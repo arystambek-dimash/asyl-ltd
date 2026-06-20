@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Wheat } from "lucide-react";
+import Image from "next/image";
 import { useAuth } from "@/store/auth";
 import { apiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -36,11 +36,15 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-[var(--muted)]/40 p-4">
       <div className="w-full max-w-sm animate-fade-up">
         <div className="mb-8 flex flex-col items-center gap-3">
-          <div className="flex size-12 items-center justify-center rounded-xl bg-[var(--primary)] text-[var(--primary-foreground)]">
-            <Wheat className="size-6" />
-          </div>
+          <Image
+            src="/logo.png"
+            alt="ASYL-LTD — Мельничный комплекс"
+            width={220}
+            height={200}
+            className="h-auto w-44 object-contain"
+            priority
+          />
           <div className="text-center">
-            <div className="text-xl font-bold tracking-tight">АСЫЛ-LTD</div>
             <div className="text-xs uppercase tracking-widest text-[var(--muted-foreground)]">
               Система учёта цеха
             </div>

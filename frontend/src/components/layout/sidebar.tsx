@@ -1,9 +1,10 @@
 "use client";
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Boxes, ClipboardList, Users, Truck,
-  ScrollText, BarChart3, Wheat,
+  ScrollText, BarChart3,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Me } from "@/lib/types";
@@ -39,13 +40,18 @@ export function Sidebar({ me }: { me: Me }) {
   return (
     <aside className="flex w-[220px] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)]">
       <div className="flex h-16 items-center gap-2.5 border-b px-5">
-        <div className="flex size-8 items-center justify-center rounded-md bg-[var(--primary)] text-[var(--primary-foreground)]">
-          <Wheat className="size-4" />
-        </div>
+        <Image
+          src="/logo-mark.png"
+          alt="ASYL-LTD"
+          width={32}
+          height={32}
+          className="size-8 shrink-0 object-contain"
+          priority
+        />
         <div className="leading-tight">
-          <div className="text-sm font-bold tracking-tight">АСЫЛ-LTD</div>
+          <div className="text-sm font-bold tracking-tight">ASYL-LTD</div>
           <div className="text-[10px] uppercase tracking-widest text-[var(--muted-foreground)]">
-            {me.is_client ? "Кабинет" : "Учёт цеха"}
+            {me.is_client ? "Кабинет" : "Мельничный комплекс"}
           </div>
         </div>
       </div>
