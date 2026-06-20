@@ -8,6 +8,10 @@ class EventLog(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
     )
+    order = models.ForeignKey(
+        "orders.Order", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="events",
+    )
     payload = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
