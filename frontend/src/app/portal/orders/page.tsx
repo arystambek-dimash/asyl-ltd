@@ -1,0 +1,46 @@
+"use client";
+import Link from "next/link";
+import { AppShell } from "@/components/layout/app-shell";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { StatusBadge } from "@/components/status-badge";
+import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { useApi } from "@/lib/use-api";
+import { formatMoney } from "@/lib/utils";
+import { Plus } from "lucide-react";
+import type { Order } from "@/lib/types";
+
+export default function PortalOrdersPage() {
+  const { data: orders, loading } = useApi<Order[]>("/portal/orders/");
+  return (
+    <AppShell title="Мои заказы" portal>
+      <div className="mb-4 flex justify-between">
+        <p className="text-sm text-[var(--muted-foreground)]">{orders?.length ?? 0} заказов</p>
+        <Link href="/portal/orders/new"><Button size="sm"><Plus className="size-4" /> Новый заказ</Button></Link>
+      </div>
+      <Card>
+        <CardContent className="pt-6">
+          {loading ? (
+            <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+          ) : (orders ?? []).length === 0 ? (
+            <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">У вас пока нет заказов.</p>
+          ) : (
+            <Table>
+              <THead><TR><TH>№</TH><TH>Сумма</TH><TH>Оплачено</TH><TH>Статус</TH></TR></THead>
+              <TBody>
+                {(orders ?? []).map((o) => (
+                  <TR key={o.id}>
+                    <TD className="font-medium">#{o.id}</TD>
+                    <TD className="tabular-nums">{formatMoney(o.total_amount)} ₸</TD>
+                    <TD className="tabular-nums text-[var(--muted-foreground)]">{formatMoney(o.paid_total)} ₸</TD>
+                    <TD><StatusBadge status={o.status} /></TD>
+                  </TR>
+                ))}
+              </TBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+    </AppShell>
+  );
+}
