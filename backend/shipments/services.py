@@ -15,7 +15,8 @@ def record_arrival(order, truck_number, weigh_in_kg, user, debt_override=False):
              "code": "invalid_status"}
         )
     if not order.is_fully_paid:
-        if not (debt_override and user.is_boss):
+        may_override = user.is_boss or user.is_superuser
+        if not (debt_override and may_override):
             raise ValidationError(
                 {"detail": "Заказ не оплачен — въезд запрещён", "code": "payment_required"}
             )
