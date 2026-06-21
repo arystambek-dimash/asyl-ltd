@@ -2,12 +2,13 @@
 import { useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
@@ -20,6 +21,7 @@ export default function ProductsPage() {
   const { data: packagings } = useApi<Packaging[]>("/packagings/");
   const { data: products, reload } = useApi<Product[]>("/products/");
 
+  const [open, setOpen] = useState(false);
   const [grade, setGrade] = useState("");
   const [packaging, setPackaging] = useState("");
   const [price, setPrice] = useState("");
@@ -38,7 +40,7 @@ export default function ProductsPage() {
       await api.post("/products/", {
         grade: Number(grade), packaging: Number(packaging), price,
       });
-      setGrade(""); setPackaging(""); setPrice(""); reload();
+      setGrade(""); setPackaging(""); setPrice(""); setOpen(false); reload();
     } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
   }
 
@@ -54,43 +56,21 @@ export default function ProductsPage() {
 
   return (
     <AppShell title="Товары">
-      <Card className="mb-6">
-        <CardHeader><CardTitle>Новый товар</CardTitle></CardHeader>
-        <CardContent>
-          {!ready ? (
-            <p className="py-2 text-sm text-[var(--muted-foreground)]">
-              Сначала добавьте хотя бы один{" "}
-              <Link href="/catalog/grades" className="text-[var(--primary)] underline">сорт</Link>{" "}
-              и одну{" "}
-              <Link href="/catalog/packagings" className="text-[var(--primary)] underline">фасовку</Link>.
-            </p>
-          ) : (
-            <form onSubmit={add} className="flex items-end gap-3">
-              <div className="flex flex-1 flex-col gap-1.5">
-                <Label>Сорт</Label>
-                <Select value={grade} onChange={(e) => setGrade(e.target.value)} required>
-                  <option value="">Выберите сорт</option>
-                  {activeGrades.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-                </Select>
-              </div>
-              <div className="flex flex-1 flex-col gap-1.5">
-                <Label>Фасовка</Label>
-                <Select value={packaging} onChange={(e) => setPackaging(e.target.value)} required>
-                  <option value="">Выберите фасовку</option>
-                  {activePackagings.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
-                </Select>
-              </div>
-              <div className="flex w-40 flex-col gap-1.5">
-                <Label>Цена за мешок, ₸</Label>
-                <Input type="number" step="0.01" value={price}
-                  onChange={(e) => setPrice(e.target.value)} required />
-              </div>
-              <Button type="submit" disabled={busy}><Plus className="size-4" /> Создать</Button>
-            </form>
-          )}
-          {error && <p className="mt-2 text-sm text-[var(--destructive)]">{error}</p>}
-        </CardContent>
-      </Card>
+      <div className="mb-4 flex items-center justify-between">
+        <p className="text-sm text-[var(--muted-foreground)]">{products?.length ?? 0} товаров</p>
+        <Button size="sm" disabled={!ready} onClick={() => { setError(""); setOpen(true); }}>
+          <Plus className="size-4" /> Создать товар
+        </Button>
+      </div>
+
+      {!ready && (
+        <p className="mb-4 text-sm text-[var(--muted-foreground)]">
+          Сначала добавьте хотя бы один{" "}
+          <Link href="/catalog/grades" className="text-[var(--primary)] underline">сорт</Link>{" "}
+          и одну{" "}
+          <Link href="/catalog/packagings" className="text-[var(--primary)] underline">фасовку</Link>.
+        </p>
+      )}
 
       <Card>
         <CardContent className="pt-6">
@@ -132,6 +112,35 @@ export default function ProductsPage() {
           </Table>
         </CardContent>
       </Card>
+
+      <Modal open={open} onClose={() => setOpen(false)} title="Новый товар">
+        <form onSubmit={add} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Label>Сорт</Label>
+            <Select value={grade} onChange={(e) => setGrade(e.target.value)} required>
+              <option value="">Выберите сорт</option>
+              {activeGrades.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Фасовка</Label>
+            <Select value={packaging} onChange={(e) => setPackaging(e.target.value)} required>
+              <option value="">Выберите фасовку</option>
+              {activePackagings.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Цена за мешок, ₸</Label>
+            <Input type="number" step="0.01" value={price}
+              onChange={(e) => setPrice(e.target.value)} required />
+          </div>
+          {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
+            <Button type="submit" disabled={busy}>{busy ? "Создание…" : "Создать"}</Button>
+          </div>
+        </form>
+      </Modal>
     </AppShell>
   );
 }

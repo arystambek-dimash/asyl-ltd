@@ -1,11 +1,12 @@
 "use client";
 import { useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
@@ -14,14 +15,17 @@ import type { Grade } from "@/lib/types";
 
 export default function GradesPage() {
   const { data: grades, reload } = useApi<Grade[]>("/grades/");
+  const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function add(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError("");
-    try { await api.post("/grades/", { name }); setName(""); reload(); }
-    catch (e) { setError(apiError(e)); } finally { setBusy(false); }
+    try {
+      await api.post("/grades/", { name });
+      setName(""); setOpen(false); reload();
+    } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
   }
 
   async function toggle(g: Grade) {
@@ -31,20 +35,12 @@ export default function GradesPage() {
 
   return (
     <AppShell title="Сорта">
-      <Card className="mb-6 max-w-xl">
-        <CardHeader><CardTitle>Новый сорт</CardTitle></CardHeader>
-        <CardContent>
-          <form onSubmit={add} className="flex items-end gap-3">
-            <div className="flex flex-1 flex-col gap-1.5">
-              <Label>Название сорта</Label>
-              <Input placeholder="напр. Премиум" value={name}
-                onChange={(e) => setName(e.target.value)} required />
-            </div>
-            <Button type="submit" disabled={busy}><Plus className="size-4" /> Добавить</Button>
-          </form>
-          {error && <p className="mt-2 text-sm text-[var(--destructive)]">{error}</p>}
-        </CardContent>
-      </Card>
+      <div className="mb-4 flex items-center justify-between">
+        <p className="text-sm text-[var(--muted-foreground)]">{grades?.length ?? 0} сортов</p>
+        <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
+          <Plus className="size-4" /> Добавить сорт
+        </Button>
+      </div>
 
       <Card>
         <CardContent className="pt-6">
@@ -71,6 +67,21 @@ export default function GradesPage() {
           </Table>
         </CardContent>
       </Card>
+
+      <Modal open={open} onClose={() => setOpen(false)} title="Новый сорт">
+        <form onSubmit={add} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Label>Название сорта</Label>
+            <Input placeholder="напр. Премиум" value={name} autoFocus
+              onChange={(e) => setName(e.target.value)} required />
+          </div>
+          {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
+            <Button type="submit" disabled={busy}>{busy ? "Сохранение…" : "Добавить"}</Button>
+          </div>
+        </form>
+      </Modal>
     </AppShell>
   );
 }

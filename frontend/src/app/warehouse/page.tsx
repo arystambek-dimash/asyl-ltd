@@ -7,12 +7,13 @@ import { Select } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
-import { Plus, Minus, History } from "lucide-react";
+import { Plus, Minus, History, SlidersHorizontal } from "lucide-react";
 import type { StockItem, Product } from "@/lib/types";
 
 interface Movement {
@@ -33,6 +34,7 @@ export default function WarehousePage() {
   const { me } = useAuth();
   const canAdjust = me?.is_superuser || me?.roles.includes("manager");
 
+  const [open, setOpen] = useState(false);
   const [product, setProduct] = useState("");
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
@@ -50,7 +52,7 @@ export default function WarehousePage() {
         delta: sign * Number(amount),
         note,
       });
-      setAmount(""); setNote("");
+      setProduct(""); setAmount(""); setNote(""); setOpen(false);
       reload(); reloadMoves();
     } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
   }
@@ -58,39 +60,14 @@ export default function WarehousePage() {
   return (
     <AppShell title="Склад готовой муки">
       {canAdjust && (
-        <Card className="mb-6">
-          <CardHeader><CardTitle>Изменить остаток</CardTitle></CardHeader>
-          <CardContent>
-            <div className="flex items-end gap-3">
-              <div className="flex flex-1 flex-col gap-1.5">
-                <Label>Товар</Label>
-                <Select value={product} onChange={(e) => setProduct(e.target.value)}>
-                  <option value="">Выберите товар</option>
-                  {(products ?? []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-                </Select>
-              </div>
-              <div className="flex w-32 flex-col gap-1.5">
-                <Label>Мешков</Label>
-                <Input type="number" min="1" value={amount}
-                  onChange={(e) => setAmount(e.target.value)} placeholder="0" />
-              </div>
-              <div className="flex flex-1 flex-col gap-1.5">
-                <Label>Причина (необязательно)</Label>
-                <Input value={note} onChange={(e) => setNote(e.target.value)}
-                  placeholder="напр. инвентаризация, бой мешков" />
-              </div>
-              <Button type="button" disabled={busy || !product || !amount}
-                onClick={() => adjust(1)}>
-                <Plus className="size-4" /> Добавить
-              </Button>
-              <Button type="button" variant="outline" disabled={busy || !product || !amount}
-                onClick={() => adjust(-1)}>
-                <Minus className="size-4" /> Списать
-              </Button>
-            </div>
-            {error && <p className="mt-2 text-sm text-[var(--destructive)]">{error}</p>}
-          </CardContent>
-        </Card>
+        <div className="mb-4 flex items-center justify-between">
+          <p className="text-sm text-[var(--muted-foreground)]">
+            {(stock ?? []).length} позиций на складе
+          </p>
+          <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
+            <SlidersHorizontal className="size-4" /> Изменить остаток
+          </Button>
+        </div>
       )}
 
       <div className="grid grid-cols-4 gap-4">
@@ -151,6 +128,39 @@ export default function WarehousePage() {
           )}
         </CardContent>
       </Card>
+
+      <Modal open={open} onClose={() => setOpen(false)} title="Изменить остаток">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Label>Товар</Label>
+            <Select value={product} onChange={(e) => setProduct(e.target.value)}>
+              <option value="">Выберите товар</option>
+              {(products ?? []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Мешков</Label>
+            <Input type="number" min="1" value={amount}
+              onChange={(e) => setAmount(e.target.value)} placeholder="0" />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Причина (необязательно)</Label>
+            <Input value={note} onChange={(e) => setNote(e.target.value)}
+              placeholder="напр. инвентаризация, бой мешков" />
+          </div>
+          {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" disabled={busy || !product || !amount}
+              onClick={() => adjust(-1)}>
+              <Minus className="size-4" /> Списать
+            </Button>
+            <Button type="button" disabled={busy || !product || !amount}
+              onClick={() => adjust(1)}>
+              <Plus className="size-4" /> Добавить
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </AppShell>
   );
 }
