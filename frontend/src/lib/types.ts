@@ -15,7 +15,8 @@ export interface Product {
 }
 export interface Client {
   id: number; first_name: string; last_name: string; phone: string;
-  name: string; country: string; requisites: string; user: number | null;
+  name: string; country: string;
+  iin: string; bank: string; bank_account: string; user: number | null;
 }
 export interface OrderItem { id?: number; product: number; quantity: number; }
 export interface Order {

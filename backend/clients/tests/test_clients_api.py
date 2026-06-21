@@ -12,7 +12,7 @@ def test_manager_creates_client_without_optional_fields(auth_client, manager):
     assert resp.status_code == 201
     c = Client.objects.get(first_name="Иван")
     assert c.name == "Иван Петров"
-    assert c.country == "" and c.requisites == ""
+    assert c.country == "" and c.iin == "" and c.bank == "" and c.bank_account == ""
 
 
 def test_country_and_requisites_optional(auth_client, manager):

@@ -29,7 +29,11 @@ const schema = z.object({
     .string()
     .refine((v) => v.replace(/\D/g, "").length === 11, "Введите номер полностью"),
   country: z.string().optional(),
-  requisites: z.string().optional(),
+  iin: z.string().optional().refine(
+    (v) => !v || /^\d{12}$/.test(v), "ИИН/БИН — 12 цифр"
+  ),
+  bank: z.string().optional(),
+  bank_account: z.string().optional(),
 });
 type FormValues = z.infer<typeof schema>;
 
@@ -37,7 +41,10 @@ function ClientForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
   const [serverError, setServerError] = useState("");
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { first_name: "", last_name: "", phone: "", country: "", requisites: "" },
+    defaultValues: {
+      first_name: "", last_name: "", phone: "", country: "",
+      iin: "", bank: "", bank_account: "",
+    },
   });
 
   async function onSubmit(values: FormValues) {
@@ -103,11 +110,38 @@ function ClientForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
           </FormItem>
         )} />
 
-        <FormField control={form.control} name="requisites" render={({ field }) => (
-          <FormItem className="sm:col-span-2">
-            <FormLabel>Реквизиты</FormLabel>
+        <div className="sm:col-span-2 mt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+          Реквизиты
+        </div>
+
+        <FormField control={form.control} name="iin" render={({ field }) => (
+          <FormItem>
+            <FormLabel>ИИН / БИН</FormLabel>
             <FormControl>
-              <Input placeholder="ИНН, банк, расчётный счёт…" {...field} />
+              <Input inputMode="numeric" placeholder="12 цифр" maxLength={12}
+                value={field.value}
+                onChange={(e) => field.onChange(e.target.value.replace(/\D/g, "").slice(0, 12))} />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )} />
+
+        <FormField control={form.control} name="bank" render={({ field }) => (
+          <FormItem>
+            <FormLabel>Банк</FormLabel>
+            <FormControl>
+              <Input placeholder="напр. Halyk Bank" {...field} />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )} />
+
+        <FormField control={form.control} name="bank_account" render={({ field }) => (
+          <FormItem className="sm:col-span-2">
+            <FormLabel>Расчётный счёт (IBAN)</FormLabel>
+            <FormControl>
+              <Input placeholder="KZ…" {...field}
+                onChange={(e) => field.onChange(e.target.value.toUpperCase())} />
             </FormControl>
             <FormMessage />
           </FormItem>
