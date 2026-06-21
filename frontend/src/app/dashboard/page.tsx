@@ -1,6 +1,7 @@
 "use client";
 import { AppShell } from "@/components/layout/app-shell";
 import { KpiCard } from "@/components/kpi-card";
+import { CameraWall } from "@/components/camera-wall";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
@@ -22,7 +23,11 @@ export default function DashboardPage() {
 
   return (
     <AppShell title="Дашборд">
-      <div className="grid grid-cols-4 gap-4">
+      {/* Реальная трансляция камер цеха */}
+      <CameraWall />
+
+      {/* Статистика */}
+      <div className="mt-6 grid grid-cols-4 gap-4">
         <KpiCard label="Активные заказы" value={String(activeOrders.length)}
           sub="в работе" />
         <KpiCard label="Мешков на складе" value={formatMoney(totalBags)}
@@ -33,6 +38,7 @@ export default function DashboardPage() {
           sub="неоплаченный остаток" />
       </div>
 
+      {/* Заказы в работе */}
       <Card className="mt-6">
         <CardHeader>
           <CardTitle>Заказы в работе</CardTitle>
