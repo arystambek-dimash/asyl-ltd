@@ -3,6 +3,9 @@ from .models import Client
 
 
 class ClientSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(read_only=True)
+
     class Meta:
         model = Client
-        fields = ["id", "name", "contact", "country", "requisites", "user"]
+        fields = ["id", "first_name", "last_name", "phone", "name",
+                  "country", "requisites", "user"]

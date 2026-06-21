@@ -14,8 +14,9 @@ import type { Client } from "@/lib/types";
 
 export default function ClientsPage() {
   const { data: clients, reload } = useApi<Client[]>("/clients/");
+  const empty = { first_name: "", last_name: "", phone: "", country: "", requisites: "" };
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", contact: "", country: "", requisites: "" });
+  const [form, setForm] = useState(empty);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -23,7 +24,7 @@ export default function ClientsPage() {
     e.preventDefault(); setBusy(true); setError("");
     try {
       await api.post("/clients/", form);
-      setForm({ name: "", contact: "", country: "", requisites: "" });
+      setForm(empty);
       setOpen(false); reload();
     } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
   }
@@ -40,12 +41,12 @@ export default function ClientsPage() {
       <Card>
         <CardContent className="pt-6">
           <Table>
-            <THead><TR><TH>Название</TH><TH>Контакт</TH><TH>Страна</TH></TR></THead>
+            <THead><TR><TH>Имя</TH><TH>Телефон</TH><TH>Страна</TH></TR></THead>
             <TBody>
               {(clients ?? []).map((c) => (
                 <TR key={c.id}>
                   <TD className="font-medium">{c.name}</TD>
-                  <TD>{c.contact}</TD>
+                  <TD>{c.phone}</TD>
                   <TD>{c.country || "—"}</TD>
                 </TR>
               ))}
@@ -61,21 +62,26 @@ export default function ClientsPage() {
       <Modal open={open} onClose={() => setOpen(false)} title="Новый клиент" className="max-w-xl">
         <form onSubmit={submit} className="grid grid-cols-1 gap-x-5 gap-y-5 sm:grid-cols-2">
           <div className="grid gap-2">
-            <Label>Название*</Label>
-            <Input value={form.name} required autoFocus
-              onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            <Label>Имя*</Label>
+            <Input value={form.first_name} required autoFocus
+              onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
           </div>
           <div className="grid gap-2">
-            <Label>Контакт*</Label>
-            <Input value={form.contact} required
-              onChange={(e) => setForm({ ...form, contact: e.target.value })} />
+            <Label>Фамилия*</Label>
+            <Input value={form.last_name} required
+              onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
+          </div>
+          <div className="grid gap-2">
+            <Label>Номер телефона*</Label>
+            <Input type="tel" value={form.phone} required placeholder="+7 …"
+              onChange={(e) => setForm({ ...form, phone: e.target.value })} />
           </div>
           <div className="grid gap-2">
             <Label>Страна</Label>
             <Input value={form.country}
               onChange={(e) => setForm({ ...form, country: e.target.value })} />
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-2 sm:col-span-2">
             <Label>Реквизиты</Label>
             <Input value={form.requisites}
               onChange={(e) => setForm({ ...form, requisites: e.target.value })} />

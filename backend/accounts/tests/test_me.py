@@ -13,7 +13,7 @@ def test_me_returns_roles(auth_client, boss):
 
 def test_me_for_client_includes_client_id(auth_client, client_user):
     from clients.models import Client
-    c = Client.objects.create(name="Мой", contact="x", user=client_user)
+    c = Client.objects.create(first_name="Мой", last_name="К", phone="x", user=client_user)
     resp = auth_client(client_user).get("/api/auth/me/")
     assert resp.status_code == 200
     assert resp.data["is_client"] is True

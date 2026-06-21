@@ -13,7 +13,7 @@ def _product(price="100.00"):
 
 
 def test_manager_creates_order_with_items(auth_client, manager):
-    client = Client.objects.create(name="Лидер", contact="x")
+    client = Client.objects.create(first_name="Лидер", last_name="К", phone="x")
     prod = _product("100.00")
     resp = auth_client(manager).post(
         "/api/orders/",
@@ -27,7 +27,7 @@ def test_manager_creates_order_with_items(auth_client, manager):
 
 
 def test_order_status_not_settable_via_create(auth_client, manager):
-    client = Client.objects.create(name="L", contact="x")
+    client = Client.objects.create(first_name="L", last_name="К", phone="x")
     prod = _product()
     resp = auth_client(manager).post(
         "/api/orders/",

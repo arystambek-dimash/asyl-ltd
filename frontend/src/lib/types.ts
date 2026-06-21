@@ -14,8 +14,8 @@ export interface Product {
   is_active: boolean; label: string; weight_kg: string;
 }
 export interface Client {
-  id: number; name: string; contact: string; country: string;
-  requisites: string; user: number | null;
+  id: number; first_name: string; last_name: string; phone: string;
+  name: string; country: string; requisites: string; user: number | null;
 }
 export interface OrderItem { id?: number; product: number; quantity: number; }
 export interface Order {

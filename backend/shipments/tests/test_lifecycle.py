@@ -15,7 +15,7 @@ def _paid_order(boss, status="paid", bags_in_stock=100, qty=50):
     pk = Packaging.objects.create(name="50 кг", weight_kg="50.00")
     prod = Product.objects.create(grade=g, packaging=pk, price="100.00")
     receive_stock(prod, bags_in_stock, boss)
-    c = Client.objects.create(name="L", contact="x")
+    c = Client.objects.create(first_name="L", last_name="К", phone="x")
     o = Order.objects.create(client=c, status=status)
     OrderItem.objects.create(order=o, product=prod, quantity=qty)
     # When the order is meant to be paid, back the status with a real payment
