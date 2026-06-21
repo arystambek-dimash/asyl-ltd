@@ -1,7 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
@@ -13,18 +13,8 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
-import { Plus, Minus, History, SlidersHorizontal, Search } from "lucide-react";
+import { Plus, Minus, SlidersHorizontal, Search } from "lucide-react";
 import type { StockItem, Product } from "@/lib/types";
-
-interface Movement {
-  id: number; product: number; product_label: string;
-  delta: number; balance_after: number; reason: string;
-  note: string; created_at: string; created_by_name: string | null;
-}
-
-const REASON_LABELS: Record<string, string> = {
-  adjustment: "Корректировка", shipment: "Отгрузка", receipt: "Приёмка",
-};
 
 // Статус остатка: нет / мало (<20 мешков) / в наличии.
 function stockTone(bags: number): { tone: "destructive" | "warning" | "success"; label: string } {
@@ -36,7 +26,6 @@ function stockTone(bags: number): { tone: "destructive" | "warning" | "success";
 export default function WarehousePage() {
   const { data: stock, reload } = useApi<StockItem[]>("/stock/");
   const { data: products } = useApi<Product[]>("/products/");
-  const { data: movements, reload: reloadMoves } = useApi<Movement[]>("/stock/movements/");
   const { me } = useAuth();
   const canAdjust = me?.is_superuser || me?.roles.includes("manager");
 
@@ -49,7 +38,6 @@ export default function WarehousePage() {
   const [open, setOpen] = useState(false);
   const [product, setProduct] = useState("");
   const [amount, setAmount] = useState("");
-  const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -70,9 +58,9 @@ export default function WarehousePage() {
     if (!product || !amount) return;
     setBusy(true); setError("");
     try {
-      await api.post("/stock/adjust/", { product: Number(product), delta: sign * Number(amount), note });
-      setProduct(""); setAmount(""); setNote(""); setOpen(false);
-      reload(); reloadMoves();
+      await api.post("/stock/adjust/", { product: Number(product), delta: sign * Number(amount) });
+      setProduct(""); setAmount(""); setOpen(false);
+      reload();
     } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
   }
 
@@ -157,43 +145,6 @@ export default function WarehousePage() {
         </CardContent>
       </Card>
 
-      {/* история движений */}
-      <Card className="mt-6">
-        <CardHeader className="flex-row items-center gap-2">
-          <History className="size-4 text-[var(--muted-foreground)]" />
-          <CardTitle>История движений</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {(movements ?? []).length === 0 ? (
-            <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Движений пока нет.</p>
-          ) : (
-            <Table>
-              <THead>
-                <TR><TH>Дата</TH><TH>Товар</TH><TH>Изменение</TH><TH>Остаток</TH>
-                  <TH>Тип</TH><TH>Причина</TH><TH>Кто</TH></TR>
-              </THead>
-              <TBody>
-                {(movements ?? []).map((m) => (
-                  <TR key={m.id}>
-                    <TD className="whitespace-nowrap text-[var(--muted-foreground)]">
-                      {new Date(m.created_at).toLocaleString("ru-RU")}
-                    </TD>
-                    <TD>{m.product_label}</TD>
-                    <TD className={`tabular-nums font-medium ${m.delta > 0 ? "text-[var(--success)]" : "text-[var(--destructive)]"}`}>
-                      {m.delta > 0 ? "+" : ""}{m.delta}
-                    </TD>
-                    <TD className="tabular-nums">{m.balance_after}</TD>
-                    <TD><Badge tone="muted">{REASON_LABELS[m.reason] ?? m.reason}</Badge></TD>
-                    <TD className="text-[var(--muted-foreground)]">{m.note || "—"}</TD>
-                    <TD className="text-[var(--muted-foreground)]">{m.created_by_name || "—"}</TD>
-                  </TR>
-                ))}
-              </TBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
       {/* модалка корректировки */}
       <Modal open={open} onClose={() => setOpen(false)} title="Изменить остаток">
         <div className="flex flex-col gap-5">
@@ -208,11 +159,6 @@ export default function WarehousePage() {
             <Label>Мешков</Label>
             <Input type="number" min="1" value={amount}
               onChange={(e) => setAmount(e.target.value)} placeholder="0" />
-          </div>
-          <div className="grid gap-2">
-            <Label>Причина (необязательно)</Label>
-            <Input value={note} onChange={(e) => setNote(e.target.value)}
-              placeholder="напр. инвентаризация, бой мешков" />
           </div>
           {error && (
             <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
