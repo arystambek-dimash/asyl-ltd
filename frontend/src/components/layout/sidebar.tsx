@@ -4,7 +4,7 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Boxes, ClipboardList, Users, Truck,
-  ScrollText, BarChart3,
+  ScrollText, BarChart3, Package,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Me } from "@/lib/types";
@@ -15,6 +15,7 @@ interface NavItem {
 
 const STAFF_NAV: NavItem[] = [
   { href: "/dashboard", label: "Дашборд", icon: LayoutDashboard },
+  { href: "/products", label: "Товары", icon: Package, roles: ["manager", "boss"] },
   { href: "/warehouse", label: "Склад", icon: Boxes },
   { href: "/orders", label: "Заказы", icon: ClipboardList },
   { href: "/clients", label: "Клиенты", icon: Users, roles: ["manager", "boss"] },
