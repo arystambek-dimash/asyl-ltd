@@ -130,31 +130,37 @@ export default function WarehousePage() {
       </Card>
 
       <Modal open={open} onClose={() => setOpen(false)} title="Изменить остаток">
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-5">
+          <div className="grid gap-2">
             <Label>Товар</Label>
             <Select value={product} onChange={(e) => setProduct(e.target.value)}>
               <option value="">Выберите товар</option>
               {(products ?? []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
             </Select>
           </div>
-          <div className="flex flex-col gap-1.5">
+          <div className="grid gap-2">
             <Label>Мешков</Label>
             <Input type="number" min="1" value={amount}
               onChange={(e) => setAmount(e.target.value)} placeholder="0" />
           </div>
-          <div className="flex flex-col gap-1.5">
+          <div className="grid gap-2">
             <Label>Причина (необязательно)</Label>
             <Input value={note} onChange={(e) => setNote(e.target.value)}
               placeholder="напр. инвентаризация, бой мешков" />
           </div>
-          {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
-          <div className="flex justify-end gap-2">
+          {error && (
+            <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
+              {error}
+            </p>
+          )}
+          <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-end">
             <Button type="button" variant="outline" disabled={busy || !product || !amount}
+              className="w-full sm:w-auto sm:min-w-28"
               onClick={() => adjust(-1)}>
               <Minus className="size-4" /> Списать
             </Button>
             <Button type="button" disabled={busy || !product || !amount}
+              className="w-full sm:w-auto sm:min-w-28"
               onClick={() => adjust(1)}>
               <Plus className="size-4" /> Добавить
             </Button>

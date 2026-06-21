@@ -114,30 +114,34 @@ export default function ProductsPage() {
       </Card>
 
       <Modal open={open} onClose={() => setOpen(false)} title="Новый товар">
-        <form onSubmit={add} className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
+        <form onSubmit={add} className="flex flex-col gap-5">
+          <div className="grid gap-2">
             <Label>Сорт</Label>
             <Select value={grade} onChange={(e) => setGrade(e.target.value)} required>
               <option value="">Выберите сорт</option>
               {activeGrades.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
             </Select>
           </div>
-          <div className="flex flex-col gap-1.5">
+          <div className="grid gap-2">
             <Label>Фасовка</Label>
             <Select value={packaging} onChange={(e) => setPackaging(e.target.value)} required>
               <option value="">Выберите фасовку</option>
               {activePackagings.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
             </Select>
           </div>
-          <div className="flex flex-col gap-1.5">
+          <div className="grid gap-2">
             <Label>Цена за мешок, ₸</Label>
             <Input type="number" step="0.01" value={price}
               onChange={(e) => setPrice(e.target.value)} required />
           </div>
-          {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
-            <Button type="submit" disabled={busy}>{busy ? "Создание…" : "Создать"}</Button>
+          {error && (
+            <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
+              {error}
+            </p>
+          )}
+          <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-end">
+            <Button type="button" variant="outline" className="w-full sm:w-auto sm:min-w-28" onClick={() => setOpen(false)}>Отмена</Button>
+            <Button type="submit" className="w-full sm:w-auto sm:min-w-28" disabled={busy}>{busy ? "Создание…" : "Создать"}</Button>
           </div>
         </form>
       </Modal>

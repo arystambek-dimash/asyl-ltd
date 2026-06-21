@@ -58,32 +58,36 @@ export default function ClientsPage() {
         </CardContent>
       </Card>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="Новый клиент">
-        <form onSubmit={submit} className="grid grid-cols-2 gap-4">
-          <div className="flex flex-col gap-1.5">
+      <Modal open={open} onClose={() => setOpen(false)} title="Новый клиент" className="max-w-xl">
+        <form onSubmit={submit} className="grid grid-cols-1 gap-x-5 gap-y-5 sm:grid-cols-2">
+          <div className="grid gap-2">
             <Label>Название*</Label>
             <Input value={form.name} required autoFocus
               onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </div>
-          <div className="flex flex-col gap-1.5">
+          <div className="grid gap-2">
             <Label>Контакт*</Label>
             <Input value={form.contact} required
               onChange={(e) => setForm({ ...form, contact: e.target.value })} />
           </div>
-          <div className="flex flex-col gap-1.5">
+          <div className="grid gap-2">
             <Label>Страна</Label>
             <Input value={form.country}
               onChange={(e) => setForm({ ...form, country: e.target.value })} />
           </div>
-          <div className="flex flex-col gap-1.5">
+          <div className="grid gap-2">
             <Label>Реквизиты</Label>
             <Input value={form.requisites}
               onChange={(e) => setForm({ ...form, requisites: e.target.value })} />
           </div>
-          {error && <p className="col-span-2 text-sm text-[var(--destructive)]">{error}</p>}
-          <div className="col-span-2 flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
-            <Button type="submit" disabled={busy}>{busy ? "Сохранение…" : "Сохранить"}</Button>
+          {error && (
+            <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)] sm:col-span-2">
+              {error}
+            </p>
+          )}
+          <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:col-span-2 sm:flex-row sm:justify-end">
+            <Button type="button" variant="outline" className="w-full sm:w-auto sm:min-w-28" onClick={() => setOpen(false)}>Отмена</Button>
+            <Button type="submit" className="w-full sm:w-auto sm:min-w-28" disabled={busy}>{busy ? "Сохранение…" : "Сохранить"}</Button>
           </div>
         </form>
       </Modal>

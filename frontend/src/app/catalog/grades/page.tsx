@@ -69,16 +69,20 @@ export default function GradesPage() {
       </Card>
 
       <Modal open={open} onClose={() => setOpen(false)} title="Новый сорт">
-        <form onSubmit={add} className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
+        <form onSubmit={add} className="flex flex-col gap-5">
+          <div className="grid gap-2">
             <Label>Название сорта</Label>
             <Input placeholder="напр. Премиум" value={name} autoFocus
               onChange={(e) => setName(e.target.value)} required />
           </div>
-          {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
-            <Button type="submit" disabled={busy}>{busy ? "Сохранение…" : "Добавить"}</Button>
+          {error && (
+            <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
+              {error}
+            </p>
+          )}
+          <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-end">
+            <Button type="button" variant="outline" className="w-full sm:w-auto sm:min-w-28" onClick={() => setOpen(false)}>Отмена</Button>
+            <Button type="submit" className="w-full sm:w-auto sm:min-w-28" disabled={busy}>{busy ? "Сохранение…" : "Добавить"}</Button>
           </div>
         </form>
       </Modal>
