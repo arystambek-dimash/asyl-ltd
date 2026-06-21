@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
-import { Plus, Minus, History, SlidersHorizontal } from "lucide-react";
+import { Plus, Minus, History, SlidersHorizontal, Search } from "lucide-react";
 import type { StockItem, Product } from "@/lib/types";
 
 interface Movement {
@@ -26,14 +26,26 @@ const REASON_LABELS: Record<string, string> = {
   adjustment: "Корректировка", shipment: "Отгрузка", receipt: "Приёмка",
 };
 
+// Статус остатка: нет / мало (<20 мешков) / в наличии.
+function stockTone(bags: number): { tone: "destructive" | "warning" | "success"; label: string } {
+  if (bags <= 0) return { tone: "destructive", label: "Нет" };
+  if (bags < 20) return { tone: "warning", label: "Мало" };
+  return { tone: "success", label: "В наличии" };
+}
+
 export default function WarehousePage() {
   const { data: stock, reload } = useApi<StockItem[]>("/stock/");
   const { data: products } = useApi<Product[]>("/products/");
-  const { data: movements, reload: reloadMoves } =
-    useApi<Movement[]>("/stock/movements/");
+  const { data: movements, reload: reloadMoves } = useApi<Movement[]>("/stock/movements/");
   const { me } = useAuth();
   const canAdjust = me?.is_superuser || me?.roles.includes("manager");
 
+  // фильтры
+  const [search, setSearch] = useState("");
+  const [grade, setGrade] = useState("");
+  const [packaging, setPackaging] = useState("");
+
+  // модалка корректировки
   const [open, setOpen] = useState(false);
   const [product, setProduct] = useState("");
   const [amount, setAmount] = useState("");
@@ -41,56 +53,111 @@ export default function WarehousePage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const maxBags = Math.max(1, ...(stock ?? []).map((s) => s.bags));
+  const items = stock ?? [];
+  const grades = useMemo(() => Array.from(new Set(items.map((s) => s.grade))).filter(Boolean), [items]);
+  const packagings = useMemo(() => Array.from(new Set(items.map((s) => s.packaging))).filter(Boolean), [items]);
+
+  const filtered = items.filter((s) =>
+    (!search || s.product_label.toLowerCase().includes(search.toLowerCase())) &&
+    (!grade || s.grade === grade) &&
+    (!packaging || s.packaging === packaging)
+  );
+
+  const totalBags = filtered.reduce((sum, s) => sum + s.bags, 0);
+  const totalTons = filtered.reduce((sum, s) => sum + (s.bags * Number(s.weight_kg)) / 1000, 0);
 
   async function adjust(sign: 1 | -1) {
     if (!product || !amount) return;
     setBusy(true); setError("");
     try {
-      await api.post("/stock/adjust/", {
-        product: Number(product),
-        delta: sign * Number(amount),
-        note,
-      });
+      await api.post("/stock/adjust/", { product: Number(product), delta: sign * Number(amount), note });
       setProduct(""); setAmount(""); setNote(""); setOpen(false);
       reload(); reloadMoves();
     } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
   }
 
+  const hasFilters = search || grade || packaging;
+
   return (
-    <AppShell title="Склад готовой муки">
-      {canAdjust && (
-        <div className="mb-4 flex items-center justify-between">
-          <p className="text-sm text-[var(--muted-foreground)]">
-            {(stock ?? []).length} позиций на складе
-          </p>
+    <AppShell title="Остатки склада">
+      {/* шапка: итоги + кнопка */}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex gap-6 text-sm">
+          <span className="text-[var(--muted-foreground)]">
+            Позиций: <span className="font-semibold text-[var(--foreground)]">{filtered.length}</span>
+          </span>
+          <span className="text-[var(--muted-foreground)]">
+            Мешков: <span className="font-semibold tabular-nums text-[var(--foreground)]">{formatMoney(totalBags)}</span>
+          </span>
+          <span className="text-[var(--muted-foreground)]">
+            Вес: <span className="font-semibold tabular-nums text-[var(--foreground)]">{totalTons.toFixed(2)} т</span>
+          </span>
+        </div>
+        {canAdjust && (
           <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
             <SlidersHorizontal className="size-4" /> Изменить остаток
           </Button>
-        </div>
-      )}
-
-      <div className="grid grid-cols-4 gap-4">
-        {(stock ?? []).map((s) => (
-          <Card key={s.id} className="p-6">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
-              {s.product_label}
-            </div>
-            <div className="mt-2 text-2xl font-bold tabular-nums">{formatMoney(s.bags)}</div>
-            <div className="text-xs text-[var(--muted-foreground)]">мешков</div>
-            <div className="mt-3 h-1 w-full rounded-full bg-[var(--muted)]">
-              <div className="h-1 rounded-full bg-[var(--primary)]"
-                style={{ width: `${(s.bags / maxBags) * 100}%` }} />
-            </div>
-          </Card>
-        ))}
-        {(stock ?? []).length === 0 && (
-          <p className="col-span-4 py-6 text-center text-sm text-[var(--muted-foreground)]">
-            Склад пуст. Добавьте мешки, чтобы появились остатки.
-          </p>
         )}
       </div>
 
+      {/* фильтры */}
+      <Card className="mb-4">
+        <CardContent className="pt-6">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+              <Input className="pl-8" placeholder="Быстрый поиск по товару"
+                value={search} onChange={(e) => setSearch(e.target.value)} />
+            </div>
+            <Select value={grade} onChange={(e) => setGrade(e.target.value)}>
+              <option value="">Все сорта</option>
+              {grades.map((g) => <option key={g} value={g}>{g}</option>)}
+            </Select>
+            <Select value={packaging} onChange={(e) => setPackaging(e.target.value)}>
+              <option value="">Все фасовки</option>
+              {packagings.map((p) => <option key={p} value={p}>{p}</option>)}
+            </Select>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* таблица остатков */}
+      <Card>
+        <CardContent className="pt-6">
+          <Table>
+            <THead>
+              <TR>
+                <TH>#</TH><TH>Товар</TH><TH>Сорт</TH><TH>Фасовка</TH>
+                <TH>Остаток</TH><TH>Вес</TH><TH>Статус</TH>
+              </TR>
+            </THead>
+            <TBody>
+              {filtered.map((s) => {
+                const st = stockTone(s.bags);
+                const tons = (s.bags * Number(s.weight_kg)) / 1000;
+                return (
+                  <TR key={s.id}>
+                    <TD className="text-[var(--muted-foreground)]">{s.product}</TD>
+                    <TD className="font-medium">{s.product_label}</TD>
+                    <TD>{s.grade}</TD>
+                    <TD>{s.packaging}</TD>
+                    <TD className="tabular-nums font-medium">{formatMoney(s.bags)} меш.</TD>
+                    <TD className="tabular-nums text-[var(--muted-foreground)]">{tons.toFixed(2)} т</TD>
+                    <TD><Badge tone={st.tone}>{st.label}</Badge></TD>
+                  </TR>
+                );
+              })}
+              {filtered.length === 0 && (
+                <TR><TD colSpan={7} className="py-6 text-center text-[var(--muted-foreground)]">
+                  {hasFilters ? "Ничего не найдено по фильтрам." : "Склад пуст. Измените остаток, чтобы появились позиции."}
+                </TD></TR>
+              )}
+            </TBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      {/* история движений */}
       <Card className="mt-6">
         <CardHeader className="flex-row items-center gap-2">
           <History className="size-4 text-[var(--muted-foreground)]" />
@@ -98,9 +165,7 @@ export default function WarehousePage() {
         </CardHeader>
         <CardContent>
           {(movements ?? []).length === 0 ? (
-            <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">
-              Движений пока нет.
-            </p>
+            <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Движений пока нет.</p>
           ) : (
             <Table>
               <THead>
@@ -129,6 +194,7 @@ export default function WarehousePage() {
         </CardContent>
       </Card>
 
+      {/* модалка корректировки */}
       <Modal open={open} onClose={() => setOpen(false)} title="Изменить остаток">
         <div className="flex flex-col gap-5">
           <div className="grid gap-2">
@@ -155,13 +221,11 @@ export default function WarehousePage() {
           )}
           <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-end">
             <Button type="button" variant="outline" disabled={busy || !product || !amount}
-              className="w-full sm:w-auto sm:min-w-28"
-              onClick={() => adjust(-1)}>
+              className="w-full sm:w-auto sm:min-w-28" onClick={() => adjust(-1)}>
               <Minus className="size-4" /> Списать
             </Button>
             <Button type="button" disabled={busy || !product || !amount}
-              className="w-full sm:w-auto sm:min-w-28"
-              onClick={() => adjust(1)}>
+              className="w-full sm:w-auto sm:min-w-28" onClick={() => adjust(1)}>
               <Plus className="size-4" /> Добавить
             </Button>
           </div>

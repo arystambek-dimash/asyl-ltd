@@ -10,7 +10,9 @@ from catalog.models import Product
 
 
 class StockViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    queryset = StockItem.objects.select_related("product")
+    queryset = StockItem.objects.select_related(
+        "product", "product__grade", "product__packaging"
+    )
     serializer_class = StockItemSerializer
     permission_classes = [IsStaff]
 

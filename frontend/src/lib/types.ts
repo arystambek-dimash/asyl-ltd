@@ -27,7 +27,10 @@ export interface Order {
 export interface Payment {
   id: number; order: number; amount: string; paid_at: string; recorded_by: number | null;
 }
-export interface StockItem { id: number; product: number; product_label: string; bags: number; }
+export interface StockItem {
+  id: number; product: number; product_label: string;
+  grade: string; packaging: string; weight_kg: string; bags: number;
+}
 export interface Shipment {
   id: number; order: number; truck_number: string;
   weigh_in_kg: string | null; weigh_out_kg: string | null;
