@@ -3,9 +3,11 @@ from .models import Order, OrderItem, Payment
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
+    product_label = serializers.CharField(source="product.__str__", read_only=True)
+
     class Meta:
         model = OrderItem
-        fields = ["id", "product", "quantity"]
+        fields = ["id", "product", "product_label", "quantity"]
 
 
 class PaymentSerializer(serializers.ModelSerializer):
@@ -21,13 +23,34 @@ class OrderSerializer(serializers.ModelSerializer):
     total_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     paid_total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     is_fully_paid = serializers.BooleanField(read_only=True)
+    client_name = serializers.CharField(source="client.name", read_only=True)
+    client_phone = serializers.CharField(source="client.phone", read_only=True)
+    weigh_in_kg = serializers.SerializerMethodField()
+    weigh_out_kg = serializers.SerializerMethodField()
+    net_weight_kg = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
-        fields = ["id", "client", "status", "truck_number", "items",
-                  "total_amount", "paid_total", "is_fully_paid",
-                  "debt_override", "created_at"]
+        fields = ["id", "client", "client_name", "client_phone", "status",
+                  "truck_number", "items", "total_amount", "paid_total",
+                  "is_fully_paid", "debt_override",
+                  "weigh_in_kg", "weigh_out_kg", "net_weight_kg", "created_at"]
         read_only_fields = ["truck_number", "debt_override"]
+
+    def _shipment(self, obj):
+        return getattr(obj, "shipment", None)
+
+    def get_weigh_in_kg(self, obj):
+        s = self._shipment(obj)
+        return str(s.weigh_in_kg) if s and s.weigh_in_kg is not None else None
+
+    def get_weigh_out_kg(self, obj):
+        s = self._shipment(obj)
+        return str(s.weigh_out_kg) if s and s.weigh_out_kg is not None else None
+
+    def get_net_weight_kg(self, obj):
+        s = self._shipment(obj)
+        return str(s.net_weight_kg) if s and s.net_weight_kg is not None else None
 
     def create(self, validated_data):
         items = validated_data.pop("items")

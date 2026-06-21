@@ -18,11 +18,14 @@ export interface Client {
   name: string; country: string;
   iin: string; bank: string; bank_account: string; user: number | null;
 }
-export interface OrderItem { id?: number; product: number; quantity: number; }
+export interface OrderItem { id?: number; product: number; product_label?: string; quantity: number; }
 export interface Order {
-  id: number; client: number; status: string; truck_number: string;
+  id: number; client: number; client_name?: string; client_phone?: string;
+  status: string; truck_number: string;
   items: OrderItem[]; total_amount: string; paid_total: string;
-  is_fully_paid: boolean; debt_override: boolean; created_at: string;
+  is_fully_paid: boolean; debt_override: boolean;
+  weigh_in_kg?: string | null; weigh_out_kg?: string | null; net_weight_kg?: string | null;
+  created_at: string;
 }
 export interface Payment {
   id: number; order: number; amount: string; paid_at: string; recorded_by: number | null;
