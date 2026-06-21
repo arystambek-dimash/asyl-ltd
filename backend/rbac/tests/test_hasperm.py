@@ -19,7 +19,7 @@ def test_user_with_code_allowed(make_user):
     from employees.models import Employee
     u = make_user(username="m")
     role = Role.objects.create(name="R")
-    p = Permission.objects.create(code="orders.view", section="orders", action="view", label="x")
+    p, _ = Permission.objects.get_or_create(code="orders.view", defaults={"section":"orders","action":"view","label":"x"})
     role.permissions.add(p)
     Employee.objects.create(user=u, first_name="A", last_name="B", phone="x", role=role)
     assert HasPerm("orders.view").has_permission(_Req(u), None) is True
