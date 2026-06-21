@@ -1,39 +1,146 @@
 "use client";
 import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import {
+  Form, FormField, FormItem, FormLabel, FormControl, FormMessage,
+} from "@/components/ui/form";
+import {
+  Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
+} from "@/components/ui/select-ui";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
+import { formatPhone } from "@/lib/utils";
+import { COUNTRIES } from "@/lib/countries";
 import { Plus } from "lucide-react";
 import type { Client } from "@/lib/types";
 
+const schema = z.object({
+  first_name: z.string().min(2, "Введите имя (мин. 2 символа)"),
+  last_name: z.string().min(2, "Введите фамилию (мин. 2 символа)"),
+  phone: z
+    .string()
+    .refine((v) => v.replace(/\D/g, "").length === 11, "Введите номер полностью"),
+  country: z.string().optional(),
+  requisites: z.string().optional(),
+});
+type FormValues = z.infer<typeof schema>;
+
+function ClientForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
+  const [serverError, setServerError] = useState("");
+  const form = useForm<FormValues>({
+    resolver: zodResolver(schema),
+    defaultValues: { first_name: "", last_name: "", phone: "", country: "", requisites: "" },
+  });
+
+  async function onSubmit(values: FormValues) {
+    setServerError("");
+    try {
+      await api.post("/clients/", values);
+      onDone();
+    } catch (e) {
+      setServerError(apiError(e));
+    }
+  }
+
+  return (
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(onSubmit)}
+        className="grid grid-cols-1 gap-x-5 gap-y-5 sm:grid-cols-2">
+        <FormField control={form.control} name="first_name" render={({ field }) => (
+          <FormItem>
+            <FormLabel>Имя</FormLabel>
+            <FormControl><Input autoFocus placeholder="Иван" {...field} /></FormControl>
+            <FormMessage />
+          </FormItem>
+        )} />
+
+        <FormField control={form.control} name="last_name" render={({ field }) => (
+          <FormItem>
+            <FormLabel>Фамилия</FormLabel>
+            <FormControl><Input placeholder="Петров" {...field} /></FormControl>
+            <FormMessage />
+          </FormItem>
+        )} />
+
+        <FormField control={form.control} name="phone" render={({ field }) => (
+          <FormItem>
+            <FormLabel>Номер телефона</FormLabel>
+            <FormControl>
+              <Input
+                type="tel"
+                inputMode="tel"
+                placeholder="+7 (___) ___-__-__"
+                value={field.value}
+                onChange={(e) => field.onChange(formatPhone(e.target.value))}
+              />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )} />
+
+        <FormField control={form.control} name="country" render={({ field }) => (
+          <FormItem>
+            <FormLabel>Страна</FormLabel>
+            <Select value={field.value} onValueChange={field.onChange}>
+              <FormControl>
+                <SelectTrigger>
+                  <SelectValue placeholder="Выберите страну" />
+                </SelectTrigger>
+              </FormControl>
+              <SelectContent>
+                {COUNTRIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <FormMessage />
+          </FormItem>
+        )} />
+
+        <FormField control={form.control} name="requisites" render={({ field }) => (
+          <FormItem className="sm:col-span-2">
+            <FormLabel>Реквизиты</FormLabel>
+            <FormControl>
+              <Input placeholder="ИНН, банк, расчётный счёт…" {...field} />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )} />
+
+        {serverError && (
+          <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)] sm:col-span-2">
+            {serverError}
+          </p>
+        )}
+
+        <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:col-span-2 sm:flex-row sm:justify-end">
+          <Button type="button" variant="outline" className="w-full sm:w-auto sm:min-w-28"
+            onClick={onCancel}>Отмена</Button>
+          <Button type="submit" className="w-full sm:w-auto sm:min-w-28"
+            disabled={form.formState.isSubmitting}>
+            {form.formState.isSubmitting ? "Сохранение…" : "Сохранить"}
+          </Button>
+        </div>
+      </form>
+    </Form>
+  );
+}
+
 export default function ClientsPage() {
   const { data: clients, reload } = useApi<Client[]>("/clients/");
-  const empty = { first_name: "", last_name: "", phone: "", country: "", requisites: "" };
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState(empty);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault(); setBusy(true); setError("");
-    try {
-      await api.post("/clients/", form);
-      setForm(empty);
-      setOpen(false); reload();
-    } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
-  }
 
   return (
     <AppShell title="Клиенты">
       <div className="mb-4 flex items-center justify-between">
         <p className="text-sm text-[var(--muted-foreground)]">{clients?.length ?? 0} клиентов</p>
-        <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
+        <Button size="sm" onClick={() => setOpen(true)}>
           <Plus className="size-4" /> Добавить клиента
         </Button>
       </div>
@@ -46,7 +153,7 @@ export default function ClientsPage() {
               {(clients ?? []).map((c) => (
                 <TR key={c.id}>
                   <TD className="font-medium">{c.name}</TD>
-                  <TD>{c.phone}</TD>
+                  <TD className="tabular-nums">{c.phone}</TD>
                   <TD>{c.country || "—"}</TD>
                 </TR>
               ))}
@@ -60,42 +167,12 @@ export default function ClientsPage() {
       </Card>
 
       <Modal open={open} onClose={() => setOpen(false)} title="Новый клиент" className="max-w-xl">
-        <form onSubmit={submit} className="grid grid-cols-1 gap-x-5 gap-y-5 sm:grid-cols-2">
-          <div className="grid gap-2">
-            <Label>Имя*</Label>
-            <Input value={form.first_name} required autoFocus
-              onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
-          </div>
-          <div className="grid gap-2">
-            <Label>Фамилия*</Label>
-            <Input value={form.last_name} required
-              onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
-          </div>
-          <div className="grid gap-2">
-            <Label>Номер телефона*</Label>
-            <Input type="tel" value={form.phone} required placeholder="+7 …"
-              onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-          </div>
-          <div className="grid gap-2">
-            <Label>Страна</Label>
-            <Input value={form.country}
-              onChange={(e) => setForm({ ...form, country: e.target.value })} />
-          </div>
-          <div className="grid gap-2 sm:col-span-2">
-            <Label>Реквизиты</Label>
-            <Input value={form.requisites}
-              onChange={(e) => setForm({ ...form, requisites: e.target.value })} />
-          </div>
-          {error && (
-            <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)] sm:col-span-2">
-              {error}
-            </p>
-          )}
-          <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:col-span-2 sm:flex-row sm:justify-end">
-            <Button type="button" variant="outline" className="w-full sm:w-auto sm:min-w-28" onClick={() => setOpen(false)}>Отмена</Button>
-            <Button type="submit" className="w-full sm:w-auto sm:min-w-28" disabled={busy}>{busy ? "Сохранение…" : "Сохранить"}</Button>
-          </div>
-        </form>
+        {open && (
+          <ClientForm
+            onCancel={() => setOpen(false)}
+            onDone={() => { setOpen(false); reload(); }}
+          />
+        )}
       </Modal>
     </AppShell>
   );
