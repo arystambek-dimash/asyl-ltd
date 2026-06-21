@@ -65,7 +65,7 @@ def record_shipment(order, weigh_out_kg, user):
     shipment = order.shipment
     net = abs(Decimal(weigh_out_kg) - shipment.weigh_in_kg)
     for item in order.items.select_related("product").all():
-        deduct_stock(item.product, item.quantity)
+        deduct_stock(item.product, item.quantity, user)
     shipment.weigh_out_kg = weigh_out_kg
     shipment.net_weight_kg = net
     shipment.shipped_at = timezone.now()

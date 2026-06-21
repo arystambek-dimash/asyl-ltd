@@ -8,7 +8,7 @@ import type { EventLog } from "@/lib/types";
 const TYPE_LABELS: Record<string, string> = {
   status: "Статус", payment: "Оплата", receipt: "Приёмка",
   arrival: "Прибытие", loading: "Загрузка", shipment: "Отгрузка",
-  debt_override: "Долг",
+  debt_override: "Долг", stock_adjust: "Склад",
 };
 
 export default function EventsPage() {
