@@ -27,8 +27,8 @@ def test_product_weight_from_packaging(auth_client, manager):
     assert prod.weight_kg == prod.packaging.weight_kg
 
 
-def test_staff_can_list_products(auth_client, operator):
+def test_staff_can_list_products(auth_client, manager):
     _make_product()
-    resp = auth_client(operator).get("/api/products/")
+    resp = auth_client(manager).get("/api/products/")
     assert resp.status_code == 200
     assert len(resp.data) == 1

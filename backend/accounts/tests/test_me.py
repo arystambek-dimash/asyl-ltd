@@ -3,12 +3,19 @@ import pytest
 pytestmark = pytest.mark.django_db
 
 
-def test_me_returns_roles(auth_client, boss):
-    resp = auth_client(boss).get("/api/auth/me/")
+def test_me_returns_permissions(auth_client, make_user):
+    from rbac.models import Permission, Role
+    from employees.models import Employee
+    u = make_user(username="m")
+    role = Role.objects.create(name="R")
+    p, _ = Permission.objects.get_or_create(
+        code="orders.view", defaults={"section": "orders", "action": "view", "label": "x"})
+    role.permissions.add(p)
+    Employee.objects.create(user=u, first_name="A", last_name="B", phone="x", role=role)
+    resp = auth_client(u).get("/api/auth/me/")
     assert resp.status_code == 200
-    assert resp.data["username"] == "boss"
-    assert "boss" in resp.data["roles"]
-    assert resp.data["is_client"] is False
+    assert "orders.view" in resp.data["permissions"]
+    assert resp.data["role_name"] == "R"
 
 
 def test_me_for_client_includes_client_id(auth_client, client_user):
@@ -18,7 +25,6 @@ def test_me_for_client_includes_client_id(auth_client, client_user):
     assert resp.status_code == 200
     assert resp.data["is_client"] is True
     assert resp.data["client_id"] == c.id
-    assert resp.data["roles"] == []
 
 
 def test_me_requires_auth(api_client):
