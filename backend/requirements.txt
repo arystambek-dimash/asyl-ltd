@@ -6,3 +6,5 @@ pytest>=8.0
 pytest-django>=4.8
 factory_boy>=3.3
 django-cors-headers>=4.0
+redis>=5.0
+fakeredis>=2.21

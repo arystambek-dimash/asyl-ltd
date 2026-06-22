@@ -51,3 +51,15 @@ python integrations/camera_client.py --plate 777ABC02 --bags 50
 | Въезд        | `plate`                              | проверка заказа → `arrived` |
 | Счётчик      | `plate`, `bags`                      | `loading` + мешки           |
 | Выезд        | `plate`, `weight_kg`                 | `shipped` + нетто/списание  |
+
+## Счётчик мешков (живой счёт)
+
+CV-воркер шлёт `+1` на каждый посчитанный мешок:
+```python
+for event in counter.run(rtsp_url):
+    requests.post("http://localhost:8000/api/webhook/camera/",
+                  json={"camera_id": "counter-01", "increment": 1},
+                  headers={"X-Camera-Key": "<ключ>"})
+```
+Счёт виден в CRM → **Управление → Счётчик мешков**. Оператор вводит номер
+машины и жмёт «Закончить сессию» — итог уходит в заказ (статус `loading`).
