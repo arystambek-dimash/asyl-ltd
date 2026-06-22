@@ -55,6 +55,7 @@ class VideoJob(models.Model):
     video = models.FileField(upload_to=video_upload_path)
     status = models.CharField(max_length=12, default="queued")
     bags_counted = models.PositiveIntegerField(default=0)
+    counts_by_class = models.JSONField(default=dict, blank=True)  # {"Red_50": 12, ...}
     error = models.CharField(max_length=500, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)

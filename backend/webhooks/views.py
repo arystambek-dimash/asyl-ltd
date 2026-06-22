@@ -51,7 +51,8 @@ class CameraWebhookView(APIView):
             from .templating import render_template
             try:
                 by = int(request.data.get("increment") or 1)
-                total = counter_store.increment(camera.pk, by)
+                cls = request.data.get("cls") or None
+                total = counter_store.increment(camera.pk, by, cls=cls)
             except counter_store.CounterUnavailable:
                 return Response({"detail": "Счётчик недоступен (Redis)",
                                  "code": "counter_unavailable"}, status=503)
@@ -182,7 +183,9 @@ class CountView(APIView):
             return Response({"detail": "Камера не найдена", "code": "not_found"}, status=404)
         try:
             bags = counter_store.get(cam.pk)
+            by_class = counter_store.get_breakdown(cam.pk)
         except counter_store.CounterUnavailable:
             return Response({"detail": "Счётчик недоступен (Redis)",
                              "code": "counter_unavailable"}, status=503)
-        return Response({"camera": cam.pk, "camera_name": cam.name, "bags": bags})
+        return Response({"camera": cam.pk, "camera_name": cam.name,
+                         "bags": bags, "by_class": by_class})

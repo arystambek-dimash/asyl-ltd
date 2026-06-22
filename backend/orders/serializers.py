@@ -4,10 +4,11 @@ from .models import Order, OrderItem, Payment
 
 class OrderItemSerializer(serializers.ModelSerializer):
     product_label = serializers.CharField(source="product.__str__", read_only=True)
+    cv_class = serializers.CharField(source="product.cv_class", read_only=True)
 
     class Meta:
         model = OrderItem
-        fields = ["id", "product", "product_label", "quantity"]
+        fields = ["id", "product", "product_label", "cv_class", "quantity"]
 
 
 class PaymentSerializer(serializers.ModelSerializer):

@@ -28,7 +28,9 @@ def test_product_weight_from_packaging(auth_client, manager):
 
 
 def test_staff_can_list_products(auth_client, manager):
-    _make_product()
+    prod = _make_product()
     resp = auth_client(manager).get("/api/products/")
     assert resp.status_code == 200
-    assert len(resp.data) == 1
+    # Каталог содержит 6 засеянных классов мешков + созданный в тесте.
+    ids = {row["id"] for row in resp.data}
+    assert prod.id in ids

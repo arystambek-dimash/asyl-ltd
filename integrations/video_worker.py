@@ -20,6 +20,12 @@ DET = os.environ.get("CV_DET", f"{CV_DIR}/weights/detector.pt")
 CLS = os.environ.get("CV_CLS", f"{CV_DIR}/weights/color_classifier.pt")
 DEVICE = os.environ.get("CV_DEVICE", "0")  # "0" GPU, "cpu" для теста
 
+# Линия счёта и направление настраиваются под камеру без правки кода.
+# CV_LINE="x1,y1,x2,y2" (доли кадра [0..1] или пиксели). direction: any|positive|negative.
+# По умолчанию any — считаем мешок при пересечении линии в любую сторону (один раз).
+CV_LINE = tuple(float(x) for x in os.environ.get("CV_LINE", "0.0,0.55,1.0,0.55").split(","))
+CV_DIRECTION = os.environ.get("CV_DIRECTION", "any")
+
 H = {"X-Camera-Key": CAMERA_KEY}
 
 
@@ -29,6 +35,7 @@ def _api(method, path, **kw):
 
 def process(job):
     import cv2
+    from collections import Counter
     sys.path.insert(0, CV_DIR)
     from bag_pipeline import BagColorCounter  # CV-логика как есть (run_annotated добавлен рядом)
     r = requests.get(job["video_url"], timeout=60)
@@ -36,16 +43,20 @@ def process(job):
     with os.fdopen(fd, "wb") as f:
         f.write(r.content)
     counter = BagColorCounter(det_weights=DET, cls_weights=CLS, camera_id=CAMERA_ID,
-                              line=(0.0, 0.55, 1.0, 0.55), direction="positive",
+                              line=CV_LINE, direction=CV_DIRECTION,
                               device=DEVICE)
     n = 0
+    by_class = Counter()                                      # разбивка по классам мешков
     last_sent = 0.0
     try:
         for event, frame in counter.run_annotated(path):     # CV нетронут (новый метод)
             if event:
                 n += 1
+                cls = event.get("cls") or "bag"
+                by_class[cls] += 1
+                # +1 в живой счётчик, с указанием класса (для разбивки в UI)
                 _api("POST", "/api/webhook/camera/",
-                     json={"camera_id": CAMERA_ID, "increment": 1}, headers=H)
+                     json={"camera_id": CAMERA_ID, "increment": 1, "cls": cls}, headers=H)
             now = time.time()
             if now - last_sent >= 0.33:                       # ~3 кадра/сек
                 last_sent = now
@@ -58,8 +69,8 @@ def process(job):
                     except requests.RequestException:
                         pass  # превью необязательно — счёт важнее
         _api("POST", f"/api/video-jobs/{job['id']}/complete/",
-             json={"bags": n}, headers=H)
-        print(f"[worker] job {job['id']} done: {n} мешков")
+             json={"bags": n, "by_class": dict(by_class)}, headers=H)
+        print(f"[worker] job {job['id']} done: {n} мешков {dict(by_class)}")
     except Exception as e:
         _api("POST", f"/api/video-jobs/{job['id']}/fail/",
              json={"error": str(e)[:400]}, headers=H)

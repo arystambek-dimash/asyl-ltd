@@ -31,5 +31,5 @@ class WebhookCallSerializer(serializers.ModelSerializer):
 class VideoJobSerializer(serializers.ModelSerializer):
     class Meta:
         model = VideoJob
-        fields = ["id", "order", "status", "bags_counted", "error",
-                  "video", "created_at", "finished_at"]
+        fields = ["id", "order", "status", "bags_counted", "counts_by_class",
+                  "error", "video", "created_at", "finished_at"]

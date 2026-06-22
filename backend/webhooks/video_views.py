@@ -87,13 +87,18 @@ class VideoCompleteView(APIView):
         if job is None:
             return Response({"detail": "Задача не найдена", "code": "not_found"}, status=404)
         bags = int(request.data.get("bags") or 0)
+        by_class = request.data.get("by_class") or {}
+        if not isinstance(by_class, dict):
+            by_class = {}
         try:
             with transaction.atomic():
                 record_count(job.order, bags, None)
                 job.status = "done"
                 job.bags_counted = bags
+                job.counts_by_class = by_class
                 job.finished_at = timezone.now()
-                job.save(update_fields=["status", "bags_counted", "finished_at"])
+                job.save(update_fields=["status", "bags_counted",
+                                        "counts_by_class", "finished_at"])
         except ValidationError as e:
             d = e.detail
             msg = d.get("detail") if isinstance(d, dict) else str(d)

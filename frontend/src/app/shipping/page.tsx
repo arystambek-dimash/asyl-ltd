@@ -20,10 +20,68 @@ import {
 import { cn } from "@/lib/utils";
 import type { Order, VideoJob } from "@/lib/types";
 
-function VideoCounter({ orderId }: { orderId: number }) {
+// 6 классов мешков (совпадают с cv_class товаров и классами детектора).
+const CLASS_ORDER = ["Red_50", "Red_25", "Green_50", "Green_25", "Blue_50", "Blue_25"];
+const CLASS_META: Record<string, { label: string; dot: string }> = {
+  Red_50: { label: "Красный 50 кг", dot: "#dc2626" },
+  Red_25: { label: "Красный 25 кг", dot: "#dc2626" },
+  Green_50: { label: "Зелёный 50 кг", dot: "#16a34a" },
+  Green_25: { label: "Зелёный 25 кг", dot: "#16a34a" },
+  Blue_50: { label: "Синий 50 кг", dot: "#2563eb" },
+  Blue_25: { label: "Синий 25 кг", dot: "#2563eb" },
+};
+
+// Ожидание по заказу: cv_class → сколько мешков заказано.
+function expectedByClass(order: Order): Record<string, number> {
+  const exp: Record<string, number> = {};
+  for (const it of order.items) {
+    if (it.cv_class) exp[it.cv_class] = (exp[it.cv_class] ?? 0) + it.quantity;
+  }
+  return exp;
+}
+
+// Разбивка «посчитано / заказано» по классам мешков.
+function BagBreakdown({ order, counts }: { order: Order; counts: Record<string, number> }) {
+  const expected = expectedByClass(order);
+  const keys = CLASS_ORDER.filter((k) => expected[k] || counts[k]);
+  if (keys.length === 0) {
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    return total > 0
+      ? <div className="text-center text-sm text-[var(--muted-foreground)]">
+          Классы не распознаны · всего {total}
+        </div>
+      : null;
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      {keys.map((k) => {
+        const got = counts[k] ?? 0;
+        const exp = expected[k] ?? 0;
+        const done = exp > 0 && got >= exp;
+        const over = exp > 0 && got > exp;
+        return (
+          <div key={k} className="flex items-center gap-2 text-sm">
+            <span className="size-2.5 shrink-0 rounded-full" style={{ background: CLASS_META[k]?.dot }} />
+            <span className="flex-1">{CLASS_META[k]?.label ?? k}</span>
+            <span className={cn("tabular-nums font-medium",
+              over ? "text-[var(--warning)]" : done ? "text-[var(--success)]" : "text-[var(--foreground)]")}>
+              {got}{exp > 0 && <span className="text-[var(--muted-foreground)]"> / {exp}</span>}
+            </span>
+            {done && !over && <CheckCircle2 className="size-4 text-[var(--success)]" />}
+            {over && <AlertTriangle className="size-4 text-[var(--warning)]" />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function VideoCounter({ order }: { order: Order }) {
+  const orderId = order.id;
   const fileRef = useRef<HTMLInputElement>(null);
   const [job, setJob] = useState<VideoJob | null>(null);
   const [bags, setBags] = useState<number | null>(null);
+  const [byClass, setByClass] = useState<Record<string, number>>({});
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
 
@@ -50,7 +108,7 @@ function VideoCounter({ orderId }: { orderId: number }) {
           .find((c) => c.kind === "counter" && c.status === "active");
         if (!counter) return;
         const { data } = await api.get(`/count/${counter.id}/`);
-        if (alive) setBags(data.bags);
+        if (alive) { setBags(data.bags); setByClass(data.by_class ?? {}); }
       } catch { /* ignore */ }
     };
     cnt();
@@ -74,6 +132,7 @@ function VideoCounter({ orderId }: { orderId: number }) {
   const statusLabel: Record<string, string> = {
     queued: "В очереди", processing: "Обработка…", done: "Готово", failed: "Ошибка",
   };
+  const doneCounts = job?.counts_by_class ?? {};
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border bg-[var(--card)] p-4">
@@ -86,7 +145,7 @@ function VideoCounter({ orderId }: { orderId: number }) {
       </div>
 
       {job?.status === "processing" && (
-        <div className="flex flex-col items-center gap-2">
+        <div className="flex flex-col items-center gap-3">
           {/* Живой поток с разметкой модели (MJPEG). Необязателен: при ошибке
               картинка скрывается, число остаётся. */}
           <img
@@ -99,10 +158,16 @@ function VideoCounter({ orderId }: { orderId: number }) {
             <div className="text-4xl font-bold tabular-nums">{bags ?? 0}</div>
             <div className="text-xs text-[var(--muted-foreground)]">мешков посчитано</div>
           </div>
+          <div className="w-full max-w-md">
+            <BagBreakdown order={order} counts={byClass} />
+          </div>
         </div>
       )}
       {job?.status === "done" && (
-        <p className="text-sm text-[var(--success)]">Готово: {job.bags_counted} мешков записано.</p>
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-[var(--success)]">Готово: {job.bags_counted} мешков записано.</p>
+          <BagBreakdown order={order} counts={doneCounts} />
+        </div>
       )}
       {job?.status === "failed" && (
         <p className="text-sm text-[var(--destructive)]">Ошибка обработки: {job.error || "—"}</p>
@@ -352,14 +417,14 @@ function QueueRow({
                   <p className="text-xs text-[var(--muted-foreground)]">
                     Загрузите видео — система начнёт считать мешки.
                   </p>
-                  <VideoCounter orderId={order.id} />
+                  <VideoCounter order={order} />
                 </>
               )}
 
               {/* Идёт загрузка: живой счётчик + кнопка завершения. */}
               {order.status === "loading" && (
                 <>
-                  <VideoCounter orderId={order.id} />
+                  <VideoCounter order={order} />
                   <Button disabled={busy}
                     onClick={() => act(() => api.post(`/orders/${order.id}/finish-loading/`, {}))}>
                     Загрузка завершена

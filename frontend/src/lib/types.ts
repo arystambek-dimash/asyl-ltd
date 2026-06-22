@@ -19,7 +19,7 @@ export interface Client {
   name: string; country: string;
   iin: string; bank: string; bank_account: string; user: number | null;
 }
-export interface OrderItem { id?: number; product: number; product_label?: string; quantity: number; }
+export interface OrderItem { id?: number; product: number; product_label?: string; cv_class?: string; quantity: number; }
 export interface Order {
   id: number; client: number; client_name?: string; client_phone?: string;
   status: string; truck_number: string; arrival_date?: string | null;
@@ -66,7 +66,8 @@ export interface WebhookCall {
 }
 export interface VideoJob {
   id: number; order: number; status: "queued" | "processing" | "done" | "failed";
-  bags_counted: number; error: string; video: string;
+  bags_counted: number; counts_by_class?: Record<string, number>;
+  error: string; video: string;
   created_at: string; finished_at: string | null;
 }
 export interface EventLog {
