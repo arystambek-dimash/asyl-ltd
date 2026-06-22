@@ -13,10 +13,12 @@ import type { Order } from "@/lib/types";
 export default function PortalOrdersPage() {
   const { data: orders, loading } = useApi<Order[]>("/portal/orders/");
   return (
-    <AppShell title="Мои заказы" portal>
-      <div className="mb-4 flex justify-between">
+    <AppShell title="Мои заказы" portal
+      actions={
+        <Link href="/portal/orders/new"><Button size="sm"><Plus className="size-4" /> <span className="hidden sm:inline">Новый заказ</span></Button></Link>
+      }>
+      <div className="mb-4">
         <p className="text-sm text-[var(--muted-foreground)]">{orders?.length ?? 0} заказов</p>
-        <Link href="/portal/orders/new"><Button size="sm"><Plus className="size-4" /> Новый заказ</Button></Link>
       </div>
       <Card>
         <CardContent className="pt-6">

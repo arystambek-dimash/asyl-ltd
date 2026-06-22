@@ -59,7 +59,12 @@ export default function CamerasPage() {
 
   return (
     <AppShell title="Камеры" section="Управление"
-      description="Камеры поста отгрузки: вебхук по номеру машины, настраиваемый ответ и журнал вызовов.">
+      description="Камеры поста отгрузки: вебхук по номеру машины, настраиваемый ответ и журнал вызовов."
+      actions={canManage ? (
+        <Button size="sm" onClick={() => { setError(""); setCreatedKey(""); setOpen(true); }}>
+          <Plus className="size-4" /> <span className="hidden sm:inline">Добавить камеру</span>
+        </Button>
+      ) : undefined}>
       {pending.length > 0 && (
         <Card className="mb-6 border-[var(--warning)]/40">
           <CardContent className="pt-6">
@@ -88,10 +93,8 @@ export default function CamerasPage() {
         </Card>
       )}
 
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4">
         <p className="text-sm text-[var(--muted-foreground)]">{active.length} камер</p>
-        {canManage && <Button size="sm" onClick={() => { setError(""); setCreatedKey(""); setOpen(true); }}>
-          <Plus className="size-4" /> Добавить камеру</Button>}
       </div>
       <Card><CardContent className="pt-6">
         <Table>

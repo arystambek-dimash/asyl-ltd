@@ -83,19 +83,19 @@ export default function WarehousePage() {
   const hasFilters = search || grade || packaging;
 
   return (
-    <AppShell title="Остатки склада" section="Работа" description="Остатки готовой муки по сортам и фасовкам в мешках, с расчётным весом и статусом наличия.">
-      {/* шапка: stat-карточки + кнопка */}
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-3">
+    <AppShell title="Остатки склада" section="Работа" description="Остатки готовой муки по сортам и фасовкам в мешках, с расчётным весом и статусом наличия."
+      actions={canAdjust ? (
+        <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
+          <SlidersHorizontal className="size-4" /> <span className="hidden sm:inline">Изменить остаток</span>
+        </Button>
+      ) : undefined}>
+      {/* шапка: stat-карточки */}
+      <div className="mb-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <StatCard label="Позиций" value={String(filtered.length)} />
           <StatCard label="Мешков" value={formatMoney(totalBags)} />
           <StatCard label="Вес, т" value={totalTons.toFixed(2)} accent />
         </div>
-        {canAdjust && (
-          <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
-            <SlidersHorizontal className="size-4" /> Изменить остаток
-          </Button>
-        )}
       </div>
 
       {/* фильтры */}
