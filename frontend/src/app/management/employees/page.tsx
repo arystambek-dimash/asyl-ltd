@@ -9,11 +9,13 @@ import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { StatCard } from "@/components/ui/stat-card";
+import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { Plus } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import type { Employee, Role } from "@/lib/types";
 
 export default function EmployeesPage() {
@@ -35,18 +37,51 @@ export default function EmployeesPage() {
     } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
   }
 
+  const [q, setQ] = useState("");
+  const [sortKey, setSortKey] = useState("name");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const list = employees ?? [];
+  const activeN = list.filter((e) => e.is_active).length;
+  const toggleSort = (k: string) => {
+    if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
+    else { setSortKey(k); setSortDir("asc"); }
+  };
+  const filtered = list.filter((e) => {
+    if (!q) return true;
+    return `${e.name} ${e.username} ${e.position ?? ""}`.toLowerCase().includes(q.toLowerCase());
+  });
+  const sorted = [...filtered].sort((a, b) => {
+    const av = sortKey === "role" ? (a.role_name ?? "") : a.name;
+    const bv = sortKey === "role" ? (b.role_name ?? "") : b.name;
+    const cmp = String(av).localeCompare(String(bv), "ru");
+    return sortDir === "asc" ? cmp : -cmp;
+  });
+
   return (
     <AppShell title="Сотрудники" section="Управление" description="Учётные записи сотрудников и их роли. Создавайте аккаунты и назначайте доступ.">
-      <div className="mb-4 flex items-center justify-between">
-        <p className="text-sm text-[var(--muted-foreground)]">{employees?.length ?? 0} сотрудников</p>
+      <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <StatCard label="Всего сотрудников" value={String(list.length)} />
+        <StatCard label="Активных" value={String(activeN)} accent />
+      </section>
+      <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="relative max-w-md flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+          <Input className="pl-9" placeholder="Поиск по имени, логину, должности"
+            value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
         {canManage && <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
           <Plus className="size-4" /> Добавить сотрудника</Button>}
       </div>
       <Card><CardContent className="pt-6">
         <Table>
-          <THead><TR><TH>Имя</TH><TH>Логин</TH><TH>Должность</TH><TH>Роль</TH><TH>Статус</TH></TR></THead>
+          <THead><TR>
+            <SortableHeader label="Имя" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+            <TH>Логин</TH><TH>Должность</TH>
+            <SortableHeader label="Роль" sortKey="role" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+            <TH>Статус</TH>
+          </TR></THead>
           <TBody>
-            {(employees ?? []).map((e) => (
+            {sorted.map((e) => (
               <TR key={e.id}>
                 <TD className="font-medium">{e.name}</TD>
                 <TD>{e.username}</TD>
@@ -55,7 +90,7 @@ export default function EmployeesPage() {
                 <TD><Badge tone={e.is_active ? "success" : "muted"}>{e.is_active ? "Активен" : "Отключён"}</Badge></TD>
               </TR>
             ))}
-            {(employees ?? []).length === 0 && (
+            {sorted.length === 0 && (
               <TR><TD colSpan={5} className="py-4 text-center text-[var(--muted-foreground)]">Сотрудников пока нет.</TD></TR>)}
           </TBody>
         </Table>
