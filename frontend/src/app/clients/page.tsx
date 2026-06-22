@@ -9,6 +9,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { StatCard } from "@/components/ui/stat-card";
+import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
+import { Search } from "lucide-react";
 import {
   Form, FormField, FormItem, FormLabel, FormControl, FormMessage,
 } from "@/components/ui/form";
@@ -169,11 +172,38 @@ function ClientForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
 export default function ClientsPage() {
   const { data: clients, reload } = useApi<Client[]>("/clients/");
   const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [sortKey, setSortKey] = useState("name");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  const list = clients ?? [];
+  const toggleSort = (k: string) => {
+    if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
+    else { setSortKey(k); setSortDir("asc"); }
+  };
+  const filtered = list.filter((c) => {
+    if (!q) return true;
+    return `${c.name} ${c.phone} ${c.country ?? ""}`.toLowerCase().includes(q.toLowerCase());
+  });
+  const sorted = [...filtered].sort((a, b) => {
+    const av = sortKey === "phone" ? a.phone : a.name;
+    const bv = sortKey === "phone" ? b.phone : b.name;
+    const cmp = String(av).localeCompare(String(bv), "ru");
+    return sortDir === "asc" ? cmp : -cmp;
+  });
 
   return (
     <AppShell title="Клиенты" section="Работа" description="Справочник клиентов: контакты, страна и платёжные реквизиты.">
-      <div className="mb-4 flex items-center justify-between">
-        <p className="text-sm text-[var(--muted-foreground)]">{clients?.length ?? 0} клиентов</p>
+      <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <StatCard label="Всего клиентов" value={String(list.length)} />
+      </section>
+
+      <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="relative max-w-md flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+          <Input className="pl-9" placeholder="Поиск по имени, телефону, стране"
+            value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
         <Button size="sm" onClick={() => setOpen(true)}>
           <Plus className="size-4" /> Добавить клиента
         </Button>
@@ -182,16 +212,22 @@ export default function ClientsPage() {
       <Card>
         <CardContent className="pt-6">
           <Table>
-            <THead><TR><TH>Имя</TH><TH>Телефон</TH><TH>Страна</TH></TR></THead>
+            <THead>
+              <TR>
+                <SortableHeader label="Имя" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                <SortableHeader label="Телефон" sortKey="phone" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                <TH>Страна</TH>
+              </TR>
+            </THead>
             <TBody>
-              {(clients ?? []).map((c) => (
+              {sorted.map((c) => (
                 <TR key={c.id}>
                   <TD className="font-medium">{c.name}</TD>
                   <TD className="tabular-nums">{c.phone}</TD>
                   <TD>{c.country || "—"}</TD>
                 </TR>
               ))}
-              {(clients ?? []).length === 0 && (
+              {sorted.length === 0 && (
                 <TR><TD colSpan={3} className="py-4 text-center text-[var(--muted-foreground)]">
                   Клиентов пока нет.</TD></TR>
               )}
