@@ -35,7 +35,7 @@ export default function PackagingsPage() {
   }
 
   return (
-    <AppShell title="Фасовки">
+    <AppShell title="Фасовки" section="Номенклатура" description="Справочник фасовок с весом мешка.">
       <div className="mb-4 flex items-center justify-between">
         <p className="text-sm text-[var(--muted-foreground)]">{packagings?.length ?? 0} фасовок</p>
         <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>

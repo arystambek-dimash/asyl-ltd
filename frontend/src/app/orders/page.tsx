@@ -26,7 +26,7 @@ export default function OrdersPage() {
   const [open, setOpen] = useState(false);
 
   return (
-    <AppShell title="Заказы">
+    <AppShell title="Заказы" section="Работа" description="Заказы клиентов: позиции, оплаты, машина и плановая дата прибытия на отгрузку.">
       <div className="mb-4 flex items-center justify-between">
         <p className="text-sm text-[var(--muted-foreground)]">{orders?.length ?? 0} заказов</p>
         {canCreate && (

@@ -68,7 +68,7 @@ export default function WarehousePage() {
   const hasFilters = search || grade || packaging;
 
   return (
-    <AppShell title="Остатки склада">
+    <AppShell title="Остатки склада" section="Работа" description="Остатки готовой муки по сортам и фасовкам в мешках, с расчётным весом и статусом наличия.">
       {/* шапка: итоги + кнопка */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex gap-6 text-sm">

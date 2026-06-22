@@ -7,10 +7,14 @@ import { Topbar } from "./topbar";
 
 export function AppShell({
   title,
+  section,
+  description,
   children,
   portal = false,
 }: {
   title: string;
+  section?: string;
+  description?: string;
   children: React.ReactNode;
   portal?: boolean;
 }) {
@@ -40,9 +44,17 @@ export function AppShell({
     <div className="flex h-screen overflow-hidden">
       <Sidebar me={me} />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <Topbar me={me} title={title} />
-        <main className="flex-1 overflow-y-auto bg-[var(--background)] p-8">
-          <div className="animate-fade-up">{children}</div>
+        <Topbar me={me} title={title} section={section} />
+        <main className="flex-1 overflow-y-auto bg-[var(--background)] px-8 py-7">
+          <div className="animate-fade-up">
+            {description && (
+              <div className="mb-7">
+                <h2 className="text-2xl font-bold tracking-tight">{title}</h2>
+                <p className="mt-1.5 max-w-2xl text-sm text-[var(--muted-foreground)]">{description}</p>
+              </div>
+            )}
+            {children}
+          </div>
         </main>
       </div>
     </div>

@@ -171,7 +171,7 @@ export default function ClientsPage() {
   const [open, setOpen] = useState(false);
 
   return (
-    <AppShell title="Клиенты">
+    <AppShell title="Клиенты" section="Работа" description="Справочник клиентов: контакты, страна и платёжные реквизиты.">
       <div className="mb-4 flex items-center justify-between">
         <p className="text-sm text-[var(--muted-foreground)]">{clients?.length ?? 0} клиентов</p>
         <Button size="sm" onClick={() => setOpen(true)}>
