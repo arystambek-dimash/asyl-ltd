@@ -167,17 +167,12 @@ class WebhookCallViewSet(PermViewSetMixin, mixins.ListModelMixin, viewsets.Gener
 
 
 # ── Счётчик мешков (Redis live-count) ────────────────────────────────────────
-from django.db import transaction as _transaction
-from django.utils import timezone as _timezone
-from rest_framework.exceptions import ValidationError as _ValidationError
 from rbac.permissions import HasPerm
-from .models import CountSession
-from .serializers import CountSessionSerializer
 from . import counter_store
-from shipments.services import record_count
 
 
 class CountView(APIView):
+    """Живой счёт мешков из Redis. Используется превью обработки видео."""
     def get_permissions(self):
         return [HasPerm("cameras.view")]
 
@@ -191,46 +186,3 @@ class CountView(APIView):
             return Response({"detail": "Счётчик недоступен (Redis)",
                              "code": "counter_unavailable"}, status=503)
         return Response({"camera": cam.pk, "camera_name": cam.name, "bags": bags})
-
-
-class CountCloseView(APIView):
-    def get_permissions(self):
-        return [HasPerm("cameras.manage")]
-
-    def post(self, request, pk):
-        cam = Camera.objects.filter(pk=pk).first()
-        if cam is None:
-            return Response({"detail": "Камера не найдена", "code": "not_found"}, status=404)
-        plate = normalize_plate(request.data.get("plate", ""))
-        try:
-            bags = counter_store.get(cam.pk)
-        except counter_store.CounterUnavailable:
-            return Response({"detail": "Счётчик недоступен (Redis)",
-                             "code": "counter_unavailable"}, status=503)
-        order = _find_order(plate)
-        if order is None:
-            return Response({"detail": "Заказ по номеру не найден",
-                             "code": "order_not_found"}, status=400)
-        try:
-            with _transaction.atomic():
-                record_count(order, bags, request.user)
-                CountSession.objects.create(
-                    camera=cam, bags=bags, order=order, status="closed",
-                    closed_at=_timezone.now(), closed_by=request.user,
-                )
-        except _ValidationError as e:
-            d = e.detail
-            msg = d.get("detail") if isinstance(d, dict) else str(d)
-            return Response({"detail": msg, "code": "invalid"}, status=400)
-        counter_store.reset(cam.pk)
-        return Response({"bags": bags, "order_id": order.id, "status": "loading"})
-
-
-class CountSessionViewSet(PermViewSetMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
-    serializer_class = CountSessionSerializer
-    required_perms = {"list": "cameras.view"}
-
-    def get_queryset(self):
-        qs = CountSession.objects.select_related("camera", "order")
-        cam = self.request.query_params.get("camera")
-        return qs.filter(camera_id=cam) if cam else qs

@@ -1,5 +1,4 @@
 import secrets
-from django.conf import settings
 from django.db import models
 
 
@@ -38,24 +37,6 @@ class WebhookCall(models.Model):
     request_payload = models.JSONField(default=dict, blank=True)
     response_payload = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["-created_at", "-id"]
-
-
-class CountSession(models.Model):
-    camera = models.ForeignKey(Camera, on_delete=models.CASCADE, related_name="count_sessions")
-    bags = models.PositiveIntegerField(default=0)
-    order = models.ForeignKey(
-        "orders.Order", null=True, blank=True, on_delete=models.SET_NULL, related_name="count_sessions"
-    )
-    status = models.CharField(max_length=10, default="closed")
-    created_at = models.DateTimeField(auto_now_add=True)
-    closed_at = models.DateTimeField(null=True, blank=True)
-    closed_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="closed_count_sessions",
-    )
 
     class Meta:
         ordering = ["-created_at", "-id"]

@@ -64,10 +64,6 @@ export interface WebhookCall {
   payload_bags: number | null; payload_weight: string | null;
   matched_order: number | null; decision: string; reason: string; created_at: string;
 }
-export interface CountSession {
-  id: number; camera: number; camera_name: string; bags: number;
-  order: number | null; status: string; created_at: string; closed_at: string | null;
-}
 export interface VideoJob {
   id: number; order: number; status: "queued" | "processing" | "done" | "failed";
   bags_counted: number; error: string; video: string;
