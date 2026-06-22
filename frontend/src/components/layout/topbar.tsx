@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Bell, LogOut, Sun, Moon, Monitor } from "lucide-react";
 import { useAuth } from "@/store/auth";
 import { useRouter } from "next/navigation";
@@ -41,7 +41,7 @@ function ThemeToggle() {
   );
 }
 
-export function Topbar({ me, title, section }: { me: Me; title: string; section?: string }) {
+export function Topbar({ me, title, section, actions }: { me: Me; title: string; section?: string; actions?: ReactNode }) {
   const { logout } = useAuth();
   const router = useRouter();
   const roleText = me.is_client
@@ -61,6 +61,7 @@ export function Topbar({ me, title, section }: { me: Me; title: string; section?
         <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
       </div>
       <div className="flex items-center gap-3">
+        {actions}
         <ThemeToggle />
         <button className="relative text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
           <Bell className="size-5" />

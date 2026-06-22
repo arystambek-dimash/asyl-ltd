@@ -11,12 +11,14 @@ export function AppShell({
   description,
   children,
   portal = false,
+  actions,
 }: {
   title: string;
   section?: string;
   description?: string;
   children: React.ReactNode;
   portal?: boolean;
+  actions?: React.ReactNode;
 }) {
   const { me, loading, loadMe } = useAuth();
   const router = useRouter();
@@ -44,7 +46,7 @@ export function AppShell({
     <div className="flex h-screen overflow-hidden">
       <Sidebar me={me} />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <Topbar me={me} title={title} section={section} />
+        <Topbar me={me} title={title} section={section} actions={actions} />
         <main className="flex-1 overflow-y-auto bg-[var(--background)] px-8 py-7">
           <div className="animate-fade-up">
             {description && (
