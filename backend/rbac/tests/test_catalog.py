@@ -15,3 +15,9 @@ def test_presets_reference_existing_codes():
 def test_known_codes_present():
     for c in ("orders.create", "shipping.debt_override", "employees.manage"):
         assert c in ALL_CODES
+
+
+def test_cameras_codes_present():
+    from rbac.perms import ALL_CODES
+    assert "cameras.view" in ALL_CODES
+    assert "cameras.manage" in ALL_CODES

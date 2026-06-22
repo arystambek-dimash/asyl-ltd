@@ -10,6 +10,7 @@ _SECTIONS = {
     "events": ("Журнал", ["view"]),
     "reports": ("Отчёты", ["view"]),
     "employees": ("Сотрудники", ["view", "manage"]),
+    "cameras": ("Камеры", ["view", "manage"]),
 }
 
 _ACTION_LABELS = {
@@ -47,6 +48,6 @@ PRESETS = {
     "Оператор": _codes("shipping.view", "shipping.arrive", "shipping.load",
                        "shipping.ship", "orders.view", "warehouse.view", "events.view"),
     "Начальник": _codes("catalog", "clients", "orders", "payments.view",
-                        "payments.create", "warehouse", "shipping", "reports.view",
-                        "events.view"),
+                        "payments.create", "warehouse", "shipping", "cameras",
+                        "reports.view", "events.view"),
 }
