@@ -53,7 +53,8 @@ export interface Employee {
 }
 export interface Camera {
   id: number; name: string; camera_id: string;
-  kind: "entry" | "counter" | "exit";
+  kind: "entry" | "counter" | "exit" | "";
+  status: "pending" | "active";
   api_key: string; response_template: string;
   is_active: boolean; last_seen: string | null;
 }

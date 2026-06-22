@@ -159,3 +159,8 @@ CORS_ALLOW_CREDENTIALS = True
 # host. The webhook is key-authenticated and the server sits behind the shop
 # router (not public). Override ALLOWED_HOSTS in production behind a domain.
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
+
+# Общий ключ регистрации камер: камера с неизвестным camera_id и этим ключом
+# попадает в список «Обнаруженные» (pending), затем админ привязывает её и
+# выдаёт постоянный личный ключ.
+CAMERA_ENROLL_KEY = os.environ.get("CAMERA_ENROLL_KEY", "enroll-secret")
