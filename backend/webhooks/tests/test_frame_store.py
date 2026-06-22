@@ -23,7 +23,7 @@ def test_put_overwrites():
 
 def test_unavailable_raises(monkeypatch):
     class Boom:
-        def setex(self, *a, **k): raise __import__("redis").RedisError("down")
+        def set(self, *a, **k): raise __import__("redis").RedisError("down")
         def get(self, *a, **k): raise __import__("redis").RedisError("down")
     monkeypatch.setattr(frame_store, "_client", Boom())
     with pytest.raises(frame_store.FrameUnavailable):

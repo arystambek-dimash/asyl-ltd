@@ -1,4 +1,6 @@
 import os
+import time
+from django.http import StreamingHttpResponse
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -44,6 +46,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework import viewsets, mixins
 from rbac.permissions import PermViewSetMixin
 from . import counter_store
+from . import frame_store
 from shipments.services import start_loading, record_count
 
 
@@ -100,6 +103,61 @@ class VideoCompleteView(APIView):
         except counter_store.CounterUnavailable:
             pass
         return Response({"status": "done", "bags": bags, "order_id": job.order_id})
+
+
+class VideoFrameView(APIView):
+    authentication_classes = []
+    permission_classes = []
+    parser_classes = []  # raw body; читаем request.body напрямую
+
+    def post(self, request, pk):
+        cam = _camera_from_key(request)
+        if cam is None:
+            return Response({"detail": "Неверный ключ камеры", "code": "bad_key"}, status=401)
+        job = VideoJob.objects.filter(pk=pk, camera=cam).first()
+        if job is None:
+            return Response({"detail": "Задача не найдена", "code": "not_found"}, status=404)
+        data = request.body
+        if not data:
+            f = request.FILES.get("frame") if hasattr(request, "FILES") else None
+            data = f.read() if f else b""
+        if data:
+            try:
+                frame_store.put(job.pk, data)
+            except frame_store.FrameUnavailable:
+                pass
+        return Response(status=204)
+
+
+class VideoStreamView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request, pk):
+        boundary = b"--frame"
+
+        def gen():
+            # Стрим живёт, пока задача в обработке. Жёсткий потолок итераций —
+            # страховка от бесконечного цикла (1200 * 0.3с ≈ 6 минут).
+            for _ in range(1200):
+                job = VideoJob.objects.filter(pk=pk).only("status").first()
+                if job is None or job.status != "processing":
+                    break
+                try:
+                    frame = frame_store.get(pk)
+                except frame_store.FrameUnavailable:
+                    frame = None
+                if frame:
+                    yield (boundary + b"\r\n"
+                           + b"Content-Type: image/jpeg\r\n"
+                           + b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
+                           + frame + b"\r\n")
+                time.sleep(0.3)
+
+        resp = StreamingHttpResponse(
+            gen(), content_type="multipart/x-mixed-replace; boundary=frame")
+        resp["Cache-Control"] = "no-cache"
+        return resp
 
 
 class VideoFailView(APIView):

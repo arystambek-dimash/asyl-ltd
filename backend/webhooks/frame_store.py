@@ -23,7 +23,7 @@ def _key(job_id: int) -> str:
 
 def put(job_id: int, jpeg: bytes) -> None:
     try:
-        get_client().setex(_key(job_id), TTL_SECONDS, jpeg)
+        get_client().set(_key(job_id), jpeg, ex=TTL_SECONDS)
     except redis.RedisError as e:
         raise FrameUnavailable(str(e))
 

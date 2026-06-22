@@ -3,7 +3,8 @@ from rest_framework.routers import DefaultRouter
 from .views import (CameraWebhookView, CameraViewSet, WebhookCallViewSet,
                     CountView, CountCloseView, CountSessionViewSet)
 from .video_views import (UploadVideoView, VideoNextView, VideoCompleteView,
-                          VideoFailView, VideoRequeueView, VideoJobViewSet)
+                          VideoFailView, VideoRequeueView, VideoJobViewSet,
+                          VideoFrameView, VideoStreamView)
 
 router = DefaultRouter()
 router.register("cameras", CameraViewSet)
@@ -20,6 +21,8 @@ urlpatterns = [
     # video-jobs/<pk>/ detail route does not shadow video-jobs/next/.
     path("video-jobs/next/", VideoNextView.as_view()),
     path("video-jobs/<int:pk>/complete/", VideoCompleteView.as_view()),
+    path("video-jobs/<int:pk>/frame/", VideoFrameView.as_view()),
+    path("video-jobs/<int:pk>/stream/", VideoStreamView.as_view()),
     path("video-jobs/<int:pk>/fail/", VideoFailView.as_view()),
     path("video-jobs/<int:pk>/requeue/", VideoRequeueView.as_view()),
 ] + router.urls
