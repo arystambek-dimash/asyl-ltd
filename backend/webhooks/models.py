@@ -59,3 +59,25 @@ class CountSession(models.Model):
 
     class Meta:
         ordering = ["-created_at", "-id"]
+
+
+def video_upload_path(instance, filename):
+    return f"videos/order_{instance.order_id}/{filename}"
+
+
+class VideoJob(models.Model):
+    STATUSES = [("queued", "В очереди"), ("processing", "Обработка"),
+                ("done", "Готово"), ("failed", "Ошибка")]
+
+    order = models.ForeignKey("orders.Order", on_delete=models.CASCADE, related_name="video_jobs")
+    camera = models.ForeignKey(Camera, on_delete=models.SET_NULL, null=True, related_name="video_jobs")
+    video = models.FileField(upload_to=video_upload_path)
+    status = models.CharField(max_length=12, default="queued")
+    bags_counted = models.PositiveIntegerField(default=0)
+    error = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]

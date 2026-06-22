@@ -10,3 +10,4 @@ node_modules/
 
 # Python
 db.sqlite3
+backend/media/

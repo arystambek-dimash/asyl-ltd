@@ -40,6 +40,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+    volumes:
+      - mediadata:/app/media
     ports:
       - "8000:8000"
 
@@ -56,3 +58,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  mediadata:
