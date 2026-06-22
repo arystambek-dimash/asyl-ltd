@@ -5,9 +5,12 @@ from django.db import models
 class Camera(models.Model):
     KINDS = [("entry", "Въезд"), ("counter", "Счётчик загрузки"), ("exit", "Выезд")]
 
-    name = models.CharField(max_length=120)
+    STATUSES = [("pending", "Обнаружена"), ("active", "Активна")]
+
+    name = models.CharField(max_length=120, blank=True, default="")
     camera_id = models.CharField(max_length=60, unique=True)
-    kind = models.CharField(max_length=20, choices=KINDS)
+    kind = models.CharField(max_length=20, choices=KINDS, blank=True, default="")
+    status = models.CharField(max_length=10, choices=STATUSES, default="active")
     api_key = models.CharField(max_length=80)
     response_template = models.TextField(blank=True, default="")
     is_active = models.BooleanField(default=True)

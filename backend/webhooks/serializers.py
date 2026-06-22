@@ -7,7 +7,7 @@ class CameraSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Camera
-        fields = ["id", "name", "camera_id", "kind", "api_key",
+        fields = ["id", "name", "camera_id", "kind", "status", "api_key",
                   "response_template", "is_active", "last_seen"]
 
     def get_api_key(self, obj):

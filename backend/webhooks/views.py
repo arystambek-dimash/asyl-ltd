@@ -15,12 +15,31 @@ class CameraWebhookView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        from django.conf import settings
+        from django.utils import timezone
         from .services import process_webhook
         camera_id = request.data.get("camera_id")
-        camera = Camera.objects.filter(camera_id=camera_id).first()
-        if camera is None:
-            return Response({"detail": "Камера не найдена", "code": "camera_not_found"}, status=404)
         key = request.headers.get("X-Camera-Key", "")
+        camera = Camera.objects.filter(camera_id=camera_id).first()
+
+        # Неизвестная камера: авторегистрация по общему enrollment-ключу.
+        if camera is None:
+            if camera_id and key == settings.CAMERA_ENROLL_KEY:
+                Camera.objects.create(
+                    camera_id=camera_id, status="pending", is_active=False,
+                    api_key=Camera.generate_key(),
+                )
+                return Response({"status": "pending",
+                                 "detail": "Камера обнаружена, ожидает привязки"}, status=200)
+            return Response({"detail": "Камера не найдена", "code": "camera_not_found"}, status=404)
+
+        # Pending-камера: ещё не привязана — не обрабатываем заказы.
+        if camera.status == "pending":
+            camera.last_seen = timezone.now()
+            camera.save(update_fields=["last_seen"])
+            return Response({"status": "pending",
+                             "detail": "Камера ожидает привязки"}, status=200)
+
         if key != camera.api_key:
             return Response({"detail": "Неверный ключ камеры", "code": "bad_key"}, status=401)
         if not camera.is_active:
@@ -55,6 +74,7 @@ class CameraViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "create": "cameras.manage", "update": "cameras.manage",
         "partial_update": "cameras.manage", "destroy": "cameras.manage",
         "regenerate_key": "cameras.manage", "simulate": "cameras.manage",
+        "bind": "cameras.manage",
     }
 
     def create(self, request, *args, **kwargs):
@@ -62,6 +82,26 @@ class CameraViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         ser.is_valid(raise_exception=True)
         cam = ser.save()
         return Response(CameraSerializer(cam, context={"reveal_key": True}).data, status=201)
+
+    @action(detail=True, methods=["post"])
+    def bind(self, request, pk=None):
+        """Привязать обнаруженную (pending) камеру: задать тип/название,
+        выдать постоянный ключ, активировать."""
+        from rest_framework.exceptions import ValidationError
+        cam = self.get_object()
+        if cam.status != "pending":
+            raise ValidationError({"detail": "Камера уже привязана", "code": "already_bound"})
+        kind = request.data.get("kind")
+        if kind not in dict(Camera.KINDS):
+            raise ValidationError({"detail": "Неверный тип камеры", "code": "bad_kind"})
+        cam.kind = kind
+        cam.name = request.data.get("name", "") or cam.camera_id
+        cam.response_template = request.data.get("response_template", "")
+        cam.status = "active"
+        cam.is_active = True
+        cam.api_key = Camera.generate_key()
+        cam.save()
+        return Response(CameraSerializer(cam, context={"reveal_key": True}).data)
 
     @action(detail=True, methods=["post"], url_path="regenerate_key")
     def regenerate_key(self, request, pk=None):
