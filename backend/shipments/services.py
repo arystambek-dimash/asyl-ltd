@@ -8,7 +8,7 @@ from .models import Shipment
 
 
 @transaction.atomic
-def record_arrival(order, truck_number, weigh_in_kg, user, debt_override=False):
+def record_arrival(order, weigh_in_kg, user, debt_override=False):
     if order.status not in ("confirmed", "paid"):
         raise ValidationError(
             {"detail": "Машину можно принять только для подтверждённого заказа",
@@ -25,42 +25,71 @@ def record_arrival(order, truck_number, weigh_in_kg, user, debt_override=False):
         log_event("debt_override",
                   f"Отгрузка в долг разрешена ({user.username})",
                   user=user, order=order)
-    order.truck_number = truck_number
+    truck = order.truck_number
     order.status = "arrived"
-    order.save(update_fields=["truck_number", "status", "debt_override", "debt_override_by"])
+    order.save(update_fields=["status", "debt_override", "debt_override_by"])
     shipment, _ = Shipment.objects.get_or_create(
-        order=order, defaults={"truck_number": truck_number}
+        order=order, defaults={"truck_number": truck}
     )
-    shipment.truck_number = truck_number
+    shipment.truck_number = truck
     shipment.weigh_in_kg = weigh_in_kg
     shipment.arrived_at = timezone.now()
     shipment.save()
-    log_event("arrival", f"Машина {truck_number} прибыла", user=user, order=order,
+    log_event("arrival", f"Машина {truck} прибыла", user=user, order=order,
               payload={"weigh_in_kg": str(weigh_in_kg)})
     return shipment
 
 
 @transaction.atomic
-def record_loading(order, bags, user):
+def start_loading(order, user):
     if order.status != "arrived":
         raise ValidationError(
-            {"detail": "Загрузка возможна только после прибытия", "code": "invalid_status"}
+            {"detail": "Загрузку можно начать только после прибытия", "code": "invalid_status"}
         )
     order.status = "loading"
     order.save(update_fields=["status"])
+    log_event("loading_start", "Начата загрузка", user=user, order=order)
+    return order.shipment
+
+
+@transaction.atomic
+def record_count(order, bags, user):
+    if order.status == "arrived":
+        order.status = "loading"
+        order.save(update_fields=["status"])
+        log_event("loading_start", "Начата загрузка", user=user, order=order)
+    elif order.status != "loading":
+        raise ValidationError(
+            {"detail": "Подсчёт мешков возможен только во время загрузки",
+             "code": "invalid_status"}
+        )
     shipment = order.shipment
     shipment.bags_loaded = bags
     shipment.save(update_fields=["bags_loaded"])
-    log_event("loading", f"Загружено {bags} мешков", user=user, order=order,
+    log_event("loading", f"Посчитано {bags} мешков", user=user, order=order,
               payload={"bags": bags})
     return shipment
 
 
 @transaction.atomic
-def record_shipment(order, weigh_out_kg, user):
+def finish_loading(order, user):
     if order.status != "loading":
         raise ValidationError(
-            {"detail": "Выезд возможен только во время загрузки", "code": "invalid_status"}
+            {"detail": "Завершить можно только идущую загрузку", "code": "invalid_status"}
+        )
+    order.status = "loaded"
+    order.save(update_fields=["status"])
+    log_event("loading_done", "Загрузка завершена", user=user, order=order,
+              payload={"bags": order.shipment.bags_loaded})
+    return order.shipment
+
+
+@transaction.atomic
+def record_shipment(order, weigh_out_kg, user):
+    if order.status != "loaded":
+        raise ValidationError(
+            {"detail": "Выезд возможен только после завершения загрузки",
+             "code": "invalid_status"}
         )
     shipment = order.shipment
     net = abs(Decimal(weigh_out_kg) - shipment.weigh_in_kg)
