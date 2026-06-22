@@ -44,6 +44,26 @@ class CameraWebhookView(APIView):
             return Response({"detail": "Неверный ключ камеры", "code": "bad_key"}, status=401)
         if not camera.is_active:
             return Response({"detail": "Камера отключена", "code": "camera_inactive"}, status=403)
+
+        # Режим живого счёта: counter-камера шлёт +1 на каждый мешок → Redis.
+        if camera.kind == "counter" and "increment" in request.data:
+            from . import counter_store
+            from .templating import render_template
+            try:
+                by = int(request.data.get("increment") or 1)
+                total = counter_store.increment(camera.pk, by)
+            except counter_store.CounterUnavailable:
+                return Response({"detail": "Счётчик недоступен (Redis)",
+                                 "code": "counter_unavailable"}, status=503)
+            ctx = {"camera_id": camera.camera_id, "decision": "allow", "allowed": True,
+                   "reason": "", "order_id": None, "plate": "", "client_name": "",
+                   "bags": total, "weight_kg": None, "net_weight_kg": None}
+            try:
+                resp = render_template(camera.response_template, ctx)
+            except ValueError:
+                resp = render_template("", ctx)
+            return Response(resp, status=200)
+
         return Response(process_webhook(camera, request.data), status=200)
 
 
