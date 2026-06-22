@@ -58,19 +58,22 @@ export default function EmployeesPage() {
   });
 
   return (
-    <AppShell title="Сотрудники" section="Управление" description="Учётные записи сотрудников и их роли. Создавайте аккаунты и назначайте доступ.">
+    <AppShell title="Сотрудники" section="Управление" description="Учётные записи сотрудников и их роли. Создавайте аккаунты и назначайте доступ."
+      actions={canManage ? (
+        <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
+          <Plus className="size-4" /> <span className="hidden sm:inline">Добавить сотрудника</span>
+        </Button>
+      ) : undefined}>
       <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <StatCard label="Всего сотрудников" value={String(list.length)} />
         <StatCard label="Активных" value={String(activeN)} accent />
       </section>
-      <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div className="mb-4">
         <div className="relative max-w-md flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
           <Input className="pl-9" placeholder="Поиск по имени, логину, должности"
             value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
-        {canManage && <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
-          <Plus className="size-4" /> Добавить сотрудника</Button>}
       </div>
       <Card><CardContent className="pt-6">
         <Table>
