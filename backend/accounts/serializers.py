@@ -3,19 +3,21 @@ from .models import User
 
 
 class MeSerializer(serializers.ModelSerializer):
-    roles = serializers.SerializerMethodField()
+    permissions = serializers.SerializerMethodField()
     client_id = serializers.SerializerMethodField()
+    role_name = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ["id", "username", "is_client", "is_superuser", "roles", "client_id"]
+        fields = ["id", "username", "is_client", "is_superuser",
+                  "permissions", "role_name", "client_id"]
 
-    def get_roles(self, obj):
-        roles = []
-        for name in ("manager", "accountant", "operator", "boss"):
-            if obj._in_group(name):
-                roles.append(name)
-        return roles
+    def get_permissions(self, obj):
+        return sorted(obj.perm_codes)
+
+    def get_role_name(self, obj):
+        emp = getattr(obj, "employee", None)
+        return emp.role.name if emp and emp.role else None
 
     def get_client_id(self, obj):
         profile = getattr(obj, "client_profile", None)

@@ -1,14 +1,14 @@
 from rest_framework import viewsets
-from accounts.permissions import IsStaff, IsManager
+from rbac.permissions import PermViewSetMixin
 from .models import Client
 from .serializers import ClientSerializer
 
 
-class ClientViewSet(viewsets.ModelViewSet):
+class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
-
-    def get_permissions(self):
-        if self.action in ("list", "retrieve"):
-            return [IsStaff()]
-        return [IsManager()]
+    required_perms = {
+        "list": "clients.view", "retrieve": "clients.view",
+        "create": "clients.create", "update": "clients.edit",
+        "partial_update": "clients.edit", "destroy": "clients.delete",
+    }

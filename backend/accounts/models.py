@@ -5,21 +5,23 @@ from django.db import models
 class User(AbstractUser):
     is_client = models.BooleanField(default=False)
 
-    def _in_group(self, name: str) -> bool:
-        return self.groups.filter(name=name).exists()
+    @property
+    def _role(self):
+        emp = getattr(self, "employee", None)
+        return emp.role if emp else None
 
     @property
-    def is_manager(self) -> bool:
-        return self._in_group("manager")
+    def perm_codes(self) -> set:
+        if self.is_superuser:
+            from rbac.perms import ALL_CODES
+            return set(ALL_CODES)
+        role = self._role
+        if role is None:
+            return set()
+        return set(role.permissions.values_list("code", flat=True))
 
-    @property
-    def is_accountant(self) -> bool:
-        return self._in_group("accountant")
-
-    @property
-    def is_operator(self) -> bool:
-        return self._in_group("operator")
-
-    @property
-    def is_boss(self) -> bool:
-        return self._in_group("boss")
+    def has_perm_code(self, code: str) -> bool:
+        if self.is_superuser:
+            return True
+        role = self._role
+        return role is not None and role.permissions.filter(code=code).exists()

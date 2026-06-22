@@ -1,26 +1,28 @@
 from rest_framework import viewsets
-from accounts.permissions import IsStaff, IsManager
+from rbac.permissions import PermViewSetMixin
 from .models import Grade, Packaging, Product
 from .serializers import GradeSerializer, PackagingSerializer, ProductSerializer
 
+_PERMS = {
+    "list": "catalog.view", "retrieve": "catalog.view",
+    "create": "catalog.create", "update": "catalog.edit",
+    "partial_update": "catalog.edit", "destroy": "catalog.delete",
+}
 
-class _StaffReadManagerWrite(viewsets.ModelViewSet):
-    def get_permissions(self):
-        if self.action in ("list", "retrieve"):
-            return [IsStaff()]
-        return [IsManager()]
 
-
-class GradeViewSet(_StaffReadManagerWrite):
+class GradeViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     queryset = Grade.objects.all()
     serializer_class = GradeSerializer
+    required_perms = _PERMS
 
 
-class PackagingViewSet(_StaffReadManagerWrite):
+class PackagingViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     queryset = Packaging.objects.all()
     serializer_class = PackagingSerializer
+    required_perms = _PERMS
 
 
-class ProductViewSet(_StaffReadManagerWrite):
+class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     queryset = Product.objects.select_related("grade", "packaging").all()
     serializer_class = ProductSerializer
+    required_perms = _PERMS

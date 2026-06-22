@@ -44,13 +44,13 @@ def test_every_change_recorded_as_movement(boss):
     assert moves[1].reason == "shipment"
 
 
-def test_adjust_endpoint_manager_only(auth_client, operator, manager):
+def test_adjust_endpoint_manager_only(auth_client, operator, boss):
     prod = _product()
     denied = auth_client(operator).post(
         "/api/stock/adjust/", {"product": prod.id, "delta": 50}, format="json"
     )
     assert denied.status_code == 403
-    ok = auth_client(manager).post(
+    ok = auth_client(boss).post(
         "/api/stock/adjust/", {"product": prod.id, "delta": 50, "note": "приход"},
         format="json",
     )
@@ -58,10 +58,10 @@ def test_adjust_endpoint_manager_only(auth_client, operator, manager):
     assert ok.data["bags"] == 50
 
 
-def test_movements_endpoint_lists_history(auth_client, manager):
+def test_movements_endpoint_lists_history(auth_client, boss):
     prod = _product()
-    adjust_stock(prod, 80, manager)
-    resp = auth_client(manager).get(f"/api/stock/movements/?product={prod.id}")
+    adjust_stock(prod, 80, boss)
+    resp = auth_client(boss).get(f"/api/stock/movements/?product={prod.id}")
     assert resp.status_code == 200
     assert len(resp.data) == 1
     assert resp.data[0]["delta"] == 80

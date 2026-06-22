@@ -2,7 +2,6 @@
 import { Bell, LogOut } from "lucide-react";
 import { useAuth } from "@/store/auth";
 import { useRouter } from "next/navigation";
-import { ROLE_LABELS } from "@/lib/constants";
 import type { Me } from "@/lib/types";
 
 export function Topbar({ me, title }: { me: Me; title: string }) {
@@ -12,7 +11,7 @@ export function Topbar({ me, title }: { me: Me; title: string }) {
     ? "Клиент"
     : me.is_superuser
     ? "Администратор"
-    : me.roles.map((r) => ROLE_LABELS[r] ?? r).join(", ") || "Сотрудник";
+    : me.role_name || "Сотрудник";
 
   return (
     <header className="flex h-16 items-center justify-between border-b px-8">

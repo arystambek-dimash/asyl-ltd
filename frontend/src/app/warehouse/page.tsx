@@ -11,6 +11,7 @@ import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
+import { can } from "@/lib/can";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
 import { Plus, Minus, SlidersHorizontal, Search } from "lucide-react";
@@ -27,7 +28,7 @@ export default function WarehousePage() {
   const { data: stock, reload } = useApi<StockItem[]>("/stock/");
   const { data: products } = useApi<Product[]>("/products/");
   const { me } = useAuth();
-  const canAdjust = me?.is_superuser || me?.roles.includes("manager");
+  const canAdjust = can(me, "warehouse.adjust");
 
   // фильтры
   const [search, setSearch] = useState("");

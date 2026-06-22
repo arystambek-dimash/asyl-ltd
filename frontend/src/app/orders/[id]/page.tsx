@@ -9,6 +9,7 @@ import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
+import { can } from "@/lib/can";
 import { formatMoney } from "@/lib/utils";
 import type { Order, Payment } from "@/lib/types";
 
@@ -21,8 +22,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const isManager = me?.is_superuser || me?.roles.includes("manager");
-  const isAccountant = me?.is_superuser || me?.roles.includes("accountant");
+  const isManager = can(me, "orders.confirm");
+  const isAccountant = can(me, "payments.create");
 
   async function act(fn: () => Promise<unknown>) {
     setBusy(true); setError("");
