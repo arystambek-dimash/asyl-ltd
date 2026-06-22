@@ -10,6 +10,8 @@ import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { StatCard } from "@/components/ui/stat-card";
+import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
@@ -54,10 +56,28 @@ export default function ProductsPage() {
     catch (e) { setError(apiError(e)); }
   }
 
+  const [sortKey, setSortKey] = useState("label");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const list = products ?? [];
+  const activeN = list.filter((p) => p.is_active).length;
+  const toggleSort = (k: string) => {
+    if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
+    else { setSortKey(k); setSortDir("asc"); }
+  };
+  const sorted = [...list].sort((a, b) => {
+    let cmp: number;
+    if (sortKey === "price") cmp = Number(a.price) - Number(b.price);
+    else cmp = a.label.localeCompare(b.label, "ru");
+    return sortDir === "asc" ? cmp : -cmp;
+  });
+
   return (
     <AppShell title="Товары" section="Номенклатура" description="Товары = сорт × фасовка + цена. Управляйте ценами и активностью.">
-      <div className="mb-4 flex items-center justify-between">
-        <p className="text-sm text-[var(--muted-foreground)]">{products?.length ?? 0} товаров</p>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
+          <StatCard label="Всего товаров" value={String(list.length)} />
+          <StatCard label="Активных" value={String(activeN)} accent />
+        </div>
         <Button size="sm" disabled={!ready} onClick={() => { setError(""); setOpen(true); }}>
           <Plus className="size-4" /> Создать товар
         </Button>
@@ -75,9 +95,13 @@ export default function ProductsPage() {
       <Card>
         <CardContent className="pt-6">
           <Table>
-            <THead><TR><TH>Товар</TH><TH>Цена</TH><TH>Статус</TH><TH></TH></TR></THead>
+            <THead><TR>
+              <SortableHeader label="Товар" sortKey="label" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+              <SortableHeader label="Цена" sortKey="price" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+              <TH>Статус</TH><TH></TH>
+            </TR></THead>
             <TBody>
-              {(products ?? []).map((p) => (
+              {sorted.map((p) => (
                 <TR key={p.id}>
                   <TD className="font-medium">{p.label}</TD>
                   <TD className="tabular-nums">
@@ -104,7 +128,7 @@ export default function ProductsPage() {
                   </TD>
                 </TR>
               ))}
-              {(products ?? []).length === 0 && (
+              {sorted.length === 0 && (
                 <TR><TD colSpan={4} className="py-4 text-center text-[var(--muted-foreground)]">
                   Товаров пока нет.</TD></TR>
               )}
