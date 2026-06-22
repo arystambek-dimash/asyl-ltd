@@ -32,10 +32,14 @@ class OrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = ["id", "client", "client_name", "client_phone", "status",
-                  "truck_number", "items", "total_amount", "paid_total",
-                  "is_fully_paid", "debt_override",
+                  "truck_number", "arrival_date", "items", "total_amount",
+                  "paid_total", "is_fully_paid", "debt_override",
                   "weigh_in_kg", "weigh_out_kg", "net_weight_kg", "created_at"]
-        read_only_fields = ["truck_number", "debt_override"]
+        read_only_fields = ["debt_override"]
+        extra_kwargs = {
+            "truck_number": {"required": False},
+            "arrival_date": {"required": False, "allow_null": True},
+        }
 
     def _shipment(self, obj):
         return getattr(obj, "shipment", None)

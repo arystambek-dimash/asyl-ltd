@@ -11,6 +11,7 @@ class Order(models.Model):
     )
     status = models.CharField(max_length=20, default="draft")
     truck_number = models.CharField(max_length=30, blank=True, default="")
+    arrival_date = models.DateField(null=True, blank=True)
     debt_override = models.BooleanField(default=False)
     debt_override_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,

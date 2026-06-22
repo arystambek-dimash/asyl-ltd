@@ -22,7 +22,7 @@ export interface Client {
 export interface OrderItem { id?: number; product: number; product_label?: string; quantity: number; }
 export interface Order {
   id: number; client: number; client_name?: string; client_phone?: string;
-  status: string; truck_number: string;
+  status: string; truck_number: string; arrival_date?: string | null;
   items: OrderItem[]; total_amount: string; paid_total: string;
   is_fully_paid: boolean; debt_override: boolean;
   weigh_in_kg?: string | null; weigh_out_kg?: string | null; net_weight_kg?: string | null;
