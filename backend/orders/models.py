@@ -4,7 +4,7 @@ from decimal import Decimal
 
 
 class Order(models.Model):
-    STATUSES = ["draft", "confirmed", "paid", "arrived", "loading", "shipped", "cancelled"]
+    STATUSES = ["draft", "confirmed", "paid", "arrived", "loading", "loaded", "shipped", "cancelled"]
 
     client = models.ForeignKey(
         "clients.Client", on_delete=models.PROTECT, related_name="orders"
