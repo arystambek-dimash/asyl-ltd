@@ -26,6 +26,7 @@ export interface Order {
   items: OrderItem[]; total_amount: string; paid_total: string;
   is_fully_paid: boolean; debt_override: boolean;
   weigh_in_kg?: string | null; weigh_out_kg?: string | null; net_weight_kg?: string | null;
+  bags_loaded?: number; bag_estimate_kg?: string;
   created_at: string;
 }
 export interface Payment {

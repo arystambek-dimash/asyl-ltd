@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { LicensePlateInput, formatPlate } from "@/components/ui/license-plate-input";
+import { formatPlate } from "@/components/ui/license-plate-input";
 import { StatusBadge } from "@/components/status-badge";
 import { useApi } from "@/lib/use-api";
 import { can } from "@/lib/can";
@@ -109,7 +109,7 @@ function VideoCounter({ orderId }: { orderId: number }) {
   );
 }
 
-const QUEUE_STATUSES = ["paid", "arrived", "loading"];
+const QUEUE_STATUSES = ["paid", "arrived", "loading", "loaded"];
 
 // шаги жизненного цикла на посту
 const STEPS = [
@@ -120,6 +120,7 @@ const STEPS = [
 ];
 function stepIndex(status: string) {
   if (status === "confirmed") return 0;
+  if (status === "loaded") return 2; // «Загрузка» завершена, ждём выезд
   const i = STEPS.findIndex((s) => s.key === status);
   return i < 0 ? 0 : i;
 }
@@ -198,15 +199,35 @@ export default function ShippingPage() {
   );
 }
 
+// Сравнение фактического веса груза (выезд − въезд) с ожидаемым (мешки × вес).
+// Авторитетный расчёт делает бэкенд (eventlog); здесь — предпросмотр для оператора.
+function WeightCompare({ order, weighOut }: { order: Order; weighOut: string }) {
+  const inKg = order.weigh_in_kg ? Number(order.weigh_in_kg) : null;
+  const out = weighOut ? Number(weighOut) : null;
+  if (inKg === null || out === null || Number.isNaN(out)) return null;
+  const cargo = Math.abs(out - inKg);
+  const estimate = Number(order.bag_estimate_kg ?? 0);
+  const diff = cargo - estimate;
+  const big = estimate > 0 && Math.abs(diff) > estimate * 0.05; // порог 5%
+  return (
+    <div className={cn("rounded-md px-3 py-2 text-xs",
+      big ? "bg-[var(--destructive)]/10 text-[var(--destructive)]"
+          : "bg-[var(--muted)]/40 text-[var(--muted-foreground)]")}>
+      Вес груза: <b>{formatMoney(cargo)} кг</b> · Ожидалось:{" "}
+      <b>{formatMoney(estimate)} кг</b> · Расхождение:{" "}
+      <b>{diff > 0 ? "+" : ""}{formatMoney(diff)} кг</b>
+      {big && " — большое расхождение"}
+    </div>
+  );
+}
+
 function QueueRow({
   order, isBoss, open, onToggle, onChange,
 }: {
   order: Order; isBoss: boolean; open: boolean;
   onToggle: () => void; onChange: () => void;
 }) {
-  const [truck, setTruck] = useState(order.truck_number);
   const [weighIn, setWeighIn] = useState("");
-  const [bags, setBags] = useState("");
   const [weighOut, setWeighOut] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -293,15 +314,20 @@ function QueueRow({
 
             {/* действие текущего шага */}
             <div className="flex flex-col gap-3 rounded-lg border bg-[var(--card)] p-4">
+              {/* Прибытие: номер уже в заказе, вес приходит датчиком (вебхук).
+                  Ручное поле веса — fallback для теста без датчика. */}
               {(order.status === "paid" || order.status === "confirmed") && (
                 <>
                   <Label>Прибытие машины</Label>
-                  <LicensePlateInput value={truck} onChange={setTruck} />
-                  <Input type="number" placeholder="Вес въезда, кг" value={weighIn}
+                  <div className="text-sm text-[var(--muted-foreground)]">
+                    Номер: <b className="text-[var(--foreground)] tabular-nums">
+                      {order.truck_number ? formatPlate(order.truck_number) : "—"}</b>
+                  </div>
+                  <Input type="number" placeholder="Вес въезда, кг (или с датчика)" value={weighIn}
                     onChange={(e) => setWeighIn(e.target.value)} />
                   <Button disabled={busy || !weighIn}
                     onClick={() => act(() => api.post(`/orders/${order.id}/arrive/`, {
-                      truck_number: truck, weigh_in_kg: weighIn,
+                      weigh_in_kg: weighIn,
                       debt_override: needsPayWarn && isBoss,
                     }))}>
                     {needsPayWarn && isBoss ? "Принять (в долг)" : "Принять машину"}
@@ -309,28 +335,54 @@ function QueueRow({
                 </>
               )}
 
+              {/* Прибыл: загрузка начинается с загрузки видео (start_loading). */}
               {order.status === "arrived" && (
                 <>
                   <Label>Загрузка</Label>
-                  <Input type="number" placeholder="Загружено мешков" value={bags}
-                    onChange={(e) => setBags(e.target.value)} />
-                  <Button disabled={busy || !bags}
-                    onClick={() => act(() => api.post(`/orders/${order.id}/load/`, { bags }))}>
-                    Зафиксировать загрузку
+                  <p className="text-xs text-[var(--muted-foreground)]">
+                    Загрузите видео — система начнёт считать мешки.
+                  </p>
+                  <VideoCounter orderId={order.id} />
+                </>
+              )}
+
+              {/* Идёт загрузка: живой счётчик + кнопка завершения. */}
+              {order.status === "loading" && (
+                <>
+                  <VideoCounter orderId={order.id} />
+                  <Button disabled={busy}
+                    onClick={() => act(() => api.post(`/orders/${order.id}/finish-loading/`, {}))}>
+                    Загрузка завершена
                   </Button>
                 </>
               )}
 
-              {order.status === "loading" && (
+              {/* Загрузка завершена: вес выезда + сравнение. */}
+              {order.status === "loaded" && (
                 <>
-                  <VideoCounter orderId={order.id} />
                   <Label>Выезд</Label>
+                  <div className="text-sm text-[var(--muted-foreground)]">
+                    Посчитано мешков: <b className="text-[var(--foreground)] tabular-nums">
+                      {order.bags_loaded ?? 0}</b>
+                  </div>
                   <Input type="number" placeholder="Вес выезда, кг" value={weighOut}
                     onChange={(e) => setWeighOut(e.target.value)} />
+                  <WeightCompare order={order} weighOut={weighOut} />
                   <Button disabled={busy || !weighOut}
                     onClick={() => act(() => api.post(`/orders/${order.id}/ship/`, { weigh_out_kg: weighOut }))}>
                     Отгрузить (выезд)
                   </Button>
+                </>
+              )}
+
+              {order.status === "shipped" && (
+                <>
+                  <Label>Отгружено</Label>
+                  <div className="text-sm">
+                    Нетто: <b className="tabular-nums text-[var(--success)]">
+                      {order.net_weight_kg ? `${formatMoney(order.net_weight_kg)} кг` : "—"}</b>
+                  </div>
+                  <WeightCompare order={order} weighOut={order.weigh_out_kg ?? ""} />
                 </>
               )}
 
