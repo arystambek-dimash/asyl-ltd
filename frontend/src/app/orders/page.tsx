@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Modal } from "@/components/ui/modal";
+import { LicensePlateInput, formatPlate } from "@/components/ui/license-plate-input";
 import { StatusBadge } from "@/components/status-badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { useApi } from "@/lib/use-api";
@@ -52,7 +53,7 @@ export default function OrdersPage() {
                       <Link href={`/orders/${o.id}`} className="hover:underline">#{o.id}</Link>
                     </TD>
                     <TD>{o.client_name || `Клиент #${o.client}`}</TD>
-                    <TD>{o.truck_number || "—"}</TD>
+                    <TD className="font-medium tabular-nums">{o.truck_number ? formatPlate(o.truck_number) : "—"}</TD>
                     <TD>{o.arrival_date ? new Date(o.arrival_date).toLocaleDateString("ru-RU") : "—"}</TD>
                     <TD className="tabular-nums">{formatMoney(o.total_amount)} ₸</TD>
                     <TD className="tabular-nums text-[var(--muted-foreground)]">{formatMoney(o.paid_total)} ₸</TD>
@@ -125,8 +126,7 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
       <div className="grid grid-cols-2 gap-4">
         <div className="grid gap-2">
           <Label>Номер машины</Label>
-          <Input value={truck} placeholder="напр. 01A777"
-            onChange={(e) => setTruck(e.target.value.toUpperCase())} />
+          <LicensePlateInput value={truck} onChange={setTruck} />
         </div>
         <div className="grid gap-2">
           <Label>Дата прибытия</Label>

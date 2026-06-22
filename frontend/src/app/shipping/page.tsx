@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { LicensePlateInput, formatPlate } from "@/components/ui/license-plate-input";
 import { StatusBadge } from "@/components/status-badge";
 import { useApi } from "@/lib/use-api";
 import { can } from "@/lib/can";
@@ -139,7 +140,7 @@ function QueueRow({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="font-semibold">{order.truck_number || `Заказ #${order.id}`}</span>
+            <span className="font-semibold tabular-nums">{order.truck_number ? formatPlate(order.truck_number) : `Заказ #${order.id}`}</span>
             <span className="text-sm text-[var(--muted-foreground)]">· {order.client_name || "—"}</span>
           </div>
           <div className="text-xs text-[var(--muted-foreground)]">
@@ -206,7 +207,7 @@ function QueueRow({
               {(order.status === "paid" || order.status === "confirmed") && (
                 <>
                   <Label>Прибытие машины</Label>
-                  <Input placeholder="Номер машины" value={truck} onChange={(e) => setTruck(e.target.value)} />
+                  <LicensePlateInput value={truck} onChange={setTruck} />
                   <Input type="number" placeholder="Вес въезда, кг" value={weighIn}
                     onChange={(e) => setWeighIn(e.target.value)} />
                   <Button disabled={busy || !weighIn}
