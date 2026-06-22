@@ -52,15 +52,17 @@ export default function PackagingsPage() {
   });
 
   return (
-    <AppShell title="Фасовки" section="Номенклатура" description="Справочник фасовок с весом мешка.">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
+    <AppShell title="Фасовки" section="Номенклатура" description="Справочник фасовок с весом мешка."
+      actions={
+        <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
+          <Plus className="size-4" /> <span className="hidden sm:inline">Добавить фасовку</span>
+        </Button>
+      }>
+      <div className="mb-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <StatCard label="Всего фасовок" value={String(list.length)} />
           <StatCard label="Активных" value={String(activeN)} accent />
         </div>
-        <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
-          <Plus className="size-4" /> Добавить фасовку
-        </Button>
       </div>
 
       <Card>

@@ -49,15 +49,17 @@ export default function GradesPage() {
   });
 
   return (
-    <AppShell title="Сорта" section="Номенклатура" description="Справочник сортов муки.">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
+    <AppShell title="Сорта" section="Номенклатура" description="Справочник сортов муки."
+      actions={
+        <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
+          <Plus className="size-4" /> <span className="hidden sm:inline">Добавить сорт</span>
+        </Button>
+      }>
+      <div className="mb-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <StatCard label="Всего сортов" value={String(list.length)} />
           <StatCard label="Активных" value={String(activeN)} accent />
         </div>
-        <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
-          <Plus className="size-4" /> Добавить сорт
-        </Button>
       </div>
 
       <Card>

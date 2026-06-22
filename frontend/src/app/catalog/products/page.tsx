@@ -72,15 +72,17 @@ export default function ProductsPage() {
   });
 
   return (
-    <AppShell title="Товары" section="Номенклатура" description="Товары = сорт × фасовка + цена. Управляйте ценами и активностью.">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
+    <AppShell title="Товары" section="Номенклатура" description="Товары = сорт × фасовка + цена. Управляйте ценами и активностью."
+      actions={
+        <Button size="sm" disabled={!ready} onClick={() => { setError(""); setOpen(true); }}>
+          <Plus className="size-4" /> <span className="hidden sm:inline">Создать товар</span>
+        </Button>
+      }>
+      <div className="mb-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <StatCard label="Всего товаров" value={String(list.length)} />
           <StatCard label="Активных" value={String(activeN)} accent />
         </div>
-        <Button size="sm" disabled={!ready} onClick={() => { setError(""); setOpen(true); }}>
-          <Plus className="size-4" /> Создать товар
-        </Button>
       </div>
 
       {!ready && (
