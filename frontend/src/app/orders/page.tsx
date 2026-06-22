@@ -75,7 +75,12 @@ export default function OrdersPage() {
   });
 
   return (
-    <AppShell title="Заказы" section="Работа" description="Заказы клиентов: позиции, оплаты, машина и плановая дата прибытия на отгрузку.">
+    <AppShell title="Заказы" section="Работа" description="Заказы клиентов: позиции, оплаты, машина и плановая дата прибытия на отгрузку."
+      actions={canCreate ? (
+        <Button size="sm" onClick={() => setOpen(true)}>
+          <Plus className="size-4" /> <span className="hidden sm:inline">Новый заказ</span>
+        </Button>
+      ) : undefined}>
       <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <StatCard label="Всего заказов" value={String(list.length)} />
         <StatCard label="В процессе" value={String(activeCount)} />
@@ -90,11 +95,6 @@ export default function OrdersPage() {
         </div>
         <div className="flex items-center gap-2 overflow-x-auto">
           <FilterPills items={pills} active={status} onChange={setStatus} />
-          {canCreate && (
-            <Button size="sm" onClick={() => setOpen(true)}>
-              <Plus className="size-4" /> Новый заказ
-            </Button>
-          )}
         </div>
       </div>
 
