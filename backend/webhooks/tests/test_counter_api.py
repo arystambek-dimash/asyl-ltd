@@ -45,7 +45,7 @@ def _paid_arrived_order(boss, plate="123ABC02", bags_stock=100, qty=50):
     o = Order.objects.create(client=cl, status="paid", truck_number=plate)
     OrderItem.objects.create(order=o, product=prod, quantity=qty)
     Payment.objects.create(order=o, amount=o.total_amount)
-    record_arrival(o, plate, Decimal("0"), boss)
+    record_arrival(o, Decimal("0"), boss)
     return o
 
 

@@ -174,7 +174,7 @@ from rbac.permissions import HasPerm
 from .models import CountSession
 from .serializers import CountSessionSerializer
 from . import counter_store
-from shipments.services import record_loading
+from shipments.services import record_count
 
 
 class CountView(APIView):
@@ -213,7 +213,7 @@ class CountCloseView(APIView):
                              "code": "order_not_found"}, status=400)
         try:
             with _transaction.atomic():
-                record_loading(order, bags, request.user)
+                record_count(order, bags, request.user)
                 CountSession.objects.create(
                     camera=cam, bags=bags, order=order, status="closed",
                     closed_at=_timezone.now(), closed_by=request.user,

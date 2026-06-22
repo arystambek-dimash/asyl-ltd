@@ -25,7 +25,7 @@ def _loading_order(boss):
     o = Order.objects.create(client=cl, status="paid", truck_number="123ABC02")
     OrderItem.objects.create(order=o, product=prod, quantity=50)
     Payment.objects.create(order=o, amount=o.total_amount)
-    record_arrival(o, "123ABC02", Decimal("0"), boss)
+    record_arrival(o, Decimal("0"), boss)
     return o
 
 

@@ -30,6 +30,11 @@ class UploadVideoView(APIView):
         if camera is None:
             return Response({"detail": "Нет активной камеры-счётчика", "code": "no_counter"}, status=400)
         job = VideoJob.objects.create(order=order, camera=camera, video=f, status="queued")
+        try:
+            if order.status == "arrived":
+                start_loading(order, request.user)
+        except Exception:
+            pass
         return Response(VideoJobSerializer(job).data, status=201)
 
 
@@ -39,7 +44,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework import viewsets, mixins
 from rbac.permissions import PermViewSetMixin
 from . import counter_store
-from shipments.services import record_loading
+from shipments.services import start_loading, record_count
 
 
 def _camera_from_key(request):
@@ -81,7 +86,7 @@ class VideoCompleteView(APIView):
         bags = int(request.data.get("bags") or 0)
         try:
             with transaction.atomic():
-                record_loading(job.order, bags, None)
+                record_count(job.order, bags, None)
                 job.status = "done"
                 job.bags_counted = bags
                 job.finished_at = timezone.now()

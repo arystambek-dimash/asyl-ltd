@@ -4,7 +4,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from orders.models import Order
-from shipments.services import record_arrival, record_loading, record_shipment
+from shipments.services import record_arrival, record_count, record_shipment
 from .models import WebhookCall
 from .templating import render_template
 
@@ -56,10 +56,9 @@ def process_webhook(camera, body: dict) -> dict:
         else:
             try:
                 if camera.kind == "entry":
-                    record_arrival(order, order.truck_number or plate_raw,
-                                   Decimal("0"), user)
+                    record_arrival(order, Decimal(str(weight or 0)), user)
                 elif camera.kind == "counter":
-                    record_loading(order, int(bags or 0), user)
+                    record_count(order, int(bags or 0), user)
                 elif camera.kind == "exit":
                     record_shipment(order, Decimal(str(weight or 0)), user)
                 else:

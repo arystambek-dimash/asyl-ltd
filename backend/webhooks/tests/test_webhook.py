@@ -76,6 +76,9 @@ def test_exit_records_shipment(boss):
     o.refresh_from_db()
     o.shipment.weigh_in_kg = Decimal("8000")
     o.shipment.save()
+    # Exit camera fires after the operator confirms loading is done (loaded).
+    from shipments.services import finish_loading
+    finish_loading(o, boss)
     cam = _camera("exit")
     resp = process_webhook(cam, {"plate": "123ABC02", "weight_kg": 10500})
     o.refresh_from_db()
