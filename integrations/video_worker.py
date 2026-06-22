@@ -28,8 +28,9 @@ def _api(method, path, **kw):
 
 
 def process(job):
+    import cv2
     sys.path.insert(0, CV_DIR)
-    from bag_pipeline import BagColorCounter  # CV-логика как есть
+    from bag_pipeline import BagColorCounter  # CV-логика как есть (run_annotated добавлен рядом)
     r = requests.get(job["video_url"], timeout=60)
     fd, path = tempfile.mkstemp(suffix=".mp4")
     with os.fdopen(fd, "wb") as f:
@@ -38,11 +39,24 @@ def process(job):
                               line=(0.0, 0.55, 1.0, 0.55), direction="positive",
                               device=DEVICE)
     n = 0
+    last_sent = 0.0
     try:
-        for _event in counter.run(path):          # CV нетронут
-            n += 1
-            _api("POST", "/api/webhook/camera/",
-                 json={"camera_id": CAMERA_ID, "increment": 1}, headers=H)
+        for event, frame in counter.run_annotated(path):     # CV нетронут (новый метод)
+            if event:
+                n += 1
+                _api("POST", "/api/webhook/camera/",
+                     json={"camera_id": CAMERA_ID, "increment": 1}, headers=H)
+            now = time.time()
+            if now - last_sent >= 0.33:                       # ~3 кадра/сек
+                last_sent = now
+                ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                if ok:
+                    try:
+                        _api("POST", f"/api/video-jobs/{job['id']}/frame/",
+                             data=buf.tobytes(),
+                             headers={**H, "Content-Type": "application/octet-stream"})
+                    except requests.RequestException:
+                        pass  # превью необязательно — счёт важнее
         _api("POST", f"/api/video-jobs/{job['id']}/complete/",
              json={"bags": n}, headers=H)
         print(f"[worker] job {job['id']} done: {n} мешков")
