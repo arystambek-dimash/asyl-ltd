@@ -8,6 +8,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { StatCard } from "@/components/ui/stat-card";
+import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { Plus } from "lucide-react";
@@ -34,10 +36,28 @@ export default function PackagingsPage() {
     catch (e) { setError(apiError(e)); }
   }
 
+  const [sortKey, setSortKey] = useState("name");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const list = packagings ?? [];
+  const activeN = list.filter((p) => p.is_active).length;
+  const toggleSort = (k: string) => {
+    if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
+    else { setSortKey(k); setSortDir("asc"); }
+  };
+  const sorted = [...list].sort((a, b) => {
+    let cmp: number;
+    if (sortKey === "weight") cmp = Number(a.weight_kg) - Number(b.weight_kg);
+    else cmp = a.name.localeCompare(b.name, "ru");
+    return sortDir === "asc" ? cmp : -cmp;
+  });
+
   return (
     <AppShell title="Фасовки" section="Номенклатура" description="Справочник фасовок с весом мешка.">
-      <div className="mb-4 flex items-center justify-between">
-        <p className="text-sm text-[var(--muted-foreground)]">{packagings?.length ?? 0} фасовок</p>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
+          <StatCard label="Всего фасовок" value={String(list.length)} />
+          <StatCard label="Активных" value={String(activeN)} accent />
+        </div>
         <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
           <Plus className="size-4" /> Добавить фасовку
         </Button>
@@ -46,9 +66,13 @@ export default function PackagingsPage() {
       <Card>
         <CardContent className="pt-6">
           <Table>
-            <THead><TR><TH>Фасовка</TH><TH>Вес</TH><TH>Статус</TH><TH></TH></TR></THead>
+            <THead><TR>
+              <SortableHeader label="Фасовка" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+              <SortableHeader label="Вес" sortKey="weight" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+              <TH>Статус</TH><TH></TH>
+            </TR></THead>
             <TBody>
-              {(packagings ?? []).map((p) => (
+              {sorted.map((p) => (
                 <TR key={p.id}>
                   <TD className="font-medium">{p.name}</TD>
                   <TD className="tabular-nums">{p.weight_kg} кг</TD>
@@ -61,7 +85,7 @@ export default function PackagingsPage() {
                   </TD>
                 </TR>
               ))}
-              {(packagings ?? []).length === 0 && (
+              {sorted.length === 0 && (
                 <TR><TD colSpan={4} className="py-4 text-center text-[var(--muted-foreground)]">
                   Фасовок пока нет.</TD></TR>
               )}
