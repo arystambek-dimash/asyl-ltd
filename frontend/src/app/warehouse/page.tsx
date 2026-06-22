@@ -9,6 +9,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { StatCard } from "@/components/ui/stat-card";
+import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
@@ -52,6 +54,19 @@ export default function WarehousePage() {
     (!packaging || s.packaging === packaging)
   );
 
+  const [sortKey, setSortKey] = useState("product_label");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const toggleSort = (k: string) => {
+    if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
+    else { setSortKey(k); setSortDir("asc"); }
+  };
+  const sorted = [...filtered].sort((a, b) => {
+    let cmp: number;
+    if (sortKey === "bags") cmp = a.bags - b.bags;
+    else cmp = String(a.product_label).localeCompare(String(b.product_label), "ru");
+    return sortDir === "asc" ? cmp : -cmp;
+  });
+
   const totalBags = filtered.reduce((sum, s) => sum + s.bags, 0);
   const totalTons = filtered.reduce((sum, s) => sum + (s.bags * Number(s.weight_kg)) / 1000, 0);
 
@@ -69,18 +84,12 @@ export default function WarehousePage() {
 
   return (
     <AppShell title="Остатки склада" section="Работа" description="Остатки готовой муки по сортам и фасовкам в мешках, с расчётным весом и статусом наличия.">
-      {/* шапка: итоги + кнопка */}
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex gap-6 text-sm">
-          <span className="text-[var(--muted-foreground)]">
-            Позиций: <span className="font-semibold text-[var(--foreground)]">{filtered.length}</span>
-          </span>
-          <span className="text-[var(--muted-foreground)]">
-            Мешков: <span className="font-semibold tabular-nums text-[var(--foreground)]">{formatMoney(totalBags)}</span>
-          </span>
-          <span className="text-[var(--muted-foreground)]">
-            Вес: <span className="font-semibold tabular-nums text-[var(--foreground)]">{totalTons.toFixed(2)} т</span>
-          </span>
+      {/* шапка: stat-карточки + кнопка */}
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-3">
+          <StatCard label="Позиций" value={String(filtered.length)} />
+          <StatCard label="Мешков" value={formatMoney(totalBags)} />
+          <StatCard label="Вес, т" value={totalTons.toFixed(2)} accent />
         </div>
         {canAdjust && (
           <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
@@ -116,12 +125,15 @@ export default function WarehousePage() {
           <Table>
             <THead>
               <TR>
-                <TH>#</TH><TH>Товар</TH><TH>Сорт</TH><TH>Фасовка</TH>
-                <TH>Остаток</TH><TH>Вес</TH><TH>Статус</TH>
+                <TH>#</TH>
+                <SortableHeader label="Товар" sortKey="product_label" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                <TH>Сорт</TH><TH>Фасовка</TH>
+                <SortableHeader label="Остаток" sortKey="bags" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                <TH>Вес</TH><TH>Статус</TH>
               </TR>
             </THead>
             <TBody>
-              {filtered.map((s) => {
+              {sorted.map((s) => {
                 const st = stockTone(s.bags);
                 const tons = (s.bags * Number(s.weight_kg)) / 1000;
                 return (
