@@ -193,20 +193,22 @@ export default function ClientsPage() {
   });
 
   return (
-    <AppShell title="Клиенты" section="Работа" description="Справочник клиентов: контакты, страна и платёжные реквизиты.">
+    <AppShell title="Клиенты" section="Работа" description="Справочник клиентов: контакты, страна и платёжные реквизиты."
+      actions={
+        <Button size="sm" onClick={() => setOpen(true)}>
+          <Plus className="size-4" /> <span className="hidden sm:inline">Добавить клиента</span>
+        </Button>
+      }>
       <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <StatCard label="Всего клиентов" value={String(list.length)} />
       </section>
 
-      <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div className="mb-4">
         <div className="relative max-w-md flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
           <Input className="pl-9" placeholder="Поиск по имени, телефону, стране"
             value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
-        <Button size="sm" onClick={() => setOpen(true)}>
-          <Plus className="size-4" /> Добавить клиента
-        </Button>
       </div>
 
       <Card>
