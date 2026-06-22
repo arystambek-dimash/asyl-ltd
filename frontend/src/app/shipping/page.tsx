@@ -86,9 +86,19 @@ function VideoCounter({ orderId }: { orderId: number }) {
       </div>
 
       {job?.status === "processing" && (
-        <div className="text-center">
-          <div className="text-4xl font-bold tabular-nums">{bags ?? 0}</div>
-          <div className="text-xs text-[var(--muted-foreground)]">мешков посчитано</div>
+        <div className="flex flex-col items-center gap-2">
+          {/* Живой поток с разметкой модели (MJPEG). Необязателен: при ошибке
+              картинка скрывается, число остаётся. */}
+          <img
+            src={`${process.env.NEXT_PUBLIC_API_URL}/video-jobs/${job.id}/stream/`}
+            alt="Обработка видео"
+            className="w-full max-w-md rounded-lg border bg-black/5"
+            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+          />
+          <div className="text-center">
+            <div className="text-4xl font-bold tabular-nums">{bags ?? 0}</div>
+            <div className="text-xs text-[var(--muted-foreground)]">мешков посчитано</div>
+          </div>
         </div>
       )}
       {job?.status === "done" && (
