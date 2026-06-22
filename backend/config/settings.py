@@ -154,5 +154,8 @@ CORS_ALLOWED_ORIGINS = os.environ.get(
 ).split(",")
 CORS_ALLOW_CREDENTIALS = True
 
-# Allow the configured hosts (Docker service names, localhost) to reach Django.
-ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+# Allowed hosts. On an on-prem shop LAN the server is reached by its local IP
+# (e.g. 192.168.1.50) by cameras and staff devices, so the default allows any
+# host. The webhook is key-authenticated and the server sits behind the shop
+# router (not public). Override ALLOWED_HOSTS in production behind a domain.
+ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
