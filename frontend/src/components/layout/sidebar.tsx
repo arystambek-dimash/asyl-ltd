@@ -5,9 +5,10 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Boxes, ClipboardList, Users, Truck,
-  ScrollText, BarChart3, Package, ChevronDown,
+  ScrollText, BarChart3, Package, ChevronDown, Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { can } from "@/lib/can";
 import type { Me } from "@/lib/types";
 
 interface NavChild { href: string; label: string; }
@@ -15,26 +16,33 @@ interface NavItem {
   href?: string;
   label: string;
   icon: React.ElementType;
-  roles?: string[];
+  perm?: string;
   children?: NavChild[];
 }
 
 const STAFF_NAV: NavItem[] = [
   { href: "/dashboard", label: "Дашборд", icon: LayoutDashboard },
   {
-    label: "Номенклатура", icon: Package, roles: ["manager", "boss"],
+    label: "Номенклатура", icon: Package, perm: "catalog.view",
     children: [
       { href: "/catalog/grades", label: "Сорта" },
       { href: "/catalog/packagings", label: "Фасовки" },
       { href: "/catalog/products", label: "Товары" },
     ],
   },
-  { href: "/warehouse", label: "Склад", icon: Boxes },
-  { href: "/orders", label: "Заказы", icon: ClipboardList },
-  { href: "/clients", label: "Клиенты", icon: Users, roles: ["manager", "boss"] },
-  { href: "/shipping", label: "Пост отгрузки", icon: Truck, roles: ["operator", "boss"] },
-  { href: "/events", label: "Журнал", icon: ScrollText },
-  { href: "/reports", label: "Отчёты", icon: BarChart3 },
+  { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },
+  { href: "/orders", label: "Заказы", icon: ClipboardList, perm: "orders.view" },
+  { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
+  { href: "/shipping", label: "Пост отгрузки", icon: Truck, perm: "shipping.view" },
+  { href: "/events", label: "Журнал", icon: ScrollText, perm: "events.view" },
+  { href: "/reports", label: "Отчёты", icon: BarChart3, perm: "reports.view" },
+  {
+    label: "Управление", icon: Settings, perm: "employees.view",
+    children: [
+      { href: "/management/employees", label: "Сотрудники" },
+      { href: "/management/roles", label: "Роли" },
+    ],
+  },
 ];
 
 const PORTAL_NAV: NavItem[] = [
@@ -116,9 +124,7 @@ function NavGroup({ item }: { item: NavItem }) {
 export function Sidebar({ me }: { me: Me }) {
   const nav = me.is_client
     ? PORTAL_NAV
-    : STAFF_NAV.filter(
-        (i) => !i.roles || me.is_superuser || i.roles.some((r) => me.roles.includes(r))
-      );
+    : STAFF_NAV.filter((i) => !i.perm || can(me, i.perm));
 
   return (
     <aside className="flex w-[220px] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)]">

@@ -7,6 +7,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
+import { can } from "@/lib/can";
 import { formatMoney } from "@/lib/utils";
 import { Plus } from "lucide-react";
 import type { Order } from "@/lib/types";
@@ -14,7 +15,7 @@ import type { Order } from "@/lib/types";
 export default function OrdersPage() {
   const { data: orders, loading } = useApi<Order[]>("/orders/");
   const { me } = useAuth();
-  const canCreate = me?.is_superuser || me?.roles.includes("manager");
+  const canCreate = can(me, "orders.create");
 
   return (
     <AppShell title="Заказы">

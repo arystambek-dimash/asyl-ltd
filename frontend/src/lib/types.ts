@@ -3,7 +3,8 @@ export interface Me {
   username: string;
   is_client: boolean;
   is_superuser: boolean;
-  roles: string[];
+  permissions: string[];
+  role_name: string | null;
   client_id: number | null;
 }
 
@@ -39,6 +40,16 @@ export interface Shipment {
   weigh_in_kg: string | null; weigh_out_kg: string | null;
   net_weight_kg: string | null; bags_loaded: number;
   arrived_at: string | null; shipped_at: string | null;
+}
+export interface Permission { id: number; code: string; section: string; action: string; label: string; }
+export interface Role {
+  id: number; name: string; description: string; is_system: boolean;
+  permissions: Permission[]; employee_count: number;
+}
+export interface Employee {
+  id: number; username: string; first_name: string; last_name: string;
+  phone: string; position: string; role: number | null; role_name: string | null;
+  name: string; is_active: boolean;
 }
 export interface EventLog {
   id: number; event_type: string; message: string;

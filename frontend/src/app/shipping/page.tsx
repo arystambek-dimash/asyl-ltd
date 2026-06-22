@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/status-badge";
 import { useApi } from "@/lib/use-api";
+import { can } from "@/lib/can";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
@@ -72,7 +73,7 @@ function Stepper({ status, compact = false }: { status: string; compact?: boolea
 export default function ShippingPage() {
   const { data: orders, reload } = useApi<Order[]>("/orders/");
   const { me } = useAuth();
-  const isBoss = me?.is_superuser || me?.roles.includes("boss");
+  const isBoss = can(me, "shipping.debt_override");
   const [openId, setOpenId] = useState<number | null>(null);
 
   const queue = (orders ?? []).filter((o) =>
