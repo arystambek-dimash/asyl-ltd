@@ -39,31 +39,6 @@ function MetricCard({ label, value, sub, icon: Icon }: {
   );
 }
 
-/* — нижние градиентные карты — */
-const GRADIENTS: Record<string, string> = {
-  green: "from-emerald-500 to-emerald-700",
-  blue: "from-blue-500 to-blue-700",
-  purple: "from-violet-500 to-violet-700",
-  orange: "from-orange-500 to-orange-600",
-};
-function GradientCard({ tone, label, value, sub }: {
-  tone: keyof typeof GRADIENTS; label: string; value: string; sub: string;
-}) {
-  return (
-    <div className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${GRADIENTS[tone]} p-5 text-white shadow-md`}>
-      <svg className="absolute inset-0 h-full w-full opacity-20" preserveAspectRatio="none" viewBox="0 0 400 200">
-        <path d="M0 140 Q100 90 200 130 T400 110 V200 H0 Z" fill="white" fillOpacity="0.25" />
-        <path d="M0 160 Q120 120 240 155 T400 140 V200 H0 Z" fill="white" fillOpacity="0.15" />
-      </svg>
-      <div className="relative">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.12em] opacity-80">{label}</div>
-        <div className="mt-3 text-2xl font-bold tabular-nums tracking-tight">{value}</div>
-        <div className="mt-1 text-xs opacity-80">{sub}</div>
-      </div>
-    </div>
-  );
-}
-
 export default function ReportsPage() {
   const { data: orders } = useApi<Order[]>("/orders/");
   const { data: stock } = useApi<StockItem[]>("/stock/");
@@ -71,12 +46,10 @@ export default function ReportsPage() {
 
   const list = orders ?? [];
   const revenue = list.reduce((s, o) => s + Number(o.paid_total), 0);
-  const totalOrderSum = list.reduce((s, o) => s + Number(o.total_amount), 0);
   const shipped = list.filter((o) => o.status === "shipped").length;
   const active = list.filter((o) => !["shipped", "cancelled"].includes(o.status)).length;
   const totalBags = (stock ?? []).reduce((s, i) => s + i.bags, 0);
   const debtors = list.filter((o) => !o.is_fully_paid && o.status !== "cancelled");
-  const debt = debtors.reduce((s, o) => s + (Number(o.total_amount) - Number(o.paid_total)), 0);
 
   // радиальный: остатки по сортам
   const radial = useMemo(() => {
@@ -182,14 +155,6 @@ export default function ReportsPage() {
             )}
           </CardContent>
         </Card>
-      </div>
-
-      {/* Градиентные карты */}
-      <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <GradientCard tone="green" label="Поступило оплат" value={`${formatMoney(revenue)} ₸`} sub="оплачено клиентами" />
-        <GradientCard tone="blue" label="Сумма заказов" value={`${formatMoney(totalOrderSum)} ₸`} sub="всего оформлено" />
-        <GradientCard tone="purple" label="Остаток на складе" value={`${formatMoney(totalBags)}`} sub="мешков готовой муки" />
-        <GradientCard tone="orange" label="Дебиторка" value={`${formatMoney(debt)} ₸`} sub="неоплаченный остаток" />
       </div>
 
       {/* Дебиторка */}
