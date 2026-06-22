@@ -63,3 +63,17 @@ for event in counter.run(rtsp_url):
 ```
 Счёт виден в CRM → **Управление → Счётчик мешков**. Оператор вводит номер
 машины и жмёт «Закончить сессию» — итог уходит в заказ (статус `loading`).
+
+## Видео-воркер (загрузка видео в заказ)
+
+Оператор грузит .mp4 в карточке заказа («Пост отгрузки», шаг Загрузка). Видео
+встаёт в очередь. Запустите воркер рядом с моделью (GPU):
+```bash
+export ASYL_BASE_URL=http://localhost:8000
+export ASYL_CAMERA_ID=counter-01
+export ASYL_CAMERA_KEY=<ключ камеры-счётчика>
+export CV_DIR=/path/to/cv_service_handoff
+python integrations/video_worker.py
+```
+Воркер тянет видео, считает мешки готовой моделью, шлёт +1 в Redis (живой счёт
+виден в карточке) и итог записывает в заказ. Для теста без GPU: `CV_DEVICE=cpu`.
