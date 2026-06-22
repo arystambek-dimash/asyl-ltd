@@ -13,6 +13,12 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+
   backend:
     build: ./backend
     environment:
@@ -24,6 +30,7 @@ services:
       DEBUG: "1"
       ALLOWED_HOSTS: "*"  # сервер в локальной сети цеха — доступен по своему IP
       CORS_ALLOWED_ORIGINS: "http://localhost:3000"
+      REDIS_URL: "redis://redis:6379/0"
       SUPER_ADMIN_EMAIL: "${SUPER_ADMIN_EMAIL:-admin@asyl.local}"
       SUPER_ADMIN_PASS: "${SUPER_ADMIN_PASS:-admin12345}"
       CAMERA_ENROLL_KEY: "${CAMERA_ENROLL_KEY:-enroll-secret}"
@@ -31,6 +38,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
     ports:
       - "8000:8000"
 
@@ -46,3 +55,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:

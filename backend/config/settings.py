@@ -164,3 +164,6 @@ ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
 # попадает в список «Обнаруженные» (pending), затем админ привязывает её и
 # выдаёт постоянный личный ключ.
 CAMERA_ENROLL_KEY = os.environ.get("CAMERA_ENROLL_KEY", "enroll-secret")
+
+# Redis — живой счёт мешков (INCR на каждый мешок, без обращений к БД).
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
