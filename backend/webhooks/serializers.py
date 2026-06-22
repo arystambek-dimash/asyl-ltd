@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Camera, WebhookCall, CountSession
+from .models import Camera, WebhookCall, CountSession, VideoJob
 
 
 class CameraSerializer(serializers.ModelSerializer):
@@ -35,3 +35,10 @@ class CountSessionSerializer(serializers.ModelSerializer):
         model = CountSession
         fields = ["id", "camera", "camera_name", "bags", "order",
                   "status", "created_at", "closed_at"]
+
+
+class VideoJobSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VideoJob
+        fields = ["id", "order", "status", "bags_counted", "error",
+                  "video", "created_at", "finished_at"]
