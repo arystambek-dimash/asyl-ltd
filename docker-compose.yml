@@ -22,7 +22,7 @@ services:
       DB_HOST: db
       DB_PORT: "5432"
       DEBUG: "1"
-      ALLOWED_HOSTS: "localhost,127.0.0.1,backend"
+      ALLOWED_HOSTS: "*"  # сервер в локальной сети цеха — доступен по своему IP
       CORS_ALLOWED_ORIGINS: "http://localhost:3000"
       SUPER_ADMIN_EMAIL: "${SUPER_ADMIN_EMAIL:-admin@asyl.local}"
       SUPER_ADMIN_PASS: "${SUPER_ADMIN_PASS:-admin12345}"
