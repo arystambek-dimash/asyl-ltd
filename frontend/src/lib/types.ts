@@ -51,6 +51,17 @@ export interface Employee {
   phone: string; position: string; role: number | null; role_name: string | null;
   name: string; is_active: boolean;
 }
+export interface Camera {
+  id: number; name: string; camera_id: string;
+  kind: "entry" | "counter" | "exit";
+  api_key: string; response_template: string;
+  is_active: boolean; last_seen: string | null;
+}
+export interface WebhookCall {
+  id: number; camera: number; plate: string;
+  payload_bags: number | null; payload_weight: string | null;
+  matched_order: number | null; decision: string; reason: string; created_at: string;
+}
 export interface EventLog {
   id: number; event_type: string; message: string;
   user: number | null; order: number | null; payload: Record<string, unknown>;

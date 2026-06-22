@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     "warehouse",
     "shipments",
     "portal",
+    "webhooks",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

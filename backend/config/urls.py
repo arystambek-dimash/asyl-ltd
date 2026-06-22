@@ -17,4 +17,5 @@ urlpatterns = [
     path("api/", include("portal.urls")),
     path("api/", include("rbac.urls")),
     path("api/", include("employees.urls")),
+    path("api/", include("webhooks.urls")),
 ]

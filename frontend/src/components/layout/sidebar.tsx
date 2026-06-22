@@ -5,7 +5,7 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Boxes, ClipboardList, Users, Truck,
-  ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings,
+  ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings, Video,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { can } from "@/lib/can";
@@ -50,6 +50,7 @@ const STAFF_SECTIONS: NavSection[] = [
     title: "Управление",
     items: [
       { href: "/events", label: "Журнал", icon: ScrollText, perm: "events.view" },
+      { href: "/management/cameras", label: "Камеры", icon: Video, perm: "cameras.view" },
       {
         label: "Доступы", icon: Settings, perm: "employees.view",
         children: [
