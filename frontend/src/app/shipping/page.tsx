@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,10 +15,99 @@ import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
 import {
   Truck, ChevronDown, User, Phone, Package, Scale, CheckCircle2, Circle,
-  AlertTriangle,
+  AlertTriangle, Upload,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { Order } from "@/lib/types";
+import type { Order, VideoJob } from "@/lib/types";
+
+function VideoCounter({ orderId }: { orderId: number }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [job, setJob] = useState<VideoJob | null>(null);
+  const [bags, setBags] = useState<number | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const { data } = await api.get<VideoJob[]>(`/video-jobs/?order=${orderId}`);
+        if (alive && data.length) setJob(data[0]);
+      } catch { /* ignore */ }
+    };
+    tick();
+    const t = setInterval(tick, 2000);
+    return () => { alive = false; clearInterval(t); };
+  }, [orderId]);
+
+  useEffect(() => {
+    if (job?.status !== "processing") return;
+    let alive = true;
+    const cnt = async () => {
+      try {
+        const cams = await api.get("/cameras/");
+        const counter = (cams.data as { id: number; kind: string; status: string }[])
+          .find((c) => c.kind === "counter" && c.status === "active");
+        if (!counter) return;
+        const { data } = await api.get(`/count/${counter.id}/`);
+        if (alive) setBags(data.bags);
+      } catch { /* ignore */ }
+    };
+    cnt();
+    const t = setInterval(cnt, 1500);
+    return () => { alive = false; clearInterval(t); };
+  }, [job?.status]);
+
+  async function upload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true); setError("");
+    try {
+      const fd = new FormData();
+      fd.append("video", file);
+      await api.post(`/orders/${orderId}/upload-video/`, fd,
+        { headers: { "Content-Type": "multipart/form-data" } });
+    } catch (err) { setError(apiError(err)); } finally { setUploading(false); }
+    if (fileRef.current) fileRef.current.value = "";
+  }
+
+  const statusLabel: Record<string, string> = {
+    queued: "В очереди", processing: "Обработка…", done: "Готово", failed: "Ошибка",
+  };
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border bg-[var(--card)] p-4">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium">Видео загрузки</span>
+        {job && <Badge tone={job.status === "done" ? "success"
+          : job.status === "failed" ? "destructive"
+          : job.status === "processing" ? "warning" : "muted"}>
+          {statusLabel[job.status]}</Badge>}
+      </div>
+
+      {job?.status === "processing" && (
+        <div className="text-center">
+          <div className="text-4xl font-bold tabular-nums">{bags ?? 0}</div>
+          <div className="text-xs text-[var(--muted-foreground)]">мешков посчитано</div>
+        </div>
+      )}
+      {job?.status === "done" && (
+        <p className="text-sm text-[var(--success)]">Готово: {job.bags_counted} мешков записано.</p>
+      )}
+      {job?.status === "failed" && (
+        <p className="text-sm text-[var(--destructive)]">Ошибка обработки: {job.error || "—"}</p>
+      )}
+
+      <input ref={fileRef} type="file" accept="video/mp4,video/avi,video/quicktime"
+        className="hidden" onChange={upload} />
+      <Button size="sm" variant="outline" disabled={uploading}
+        onClick={() => fileRef.current?.click()}>
+        <Upload className="size-4" /> {uploading ? "Загрузка…" : "Загрузить видео"}
+      </Button>
+      {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
+    </div>
+  );
+}
 
 const QUEUE_STATUSES = ["paid", "arrived", "loading"];
 
@@ -234,6 +323,7 @@ function QueueRow({
 
               {order.status === "loading" && (
                 <>
+                  <VideoCounter orderId={order.id} />
                   <Label>Выезд</Label>
                   <Input type="number" placeholder="Вес выезда, кг" value={weighOut}
                     onChange={(e) => setWeighOut(e.target.value)} />

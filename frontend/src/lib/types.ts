@@ -67,6 +67,11 @@ export interface CountSession {
   id: number; camera: number; camera_name: string; bags: number;
   order: number | null; status: string; created_at: string; closed_at: string | null;
 }
+export interface VideoJob {
+  id: number; order: number; status: "queued" | "processing" | "done" | "failed";
+  bags_counted: number; error: string; video: string;
+  created_at: string; finished_at: string | null;
+}
 export interface EventLog {
   id: number; event_type: string; message: string;
   user: number | null; order: number | null; payload: Record<string, unknown>;
