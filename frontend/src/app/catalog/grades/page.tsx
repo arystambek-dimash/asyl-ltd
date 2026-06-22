@@ -34,7 +34,7 @@ export default function GradesPage() {
   }
 
   return (
-    <AppShell title="Сорта">
+    <AppShell title="Сорта" section="Номенклатура" description="Справочник сортов муки.">
       <div className="mb-4 flex items-center justify-between">
         <p className="text-sm text-[var(--muted-foreground)]">{grades?.length ?? 0} сортов</p>
         <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>

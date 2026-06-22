@@ -55,7 +55,7 @@ export default function ProductsPage() {
   }
 
   return (
-    <AppShell title="Товары">
+    <AppShell title="Товары" section="Номенклатура" description="Товары = сорт × фасовка + цена. Управляйте ценами и активностью.">
       <div className="mb-4 flex items-center justify-between">
         <p className="text-sm text-[var(--muted-foreground)]">{products?.length ?? 0} товаров</p>
         <Button size="sm" disabled={!ready} onClick={() => { setError(""); setOpen(true); }}>

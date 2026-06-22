@@ -81,7 +81,7 @@ export default function ShippingPage() {
   );
 
   return (
-    <AppShell title="Пост отгрузки">
+    <AppShell title="Пост отгрузки" section="Работа" description="Очередь машин на отгрузку: прибытие, загрузка, выезд и расчёт нетто по весам.">
       <div className="mb-4 flex items-center gap-2 text-sm">
         <Truck className="size-4 text-[var(--muted-foreground)]" />
         <span className="text-[var(--muted-foreground)]">Очередь машин:</span>

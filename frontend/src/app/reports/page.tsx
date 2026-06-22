@@ -80,7 +80,7 @@ export default function ReportsPage() {
   }, [events]);
 
   return (
-    <AppShell title="Отчёты">
+    <AppShell title="Отчёты" section="Обзор" description="Финансовая аналитика: поступления, отгрузки, остатки по сортам и дебиторская задолженность.">
       {/* KPI */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard label="Поступило оплат" value={`${formatMoney(revenue)} ₸`} sub="всего по заказам" icon={Wallet} />

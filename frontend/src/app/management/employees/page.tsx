@@ -36,7 +36,7 @@ export default function EmployeesPage() {
   }
 
   return (
-    <AppShell title="Сотрудники">
+    <AppShell title="Сотрудники" section="Управление" description="Учётные записи сотрудников и их роли. Создавайте аккаунты и назначайте доступ.">
       <div className="mb-4 flex items-center justify-between">
         <p className="text-sm text-[var(--muted-foreground)]">{employees?.length ?? 0} сотрудников</p>
         {canManage && <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>

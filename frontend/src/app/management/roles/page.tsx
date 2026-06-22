@@ -61,7 +61,7 @@ export default function RolesPage() {
   }
 
   return (
-    <AppShell title="Роли">
+    <AppShell title="Роли" section="Управление" description="Гибкие роли с настраиваемыми правами по разделам и действиям.">
       <div className="mb-4 flex items-center justify-between">
         <p className="text-sm text-[var(--muted-foreground)]">{roles?.length ?? 0} ролей</p>
         <Button size="sm" onClick={openNew}><Plus className="size-4" /> Новая роль</Button>

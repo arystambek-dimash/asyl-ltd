@@ -43,7 +43,7 @@ export default function EventsPage() {
   }
 
   return (
-    <AppShell title="Журнал событий">
+    <AppShell title="Журнал событий" section="Управление" description="Неизменяемая лента событий системы: оплаты, отгрузки, движения склада и статусы заказов.">
       <Card className="mb-4">
         <CardContent className="pt-6">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
