@@ -8,6 +8,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { StatCard } from "@/components/ui/stat-card";
+import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { Plus } from "lucide-react";
@@ -33,10 +35,26 @@ export default function GradesPage() {
     catch (e) { setError(apiError(e)); }
   }
 
+  const [sortKey, setSortKey] = useState("name");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const list = grades ?? [];
+  const activeN = list.filter((g) => g.is_active).length;
+  const toggleSort = (k: string) => {
+    if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
+    else { setSortKey(k); setSortDir("asc"); }
+  };
+  const sorted = [...list].sort((a, b) => {
+    const cmp = a.name.localeCompare(b.name, "ru");
+    return sortDir === "asc" ? cmp : -cmp;
+  });
+
   return (
     <AppShell title="Сорта" section="Номенклатура" description="Справочник сортов муки.">
-      <div className="mb-4 flex items-center justify-between">
-        <p className="text-sm text-[var(--muted-foreground)]">{grades?.length ?? 0} сортов</p>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
+          <StatCard label="Всего сортов" value={String(list.length)} />
+          <StatCard label="Активных" value={String(activeN)} accent />
+        </div>
         <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
           <Plus className="size-4" /> Добавить сорт
         </Button>
@@ -45,9 +63,12 @@ export default function GradesPage() {
       <Card>
         <CardContent className="pt-6">
           <Table>
-            <THead><TR><TH>Сорт</TH><TH>Статус</TH><TH></TH></TR></THead>
+            <THead><TR>
+              <SortableHeader label="Сорт" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+              <TH>Статус</TH><TH></TH>
+            </TR></THead>
             <TBody>
-              {(grades ?? []).map((g) => (
+              {sorted.map((g) => (
                 <TR key={g.id}>
                   <TD className="font-medium">{g.name}</TD>
                   <TD><Badge tone={g.is_active ? "success" : "muted"}>
@@ -59,7 +80,7 @@ export default function GradesPage() {
                   </TD>
                 </TR>
               ))}
-              {(grades ?? []).length === 0 && (
+              {sorted.length === 0 && (
                 <TR><TD colSpan={3} className="py-4 text-center text-[var(--muted-foreground)]">
                   Сортов пока нет.</TD></TR>
               )}
