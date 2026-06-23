@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
+import Link from "next/link";
 import { useAuth } from "@/store/auth";
 import { apiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -71,6 +72,9 @@ export default function LoginPage() {
               {busy ? "Вход…" : "Войти"}
             </Button>
           </form>
+          <Link href="/register" className="mt-4 block text-center text-sm text-[var(--muted-foreground)] underline">
+            Нет аккаунта? Регистрация
+          </Link>
         </div>
       </div>
     </div>
