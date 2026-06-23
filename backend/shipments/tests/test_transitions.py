@@ -1,6 +1,6 @@
 import pytest
 from decimal import Decimal
-from catalog.models import Grade, Packaging, Product
+from catalog.models import Product
 from clients.models import Client
 from orders.models import Order, OrderItem, Payment
 from warehouse.services import receive_stock
@@ -12,9 +12,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _order(boss, status="paid", qty=50):
-    g = Grade.objects.create(name="Премиум")
-    pk = Packaging.objects.create(name="50 кг", weight_kg="50.00")
-    prod = Product.objects.create(grade=g, packaging=pk, price="100.00")
+    prod = Product.objects.create(name="Премиум", color="Red", weight_kg="50", price="100.00")
     receive_stock(prod, 100, boss)
     c = Client.objects.create(first_name="L", last_name="К", phone="x")
     o = Order.objects.create(client=c, status=status, truck_number="01A123")

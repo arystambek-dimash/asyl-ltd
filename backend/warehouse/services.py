@@ -55,14 +55,24 @@ def receive_stock(product, bags, user):
 
 
 @transaction.atomic
-def deduct_stock(product, bags, user=None):
+def deduct_stock(product, bags, user=None, allow_negative=False):
     item = StockItem.objects.select_for_update().filter(product=product).first()
-    if item is None or item.bags < bags:
-        available = 0 if item is None else item.bags
+    if item is None:
+        if not allow_negative:
+            raise ValidationError({
+                "detail": f"Недостаточно мешков на складе (есть 0, нужно {bags})",
+                "code": "insufficient_stock",
+            })
+        item = StockItem.objects.create(product=product, bags=0)
+    if item.bags < bags and not allow_negative:
         raise ValidationError({
-            "detail": f"Недостаточно мешков на складе (есть {available}, нужно {bags})",
+            "detail": f"Недостаточно мешков на складе (есть {item.bags}, нужно {bags})",
             "code": "insufficient_stock",
         })
+    if item.bags < bags and allow_negative:
+        log_event("stock_negative",
+                  f"Списание в минус: {product} — было {item.bags}, списано {bags}",
+                  user=user, payload={"product": product.id, "had": item.bags, "deduct": bags})
     item.bags = F("bags") - bags
     item.save()
     item.refresh_from_db()

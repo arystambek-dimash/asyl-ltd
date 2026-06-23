@@ -1,5 +1,5 @@
 import pytest
-from catalog.models import Grade, Packaging, Product
+from catalog.models import Product
 from warehouse.models import StockItem
 from warehouse.services import receive_stock, deduct_stock
 from rest_framework.exceptions import ValidationError
@@ -8,9 +8,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _product():
-    g = Grade.objects.create(name="Премиум")
-    p = Packaging.objects.create(name="50 кг", weight_kg="50.00")
-    return Product.objects.create(grade=g, packaging=p, price="100.00")
+    return Product.objects.create(name="Премиум", color="Red", weight_kg="50", price="100.00")
 
 
 def test_receive_stock_increments(boss):

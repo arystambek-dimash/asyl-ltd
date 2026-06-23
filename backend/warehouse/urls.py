@@ -9,3 +9,4 @@ router.register("stock/adjust", StockAdjustViewSet, basename="stock-adjust")
 router.register("stock/movements", StockMovementViewSet, basename="stock-movements")
 router.register("stock", StockViewSet, basename="stock")
 urlpatterns = router.urls
+

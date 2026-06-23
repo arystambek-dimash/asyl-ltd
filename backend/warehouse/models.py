@@ -6,7 +6,9 @@ class StockItem(models.Model):
     product = models.OneToOneField(
         "catalog.Product", on_delete=models.CASCADE, related_name="stock"
     )
-    bags = models.PositiveIntegerField(default=0)
+    # IntegerField (не Positive): при списании по факту CV остаток может уйти в
+    # минус, если посчитали больше, чем было на складе (с предупреждением).
+    bags = models.IntegerField(default=0)
 
 
 class StockReceipt(models.Model):
@@ -31,7 +33,7 @@ class StockMovement(models.Model):
         "catalog.Product", on_delete=models.CASCADE, related_name="movements"
     )
     delta = models.IntegerField()  # >0 добавлено, <0 списано
-    balance_after = models.PositiveIntegerField()
+    balance_after = models.IntegerField()  # может быть отрицательным (списание в минус)
     reason = models.CharField(max_length=20, choices=REASONS, default="adjustment")
     note = models.CharField(max_length=300, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)

@@ -1,5 +1,5 @@
 import pytest
-from catalog.models import Grade, Packaging, Product
+from catalog.models import Product
 from clients.models import Client
 from orders.models import Order
 
@@ -7,9 +7,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _product(price="100.00"):
-    g = Grade.objects.create(name="Премиум")
-    p = Packaging.objects.create(name="50 кг", weight_kg="50.00")
-    return Product.objects.create(grade=g, packaging=p, price=price)
+    return Product.objects.create(name="Премиум", color="Red", weight_kg="50", price=price)
 
 
 def test_manager_creates_order_with_items(auth_client, manager):

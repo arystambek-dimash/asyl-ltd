@@ -4,17 +4,20 @@ from .models import StockItem, StockReceipt, StockMovement
 
 class StockItemSerializer(serializers.ModelSerializer):
     product_label = serializers.CharField(source="product.__str__", read_only=True)
-    grade = serializers.CharField(source="product.grade.name", read_only=True)
-    packaging = serializers.CharField(source="product.packaging.name", read_only=True)
+    grade = serializers.CharField(source="product.name", read_only=True)
+    color = serializers.CharField(source="product.color", read_only=True)
+    color_label = serializers.CharField(source="product.get_color_display", read_only=True)
+    packaging = serializers.SerializerMethodField()
     weight_kg = serializers.DecimalField(
-        source="product.packaging.weight_kg", max_digits=10, decimal_places=2,
-        read_only=True,
-    )
+        source="product.weight_kg", max_digits=10, decimal_places=2, read_only=True)
 
     class Meta:
         model = StockItem
-        fields = ["id", "product", "product_label", "grade", "packaging",
-                  "weight_kg", "bags"]
+        fields = ["id", "product", "product_label", "grade", "color",
+                  "color_label", "packaging", "weight_kg", "bags"]
+
+    def get_packaging(self, obj):
+        return f"{int(obj.product.weight_kg)} кг"
 
 
 class StockReceiptSerializer(serializers.ModelSerializer):

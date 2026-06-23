@@ -93,8 +93,33 @@ def record_shipment(order, weigh_out_kg, user):
         )
     shipment = order.shipment
     net = abs(Decimal(weigh_out_kg) - shipment.weigh_in_kg)
-    for item in order.items.select_related("product").all():
-        deduct_stock(item.product, item.quantity, user)
+    from catalog.models import Product as _Product
+    job = (order.video_jobs.filter(status="done")
+           .exclude(counts_by_class={}).order_by("-finished_at").first())
+    counts = job.counts_by_class if job else None
+    if counts:
+        # Сначала ищем товар нужного класса среди позиций заказа, иначе любой
+        # активный товар того же цвета+веса.
+        order_products = [i.product for i in order.items.select_related("product").all()]
+        for cv_class, n in counts.items():
+            if not n:
+                continue
+            color, _, w = cv_class.partition("_")
+            weight = Decimal("50") if w == "50" else Decimal("25")
+            prod = next((p for p in order_products
+                         if p.color == color and Decimal(p.weight_kg) == weight), None)
+            if prod is None:
+                prod = (_Product.objects.filter(color=color, weight_kg=weight, is_active=True)
+                        .order_by("id").first())
+            if prod is None:
+                log_event("stock_negative",
+                          f"Нет товара для класса {cv_class} ({n} меш.) — пропущено",
+                          user=user, order=order)
+                continue
+            deduct_stock(prod, int(n), user, allow_negative=True)
+    else:
+        for item in order.items.select_related("product").all():
+            deduct_stock(item.product, item.quantity, user)
     shipment.weigh_out_kg = weigh_out_kg
     shipment.net_weight_kg = net
     shipment.shipped_at = timezone.now()

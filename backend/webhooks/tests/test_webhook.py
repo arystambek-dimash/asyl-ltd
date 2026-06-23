@@ -1,6 +1,6 @@
 import pytest
 from decimal import Decimal
-from catalog.models import Grade, Packaging, Product
+from catalog.models import Product
 from clients.models import Client
 from orders.models import Order, OrderItem, Payment
 from warehouse.services import receive_stock
@@ -16,9 +16,7 @@ def _camera(kind, tpl=""):
 
 
 def _paid_order(boss, status="paid", plate="123ABC02", bags_stock=100, qty=50):
-    g = Grade.objects.create(name="Премиум")
-    pk = Packaging.objects.create(name="50 кг", weight_kg="50.00")
-    prod = Product.objects.create(grade=g, packaging=pk, price="100.00")
+    prod = Product.objects.create(name="Премиум", color="Red", weight_kg="50", price="100.00")
     receive_stock(prod, bags_stock, boss)
     c = Client.objects.create(first_name="И", last_name="П", phone="x")
     o = Order.objects.create(client=c, status=status, truck_number=plate)
