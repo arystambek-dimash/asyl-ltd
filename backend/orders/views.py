@@ -4,9 +4,10 @@ from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 from rbac.permissions import PermViewSetMixin
 from eventlog.services import log_event
-from .models import Order
+from .models import Order, Payment
 from .serializers import OrderSerializer, PaymentSerializer
-from .services import add_payment, confirm_order
+from .services import (add_payment, confirm_order, reject_order,
+                       confirm_payment, reject_payment, approve_debt)
 
 
 class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
@@ -18,6 +19,10 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "partial_update": "orders.edit", "destroy": "orders.edit",
         "payments": "payments.create", "confirm": "orders.confirm",
         "set_status": "orders.edit",
+        "reject": "orders.confirm",
+        "confirm_payment": "payments.confirm",
+        "reject_payment": "payments.confirm",
+        "approve_debt": "shipping.debt_override",
     }
 
     @action(detail=True, methods=["post"], url_path="payments")
@@ -29,6 +34,28 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="confirm")
     def confirm(self, request, pk=None):
         order = confirm_order(self.get_object(), request.user)
+        return Response(OrderSerializer(order, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="reject")
+    def reject(self, request, pk=None):
+        order = reject_order(self.get_object(), request.user)
+        return Response(OrderSerializer(order, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="payments/(?P<pid>[^/.]+)/confirm")
+    def confirm_payment(self, request, pk=None, pid=None):
+        payment = Payment.objects.get(pk=pid, order=self.get_object())
+        confirm_payment(payment, request.user)
+        return Response(OrderSerializer(payment.order, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="payments/(?P<pid>[^/.]+)/reject")
+    def reject_payment(self, request, pk=None, pid=None):
+        payment = Payment.objects.get(pk=pid, order=self.get_object())
+        reject_payment(payment, request.user)
+        return Response(OrderSerializer(payment.order, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="approve-debt")
+    def approve_debt(self, request, pk=None):
+        order = approve_debt(self.get_object(), request.user)
         return Response(OrderSerializer(order, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="set-status")

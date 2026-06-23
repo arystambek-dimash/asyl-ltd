@@ -49,7 +49,8 @@ def manager(user_with_perms):
 
 @pytest.fixture
 def accountant(user_with_perms):
-    return user_with_perms("accountant", codes=["payments.view", "payments.create", "orders.view"])
+    return user_with_perms("accountant", codes=["payments.view", "payments.create",
+                                                "payments.confirm", "orders.view"])
 
 
 @pytest.fixture

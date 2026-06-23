@@ -14,8 +14,9 @@ class OrderItemSerializer(serializers.ModelSerializer):
 class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
-        fields = ["id", "order", "amount", "paid_at", "recorded_by"]
-        read_only_fields = ["order", "paid_at", "recorded_by"]
+        fields = ["id", "order", "amount", "method", "status",
+                  "paid_at", "recorded_by", "confirmed_by"]
+        read_only_fields = ["order", "paid_at", "recorded_by", "confirmed_by"]
 
 
 class OrderSerializer(serializers.ModelSerializer):
