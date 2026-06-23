@@ -276,25 +276,6 @@ export default function ShippingPage() {
 
 // Сравнение фактического веса груза (выезд − въезд) с ожидаемым (мешки × вес).
 // Авторитетный расчёт делает бэкенд (eventlog); здесь — предпросмотр для оператора.
-function WeightCompare({ order, weighOut }: { order: Order; weighOut: string }) {
-  const inKg = order.weigh_in_kg ? Number(order.weigh_in_kg) : null;
-  const out = weighOut ? Number(weighOut) : null;
-  if (inKg === null || out === null || Number.isNaN(out)) return null;
-  const cargo = Math.abs(out - inKg);
-  const estimate = Number(order.bag_estimate_kg ?? 0);
-  const diff = cargo - estimate;
-  const big = estimate > 0 && Math.abs(diff) > estimate * 0.05; // порог 5%
-  return (
-    <div className={cn("rounded-md px-3 py-2 text-xs",
-      big ? "bg-[var(--destructive)]/10 text-[var(--destructive)]"
-          : "bg-[var(--muted)]/40 text-[var(--muted-foreground)]")}>
-      Вес груза: <b>{formatMoney(cargo)} кг</b> · Ожидалось:{" "}
-      <b>{formatMoney(estimate)} кг</b> · Расхождение:{" "}
-      <b>{diff > 0 ? "+" : ""}{formatMoney(diff)} кг</b>
-      {big && " — большое расхождение"}
-    </div>
-  );
-}
 
 function QueueRow({
   order, isBoss, open, onToggle, onChange,
@@ -442,7 +423,6 @@ function QueueRow({
                   </div>
                   <Input type="number" placeholder="Вес выезда, кг" value={weighOut}
                     onChange={(e) => setWeighOut(e.target.value)} />
-                  <WeightCompare order={order} weighOut={weighOut} />
                   <Button disabled={busy || !weighOut}
                     onClick={() => act(() => api.post(`/orders/${order.id}/ship/`, { weigh_out_kg: weighOut }))}>
                     Отгрузить (выезд)
@@ -457,7 +437,6 @@ function QueueRow({
                     Нетто: <b className="tabular-nums text-[var(--success)]">
                       {order.net_weight_kg ? `${formatMoney(order.net_weight_kg)} кг` : "—"}</b>
                   </div>
-                  <WeightCompare order={order} weighOut={order.weigh_out_kg ?? ""} />
                 </>
               )}
 
