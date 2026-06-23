@@ -36,14 +36,7 @@ const STAFF_SECTIONS: NavSection[] = [
       { href: "/shipping", label: "Пост отгрузки", icon: Truck, perm: "shipping.view" },
       { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },
       { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
-      {
-        label: "Номенклатура", icon: Package, perm: "catalog.view",
-        children: [
-          { href: "/catalog/grades", label: "Сорта" },
-          { href: "/catalog/packagings", label: "Фасовки" },
-          { href: "/catalog/products", label: "Товары" },
-        ],
-      },
+      { href: "/catalog/products", label: "Товары", icon: Package, perm: "catalog.view" },
     ],
   },
   {

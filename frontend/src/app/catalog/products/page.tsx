@@ -1,6 +1,5 @@
 "use client";
 import { useState } from "react";
-import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,33 +15,26 @@ import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
 import { Plus, Check, X } from "lucide-react";
-import type { Grade, Packaging, Product } from "@/lib/types";
+import type { Product } from "@/lib/types";
 
 export default function ProductsPage() {
-  const { data: grades } = useApi<Grade[]>("/grades/");
-  const { data: packagings } = useApi<Packaging[]>("/packagings/");
   const { data: products, reload } = useApi<Product[]>("/products/");
 
   const [open, setOpen] = useState(false);
-  const [grade, setGrade] = useState("");
-  const [packaging, setPackaging] = useState("");
+  const [name, setName] = useState("");
+  const [color, setColor] = useState("Red");
+  const [weight, setWeight] = useState("50");
   const [price, setPrice] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
   const [editPrice, setEditPrice] = useState("");
 
-  const activeGrades = (grades ?? []).filter((g) => g.is_active);
-  const activePackagings = (packagings ?? []).filter((p) => p.is_active);
-  const ready = activeGrades.length > 0 && activePackagings.length > 0;
-
   async function add(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError("");
     try {
-      await api.post("/products/", {
-        grade: Number(grade), packaging: Number(packaging), price,
-      });
-      setGrade(""); setPackaging(""); setPrice(""); setOpen(false); reload();
+      await api.post("/products/", { name, color, weight_kg: weight, price });
+      setName(""); setColor("Red"); setWeight("50"); setPrice(""); setOpen(false); reload();
     } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
   }
 
@@ -56,7 +48,7 @@ export default function ProductsPage() {
     catch (e) { setError(apiError(e)); }
   }
 
-  const [sortKey, setSortKey] = useState("label");
+  const [sortKey, setSortKey] = useState("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const list = products ?? [];
   const activeN = list.filter((p) => p.is_active).length;
@@ -67,14 +59,14 @@ export default function ProductsPage() {
   const sorted = [...list].sort((a, b) => {
     let cmp: number;
     if (sortKey === "price") cmp = Number(a.price) - Number(b.price);
-    else cmp = a.label.localeCompare(b.label, "ru");
+    else cmp = a.name.localeCompare(b.name, "ru");
     return sortDir === "asc" ? cmp : -cmp;
   });
 
   return (
-    <AppShell title="Товары" section="Номенклатура" description="Товары = сорт × фасовка + цена. Управляйте ценами и активностью."
+    <AppShell title="Товары" section="Работа" description="Товары: сорт, цвет (тип) и фасовка. Управляйте ценами и активностью."
       actions={
-        <Button size="sm" disabled={!ready} onClick={() => { setError(""); setOpen(true); }}>
+        <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
           <Plus className="size-4" /> <span className="hidden sm:inline">Создать товар</span>
         </Button>
       }>
@@ -85,27 +77,22 @@ export default function ProductsPage() {
         </div>
       </div>
 
-      {!ready && (
-        <p className="mb-4 text-sm text-[var(--muted-foreground)]">
-          Сначала добавьте хотя бы один{" "}
-          <Link href="/catalog/grades" className="text-[var(--primary)] underline">сорт</Link>{" "}
-          и одну{" "}
-          <Link href="/catalog/packagings" className="text-[var(--primary)] underline">фасовку</Link>.
-        </p>
-      )}
-
       <Card>
         <CardContent className="pt-6">
           <Table>
             <THead><TR>
-              <SortableHeader label="Товар" sortKey="label" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+              <SortableHeader label="Название" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+              <TH>Цвет</TH>
+              <TH>Фасовка</TH>
               <SortableHeader label="Цена" sortKey="price" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
               <TH>Статус</TH><TH></TH>
             </TR></THead>
             <TBody>
               {sorted.map((p) => (
                 <TR key={p.id}>
-                  <TD className="font-medium">{p.label}</TD>
+                  <TD className="font-medium">{p.name}</TD>
+                  <TD>{p.color_label}</TD>
+                  <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
                   <TD className="tabular-nums">
                     {editId === p.id ? (
                       <div className="flex items-center gap-2">
@@ -131,7 +118,7 @@ export default function ProductsPage() {
                 </TR>
               ))}
               {sorted.length === 0 && (
-                <TR><TD colSpan={4} className="py-4 text-center text-[var(--muted-foreground)]">
+                <TR><TD colSpan={6} className="py-4 text-center text-[var(--muted-foreground)]">
                   Товаров пока нет.</TD></TR>
               )}
             </TBody>
@@ -142,17 +129,23 @@ export default function ProductsPage() {
       <Modal open={open} onClose={() => setOpen(false)} title="Новый товар">
         <form onSubmit={add} className="flex flex-col gap-5">
           <div className="grid gap-2">
-            <Label>Сорт</Label>
-            <Select value={grade} onChange={(e) => setGrade(e.target.value)} required>
-              <option value="">Выберите сорт</option>
-              {activeGrades.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            <Label>Название</Label>
+            <Input value={name} autoFocus placeholder="напр. Высший сорт"
+              onChange={(e) => setName(e.target.value)} required />
+          </div>
+          <div className="grid gap-2">
+            <Label>Цвет (тип)</Label>
+            <Select value={color} onChange={(e) => setColor(e.target.value)}>
+              <option value="Red">Красный</option>
+              <option value="Green">Зелёный</option>
+              <option value="Blue">Синий</option>
             </Select>
           </div>
           <div className="grid gap-2">
             <Label>Фасовка</Label>
-            <Select value={packaging} onChange={(e) => setPackaging(e.target.value)} required>
-              <option value="">Выберите фасовку</option>
-              {activePackagings.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
+            <Select value={weight} onChange={(e) => setWeight(e.target.value)}>
+              <option value="50">50 кг</option>
+              <option value="25">25 кг</option>
             </Select>
           </div>
           <div className="grid gap-2">

@@ -8,11 +8,9 @@ export interface Me {
   client_id: number | null;
 }
 
-export interface Grade { id: number; name: string; is_active: boolean; }
-export interface Packaging { id: number; name: string; weight_kg: string; is_active: boolean; }
 export interface Product {
-  id: number; grade: number; packaging: number; price: string;
-  is_active: boolean; label: string; weight_kg: string;
+  id: number; name: string; color: "Red" | "Green" | "Blue"; color_label: string;
+  weight_kg: string; price: string; is_active: boolean; label: string; cv_class: string;
 }
 export interface Client {
   id: number; first_name: string; last_name: string; phone: string;
