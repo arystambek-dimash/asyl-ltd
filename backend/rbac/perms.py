@@ -5,7 +5,7 @@ _SECTIONS = {
     "clients": ("Клиенты", ["view", "create", "edit", "delete"]),
     "warehouse": ("Склад", ["view", "adjust"]),
     "orders": ("Заказы", ["view", "create", "edit", "confirm"]),
-    "payments": ("Оплаты", ["view", "create"]),
+    "payments": ("Оплаты", ["view", "create", "confirm"]),
     "shipping": ("Пост отгрузки", ["view", "arrive", "load", "ship", "debt_override"]),
     "events": ("Журнал", ["view"]),
     "reports": ("Отчёты", ["view"]),
@@ -42,12 +42,12 @@ def _codes(*sections_or_codes):
 
 PRESETS = {
     "Менеджер": _codes("catalog", "clients", "orders",
-                       "payments.view", "reports.view", "events.view"),
-    "Бухгалтер": _codes("payments.view", "payments.create", "orders.view",
-                        "clients.view", "reports.view", "events.view"),
+                       "payments.view", "payments.confirm", "reports.view", "events.view"),
+    "Бухгалтер": _codes("payments.view", "payments.create", "payments.confirm",
+                        "orders.view", "clients.view", "reports.view", "events.view"),
     "Оператор": _codes("shipping.view", "shipping.arrive", "shipping.load",
                        "shipping.ship", "orders.view", "warehouse.view", "events.view"),
     "Начальник": _codes("catalog", "clients", "orders", "payments.view",
-                        "payments.create", "warehouse", "shipping", "cameras",
-                        "reports.view", "events.view"),
+                        "payments.create", "payments.confirm", "warehouse", "shipping",
+                        "cameras", "reports.view", "events.view"),
 }
