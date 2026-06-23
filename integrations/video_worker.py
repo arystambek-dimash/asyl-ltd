@@ -26,6 +26,10 @@ DEVICE = os.environ.get("CV_DEVICE", "0")  # "0" GPU, "cpu" для теста
 CV_LINE = tuple(float(x) for x in os.environ.get("CV_LINE", "0.0,0.55,1.0,0.55").split(","))
 CV_DIRECTION = os.environ.get("CV_DIRECTION", "any")
 
+# Частота кадров живого превью (кадров/сек). Счёт мешков от этого не зависит.
+PREVIEW_FPS = float(os.environ.get("CV_PREVIEW_FPS", "10"))
+PREVIEW_INTERVAL = 1.0 / PREVIEW_FPS if PREVIEW_FPS > 0 else 0.1
+
 H = {"X-Camera-Key": CAMERA_KEY}
 
 
@@ -58,7 +62,7 @@ def process(job):
                 _api("POST", "/api/webhook/camera/",
                      json={"camera_id": CAMERA_ID, "increment": 1, "cls": cls}, headers=H)
             now = time.time()
-            if now - last_sent >= 0.33:                       # ~3 кадра/сек
+            if now - last_sent >= PREVIEW_INTERVAL:           # ~PREVIEW_FPS кадр/сек
                 last_sent = now
                 ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 if ok:

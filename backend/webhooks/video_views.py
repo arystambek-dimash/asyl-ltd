@@ -142,11 +142,18 @@ class VideoStreamView(APIView):
         boundary = b"--frame"
 
         def gen():
-            # Стрим живёт, пока задача в обработке. Жёсткий потолок итераций —
-            # страховка от бесконечного цикла (1200 * 0.3с ≈ 6 минут).
-            for _ in range(1200):
-                job = VideoJob.objects.filter(pk=pk).only("status").first()
-                if job is None or job.status != "processing":
+            # Стрим живёт, пока задача в обработке. Опрос кадра ~10/сек (0.1с).
+            # Потолок итераций — страховка от зависания (6000 * 0.1с ≈ 10 минут);
+            # статус задачи перечитываем не каждый кадр, чтобы не долбить БД.
+            last_status_check = 0.0
+            ok = True
+            for i in range(6000):
+                now = time.time()
+                if now - last_status_check >= 1.0:
+                    last_status_check = now
+                    job = VideoJob.objects.filter(pk=pk).only("status").first()
+                    ok = job is not None and job.status == "processing"
+                if not ok:
                     break
                 try:
                     frame = frame_store.get(pk)
@@ -157,7 +164,7 @@ class VideoStreamView(APIView):
                            + b"Content-Type: image/jpeg\r\n"
                            + b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
                            + frame + b"\r\n")
-                time.sleep(0.3)
+                time.sleep(0.1)
 
         resp = StreamingHttpResponse(
             gen(), content_type="multipart/x-mixed-replace; boundary=frame")
