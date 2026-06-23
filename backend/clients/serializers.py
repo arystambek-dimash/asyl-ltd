@@ -15,7 +15,7 @@ class ClientSerializer(serializers.ModelSerializer):
     def get_debt_total(self, obj):
         total = Decimal("0")
         for o in obj.orders.all():
-            if o.status == "cancelled" or o.is_fully_paid:
+            if o.status in ("draft", "cancelled") or o.is_fully_paid:
                 continue
             total += o.total_amount - o.paid_total
         return str(total.quantize(Decimal("0.01")))

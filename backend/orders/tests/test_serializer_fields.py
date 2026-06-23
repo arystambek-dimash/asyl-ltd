@@ -45,10 +45,18 @@ def test_debt_override_by_name_present(boss):
 
 def test_client_debt_total(boss):
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
-    _order(c, qty=10, paid="500")  # total 1000, paid 500 → debt 500
+    o, _ = _order(c, qty=10, paid="500")  # total 1000, paid 500 → debt 500
+    o.status = "confirmed"; o.save()
     data = ClientSerializer(c).data
     assert data["debt_total"] == "500.00"
 
     c2 = Client.objects.create(first_name="C", last_name="D", phone="y")
     _order(c2, qty=10, paid="1000")
     assert ClientSerializer(c2).data["debt_total"] == "0.00"
+
+
+def test_draft_orders_not_counted_as_debt(boss):
+    # черновик без оплаты — НЕ долг
+    c = Client.objects.create(first_name="E", last_name="F", phone="z")
+    _order(c, qty=10)  # status draft, no payment
+    assert ClientSerializer(c).data["debt_total"] == "0.00"

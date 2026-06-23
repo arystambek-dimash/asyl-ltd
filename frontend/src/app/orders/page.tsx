@@ -133,7 +133,7 @@ export default function OrdersPage() {
                     <TD>
                       <div className="flex items-center gap-1.5">
                         <StatusBadge status={o.status} dot />
-                        {!o.is_fully_paid && o.status !== "cancelled" && (
+                        {!o.is_fully_paid && o.status !== "draft" && o.status !== "cancelled" && (
                           <Badge tone={o.debt_override ? "warning" : "destructive"}>
                             {o.debt_override ? "В долг" : "Долг"}
                           </Badge>

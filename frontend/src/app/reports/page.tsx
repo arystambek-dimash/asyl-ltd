@@ -49,7 +49,7 @@ export default function ReportsPage() {
   const shipped = list.filter((o) => o.status === "shipped").length;
   const active = list.filter((o) => !["shipped", "cancelled"].includes(o.status)).length;
   const totalBags = (stock ?? []).reduce((s, i) => s + i.bags, 0);
-  const debtors = list.filter((o) => !o.is_fully_paid && o.status !== "cancelled");
+  const debtors = list.filter((o) => !o.is_fully_paid && o.status !== "draft" && o.status !== "cancelled");
 
   // радиальный: остатки по сортам
   const radial = useMemo(() => {
