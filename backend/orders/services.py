@@ -113,3 +113,29 @@ def reject_order(order: Order, user) -> Order:
         raise ValidationError(
             {"detail": "Отклонить можно только заказ на рассмотрении", "code": "invalid_status"})
     return transition(order, "rejected", user, "Заказ отклонён")
+
+
+def can_set_truck_number(order: Order, user) -> bool:
+    setter = order.truck_number_set_by
+    if setter is None or not order.truck_number:
+        return True
+    if setter.id == user.id:
+        return True
+    # number owned by a client → only that client may change it
+    if setter.is_client:
+        return False
+    # number set by staff → any staff may change it
+    return not user.is_client
+
+
+@transaction.atomic
+def set_truck_number(order: Order, value: str, user) -> Order:
+    if not can_set_truck_number(order, user):
+        raise ValidationError(
+            {"detail": "Номер КАМАЗа задан другим пользователем", "code": "forbidden"})
+    order.truck_number = value
+    order.truck_number_set_by = user
+    order.save(update_fields=["truck_number", "truck_number_set_by"])
+    log_event("status", f"Номер КАМАЗа: {value}", user=user, order=order,
+              payload={"truck_number": value})
+    return order
