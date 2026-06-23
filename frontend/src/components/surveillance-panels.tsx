@@ -1,5 +1,8 @@
 "use client";
-import { Camera, Bell, Activity, Truck } from "lucide-react";
+import Link from "next/link";
+import { useMemo } from "react";
+import { Camera, Bell, Activity, Truck, ChevronRight } from "lucide-react";
+import { ResponsiveContainer, AreaChart, Area } from "recharts";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/status-badge";
 import { useApi } from "@/lib/use-api";
@@ -36,12 +39,82 @@ export function SurveillancePanels() {
   const queue = list.filter((o) => ["arrived", "loading"].includes(o.status));
   const shipped = list.filter((o) => o.status === "shipped").length;
   const totalBags = (stock ?? []).reduce((s, i) => s + i.bags, 0);
-  const debt = list.filter((o) => !o.is_fully_paid && o.status !== "cancelled")
+  const debt = list.filter((o) => !o.is_fully_paid && o.status !== "draft" && o.status !== "cancelled")
     .reduce((s, o) => s + (Number(o.total_amount) - Number(o.paid_total)), 0);
   const onlineCount = WAREHOUSE_CAMERAS.filter((c) => c.url).length;
 
+  // Мини-спарклайн: выручка по заказам за последние 14 дней + поступления за период.
+  const { spark, periodRevenue, periodReceived } = useMemo(() => {
+    const days = 14;
+    const today = new Date(); today.setHours(23, 59, 59, 999);
+    const start = new Date(today); start.setDate(today.getDate() - (days - 1)); start.setHours(0, 0, 0, 0);
+    const key = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    const slots: Record<string, { revenue: number; received: number }> = {};
+    for (let i = 0; i < days; i++) {
+      const d = new Date(start); d.setDate(start.getDate() + i);
+      slots[key(d)] = { revenue: 0, received: 0 };
+    }
+    list.forEach((o) => {
+      if (o.status === "cancelled") return;
+      const d = new Date(o.created_at);
+      if (d >= start && d <= today) { const k = key(d); if (slots[k]) slots[k].revenue += Number(o.total_amount); }
+    });
+    (events ?? []).forEach((e) => {
+      if (e.event_type !== "payment") return;
+      const d = new Date(e.created_at);
+      if (d >= start && d <= today) { const k = key(d); if (slots[k]) slots[k].received += Number((e.payload?.amount as string) ?? 0); }
+    });
+    const arr = Object.values(slots);
+    return {
+      spark: arr,
+      periodRevenue: arr.reduce((s, x) => s + x.revenue, 0),
+      periodReceived: arr.reduce((s, x) => s + x.received, 0),
+    };
+  }, [orders, events]);
+
   return (
     <div className="flex flex-col gap-4">
+      {/* Аналитика — быстрый доступ + мини-график */}
+      <Link href="/reports"
+        className="group block rounded-xl border bg-[var(--card)] p-4 shadow-sm transition-colors hover:border-[var(--ring)]/40">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="flex size-9 items-center justify-center rounded-lg bg-[var(--ring)]/10">
+              <Activity className="size-4 text-[var(--ring)]" />
+            </div>
+            <div>
+              <div className="text-sm font-semibold">Аналитика</div>
+              <div className="text-[11px] text-[var(--muted-foreground)]">Выручка, поступления, динамика</div>
+            </div>
+          </div>
+          <ChevronRight className="size-4 text-[var(--muted-foreground)] transition-transform group-hover:translate-x-0.5" />
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--muted-foreground)]">Выручка 14д</div>
+            <div className="text-sm font-bold tabular-nums">{formatMoney(String(periodRevenue))} ₸</div>
+          </div>
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--muted-foreground)]">Поступило 14д</div>
+            <div className="text-sm font-bold tabular-nums text-[var(--success)]">{formatMoney(String(periodReceived))} ₸</div>
+          </div>
+        </div>
+        <div className="mt-2 h-[44px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={spark} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="spark-rev" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--ring)" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="var(--ring)" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <Area type="monotone" dataKey="revenue" stroke="var(--ring)" strokeWidth={2} fill="url(#spark-rev)" />
+              <Area type="monotone" dataKey="received" stroke="var(--success)" strokeWidth={1.5} fillOpacity={0} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </Link>
+
       {/* KPI */}
       <Panel title="Сводка" icon={Activity}>
         <div className="grid grid-cols-2 gap-3">
