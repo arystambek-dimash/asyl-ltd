@@ -114,6 +114,34 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             </CardContent>
           </Card>
 
+          {order.status === "shipped" && (() => {
+            const net = Number(order.net_weight_kg ?? 0);
+            const per = Number(order.bag_weight_kg ?? 0);
+            const byWeight = per > 0 ? Math.round(net / per) : null;
+            const counted = order.bags_loaded ?? 0;
+            const ordered = order.items.reduce((s, it) => s + Number(it.quantity), 0);
+            const row = (label: string, value: React.ReactNode) => (
+              <div className="flex justify-between text-sm">
+                <span className="text-[var(--muted-foreground)]">{label}</span>
+                <span className="tabular-nums font-medium">{value}</span>
+              </div>
+            );
+            return (
+              <Card>
+                <CardHeader><CardTitle>Итог отгрузки</CardTitle></CardHeader>
+                <CardContent className="flex flex-col gap-2">
+                  {row("Вес въезда", order.weigh_in_kg ? `${formatMoney(order.weigh_in_kg)} кг` : "—")}
+                  {row("Вес выезда", order.weigh_out_kg ? `${formatMoney(order.weigh_out_kg)} кг` : "—")}
+                  {row("Вес груза", `${formatMoney(String(net))} кг`)}
+                  <div className="my-1 border-t" />
+                  {row("Посчитано камерой", `${counted} меш.`)}
+                  {row("Отгружено по весу", byWeight !== null ? `${byWeight} меш.` : "—")}
+                  {row("Заказано", `${ordered} меш.`)}
+                </CardContent>
+              </Card>
+            );
+          })()}
+
           {canEditStatus && (
             <Card>
               <CardHeader><CardTitle>Сменить статус</CardTitle></CardHeader>
