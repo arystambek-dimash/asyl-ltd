@@ -12,7 +12,7 @@ import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
 import { Trash2, Plus } from "lucide-react";
 
-interface PortalProduct { id: number; label: string; price: string; weight_kg: string; }
+interface PortalProduct { id: number; label: string; price: string; weight_kg: string; available_bags: number; }
 
 export default function PortalNewOrderPage() {
   const router = useRouter();
@@ -52,10 +52,14 @@ export default function PortalNewOrderPage() {
                   onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, product: e.target.value } : x))}>
                   <option value="">Товар</option>
                   {(products ?? []).map((p) => (
-                    <option key={p.id} value={p.id}>{p.label} — {formatMoney(p.price)} ₸</option>
+                    <option key={p.id} value={p.id}>
+                      {p.label} — {formatMoney(p.price)} ₸ · в наличии {p.available_bags} меш.
+                    </option>
                   ))}
                 </Select>
-                <Input type="number" min="1" placeholder="Мешков" className="w-32" value={r.quantity}
+                <Input type="number" min="1"
+                  max={products?.find((p) => String(p.id) === r.product)?.available_bags || undefined}
+                  placeholder="Мешков" className="w-32" value={r.quantity}
                   onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, quantity: e.target.value } : x))} />
                 <Button type="button" variant="ghost" size="icon"
                   onClick={() => setRows(rows.filter((_, j) => j !== i))}><Trash2 className="size-4" /></Button>
