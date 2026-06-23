@@ -1,3 +1,4 @@
+from decimal import Decimal
 from django.db import models
 
 
@@ -19,29 +20,44 @@ class Packaging(models.Model):
 
 
 class Product(models.Model):
-    # Класс мешка для CV-счётчика: Red_50 / Red_25 / Blue_50 / Blue_25 /
-    # Green_50 / Green_25 — совпадает с классами детектора (weights/detector.pt).
-    # Пусто = товар не считается по видео.
-    CV_CLASSES = [
-        ("Red_50", "Красный 50 кг"), ("Red_25", "Красный 25 кг"),
-        ("Blue_50", "Синий 50 кг"), ("Blue_25", "Синий 25 кг"),
-        ("Green_50", "Зелёный 50 кг"), ("Green_25", "Зелёный 25 кг"),
-    ]
+    COLORS = [("Red", "Красный"), ("Green", "Зелёный"), ("Blue", "Синий")]
+    WEIGHTS = [(Decimal("25"), "25 кг"), (Decimal("50"), "50 кг")]
 
-    grade = models.ForeignKey(Grade, on_delete=models.PROTECT, related_name="products")
-    packaging = models.ForeignKey(
-        Packaging, on_delete=models.PROTECT, related_name="products"
-    )
-    cv_class = models.CharField(max_length=20, blank=True, default="", choices=CV_CLASSES)
+    # Старые поля (удаляются в финальной миграции после переноса данных).
+    grade = models.ForeignKey("Grade", on_delete=models.PROTECT, related_name="products", null=True, blank=True)
+    packaging = models.ForeignKey("Packaging", on_delete=models.PROTECT, related_name="products", null=True, blank=True)
+    cv_class_old = models.CharField(max_length=20, blank=True, default="")
+
+    # Новые поля (nullable до переноса данных, not-null в финальной миграции).
+    name = models.CharField(max_length=100, null=True, blank=True)
+    color = models.CharField(max_length=10, choices=COLORS, null=True, blank=True)
+    new_weight_kg = models.DecimalField(max_digits=6, decimal_places=2, choices=WEIGHTS, null=True, blank=True)
+
     price = models.DecimalField(max_digits=12, decimal_places=2)
     is_active = models.BooleanField(default=True)
 
-    class Meta:
-        unique_together = ("grade", "packaging")
-
     @property
     def weight_kg(self):
-        return self.packaging.weight_kg
+        if self.new_weight_kg is not None:
+            return self.new_weight_kg
+        return self.packaging.weight_kg if self.packaging_id else None
+
+    @weight_kg.setter
+    def weight_kg(self, value):
+        # Переходный сеттер: позволяет Product(weight_kg=…) до финальной миграции,
+        # где weight_kg станет реальным полем.
+        self.new_weight_kg = value
+
+    @property
+    def cv_class(self):
+        if not self.color or self.weight_kg is None:
+            return ""
+        w = "50" if Decimal(self.weight_kg) == Decimal("50") else "25"
+        return f"{self.color}_{w}"
 
     def __str__(self):
-        return f"{self.grade.name} {self.packaging.name}"
+        if self.name and self.color:
+            return f"{self.name} · {dict(self.COLORS)[self.color]} {int(self.weight_kg)} кг"
+        if self.grade_id and self.packaging_id:
+            return f"{self.grade.name} {self.packaging.name}"
+        return f"Товар #{self.pk}"
