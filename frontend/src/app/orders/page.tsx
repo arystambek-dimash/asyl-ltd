@@ -11,6 +11,7 @@ import { Select } from "@/components/ui/select";
 import { Modal } from "@/components/ui/modal";
 import { LicensePlateInput, formatPlate } from "@/components/ui/license-plate-input";
 import { StatusBadge } from "@/components/status-badge";
+import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { FilterPills } from "@/components/ui/filter-pills";
@@ -129,7 +130,16 @@ export default function OrdersPage() {
                     <TD>{o.arrival_date ? new Date(o.arrival_date).toLocaleDateString("ru-RU") : "—"}</TD>
                     <TD className="text-right tabular-nums">{formatMoney(o.total_amount)} ₸</TD>
                     <TD className="tabular-nums text-[var(--muted-foreground)]">{formatMoney(o.paid_total)} ₸</TD>
-                    <TD><StatusBadge status={o.status} dot /></TD>
+                    <TD>
+                      <div className="flex items-center gap-1.5">
+                        <StatusBadge status={o.status} dot />
+                        {!o.is_fully_paid && o.status !== "cancelled" && (
+                          <Badge tone={o.debt_override ? "warning" : "destructive"}>
+                            {o.debt_override ? "В долг" : "Долг"}
+                          </Badge>
+                        )}
+                      </div>
+                    </TD>
                   </TR>
                 ))}
                 {sorted.length === 0 && (
