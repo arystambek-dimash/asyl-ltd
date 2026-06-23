@@ -1,200 +1,276 @@
 "use client";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
-  RadialBarChart, RadialBar, PolarAngleAxis,
 } from "recharts";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { Input } from "@/components/ui/input";
 import { useApi } from "@/lib/use-api";
+import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/utils";
-import { TrendingUp, Package, Truck, Wallet, AlertCircle } from "lucide-react";
-import type { Order, StockItem, EventLog } from "@/lib/types";
+import { ORDER_STATUS_LABELS } from "@/lib/constants";
+import { TrendingUp, Wallet, AlertCircle, ClipboardList } from "lucide-react";
+import type { Order, EventLog } from "@/lib/types";
 
-const ARC_COLORS = ["#2563eb", "#f97316", "#16a34a", "#9333ea", "#0891b2", "#dc2626"];
+type Period = "week" | "month" | "year" | "all";
+type Group = "day" | "week" | "month" | "year";
 
-function fmtDay(iso: string) {
+const PERIODS: { key: Period; label: string }[] = [
+  { key: "week", label: "Неделя" }, { key: "month", label: "Месяц" },
+  { key: "year", label: "Год" }, { key: "all", label: "Всё" },
+];
+const GROUPS: { key: Group; label: string }[] = [
+  { key: "day", label: "По дням" }, { key: "week", label: "По неделям" },
+  { key: "month", label: "По месяцам" }, { key: "year", label: "По годам" },
+];
+
+// Ключ группировки + подпись для точки времени.
+function bucket(iso: string, g: Group): { key: string; label: string } {
   const d = new Date(iso);
-  return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}`;
+  const p = (n: number) => String(n).padStart(2, "0");
+  if (g === "year") return { key: `${d.getFullYear()}`, label: `${d.getFullYear()}` };
+  if (g === "month") return { key: `${d.getFullYear()}-${p(d.getMonth() + 1)}`, label: `${p(d.getMonth() + 1)}.${d.getFullYear()}` };
+  if (g === "week") {
+    const onejan = new Date(d.getFullYear(), 0, 1);
+    const wk = Math.ceil(((d.getTime() - onejan.getTime()) / 86400000 + onejan.getDay() + 1) / 7);
+    return { key: `${d.getFullYear()}-W${p(wk)}`, label: `н${wk} ${d.getFullYear()}` };
+  }
+  return { key: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`, label: `${p(d.getDate())}.${p(d.getMonth() + 1)}` };
 }
 
-/* — верхние KPI-карты — */
-function MetricCard({ label, value, sub, icon: Icon }: {
-  label: string; value: string; sub: string; icon: React.ElementType;
+function PillGroup<T extends string>({ items, active, onChange }:
+  { items: { key: T; label: string }[]; active: T; onChange: (k: T) => void }) {
+  return (
+    <div className="inline-flex rounded-md border border-[var(--border)] bg-[var(--muted)] p-0.5">
+      {items.map((it) => (
+        <button key={it.key} type="button" onClick={() => onChange(it.key)}
+          className={cn("h-7 rounded px-2.5 text-[13px] transition-colors",
+            it.key === active
+              ? "bg-[var(--card)] font-medium text-[var(--foreground)] shadow-sm"
+              : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]")}>
+          {it.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MetricCard({ label, value, sub, icon: Icon, accent }: {
+  label: string; value: string; sub: string; icon: React.ElementType; accent?: boolean;
 }) {
   return (
-    <Card className="rounded-2xl p-5 shadow-sm">
+    <div className={cn("flex flex-col gap-3 rounded-lg border p-5 transition-colors",
+      accent ? "border-[var(--ring)]/20 bg-[var(--ring)]/10" : "border-[var(--border)] bg-[var(--card)]")}>
       <div className="flex items-start justify-between">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
-          {label}
-        </div>
-        <div className="flex size-8 items-center justify-center rounded-lg bg-[var(--secondary)]">
-          <Icon className="size-4 text-[var(--muted-foreground)]" />
-        </div>
+        <span className="text-[12px] font-medium text-[var(--muted-foreground)]">{label}</span>
+        <Icon className="size-4 text-[var(--muted-foreground)]" />
       </div>
-      <div className="mt-3 text-3xl font-bold tabular-nums tracking-tight">{value}</div>
-      <div className="mt-1 text-xs text-[var(--muted-foreground)]">{sub}</div>
-    </Card>
+      <div className={cn("text-[26px] font-bold tabular-nums tracking-tight leading-none",
+        accent && "text-[var(--ring)]")}>{value}</div>
+      <span className="text-xs text-[var(--muted-foreground)]">{sub}</span>
+    </div>
   );
 }
 
 export default function ReportsPage() {
   const { data: orders } = useApi<Order[]>("/orders/");
-  const { data: stock } = useApi<StockItem[]>("/stock/");
   const { data: events } = useApi<EventLog[]>("/events/");
 
+  const [period, setPeriod] = useState<Period>("month");
+  const [group, setGroup] = useState<Group>("day");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+
+  // Границы периода: ручной диапазон переопределяет пресет.
+  const range = useMemo(() => {
+    if (from || to) {
+      return { start: from ? new Date(from + "T00:00:00") : null, end: to ? new Date(to + "T23:59:59") : null };
+    }
+    if (period === "all") return { start: null as Date | null, end: null as Date | null };
+    const end = new Date();
+    const start = new Date();
+    if (period === "week") start.setDate(end.getDate() - 7);
+    else if (period === "month") start.setMonth(end.getMonth() - 1);
+    else start.setFullYear(end.getFullYear() - 1);
+    return { start, end };
+  }, [period, from, to]);
+
+  const inRange = (iso: string) => {
+    const d = new Date(iso);
+    if (range.start && d < range.start) return false;
+    if (range.end && d > range.end) return false;
+    return true;
+  };
+
   const list = orders ?? [];
-  const revenue = list.reduce((s, o) => s + Number(o.paid_total), 0);
-  const shipped = list.filter((o) => o.status === "shipped").length;
-  const active = list.filter((o) => !["shipped", "cancelled"].includes(o.status)).length;
-  const totalBags = (stock ?? []).reduce((s, i) => s + i.bags, 0);
+  const periodOrders = list.filter((o) => inRange(o.created_at));
+
+  // KPI
+  const revenue = periodOrders
+    .filter((o) => o.status !== "cancelled")
+    .reduce((s, o) => s + Number(o.total_amount), 0);
+  const received = (events ?? [])
+    .filter((e) => e.event_type === "payment" && inRange(e.created_at))
+    .reduce((s, e) => s + Number((e.payload?.amount as string) ?? 0), 0);
   const debtors = list.filter((o) => !o.is_fully_paid && o.status !== "draft" && o.status !== "cancelled");
+  const debtTotal = debtors.reduce((s, o) => s + (Number(o.total_amount) - Number(o.paid_total)), 0);
 
-  // радиальный: остатки по сортам
-  const radial = useMemo(() => {
-    const by: Record<string, number> = {};
-    (stock ?? []).forEach((s) => { by[s.grade] = (by[s.grade] || 0) + s.bags; });
-    const entries = Object.entries(by).filter(([, v]) => v > 0);
-    return entries.map(([name, value], i) => ({
-      name, value, fill: ARC_COLORS[i % ARC_COLORS.length],
-    }));
-  }, [stock]);
-  const radialMax = Math.max(1, ...radial.map((r) => r.value));
-
-  // сплайн: оплаты и отгрузки по дням (из журнала)
+  // Временной ряд: выручка (по created_at заказа) + поступления (по payment-событиям)
   const series = useMemo(() => {
-    const byDay: Record<string, { day: string; payments: number; shipments: number }> = {};
-    (events ?? []).forEach((e) => {
-      if (e.event_type !== "payment" && e.event_type !== "shipment") return;
-      const day = fmtDay(e.created_at);
-      byDay[day] = byDay[day] || { day, payments: 0, shipments: 0 };
-      if (e.event_type === "payment") {
-        const amt = Number((e.payload?.amount as string) ?? 0);
-        byDay[day].payments += amt;
-      } else {
-        byDay[day].shipments += 1;
-      }
+    const map: Record<string, { key: string; label: string; revenue: number; received: number }> = {};
+    const touch = (iso: string) => {
+      const b = bucket(iso, group);
+      if (!map[b.key]) map[b.key] = { ...b, revenue: 0, received: 0 };
+      return map[b.key];
+    };
+    periodOrders.filter((o) => o.status !== "cancelled").forEach((o) => {
+      touch(o.created_at).revenue += Number(o.total_amount);
     });
-    return Object.values(byDay).reverse();
-  }, [events]);
+    (events ?? []).filter((e) => e.event_type === "payment" && inRange(e.created_at)).forEach((e) => {
+      touch(e.created_at).received += Number((e.payload?.amount as string) ?? 0);
+    });
+    return Object.values(map).sort((a, b) => a.key.localeCompare(b.key));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, events, group, range.start, range.end]);
+
+  // По статусам заказов (в периоде)
+  const byStatus = useMemo(() => {
+    const m: Record<string, { count: number; sum: number }> = {};
+    periodOrders.forEach((o) => {
+      m[o.status] = m[o.status] || { count: 0, sum: 0 };
+      m[o.status].count += 1;
+      m[o.status].sum += Number(o.total_amount);
+    });
+    return Object.entries(m);
+  }, [periodOrders]);
 
   return (
-    <AppShell title="Отчёты" section="Обзор" description="Финансовая аналитика: поступления, отгрузки, остатки по сортам и дебиторская задолженность.">
+    <AppShell title="Отчёты" section="Обзор" description="Бухгалтерская аналитика: выручка, поступления и долги за период.">
+      {/* Фильтры */}
+      <div className="mb-5 flex flex-wrap items-end gap-x-6 gap-y-3">
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[11px] font-medium text-[var(--muted-foreground)]">Период</span>
+          <PillGroup items={PERIODS} active={period} onChange={(k) => { setPeriod(k); setFrom(""); setTo(""); }} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[11px] font-medium text-[var(--muted-foreground)]">Группировка</span>
+          <PillGroup items={GROUPS} active={group} onChange={setGroup} />
+        </div>
+        <div className="flex items-end gap-3">
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[11px] font-medium text-[var(--muted-foreground)]">С даты</span>
+            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 w-[150px]" />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[11px] font-medium text-[var(--muted-foreground)]">По дату</span>
+            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 w-[150px]" />
+          </div>
+        </div>
+      </div>
+
       {/* KPI */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <MetricCard label="Поступило оплат" value={`${formatMoney(revenue)} ₸`} sub="всего по заказам" icon={Wallet} />
-        <MetricCard label="Отгружено" value={String(shipped)} sub="завершённых заказов" icon={Truck} />
-        <MetricCard label="Остаток" value={formatMoney(totalBags)} sub="мешков на складе" icon={Package} />
-        <MetricCard label="Активные" value={String(active)} sub="заказов в работе" icon={TrendingUp} />
+        <MetricCard label="Выручка" value={`${formatMoney(String(revenue))} ₸`} sub="заказов за период" icon={TrendingUp} accent />
+        <MetricCard label="Поступило" value={`${formatMoney(String(received))} ₸`} sub="оплат за период" icon={Wallet} />
+        <MetricCard label="Долг" value={`${formatMoney(String(debtTotal))} ₸`} sub={`${debtors.length} заказов`} icon={AlertCircle} />
+        <MetricCard label="Заказов" value={String(periodOrders.length)} sub="за период" icon={ClipboardList} />
       </div>
 
-      {/* Графики */}
-      <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-[380px_1fr]">
-        {/* радиальный — остатки по сортам */}
-        <Card className="rounded-2xl">
-          <CardHeader><CardTitle>Остатки по сортам</CardTitle></CardHeader>
-          <CardContent>
-            {radial.length === 0 ? (
-              <p className="py-16 text-center text-sm text-[var(--muted-foreground)]">Нет данных по складу.</p>
-            ) : (
-              <>
-                <ResponsiveContainer width="100%" height={240}>
-                  <RadialBarChart innerRadius="30%" outerRadius="100%" data={radial}
-                    startAngle={90} endAngle={-270}>
-                    <PolarAngleAxis type="number" domain={[0, radialMax]} tick={false} />
-                    <RadialBar background dataKey="value" cornerRadius={8} />
-                  </RadialBarChart>
-                </ResponsiveContainer>
-                <div className="mt-2 flex flex-col gap-1.5">
-                  {radial.map((r) => (
-                    <div key={r.name} className="flex items-center justify-between text-sm">
-                      <span className="flex items-center gap-2">
-                        <span className="size-2.5 rounded-full" style={{ background: r.fill }} />
-                        {r.name}
-                      </span>
-                      <span className="tabular-nums font-medium">{formatMoney(r.value)} меш.</span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* сплайн — оплаты/отгрузки по дням */}
-        <Card className="rounded-2xl">
-          <CardHeader><CardTitle>Динамика оплат и отгрузок</CardTitle></CardHeader>
-          <CardContent>
-            {series.length === 0 ? (
-              <p className="py-16 text-center text-sm text-[var(--muted-foreground)]">Пока нет операций для графика.</p>
-            ) : (
-              <ResponsiveContainer width="100%" height={260}>
-                <AreaChart data={series} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="pay" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#2563eb" stopOpacity={0.35} />
-                      <stop offset="100%" stopColor="#2563eb" stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="ship" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#f97316" stopOpacity={0.35} />
-                      <stop offset="100%" stopColor="#f97316" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                  <XAxis dataKey="day" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
-                  <YAxis yAxisId="l" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false}
-                    width={48} tickFormatter={(v) => (v >= 1000 ? `${v / 1000}k` : String(v))} />
-                  <Tooltip
-                    contentStyle={{ borderRadius: 12, border: "1px solid var(--border)", fontSize: 12 }}
-                    formatter={(v: number, n) => n === "payments" ? [`${formatMoney(v)} ₸`, "Оплаты"] : [v, "Отгрузки"]} />
-                  <Area yAxisId="l" type="monotone" dataKey="payments" stroke="#2563eb" strokeWidth={2.5} fill="url(#pay)" />
-                  <Area yAxisId="l" type="monotone" dataKey="shipments" stroke="#f97316" strokeWidth={2.5} fill="url(#ship)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Дебиторка */}
+      {/* График выручка/поступления */}
       <Card className="mt-6 rounded-2xl">
-        <CardHeader className="flex-row items-center gap-2">
-          <AlertCircle className="size-4 text-[var(--muted-foreground)]" />
-          <CardTitle>Дебиторская задолженность</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle>Выручка и поступления</CardTitle></CardHeader>
         <CardContent>
-          {debtors.length === 0 ? (
-            <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Долгов нет.</p>
+          {series.length === 0 ? (
+            <p className="py-16 text-center text-sm text-[var(--muted-foreground)]">Нет данных за выбранный период.</p>
           ) : (
-            <Table>
-              <THead><TR><TH>Заказ</TH><TH>Клиент</TH><TH>Разрешил долг</TH><TH>Сумма</TH><TH>Оплачено</TH><TH>Остаток</TH></TR></THead>
-              <TBody>
-                {debtors.map((o) => (
-                  <TR key={o.id}>
-                    <TD className="font-medium">#{o.id}</TD>
-                    <TD>{o.client_name || "—"}</TD>
-                    <TD className="text-[var(--muted-foreground)]">{o.debt_override_by_name || "—"}</TD>
-                    <TD className="tabular-nums">{formatMoney(o.total_amount)} ₸</TD>
-                    <TD className="tabular-nums">{formatMoney(o.paid_total)} ₸</TD>
-                    <TD className="tabular-nums font-medium text-[var(--destructive)]">
-                      {formatMoney(Number(o.total_amount) - Number(o.paid_total))} ₸
-                    </TD>
-                  </TR>
-                ))}
-                {debtors.length > 0 && (
-                  <TR>
-                    <TD colSpan={5} className="text-right font-medium">Итого долг</TD>
-                    <TD className="tabular-nums font-bold text-[var(--destructive)]">
-                      {formatMoney(String(debtors.reduce((s, o) => s + (Number(o.total_amount) - Number(o.paid_total)), 0)))} ₸
-                    </TD>
-                  </TR>
-                )}
-              </TBody>
-            </Table>
+            <ResponsiveContainer width="100%" height={300}>
+              <AreaChart data={series} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="rev" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="var(--ring)" stopOpacity={0.3} />
+                    <stop offset="100%" stopColor="var(--ring)" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="rcv" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="var(--success)" stopOpacity={0.3} />
+                    <stop offset="100%" stopColor="var(--success)" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} axisLine={false} tickLine={false}
+                  width={52} tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : String(v))} />
+                <Tooltip contentStyle={{ background: "var(--card)", borderRadius: 12, border: "1px solid var(--border)", fontSize: 12 }}
+                  formatter={(v: number, n) => [`${formatMoney(String(v))} ₸`, n === "revenue" ? "Выручка" : "Поступления"]} />
+                <Area type="monotone" dataKey="revenue" stroke="var(--ring)" strokeWidth={2.5} fill="url(#rev)" />
+                <Area type="monotone" dataKey="received" stroke="var(--success)" strokeWidth={2.5} fill="url(#rcv)" />
+              </AreaChart>
+            </ResponsiveContainer>
           )}
+          <div className="mt-2 flex gap-4 text-xs">
+            <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full" style={{ background: "var(--ring)" }} /> Выручка</span>
+            <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full" style={{ background: "var(--success)" }} /> Поступления</span>
+          </div>
         </CardContent>
       </Card>
+
+      {/* По статусам + долги */}
+      <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card className="rounded-2xl">
+          <CardHeader><CardTitle>По статусам заказов</CardTitle></CardHeader>
+          <CardContent>
+            {byStatus.length === 0 ? (
+              <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Нет заказов за период.</p>
+            ) : (
+              <Table>
+                <THead><TR><TH>Статус</TH><TH>Кол-во</TH><TH>Сумма</TH></TR></THead>
+                <TBody>
+                  {byStatus.map(([st, v]) => (
+                    <TR key={st}>
+                      <TD>{ORDER_STATUS_LABELS[st] ?? st}</TD>
+                      <TD className="tabular-nums">{v.count}</TD>
+                      <TD className="tabular-nums">{formatMoney(String(v.sum))} ₸</TD>
+                    </TR>
+                  ))}
+                </TBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-2xl">
+          <CardHeader className="flex-row items-center gap-2">
+            <AlertCircle className="size-4 text-[var(--muted-foreground)]" />
+            <CardTitle>Дебиторская задолженность</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {debtors.length === 0 ? (
+              <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Долгов нет.</p>
+            ) : (
+              <Table>
+                <THead><TR><TH>Заказ</TH><TH>Клиент</TH><TH>Разрешил</TH><TH>Остаток</TH></TR></THead>
+                <TBody>
+                  {debtors.map((o) => (
+                    <TR key={o.id}>
+                      <TD className="font-medium">#{o.id}</TD>
+                      <TD>{o.client_name || "—"}</TD>
+                      <TD className="text-[var(--muted-foreground)]">{o.debt_override_by_name || "—"}</TD>
+                      <TD className="tabular-nums font-medium text-[var(--destructive)]">
+                        {formatMoney(String(Number(o.total_amount) - Number(o.paid_total)))} ₸
+                      </TD>
+                    </TR>
+                  ))}
+                  <TR>
+                    <TD colSpan={3} className="text-right font-medium">Итого долг</TD>
+                    <TD className="tabular-nums font-bold text-[var(--destructive)]">{formatMoney(String(debtTotal))} ₸</TD>
+                  </TR>
+                </TBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </AppShell>
   );
 }
