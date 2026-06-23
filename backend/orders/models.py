@@ -4,14 +4,20 @@ from decimal import Decimal
 
 
 class Order(models.Model):
-    STATUSES = ["draft", "confirmed", "paid", "arrived", "loading", "loaded", "shipped", "cancelled"]
+    STATUSES = ["draft", "pending", "confirmed", "paid", "arrived",
+                "loading", "loaded", "shipped", "rejected", "cancelled"]
 
     client = models.ForeignKey(
         "clients.Client", on_delete=models.PROTECT, related_name="orders"
     )
     status = models.CharField(max_length=20, default="draft")
     truck_number = models.CharField(max_length=30, blank=True, default="")
+    truck_number_set_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="truck_numbers_set",
+    )
     arrival_date = models.DateField(null=True, blank=True)
+    debt_requested = models.BooleanField(default=False)
     debt_override = models.BooleanField(default=False)
     debt_override_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
@@ -29,7 +35,7 @@ class Order(models.Model):
 
     @property
     def paid_total(self) -> Decimal:
-        return sum((p.amount for p in self.payments.all()), Decimal("0"))
+        return sum((p.amount for p in self.payments.all() if p.status == "confirmed"), Decimal("0"))
 
     @property
     def is_fully_paid(self) -> bool:
@@ -43,9 +49,20 @@ class OrderItem(models.Model):
 
 
 class Payment(models.Model):
+    METHODS = ["cash", "card", "kaspi", "debt"]
+    STATUSES = ["pending", "confirmed", "rejected"]
+
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="payments")
     amount = models.DecimalField(max_digits=12, decimal_places=2)
+    method = models.CharField(max_length=10, default="cash")
+    status = models.CharField(max_length=10, default="confirmed")
     paid_at = models.DateTimeField(auto_now_add=True)
     recorded_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="recorded_payments",
     )
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="confirmed_payments",
+    )
+    confirmed_at = models.DateTimeField(null=True, blank=True)
