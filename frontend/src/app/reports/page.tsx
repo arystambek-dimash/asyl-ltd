@@ -168,12 +168,13 @@ export default function ReportsPage() {
             <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Долгов нет.</p>
           ) : (
             <Table>
-              <THead><TR><TH>Заказ</TH><TH>Клиент</TH><TH>Сумма</TH><TH>Оплачено</TH><TH>Остаток</TH></TR></THead>
+              <THead><TR><TH>Заказ</TH><TH>Клиент</TH><TH>Разрешил долг</TH><TH>Сумма</TH><TH>Оплачено</TH><TH>Остаток</TH></TR></THead>
               <TBody>
                 {debtors.map((o) => (
                   <TR key={o.id}>
                     <TD className="font-medium">#{o.id}</TD>
                     <TD>{o.client_name || "—"}</TD>
+                    <TD className="text-[var(--muted-foreground)]">{o.debt_override_by_name || "—"}</TD>
                     <TD className="tabular-nums">{formatMoney(o.total_amount)} ₸</TD>
                     <TD className="tabular-nums">{formatMoney(o.paid_total)} ₸</TD>
                     <TD className="tabular-nums font-medium text-[var(--destructive)]">
@@ -181,6 +182,14 @@ export default function ReportsPage() {
                     </TD>
                   </TR>
                 ))}
+                {debtors.length > 0 && (
+                  <TR>
+                    <TD colSpan={5} className="text-right font-medium">Итого долг</TD>
+                    <TD className="tabular-nums font-bold text-[var(--destructive)]">
+                      {formatMoney(String(debtors.reduce((s, o) => s + (Number(o.total_amount) - Number(o.paid_total)), 0)))} ₸
+                    </TD>
+                  </TR>
+                )}
               </TBody>
             </Table>
           )}
