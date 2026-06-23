@@ -8,7 +8,7 @@ from .serializers import CatalogProductSerializer, PortalOrderSerializer
 class PortalCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     serializer_class = CatalogProductSerializer
     permission_classes = [IsClientUser]
-    queryset = Product.objects.filter(is_active=True).select_related("grade", "packaging")
+    queryset = Product.objects.filter(is_active=True)
 
 
 class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,

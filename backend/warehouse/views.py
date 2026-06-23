@@ -8,7 +8,7 @@ from catalog.models import Product
 
 
 class StockViewSet(PermViewSetMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
-    queryset = StockItem.objects.select_related("product", "product__grade", "product__packaging")
+    queryset = StockItem.objects.select_related("product")
     serializer_class = StockItemSerializer
     required_perms = {"list": "warehouse.view"}
 
