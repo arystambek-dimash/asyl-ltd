@@ -25,6 +25,7 @@ import { Plus, Trash2, Search } from "lucide-react";
 import type { Order, Client, Product } from "@/lib/types";
 
 export default function OrdersPage() {
+  const router = useRouter();
   const { data: orders, loading, reload } = useApi<Order[]>("/orders/");
   const { me } = useAuth();
   const canCreate = can(me, "orders.create");
@@ -117,9 +118,11 @@ export default function OrdersPage() {
               </THead>
               <TBody>
                 {sorted.map((o) => (
-                  <TR key={o.id}>
+                  <TR key={o.id} className="cursor-pointer"
+                    onClick={() => router.push(`/orders/${o.id}`)}>
                     <TD className="font-medium">
-                      <Link href={`/orders/${o.id}`} className="hover:underline">#{o.id}</Link>
+                      <Link href={`/orders/${o.id}`} className="hover:underline"
+                        onClick={(e) => e.stopPropagation()}>#{o.id}</Link>
                     </TD>
                     <TD>{o.client_name || `Клиент #${o.client}`}</TD>
                     <TD className="font-medium tabular-nums">{o.truck_number ? formatPlate(o.truck_number) : "—"}</TD>

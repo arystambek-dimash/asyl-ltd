@@ -4,6 +4,7 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
   paid: "Оплачен",
   arrived: "Прибыл",
   loading: "Загрузка",
+  loaded: "Загружен",
   shipped: "Отгружен",
   cancelled: "Отменён",
 };
@@ -14,6 +15,7 @@ export const ORDER_STATUS_TONE: Record<string, "muted" | "primary" | "success" |
   paid: "primary",
   arrived: "warning",
   loading: "warning",
+  loaded: "primary",
   shipped: "success",
   cancelled: "destructive",
 };
