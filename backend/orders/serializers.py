@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import Order, OrderItem, Payment
+from .services import set_truck_number
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -91,3 +92,11 @@ class OrderSerializer(serializers.ModelSerializer):
         for item in items:
             OrderItem.objects.create(order=order, **item)
         return order
+
+    def update(self, instance, validated_data):
+        new_truck = validated_data.pop("truck_number", None)
+        user = self.context["request"].user
+        if new_truck is not None and new_truck != instance.truck_number:
+            set_truck_number(instance, new_truck, user)
+            instance.refresh_from_db()
+        return super().update(instance, validated_data)
