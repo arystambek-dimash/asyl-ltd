@@ -138,7 +138,11 @@ export default function OrdersPage() {
         </CardContent>
       </Card>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="Новый заказ" className="max-w-2xl">
+      <Modal open={open} onClose={() => setOpen(false)}
+        eyebrow="Работа · Заказ"
+        title="Новый заказ"
+        description="Клиент, позиции и плановая дата прибытия."
+        className="max-w-2xl">
         {open && <NewOrderForm onCancel={() => setOpen(false)}
           onDone={() => { setOpen(false); reload(); }} />}
       </Modal>
