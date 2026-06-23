@@ -16,6 +16,7 @@ export interface Client {
   id: number; first_name: string; last_name: string; phone: string;
   name: string; country: string;
   iin: string; bank: string; bank_account: string; user: number | null;
+  debt_total?: string;
 }
 export interface OrderItem { id?: number; product: number; product_label?: string; cv_class?: string; quantity: number; }
 export interface Order {
@@ -25,6 +26,7 @@ export interface Order {
   is_fully_paid: boolean; debt_override: boolean;
   weigh_in_kg?: string | null; weigh_out_kg?: string | null; net_weight_kg?: string | null;
   bags_loaded?: number; bag_estimate_kg?: string;
+  bag_weight_kg?: string; debt_override_by_name?: string | null;
   created_at: string;
 }
 export interface Payment {
