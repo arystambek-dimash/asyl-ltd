@@ -11,16 +11,23 @@ import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useApi } from "@/lib/use-api";
+import { useAuth } from "@/store/auth";
+import { can } from "@/lib/can";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
-import { Plus, Check, X } from "lucide-react";
+import { Plus, Check, X, Pencil, Trash2 } from "lucide-react";
 import type { Product } from "@/lib/types";
 
 export default function ProductsPage() {
   const { data: products, reload } = useApi<Product[]>("/products/");
+  const { me } = useAuth();
+  const canEdit = can(me, "catalog.edit");
+  const canDelete = can(me, "catalog.delete");
 
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<Product | null>(null);
   const [name, setName] = useState("");
   const [color, setColor] = useState("Red");
   const [weight, setWeight] = useState("50");
@@ -29,13 +36,37 @@ export default function ProductsPage() {
   const [busy, setBusy] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
   const [editPrice, setEditPrice] = useState("");
+  const [delItem, setDelItem] = useState<Product | null>(null);
+  const [delError, setDelError] = useState("");
+  const [delBusy, setDelBusy] = useState(false);
 
-  async function add(e: React.FormEvent) {
+  function openNew() {
+    setEditing(null); setName(""); setColor("Red"); setWeight("50"); setPrice("");
+    setError(""); setOpen(true);
+  }
+  function openEdit(p: Product) {
+    setEditing(p); setName(p.name); setColor(p.color);
+    setWeight(String(Number(p.weight_kg))); setPrice(p.price);
+    setError(""); setOpen(true);
+  }
+
+  async function save(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError("");
     try {
-      await api.post("/products/", { name, color, weight_kg: weight, price });
-      setName(""); setColor("Red"); setWeight("50"); setPrice(""); setOpen(false); reload();
+      const body = { name, color, weight_kg: weight, price };
+      if (editing) await api.patch(`/products/${editing.id}/`, body);
+      else await api.post("/products/", body);
+      setOpen(false); reload();
     } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
+  }
+
+  async function confirmDelete() {
+    if (!delItem) return;
+    setDelBusy(true); setDelError("");
+    try {
+      await api.delete(`/products/${delItem.id}/`);
+      setDelItem(null); reload();
+    } catch (e) { setDelError(apiError(e)); } finally { setDelBusy(false); }
   }
 
   async function savePrice(p: Product) {
@@ -66,7 +97,7 @@ export default function ProductsPage() {
   return (
     <AppShell title="Товары" section="Работа" description="Товары: сорт, цвет (тип) и фасовка. Управляйте ценами и активностью."
       actions={
-        <Button size="sm" onClick={() => { setError(""); setOpen(true); }}>
+        <Button size="sm" onClick={openNew}>
           <Plus className="size-4" /> <span className="hidden sm:inline">Создать товар</span>
         </Button>
       }>
@@ -111,9 +142,23 @@ export default function ProductsPage() {
                   <TD><Badge tone={p.is_active ? "success" : "muted"}>
                     {p.is_active ? "Активен" : "Скрыт"}</Badge></TD>
                   <TD>
-                    <Button size="sm" variant="outline" onClick={() => toggleActive(p)}>
-                      {p.is_active ? "Скрыть" : "Включить"}
-                    </Button>
+                    <div className="flex items-center justify-end gap-1">
+                      <Button size="sm" variant="outline" onClick={() => toggleActive(p)}>
+                        {p.is_active ? "Скрыть" : "Включить"}
+                      </Button>
+                      {canEdit && (
+                        <Button size="sm" variant="ghost" onClick={() => openEdit(p)} title="Изменить">
+                          <Pencil className="size-4" />
+                        </Button>
+                      )}
+                      {canDelete && (
+                        <Button size="sm" variant="ghost"
+                          className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                          onClick={() => { setDelError(""); setDelItem(p); }} title="Удалить">
+                          <Trash2 className="size-4" />
+                        </Button>
+                      )}
+                    </div>
                   </TD>
                 </TR>
               ))}
@@ -127,16 +172,17 @@ export default function ProductsPage() {
       </Card>
 
       <Modal open={open} onClose={() => setOpen(false)}
-        eyebrow="Номенклатура · Товар"
-        title="Новый товар"
+        eyebrow={editing ? "Номенклатура · Изменение" : "Номенклатура · Товар"}
+        title={editing ? "Изменить товар" : "Новый товар"}
         description="Сорт, цвет (тип) и фасовка."
         footer={
           <>
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
-            <Button type="submit" form="product-form" disabled={busy}>{busy ? "Создание…" : "Создать"}</Button>
+            <Button type="submit" form="product-form" disabled={busy}>
+              {busy ? "Сохранение…" : editing ? "Сохранить" : "Создать"}</Button>
           </>
         }>
-        <form id="product-form" onSubmit={add} className="flex flex-col gap-4">
+        <form id="product-form" onSubmit={save} className="flex flex-col gap-4">
           <Field label="Название">
             <Input value={name} autoFocus placeholder="напр. Высший сорт"
               onChange={(e) => setName(e.target.value)} required />
@@ -167,6 +213,16 @@ export default function ProductsPage() {
           )}
         </form>
       </Modal>
+
+      <ConfirmDialog
+        open={!!delItem}
+        onClose={() => setDelItem(null)}
+        title="Удалить товар?"
+        description={delItem ? `«${delItem.label}» будет удалён. Действие необратимо.` : ""}
+        busy={delBusy}
+        error={delError}
+        onConfirm={confirmDelete}
+      />
     </AppShell>
   );
 }
