@@ -8,10 +8,15 @@ class CatalogProductSerializer(serializers.ModelSerializer):
     weight_kg = serializers.DecimalField(
         max_digits=10, decimal_places=2, read_only=True
     )
+    available_bags = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
-        fields = ["id", "label", "price", "weight_kg"]
+        fields = ["id", "label", "price", "weight_kg", "available_bags"]
+
+    def get_available_bags(self, obj):
+        s = getattr(obj, "stock", None)
+        return s.bags if s and s.bags > 0 else 0
 
 
 class PortalOrderItemSerializer(serializers.ModelSerializer):

@@ -19,7 +19,9 @@ class Conflict(APIException):
 class PortalCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     serializer_class = CatalogProductSerializer
     permission_classes = [IsClientUser]
-    queryset = Product.objects.filter(is_active=True)
+    # Клиент видит/заказывает только товары, которые есть на складе (остаток > 0).
+    queryset = (Product.objects.filter(is_active=True, stock__bags__gt=0)
+                .select_related("stock"))
 
 
 class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,

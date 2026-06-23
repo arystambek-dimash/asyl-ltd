@@ -118,8 +118,10 @@ def record_shipment(order, weigh_out_kg, user):
                 continue
             deduct_stock(prod, int(n), user, allow_negative=True)
     else:
+        # Без видео — списываем по позициям заказа. Выезд должен пройти даже при
+        # нехватке (остаток уходит в минус с предупреждением в журнале).
         for item in order.items.select_related("product").all():
-            deduct_stock(item.product, item.quantity, user)
+            deduct_stock(item.product, item.quantity, user, allow_negative=True)
     shipment.weigh_out_kg = weigh_out_kg
     shipment.net_weight_kg = net
     shipment.shipped_at = timezone.now()
