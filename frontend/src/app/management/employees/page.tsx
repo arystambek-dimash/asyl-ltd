@@ -4,13 +4,13 @@ import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
+import { Field } from "@/components/ui/field";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
@@ -99,31 +99,60 @@ export default function EmployeesPage() {
         </Table>
       </CardContent></Card>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="Новый сотрудник" className="max-w-xl">
-        <form onSubmit={submit} className="grid grid-cols-1 gap-x-5 gap-y-5 sm:grid-cols-2">
-          <div className="grid gap-2"><Label>Имя</Label>
-            <Input value={form.first_name} required onChange={(e) => setForm({ ...form, first_name: e.target.value })} /></div>
-          <div className="grid gap-2"><Label>Фамилия</Label>
-            <Input value={form.last_name} required onChange={(e) => setForm({ ...form, last_name: e.target.value })} /></div>
-          <div className="grid gap-2"><Label>Логин</Label>
-            <Input value={form.username} required onChange={(e) => setForm({ ...form, username: e.target.value })} /></div>
-          <div className="grid gap-2"><Label>Пароль</Label>
-            <Input type="password" value={form.password} required minLength={6}
-              onChange={(e) => setForm({ ...form, password: e.target.value })} /></div>
-          <div className="grid gap-2"><Label>Телефон</Label>
-            <Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
-          <div className="grid gap-2"><Label>Должность</Label>
-            <Input value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} /></div>
-          <div className="grid gap-2 sm:col-span-2"><Label>Роль</Label>
-            <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
-              <option value="">Без роли</option>
-              {(roles ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </Select></div>
-          {error && <p className="text-sm text-[var(--destructive)] sm:col-span-2">{error}</p>}
-          <div className="flex justify-end gap-2 border-t pt-5 sm:col-span-2">
+      <Modal open={open} onClose={() => setOpen(false)}
+        eyebrow="Команда · Сотрудник"
+        title="Новый сотрудник"
+        description="Создайте аккаунт коллеге и выдайте доступ."
+        className="max-w-xl"
+        footer={
+          <>
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
-            <Button type="submit" disabled={busy}>{busy ? "Сохранение…" : "Создать"}</Button>
-          </div>
+            <Button type="submit" form="employee-form" disabled={busy}>{busy ? "Сохранение…" : "Создать"}</Button>
+          </>
+        }>
+        <form id="employee-form" onSubmit={submit} className="flex flex-col gap-5">
+          <section className="space-y-3">
+            <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Человек</h4>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field label="Имя">
+                <Input value={form.first_name} required onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
+              </Field>
+              <Field label="Фамилия">
+                <Input value={form.last_name} required onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
+              </Field>
+              <Field label="Логин">
+                <Input value={form.username} required onChange={(e) => setForm({ ...form, username: e.target.value })} />
+              </Field>
+              <Field label="Пароль">
+                <Input type="password" value={form.password} required minLength={6}
+                  onChange={(e) => setForm({ ...form, password: e.target.value })} />
+              </Field>
+            </div>
+          </section>
+
+          <section className="space-y-3 border-t border-[var(--border)] pt-4">
+            <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Должность</h4>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field label="Телефон">
+                <Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+              </Field>
+              <Field label="Должность">
+                <Input value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} />
+              </Field>
+            </div>
+          </section>
+
+          <section className="space-y-3 border-t border-[var(--border)] pt-4">
+            <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Роль</h4>
+            <Field label="Роль">
+              <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+                <option value="">Без роли</option>
+                {(roles ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </Select>
+            </Field>
+          </section>
+
+          {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
         </form>
       </Modal>
     </AppShell>
