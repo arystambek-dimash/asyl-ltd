@@ -1,11 +1,11 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Boxes, ClipboardList, Users, Truck,
-  ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings, Video,
+  ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings, Video, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { can } from "@/lib/can";
@@ -133,7 +133,7 @@ function NavGroup({ item }: { item: NavItem }) {
   );
 }
 
-export function Sidebar({ me }: { me: Me }) {
+function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void }) {
   const sections = me.is_client ? PORTAL_SECTIONS : STAFF_SECTIONS;
   const visible = sections
     .map((s) => ({ ...s, items: s.items.filter((i) => !i.perm || can(me, i.perm)) }))
@@ -142,7 +142,7 @@ export function Sidebar({ me }: { me: Me }) {
   const initials = me.username.slice(0, 2).toUpperCase();
 
   return (
-    <aside className="flex w-[248px] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)]">
+    <>
       {/* профиль вверху */}
       <div className="flex items-center gap-2.5 px-3 py-3">
         <Image src="/logo-mark.png" alt="ASYL-LTD" width={28} height={28}
@@ -156,7 +156,7 @@ export function Sidebar({ me }: { me: Me }) {
       </div>
 
       {/* навигация по группам */}
-      <nav className="flex flex-1 flex-col gap-5 overflow-y-auto px-3 pb-3">
+      <nav className="flex flex-1 flex-col gap-5 overflow-y-auto px-3 pb-3" onClick={onNavigate}>
         {visible.map((section) => (
           <div key={section.title} className="flex flex-col gap-0.5">
             <div className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--muted-foreground)]/70">
@@ -178,6 +178,51 @@ export function Sidebar({ me }: { me: Me }) {
         </span>
         <span>v1.0</span>
       </div>
-    </aside>
+    </>
+  );
+}
+
+export function Sidebar({
+  me, mobileOpen = false, onClose,
+}: { me: Me; mobileOpen?: boolean; onClose?: () => void }) {
+  const pathname = usePathname();
+
+  // Закрываем мобильную панель при смене маршрута.
+  useEffect(() => { onClose?.(); }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <>
+      {/* десктоп: постоянный сайдбар */}
+      <aside className="hidden w-[248px] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)] md:flex">
+        <SidebarContent me={me} />
+      </aside>
+
+      {/* мобайл: выезжающая панель с оверлеем */}
+      <div
+        className={cn("fixed inset-0 z-50 md:hidden", mobileOpen ? "" : "pointer-events-none")}
+        aria-hidden={!mobileOpen}
+      >
+        <div
+          className={cn("absolute inset-0 bg-black/50 transition-opacity",
+            mobileOpen ? "opacity-100" : "opacity-0")}
+          onClick={onClose}
+        />
+        <aside
+          className={cn(
+            "absolute inset-y-0 left-0 flex w-[248px] max-w-[80vw] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)] shadow-xl transition-transform",
+            mobileOpen ? "translate-x-0" : "-translate-x-full"
+          )}
+        >
+          <button
+            onClick={onClose}
+            className="absolute right-2 top-2 flex size-8 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)]/60"
+            aria-label="Закрыть меню"
+          >
+            <X className="size-4" />
+          </button>
+          <SidebarContent me={me} onNavigate={onClose} />
+        </aside>
+      </div>
+    </>
   );
 }

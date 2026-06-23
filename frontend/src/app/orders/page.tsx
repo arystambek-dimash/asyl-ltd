@@ -209,7 +209,7 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
         </Select>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="grid gap-2">
           <Label>Номер машины</Label>
           <LicensePlateInput value={truck} onChange={setTruck} />
@@ -231,7 +231,7 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
                 <option key={p.id} value={p.id}>{p.label} — {formatMoney(p.price)} ₸</option>
               ))}
             </Select>
-            <Input type="number" min="1" placeholder="Мешков" className="w-32" value={r.quantity}
+            <Input type="number" min="1" placeholder="Мешков" className="w-24 sm:w-32" value={r.quantity}
               onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, quantity: e.target.value } : x))} />
             <Button type="button" variant="ghost" size="icon"
               onClick={() => setRows(rows.length > 1 ? rows.filter((_, j) => j !== i) : rows)}>

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/store/auth";
 import { Sidebar } from "./sidebar";
@@ -22,6 +22,7 @@ export function AppShell({
 }) {
   const { me, loading, loadMe } = useAuth();
   const router = useRouter();
+  const [navOpen, setNavOpen] = useState(false);
 
   useEffect(() => {
     if (!me) loadMe();
@@ -44,10 +45,11 @@ export function AppShell({
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <Sidebar me={me} />
+      <Sidebar me={me} mobileOpen={navOpen} onClose={() => setNavOpen(false)} />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <Topbar me={me} title={title} section={section} actions={actions} />
-        <main className="flex-1 overflow-y-auto bg-[var(--background)] px-8 py-7">
+        <Topbar me={me} title={title} section={section} actions={actions}
+          onMenu={() => setNavOpen(true)} />
+        <main className="flex-1 overflow-y-auto bg-[var(--background)] px-4 py-5 sm:px-8 sm:py-7">
           <div className="animate-fade-up">
             {description && (
               <div className="mb-7">

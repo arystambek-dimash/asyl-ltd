@@ -52,7 +52,7 @@ function ShippingQueue() {
 export default function DashboardPage() {
   return (
     <AppShell title="Командный центр">
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_340px]">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_320px] xl:grid-cols-[1fr_340px]">
         {/* Камеры + очередь отгрузки — основной фокус */}
         <div className="flex min-w-0 flex-col gap-4">
           <CameraWall />

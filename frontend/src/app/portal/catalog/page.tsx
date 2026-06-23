@@ -22,7 +22,7 @@ export default function PortalCatalogPage() {
       {loading ? (
         <p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p>
       ) : (
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {(products ?? []).map((p) => (
             <Card key={p.id} className="p-6">
               <div className="font-medium">{p.label}</div>

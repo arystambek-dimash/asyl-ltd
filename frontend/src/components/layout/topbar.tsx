@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, type ReactNode } from "react";
-import { Bell, LogOut, Sun, Moon, Monitor } from "lucide-react";
+import { Bell, LogOut, Sun, Moon, Monitor, Menu } from "lucide-react";
 import { useAuth } from "@/store/auth";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -41,7 +41,7 @@ function ThemeToggle() {
   );
 }
 
-export function Topbar({ me, title, section, actions }: { me: Me; title: string; section?: string; actions?: ReactNode }) {
+export function Topbar({ me, title, section, actions, onMenu }: { me: Me; title: string; section?: string; actions?: ReactNode; onMenu?: () => void }) {
   const { logout } = useAuth();
   const router = useRouter();
   const roleText = me.is_client
@@ -51,16 +51,25 @@ export function Topbar({ me, title, section, actions }: { me: Me; title: string;
     : me.role_name || "Сотрудник";
 
   return (
-    <header className="flex h-16 items-center justify-between border-b px-8">
-      <div className="leading-tight">
-        {section && (
-          <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
-            {section}
-          </div>
-        )}
-        <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
+    <header className="flex h-16 items-center justify-between gap-2 border-b px-4 sm:px-8">
+      <div className="flex min-w-0 items-center gap-2">
+        <button
+          onClick={onMenu}
+          className="-ml-1 flex size-9 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--secondary)] md:hidden"
+          aria-label="Меню"
+        >
+          <Menu className="size-5" />
+        </button>
+        <div className="min-w-0 leading-tight">
+          {section && (
+            <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
+              {section}
+            </div>
+          )}
+          <h1 className="truncate text-base font-semibold tracking-tight sm:text-lg">{title}</h1>
+        </div>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 sm:gap-3">
         {actions}
         <ThemeToggle />
         <button className="relative text-[var(--muted-foreground)] hover:text-[var(--foreground)]">

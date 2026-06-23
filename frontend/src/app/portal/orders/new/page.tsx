@@ -59,7 +59,7 @@ export default function PortalNewOrderPage() {
                 </Select>
                 <Input type="number" min="1"
                   max={products?.find((p) => String(p.id) === r.product)?.available_bags || undefined}
-                  placeholder="Мешков" className="w-32" value={r.quantity}
+                  placeholder="Мешков" className="w-24 sm:w-32" value={r.quantity}
                   onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, quantity: e.target.value } : x))} />
                 <Button type="button" variant="ghost" size="icon"
                   onClick={() => setRows(rows.filter((_, j) => j !== i))}><Trash2 className="size-4" /></Button>
