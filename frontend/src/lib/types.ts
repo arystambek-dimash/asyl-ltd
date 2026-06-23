@@ -54,24 +54,6 @@ export interface Employee {
   phone: string; position: string; role: number | null; role_name: string | null;
   name: string; is_active: boolean;
 }
-export interface Camera {
-  id: number; name: string; camera_id: string;
-  kind: "entry" | "counter" | "exit" | "";
-  status: "pending" | "active";
-  api_key: string; response_template: string;
-  is_active: boolean; last_seen: string | null;
-}
-export interface WebhookCall {
-  id: number; camera: number; plate: string;
-  payload_bags: number | null; payload_weight: string | null;
-  matched_order: number | null; decision: string; reason: string; created_at: string;
-}
-export interface VideoJob {
-  id: number; order: number; status: "queued" | "processing" | "done" | "failed";
-  bags_counted: number; counts_by_class?: Record<string, number>;
-  error: string; video: string;
-  created_at: string; finished_at: string | null;
-}
 export interface EventLog {
   id: number; event_type: string; message: string;
   user: number | null; order: number | null; payload: Record<string, unknown>;

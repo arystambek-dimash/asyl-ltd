@@ -23,8 +23,8 @@ def make_user(db, django_user_model):
 
 @pytest.fixture
 def user_with_perms(make_user):
-    from rbac.models import Permission, Role
-    from employees.models import Employee
+    from apps.employees.models import Employee
+    from apps.rbac.models import Permission, Role
 
     def _make(username="emp", codes=()):
         user = make_user(username=username)
@@ -65,7 +65,8 @@ def boss(user_with_perms):
     return user_with_perms("boss", codes=[
         "shipping.view", "shipping.arrive", "shipping.load", "shipping.ship",
         "shipping.debt_override", "orders.view", "warehouse.view", "warehouse.adjust",
-        "catalog.view", "clients.view"])
+        "catalog.view", "clients.view", "employees.view", "employees.manage",
+        "rbac.view", "rbac.manage"])
 
 
 @pytest.fixture

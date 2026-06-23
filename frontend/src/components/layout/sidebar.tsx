@@ -5,13 +5,13 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Boxes, ClipboardList, Users, Truck,
-  ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings, Video, X,
+  ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { can } from "@/lib/can";
 import type { Me } from "@/lib/types";
 
-interface NavChild { href: string; label: string; }
+interface NavChild { href: string; label: string; perm?: string; }
 interface NavItem {
   href?: string;
   label: string;
@@ -43,12 +43,11 @@ const STAFF_SECTIONS: NavSection[] = [
     title: "Управление",
     items: [
       { href: "/events", label: "Журнал", icon: ScrollText, perm: "events.view" },
-      { href: "/management/cameras", label: "Камеры", icon: Video, perm: "cameras.view" },
       {
-        label: "Доступы", icon: Settings, perm: "employees.view",
+        label: "Доступы", icon: Settings,
         children: [
-          { href: "/management/employees", label: "Сотрудники" },
-          { href: "/management/roles", label: "Роли" },
+          { href: "/management/employees", label: "Сотрудники", perm: "employees.view" },
+          { href: "/management/roles", label: "Роли", perm: "rbac.view" },
         ],
       },
     ],
@@ -136,7 +135,14 @@ function NavGroup({ item }: { item: NavItem }) {
 function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void }) {
   const sections = me.is_client ? PORTAL_SECTIONS : STAFF_SECTIONS;
   const visible = sections
-    .map((s) => ({ ...s, items: s.items.filter((i) => !i.perm || can(me, i.perm)) }))
+    .map((s) => ({
+      ...s,
+      items: s.items
+        .map((i) => i.children
+          ? { ...i, children: i.children.filter((c) => !c.perm || can(me, c.perm)) }
+          : i)
+        .filter((i) => (!i.perm || can(me, i.perm)) && (!i.children || i.children.length > 0)),
+    }))
     .filter((s) => s.items.length > 0);
 
   const initials = me.username.slice(0, 2).toUpperCase();

@@ -1,11 +1,10 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { formatPlate } from "@/components/ui/license-plate-input";
 import { StatusBadge } from "@/components/status-badge";
 import { useApi } from "@/lib/use-api";
@@ -15,206 +14,10 @@ import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
 import {
   Truck, ChevronDown, User, Phone, Package, Scale, CheckCircle2, Circle,
-  AlertTriangle, Upload,
+  AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { Order, VideoJob } from "@/lib/types";
-
-// 6 классов мешков (совпадают с cv_class товаров и классами детектора).
-const CLASS_ORDER = ["Red_50", "Red_25", "Green_50", "Green_25", "Blue_50", "Blue_25"];
-const CLASS_META: Record<string, { label: string; dot: string }> = {
-  Red_50: { label: "Красный 50 кг", dot: "#dc2626" },
-  Red_25: { label: "Красный 25 кг", dot: "#dc2626" },
-  Green_50: { label: "Зелёный 50 кг", dot: "#16a34a" },
-  Green_25: { label: "Зелёный 25 кг", dot: "#16a34a" },
-  Blue_50: { label: "Синий 50 кг", dot: "#2563eb" },
-  Blue_25: { label: "Синий 25 кг", dot: "#2563eb" },
-};
-
-// Ожидание по заказу: cv_class → сколько мешков заказано.
-function expectedByClass(order: Order): Record<string, number> {
-  const exp: Record<string, number> = {};
-  for (const it of order.items) {
-    if (it.cv_class) exp[it.cv_class] = (exp[it.cv_class] ?? 0) + it.quantity;
-  }
-  return exp;
-}
-
-// Живой MJPEG-поток с авто-переподключением. Браузер сам не возобновляет
-// <img>-стрим после обрыва; здесь по onError перезагружаем src с cache-buster.
-function MjpegStream({ jobId }: { jobId: number }) {
-  const base = `${process.env.NEXT_PUBLIC_API_URL}/video-jobs/${jobId}/stream/`;
-  const [src, setSrc] = useState(`${base}?t=${Date.now()}`);
-  const [down, setDown] = useState(false);
-  const retry = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    // при смене задачи начинаем заново
-    setSrc(`${base}?t=${Date.now()}`);
-    setDown(false);
-    return () => { if (retry.current) clearTimeout(retry.current); };
-  }, [base]);
-
-  return (
-    <div className="relative w-full max-w-md">
-      <img
-        key={src}
-        src={src}
-        alt="Обработка видео"
-        className="w-full rounded-lg border bg-black/5"
-        onLoad={() => setDown(false)}
-        onError={() => {
-          setDown(true);
-          if (retry.current) clearTimeout(retry.current);
-          retry.current = setTimeout(() => setSrc(`${base}?t=${Date.now()}`), 1500);
-        }}
-      />
-      {down && (
-        <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/5 text-xs text-[var(--muted-foreground)]">
-          Переподключение к потоку…
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Разбивка «посчитано / заказано» по классам мешков.
-function BagBreakdown({ order, counts }: { order: Order; counts: Record<string, number> }) {
-  const expected = expectedByClass(order);
-  const keys = CLASS_ORDER.filter((k) => expected[k] || counts[k]);
-  if (keys.length === 0) {
-    const total = Object.values(counts).reduce((a, b) => a + b, 0);
-    return total > 0
-      ? <div className="text-center text-sm text-[var(--muted-foreground)]">
-          Классы не распознаны · всего {total}
-        </div>
-      : null;
-  }
-  return (
-    <div className="flex flex-col gap-1.5">
-      {keys.map((k) => {
-        const got = counts[k] ?? 0;
-        const exp = expected[k] ?? 0;
-        const done = exp > 0 && got >= exp;
-        const over = exp > 0 && got > exp;
-        return (
-          <div key={k} className="flex items-center gap-2 text-sm">
-            <span className="size-2.5 shrink-0 rounded-full" style={{ background: CLASS_META[k]?.dot }} />
-            <span className="flex-1">{CLASS_META[k]?.label ?? k}</span>
-            <span className={cn("tabular-nums font-medium",
-              over ? "text-[var(--warning)]" : done ? "text-[var(--success)]" : "text-[var(--foreground)]")}>
-              {got}{exp > 0 && <span className="text-[var(--muted-foreground)]"> / {exp}</span>}
-            </span>
-            {done && !over && <CheckCircle2 className="size-4 text-[var(--success)]" />}
-            {over && <AlertTriangle className="size-4 text-[var(--warning)]" />}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function VideoCounter({ order }: { order: Order }) {
-  const orderId = order.id;
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [job, setJob] = useState<VideoJob | null>(null);
-  const [bags, setBags] = useState<number | null>(null);
-  const [byClass, setByClass] = useState<Record<string, number>>({});
-  const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try {
-        const { data } = await api.get<VideoJob[]>(`/video-jobs/?order=${orderId}`);
-        if (alive && data.length) setJob(data[0]);
-      } catch { /* ignore */ }
-    };
-    tick();
-    const t = setInterval(tick, 2000);
-    return () => { alive = false; clearInterval(t); };
-  }, [orderId]);
-
-  useEffect(() => {
-    if (job?.status !== "processing") return;
-    let alive = true;
-    const cnt = async () => {
-      try {
-        const cams = await api.get("/cameras/");
-        const counter = (cams.data as { id: number; kind: string; status: string }[])
-          .find((c) => c.kind === "counter" && c.status === "active");
-        if (!counter) return;
-        const { data } = await api.get(`/count/${counter.id}/`);
-        if (alive) { setBags(data.bags); setByClass(data.by_class ?? {}); }
-      } catch { /* ignore */ }
-    };
-    cnt();
-    const t = setInterval(cnt, 1500);
-    return () => { alive = false; clearInterval(t); };
-  }, [job?.status]);
-
-  async function upload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true); setError("");
-    try {
-      const fd = new FormData();
-      fd.append("video", file);
-      await api.post(`/orders/${orderId}/upload-video/`, fd,
-        { headers: { "Content-Type": "multipart/form-data" } });
-    } catch (err) { setError(apiError(err)); } finally { setUploading(false); }
-    if (fileRef.current) fileRef.current.value = "";
-  }
-
-  const statusLabel: Record<string, string> = {
-    queued: "В очереди", processing: "Обработка…", done: "Готово", failed: "Ошибка",
-  };
-  const doneCounts = job?.counts_by_class ?? {};
-
-  return (
-    <div className="flex flex-col gap-2 rounded-lg border bg-[var(--card)] p-4">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">Видео загрузки</span>
-        {job && <Badge tone={job.status === "done" ? "success"
-          : job.status === "failed" ? "destructive"
-          : job.status === "processing" ? "warning" : "muted"}>
-          {statusLabel[job.status]}</Badge>}
-      </div>
-
-      {job?.status === "processing" && (
-        <div className="flex flex-col items-center gap-3">
-          {/* Живой поток с разметкой модели (MJPEG) с авто-переподключением. */}
-          <MjpegStream jobId={job.id} />
-          <div className="text-center">
-            <div className="text-4xl font-bold tabular-nums">{bags ?? 0}</div>
-            <div className="text-xs text-[var(--muted-foreground)]">мешков посчитано</div>
-          </div>
-          <div className="w-full max-w-md">
-            <BagBreakdown order={order} counts={byClass} />
-          </div>
-        </div>
-      )}
-      {job?.status === "done" && (
-        <div className="flex flex-col gap-2">
-          <p className="text-sm text-[var(--success)]">Готово: {job.bags_counted} мешков записано.</p>
-          <BagBreakdown order={order} counts={doneCounts} />
-        </div>
-      )}
-      {job?.status === "failed" && (
-        <p className="text-sm text-[var(--destructive)]">Ошибка обработки: {job.error || "—"}</p>
-      )}
-
-      <input ref={fileRef} type="file" accept="video/mp4,video/avi,video/quicktime"
-        className="hidden" onChange={upload} />
-      <Button size="sm" variant="outline" disabled={uploading}
-        onClick={() => fileRef.current?.click()}>
-        <Upload className="size-4" /> {uploading ? "Загрузка…" : "Загрузить видео"}
-      </Button>
-      {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
-    </div>
-  );
-}
+import type { Order } from "@/lib/types";
 
 const QUEUE_STATUSES = ["paid", "arrived", "loading", "loaded"];
 
@@ -317,6 +120,7 @@ function QueueRow({
 }) {
   const [weighIn, setWeighIn] = useState("");
   const [weighOut, setWeighOut] = useState("");
+  const [bags, setBags] = useState(order.bags_loaded ? String(order.bags_loaded) : "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const needsPayWarn = !order.is_fully_paid;
@@ -402,8 +206,7 @@ function QueueRow({
 
             {/* действие текущего шага */}
             <div className="flex flex-col gap-3 rounded-lg border bg-[var(--card)] p-4">
-              {/* Прибытие: номер уже в заказе, вес приходит датчиком (вебхук).
-                  Ручное поле веса — fallback для теста без датчика. */}
+              {/* Прибытие */}
               {(order.status === "paid" || order.status === "confirmed") && (
                 <>
                   <Label>Прибытие машины</Label>
@@ -411,7 +214,7 @@ function QueueRow({
                     Номер: <b className="text-[var(--foreground)] tabular-nums">
                       {order.truck_number ? formatPlate(order.truck_number) : "—"}</b>
                   </div>
-                  <Input type="number" placeholder="Вес въезда, кг (или с датчика)" value={weighIn}
+                  <Input type="number" placeholder="Вес въезда, кг" value={weighIn}
                     onChange={(e) => setWeighIn(e.target.value)} />
                   <Button disabled={busy || !weighIn}
                     onClick={() => act(() => api.post(`/orders/${order.id}/arrive/`, {
@@ -423,21 +226,29 @@ function QueueRow({
                 </>
               )}
 
-              {/* Прибыл: загрузка начинается с загрузки видео (start_loading). */}
+              {/* Прибыл: оператор фиксирует количество загруженных мешков. */}
               {order.status === "arrived" && (
                 <>
                   <Label>Загрузка</Label>
-                  <p className="text-xs text-[var(--muted-foreground)]">
-                    Загрузите видео — система начнёт считать мешки.
-                  </p>
-                  <VideoCounter order={order} />
+                  <Input type="number" min={0} placeholder="Количество мешков" value={bags}
+                    onChange={(e) => setBags(e.target.value)} />
+                  <Button disabled={busy || !bags}
+                    onClick={() => act(() => api.post(`/orders/${order.id}/load/`, { bags }))}>
+                    Начать загрузку
+                  </Button>
                 </>
               )}
 
-              {/* Идёт загрузка: живой счётчик + кнопка завершения. */}
+              {/* Идёт загрузка: можно обновить количество и завершить. */}
               {order.status === "loading" && (
                 <>
-                  <VideoCounter order={order} />
+                  <Label>Загрузка</Label>
+                  <Input type="number" min={0} placeholder="Количество мешков" value={bags}
+                    onChange={(e) => setBags(e.target.value)} />
+                  <Button disabled={busy || !bags} variant="outline"
+                    onClick={() => act(() => api.post(`/orders/${order.id}/load/`, { bags }))}>
+                    Сохранить мешки
+                  </Button>
                   <Button disabled={busy}
                     onClick={() => act(() => api.post(`/orders/${order.id}/finish-loading/`, {}))}>
                     Загрузка завершена

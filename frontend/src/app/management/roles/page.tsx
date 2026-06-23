@@ -15,7 +15,7 @@ import type { Role, Permission } from "@/lib/types";
 const SECTION_LABELS: Record<string, string> = {
   catalog: "Номенклатура", clients: "Клиенты", warehouse: "Склад", orders: "Заказы",
   payments: "Оплаты", shipping: "Пост отгрузки", events: "Журнал", reports: "Отчёты",
-  employees: "Сотрудники",
+  employees: "Сотрудники", rbac: "Доступы",
 };
 const ACTION_LABELS: Record<string, string> = {
   view: "просмотр", create: "создание", edit: "редакт.", delete: "удаление",
