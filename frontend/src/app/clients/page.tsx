@@ -22,7 +22,10 @@ import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { formatPhone } from "@/lib/utils";
 import { COUNTRIES } from "@/lib/countries";
-import { Plus } from "lucide-react";
+import { Plus, Pencil, Trash2 } from "lucide-react";
+import { useAuth } from "@/store/auth";
+import { can } from "@/lib/can";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { Client } from "@/lib/types";
 
 const schema = z.object({
@@ -40,11 +43,15 @@ const schema = z.object({
 });
 type FormValues = z.infer<typeof schema>;
 
-function ClientForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
+function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCancel: () => void; editing?: Client | null }) {
   const [serverError, setServerError] = useState("");
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: {
+    defaultValues: editing ? {
+      first_name: editing.first_name, last_name: editing.last_name, phone: editing.phone,
+      country: editing.country ?? "", iin: editing.iin ?? "",
+      bank: editing.bank ?? "", bank_account: editing.bank_account ?? "",
+    } : {
       first_name: "", last_name: "", phone: "", country: "",
       iin: "", bank: "", bank_account: "",
     },
@@ -53,7 +60,8 @@ function ClientForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
   async function onSubmit(values: FormValues) {
     setServerError("");
     try {
-      await api.post("/clients/", values);
+      if (editing) await api.patch(`/clients/${editing.id}/`, values);
+      else await api.post("/clients/", values);
       onDone();
     } catch (e) {
       setServerError(apiError(e));
@@ -171,10 +179,26 @@ function ClientForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
 
 export default function ClientsPage() {
   const { data: clients, reload } = useApi<Client[]>("/clients/");
+  const { me } = useAuth();
+  const canEdit = can(me, "clients.edit");
+  const canDelete = can(me, "clients.delete");
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<Client | null>(null);
   const [q, setQ] = useState("");
   const [sortKey, setSortKey] = useState("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [delItem, setDelItem] = useState<Client | null>(null);
+  const [delError, setDelError] = useState("");
+  const [delBusy, setDelBusy] = useState(false);
+
+  async function confirmDelete() {
+    if (!delItem) return;
+    setDelBusy(true); setDelError("");
+    try {
+      await api.delete(`/clients/${delItem.id}/`);
+      setDelItem(null); reload();
+    } catch (e) { setDelError(apiError(e)); } finally { setDelBusy(false); }
+  }
 
   const list = clients ?? [];
   const toggleSort = (k: string) => {
@@ -195,7 +219,7 @@ export default function ClientsPage() {
   return (
     <AppShell title="Клиенты" section="Работа" description="Справочник клиентов: контакты, страна и платёжные реквизиты."
       actions={
-        <Button size="sm" onClick={() => setOpen(true)}>
+        <Button size="sm" onClick={() => { setEditing(null); setOpen(true); }}>
           <Plus className="size-4" /> <span className="hidden sm:inline">Добавить клиента</span>
         </Button>
       }>
@@ -218,7 +242,7 @@ export default function ClientsPage() {
               <TR>
                 <SortableHeader label="Имя" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
                 <SortableHeader label="Телефон" sortKey="phone" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-                <TH>Страна</TH>
+                <TH>Страна</TH><TH></TH>
               </TR>
             </THead>
             <TBody>
@@ -227,10 +251,26 @@ export default function ClientsPage() {
                   <TD className="font-medium">{c.name}</TD>
                   <TD className="tabular-nums">{c.phone}</TD>
                   <TD>{c.country || "—"}</TD>
+                  <TD>
+                    <div className="flex items-center justify-end gap-1">
+                      {canEdit && (
+                        <Button size="sm" variant="ghost" onClick={() => { setEditing(c); setOpen(true); }} title="Изменить">
+                          <Pencil className="size-4" />
+                        </Button>
+                      )}
+                      {canDelete && (
+                        <Button size="sm" variant="ghost"
+                          className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                          onClick={() => { setDelError(""); setDelItem(c); }} title="Удалить">
+                          <Trash2 className="size-4" />
+                        </Button>
+                      )}
+                    </div>
+                  </TD>
                 </TR>
               ))}
               {sorted.length === 0 && (
-                <TR><TD colSpan={3} className="py-4 text-center text-[var(--muted-foreground)]">
+                <TR><TD colSpan={4} className="py-4 text-center text-[var(--muted-foreground)]">
                   Клиентов пока нет.</TD></TR>
               )}
             </TBody>
@@ -239,17 +279,28 @@ export default function ClientsPage() {
       </Card>
 
       <Modal open={open} onClose={() => setOpen(false)}
-        eyebrow="Работа · Клиент"
-        title="Новый клиент"
+        eyebrow={editing ? "Работа · Изменение" : "Работа · Клиент"}
+        title={editing ? "Изменить клиента" : "Новый клиент"}
         description="Контакты и платёжные реквизиты клиента."
         className="max-w-xl">
         {open && (
           <ClientForm
+            editing={editing}
             onCancel={() => setOpen(false)}
             onDone={() => { setOpen(false); reload(); }}
           />
         )}
       </Modal>
+
+      <ConfirmDialog
+        open={!!delItem}
+        onClose={() => setDelItem(null)}
+        title="Удалить клиента?"
+        description={delItem ? `«${delItem.name}» будет удалён. Действие необратимо.` : ""}
+        busy={delBusy}
+        error={delError}
+        onConfirm={confirmDelete}
+      />
     </AppShell>
   );
 }
