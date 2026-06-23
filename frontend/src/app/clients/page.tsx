@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/select-ui";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
-import { formatPhone } from "@/lib/utils";
+import { formatPhone, formatMoney } from "@/lib/utils";
 import { COUNTRIES } from "@/lib/countries";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { useAuth } from "@/store/auth";
@@ -242,7 +242,7 @@ export default function ClientsPage() {
               <TR>
                 <SortableHeader label="Имя" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
                 <SortableHeader label="Телефон" sortKey="phone" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-                <TH>Страна</TH><TH></TH>
+                <TH>Страна</TH><TH>Долг</TH><TH></TH>
               </TR>
             </THead>
             <TBody>
@@ -251,6 +251,11 @@ export default function ClientsPage() {
                   <TD className="font-medium">{c.name}</TD>
                   <TD className="tabular-nums">{c.phone}</TD>
                   <TD>{c.country || "—"}</TD>
+                  <TD className="tabular-nums">
+                    {Number(c.debt_total ?? 0) > 0
+                      ? <span className="font-medium text-[var(--destructive)]">{formatMoney(c.debt_total!)} ₸</span>
+                      : <span className="text-[var(--muted-foreground)]">—</span>}
+                  </TD>
                   <TD>
                     <div className="flex items-center justify-end gap-1">
                       {canEdit && (
@@ -270,7 +275,7 @@ export default function ClientsPage() {
                 </TR>
               ))}
               {sorted.length === 0 && (
-                <TR><TD colSpan={4} className="py-4 text-center text-[var(--muted-foreground)]">
+                <TR><TD colSpan={5} className="py-4 text-center text-[var(--muted-foreground)]">
                   Клиентов пока нет.</TD></TR>
               )}
             </TBody>
