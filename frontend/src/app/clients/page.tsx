@@ -113,7 +113,7 @@ function ClientForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
           </FormItem>
         )} />
 
-        <div className="sm:col-span-2 mt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+        <div className="sm:col-span-2 mt-1 border-t border-[var(--border)] pt-4 text-[12px] font-medium text-[var(--muted-foreground)]">
           Реквизиты
         </div>
 
@@ -238,7 +238,11 @@ export default function ClientsPage() {
         </CardContent>
       </Card>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="Новый клиент" className="max-w-xl">
+      <Modal open={open} onClose={() => setOpen(false)}
+        eyebrow="Работа · Клиент"
+        title="Новый клиент"
+        description="Контакты и платёжные реквизиты клиента."
+        className="max-w-xl">
         {open && (
           <ClientForm
             onCancel={() => setOpen(false)}

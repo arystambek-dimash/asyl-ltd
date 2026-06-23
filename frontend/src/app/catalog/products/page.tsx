@@ -4,7 +4,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Field } from "@/components/ui/field";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
@@ -126,42 +126,45 @@ export default function ProductsPage() {
         </CardContent>
       </Card>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="Новый товар">
-        <form onSubmit={add} className="flex flex-col gap-5">
-          <div className="grid gap-2">
-            <Label>Название</Label>
+      <Modal open={open} onClose={() => setOpen(false)}
+        eyebrow="Номенклатура · Товар"
+        title="Новый товар"
+        description="Сорт, цвет (тип) и фасовка."
+        footer={
+          <>
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
+            <Button type="submit" form="product-form" disabled={busy}>{busy ? "Создание…" : "Создать"}</Button>
+          </>
+        }>
+        <form id="product-form" onSubmit={add} className="flex flex-col gap-4">
+          <Field label="Название">
             <Input value={name} autoFocus placeholder="напр. Высший сорт"
               onChange={(e) => setName(e.target.value)} required />
+          </Field>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label="Цвет (тип)">
+              <Select value={color} onChange={(e) => setColor(e.target.value)}>
+                <option value="Red">Красный</option>
+                <option value="Green">Зелёный</option>
+                <option value="Blue">Синий</option>
+              </Select>
+            </Field>
+            <Field label="Фасовка">
+              <Select value={weight} onChange={(e) => setWeight(e.target.value)}>
+                <option value="50">50 кг</option>
+                <option value="25">25 кг</option>
+              </Select>
+            </Field>
           </div>
-          <div className="grid gap-2">
-            <Label>Цвет (тип)</Label>
-            <Select value={color} onChange={(e) => setColor(e.target.value)}>
-              <option value="Red">Красный</option>
-              <option value="Green">Зелёный</option>
-              <option value="Blue">Синий</option>
-            </Select>
-          </div>
-          <div className="grid gap-2">
-            <Label>Фасовка</Label>
-            <Select value={weight} onChange={(e) => setWeight(e.target.value)}>
-              <option value="50">50 кг</option>
-              <option value="25">25 кг</option>
-            </Select>
-          </div>
-          <div className="grid gap-2">
-            <Label>Цена за мешок, ₸</Label>
+          <Field label="Цена за мешок, ₸">
             <Input type="number" step="0.01" value={price}
               onChange={(e) => setPrice(e.target.value)} required />
-          </div>
+          </Field>
           {error && (
             <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
               {error}
             </p>
           )}
-          <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-end">
-            <Button type="button" variant="outline" className="w-full sm:w-auto sm:min-w-28" onClick={() => setOpen(false)}>Отмена</Button>
-            <Button type="submit" className="w-full sm:w-auto sm:min-w-28" disabled={busy}>{busy ? "Создание…" : "Создать"}</Button>
-          </div>
         </form>
       </Modal>
     </AppShell>
