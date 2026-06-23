@@ -40,6 +40,44 @@ function expectedByClass(order: Order): Record<string, number> {
   return exp;
 }
 
+// Живой MJPEG-поток с авто-переподключением. Браузер сам не возобновляет
+// <img>-стрим после обрыва; здесь по onError перезагружаем src с cache-buster.
+function MjpegStream({ jobId }: { jobId: number }) {
+  const base = `${process.env.NEXT_PUBLIC_API_URL}/video-jobs/${jobId}/stream/`;
+  const [src, setSrc] = useState(`${base}?t=${Date.now()}`);
+  const [down, setDown] = useState(false);
+  const retry = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    // при смене задачи начинаем заново
+    setSrc(`${base}?t=${Date.now()}`);
+    setDown(false);
+    return () => { if (retry.current) clearTimeout(retry.current); };
+  }, [base]);
+
+  return (
+    <div className="relative w-full max-w-md">
+      <img
+        key={src}
+        src={src}
+        alt="Обработка видео"
+        className="w-full rounded-lg border bg-black/5"
+        onLoad={() => setDown(false)}
+        onError={() => {
+          setDown(true);
+          if (retry.current) clearTimeout(retry.current);
+          retry.current = setTimeout(() => setSrc(`${base}?t=${Date.now()}`), 1500);
+        }}
+      />
+      {down && (
+        <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/5 text-xs text-[var(--muted-foreground)]">
+          Переподключение к потоку…
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Разбивка «посчитано / заказано» по классам мешков.
 function BagBreakdown({ order, counts }: { order: Order; counts: Record<string, number> }) {
   const expected = expectedByClass(order);
@@ -146,14 +184,8 @@ function VideoCounter({ order }: { order: Order }) {
 
       {job?.status === "processing" && (
         <div className="flex flex-col items-center gap-3">
-          {/* Живой поток с разметкой модели (MJPEG). Необязателен: при ошибке
-              картинка скрывается, число остаётся. */}
-          <img
-            src={`${process.env.NEXT_PUBLIC_API_URL}/video-jobs/${job.id}/stream/`}
-            alt="Обработка видео"
-            className="w-full max-w-md rounded-lg border bg-black/5"
-            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
-          />
+          {/* Живой поток с разметкой модели (MJPEG) с авто-переподключением. */}
+          <MjpegStream jobId={job.id} />
           <div className="text-center">
             <div className="text-4xl font-bold tabular-nums">{bags ?? 0}</div>
             <div className="text-xs text-[var(--muted-foreground)]">мешков посчитано</div>
