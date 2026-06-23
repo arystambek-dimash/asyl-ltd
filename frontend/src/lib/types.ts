@@ -21,16 +21,18 @@ export interface Client {
 export interface OrderItem { id?: number; product: number; product_label?: string; cv_class?: string; quantity: number; }
 export interface Order {
   id: number; client: number; client_name?: string; client_phone?: string;
-  status: string; truck_number: string; arrival_date?: string | null;
+  status: string; truck_number: string; truck_number_set_by?: number | null;
+  arrival_date?: string | null;
   items: OrderItem[]; total_amount: string; paid_total: string;
-  is_fully_paid: boolean; debt_override: boolean;
+  is_fully_paid: boolean; debt_override: boolean; debt_requested?: boolean;
   weigh_in_kg?: string | null; weigh_out_kg?: string | null; net_weight_kg?: string | null;
   bags_loaded?: number; bag_estimate_kg?: string;
   bag_weight_kg?: string; debt_override_by_name?: string | null;
   created_at: string;
 }
 export interface Payment {
-  id: number; order: number; amount: string; paid_at: string; recorded_by: number | null;
+  id: number; order: number; amount: string; method: string; status: string;
+  paid_at: string; recorded_by: number | null;
 }
 export interface StockItem {
   id: number; product: number; product_label: string;
