@@ -15,9 +15,12 @@ class CatalogProductSerializer(serializers.ModelSerializer):
 
 
 class PortalOrderItemSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(read_only=True)
+    product_label = serializers.CharField(source="product.__str__", read_only=True)
+
     class Meta:
         model = OrderItem
-        fields = ["product", "quantity"]
+        fields = ["id", "product", "product_label", "quantity"]
 
 
 class PortalOrderSerializer(serializers.ModelSerializer):
@@ -27,13 +30,14 @@ class PortalOrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ["id", "status", "items", "total_amount", "paid_total", "created_at"]
-        read_only_fields = ["status"]
+        fields = ["id", "status", "items", "total_amount", "paid_total",
+                  "truck_number", "debt_requested", "debt_override", "created_at"]
+        read_only_fields = ["status", "truck_number", "debt_requested", "debt_override"]
 
     def create(self, validated_data):
         items = validated_data.pop("items")
         client = self.context["request"].user.client_profile
-        order = Order.objects.create(client=client, status="draft")
+        order = Order.objects.create(client=client, status="pending")
         for item in items:
             OrderItem.objects.create(order=order, **item)
         return order

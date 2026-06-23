@@ -14,7 +14,7 @@ def _client_for(user):
     return Client.objects.create(first_name="Мой", last_name="К", phone="x", user=user)
 
 
-def test_client_creates_own_draft_order(auth_client, client_user):
+def test_client_creates_own_pending_order(auth_client, client_user):
     _client_for(client_user)
     prod = _product()
     resp = auth_client(client_user).post(
@@ -23,7 +23,7 @@ def test_client_creates_own_draft_order(auth_client, client_user):
     )
     assert resp.status_code == 201
     order = Order.objects.get()
-    assert order.status == "draft"
+    assert order.status == "pending"
     assert order.client.user_id == client_user.id
 
 

@@ -172,3 +172,11 @@ CAMERA_ENROLL_KEY = os.environ.get("CAMERA_ENROLL_KEY", "enroll-secret")
 
 # Redis — живой счёт мешков (INCR на каждый мешок, без обращений к БД).
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+
+# Реквизиты оплаты для клиентского портала (MVP — статичный Kaspi QR).
+PORTAL_PAYMENT_INFO = {
+    "kaspi_qr": os.environ.get("KASPI_QR", ""),  # URL картинки QR или payload-строка
+    "bank": os.environ.get("PORTAL_BANK", "Kaspi Bank"),
+    "account": os.environ.get("PORTAL_ACCOUNT", ""),
+    "instructions": "Отсканируйте QR в приложении Kaspi и переведите сумму к оплате.",
+}
