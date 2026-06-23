@@ -118,7 +118,11 @@ export default function CamerasPage() {
         </Table>
       </CardContent></Card>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="Новая камера" className="max-w-lg">
+      <Modal open={open} onClose={() => setOpen(false)}
+        eyebrow="Управление · Камера"
+        title="Новая камера"
+        description="Камера поста отгрузки и её ответ на вебхук."
+        className="max-w-lg">
         {createdKey ? (
           <div className="flex flex-col gap-4">
             <p className="text-sm">Камера создана. Сохраните ключ — он показывается один раз:</p>
@@ -155,7 +159,10 @@ export default function CamerasPage() {
       </Modal>
 
       <Modal open={!!bindCam} onClose={() => setBindCam(null)}
-        title={`Привязать камеру ${bindCam?.camera_id ?? ""}`} className="max-w-lg">
+        eyebrow="Управление · Привязка"
+        title={`Привязать камеру ${bindCam?.camera_id ?? ""}`}
+        description="Назначьте имя и тип обнаруженной камере."
+        className="max-w-lg">
         {bindKey ? (
           <div className="flex flex-col gap-4">
             <p className="text-sm">Камера привязана. Сохраните её ключ — он показывается один раз:</p>

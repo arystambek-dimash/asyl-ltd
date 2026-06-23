@@ -93,7 +93,10 @@ export default function RolesPage() {
       </div>
 
       <Modal open={open} onClose={() => setOpen(false)}
-        title={editing ? `Роль: ${editing.name}` : "Новая роль"} className="max-w-2xl">
+        eyebrow="Доступы · Роль"
+        title={editing ? `Роль: ${editing.name}` : "Новая роль"}
+        description="Название и набор прав по разделам."
+        className="max-w-2xl">
         <form onSubmit={save} className="flex flex-col gap-5">
           <div className="grid gap-2"><Label>Название роли</Label>
             <Input value={name} required onChange={(e) => setName(e.target.value)}
