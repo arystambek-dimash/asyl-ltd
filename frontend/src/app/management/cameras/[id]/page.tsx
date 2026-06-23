@@ -1,13 +1,18 @@
 "use client";
 import { use, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useApi } from "@/lib/use-api";
+import { useAuth } from "@/store/auth";
+import { can } from "@/lib/can";
 import { api, apiError } from "@/lib/api";
+import { Trash2 } from "lucide-react";
 import type { Camera, WebhookCall } from "@/lib/types";
 
 const VARS = ["camera_id", "decision", "allowed", "reason", "order_id",
@@ -23,6 +28,20 @@ export default function CameraDetailPage({ params }: { params: Promise<{ id: str
   const [simResult, setSimResult] = useState<unknown>(null);
   const [revealKey, setRevealKey] = useState("");
   const [error, setError] = useState("");
+  const router = useRouter();
+  const { me } = useAuth();
+  const canManage = can(me, "cameras.manage");
+  const [delOpen, setDelOpen] = useState(false);
+  const [delError, setDelError] = useState("");
+  const [delBusy, setDelBusy] = useState(false);
+
+  async function confirmDelete() {
+    setDelBusy(true); setDelError("");
+    try {
+      await api.delete(`/cameras/${id}/`);
+      router.push("/management/cameras");
+    } catch (e) { setDelError(apiError(e)); setDelBusy(false); }
+  }
 
   if (!cam) return <AppShell title="Камера"><p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p></AppShell>;
   const template = tpl ?? cam.response_template;
@@ -59,6 +78,13 @@ export default function CameraDetailPage({ params }: { params: Promise<{ id: str
             <div className="flex justify-between"><span className="text-[var(--muted-foreground)]">Ключ</span>
               <span className="font-mono text-xs">{revealKey || cam.api_key}</span></div>
             <Button size="sm" variant="outline" onClick={regenerate}>Перегенерировать ключ</Button>
+            {canManage && (
+              <Button size="sm" variant="ghost"
+                className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                onClick={() => { setDelError(""); setDelOpen(true); }}>
+                <Trash2 className="size-4" /> Удалить камеру
+              </Button>
+            )}
           </CardContent>
         </Card>
 
@@ -116,6 +142,16 @@ export default function CameraDetailPage({ params }: { params: Promise<{ id: str
           </Table>
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={delOpen}
+        onClose={() => setDelOpen(false)}
+        title="Удалить камеру?"
+        description={`Камера «${cam.name}» (${cam.camera_id}) будет удалена.`}
+        busy={delBusy}
+        error={delError}
+        onConfirm={confirmDelete}
+      />
     </AppShell>
   );
 }
