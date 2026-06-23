@@ -32,7 +32,9 @@ export default function PortalOrdersPage() {
               <TBody>
                 {(orders ?? []).map((o) => (
                   <TR key={o.id}>
-                    <TD className="font-medium">#{o.id}</TD>
+                    <TD className="font-medium">
+                      <Link href={`/portal/orders/${o.id}`} className="underline">#{o.id}</Link>
+                    </TD>
                     <TD className="tabular-nums">{formatMoney(o.total_amount)} ₸</TD>
                     <TD className="tabular-nums text-[var(--muted-foreground)]">{formatMoney(o.paid_total)} ₸</TD>
                     <TD><StatusBadge status={o.status} /></TD>
