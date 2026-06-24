@@ -12,26 +12,27 @@ import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
 import {
   Truck, ChevronDown, User, Phone, Package, Scale, CheckCircle2, Circle,
-  AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Order } from "@/lib/types";
 
 const QUEUE_STATUSES = ["confirmed", "arrived", "loading", "loaded"];
 
-// шаги жизненного цикла на посту (новый порядок: въезд → загрузка → выезд; оплата после отгрузки)
+// шаги жизненного цикла на посту: прибытие → начальный вес → загрузка → выезд
+// (оплата после отгрузки, на посту её нет)
 const STEPS = [
   { key: "confirmed", label: "Прибытие" },
-  { key: "arrived", label: "Загрузка" },
+  { key: "arrived", label: "Начальный вес" },
   { key: "loading", label: "Загрузка" },
   { key: "shipped", label: "Выезд" },
 ];
 function stepIndex(status: string) {
-  if (status === "confirmed") return 0;
-  if (status === "arrived") return 1; // машина въехала — можно грузить
-  if (status === "loaded") return 2;  // «Загрузка» завершена, ждём выезд
-  const i = STEPS.findIndex((s) => s.key === status);
-  return i < 0 ? 0 : i;
+  if (status === "confirmed") return 0; // прибыла, ждём взвешивания
+  if (status === "arrived") return 1;   // вес КАМАЗа зафиксирован, готова грузиться
+  if (status === "loading") return 2;   // идёт загрузка
+  if (status === "loaded") return 3;    // загрузка завершена, ждём выезд
+  if (status === "shipped") return 3;
+  return 0;
 }
 
 function Stepper({ status, compact = false }: { status: string; compact?: boolean }) {
@@ -182,12 +183,6 @@ function QueueRow({
                     <Scale className="size-4 text-[var(--muted-foreground)]" />
                     Вес КАМАЗа: <span className="tabular-nums font-medium">{formatMoney(order.weigh_in_kg)} кг</span>
                   </span>
-                </div>
-              )}
-              {order.status === "arrived" && (
-                <div className="flex items-center gap-2 rounded-md bg-[var(--warning)]/12 px-3 py-2 text-xs text-[var(--warning)]">
-                  <AlertTriangle className="size-4 shrink-0" />
-                  Ожидается оплата клиентом (или долг). Загрузка начнётся после оплаты.
                 </div>
               )}
             </div>
