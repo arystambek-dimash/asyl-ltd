@@ -105,7 +105,10 @@ def record_shipment(order, user):
     shipment.shipped_at = timezone.now()
     shipment.save()
     order.status = "shipped"
-    order.save(update_fields=["status"])
+    order.payment_status = "unpaid"
+    order.save(update_fields=["status", "payment_status"])
+    log_event("debt", f"Заказ отгружен в долг: {order.total_amount}", user=user, order=order,
+              payload={"amount": str(order.total_amount), "intent": order.settlement_intent})
     bag_estimate = sum(
         (i.quantity * i.product.weight_kg for i in order.items.all()), Decimal("0")
     )
