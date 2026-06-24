@@ -3,6 +3,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from apps.eventlog.services import log_event
+from apps.notifications.services import notify
 from .models import Order, Payment
 
 
@@ -154,4 +155,5 @@ def set_truck_number(order: Order, value: str, user) -> Order:
     order.save(update_fields=["truck_number", "truck_number_set_by"])
     log_event("status", f"Номер КАМАЗа: {value}", user=user, order=order,
               payload={"truck_number": value})
+    notify(order.client, f"Ваш КАМАЗ {value} отправляется")
     return order
