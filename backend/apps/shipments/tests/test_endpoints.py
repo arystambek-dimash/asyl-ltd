@@ -54,3 +54,11 @@ def test_finish_loading_wrong_status_400(boss):
     o = _order(boss, status="paid")  # оплачен, но загрузка не начата
     r = _client(boss).post(f"/api/orders/{o.id}/finish-loading/")
     assert r.status_code == 400
+
+
+def test_load_without_shipment_returns_400_and_keeps_status(boss):
+    o = _order(boss, status="paid")  # legacy/bad state: paid, but no arrival shipment
+    r = _client(boss).post(f"/api/orders/{o.id}/load/", {"bags": 10})
+    assert r.status_code == 400
+    o.refresh_from_db()
+    assert o.status == "paid"
