@@ -1,6 +1,7 @@
 .idea/
 __pycache__/
 *.pyc
+.pytest_cache/
 .env
 venv/
 .venv/
@@ -11,8 +12,3 @@ node_modules/
 # Python
 db.sqlite3
 backend/media/
-
-# CV model weights (большие, передаются отдельно)
-*.pt
-integrations/weights/
-.worker-venv/

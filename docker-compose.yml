@@ -33,7 +33,6 @@ services:
       REDIS_URL: "redis://redis:6379/0"
       SUPER_ADMIN_EMAIL: "${SUPER_ADMIN_EMAIL:-admin@asyl.local}"
       SUPER_ADMIN_PASS: "${SUPER_ADMIN_PASS:-admin12345}"
-      CAMERA_ENROLL_KEY: "${CAMERA_ENROLL_KEY:-enroll-secret}"
       SUPER_ADMIN_RESET_PASSWORD: "${SUPER_ADMIN_RESET_PASSWORD:-0}"
     depends_on:
       db:
