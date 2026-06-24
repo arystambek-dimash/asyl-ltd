@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from decimal import Decimal
-from .models import Client
+from .models import Client, Store
 
 
 class ClientSerializer(serializers.ModelSerializer):
@@ -19,3 +19,10 @@ class ClientSerializer(serializers.ModelSerializer):
                 continue
             total += o.total_amount - o.paid_total
         return str(total.quantize(Decimal("0.01")))
+
+
+class StoreSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Store
+        fields = ["id", "client", "name", "address", "phone",
+                  "payment_schedule_type", "payment_days", "contract_signed_at"]
