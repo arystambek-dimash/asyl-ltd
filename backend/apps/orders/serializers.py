@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Order, OrderItem, Payment
+from .models import Order, OrderItem, Payment, StatusChangeRequest
 from .services import set_truck_number
 
 
@@ -10,6 +10,23 @@ class OrderItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = OrderItem
         fields = ["id", "product", "product_label", "cv_class", "quantity"]
+
+
+class StatusChangeRequestSerializer(serializers.ModelSerializer):
+    requested_by_name = serializers.SerializerMethodField()
+    to_status_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StatusChangeRequest
+        fields = ["id", "order", "to_status", "to_status_label", "status",
+                  "requested_by", "requested_by_name", "decided_by",
+                  "created_at", "decided_at"]
+
+    def get_requested_by_name(self, obj):
+        return obj.requested_by.username if obj.requested_by else None
+
+    def get_to_status_label(self, obj):
+        return obj.to_status
 
 
 class PaymentSerializer(serializers.ModelSerializer):
@@ -36,6 +53,7 @@ class OrderSerializer(serializers.ModelSerializer):
     bag_estimate_kg = serializers.SerializerMethodField()
     bag_weight_kg = serializers.SerializerMethodField()
     debt_override_by_name = serializers.SerializerMethodField()
+    pending_status_requests = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -43,7 +61,7 @@ class OrderSerializer(serializers.ModelSerializer):
                   "payment_status", "settlement_intent",
                   "truck_number", "arrival_date", "items", "total_amount",
                   "paid_total", "remaining_amount", "is_fully_paid",
-                  "debt_override", "debt_override_by_name",
+                  "debt_override", "debt_override_by_name", "pending_status_requests",
                   "weigh_in_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at"]
         read_only_fields = ["debt_override"]
@@ -80,6 +98,10 @@ class OrderSerializer(serializers.ModelSerializer):
     def get_debt_override_by_name(self, obj):
         u = obj.debt_override_by
         return u.username if u else None
+
+    def get_pending_status_requests(self, obj):
+        qs = obj.status_requests.filter(status="pending")
+        return StatusChangeRequestSerializer(qs, many=True).data
 
     def create(self, validated_data):
         items = validated_data.pop("items")

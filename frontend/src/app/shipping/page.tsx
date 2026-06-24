@@ -17,19 +17,19 @@ import {
 import { cn } from "@/lib/utils";
 import type { Order } from "@/lib/types";
 
-const QUEUE_STATUSES = ["confirmed", "arrived", "paid", "loading", "loaded"];
+const QUEUE_STATUSES = ["confirmed", "arrived", "loading", "loaded"];
 
-// шаги жизненного цикла на посту (новый порядок: въезд → оплата → загрузка → выезд)
+// шаги жизненного цикла на посту (новый порядок: въезд → загрузка → выезд; оплата после отгрузки)
 const STEPS = [
   { key: "confirmed", label: "Прибытие" },
-  { key: "arrived", label: "Оплата" },
+  { key: "arrived", label: "Загрузка" },
   { key: "loading", label: "Загрузка" },
   { key: "shipped", label: "Выезд" },
 ];
 function stepIndex(status: string) {
   if (status === "confirmed") return 0;
-  if (status === "paid") return 2;   // оплачено — ждём загрузку
-  if (status === "loaded") return 2; // «Загрузка» завершена, ждём выезд
+  if (status === "arrived") return 1; // машина въехала — можно грузить
+  if (status === "loaded") return 2;  // «Загрузка» завершена, ждём выезд
   const i = STEPS.findIndex((s) => s.key === status);
   return i < 0 ? 0 : i;
 }
@@ -213,18 +213,8 @@ function QueueRow({
                 </>
               )}
 
-              {/* Прибыл — ждём оплату клиента (загрузка после оплаты). */}
+              {/* Машина въехала — оператор сразу начинает загрузку (оплата после отгрузки). */}
               {order.status === "arrived" && (
-                <>
-                  <Label>Оплата</Label>
-                  <p className="text-sm text-[var(--muted-foreground)]">
-                    Машина принята. Загрузка станет доступна после оплаты заказа клиентом.
-                  </p>
-                </>
-              )}
-
-              {/* Оплачен: оператор фиксирует количество и начинает загрузку. */}
-              {order.status === "paid" && (
                 <>
                   <Label>Загрузка</Label>
                   <Input type="number" min={0} placeholder="Количество мешков" value={bags}

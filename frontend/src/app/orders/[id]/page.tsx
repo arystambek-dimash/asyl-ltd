@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { StatusBadge } from "@/components/status-badge";
+import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import {
   ResponsiveContainer, RadialBarChart, RadialBar, PolarAngleAxis,
@@ -18,12 +19,12 @@ import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/utils";
-import { ORDER_STATUS_LABELS } from "@/lib/constants";
+import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { CheckCircle2, Circle } from "lucide-react";
 import type { Order, Payment } from "@/lib/types";
 
-const ORDER_STATUSES = ["draft", "confirmed", "arrived", "paid", "loading", "loaded", "shipped", "cancelled"];
-const LIFECYCLE = ["draft", "confirmed", "arrived", "paid", "loading", "loaded", "shipped"];
+const ORDER_STATUSES = ["draft", "pending", "confirmed", "arrived", "loading", "loaded", "shipped", "cancelled"];
+const LIFECYCLE = ["draft", "pending", "confirmed", "arrived", "loading", "loaded", "shipped"];
 
 function OrderStepper({ status }: { status: string }) {
   if (status === "cancelled") {
@@ -71,6 +72,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const isManager = can(me, "orders.confirm");
   const isAccountant = can(me, "payments.create");
   const canEditStatus = can(me, "orders.edit");
+  const canViewStatus = can(me, "orders.view");
   const [newStatus, setNewStatus] = useState("");
 
   async function act(fn: () => Promise<unknown>) {
@@ -102,7 +104,14 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               {order.client_name || "—"}{order.truck_number ? ` · ${order.truck_number}` : ""}
             </div>
           </div>
-          <StatusBadge status={order.status} dot />
+          <div className="flex items-center gap-2">
+            <StatusBadge status={order.status} dot />
+            {order.payment_status && (
+              <Badge tone={PAYMENT_STATUS_TONE[order.payment_status] ?? "muted"} dot>
+                {PAYMENT_STATUS_LABELS[order.payment_status] ?? order.payment_status}
+              </Badge>
+            )}
+          </div>
         </div>
         <div className="border-t pt-3"><OrderStepper status={order.status} /></div>
       </div>
@@ -162,7 +171,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     <span className={cn("tabular-nums font-medium", remaining > 0 && "text-[var(--destructive)]")}>
                       {formatMoney(String(remaining))} ₸</span>
                   </div>
-                  {isAccountant && remaining > 0 && (
+                  {isAccountant && remaining > 0 && order.status === "shipped" && (
                     <div className="mt-1 flex gap-2 border-t pt-3">
                       <Input type="number" placeholder="Сумма" value={amount}
                         onChange={(e) => setAmount(e.target.value)} />
@@ -172,6 +181,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                           setAmount("");
                         })}>Внести</Button>
                     </div>
+                  )}
+                  {isAccountant && remaining > 0 && order.status !== "shipped" && (
+                    <p className="mt-1 border-t pt-3 text-xs text-[var(--muted-foreground)]">
+                      Оплата станет доступна после отгрузки.
+                    </p>
                   )}
                 </div>
               </div>
@@ -224,31 +238,65 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           <Card>
             <CardHeader><CardTitle>Действия</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-2">
-              {isManager && order.status === "draft" && (
-                <Button variant="outline" disabled={busy}
-                  onClick={() => act(() => api.post(`/orders/${order.id}/confirm/`))}>
-                  Подтвердить заказ
-                </Button>
-              )}
-              {order.status === "paid" && (
-                <p className="text-sm text-[var(--success)]">Заказ оплачен, готов к отгрузке.</p>
+              {isManager && (order.status === "draft" || order.status === "pending") && (
+                <>
+                  <Button variant="outline" disabled={busy}
+                    onClick={() => act(() => api.post(`/orders/${order.id}/confirm/`))}>
+                    Подтвердить заказ
+                  </Button>
+                  {order.status === "pending" && (
+                    <Button size="sm" variant="ghost" disabled={busy}
+                      onClick={() => act(() => api.post(`/orders/${order.id}/reject/`))}>
+                      Отклонить
+                    </Button>
+                  )}
+                </>
               )}
               {order.status === "shipped" && (
-                <p className="text-sm text-[var(--muted-foreground)]">Заказ отгружен.</p>
+                <p className="text-sm text-[var(--muted-foreground)]">Заказ отгружен. Долг можно гасить во вкладке «Оплата».</p>
               )}
-              {!isManager && order.status === "draft" && (
+              {!isManager && (order.status === "draft" || order.status === "pending") && (
                 <p className="text-sm text-[var(--muted-foreground)]">Ожидает подтверждения менеджером.</p>
               )}
               {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
             </CardContent>
           </Card>
 
-          {canEditStatus && (
+          {/* Ожидающие запросы на ручную смену — одобряет держатель orders.edit */}
+          {canEditStatus && (order.pending_status_requests?.length ?? 0) > 0 && (
+            <Card>
+              <CardHeader><CardTitle>Запросы на смену статуса</CardTitle></CardHeader>
+              <CardContent className="flex flex-col gap-3">
+                {order.pending_status_requests!.map((req) => (
+                  <div key={req.id} className="flex flex-col gap-2 rounded-lg border p-3">
+                    <div className="text-sm">
+                      <span className="text-[var(--muted-foreground)]">{req.requested_by_name || "Оператор"} → </span>
+                      <span className="font-medium">{ORDER_STATUS_LABELS[req.to_status] ?? req.to_status}</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" disabled={busy}
+                        onClick={() => act(() => api.post(`/orders/${order.id}/status-requests/${req.id}/approve/`))}>
+                        Одобрить
+                      </Button>
+                      <Button size="sm" variant="ghost" disabled={busy}
+                        onClick={() => act(() => api.post(`/orders/${order.id}/status-requests/${req.id}/reject/`))}>
+                        Отклонить
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          {canViewStatus && (
             <Card>
               <CardHeader><CardTitle>Сменить статус</CardTitle></CardHeader>
               <CardContent className="flex flex-col gap-3">
                 <p className="text-xs text-[var(--muted-foreground)]">
-                  Ручная смена статуса для исправления ошибок.
+                  {canEditStatus
+                    ? "Ручная смена статуса для исправления ошибок."
+                    : "Ручная смена требует одобрения главного оператора — будет создан запрос."}
                 </p>
                 <div className="flex flex-col gap-1.5">
                   <Label>Новый статус</Label>
@@ -260,12 +308,15 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   </Select>
                 </div>
                 <Button size="sm" variant="outline"
-                  disabled={busy || !newStatus || newStatus === order.status}
+                  disabled={busy || (newStatus ? newStatus === order.status : true)}
                   onClick={() => act(async () => {
-                    await api.post(`/orders/${order.id}/set-status/`, { status: newStatus });
+                    const r = await api.post<{ applied: boolean }>(`/orders/${order.id}/set-status/`, { status: newStatus });
                     setNewStatus("");
+                    if (r.data?.applied === false) {
+                      setError("Запрос на смену статуса отправлен на одобрение.");
+                    }
                   })}>
-                  Применить
+                  {canEditStatus ? "Применить" : "Запросить смену"}
                 </Button>
               </CardContent>
             </Card>

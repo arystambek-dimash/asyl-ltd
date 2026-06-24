@@ -78,3 +78,25 @@ class Payment(models.Model):
         on_delete=models.SET_NULL, related_name="confirmed_payments",
     )
     confirmed_at = models.DateTimeField(null=True, blank=True)
+
+
+class StatusChangeRequest(models.Model):
+    STATUSES = ["pending", "approved", "rejected"]
+
+    order = models.ForeignKey(
+        Order, on_delete=models.CASCADE, related_name="status_requests")
+    to_status = models.CharField(max_length=20)
+    status = models.CharField(max_length=10, default="pending")
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="status_change_requests",
+    )
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="status_change_decisions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]

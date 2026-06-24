@@ -1,13 +1,12 @@
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.exceptions import ValidationError
 from apps.rbac.permissions import PermViewSetMixin
-from apps.eventlog.services import log_event
-from .models import Order, Payment
-from .serializers import OrderSerializer, PaymentSerializer
+from .models import Order, Payment, StatusChangeRequest
+from .serializers import OrderSerializer, PaymentSerializer, StatusChangeRequestSerializer
 from .services import (add_payment, confirm_order, reject_order,
-                       confirm_payment, reject_payment, approve_debt)
+                       confirm_payment, reject_payment, approve_debt,
+                       request_status_change, approve_status_change, reject_status_change)
 
 
 class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
@@ -18,7 +17,10 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "create": "orders.create", "update": "orders.edit",
         "partial_update": "orders.edit", "destroy": "orders.edit",
         "payments": "payments.create", "confirm": "orders.confirm",
-        "set_status": "orders.edit",
+        "set_status": "orders.view",
+        "status_requests": "orders.view",
+        "approve_status": "orders.edit",
+        "reject_status": "orders.edit",
         "reject": "orders.confirm",
         "confirm_payment": "payments.confirm",
         "reject_payment": "payments.confirm",
@@ -60,16 +62,32 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="set-status")
     def set_status(self, request, pk=None):
-        """Ручная смена статуса (право orders.edit) — для исправления ошибок."""
+        """Ручная смена статуса. orders.edit — сразу; иначе запрос на одобрение."""
         order = self.get_object()
-        new = request.data.get("status")
-        if new not in Order.STATUSES:
-            raise ValidationError({"detail": "Неизвестный статус", "code": "bad_status"})
-        old = order.status
-        order.status = new
-        order.save(update_fields=["status"])
-        log_event("status_override",
-                  f"Статус заказа изменён вручную: {old} → {new}",
-                  user=request.user, order=order,
-                  payload={"from": old, "to": new})
-        return Response(OrderSerializer(order, context={"request": request}).data)
+        result = request_status_change(order, request.data.get("status"), request.user)
+        order.refresh_from_db()
+        return Response({
+            "applied": result["applied"],
+            "order": OrderSerializer(order, context={"request": request}).data,
+            "request": (StatusChangeRequestSerializer(result["request"]).data
+                        if result["request"] else None),
+        }, status=200 if result["applied"] else 202)
+
+    @action(detail=True, methods=["get"], url_path="status-requests")
+    def status_requests(self, request, pk=None):
+        qs = self.get_object().status_requests.filter(status="pending")
+        return Response(StatusChangeRequestSerializer(qs, many=True).data)
+
+    @action(detail=True, methods=["post"],
+            url_path="status-requests/(?P<rid>[^/.]+)/approve")
+    def approve_status(self, request, pk=None, rid=None):
+        req = StatusChangeRequest.objects.get(pk=rid, order=self.get_object())
+        approve_status_change(req, request.user)
+        return Response(StatusChangeRequestSerializer(req).data)
+
+    @action(detail=True, methods=["post"],
+            url_path="status-requests/(?P<rid>[^/.]+)/reject")
+    def reject_status(self, request, pk=None, rid=None):
+        req = StatusChangeRequest.objects.get(pk=rid, order=self.get_object())
+        reject_status_change(req, request.user)
+        return Response(StatusChangeRequestSerializer(req).data)

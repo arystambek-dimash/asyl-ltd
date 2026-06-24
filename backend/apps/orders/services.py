@@ -6,7 +6,7 @@ from rest_framework.exceptions import ValidationError
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
 from apps.clients.services import is_payment_window_open
-from .models import Order, Payment
+from .models import Order, Payment, StatusChangeRequest
 
 
 @transaction.atomic
@@ -164,3 +164,66 @@ def set_truck_number(order: Order, value: str, user) -> Order:
               payload={"truck_number": value})
     notify(order.client, f"Ваш КАМАЗ {value} отправляется")
     return order
+
+
+def _can_edit_status(user) -> bool:
+    return bool(user) and not getattr(user, "is_client", False) and user.has_perm_code("orders.edit")
+
+
+@transaction.atomic
+def _force_set_status(order: Order, to_status: str, user) -> Order:
+    if to_status not in Order.STATUSES:
+        raise ValidationError({"detail": "Неизвестный статус", "code": "bad_status"})
+    old = order.status
+    order.status = to_status
+    order.save(update_fields=["status"])
+    log_event("status_override",
+              f"Статус заказа изменён вручную: {old} → {to_status}",
+              user=user, order=order, payload={"from": old, "to": to_status})
+    return order
+
+
+@transaction.atomic
+def request_status_change(order: Order, to_status: str, user) -> dict:
+    """Главный оператор (orders.edit) меняет сразу; остальные создают запрос."""
+    if to_status not in Order.STATUSES:
+        raise ValidationError({"detail": "Неизвестный статус", "code": "bad_status"})
+    if to_status == order.status:
+        raise ValidationError({"detail": "Статус уже такой", "code": "no_change"})
+    if _can_edit_status(user):
+        _force_set_status(order, to_status, user)
+        return {"applied": True, "request": None}
+    req = StatusChangeRequest.objects.create(
+        order=order, to_status=to_status, requested_by=user)
+    log_event("status_request",
+              f"Запрос ручной смены статуса: {order.status} → {to_status}",
+              user=user, order=order,
+              payload={"request_id": req.id, "from": order.status, "to": to_status})
+    return {"applied": False, "request": req}
+
+
+@transaction.atomic
+def approve_status_change(req: StatusChangeRequest, user) -> StatusChangeRequest:
+    if req.status != "pending":
+        raise ValidationError({"detail": "Запрос уже обработан", "code": "already_decided"})
+    _force_set_status(req.order, req.to_status, user)
+    req.status = "approved"
+    req.decided_by = user
+    req.decided_at = timezone.now()
+    req.save(update_fields=["status", "decided_by", "decided_at"])
+    log_event("status_request", "Запрос смены статуса одобрен", user=user, order=req.order,
+              payload={"request_id": req.id})
+    return req
+
+
+@transaction.atomic
+def reject_status_change(req: StatusChangeRequest, user) -> StatusChangeRequest:
+    if req.status != "pending":
+        raise ValidationError({"detail": "Запрос уже обработан", "code": "already_decided"})
+    req.status = "rejected"
+    req.decided_by = user
+    req.decided_at = timezone.now()
+    req.save(update_fields=["status", "decided_by", "decided_at"])
+    log_event("status_request", "Запрос смены статуса отклонён", user=user, order=req.order,
+              payload={"request_id": req.id})
+    return req

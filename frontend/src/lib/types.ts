@@ -19,12 +19,19 @@ export interface Client {
   debt_total?: string;
 }
 export interface OrderItem { id?: number; product: number; product_label?: string; cv_class?: string; quantity: number; }
+export interface StatusChangeRequest {
+  id: number; order: number; to_status: string; to_status_label?: string;
+  status: string; requested_by?: number | null; requested_by_name?: string | null;
+  decided_by?: number | null; created_at: string; decided_at?: string | null;
+}
 export interface Order {
-  id: number; client: number; client_name?: string; client_phone?: string;
-  status: string; truck_number: string; truck_number_set_by?: number | null;
+  id: number; client: number; store?: number | null; client_name?: string; client_phone?: string;
+  status: string; payment_status?: string; settlement_intent?: string;
+  truck_number: string; truck_number_set_by?: number | null;
   arrival_date?: string | null;
-  items: OrderItem[]; total_amount: string; paid_total: string;
+  items: OrderItem[]; total_amount: string; paid_total: string; remaining_amount?: string;
   is_fully_paid: boolean; debt_override: boolean; debt_requested?: boolean;
+  pending_status_requests?: StatusChangeRequest[];
   weigh_in_kg?: string | null;
   bags_loaded?: number; bag_estimate_kg?: string;
   bag_weight_kg?: string; debt_override_by_name?: string | null;
