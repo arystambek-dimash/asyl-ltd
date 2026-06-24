@@ -8,6 +8,7 @@ import { Select } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
+import { CollapsibleCard } from "@/components/ui/collapsible-card";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import {
   ResponsiveContainer, RadialBarChart, RadialBar, PolarAngleAxis,
@@ -92,6 +93,12 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const hasShipment = order.weigh_in_kg != null;
   const counted = order.bags_loaded ?? 0;
   const ordered = order.items.reduce((s, it) => s + Number(it.quantity), 0);
+
+  const isNew = order.status === "draft" || order.status === "pending";
+  // «Действия» имеет смысл, только если есть что показать в текущем состоянии.
+  const hasActions =
+    (isManager && isNew) || order.status === "shipped" || (!isManager && isNew);
+  const pendingReqs = order.pending_status_requests ?? [];
 
   return (
     <AppShell title={`Заказ #${order.id}`}>
@@ -235,10 +242,17 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             </Card>
           )}
 
-          <Card>
-            <CardHeader><CardTitle>Действия</CardTitle></CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              {isManager && (order.status === "draft" || order.status === "pending") && (
+          {/* Ошибки/уведомления всегда видны, не прячем под свёрнутую карточку */}
+          {error && (
+            <p className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-3 text-sm text-[var(--destructive)] shadow-card">
+              {error}
+            </p>
+          )}
+
+          {/* «Действия» — скрыта, если в текущем состоянии действий нет; иначе сворачиваемая (раскрыта) */}
+          {hasActions && (
+            <CollapsibleCard title="Действия" defaultOpen>
+              {isManager && isNew && (
                 <>
                   <Button variant="outline" disabled={busy}
                     onClick={() => act(() => api.post(`/orders/${order.id}/confirm/`))}>
@@ -255,71 +269,69 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               {order.status === "shipped" && (
                 <p className="text-sm text-[var(--muted-foreground)]">Заказ отгружен. Долг можно гасить во вкладке «Оплата».</p>
               )}
-              {!isManager && (order.status === "draft" || order.status === "pending") && (
+              {!isManager && isNew && (
                 <p className="text-sm text-[var(--muted-foreground)]">Ожидает подтверждения менеджером.</p>
               )}
-              {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
-            </CardContent>
-          </Card>
-
-          {/* Ожидающие запросы на ручную смену — одобряет держатель orders.edit */}
-          {canEditStatus && (order.pending_status_requests?.length ?? 0) > 0 && (
-            <Card>
-              <CardHeader><CardTitle>Запросы на смену статуса</CardTitle></CardHeader>
-              <CardContent className="flex flex-col gap-3">
-                {order.pending_status_requests!.map((req) => (
-                  <div key={req.id} className="flex flex-col gap-2 rounded-lg border p-3">
-                    <div className="text-sm">
-                      <span className="text-[var(--muted-foreground)]">{req.requested_by_name || "Оператор"} → </span>
-                      <span className="font-medium">{ORDER_STATUS_LABELS[req.to_status] ?? req.to_status}</span>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button size="sm" disabled={busy}
-                        onClick={() => act(() => api.post(`/orders/${order.id}/status-requests/${req.id}/approve/`))}>
-                        Одобрить
-                      </Button>
-                      <Button size="sm" variant="ghost" disabled={busy}
-                        onClick={() => act(() => api.post(`/orders/${order.id}/status-requests/${req.id}/reject/`))}>
-                        Отклонить
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
+            </CollapsibleCard>
           )}
 
-          {canViewStatus && (
-            <Card>
-              <CardHeader><CardTitle>Сменить статус</CardTitle></CardHeader>
-              <CardContent className="flex flex-col gap-3">
-                <p className="text-xs text-[var(--muted-foreground)]">
-                  {canEditStatus
-                    ? "Ручная смена статуса для исправления ошибок."
-                    : "Ручная смена требует одобрения главного оператора — будет создан запрос."}
-                </p>
-                <div className="flex flex-col gap-1.5">
-                  <Label>Новый статус</Label>
-                  <Select value={newStatus || order.status}
-                    onChange={(e) => setNewStatus(e.target.value)}>
-                    {ORDER_STATUSES.map((s) => (
-                      <option key={s} value={s}>{ORDER_STATUS_LABELS[s] ?? s}</option>
-                    ))}
-                  </Select>
+          {/* Ожидающие запросы на ручную смену — одобряет держатель orders.edit; раскрыты по умолчанию */}
+          {canEditStatus && pendingReqs.length > 0 && (
+            <CollapsibleCard
+              title="Запросы на смену статуса"
+              defaultOpen
+              badge={<Badge tone="warning">{pendingReqs.length}</Badge>}
+            >
+              {pendingReqs.map((req) => (
+                <div key={req.id} className="flex flex-col gap-2 rounded-lg border p-3">
+                  <div className="text-sm">
+                    <span className="text-[var(--muted-foreground)]">{req.requested_by_name || "Оператор"} → </span>
+                    <span className="font-medium">{ORDER_STATUS_LABELS[req.to_status] ?? req.to_status}</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button size="sm" disabled={busy}
+                      onClick={() => act(() => api.post(`/orders/${order.id}/status-requests/${req.id}/approve/`))}>
+                      Одобрить
+                    </Button>
+                    <Button size="sm" variant="ghost" disabled={busy}
+                      onClick={() => act(() => api.post(`/orders/${order.id}/status-requests/${req.id}/reject/`))}>
+                      Отклонить
+                    </Button>
+                  </div>
                 </div>
-                <Button size="sm" variant="outline"
-                  disabled={busy || (newStatus ? newStatus === order.status : true)}
-                  onClick={() => act(async () => {
-                    const r = await api.post<{ applied: boolean }>(`/orders/${order.id}/set-status/`, { status: newStatus });
-                    setNewStatus("");
-                    if (r.data?.applied === false) {
-                      setError("Запрос на смену статуса отправлен на одобрение.");
-                    }
-                  })}>
-                  {canEditStatus ? "Применить" : "Запросить смену"}
-                </Button>
-              </CardContent>
-            </Card>
+              ))}
+            </CollapsibleCard>
+          )}
+
+          {/* «Сменить статус» — сворачиваемая, по умолчанию свёрнута */}
+          {canViewStatus && (
+            <CollapsibleCard title="Сменить статус">
+              <p className="text-xs text-[var(--muted-foreground)]">
+                {canEditStatus
+                  ? "Ручная смена статуса для исправления ошибок."
+                  : "Ручная смена требует одобрения главного оператора — будет создан запрос."}
+              </p>
+              <div className="flex flex-col gap-1.5">
+                <Label>Новый статус</Label>
+                <Select value={newStatus || order.status}
+                  onChange={(e) => setNewStatus(e.target.value)}>
+                  {ORDER_STATUSES.map((s) => (
+                    <option key={s} value={s}>{ORDER_STATUS_LABELS[s] ?? s}</option>
+                  ))}
+                </Select>
+              </div>
+              <Button size="sm" variant="outline"
+                disabled={busy || (newStatus ? newStatus === order.status : true)}
+                onClick={() => act(async () => {
+                  const r = await api.post<{ applied: boolean }>(`/orders/${order.id}/set-status/`, { status: newStatus });
+                  setNewStatus("");
+                  if (r.data?.applied === false) {
+                    setError("Запрос на смену статуса отправлен на одобрение.");
+                  }
+                })}>
+                {canEditStatus ? "Применить" : "Запросить смену"}
+              </Button>
+            </CollapsibleCard>
           )}
         </div>
       </div>
