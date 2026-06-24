@@ -15,9 +15,8 @@ def _setup(boss, bags_in_stock=100):
     red = Product.objects.create(name="Высший", color="Red", weight_kg="50", price="25000")
     receive_stock(red, bags_in_stock, boss)
     c = Client.objects.create(first_name="L", last_name="К", phone="x")
-    o = Order.objects.create(client=c, status="paid", truck_number="01A123")
+    o = Order.objects.create(client=c, status="confirmed", truck_number="01A123")
     OrderItem.objects.create(order=o, product=red, quantity=50)
-    Payment.objects.create(order=o, amount=o.total_amount)
     return o, red
 
 
@@ -29,8 +28,12 @@ def test_deduct_allow_negative_goes_below_zero(boss):
 
 
 def test_shipment_deducts_by_order_items(boss, operator):
+    # Полный поток: confirmed → въезд → оплата → загрузка → выезд.
     o, red = _setup(boss, bags_in_stock=100)
     record_arrival(o, Decimal("8000"), operator)
+    Payment.objects.create(order=o, amount=o.total_amount)
+    from apps.orders.services import _maybe_mark_paid
+    _maybe_mark_paid(o, boss)
     start_loading(o, operator)
     record_count(o, 50, operator)
     finish_loading(o, operator)

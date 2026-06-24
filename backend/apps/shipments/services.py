@@ -8,26 +8,17 @@ from .models import Shipment
 
 
 @transaction.atomic
-def record_arrival(order, weigh_in_kg, user, debt_override=False):
-    if order.status not in ("confirmed", "paid"):
+def record_arrival(order, weigh_in_kg, user):
+    # Въезд разрешён без оплаты: машина заезжает, взвешивается, и только
+    # после этого клиент оплачивает (либо берёт в долг).
+    if order.status != "confirmed":
         raise ValidationError(
             {"detail": "Машину можно принять только для подтверждённого заказа",
              "code": "invalid_status"}
         )
-    if not order.is_fully_paid:
-        may_override = user is not None and user.has_perm_code("shipping.debt_override")
-        if not (debt_override and may_override):
-            raise ValidationError(
-                {"detail": "Заказ не оплачен — въезд запрещён", "code": "payment_required"}
-            )
-        order.debt_override = True
-        order.debt_override_by = user
-        log_event("debt_override",
-                  f"Отгрузка в долг разрешена ({user.username})",
-                  user=user, order=order)
     truck = order.truck_number
     order.status = "arrived"
-    order.save(update_fields=["status", "debt_override", "debt_override_by"])
+    order.save(update_fields=["status"])
     shipment, _ = Shipment.objects.get_or_create(
         order=order, defaults={"truck_number": truck}
     )
@@ -42,9 +33,9 @@ def record_arrival(order, weigh_in_kg, user, debt_override=False):
 
 @transaction.atomic
 def start_loading(order, user):
-    if order.status != "arrived":
+    if order.status != "paid":
         raise ValidationError(
-            {"detail": "Загрузку можно начать только после прибытия", "code": "invalid_status"}
+            {"detail": "Загрузку можно начать только после оплаты", "code": "invalid_status"}
         )
     order.status = "loading"
     order.save(update_fields=["status"])
@@ -54,7 +45,7 @@ def start_loading(order, user):
 
 @transaction.atomic
 def record_count(order, bags, user):
-    if order.status == "arrived":
+    if order.status == "paid":
         order.status = "loading"
         order.save(update_fields=["status"])
         log_event("loading_start", "Начата загрузка", user=user, order=order)

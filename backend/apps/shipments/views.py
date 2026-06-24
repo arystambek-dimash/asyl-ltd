@@ -24,7 +24,6 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
             self.get_object(),
             serializer.validated_data["weigh_in_kg"],
             request.user,
-            debt_override=serializer.validated_data["debt_override"],
         )
         return Response(ShipmentSerializer(shipment).data)
 

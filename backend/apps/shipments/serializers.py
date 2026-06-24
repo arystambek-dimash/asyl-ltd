@@ -4,7 +4,6 @@ from .models import Shipment
 
 class ArrivalSerializer(serializers.Serializer):
     weigh_in_kg = serializers.DecimalField(max_digits=12, decimal_places=2)
-    debt_override = serializers.BooleanField(required=False, default=False)
 
 
 class LoadSerializer(serializers.Serializer):

@@ -1,9 +1,9 @@
 export const ORDER_STATUS_LABELS: Record<string, string> = {
   draft: "Черновик",
   pending: "На рассмотрении",
-  confirmed: "Ожидает оплаты",
+  confirmed: "Ожидает въезда",
   paid: "Оплачен",
-  arrived: "Прибыл",
+  arrived: "Ожидает оплаты",
   loading: "Загрузка",
   loaded: "Загружен",
   shipped: "Отгружен",

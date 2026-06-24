@@ -8,8 +8,6 @@ import { Label } from "@/components/ui/label";
 import { formatPlate } from "@/components/ui/license-plate-input";
 import { StatusBadge } from "@/components/status-badge";
 import { useApi } from "@/lib/use-api";
-import { can } from "@/lib/can";
-import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
 import {
@@ -19,17 +17,18 @@ import {
 import { cn } from "@/lib/utils";
 import type { Order } from "@/lib/types";
 
-const QUEUE_STATUSES = ["paid", "arrived", "loading", "loaded"];
+const QUEUE_STATUSES = ["confirmed", "arrived", "paid", "loading", "loaded"];
 
-// шаги жизненного цикла на посту
+// шаги жизненного цикла на посту (новый порядок: въезд → оплата → загрузка → выезд)
 const STEPS = [
-  { key: "paid", label: "Оплачен" },
-  { key: "arrived", label: "Прибытие" },
+  { key: "confirmed", label: "Прибытие" },
+  { key: "arrived", label: "Оплата" },
   { key: "loading", label: "Загрузка" },
   { key: "shipped", label: "Выезд" },
 ];
 function stepIndex(status: string) {
   if (status === "confirmed") return 0;
+  if (status === "paid") return 2;   // оплачено — ждём загрузку
   if (status === "loaded") return 2; // «Загрузка» завершена, ждём выезд
   const i = STEPS.findIndex((s) => s.key === status);
   return i < 0 ? 0 : i;
@@ -73,13 +72,9 @@ function Stepper({ status, compact = false }: { status: string; compact?: boolea
 
 export default function ShippingPage() {
   const { data: orders, reload } = useApi<Order[]>("/orders/");
-  const { me } = useAuth();
-  const isBoss = can(me, "shipping.debt_override");
   const [openId, setOpenId] = useState<number | null>(null);
 
-  const queue = (orders ?? []).filter((o) =>
-    QUEUE_STATUSES.includes(o.status) || (o.status === "confirmed" && isBoss)
-  );
+  const queue = (orders ?? []).filter((o) => QUEUE_STATUSES.includes(o.status));
 
   return (
     <AppShell title="Пост отгрузки" section="Работа" description="Очередь машин на отгрузку: прибытие, загрузка, выезд и расчёт нетто по весам.">
@@ -92,13 +87,13 @@ export default function ShippingPage() {
       {queue.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-sm text-[var(--muted-foreground)]">
-            Нет машин в очереди. Заказы появляются здесь после оплаты.
+            Нет машин в очереди. Заказы появляются здесь после подтверждения.
           </CardContent>
         </Card>
       ) : (
         <div className="flex flex-col gap-3">
           {queue.map((o) => (
-            <QueueRow key={o.id} order={o} isBoss={!!isBoss}
+            <QueueRow key={o.id} order={o}
               open={openId === o.id}
               onToggle={() => setOpenId(openId === o.id ? null : o.id)}
               onChange={reload} />
@@ -113,16 +108,15 @@ export default function ShippingPage() {
 // Авторитетный расчёт делает бэкенд (eventlog); здесь — предпросмотр для оператора.
 
 function QueueRow({
-  order, isBoss, open, onToggle, onChange,
+  order, open, onToggle, onChange,
 }: {
-  order: Order; isBoss: boolean; open: boolean;
+  order: Order; open: boolean;
   onToggle: () => void; onChange: () => void;
 }) {
   const [weighIn, setWeighIn] = useState("");
   const [bags, setBags] = useState(order.bags_loaded ? String(order.bags_loaded) : "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const needsPayWarn = !order.is_fully_paid;
 
   async function act(fn: () => Promise<unknown>) {
     setBusy(true); setError("");
@@ -190,10 +184,10 @@ function QueueRow({
                   </span>
                 </div>
               )}
-              {needsPayWarn && order.status !== "shipped" && (
+              {order.status === "arrived" && (
                 <div className="flex items-center gap-2 rounded-md bg-[var(--warning)]/12 px-3 py-2 text-xs text-[var(--warning)]">
                   <AlertTriangle className="size-4 shrink-0" />
-                  Заказ не оплачен. {isBoss ? "Можно отгрузить в долг." : "Въезд запрещён без оплаты."}
+                  Ожидается оплата клиентом (или долг). Загрузка начнётся после оплаты.
                 </div>
               )}
             </div>
@@ -201,7 +195,7 @@ function QueueRow({
             {/* действие текущего шага */}
             <div className="flex flex-col gap-3 rounded-lg border bg-[var(--card)] p-4">
               {/* Прибытие */}
-              {(order.status === "paid" || order.status === "confirmed") && (
+              {order.status === "confirmed" && (
                 <>
                   <Label>Прибытие машины</Label>
                   <div className="text-sm text-[var(--muted-foreground)]">
@@ -213,15 +207,24 @@ function QueueRow({
                   <Button disabled={busy || !weighIn}
                     onClick={() => act(() => api.post(`/orders/${order.id}/arrive/`, {
                       weigh_in_kg: weighIn,
-                      debt_override: needsPayWarn && isBoss,
                     }))}>
-                    {needsPayWarn && isBoss ? "Принять (в долг)" : "Принять машину"}
+                    Принять машину
                   </Button>
                 </>
               )}
 
-              {/* Прибыл: оператор фиксирует количество загруженных мешков. */}
+              {/* Прибыл — ждём оплату клиента (загрузка после оплаты). */}
               {order.status === "arrived" && (
+                <>
+                  <Label>Оплата</Label>
+                  <p className="text-sm text-[var(--muted-foreground)]">
+                    Машина принята. Загрузка станет доступна после оплаты заказа клиентом.
+                  </p>
+                </>
+              )}
+
+              {/* Оплачен: оператор фиксирует количество и начинает загрузку. */}
+              {order.status === "paid" && (
                 <>
                   <Label>Загрузка</Label>
                   <Input type="number" min={0} placeholder="Количество мешков" value={bags}

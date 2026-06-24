@@ -27,7 +27,7 @@ def test_partial_payment_keeps_status(auth_client, accountant):
 
 
 def test_full_payment_sets_status_paid(auth_client, accountant):
-    o = _order()  # total 500
+    o = _order(status="arrived")  # total 500
     auth_client(accountant).post(
         f"/api/orders/{o.id}/payments/", {"amount": "500.00"}, format="json"
     )

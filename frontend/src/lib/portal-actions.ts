@@ -28,9 +28,10 @@ export type ClientStep = "pending" | "pay" | "rejected" | "truck" | "shipping" |
 
 export function clientStep(status: string): ClientStep {
   if (status === "pending" || status === "draft") return "pending";
-  if (status === "confirmed") return "pay";
   if (status === "rejected" || status === "cancelled") return "rejected";
-  if (status === "paid") return "truck";
+  // Новый порядок: подтверждён → ввод КАМАЗа, въезд → оплата, дальше склад.
+  if (status === "confirmed") return "truck";
+  if (status === "arrived") return "pay";
   if (status === "shipped") return "done";
-  return "shipping"; // arrived/loading/loaded
+  return "shipping"; // paid/loading/loaded
 }

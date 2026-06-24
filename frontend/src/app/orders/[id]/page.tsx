@@ -22,8 +22,8 @@ import { ORDER_STATUS_LABELS } from "@/lib/constants";
 import { CheckCircle2, Circle } from "lucide-react";
 import type { Order, Payment } from "@/lib/types";
 
-const ORDER_STATUSES = ["draft", "confirmed", "paid", "arrived", "loading", "loaded", "shipped", "cancelled"];
-const LIFECYCLE = ["draft", "confirmed", "paid", "arrived", "loading", "loaded", "shipped"];
+const ORDER_STATUSES = ["draft", "confirmed", "arrived", "paid", "loading", "loaded", "shipped", "cancelled"];
+const LIFECYCLE = ["draft", "confirmed", "arrived", "paid", "loading", "loaded", "shipped"];
 
 function OrderStepper({ status }: { status: string }) {
   if (status === "cancelled") {

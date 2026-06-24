@@ -43,8 +43,8 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     @action(detail=True, methods=["post"], url_path="request-debt")
     def request_debt(self, request, pk=None):
         order = self.get_object()
-        if order.status != "confirmed":
-            raise ValidationError({"detail": "Долг доступен только для подтверждённого заказа",
+        if order.status != "arrived":
+            raise ValidationError({"detail": "Долг доступен после въезда машины",
                                    "code": "invalid_status"})
         order.debt_requested = True
         order.save(update_fields=["debt_requested"])
@@ -54,8 +54,8 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     @action(detail=True, methods=["patch"], url_path="truck")
     def truck(self, request, pk=None):
         order = self.get_object()
-        if order.status != "paid":
-            raise Conflict({"detail": "Номер КАМАЗа доступен после оплаты",
+        if order.status != "confirmed":
+            raise Conflict({"detail": "Номер КАМАЗа доступен после подтверждения заказа",
                             "code": "invalid_status"})
         value = (request.data.get("truck_number") or "").strip()
         if not value:

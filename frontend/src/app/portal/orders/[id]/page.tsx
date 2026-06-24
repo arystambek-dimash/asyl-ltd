@@ -72,12 +72,15 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
           <Card>
             <CardHeader><CardTitle>Оплата · к оплате {formatMoney(remaining)} ₸</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-3">
+              <p className="text-sm text-[var(--muted-foreground)]">
+                Машина въехала и взвешена. Оплатите заказ или возьмите в долг.
+              </p>
               <div className="flex flex-wrap gap-2">
-                <Button disabled={busy} onClick={() => run(() => payOrder(order.id, "card"))}>Оплатил картой</Button>
+                <Button disabled={busy} onClick={() => run(() => requestDebt(order.id))}>Взять в долг</Button>
+                <Button disabled={busy} variant="outline" onClick={() => run(() => payOrder(order.id, "card"))}>Оплатил картой</Button>
                 <Button disabled={busy} variant="outline"
                   onClick={() => run(async () => { setInfo(await getPaymentInfo()); await payOrder(order.id, "kaspi"); })}>
                   Оплатить Kaspi QR</Button>
-                <Button disabled={busy} variant="secondary" onClick={() => run(() => requestDebt(order.id))}>Взять в долг</Button>
               </div>
               {info && (
                 <div className="rounded-md border p-3 text-sm">
@@ -97,6 +100,9 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
           <Card>
             <CardHeader><CardTitle>Отправка КАМАЗа</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-3">
+              <p className="text-sm text-[var(--muted-foreground)]">
+                Укажите номер КАМАЗа. После въезда и взвешивания машины вы сможете оплатить заказ.
+              </p>
               {order.truck_number && <p className="text-sm">Текущий номер: <b>{order.truck_number}</b></p>}
               <div className="flex gap-2">
                 <Input placeholder="Номер КАМАЗа" value={truck} onChange={(e) => setTruckVal(e.target.value)} />

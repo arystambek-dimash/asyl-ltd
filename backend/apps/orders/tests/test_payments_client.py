@@ -11,7 +11,7 @@ from apps.orders import services
 def order(db):
     c = Client.objects.create(first_name="A", last_name="B", phone="1")
     p = Product.objects.create(name="F", color="Red", weight_kg=Decimal("50"), price=Decimal("100"))
-    o = Order.objects.create(client=c, status="confirmed")
+    o = Order.objects.create(client=c, status="arrived")
     OrderItem.objects.create(order=o, product=p, quantity=2)  # total 200
     return o
 
@@ -21,7 +21,7 @@ def test_client_payment_is_pending_and_does_not_pay(order, make_user):
     assert pay.status == "pending"
     assert pay.amount == Decimal("200")
     order.refresh_from_db()
-    assert order.status == "confirmed"
+    assert order.status == "arrived"
 
 
 def test_confirm_payment_marks_order_paid(order, make_user):
@@ -31,12 +31,12 @@ def test_confirm_payment_marks_order_paid(order, make_user):
     assert order.status == "paid"
 
 
-def test_reject_payment_keeps_confirmed(order, make_user):
+def test_reject_payment_keeps_arrived(order, make_user):
     pay = services.create_client_payment(order, "card", make_user(client=True))
     services.reject_payment(pay, make_user(username="staff"))
     pay.refresh_from_db(); order.refresh_from_db()
     assert pay.status == "rejected"
-    assert order.status == "confirmed"
+    assert order.status == "arrived"
 
 
 def test_approve_debt_marks_paid(order, make_user):
@@ -46,7 +46,7 @@ def test_approve_debt_marks_paid(order, make_user):
     assert order.debt_override is True
 
 
-def test_client_payment_requires_confirmed(order, make_user):
-    order.status = "pending"; order.save()
+def test_client_payment_requires_arrived(order, make_user):
+    order.status = "confirmed"; order.save()
     with pytest.raises(ValidationError):
         services.create_client_payment(order, "card", make_user(client=True))

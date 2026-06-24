@@ -22,9 +22,10 @@ def add_payment(order: Order, amount, user, method="cash", status="confirmed") -
 
 @transaction.atomic
 def create_client_payment(order: Order, method: str, user) -> Payment:
-    if order.status != "confirmed":
+    # Оплата происходит после въезда машины (статус «arrived»).
+    if order.status != "arrived":
         raise ValidationError(
-            {"detail": "Оплата доступна только для подтверждённого заказа", "code": "invalid_status"})
+            {"detail": "Оплата доступна после въезда машины", "code": "invalid_status"})
     if method not in ("card", "kaspi"):
         raise ValidationError({"detail": "Недопустимый способ оплаты", "code": "bad_method"})
     remaining = order.total_amount - order.paid_total
@@ -69,16 +70,17 @@ def approve_debt(order: Order, user) -> Order:
 
 def _maybe_mark_paid(order: Order, user) -> None:
     order.refresh_from_db()
-    if order.status == "confirmed" and order.is_fully_paid:
+    if order.status == "arrived" and order.is_fully_paid:
         transition(order, "paid", user, "Заказ оплачен")
 
 
+# Новый порядок: подтверждение → въезд (без оплаты) → оплата → загрузка.
 ALLOWED_TRANSITIONS = {
     "draft": {"pending", "confirmed", "cancelled"},
     "pending": {"confirmed", "rejected", "cancelled"},
-    "confirmed": {"paid", "cancelled"},
-    "paid": {"arrived", "cancelled"},
-    "arrived": {"loading", "cancelled"},
+    "confirmed": {"arrived", "cancelled"},
+    "arrived": {"paid", "cancelled"},
+    "paid": {"loading", "cancelled"},
     "loading": {"loaded", "cancelled"},
     "loaded": {"shipped", "cancelled"},
 }

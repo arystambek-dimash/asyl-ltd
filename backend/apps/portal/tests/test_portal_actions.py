@@ -26,29 +26,34 @@ def test_create_order_is_pending(db, make_user, auth_client):
 
 
 def test_pay_creates_pending_payment(client_and_order, auth_client):
+    # Оплата доступна после въезда (статус "arrived").
     user, o = client_and_order
+    o.status = "arrived"; o.save()
     r = auth_client(user).post(f"/api/portal/orders/{o.id}/pay/", {"method": "kaspi"}, format="json")
     assert r.status_code == 201
     assert o.payments.filter(status="pending", method="kaspi").exists()
 
 
 def test_request_debt(client_and_order, auth_client):
+    # Долг доступен после въезда (статус "arrived").
     user, o = client_and_order
+    o.status = "arrived"; o.save()
     r = auth_client(user).post(f"/api/portal/orders/{o.id}/request-debt/")
     assert r.status_code == 200
     o.refresh_from_db(); assert o.debt_requested is True
 
 
-def test_truck_only_after_paid(client_and_order, auth_client):
-    user, o = client_and_order  # status confirmed, not paid
+def test_truck_blocked_before_confirmed(client_and_order, auth_client):
+    # КАМАЗ вводится на статусе "confirmed"; до этого (pending) — нельзя.
+    user, o = client_and_order
+    o.status = "pending"; o.save()
     r = auth_client(user).patch(f"/api/portal/orders/{o.id}/truck/",
                                 {"truck_number": "777"}, format="json")
     assert r.status_code == 409
 
 
-def test_truck_set_when_paid(client_and_order, auth_client):
-    user, o = client_and_order
-    o.status = "paid"; o.save()
+def test_truck_set_when_confirmed(client_and_order, auth_client):
+    user, o = client_and_order  # status confirmed
     r = auth_client(user).patch(f"/api/portal/orders/{o.id}/truck/",
                                 {"truck_number": "777ABC"}, format="json")
     assert r.status_code == 200

@@ -7,10 +7,11 @@ from apps.orders import services
 
 
 @pytest.fixture
-def confirmed_order(db):
+def arrived_order(db):
+    # В новом потоке оплата/долг доступны после въезда (статус "arrived").
     c = Client.objects.create(first_name="A", last_name="B", phone="1")
     p = Product.objects.create(name="F", color="Red", weight_kg=Decimal("50"), price=Decimal("100"))
-    o = Order.objects.create(client=c, status="confirmed")
+    o = Order.objects.create(client=c, status="arrived")
     OrderItem.objects.create(order=o, product=p, quantity=1)
     return o
 
@@ -23,16 +24,16 @@ def test_reject_endpoint(db, manager, auth_client):
     o.refresh_from_db(); assert o.status == "rejected"
 
 
-def test_confirm_payment_endpoint(confirmed_order, accountant, auth_client, make_user):
-    pay = services.create_client_payment(confirmed_order, "card", make_user(client=True))
+def test_confirm_payment_endpoint(arrived_order, accountant, auth_client, make_user):
+    pay = services.create_client_payment(arrived_order, "card", make_user(client=True))
     r = auth_client(accountant).post(
-        f"/api/orders/{confirmed_order.id}/payments/{pay.id}/confirm/")
+        f"/api/orders/{arrived_order.id}/payments/{pay.id}/confirm/")
     assert r.status_code == 200
-    confirmed_order.refresh_from_db(); assert confirmed_order.status == "paid"
+    arrived_order.refresh_from_db(); assert arrived_order.status == "paid"
 
 
-def test_approve_debt_endpoint(confirmed_order, boss, auth_client):
-    r = auth_client(boss).post(f"/api/orders/{confirmed_order.id}/approve-debt/")
+def test_approve_debt_endpoint(arrived_order, boss, auth_client):
+    r = auth_client(boss).post(f"/api/orders/{arrived_order.id}/approve-debt/")
     assert r.status_code == 200
-    confirmed_order.refresh_from_db()
-    assert confirmed_order.status == "paid" and confirmed_order.debt_override is True
+    arrived_order.refresh_from_db()
+    assert arrived_order.status == "paid" and arrived_order.debt_override is True
