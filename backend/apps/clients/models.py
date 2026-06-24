@@ -21,3 +21,20 @@ class Client(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class Store(models.Model):
+    SCHEDULE_TYPES = ["none", "monthly", "weekly"]
+
+    client = models.ForeignKey(
+        Client, on_delete=models.CASCADE, related_name="stores"
+    )
+    name = models.CharField(max_length=200)
+    address = models.CharField(max_length=300, blank=True, default="")
+    phone = models.CharField(max_length=50, blank=True, default="")
+    payment_schedule_type = models.CharField(max_length=20, default="none")
+    payment_days = models.JSONField(default=list, blank=True)
+    contract_signed_at = models.DateField(null=True, blank=True)
+
+    def __str__(self):
+        return self.name
