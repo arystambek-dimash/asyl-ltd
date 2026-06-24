@@ -34,5 +34,5 @@ def test_shipment_deducts_by_order_items(boss, operator):
     start_loading(o, operator)
     record_count(o, 50, operator)
     finish_loading(o, operator)
-    record_shipment(o, Decimal("10000"), operator)
+    record_shipment(o, operator)
     assert StockItem.objects.get(product=red).bags == 50  # 100 - 50 ordered

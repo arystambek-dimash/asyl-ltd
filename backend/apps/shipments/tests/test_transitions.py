@@ -71,17 +71,16 @@ def test_finish_loading_requires_loading(boss, operator):
     assert o.status == "loaded"
 
 
-def test_shipment_requires_loaded_and_computes_net(boss, operator):
+def test_shipment_requires_loaded(boss, operator):
     o, prod = _order(boss, status="paid")
     record_arrival(o, Decimal("8000"), operator)
     start_loading(o, operator)
     record_count(o, 50, operator)
     with pytest.raises(ValidationError):  # still loading, not loaded
-        record_shipment(o, Decimal("10500"), operator)
+        record_shipment(o, operator)
     finish_loading(o, operator)
-    record_shipment(o, Decimal("10500"), operator)
+    record_shipment(o, operator)
     o.refresh_from_db()
     assert o.status == "shipped"
-    assert o.shipment.net_weight_kg == Decimal("2500")
     from apps.warehouse.models import StockItem
     assert StockItem.objects.get(product=prod).bags == 50

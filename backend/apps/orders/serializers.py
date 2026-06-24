@@ -29,8 +29,6 @@ class OrderSerializer(serializers.ModelSerializer):
     client_name = serializers.CharField(source="client.name", read_only=True)
     client_phone = serializers.CharField(source="client.phone", read_only=True)
     weigh_in_kg = serializers.SerializerMethodField()
-    weigh_out_kg = serializers.SerializerMethodField()
-    net_weight_kg = serializers.SerializerMethodField()
     bags_loaded = serializers.SerializerMethodField()
     bag_estimate_kg = serializers.SerializerMethodField()
     bag_weight_kg = serializers.SerializerMethodField()
@@ -41,7 +39,7 @@ class OrderSerializer(serializers.ModelSerializer):
         fields = ["id", "client", "client_name", "client_phone", "status",
                   "truck_number", "arrival_date", "items", "total_amount",
                   "paid_total", "is_fully_paid", "debt_override", "debt_override_by_name",
-                  "weigh_in_kg", "weigh_out_kg", "net_weight_kg",
+                  "weigh_in_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at"]
         read_only_fields = ["debt_override"]
         extra_kwargs = {
@@ -55,14 +53,6 @@ class OrderSerializer(serializers.ModelSerializer):
     def get_weigh_in_kg(self, obj):
         s = self._shipment(obj)
         return str(s.weigh_in_kg) if s and s.weigh_in_kg is not None else None
-
-    def get_weigh_out_kg(self, obj):
-        s = self._shipment(obj)
-        return str(s.weigh_out_kg) if s and s.weigh_out_kg is not None else None
-
-    def get_net_weight_kg(self, obj):
-        s = self._shipment(obj)
-        return str(s.net_weight_kg) if s and s.net_weight_kg is not None else None
 
     def get_bags_loaded(self, obj):
         s = self._shipment(obj)

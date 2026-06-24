@@ -119,7 +119,6 @@ function QueueRow({
   onToggle: () => void; onChange: () => void;
 }) {
   const [weighIn, setWeighIn] = useState("");
-  const [weighOut, setWeighOut] = useState("");
   const [bags, setBags] = useState(order.bags_loaded ? String(order.bags_loaded) : "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -183,17 +182,12 @@ function QueueRow({
                   ))}
                 </div>
               </div>
-              {(order.weigh_in_kg || order.weigh_out_kg) && (
+              {order.weigh_in_kg && (
                 <div className="flex flex-wrap gap-4 border-t pt-3 text-sm">
-                  {order.weigh_in_kg && (
-                    <span className="flex items-center gap-1.5">
-                      <Scale className="size-4 text-[var(--muted-foreground)]" />
-                      Въезд: <span className="tabular-nums font-medium">{formatMoney(order.weigh_in_kg)} кг</span>
-                    </span>
-                  )}
-                  {order.net_weight_kg && (
-                    <span>Нетто: <span className="tabular-nums font-medium text-[var(--success)]">{formatMoney(order.net_weight_kg)} кг</span></span>
-                  )}
+                  <span className="flex items-center gap-1.5">
+                    <Scale className="size-4 text-[var(--muted-foreground)]" />
+                    Вес КАМАЗа: <span className="tabular-nums font-medium">{formatMoney(order.weigh_in_kg)} кг</span>
+                  </span>
                 </div>
               )}
               {needsPayWarn && order.status !== "shipped" && (
@@ -214,7 +208,7 @@ function QueueRow({
                     Номер: <b className="text-[var(--foreground)] tabular-nums">
                       {order.truck_number ? formatPlate(order.truck_number) : "—"}</b>
                   </div>
-                  <Input type="number" placeholder="Вес въезда, кг" value={weighIn}
+                  <Input type="number" placeholder="Вес КАМАЗа, кг" value={weighIn}
                     onChange={(e) => setWeighIn(e.target.value)} />
                   <Button disabled={busy || !weighIn}
                     onClick={() => act(() => api.post(`/orders/${order.id}/arrive/`, {
@@ -264,10 +258,8 @@ function QueueRow({
                     Посчитано мешков: <b className="text-[var(--foreground)] tabular-nums">
                       {order.bags_loaded ?? 0}</b>
                   </div>
-                  <Input type="number" placeholder="Вес выезда, кг" value={weighOut}
-                    onChange={(e) => setWeighOut(e.target.value)} />
-                  <Button disabled={busy || !weighOut}
-                    onClick={() => act(() => api.post(`/orders/${order.id}/ship/`, { weigh_out_kg: weighOut }))}>
+                  <Button disabled={busy}
+                    onClick={() => act(() => api.post(`/orders/${order.id}/ship/`, {}))}>
                     Отгрузить (выезд)
                   </Button>
                 </>
@@ -277,8 +269,8 @@ function QueueRow({
                 <>
                   <Label>Отгружено</Label>
                   <div className="text-sm">
-                    Нетто: <b className="tabular-nums text-[var(--success)]">
-                      {order.net_weight_kg ? `${formatMoney(order.net_weight_kg)} кг` : "—"}</b>
+                    Вес КАМАЗа: <b className="tabular-nums text-[var(--success)]">
+                      {order.weigh_in_kg ? `${formatMoney(order.weigh_in_kg)} кг` : "—"}</b>
                   </div>
                 </>
               )}

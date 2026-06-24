@@ -36,16 +36,17 @@ def test_boss_debt_override_allows_arrival(boss):
     assert o.debt_override is True
 
 
-def test_full_flow_deducts_stock_and_computes_net(boss, operator):
+def test_full_flow_deducts_stock(boss, operator):
     o, prod = _paid_order(boss, status="paid", bags_in_stock=100, qty=50)
     record_arrival(o, Decimal("8000"), operator)
     start_loading(o, operator)
     record_count(o, 50, operator)
     finish_loading(o, operator)
-    record_shipment(o, Decimal("10500"), operator)
+    record_shipment(o, operator)
     o.refresh_from_db()
     assert o.status == "shipped"
-    assert o.shipment.net_weight_kg == Decimal("2500")
+    assert o.shipment.weigh_in_kg == Decimal("8000")
+    assert o.shipment.shipped_at is not None
     from apps.warehouse.models import StockItem
     assert StockItem.objects.get(product=prod).bags == 50
 
@@ -56,6 +57,6 @@ def test_double_ship_rejected(boss, operator):
     start_loading(o, operator)
     record_count(o, 50, operator)
     finish_loading(o, operator)
-    record_shipment(o, Decimal("10500"), operator)
+    record_shipment(o, operator)
     with pytest.raises(ValidationError):
-        record_shipment(o, Decimal("10500"), operator)
+        record_shipment(o, operator)

@@ -25,7 +25,7 @@ export interface Order {
   arrival_date?: string | null;
   items: OrderItem[]; total_amount: string; paid_total: string;
   is_fully_paid: boolean; debt_override: boolean; debt_requested?: boolean;
-  weigh_in_kg?: string | null; weigh_out_kg?: string | null; net_weight_kg?: string | null;
+  weigh_in_kg?: string | null;
   bags_loaded?: number; bag_estimate_kg?: string;
   bag_weight_kg?: string; debt_override_by_name?: string | null;
   created_at: string;
@@ -40,8 +40,7 @@ export interface StockItem {
 }
 export interface Shipment {
   id: number; order: number; truck_number: string;
-  weigh_in_kg: string | null; weigh_out_kg: string | null;
-  net_weight_kg: string | null; bags_loaded: number;
+  weigh_in_kg: string | null; bags_loaded: number;
   arrived_at: string | null; shipped_at: string | null;
 }
 export interface Permission { id: number; code: string; section: string; action: string; label: string; }

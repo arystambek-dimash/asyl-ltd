@@ -87,10 +87,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const remaining = total - paid;
   const paidPct = total > 0 ? Math.min(100, Math.round((paid / total) * 100)) : 0;
 
-  const hasShipment = order.weigh_in_kg != null || order.weigh_out_kg != null;
-  const net = Number(order.net_weight_kg ?? 0);
-  const per = Number(order.bag_weight_kg ?? 0);
-  const byWeight = per > 0 ? Math.round(net / per) : 0;
+  const hasShipment = order.weigh_in_kg != null;
   const counted = order.bags_loaded ?? 0;
   const ordered = order.items.reduce((s, it) => s + Number(it.quantity), 0);
 
@@ -189,7 +186,6 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   <BarChart data={[
                     { name: "Заказано", value: ordered, fill: "var(--muted-foreground)" },
                     { name: "Камера", value: counted, fill: "var(--ring)" },
-                    { name: "По весу", value: byWeight, fill: "var(--success)" },
                   ]} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                     <XAxis dataKey="name" tick={{ fontSize: 12, fill: "var(--muted-foreground)" }} />
@@ -197,14 +193,14 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     <Tooltip cursor={{ fill: "var(--muted)", opacity: 0.4 }}
                       contentStyle={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
                     <Bar dataKey="value" radius={[6, 6, 0, 0]}>
-                      {["a", "b", "c"].map((k, i) => (
-                        <Cell key={k} fill={["var(--muted-foreground)", "var(--ring)", "var(--success)"][i]} />
+                      {["a", "b"].map((k, i) => (
+                        <Cell key={k} fill={["var(--muted-foreground)", "var(--ring)"][i]} />
                       ))}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
                 <p className="mt-2 text-xs text-[var(--muted-foreground)]">
-                  Камера посчитала {counted} меш.; по весу груза отгружено {byWeight} меш.; заказано {ordered} меш.
+                  Камера посчитала {counted} меш.; заказано {ordered} меш.
                 </p>
               </CardContent>
             </Card>
@@ -215,19 +211,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         <div className="flex flex-col gap-6">
           {hasShipment && (
             <Card>
-              <CardHeader><CardTitle>Веса</CardTitle></CardHeader>
+              <CardHeader><CardTitle>Вес</CardTitle></CardHeader>
               <CardContent className="flex flex-col gap-2">
                 <div className="flex justify-between text-sm">
-                  <span className="text-[var(--muted-foreground)]">Вес въезда</span>
+                  <span className="text-[var(--muted-foreground)]">Вес КАМАЗа</span>
                   <span className="tabular-nums font-medium">{order.weigh_in_kg ? `${formatMoney(order.weigh_in_kg)} кг` : "—"}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-[var(--muted-foreground)]">Вес выезда</span>
-                  <span className="tabular-nums font-medium">{order.weigh_out_kg ? `${formatMoney(order.weigh_out_kg)} кг` : "—"}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-[var(--muted-foreground)]">Вес груза</span>
-                  <span className="tabular-nums font-bold text-[var(--success)]">{net ? `${formatMoney(String(net))} кг` : "—"}</span>
                 </div>
               </CardContent>
             </Card>

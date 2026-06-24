@@ -85,20 +85,18 @@ def finish_loading(order, user):
 
 
 @transaction.atomic
-def record_shipment(order, weigh_out_kg, user):
+def record_shipment(order, user):
     if order.status != "loaded":
         raise ValidationError(
             {"detail": "Выезд возможен только после завершения загрузки",
              "code": "invalid_status"}
         )
     shipment = order.shipment
-    net = abs(Decimal(weigh_out_kg) - shipment.weigh_in_kg)
+    # Выезд не взвешивается — просто фиксируем отгрузку.
     # Списываем по позициям заказа. Выезд должен пройти даже при нехватке:
     # остаток уходит в минус с предупреждением в журнале.
     for item in order.items.select_related("product").all():
         deduct_stock(item.product, item.quantity, user, allow_negative=True)
-    shipment.weigh_out_kg = weigh_out_kg
-    shipment.net_weight_kg = net
     shipment.shipped_at = timezone.now()
     shipment.save()
     order.status = "shipped"
@@ -106,8 +104,8 @@ def record_shipment(order, weigh_out_kg, user):
     bag_estimate = sum(
         (i.quantity * i.product.weight_kg for i in order.items.all()), Decimal("0")
     )
-    log_event("shipment", f"Выезд, нетто {net} кг", user=user, order=order,
-              payload={"net_weight_kg": str(net),
-                       "bag_estimate_kg": str(bag_estimate),
-                       "discrepancy_kg": str(net - bag_estimate)})
+    log_event("shipment", f"Машина {shipment.truck_number} выехала",
+              user=user, order=order,
+              payload={"bags_loaded": shipment.bags_loaded,
+                       "bag_estimate_kg": str(bag_estimate)})
     return shipment

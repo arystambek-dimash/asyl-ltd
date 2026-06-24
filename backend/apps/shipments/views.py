@@ -3,7 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from apps.orders.models import Order
 from apps.rbac.permissions import PermViewSetMixin
-from .serializers import ArrivalSerializer, LoadSerializer, ShipSerializer, ShipmentSerializer
+from .serializers import ArrivalSerializer, LoadSerializer, ShipmentSerializer
 from .services import finish_loading, record_arrival, record_count, record_shipment
 
 
@@ -46,11 +46,5 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
 
     @action(detail=True, methods=["post"], url_path="ship")
     def ship(self, request, pk=None):
-        serializer = ShipSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        shipment = record_shipment(
-            self.get_object(),
-            serializer.validated_data["weigh_out_kg"],
-            request.user,
-        )
+        shipment = record_shipment(self.get_object(), request.user)
         return Response(ShipmentSerializer(shipment).data)
