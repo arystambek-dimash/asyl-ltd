@@ -43,9 +43,9 @@ def record_arrival(order, weigh_in_kg, user):
 
 @transaction.atomic
 def start_loading(order, user):
-    if order.status != "paid":
+    if order.status != "arrived":
         raise ValidationError(
-            {"detail": "Загрузку можно начать только после оплаты", "code": "invalid_status"}
+            {"detail": "Загрузку можно начать только после въезда машины", "code": "invalid_status"}
         )
     shipment = _require_shipment(order)
     order.status = "loading"
@@ -56,7 +56,7 @@ def start_loading(order, user):
 
 @transaction.atomic
 def record_count(order, bags, user):
-    if order.status in ("paid", "loading"):
+    if order.status in ("arrived", "loading"):
         shipment = _require_shipment(order)
     else:
         raise ValidationError(
@@ -64,7 +64,7 @@ def record_count(order, bags, user):
              "code": "invalid_status"}
         )
 
-    if order.status == "paid":
+    if order.status == "arrived":
         order.status = "loading"
         order.save(update_fields=["status"])
         log_event("loading_start", "Начата загрузка", user=user, order=order)
