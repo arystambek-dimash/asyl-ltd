@@ -29,11 +29,13 @@ def test_confirm_payment_endpoint(arrived_order, accountant, auth_client, make_u
     r = auth_client(accountant).post(
         f"/api/orders/{arrived_order.id}/payments/{pay.id}/confirm/")
     assert r.status_code == 200
-    arrived_order.refresh_from_db(); assert arrived_order.status == "paid"
+    arrived_order.refresh_from_db()
+    assert arrived_order.payment_status == "settled"
 
 
 def test_approve_debt_endpoint(arrived_order, boss, auth_client):
     r = auth_client(boss).post(f"/api/orders/{arrived_order.id}/approve-debt/")
     assert r.status_code == 200
     arrived_order.refresh_from_db()
-    assert arrived_order.status == "paid" and arrived_order.debt_override is True
+    assert arrived_order.debt_override is True
+    assert arrived_order.settlement_intent == "debt"

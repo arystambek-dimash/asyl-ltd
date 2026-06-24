@@ -24,11 +24,13 @@ def test_client_payment_is_pending_and_does_not_pay(order, make_user):
     assert order.status == "arrived"
 
 
-def test_confirm_payment_marks_order_paid(order, make_user):
+def test_confirm_payment_sets_settled(order, make_user):
     pay = services.create_client_payment(order, "card", make_user(client=True))
     services.confirm_payment(pay, make_user(username="staff"))
     order.refresh_from_db()
-    assert order.status == "paid"
+    # Логистический статус не меняется оплатой; меняется только статус оплаты.
+    assert order.status == "arrived"
+    assert order.payment_status == "settled"
 
 
 def test_reject_payment_keeps_arrived(order, make_user):
@@ -39,11 +41,13 @@ def test_reject_payment_keeps_arrived(order, make_user):
     assert order.status == "arrived"
 
 
-def test_approve_debt_marks_paid(order, make_user):
+def test_approve_debt_sets_override(order, make_user):
     services.approve_debt(order, make_user(username="boss"))
     order.refresh_from_db()
-    assert order.status == "paid"
+    # Долг больше не меняет логистический статус — лишь фиксирует override.
+    assert order.status == "arrived"
     assert order.debt_override is True
+    assert order.settlement_intent == "debt"
 
 
 def test_client_payment_requires_arrived(order, make_user):

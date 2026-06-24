@@ -23,8 +23,11 @@ class PaymentSerializer(serializers.ModelSerializer):
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True)
     status = serializers.CharField(read_only=True)
+    payment_status = serializers.CharField(read_only=True)
+    settlement_intent = serializers.CharField(required=False)
     total_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     paid_total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    remaining_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     is_fully_paid = serializers.BooleanField(read_only=True)
     client_name = serializers.CharField(source="client.name", read_only=True)
     client_phone = serializers.CharField(source="client.phone", read_only=True)
@@ -36,15 +39,18 @@ class OrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ["id", "client", "client_name", "client_phone", "status",
+        fields = ["id", "client", "store", "client_name", "client_phone", "status",
+                  "payment_status", "settlement_intent",
                   "truck_number", "arrival_date", "items", "total_amount",
-                  "paid_total", "is_fully_paid", "debt_override", "debt_override_by_name",
+                  "paid_total", "remaining_amount", "is_fully_paid",
+                  "debt_override", "debt_override_by_name",
                   "weigh_in_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at"]
         read_only_fields = ["debt_override"]
         extra_kwargs = {
             "truck_number": {"required": False},
             "arrival_date": {"required": False, "allow_null": True},
+            "store": {"required": False, "allow_null": True},
         }
 
     def _shipment(self, obj):
