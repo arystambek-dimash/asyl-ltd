@@ -7,6 +7,16 @@ from apps.warehouse.services import deduct_stock
 from .models import Shipment
 
 
+def _require_shipment(order):
+    shipment = getattr(order, "shipment", None)
+    if shipment is None:
+        raise ValidationError(
+            {"detail": "Сначала нужно принять машину: для заказа нет отгрузки",
+             "code": "shipment_required"}
+        )
+    return shipment
+
+
 @transaction.atomic
 def record_arrival(order, weigh_in_kg, user):
     # Въезд разрешён без оплаты: машина заезжает, взвешивается, и только
@@ -33,28 +43,31 @@ def record_arrival(order, weigh_in_kg, user):
 
 @transaction.atomic
 def start_loading(order, user):
-    if order.status != "paid":
+    if order.status != "arrived":
         raise ValidationError(
-            {"detail": "Загрузку можно начать только после оплаты", "code": "invalid_status"}
+            {"detail": "Загрузку можно начать только после въезда машины", "code": "invalid_status"}
         )
+    shipment = _require_shipment(order)
     order.status = "loading"
     order.save(update_fields=["status"])
     log_event("loading_start", "Начата загрузка", user=user, order=order)
-    return order.shipment
+    return shipment
 
 
 @transaction.atomic
 def record_count(order, bags, user):
-    if order.status == "paid":
-        order.status = "loading"
-        order.save(update_fields=["status"])
-        log_event("loading_start", "Начата загрузка", user=user, order=order)
-    elif order.status != "loading":
+    if order.status in ("arrived", "loading"):
+        shipment = _require_shipment(order)
+    else:
         raise ValidationError(
             {"detail": "Подсчёт мешков возможен только во время загрузки",
              "code": "invalid_status"}
         )
-    shipment = order.shipment
+
+    if order.status == "arrived":
+        order.status = "loading"
+        order.save(update_fields=["status"])
+        log_event("loading_start", "Начата загрузка", user=user, order=order)
     shipment.bags_loaded = bags
     shipment.save(update_fields=["bags_loaded"])
     log_event("loading", f"Посчитано {bags} мешков", user=user, order=order,
@@ -68,11 +81,12 @@ def finish_loading(order, user):
         raise ValidationError(
             {"detail": "Завершить можно только идущую загрузку", "code": "invalid_status"}
         )
+    shipment = _require_shipment(order)
     order.status = "loaded"
     order.save(update_fields=["status"])
     log_event("loading_done", "Загрузка завершена", user=user, order=order,
-              payload={"bags": order.shipment.bags_loaded})
-    return order.shipment
+              payload={"bags": shipment.bags_loaded})
+    return shipment
 
 
 @transaction.atomic
@@ -82,7 +96,7 @@ def record_shipment(order, user):
             {"detail": "Выезд возможен только после завершения загрузки",
              "code": "invalid_status"}
         )
-    shipment = order.shipment
+    shipment = _require_shipment(order)
     # Выезд не взвешивается — просто фиксируем отгрузку.
     # Списываем по позициям заказа. Выезд должен пройти даже при нехватке:
     # остаток уходит в минус с предупреждением в журнале.
@@ -91,7 +105,10 @@ def record_shipment(order, user):
     shipment.shipped_at = timezone.now()
     shipment.save()
     order.status = "shipped"
-    order.save(update_fields=["status"])
+    order.payment_status = "unpaid"
+    order.save(update_fields=["status", "payment_status"])
+    log_event("debt", f"Заказ отгружен в долг: {order.total_amount}", user=user, order=order,
+              payload={"amount": str(order.total_amount), "intent": order.settlement_intent})
     bag_estimate = sum(
         (i.quantity * i.product.weight_kg for i in order.items.all()), Decimal("0")
     )

@@ -2,7 +2,7 @@ import pytest
 from decimal import Decimal
 from apps.catalog.models import Product
 from apps.clients.models import Client
-from apps.orders.models import Order, OrderItem, Payment
+from apps.orders.models import Order, OrderItem
 from apps.warehouse.services import receive_stock, deduct_stock
 from apps.warehouse.models import StockItem
 from apps.shipments.services import (record_arrival, start_loading, record_count,
@@ -28,12 +28,9 @@ def test_deduct_allow_negative_goes_below_zero(boss):
 
 
 def test_shipment_deducts_by_order_items(boss, operator):
-    # Полный поток: confirmed → въезд → оплата → загрузка → выезд.
+    # Полный поток: confirmed → въезд → загрузка → выезд (оплата после shipped).
     o, red = _setup(boss, bags_in_stock=100)
     record_arrival(o, Decimal("8000"), operator)
-    Payment.objects.create(order=o, amount=o.total_amount)
-    from apps.orders.services import _maybe_mark_paid
-    _maybe_mark_paid(o, boss)
     start_loading(o, operator)
     record_count(o, 50, operator)
     finish_loading(o, operator)

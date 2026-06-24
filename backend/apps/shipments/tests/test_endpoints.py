@@ -3,9 +3,9 @@ from decimal import Decimal
 from rest_framework.test import APIClient
 from apps.catalog.models import Product
 from apps.clients.models import Client
-from apps.orders.models import Order, OrderItem, Payment
+from apps.orders.models import Order, OrderItem
 from apps.warehouse.services import receive_stock
-from apps.shipments.services import record_arrival, start_loading, record_count
+from apps.shipments.services import record_arrival, record_count
 
 pytestmark = pytest.mark.django_db
 
@@ -16,8 +16,6 @@ def _order(boss, status="confirmed"):
     c = Client.objects.create(first_name="L", last_name="К", phone="x")
     o = Order.objects.create(client=c, status=status, truck_number="01A123")
     OrderItem.objects.create(order=o, product=prod, quantity=50)
-    if status in ("paid", "loading", "loaded"):
-        Payment.objects.create(order=o, amount=o.total_amount)
     return o
 
 
@@ -36,13 +34,9 @@ def test_arrive_endpoint_no_truck_param(boss):
 
 
 def test_finish_loading_endpoint(boss):
-    # confirmed → въезд → оплата → загрузка → finish
+    # confirmed → въезд → загрузка → finish (оплата теперь после shipped)
     o = _order(boss, status="confirmed")
     record_arrival(o, Decimal("8000"), boss)
-    Payment.objects.create(order=o, amount=o.total_amount)
-    from apps.orders.services import _maybe_mark_paid
-    _maybe_mark_paid(o, boss)
-    start_loading(o, boss)
     record_count(o, 50, boss)
     r = _client(boss).post(f"/api/orders/{o.id}/finish-loading/")
     assert r.status_code == 200
@@ -51,6 +45,14 @@ def test_finish_loading_endpoint(boss):
 
 
 def test_finish_loading_wrong_status_400(boss):
-    o = _order(boss, status="paid")  # оплачен, но загрузка не начата
+    o = _order(boss, status="arrived")  # въезд есть, но загрузка не начата
     r = _client(boss).post(f"/api/orders/{o.id}/finish-loading/")
     assert r.status_code == 400
+
+
+def test_load_without_shipment_returns_400_and_keeps_status(boss):
+    o = _order(boss, status="arrived")  # arrived but no Shipment row
+    r = _client(boss).post(f"/api/orders/{o.id}/load/", {"bags": 10})
+    assert r.status_code == 400
+    o.refresh_from_db()
+    assert o.status == "arrived"

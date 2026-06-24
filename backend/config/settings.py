@@ -25,6 +25,7 @@ INSTALLED_APPS = [
     "apps.warehouse",
     "apps.shipments",
     "apps.portal",
+    "apps.notifications",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

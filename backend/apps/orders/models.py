@@ -4,13 +4,21 @@ from decimal import Decimal
 
 
 class Order(models.Model):
-    STATUSES = ["draft", "pending", "confirmed", "paid", "arrived",
+    STATUSES = ["draft", "pending", "confirmed", "arrived",
                 "loading", "loaded", "shipped", "rejected", "cancelled"]
+    PAYMENT_STATUSES = ["unpaid", "partial", "settled"]
+    SETTLEMENT_INTENTS = ["debt", "instant"]
 
     client = models.ForeignKey(
         "clients.Client", on_delete=models.PROTECT, related_name="orders"
     )
+    store = models.ForeignKey(
+        "clients.Store", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="orders",
+    )
     status = models.CharField(max_length=20, default="draft")
+    payment_status = models.CharField(max_length=20, default="unpaid")
+    settlement_intent = models.CharField(max_length=20, default="debt")
     truck_number = models.CharField(max_length=30, blank=True, default="")
     truck_number_set_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
@@ -40,6 +48,10 @@ class Order(models.Model):
     @property
     def is_fully_paid(self) -> bool:
         return self.total_amount > 0 and self.paid_total >= self.total_amount
+
+    @property
+    def remaining_amount(self) -> Decimal:
+        return self.total_amount - self.paid_total
 
 
 class OrderItem(models.Model):

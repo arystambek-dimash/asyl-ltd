@@ -1,13 +1,25 @@
+from datetime import date
 from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from apps.eventlog.services import log_event
+from apps.notifications.services import notify
+from apps.clients.services import is_payment_window_open
 from .models import Order, Payment
 
 
 @transaction.atomic
 def add_payment(order: Order, amount, user, method="cash", status="confirmed") -> Payment:
+    if order.status != "shipped":
+        raise ValidationError(
+            {"detail": "Оплата доступна только после отгрузки", "code": "payment_not_open"}
+        )
+    if order.store and not is_payment_window_open(order.store, date.today()):
+        raise ValidationError(
+            {"detail": f"Оплата для магазина «{order.store.name}» сегодня недоступна",
+             "code": "payment_window_closed"}
+        )
     if amount is None or Decimal(str(amount)) <= 0:
         raise ValidationError(
             {"detail": "Сумма оплаты должна быть больше нуля", "code": "invalid_amount"}
@@ -16,7 +28,7 @@ def add_payment(order: Order, amount, user, method="cash", status="confirmed") -
         order=order, amount=amount, method=method, status=status, recorded_by=user)
     log_event("payment", f"Оплата {amount} ({method}/{status})", user=user, order=order,
               payload={"amount": str(amount), "method": method, "status": status})
-    _maybe_mark_paid(order, user)
+    _apply_payment_status(order, user)
     return payment
 
 
@@ -46,7 +58,7 @@ def confirm_payment(payment: Payment, user) -> Payment:
     payment.save(update_fields=["status", "confirmed_by", "confirmed_at"])
     log_event("payment", f"Оплата подтверждена {payment.amount}", user=user, order=payment.order,
               payload={"payment_id": payment.id, "amount": str(payment.amount)})
-    _maybe_mark_paid(payment.order, user)
+    _apply_payment_status(payment.order, user)
     return payment
 
 
@@ -63,24 +75,34 @@ def reject_payment(payment: Payment, user) -> Payment:
 def approve_debt(order: Order, user) -> Order:
     order.debt_override = True
     order.debt_override_by = user
-    order.save(update_fields=["debt_override", "debt_override_by"])
+    order.settlement_intent = "debt"
+    order.save(update_fields=["debt_override", "debt_override_by", "settlement_intent"])
     log_event("debt_override", "Долг одобрен", user=user, order=order)
-    return transition(order, "paid", user, "Заказ готов (в долг)")
+    return order
 
 
-def _maybe_mark_paid(order: Order, user) -> None:
+def _apply_payment_status(order: Order, user) -> None:
     order.refresh_from_db()
-    if order.status == "arrived" and order.is_fully_paid:
-        transition(order, "paid", user, "Заказ оплачен")
+    paid = order.paid_total
+    if paid <= 0:
+        new = "unpaid"
+    elif paid >= order.total_amount:
+        new = "settled"
+    else:
+        new = "partial"
+    if new != order.payment_status:
+        order.payment_status = new
+        order.save(update_fields=["payment_status"])
+        log_event("payment", f"Статус оплаты: {new}", user=user, order=order,
+                  payload={"payment_status": new})
 
 
-# Новый порядок: подтверждение → въезд (без оплаты) → оплата → загрузка.
+# Логистика: подтверждение → въезд → загрузка → отгрузка. Оплата — отдельно, после shipped.
 ALLOWED_TRANSITIONS = {
     "draft": {"pending", "confirmed", "cancelled"},
     "pending": {"confirmed", "rejected", "cancelled"},
     "confirmed": {"arrived", "cancelled"},
-    "arrived": {"paid", "cancelled"},
-    "paid": {"loading", "cancelled"},
+    "arrived": {"loading", "cancelled"},
     "loading": {"loaded", "cancelled"},
     "loaded": {"shipped", "cancelled"},
 }
@@ -140,4 +162,5 @@ def set_truck_number(order: Order, value: str, user) -> Order:
     order.save(update_fields=["truck_number", "truck_number_set_by"])
     log_event("status", f"Номер КАМАЗа: {value}", user=user, order=order,
               payload={"truck_number": value})
+    notify(order.client, f"Ваш КАМАЗ {value} отправляется")
     return order

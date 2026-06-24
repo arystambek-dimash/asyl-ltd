@@ -15,29 +15,38 @@ def _order(status="confirmed", price="100.00", qty=5):
     return o
 
 
-def test_partial_payment_keeps_status(auth_client, accountant):
-    o = _order()  # total 500
+def test_partial_payment_keeps_logistics_status(auth_client, accountant):
+    o = _order(status="shipped")  # total 500
     resp = auth_client(accountant).post(
         f"/api/orders/{o.id}/payments/", {"amount": "200.00"}, format="json"
     )
     assert resp.status_code == 201
     o.refresh_from_db()
     assert o.paid_total == Decimal("200.00")
-    assert o.status == "confirmed"
+    assert o.status == "shipped"
+    assert o.payment_status == "partial"
 
 
-def test_full_payment_sets_status_paid(auth_client, accountant):
-    o = _order(status="arrived")  # total 500
+def test_full_payment_sets_settled(auth_client, accountant):
+    o = _order(status="shipped")  # total 500
     auth_client(accountant).post(
         f"/api/orders/{o.id}/payments/", {"amount": "500.00"}, format="json"
     )
     o.refresh_from_db()
     assert o.is_fully_paid is True
-    assert o.status == "paid"
+    assert o.payment_status == "settled"
+
+
+def test_payment_before_shipped_rejected(auth_client, accountant):
+    o = _order(status="arrived")  # not yet shipped
+    resp = auth_client(accountant).post(
+        f"/api/orders/{o.id}/payments/", {"amount": "500.00"}, format="json"
+    )
+    assert resp.status_code == 400
 
 
 def test_manager_cannot_record_payment(auth_client, manager):
-    o = _order()
+    o = _order(status="shipped")
     resp = auth_client(manager).post(
         f"/api/orders/{o.id}/payments/", {"amount": "500.00"}, format="json"
     )
