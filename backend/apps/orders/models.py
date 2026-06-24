@@ -12,6 +12,10 @@ class Order(models.Model):
     client = models.ForeignKey(
         "clients.Client", on_delete=models.PROTECT, related_name="orders"
     )
+    store = models.ForeignKey(
+        "clients.Store", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="orders",
+    )
     status = models.CharField(max_length=20, default="draft")
     payment_status = models.CharField(max_length=20, default="unpaid")
     settlement_intent = models.CharField(max_length=20, default="debt")

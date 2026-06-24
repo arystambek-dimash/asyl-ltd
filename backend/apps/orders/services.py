@@ -1,9 +1,11 @@
+from datetime import date
 from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
+from apps.clients.services import is_payment_window_open
 from .models import Order, Payment
 
 
@@ -12,6 +14,11 @@ def add_payment(order: Order, amount, user, method="cash", status="confirmed") -
     if order.status != "shipped":
         raise ValidationError(
             {"detail": "Оплата доступна только после отгрузки", "code": "payment_not_open"}
+        )
+    if order.store and not is_payment_window_open(order.store, date.today()):
+        raise ValidationError(
+            {"detail": f"Оплата для магазина «{order.store.name}» сегодня недоступна",
+             "code": "payment_window_closed"}
         )
     if amount is None or Decimal(str(amount)) <= 0:
         raise ValidationError(
