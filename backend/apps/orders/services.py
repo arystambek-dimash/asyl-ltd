@@ -156,11 +156,32 @@ def transition(order: Order, to_status: str, user, message: str | None = None) -
 
 
 @transaction.atomic
-def confirm_order(order: Order, user) -> Order:
+def confirm_order(order: Order, user, prices: dict | None = None) -> Order:
     if order.status not in ("draft", "pending"):
         raise ValidationError(
             {"detail": "Подтвердить можно только новый заказ", "code": "invalid_status"})
+    _apply_prices(order, prices or {}, user)
     return transition(order, "confirmed", user, "Заказ подтверждён")
+
+
+def _apply_prices(order: Order, prices: dict, user) -> None:
+    """Зафиксировать договорную цену по каждой позиции и запомнить её для клиента.
+
+    prices: {order_item_id: цена за мешок}. Все позиции обязаны получить цену > 0.
+    """
+    from apps.catalog.models import ClientPrice
+    items = list(order.items.select_related("product").all())
+    for item in items:
+        raw = prices.get(item.id, prices.get(str(item.id)))
+        if raw is None or Decimal(str(raw)) <= 0:
+            raise ValidationError(
+                {"detail": f"Укажите цену для «{item.product}»", "code": "price_required"})
+        price = Decimal(str(raw))
+        item.unit_price = price
+        item.save(update_fields=["unit_price"])
+        ClientPrice.objects.update_or_create(
+            client=order.client, product=item.product,
+            defaults={"price": price, "updated_by": user})
 
 
 @transaction.atomic
