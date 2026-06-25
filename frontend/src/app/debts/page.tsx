@@ -146,14 +146,14 @@ export default function DebtsPage() {
               <THead>
                 <TR>
                   <TH>Магазин</TH><TH>Клиент</TH><TH>Долг</TH><TH>Заказов</TH>
-                  <TH>Расписание</TH><TH>Окно оплаты</TH>
+                  <TH>Расписание</TH><TH>Окно оплаты</TH><TH></TH>
                 </TR>
               </THead>
               <TBody>
                 {ls ? (
-                  <TR><TD colSpan={6} className="py-6 text-center text-[var(--muted-foreground)]">Загрузка…</TD></TR>
+                  <TR><TD colSpan={7} className="py-6 text-center text-[var(--muted-foreground)]">Загрузка…</TD></TR>
                 ) : filteredStores.length === 0 ? (
-                  <TR><TD colSpan={6} className="py-6 text-center text-[var(--muted-foreground)]">Долгов по магазинам нет.</TD></TR>
+                  <TR><TD colSpan={7} className="py-6 text-center text-[var(--muted-foreground)]">Долгов по магазинам нет.</TD></TR>
                 ) : filteredStores.map((r) => (
                   <TR key={r.store_id}>
                     <TD className="font-medium">{r.store_name}</TD>
@@ -171,6 +171,11 @@ export default function DebtsPage() {
                       ) : (
                         <Badge tone="muted">Закрыто</Badge>
                       )}
+                    </TD>
+                    <TD>
+                      <div className="flex justify-end">
+                        <Link href={`/debts/stores/${r.store_id}`}><Button size="sm" variant="ghost">Открыть</Button></Link>
+                      </div>
                     </TD>
                   </TR>
                 ))}

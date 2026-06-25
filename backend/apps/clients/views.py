@@ -28,7 +28,26 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "partial_update": "clients.edit", "destroy": "clients.delete",
         "check_overdue": "clients.view",
         "debts": "clients.view",
+        "debt_detail": "clients.view",
     }
+
+    @action(detail=True, methods=["get"], url_path="debt-detail")
+    def debt_detail(self, request, pk=None):
+        """Детали долга одного магазина: расписание, окно и непогашенные заказы."""
+        from apps.orders.serializers import OrderSerializer
+        store = self.get_object()
+        today = date.today()
+        orders = (store.orders.filter(status="shipped").exclude(payment_status="settled")
+                  .select_related("client").prefetch_related("items__product", "payments")
+                  .order_by("created_at"))
+        debt = sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
+        return Response({
+            "store": StoreSerializer(store).data,
+            "client_name": store.client.name,
+            "debt_total": str(debt.quantize(Decimal("0.01"))),
+            "window_open": is_payment_window_open(store, today),
+            "orders": OrderSerializer(orders, many=True, context={"request": request}).data,
+        })
 
     @action(detail=False, methods=["get"], url_path="debts")
     def debts(self, request):
