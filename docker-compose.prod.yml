@@ -1,0 +1,146 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-asyl}
+      POSTGRES_USER: ${POSTGRES_USER:-asyl}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-asyl} -d ${POSTGRES_DB:-asyl}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment:
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
+      DEBUG: "0"
+      DB_NAME: ${POSTGRES_DB:-asyl}
+      DB_USER: ${POSTGRES_USER:-asyl}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      DB_HOST: db
+      DB_PORT: "5432"
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-asyl-ltd.kz,www.asyl-ltd.kz,78.40.109.240}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://asyl-ltd.kz,https://www.asyl-ltd.kz}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-https://asyl-ltd.kz,https://www.asyl-ltd.kz}
+      REDIS_URL: redis://redis:6379/0
+      DJANGO_COLLECTSTATIC: "1"
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:?set SUPER_ADMIN_EMAIL}
+      SUPER_ADMIN_PASS: ${SUPER_ADMIN_PASS:?set SUPER_ADMIN_PASS}
+      SUPER_ADMIN_RESET_PASSWORD: ${SUPER_ADMIN_RESET_PASSWORD:-0}
+      KASPI_QR: ${KASPI_QR:-}
+      PORTAL_BANK: ${PORTAL_BANK:-Kaspi Bank}
+      PORTAL_ACCOUNT: ${PORTAL_ACCOUNT:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - mediadata:/app/media
+      - staticdata:/app/staticfiles
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api}
+    environment:
+      NODE_ENV: production
+    depends_on:
+      - backend
+    expose:
+      - "3000"
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - backend
+      - frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./deploy/certbot/www:/var/www/certbot:ro
+      - ./deploy/certbot/conf:/etc/letsencrypt:ro
+      - staticdata:/var/www/static:ro
+      - mediadata:/var/www/media:ro
+    restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - ./deploy/certbot/www:/var/www/certbot
+      - ./deploy/certbot/conf:/etc/letsencrypt
+    entrypoint: /bin/sh
+    command: -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $$!; done;'
+    restart: unless-stopped
+
+  db-backup:
+    image: postgres:16-alpine
+    environment:
+      TZ: Asia/Almaty
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-asyl}
+      POSTGRES_USER: ${POSTGRES_USER:-asyl}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      BACKUP_FILE: /backups/asyl-latest.dump
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backups:/backups
+      - ./deploy/backup:/backup:ro
+    command: /bin/sh -c "crontab /backup/crontab && crond -f -l 8"
+    restart: unless-stopped
+
+  wireguard:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: wireguard
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Almaty
+      - SERVERURL=${WG_SERVERURL:-78.40.109.240}
+      - SERVERPORT=${WG_SERVERPORT:-51820}
+      - PEERS=${WG_PEERS:-operator-laptop}
+      - PEERDNS=${WG_PEERDNS:-1.1.1.1}
+      - INTERNAL_SUBNET=${WG_INTERNAL_SUBNET:-10.13.13.0}
+      - ALLOWEDIPS=${WG_ALLOWEDIPS:-10.13.13.0/24,192.168.1.0/24}
+      - PERSISTENTKEEPALIVE_PEERS=${WG_PERSISTENTKEEPALIVE_PEERS:-all}
+      - LOG_CONFS=true
+    volumes:
+      - ./config:/config
+      - /lib/modules:/lib/modules:ro
+    ports:
+      - "51820:51820/udp"
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv4.ip_forward=1
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  mediadata:
+  staticdata:

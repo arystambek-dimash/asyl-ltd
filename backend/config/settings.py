@@ -3,7 +3,10 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = "django-insecure-n^--vbbev=3i(v4ztl5w(nm4ym3uw4ow9ozx=))e+7b165k(8$"
+SECRET_KEY = os.environ.get(
+    "SECRET_KEY",
+    "django-insecure-n^--vbbev=3i(v4ztl5w(nm4ym3uw4ow9ozx=))e+7b165k(8$",
+)
 DEBUG = os.environ.get("DEBUG", "1") == "1"
 
 INSTALLED_APPS = [
@@ -102,7 +105,8 @@ USE_I18N = True
 
 USE_TZ = True
 
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
@@ -115,10 +119,18 @@ CORS_ALLOWED_ORIGINS = os.environ.get(
 ).split(",")
 CORS_ALLOW_CREDENTIALS = True
 
+CSRF_TRUSTED_ORIGINS = [
+    origin
+    for origin in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin
+]
+
 # Allowed hosts. On an on-prem shop LAN the server is reached by its local IP,
 # so the default allows any host. Override ALLOWED_HOSTS in production behind a
 # domain.
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
+
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # Реквизиты оплаты для клиентского портала (MVP — статичный Kaspi QR).
 PORTAL_PAYMENT_INFO = {
