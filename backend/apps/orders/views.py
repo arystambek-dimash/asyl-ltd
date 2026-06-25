@@ -1,7 +1,10 @@
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
 from apps.rbac.permissions import PermViewSetMixin
+from apps.shipments.services import (
+    start_train_loading, record_count, finish_train_loading)
 from .models import Order, Payment, StatusChangeRequest
 from .serializers import OrderSerializer, PaymentSerializer, StatusChangeRequestSerializer
 from .services import (add_payment, pay_via_bank, confirm_order, reject_order,
@@ -27,7 +30,32 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "confirm_payment": "payments.confirm",
         "reject_payment": "payments.confirm",
         "approve_debt": "shipping.debt_override",
+        "train_queue": "train.view",
+        "train": "train.load",
     }
+
+    @action(detail=False, methods=["get"], url_path="train/queue")
+    def train_queue(self, request):
+        """Очередь поездов для загрузчика: подтверждённые и идущие на загрузке."""
+        qs = (self.get_queryset()
+              .filter(transport_type="train", status__in=["confirmed", "loading"])
+              .order_by("created_at"))
+        return Response(OrderSerializer(qs, many=True, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="train")
+    def train(self, request, pk=None):
+        """Единый эндпоинт загрузки поезда: action = start | count | finish."""
+        order = self.get_object()
+        what = request.data.get("action")
+        if what == "start":
+            start_train_loading(order, request.user)
+        elif what == "count":
+            record_count(order, int(request.data.get("bags") or 0), request.user)
+        elif what == "finish":
+            finish_train_loading(order, request.user)
+        else:
+            raise ValidationError({"detail": "Неизвестное действие", "code": "bad_action"})
+        return Response(OrderSerializer(order, context={"request": request}).data)
 
     @action(detail=False, methods=["get"], url_path="debts")
     def debts(self, request):

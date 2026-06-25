@@ -94,7 +94,7 @@ class OrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = ["id", "client", "store", "client_name", "client_phone", "status",
-                  "payment_status", "settlement_intent",
+                  "payment_status", "settlement_intent", "transport_type",
                   "truck_number", "arrival_date", "items", "total_amount",
                   "paid_total", "remaining_amount", "is_fully_paid",
                   "debt_override", "debt_override_by_name", "pending_status_requests",
@@ -106,6 +106,7 @@ class OrderSerializer(serializers.ModelSerializer):
             "truck_number": {"required": False},
             "arrival_date": {"required": False, "allow_null": True},
             "store": {"required": False, "allow_null": True},
+            "transport_type": {"required": False},
         }
 
     def _shipment(self, obj):

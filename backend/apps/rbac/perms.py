@@ -7,6 +7,7 @@ _SECTIONS = {
     "orders": ("Заказы", ["view", "create", "edit", "confirm"]),
     "payments": ("Оплаты", ["view", "create", "confirm"]),
     "shipping": ("Пост отгрузки", ["view", "arrive", "load", "ship", "debt_override"]),
+    "train": ("Поезд", ["view", "load"]),
     "events": ("Журнал", ["view"]),
     "reports": ("Отчёты", ["view"]),
     "employees": ("Сотрудники", ["view", "manage"]),
@@ -19,6 +20,8 @@ _ACTION_LABELS = {
     "arrive": "Приём машины", "load": "Загрузка", "ship": "Отгрузка",
     "debt_override": "Отгрузка в долг", "manage": "Управление",
 }
+
+# train.load переиспользует label "Загрузка" из _ACTION_LABELS.
 
 PERMISSIONS = [
     {"code": f"{sec}.{act}", "section": sec, "action": act,
@@ -47,7 +50,8 @@ PRESETS = {
                         "orders.view", "clients.view", "reports.view", "events.view"),
     "Оператор": _codes("shipping.view", "shipping.arrive", "shipping.load",
                        "shipping.ship", "orders.view", "warehouse.view", "events.view"),
+    "Загрузчик": _codes("train.view", "train.load"),
     "Начальник": _codes("catalog", "clients", "orders", "payments.view",
                         "payments.create", "payments.confirm", "warehouse", "shipping",
-                        "employees", "rbac", "reports.view", "events.view"),
+                        "train", "employees", "rbac", "reports.view", "events.view"),
 }
