@@ -40,14 +40,15 @@ export interface Order {
   items: OrderItem[]; total_amount: string; paid_total: string; remaining_amount?: string;
   is_fully_paid: boolean; debt_override: boolean; debt_requested?: boolean;
   pending_status_requests?: StatusChangeRequest[];
+  payments?: Payment[];
   weigh_in_kg?: string | null;
   bags_loaded?: number; bag_estimate_kg?: string;
   bag_weight_kg?: string; debt_override_by_name?: string | null;
   created_at: string;
 }
 export interface Payment {
-  id: number; order: number; amount: string; method: string; status: string;
-  paid_at: string; recorded_by: number | null;
+  id: number; order: number; amount: string; method: string; method_label?: string;
+  status: string; paid_at: string; recorded_by: number | null; recorded_by_name?: string | null;
 }
 export interface StockItem {
   id: number; product: number; product_label: string;

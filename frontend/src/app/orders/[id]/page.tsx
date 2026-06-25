@@ -179,14 +179,22 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                       {formatMoney(String(remaining))} ₸</span>
                   </div>
                   {isAccountant && remaining > 0 && order.status === "shipped" && (
-                    <div className="mt-1 flex gap-2 border-t pt-3">
-                      <Input type="number" placeholder="Сумма" value={amount}
-                        onChange={(e) => setAmount(e.target.value)} />
-                      <Button size="sm" disabled={busy || !amount}
-                        onClick={() => act(async () => {
-                          await api.post(`/orders/${order.id}/payments/`, { amount });
-                          setAmount("");
-                        })}>Внести</Button>
+                    <div className="mt-1 flex flex-col gap-2 border-t pt-3">
+                      <div className="flex gap-2">
+                        <Input type="number" placeholder="Сумма" value={amount}
+                          onChange={(e) => setAmount(e.target.value)} />
+                        <Button size="sm" disabled={busy || !amount}
+                          onClick={() => act(async () => {
+                            await api.post(`/orders/${order.id}/payments/`, { amount });
+                            setAmount("");
+                          })}>Внести</Button>
+                      </div>
+                      {order.settlement_intent === "instant" && (
+                        <Button size="sm" variant="outline" disabled={busy}
+                          onClick={() => act(() => api.post(`/orders/${order.id}/pay-bank/`))}>
+                          Оплатить через банк ({formatMoney(String(remaining))} ₸)
+                        </Button>
+                      )}
                     </div>
                   )}
                   {isAccountant && remaining > 0 && order.status !== "shipped" && (
@@ -196,6 +204,24 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   )}
                 </div>
               </div>
+
+              {(order.payments?.length ?? 0) > 0 && (
+                <div className="mt-4 border-t pt-4">
+                  <div className="mb-2 text-sm font-medium">История платежей</div>
+                  <div className="flex flex-col gap-1.5">
+                    {order.payments!.map((p) => (
+                      <div key={p.id} className="flex items-center justify-between text-sm">
+                        <span className="text-[var(--muted-foreground)]">
+                          {new Date(p.paid_at).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" })}
+                          {" · "}{p.method_label ?? p.method}
+                          {p.recorded_by_name ? ` · ${p.recorded_by_name}` : ""}
+                        </span>
+                        <span className="tabular-nums font-medium text-[var(--success)]">+{formatMoney(p.amount)} ₸</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
 

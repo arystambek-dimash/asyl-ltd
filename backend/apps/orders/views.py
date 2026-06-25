@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from apps.rbac.permissions import PermViewSetMixin
 from .models import Order, Payment, StatusChangeRequest
 from .serializers import OrderSerializer, PaymentSerializer, StatusChangeRequestSerializer
-from .services import (add_payment, confirm_order, reject_order,
+from .services import (add_payment, pay_via_bank, confirm_order, reject_order,
                        confirm_payment, reject_payment, approve_debt,
                        request_status_change, approve_status_change, reject_status_change)
 
@@ -17,6 +17,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "create": "orders.create", "update": "orders.edit",
         "partial_update": "orders.edit", "destroy": "orders.edit",
         "payments": "payments.create", "confirm": "orders.confirm",
+        "pay_bank": "payments.create",
+        "debts": "orders.view",
         "set_status": "orders.view",
         "status_requests": "orders.view",
         "approve_status": "orders.edit",
@@ -27,10 +29,25 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "approve_debt": "shipping.debt_override",
     }
 
+    @action(detail=False, methods=["get"], url_path="debts")
+    def debts(self, request):
+        """Все отгруженные заказы с непогашенным долгом."""
+        qs = (self.get_queryset()
+              .filter(status="shipped")
+              .exclude(payment_status="settled")
+              .select_related("store"))
+        data = OrderSerializer(qs, many=True, context={"request": request}).data
+        return Response(data)
+
     @action(detail=True, methods=["post"], url_path="payments")
     def payments(self, request, pk=None):
         order = self.get_object()
         payment = add_payment(order, request.data.get("amount"), request.user)
+        return Response(PaymentSerializer(payment).data, status=201)
+
+    @action(detail=True, methods=["post"], url_path="pay-bank")
+    def pay_bank(self, request, pk=None):
+        payment = pay_via_bank(self.get_object(), request.user)
         return Response(PaymentSerializer(payment).data, status=201)
 
     @action(detail=True, methods=["post"], url_path="confirm")

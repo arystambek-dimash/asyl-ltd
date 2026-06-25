@@ -37,6 +37,23 @@ def add_payment(order: Order, amount, user, method="cash", status="confirmed") -
 
 
 @transaction.atomic
+def pay_via_bank(order: Order, user) -> Payment:
+    """Моментальная оплата через банк (заглушка): гасит остаток одним платежом."""
+    _validate_payment_open(order)
+    remaining = order.total_amount - order.paid_total
+    if remaining <= 0:
+        raise ValidationError({"detail": "Заказ уже оплачен", "code": "already_paid"})
+    # TODO: здесь будет реальный запрос в банк. Пока — заглушка, сразу подтверждаем.
+    payment = Payment.objects.create(
+        order=order, amount=remaining, method="card", status="confirmed", recorded_by=user)
+    log_event("payment", f"Банковская оплата {remaining} (заглушка)",
+              user=user, order=order,
+              payload={"amount": str(remaining), "method": "card", "channel": "bank_stub"})
+    _apply_payment_status(order, user)
+    return payment
+
+
+@transaction.atomic
 def create_client_payment(order: Order, method: str, user) -> Payment:
     _validate_payment_open(order)
     if method not in ("card", "kaspi"):

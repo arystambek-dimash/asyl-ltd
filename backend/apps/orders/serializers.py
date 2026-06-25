@@ -29,12 +29,25 @@ class StatusChangeRequestSerializer(serializers.ModelSerializer):
         return obj.to_status
 
 
+PAYMENT_METHOD_LABELS = {"cash": "Наличные", "card": "Карта",
+                         "kaspi": "Kaspi", "debt": "Долг"}
+
+
 class PaymentSerializer(serializers.ModelSerializer):
+    recorded_by_name = serializers.SerializerMethodField()
+    method_label = serializers.SerializerMethodField()
+
     class Meta:
         model = Payment
-        fields = ["id", "order", "amount", "method", "status",
-                  "paid_at", "recorded_by", "confirmed_by"]
+        fields = ["id", "order", "amount", "method", "method_label", "status",
+                  "paid_at", "recorded_by", "recorded_by_name", "confirmed_by"]
         read_only_fields = ["order", "paid_at", "recorded_by", "confirmed_by"]
+
+    def get_recorded_by_name(self, obj):
+        return obj.recorded_by.username if obj.recorded_by else None
+
+    def get_method_label(self, obj):
+        return PAYMENT_METHOD_LABELS.get(obj.method, obj.method)
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -54,6 +67,7 @@ class OrderSerializer(serializers.ModelSerializer):
     bag_weight_kg = serializers.SerializerMethodField()
     debt_override_by_name = serializers.SerializerMethodField()
     pending_status_requests = serializers.SerializerMethodField()
+    payments = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -62,6 +76,7 @@ class OrderSerializer(serializers.ModelSerializer):
                   "truck_number", "arrival_date", "items", "total_amount",
                   "paid_total", "remaining_amount", "is_fully_paid",
                   "debt_override", "debt_override_by_name", "pending_status_requests",
+                  "payments",
                   "weigh_in_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at"]
         read_only_fields = ["debt_override"]
@@ -102,6 +117,10 @@ class OrderSerializer(serializers.ModelSerializer):
     def get_pending_status_requests(self, obj):
         qs = obj.status_requests.filter(status="pending")
         return StatusChangeRequestSerializer(qs, many=True).data
+
+    def get_payments(self, obj):
+        qs = obj.payments.exclude(status="rejected").order_by("paid_at")
+        return PaymentSerializer(qs, many=True).data
 
     def create(self, validated_data):
         items = validated_data.pop("items")

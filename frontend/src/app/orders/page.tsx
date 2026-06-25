@@ -16,7 +16,7 @@ import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { FilterPills } from "@/components/ui/filter-pills";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
-import { ORDER_STATUS_LABELS } from "@/lib/constants";
+import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
@@ -133,9 +133,9 @@ export default function OrdersPage() {
                     <TD>
                       <div className="flex items-center gap-1.5">
                         <StatusBadge status={o.status} dot />
-                        {!o.is_fully_paid && o.status !== "draft" && o.status !== "cancelled" && (
-                          <Badge tone={o.debt_override ? "warning" : "destructive"}>
-                            {o.debt_override ? "В долг" : "Долг"}
+                        {o.status === "shipped" && o.payment_status && (
+                          <Badge tone={PAYMENT_STATUS_TONE[o.payment_status] ?? "muted"}>
+                            {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
                           </Badge>
                         )}
                       </div>
