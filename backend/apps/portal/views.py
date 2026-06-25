@@ -43,8 +43,8 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     @action(detail=True, methods=["post"], url_path="request-debt")
     def request_debt(self, request, pk=None):
         order = self.get_object()
-        if order.status != "arrived":
-            raise ValidationError({"detail": "Долг доступен после въезда машины",
+        if order.status != "shipped":
+            raise ValidationError({"detail": "Долг фиксируется после отгрузки",
                                    "code": "invalid_status"})
         order.debt_requested = True
         order.save(update_fields=["debt_requested"])

@@ -18,6 +18,14 @@ export interface Client {
   iin: string; bank: string; bank_account: string; user: number | null;
   debt_total?: string;
 }
+export interface Store {
+  id: number; client: number; name: string; address: string; phone: string;
+  payment_schedule_type: "none" | "monthly" | "weekly";
+  payment_days: number[]; contract_signed_at: string | null;
+}
+export interface Notification {
+  id: number; text: string; is_read: boolean; created_at: string;
+}
 export interface OrderItem { id?: number; product: number; product_label?: string; cv_class?: string; quantity: number; }
 export interface StatusChangeRequest {
   id: number; order: number; to_status: string; to_status_label?: string;

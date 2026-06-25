@@ -9,8 +9,7 @@ from apps.clients.services import is_payment_window_open
 from .models import Order, Payment, StatusChangeRequest
 
 
-@transaction.atomic
-def add_payment(order: Order, amount, user, method="cash", status="confirmed") -> Payment:
+def _validate_payment_open(order: Order) -> None:
     if order.status != "shipped":
         raise ValidationError(
             {"detail": "Оплата доступна только после отгрузки", "code": "payment_not_open"}
@@ -20,6 +19,11 @@ def add_payment(order: Order, amount, user, method="cash", status="confirmed") -
             {"detail": f"Оплата для магазина «{order.store.name}» сегодня недоступна",
              "code": "payment_window_closed"}
         )
+
+
+@transaction.atomic
+def add_payment(order: Order, amount, user, method="cash", status="confirmed") -> Payment:
+    _validate_payment_open(order)
     if amount is None or Decimal(str(amount)) <= 0:
         raise ValidationError(
             {"detail": "Сумма оплаты должна быть больше нуля", "code": "invalid_amount"}
@@ -34,10 +38,7 @@ def add_payment(order: Order, amount, user, method="cash", status="confirmed") -
 
 @transaction.atomic
 def create_client_payment(order: Order, method: str, user) -> Payment:
-    # Оплата происходит после въезда машины (статус «arrived»).
-    if order.status != "arrived":
-        raise ValidationError(
-            {"detail": "Оплата доступна после въезда машины", "code": "invalid_status"})
+    _validate_payment_open(order)
     if method not in ("card", "kaspi"):
         raise ValidationError({"detail": "Недопустимый способ оплаты", "code": "bad_method"})
     remaining = order.total_amount - order.paid_total

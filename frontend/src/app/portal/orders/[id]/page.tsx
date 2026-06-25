@@ -5,11 +5,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/status-badge";
+import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { useApi } from "@/lib/use-api";
 import { apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
-import { clientStep, payOrder, requestDebt, setTruck, getPaymentInfo, type PaymentInfo } from "@/lib/portal-actions";
+import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
+import { clientStep, payOrder, setTruck, getPaymentInfo, type PaymentInfo } from "@/lib/portal-actions";
 import type { Order } from "@/lib/types";
 
 export default function PortalOrderDetail({ params }: { params: Promise<{ id: string }> }) {
@@ -31,8 +33,8 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
     </AppShell>
   );
 
-  const step = clientStep(order.status);
-  const remaining = Number(order.total_amount) - Number(order.paid_total);
+  const step = clientStep(order.status, order.payment_status);
+  const remaining = Number(order.remaining_amount ?? (Number(order.total_amount) - Number(order.paid_total)));
 
   return (
     <AppShell title={`Заказ #${order.id}`} portal>
@@ -40,7 +42,14 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
         <Card>
           <CardHeader className="flex-row items-center justify-between">
             <CardTitle>Заказ #{order.id}</CardTitle>
-            <StatusBadge status={order.status} />
+            <div className="flex items-center gap-2">
+              <StatusBadge status={order.status} />
+              {order.status === "shipped" && order.payment_status && (
+                <Badge tone={PAYMENT_STATUS_TONE[order.payment_status] ?? "muted"} dot>
+                  {PAYMENT_STATUS_LABELS[order.payment_status] ?? order.payment_status}
+                </Badge>
+              )}
+            </div>
           </CardHeader>
           <CardContent>
             <Table>
@@ -73,10 +82,9 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
             <CardHeader><CardTitle>Оплата · к оплате {formatMoney(remaining)} ₸</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-3">
               <p className="text-sm text-[var(--muted-foreground)]">
-                Машина въехала и взвешена. Оплатите заказ или возьмите в долг.
+                Заказ отгружен. До оплаты сумма числится как долг.
               </p>
               <div className="flex flex-wrap gap-2">
-                <Button disabled={busy} onClick={() => run(() => requestDebt(order.id))}>Взять в долг</Button>
                 <Button disabled={busy} variant="outline" onClick={() => run(() => payOrder(order.id, "card"))}>Оплатил картой</Button>
                 <Button disabled={busy} variant="outline"
                   onClick={() => run(async () => { setInfo(await getPaymentInfo()); await payOrder(order.id, "kaspi"); })}>
@@ -90,7 +98,6 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                   {info.account && <p className="mt-1">Счёт: {info.account}</p>}
                 </div>
               )}
-              {order.debt_requested && <p className="text-sm text-[var(--warning)]">Запрос на долг отправлен, ожидайте одобрения.</p>}
               <p className="text-xs text-[var(--muted-foreground)]">Оплата картой/Kaspi подтверждается сотрудником.</p>
             </CardContent>
           </Card>
@@ -101,7 +108,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
             <CardHeader><CardTitle>Отправка КАМАЗа</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-3">
               <p className="text-sm text-[var(--muted-foreground)]">
-                Укажите номер КАМАЗа. После въезда и взвешивания машины вы сможете оплатить заказ.
+                Укажите номер КАМАЗа. Оплата станет доступна после отгрузки.
               </p>
               {order.truck_number && <p className="text-sm">Текущий номер: <b>{order.truck_number}</b></p>}
               <div className="flex gap-2">

@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, type ReactNode } from "react";
-import { Bell, LogOut, Sun, Moon, Monitor, Menu } from "lucide-react";
+import { LogOut, Sun, Moon, Monitor, Menu } from "lucide-react";
+import { NotificationBell } from "@/components/notification-bell";
 import { useAuth } from "@/store/auth";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -72,10 +73,7 @@ export function Topbar({ me, title, section, actions, onMenu }: { me: Me; title:
       <div className="flex items-center gap-2 sm:gap-3">
         {actions}
         <ThemeToggle />
-        <button className="relative text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
-          <Bell className="size-5" />
-          <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-[var(--destructive)]" />
-        </button>
+        {me.is_client && <NotificationBell />}
         <div className="flex items-center gap-2.5 border-l pl-3">
           <div className="flex size-8 items-center justify-center rounded-full bg-[var(--secondary)] text-xs font-semibold">
             {me.username.slice(0, 2).toUpperCase()}
