@@ -3,7 +3,6 @@ import { use, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { StatusBadge } from "@/components/status-badge";
@@ -11,9 +10,9 @@ import { Badge } from "@/components/ui/badge";
 import { CollapsibleCard } from "@/components/ui/collapsible-card";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import {
-  ResponsiveContainer, RadialBarChart, RadialBar, PolarAngleAxis,
-  BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell,
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell,
 } from "recharts";
+import Link from "next/link";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
@@ -66,12 +65,10 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const { me } = useAuth();
   const { data: order, reload } = useApi<Order>(`/orders/${id}/`);
   const { reload: reloadPay } = useApi<Payment[]>(null);
-  const [amount, setAmount] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const isManager = can(me, "orders.confirm");
-  const isAccountant = can(me, "payments.create");
   const canEditStatus = can(me, "orders.edit");
   const canViewStatus = can(me, "orders.view");
   const [newStatus, setNewStatus] = useState("");
@@ -88,7 +85,6 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const total = Number(order.total_amount);
   const paid = Number(order.paid_total);
   const remaining = total - paid;
-  const paidPct = total > 0 ? Math.min(100, Math.round((paid / total) * 100)) : 0;
 
   const hasShipment = order.weigh_in_kg != null;
   const counted = order.bags_loaded ?? 0;
@@ -144,84 +140,6 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 <span className="text-sm text-[var(--muted-foreground)]">Сумма заказа</span>
                 <span className="text-lg font-bold tabular-nums">{formatMoney(order.total_amount)} ₸</span>
               </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader><CardTitle>Оплата</CardTitle></CardHeader>
-            <CardContent>
-              <div className="flex flex-col items-center gap-4 sm:flex-row sm:gap-6">
-                <div className="relative h-[160px] w-[160px] shrink-0">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <RadialBarChart innerRadius="72%" outerRadius="100%" startAngle={90} endAngle={-270}
-                      data={[{ name: "paid", value: paidPct, fill: "var(--success)" }]}>
-                      <PolarAngleAxis type="number" domain={[0, 100]} tick={false} />
-                      <RadialBar background dataKey="value" cornerRadius={8} />
-                    </RadialBarChart>
-                  </ResponsiveContainer>
-                  <div className="absolute inset-0 flex flex-col items-center justify-center">
-                    <span className="text-2xl font-bold tabular-nums">{paidPct}%</span>
-                    <span className="text-[11px] text-[var(--muted-foreground)]">оплачено</span>
-                  </div>
-                </div>
-                <div className="flex flex-1 flex-col gap-2 self-stretch">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-[var(--muted-foreground)]">Сумма</span>
-                    <span className="tabular-nums font-medium">{formatMoney(order.total_amount)} ₸</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-[var(--muted-foreground)]">Оплачено</span>
-                    <span className="tabular-nums text-[var(--success)]">{formatMoney(order.paid_total)} ₸</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-[var(--muted-foreground)]">Остаток</span>
-                    <span className={cn("tabular-nums font-medium", remaining > 0 && "text-[var(--destructive)]")}>
-                      {formatMoney(String(remaining))} ₸</span>
-                  </div>
-                  {isAccountant && remaining > 0 && order.status === "shipped" && (
-                    <div className="mt-1 flex flex-col gap-2 border-t pt-3">
-                      <div className="flex gap-2">
-                        <Input type="number" placeholder="Сумма" value={amount}
-                          onChange={(e) => setAmount(e.target.value)} />
-                        <Button size="sm" disabled={busy || !amount}
-                          onClick={() => act(async () => {
-                            await api.post(`/orders/${order.id}/payments/`, { amount });
-                            setAmount("");
-                          })}>Внести</Button>
-                      </div>
-                      {order.settlement_intent === "instant" && (
-                        <Button size="sm" variant="outline" disabled={busy}
-                          onClick={() => act(() => api.post(`/orders/${order.id}/pay-bank/`))}>
-                          Оплатить через банк ({formatMoney(String(remaining))} ₸)
-                        </Button>
-                      )}
-                    </div>
-                  )}
-                  {isAccountant && remaining > 0 && order.status !== "shipped" && (
-                    <p className="mt-1 border-t pt-3 text-xs text-[var(--muted-foreground)]">
-                      Оплата станет доступна после отгрузки.
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {(order.payments?.length ?? 0) > 0 && (
-                <div className="mt-4 border-t pt-4">
-                  <div className="mb-2 text-sm font-medium">История платежей</div>
-                  <div className="flex flex-col gap-1.5">
-                    {order.payments!.map((p) => (
-                      <div key={p.id} className="flex items-center justify-between text-sm">
-                        <span className="text-[var(--muted-foreground)]">
-                          {new Date(p.paid_at).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" })}
-                          {" · "}{p.method_label ?? p.method}
-                          {p.recorded_by_name ? ` · ${p.recorded_by_name}` : ""}
-                        </span>
-                        <span className="tabular-nums font-medium text-[var(--success)]">+{formatMoney(p.amount)} ₸</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </CardContent>
           </Card>
 
@@ -292,8 +210,21 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   )}
                 </>
               )}
-              {order.status === "shipped" && (
-                <p className="text-sm text-[var(--muted-foreground)]">Заказ отгружен. Долг можно гасить во вкладке «Оплата».</p>
+              {order.status === "shipped" && order.payment_status !== "settled" && (
+                <>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-[var(--muted-foreground)]">Остаток долга</span>
+                    <span className="tabular-nums font-semibold text-[var(--destructive)]">
+                      {formatMoney(String(remaining))} ₸
+                    </span>
+                  </div>
+                  <Link href={`/debts/clients/${order.client}`}>
+                    <Button size="sm" className="w-full">Перейти к оплате долга</Button>
+                  </Link>
+                </>
+              )}
+              {order.status === "shipped" && order.payment_status === "settled" && (
+                <p className="text-sm text-[var(--success)]">Заказ полностью оплачен.</p>
               )}
               {!isManager && isNew && (
                 <p className="text-sm text-[var(--muted-foreground)]">Ожидает подтверждения менеджером.</p>
