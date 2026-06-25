@@ -22,7 +22,7 @@ import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { formatMoney } from "@/lib/utils";
-import { Plus, Trash2, Search } from "lucide-react";
+import { Plus, Trash2, Search, Info } from "lucide-react";
 import type { Order, Client, Product, Store } from "@/lib/types";
 
 export default function OrdersPage() {
@@ -177,11 +177,6 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const total = rows.reduce((s, r) => {
-    const p = products?.find((x) => String(x.id) === r.product);
-    return s + (p ? Number(p.price) * Number(r.quantity || 0) : 0);
-  }, 0);
-
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError("");
     try {
@@ -270,7 +265,7 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
               onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, product: e.target.value } : x))}>
               <option value="">Товар</option>
               {(products ?? []).map((p) => (
-                <option key={p.id} value={p.id}>{p.label} — {formatMoney(p.price)} ₸</option>
+                <option key={p.id} value={p.id}>{p.label}</option>
               ))}
             </Select>
             <Input type="number" min="1" placeholder="Мешков" className="w-24 sm:w-32" value={r.quantity}
@@ -287,9 +282,9 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
         </Button>
       </div>
 
-      <div className="flex items-center justify-between border-t pt-4">
-        <span className="text-sm text-[var(--muted-foreground)]">Итого</span>
-        <span className="text-xl font-bold tabular-nums">{formatMoney(total)} ₸</span>
+      <div className="flex items-start gap-2 rounded-lg border bg-[var(--muted)]/30 px-3 py-2.5 text-xs text-[var(--muted-foreground)]">
+        <Info className="mt-0.5 size-3.5 shrink-0" />
+        Цены назначаются при подтверждении заказа — индивидуально для клиента.
       </div>
       {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
       <div className="flex justify-end gap-2">
