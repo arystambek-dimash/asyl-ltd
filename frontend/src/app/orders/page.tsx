@@ -216,15 +216,21 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
         </div>
         {(() => {
           const clientStores = (stores ?? []).filter((s) => String(s.client) === client);
-          return clientStores.length > 0 ? (
+          return (
             <div className="grid gap-2">
               <Label>Магазин (необязательно)</Label>
-              <Select value={store} onChange={(e) => setStore(e.target.value)}>
-                <option value="">Без магазина</option>
+              <Select value={store} onChange={(e) => setStore(e.target.value)}
+                disabled={!client || clientStores.length === 0}>
+                <option value="">Без магазина (на клиента)</option>
                 {clientStores.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </Select>
+              {client && clientStores.length === 0 && (
+                <span className="text-xs text-[var(--muted-foreground)]">
+                  У клиента нет магазинов — добавьте в разделе «Магазины».
+                </span>
+              )}
             </div>
-          ) : null;
+          );
         })()}
       </div>
 
