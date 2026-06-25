@@ -18,20 +18,16 @@ import type { Order } from "@/lib/types";
 
 const QUEUE_STATUSES = ["confirmed", "arrived", "loading", "loaded"];
 
-// шаги жизненного цикла на посту: прибытие → начальный вес → загрузка → выезд
-// (оплата после отгрузки, на посту её нет)
+// Шаги поста: начальный вес фиксируется внутри прибытия, оплата идёт после выезда.
 const STEPS = [
-  { key: "confirmed", label: "Прибытие" },
-  { key: "arrived", label: "Начальный вес" },
-  { key: "loading", label: "Загрузка" },
-  { key: "shipped", label: "Выезд" },
+  { label: "Прибытие" },
+  { label: "Загрузка" },
+  { label: "Выезд" },
 ];
 function stepIndex(status: string) {
-  if (status === "confirmed") return 0; // прибыла, ждём взвешивания
-  if (status === "arrived") return 1;   // вес КАМАЗа зафиксирован, готова грузиться
-  if (status === "loading") return 2;   // идёт загрузка
-  if (status === "loaded") return 3;    // загрузка завершена, ждём выезд
-  if (status === "shipped") return 3;
+  if (status === "confirmed") return 0;
+  if (status === "arrived" || status === "loading") return 1;
+  if (status === "loaded" || status === "shipped") return 2;
   return 0;
 }
 
@@ -43,7 +39,7 @@ function Stepper({ status, compact = false }: { status: string; compact?: boolea
         const done = i < current;
         const active = i === current;
         return (
-          <div key={s.key} className="flex items-center">
+          <div key={s.label} className="flex items-center">
             <div className="flex flex-col items-center gap-1">
               {done ? (
                 <CheckCircle2 className={cn(compact ? "size-3.5" : "size-5", "text-[var(--success)]")} />
@@ -104,9 +100,6 @@ export default function ShippingPage() {
     </AppShell>
   );
 }
-
-// Сравнение фактического веса груза (выезд − въезд) с ожидаемым (мешки × вес).
-// Авторитетный расчёт делает бэкенд (eventlog); здесь — предпросмотр для оператора.
 
 function QueueRow({
   order, open, onToggle, onChange,
@@ -221,18 +214,17 @@ function QueueRow({
                 </>
               )}
 
-              {/* Идёт загрузка: можно обновить количество и завершить. */}
+              {/* Идёт загрузка: оператор вводит итоговое количество и завершает. */}
               {order.status === "loading" && (
                 <>
                   <Label>Загрузка</Label>
                   <Input type="number" min={0} placeholder="Количество мешков" value={bags}
                     onChange={(e) => setBags(e.target.value)} />
-                  <Button disabled={busy || !bags} variant="outline"
-                    onClick={() => act(() => api.post(`/orders/${order.id}/load/`, { bags }))}>
-                    Сохранить мешки
-                  </Button>
-                  <Button disabled={busy}
-                    onClick={() => act(() => api.post(`/orders/${order.id}/finish-loading/`, {}))}>
+                  <Button disabled={busy || !bags}
+                    onClick={() => act(async () => {
+                      await api.post(`/orders/${order.id}/load/`, { bags });
+                      await api.post(`/orders/${order.id}/finish-loading/`, {});
+                    })}>
                     Загрузка завершена
                   </Button>
                 </>
