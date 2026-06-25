@@ -1,7 +1,8 @@
 "use client";
-import { use, useState } from "react";
+import { use, useState, useEffect } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
@@ -72,6 +73,20 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const canEditStatus = can(me, "orders.edit");
   const canViewStatus = can(me, "orders.view");
   const [newStatus, setNewStatus] = useState("");
+  // Цены за мешок по позиции (для подтверждения). Предзаполняются ценой клиента.
+  const [prices, setPrices] = useState<Record<number, string>>({});
+
+  useEffect(() => {
+    if (!order) return;
+    if (order.status !== "pending" && order.status !== "draft") return;
+    const init: Record<number, string> = {};
+    for (const it of order.items) {
+      if (it.id == null) continue;
+      const hint = it.unit_price ?? it.client_price;
+      init[it.id] = hint != null ? String(hint) : "";
+    }
+    setPrices(init);
+  }, [order]);
 
   async function act(fn: () => Promise<unknown>) {
     setBusy(true); setError("");
@@ -92,9 +107,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const itemsWeight = order.items.reduce((s, it) => s + Number(it.quantity) * Number(it.weight_kg ?? 0), 0);
 
   const isNew = order.status === "draft" || order.status === "pending";
+  // Подтверждение с ценами рендерится отдельной карточкой (заказы с позициями).
+  const confirmInPriceCard = isManager && isNew && order.items.length > 0;
   // «Действия» имеет смысл, только если есть что показать в текущем состоянии.
   const hasActions =
-    (isManager && isNew) || order.status === "shipped" || (!isManager && isNew);
+    (isManager && isNew && !confirmInPriceCard) || order.status === "shipped" || (!isManager && isNew);
   const pendingReqs = order.pending_status_requests ?? [];
 
   return (
@@ -234,22 +251,70 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             </p>
           )}
 
+          {/* Подтверждение с ценами — оператор назначает цену каждой позиции для клиента */}
+          {isManager && isNew && order.items.length > 0 && (
+            <Card>
+              <CardHeader><CardTitle>Подтверждение · цены</CardTitle></CardHeader>
+              <CardContent className="flex flex-col gap-3">
+                <p className="text-xs text-[var(--muted-foreground)]">
+                  Укажите цену за мешок для этого клиента. Цена запомнится для будущих заказов.
+                </p>
+                {order.items.map((it) => {
+                  const id = it.id!;
+                  const qty = Number(it.quantity);
+                  const price = Number(prices[id] || 0);
+                  return (
+                    <div key={id} className="flex flex-col gap-1 border-t pt-2 first:border-0 first:pt-0">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="font-medium">{it.product_label || `Товар #${it.product}`}</span>
+                        <span className="text-xs text-[var(--muted-foreground)]">{qty} меш.</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Input type="number" min="0" placeholder="Цена за мешок"
+                          value={prices[id] ?? ""}
+                          onChange={(e) => setPrices((p) => ({ ...p, [id]: e.target.value }))} />
+                        <span className="w-28 shrink-0 text-right text-sm tabular-nums">
+                          {price > 0 ? `${formatMoney(String(price * qty))} ₸` : "—"}
+                        </span>
+                      </div>
+                      {it.client_price != null && it.unit_price == null && (
+                        <span className="text-[11px] text-[var(--muted-foreground)]">
+                          Текущая цена клиента: {formatMoney(it.client_price)} ₸
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+                <div className="flex items-center justify-between border-t pt-3">
+                  <span className="text-sm text-[var(--muted-foreground)]">Итого</span>
+                  <span className="text-lg font-bold tabular-nums">
+                    {formatMoney(String(order.items.reduce((s, it) => s + Number(prices[it.id!] || 0) * Number(it.quantity), 0)))} ₸
+                  </span>
+                </div>
+                <Button disabled={busy || order.items.some((it) => !(Number(prices[it.id!]) > 0))}
+                  onClick={() => act(() => api.post(`/orders/${order.id}/confirm/`, {
+                    prices: Object.fromEntries(order.items.map((it) => [it.id, prices[it.id!]])),
+                  }))}>
+                  Подтвердить заказ
+                </Button>
+                {order.status === "pending" && (
+                  <Button size="sm" variant="ghost" disabled={busy}
+                    onClick={() => act(() => api.post(`/orders/${order.id}/reject/`))}>
+                    Отклонить
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {/* «Действия» — скрыта, если в текущем состоянии действий нет; иначе сворачиваемая (раскрыта) */}
           {hasActions && (
             <CollapsibleCard title="Действия" defaultOpen>
-              {isManager && isNew && (
-                <>
-                  <Button variant="outline" disabled={busy}
-                    onClick={() => act(() => api.post(`/orders/${order.id}/confirm/`))}>
-                    Подтвердить заказ
-                  </Button>
-                  {order.status === "pending" && (
-                    <Button size="sm" variant="ghost" disabled={busy}
-                      onClick={() => act(() => api.post(`/orders/${order.id}/reject/`))}>
-                      Отклонить
-                    </Button>
-                  )}
-                </>
+              {isManager && isNew && order.items.length === 0 && (
+                <Button variant="outline" disabled={busy}
+                  onClick={() => act(() => api.post(`/orders/${order.id}/confirm/`))}>
+                  Подтвердить заказ
+                </Button>
               )}
               {order.status === "shipped" && order.payment_status !== "settled" && (
                 <>

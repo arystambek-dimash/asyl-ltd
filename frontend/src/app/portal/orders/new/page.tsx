@@ -10,10 +10,9 @@ import { Label } from "@/components/ui/label";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import type { Store } from "@/lib/types";
-import { formatMoney } from "@/lib/utils";
-import { Trash2, Plus } from "lucide-react";
+import { Trash2, Plus, Info } from "lucide-react";
 
-interface PortalProduct { id: number; label: string; price: string; weight_kg: string; available_bags: number; }
+interface PortalProduct { id: number; label: string; weight_kg: string; available_bags: number; }
 
 export default function PortalNewOrderPage() {
   const router = useRouter();
@@ -24,11 +23,6 @@ export default function PortalNewOrderPage() {
   const [store, setStore] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-
-  const total = rows.reduce((s, r) => {
-    const p = products?.find((x) => String(x.id) === r.product);
-    return s + (p ? Number(p.price) * Number(r.quantity || 0) : 0);
-  }, 0);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError("");
@@ -59,7 +53,7 @@ export default function PortalNewOrderPage() {
                   <option value="">Товар</option>
                   {(products ?? []).map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.label} — {formatMoney(p.price)} ₸ · в наличии {p.available_bags} меш.
+                      {p.label} · в наличии {p.available_bags} меш.
                     </option>
                   ))}
                 </Select>
@@ -104,9 +98,9 @@ export default function PortalNewOrderPage() {
                 ))}
               </div>
             </div>
-            <div className="flex items-center justify-between border-t pt-4">
-              <span className="text-sm text-[var(--muted-foreground)]">Итого</span>
-              <span className="text-xl font-bold tabular-nums">{formatMoney(total)} ₸</span>
+            <div className="flex items-start gap-2 rounded-lg border bg-[var(--muted)]/30 px-3 py-2.5 text-xs text-[var(--muted-foreground)]">
+              <Info className="mt-0.5 size-3.5 shrink-0" />
+              Стоимость рассчитает оператор при подтверждении заказа — по вашим ценам.
             </div>
             {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
             <Button type="submit" disabled={busy}>{busy ? "Отправка…" : "Отправить заказ"}</Button>

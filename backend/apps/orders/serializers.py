@@ -6,15 +6,32 @@ from .services import set_truck_number
 class OrderItemSerializer(serializers.ModelSerializer):
     product_label = serializers.CharField(source="product.__str__", read_only=True)
     cv_class = serializers.CharField(source="product.cv_class", read_only=True)
-    price = serializers.DecimalField(source="product.price", max_digits=12,
-                                     decimal_places=2, read_only=True)
+    # base_price — справочная цена товара; price — фактическая (договорная при подтверждении).
+    base_price = serializers.DecimalField(source="product.price", max_digits=12,
+                                          decimal_places=2, read_only=True)
+    unit_price = serializers.DecimalField(max_digits=12, decimal_places=2,
+                                          read_only=True, allow_null=True)
+    price = serializers.SerializerMethodField()
+    client_price = serializers.SerializerMethodField()
     weight_kg = serializers.DecimalField(source="product.weight_kg", max_digits=8,
                                          decimal_places=2, read_only=True)
 
     class Meta:
         model = OrderItem
         fields = ["id", "product", "product_label", "cv_class", "quantity",
-                  "price", "weight_kg"]
+                  "price", "base_price", "unit_price", "client_price", "weight_kg"]
+
+    def get_price(self, obj):
+        # Фактическая цена за мешок: зафиксированная договорная или базовая.
+        p = obj.unit_price if obj.unit_price is not None else obj.product.price
+        return str(p)
+
+    def get_client_price(self, obj):
+        # Подсказка для предзаполнения: текущая цена клиента на этот товар, если есть.
+        from apps.catalog.models import ClientPrice
+        cp = ClientPrice.objects.filter(
+            client=obj.order.client, product=obj.product).first()
+        return str(cp.price) if cp else None
 
 
 class StatusChangeRequestSerializer(serializers.ModelSerializer):

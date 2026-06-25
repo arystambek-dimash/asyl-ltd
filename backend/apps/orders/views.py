@@ -54,7 +54,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="confirm")
     def confirm(self, request, pk=None):
-        order = confirm_order(self.get_object(), request.user)
+        order = confirm_order(self.get_object(), request.user,
+                              prices=request.data.get("prices"))
         return Response(OrderSerializer(order, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="reject")

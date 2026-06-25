@@ -26,7 +26,7 @@ export interface Store {
 export interface Notification {
   id: number; text: string; is_read: boolean; created_at: string;
 }
-export interface OrderItem { id?: number; product: number; product_label?: string; cv_class?: string; quantity: number; price?: string; weight_kg?: string; }
+export interface OrderItem { id?: number; product: number; product_label?: string; cv_class?: string; quantity: number; price?: string; base_price?: string; unit_price?: string | null; client_price?: string | null; weight_kg?: string; }
 export interface StatusChangeRequest {
   id: number; order: number; to_status: string; to_status_label?: string;
   status: string; requested_by?: number | null; requested_by_name?: string | null;

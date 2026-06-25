@@ -13,7 +13,8 @@ class CatalogProductSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Product
-        fields = ["id", "label", "price", "weight_kg", "available_bags"]
+        # Цену клиенту не показываем — её назначает оператор при подтверждении.
+        fields = ["id", "label", "weight_kg", "available_bags"]
 
     def get_available_bags(self, obj):
         s = getattr(obj, "stock", None)

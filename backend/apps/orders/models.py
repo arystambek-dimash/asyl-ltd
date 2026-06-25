@@ -39,7 +39,13 @@ class Order(models.Model):
 
     @property
     def total_amount(self) -> Decimal:
-        return sum((i.quantity * i.product.price for i in self.items.all()), Decimal("0"))
+        # Цена за мешок — зафиксированная договорная (unit_price); пока не задана,
+        # используем базовую цену товара (для черновиков и обратной совместимости).
+        return sum(
+            (i.quantity * (i.unit_price if i.unit_price is not None else i.product.price)
+             for i in self.items.all()),
+            Decimal("0"),
+        )
 
     @property
     def paid_total(self) -> Decimal:
@@ -58,6 +64,9 @@ class OrderItem(models.Model):
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="items")
     product = models.ForeignKey("catalog.Product", on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField()
+    # Договорная цена за мешок, зафиксированная при подтверждении заказа.
+    unit_price = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True)
 
 
 class Payment(models.Model):
