@@ -3,15 +3,17 @@ import { useMemo, useState } from "react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
 } from "recharts";
+import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/utils";
 import { ORDER_STATUS_LABELS } from "@/lib/constants";
-import { TrendingUp, Wallet, AlertCircle, ClipboardList } from "lucide-react";
+import { TrendingUp, Wallet, AlertCircle, ClipboardList, ArrowUpRight } from "lucide-react";
 import type { Order, EventLog } from "@/lib/types";
 
 type Period = "week" | "month" | "year" | "all";
@@ -248,25 +250,23 @@ export default function ReportsPage() {
             {debtors.length === 0 ? (
               <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Долгов нет.</p>
             ) : (
-              <Table>
-                <THead><TR><TH>Заказ</TH><TH>Клиент</TH><TH>Разрешил</TH><TH>Остаток</TH></TR></THead>
-                <TBody>
-                  {debtors.map((o) => (
-                    <TR key={o.id}>
-                      <TD className="font-medium">#{o.id}</TD>
-                      <TD>{o.client_name || "—"}</TD>
-                      <TD className="text-[var(--muted-foreground)]">{o.debt_override_by_name || "—"}</TD>
-                      <TD className="tabular-nums font-medium text-[var(--destructive)]">
-                        {formatMoney(String(Number(o.total_amount) - Number(o.paid_total)))} ₸
-                      </TD>
-                    </TR>
-                  ))}
-                  <TR>
-                    <TD colSpan={3} className="text-right font-medium">Итого долг</TD>
-                    <TD className="tabular-nums font-bold text-[var(--destructive)]">{formatMoney(String(debtTotal))} ₸</TD>
-                  </TR>
-                </TBody>
-              </Table>
+              <div className="flex flex-col gap-4">
+                <div className="flex items-end justify-between">
+                  <div>
+                    <div className="text-sm text-[var(--muted-foreground)]">Итого долг</div>
+                    <div className="text-2xl font-bold tabular-nums text-[var(--destructive)]">{formatMoney(String(debtTotal))} ₸</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm text-[var(--muted-foreground)]">Заказов в долге</div>
+                    <div className="text-2xl font-bold tabular-nums">{debtors.length}</div>
+                  </div>
+                </div>
+                <Link href="/debts">
+                  <Button variant="outline" className="w-full">
+                    Перейти к долгам <ArrowUpRight className="size-4" />
+                  </Button>
+                </Link>
+              </div>
             )}
           </CardContent>
         </Card>
