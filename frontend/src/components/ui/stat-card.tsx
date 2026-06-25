@@ -6,11 +6,13 @@ export function StatCard({
   value,
   accent,
   caption,
+  icon: Icon,
 }: {
   label: string;
   value: React.ReactNode;
   accent?: boolean;
   caption?: string;
+  icon?: React.ElementType;
 }) {
   return (
     <div
@@ -21,7 +23,15 @@ export function StatCard({
           : "border-[var(--border)] bg-[var(--card)] hover:border-[var(--ring)]/40"
       )}
     >
-      <span className="text-[12px] font-medium text-[var(--muted-foreground)]">{label}</span>
+      <div className="flex items-start justify-between gap-2">
+        <span className="text-[12px] font-medium text-[var(--muted-foreground)]">{label}</span>
+        {Icon && (
+          <span className={cn("flex size-7 shrink-0 items-center justify-center rounded-md",
+            accent ? "bg-[var(--ring)]/15 text-[var(--ring)]" : "bg-[var(--muted)] text-[var(--muted-foreground)]")}>
+            <Icon className="size-4" />
+          </span>
+        )}
+      </div>
       <div
         className={cn(
           "text-[24px] sm:text-[30px] leading-[1.1] tracking-tight tabular-nums font-semibold",

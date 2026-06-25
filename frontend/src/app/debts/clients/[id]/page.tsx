@@ -7,14 +7,22 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/ui/stat-card";
+import { ProgressBar } from "@/components/ui/progress-bar";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
 import { can } from "@/lib/can";
 import { useAuth } from "@/store/auth";
 import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
-import { ArrowLeft, ArrowUpRight } from "lucide-react";
+import {
+  ArrowLeft, ArrowUpRight, Phone, TrendingDown, FileText, AlertCircle,
+  Clock, CheckCircle2, CreditCard, DollarSign,
+} from "lucide-react";
 import type { Client, Order } from "@/lib/types";
+
+function initials(name: string): string {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?";
+}
 
 interface DebtStore {
   id: number;
@@ -98,26 +106,36 @@ export default function ClientDebtPage({ params }: { params: Promise<{ id: strin
       }>
       <div className="mb-5 rounded-xl border bg-[var(--card)] p-5 shadow-card">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="text-lg font-bold tracking-tight">{data.client.name}</div>
-            <div className="text-sm text-[var(--muted-foreground)]">{data.client.phone || "—"}</div>
+          <div className="flex items-center gap-3">
+            <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-[var(--ring)] text-base font-semibold text-white">
+              {initials(data.client.name)}
+            </div>
+            <div>
+              <div className="text-lg font-bold tracking-tight">{data.client.name}</div>
+              <div className="flex items-center gap-1.5 text-sm text-[var(--muted-foreground)]">
+                <Phone className="size-3.5" /> {data.client.phone || "—"}
+              </div>
+            </div>
           </div>
           <Badge tone={data.partial_count > 0 ? "warning" : "destructive"} dot>
             {data.partial_count > 0 ? "Есть частичная оплата" : "Не оплачен"}
           </Badge>
         </div>
-        <p className="mt-3 border-t pt-3 text-sm text-[var(--muted-foreground)]">
-          {isAccountant
-            ? "Внесите оплату по каждому заказу ниже. Долг гасится частями или полностью."
-            : "Долги клиента по отгруженным заказам. Оплату вносит бухгалтер."}
+        <p className="mt-4 border-t pt-4 text-sm text-[var(--muted-foreground)]">
+          {isAccountant ? (
+            <>Внесите оплату по каждому заказу ниже. Долг гасится частями или полностью.
+            После полной оплаты все заказы перейдут в статус <b className="text-[var(--foreground)]">«Оплачен»</b>.</>
+          ) : (
+            "Долги клиента по отгруженным заказам. Оплату вносит бухгалтер."
+          )}
         </p>
       </div>
 
       <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-4">
-        <StatCard label="Остаток клиента" value={`${formatMoney(data.debt_total)} ₸`} accent />
-        <StatCard label="Заказов в долге" value={String(data.orders_count)} />
-        <StatCard label="Без оплат" value={String(data.unpaid_count)} />
-        <StatCard label="Частично оплачено" value={String(data.partial_count)} />
+        <StatCard label="Остаток клиента" value={`${formatMoney(data.debt_total)} ₸`} accent icon={TrendingDown} />
+        <StatCard label="Заказов в долге" value={String(data.orders_count)} icon={FileText} />
+        <StatCard label="Без оплат" value={String(data.unpaid_count)} icon={AlertCircle} />
+        <StatCard label="Частично оплачено" value={String(data.partial_count)} icon={Clock} />
       </section>
 
       {data.stores.length > 0 && (
@@ -142,7 +160,12 @@ export default function ClientDebtPage({ params }: { params: Promise<{ id: strin
 
       {error && <p className="mb-4 text-sm text-[var(--destructive)]">{error}</p>}
 
-      <div className="mb-2 text-lg font-semibold tracking-tight">Заказы в долге</div>
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-lg font-semibold tracking-tight">Заказы в долге</span>
+        <span className="text-sm text-[var(--muted-foreground)]">
+          {data.orders.length} {data.orders.length === 1 ? "заказ" : "заказов"}
+        </span>
+      </div>
       <div className="flex flex-col gap-3">
         {data.orders.length === 0 ? (
           <Card><CardContent className="py-10 text-center text-sm text-[var(--muted-foreground)]">Долгов нет.</CardContent></Card>
@@ -167,10 +190,37 @@ export default function ClientDebtPage({ params }: { params: Promise<{ id: strin
                 </Link>
               </CardHeader>
               <CardContent className="flex flex-col gap-3">
-                <div className="grid grid-cols-3 gap-2 text-sm">
-                  <div><span className="text-[var(--muted-foreground)]">Сумма</span><div className="tabular-nums font-medium">{formatMoney(order.total_amount)} ₸</div></div>
-                  <div><span className="text-[var(--muted-foreground)]">Оплачено</span><div className="tabular-nums text-[var(--success)]">{formatMoney(order.paid_total)} ₸</div></div>
-                  <div><span className="text-[var(--muted-foreground)]">Остаток</span><div className="tabular-nums font-semibold text-[var(--destructive)]">{formatMoney(String(remaining))} ₸</div></div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="flex items-center gap-2">
+                    <FileText className="size-4 text-[var(--muted-foreground)]" />
+                    <div>
+                      <div className="text-xs text-[var(--muted-foreground)]">Сумма заказа</div>
+                      <div className="tabular-nums font-medium">{formatMoney(order.total_amount)} ₸</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="size-4 text-[var(--success)]" />
+                    <div>
+                      <div className="text-xs text-[var(--muted-foreground)]">Оплачено</div>
+                      <div className="tabular-nums text-[var(--success)]">{formatMoney(order.paid_total)} ₸</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="size-4 text-[var(--destructive)]" />
+                    <div>
+                      <div className="text-xs text-[var(--muted-foreground)]">Остаток долга</div>
+                      <div className="tabular-nums font-semibold text-[var(--destructive)]">{formatMoney(String(remaining))} ₸</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* прогресс оплаты */}
+                <div className="border-t pt-3">
+                  <div className="mb-1.5 flex items-center justify-between text-xs text-[var(--muted-foreground)]">
+                    <span>Прогресс оплаты</span>
+                    <span className="tabular-nums">{Math.min(100, Math.round((Number(order.paid_total) / Math.max(1, Number(order.total_amount))) * 100))}%</span>
+                  </div>
+                  <ProgressBar pct={(Number(order.paid_total) / Math.max(1, Number(order.total_amount))) * 100} />
                 </div>
 
                 {/* история платежей */}
@@ -196,11 +246,20 @@ export default function ClientDebtPage({ params }: { params: Promise<{ id: strin
                     </p>
                   ) : (
                     <div className="flex flex-col gap-2 border-t pt-3">
+                      <div className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
+                        <CreditCard className="size-3.5" /> Внести оплату
+                      </div>
                       <div className="flex gap-2">
-                        <Input type="number" placeholder="Сумма" value={amounts[order.id] ?? ""}
+                        <Input type="number" placeholder="Введите сумму оплаты" value={amounts[order.id] ?? ""}
                           onChange={(e) => setAmounts((a) => ({ ...a, [order.id]: e.target.value }))} />
+                        <Button size="sm" variant="outline" disabled={busyId === order.id}
+                          onClick={() => setAmounts((a) => ({ ...a, [order.id]: String(remaining) }))}>
+                          Весь долг
+                        </Button>
                         <Button size="sm" disabled={busyId === order.id || !amounts[order.id]}
-                          onClick={() => pay(order, "manual")}>Внести</Button>
+                          onClick={() => pay(order, "manual")}>
+                          <DollarSign className="size-4" /> Внести
+                        </Button>
                       </div>
                       {order.settlement_intent === "instant" && (
                         <Button size="sm" variant="outline" disabled={busyId === order.id}
