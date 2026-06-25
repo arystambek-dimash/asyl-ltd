@@ -146,11 +146,25 @@ class OrderSerializer(serializers.ModelSerializer):
         return PaymentSerializer(qs, many=True).data
 
     def create(self, validated_data):
+        from .services import confirm_order
         items = validated_data.pop("items")
-        validated_data["created_by"] = self.context["request"].user
+        user = self.context["request"].user
+        validated_data["created_by"] = user
+        # Оператор создаёт заказ сразу подтверждённым с ценами.
+        # prices приходит по товару: {product_id: цена} (у позиций ещё нет id).
+        prices_by_product = self.initial_data.get("prices")
+        if prices_by_product:
+            validated_data["status"] = "pending"
         order = Order.objects.create(**validated_data)
-        for item in items:
-            OrderItem.objects.create(order=order, **item)
+        created = [OrderItem.objects.create(order=order, **item) for item in items]
+        if prices_by_product:
+            prices_by_item = {
+                it.id: prices_by_product.get(str(it.product_id),
+                                             prices_by_product.get(it.product_id))
+                for it in created
+            }
+            confirm_order(order, user, prices=prices_by_item)
+            order.refresh_from_db()
         return order
 
     def update(self, instance, validated_data):

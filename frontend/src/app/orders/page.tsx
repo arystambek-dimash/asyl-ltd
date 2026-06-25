@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
@@ -173,16 +173,35 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
   const [transport, setTransport] = useState<"truck" | "train">("truck");
   const [truck, setTruck] = useState("");
   const [arrival, setArrival] = useState("");
-  const [rows, setRows] = useState<{ product: string; quantity: string }[]>([{ product: "", quantity: "" }]);
+  const [rows, setRows] = useState<{ product: string; quantity: string; price: string }[]>([{ product: "", quantity: "", price: "" }]);
+  const [clientPrices, setClientPrices] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // При выборе клиента подтягиваем его цены и предзаполняем строки.
+  useEffect(() => {
+    if (!client) { setClientPrices({}); return; }
+    api.get<Record<string, string>>(`/client-prices/?client=${client}`)
+      .then((r) => {
+        setClientPrices(r.data);
+        setRows((rs) => rs.map((row) =>
+          row.product && !row.price && r.data[row.product]
+            ? { ...row, price: r.data[row.product] } : row));
+      })
+      .catch(() => setClientPrices({}));
+  }, [client]);
+
+  const total = rows.reduce((s, r) => s + Number(r.price || 0) * Number(r.quantity || 0), 0);
+  const allPriced = rows.filter((r) => r.product && Number(r.quantity) > 0)
+    .every((r) => Number(r.price) > 0);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError("");
     try {
-      const items = rows.filter((r) => r.product && Number(r.quantity) > 0)
-        .map((r) => ({ product: Number(r.product), quantity: Number(r.quantity) }));
-      if (!items.length) throw new Error("empty");
+      const valid = rows.filter((r) => r.product && Number(r.quantity) > 0);
+      if (!valid.length) throw new Error("empty");
+      const items = valid.map((r) => ({ product: Number(r.product), quantity: Number(r.quantity) }));
+      const prices = Object.fromEntries(valid.map((r) => [r.product, r.price]));
       const { data } = await api.post("/orders/", {
         client: Number(client),
         store: store ? Number(store) : null,
@@ -190,6 +209,7 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
         truck_number: transport === "train" ? "" : truck,
         arrival_date: arrival || null,
         items,
+        prices,
       });
       onDone();
       router.push(`/orders/${data.id}`);
@@ -260,16 +280,22 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
       <div className="grid gap-2">
         <Label>Позиции (в мешках)</Label>
         {rows.map((r, i) => (
-          <div key={i} className="flex gap-2">
-            <Select className="flex-1" value={r.product}
-              onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, product: e.target.value } : x))}>
+          <div key={i} className="flex flex-wrap gap-2">
+            <Select className="min-w-40 flex-1" value={r.product}
+              onChange={(e) => {
+                const product = e.target.value;
+                setRows(rows.map((x, j) => j === i
+                  ? { ...x, product, price: x.price || clientPrices[product] || "" } : x));
+              }}>
               <option value="">Товар</option>
               {(products ?? []).map((p) => (
                 <option key={p.id} value={p.id}>{p.label}</option>
               ))}
             </Select>
-            <Input type="number" min="1" placeholder="Мешков" className="w-24 sm:w-32" value={r.quantity}
+            <Input type="number" min="1" placeholder="Мешков" className="w-20 sm:w-24" value={r.quantity}
               onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, quantity: e.target.value } : x))} />
+            <Input type="number" min="0" placeholder="Цена/мешок" className="w-28 sm:w-36" value={r.price}
+              onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, price: e.target.value } : x))} />
             <Button type="button" variant="ghost" size="icon"
               onClick={() => setRows(rows.length > 1 ? rows.filter((_, j) => j !== i) : rows)}>
               <Trash2 className="size-4" />
@@ -277,19 +303,23 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
           </div>
         ))}
         <Button type="button" variant="outline" size="sm" className="self-start"
-          onClick={() => setRows([...rows, { product: "", quantity: "" }])}>
+          onClick={() => setRows([...rows, { product: "", quantity: "", price: "" }])}>
           <Plus className="size-4" /> Добавить позицию
         </Button>
       </div>
 
+      <div className="flex items-center justify-between border-t pt-4">
+        <span className="text-sm text-[var(--muted-foreground)]">Итого</span>
+        <span className="text-xl font-bold tabular-nums">{formatMoney(String(total))} ₸</span>
+      </div>
       <div className="flex items-start gap-2 rounded-lg border bg-[var(--muted)]/30 px-3 py-2.5 text-xs text-[var(--muted-foreground)]">
         <Info className="mt-0.5 size-3.5 shrink-0" />
-        Цены назначаются при подтверждении заказа — индивидуально для клиента.
+        Цена подставляется из прайса клиента. Заказ создаётся сразу подтверждённым.
       </div>
       {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onCancel}>Отмена</Button>
-        <Button type="submit" disabled={busy}>{busy ? "Создание…" : "Создать заказ"}</Button>
+        <Button type="submit" disabled={busy || !client || !allPriced}>{busy ? "Создание…" : "Создать заказ"}</Button>
       </div>
     </form>
   );
