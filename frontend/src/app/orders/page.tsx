@@ -243,18 +243,18 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {transport === "truck" && (
+      {transport === "truck" && (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="grid gap-2">
             <Label>Номер машины</Label>
             <LicensePlateInput value={truck} onChange={setTruck} />
           </div>
-        )}
-        <div className="grid gap-2">
-          <Label>Дата прибытия</Label>
-          <Input type="date" value={arrival} onChange={(e) => setArrival(e.target.value)} />
+          <div className="grid gap-2">
+            <Label>Дата прибытия</Label>
+            <Input type="date" value={arrival} onChange={(e) => setArrival(e.target.value)} />
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="grid gap-2">
         <Label>Позиции (в мешках)</Label>
