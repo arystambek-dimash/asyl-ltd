@@ -170,6 +170,7 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
   const { data: stores } = useApi<Store[]>("/stores/");
   const [client, setClient] = useState("");
   const [store, setStore] = useState("");
+  const [transport, setTransport] = useState<"truck" | "train">("truck");
   const [truck, setTruck] = useState("");
   const [arrival, setArrival] = useState("");
   const [rows, setRows] = useState<{ product: string; quantity: string }[]>([{ product: "", quantity: "" }]);
@@ -190,7 +191,8 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
       const { data } = await api.post("/orders/", {
         client: Number(client),
         store: store ? Number(store) : null,
-        truck_number: truck,
+        transport_type: transport,
+        truck_number: transport === "train" ? "" : truck,
         arrival_date: arrival || null,
         items,
       });
@@ -226,11 +228,28 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
         })()}
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="grid gap-2">
-          <Label>Номер машины</Label>
-          <LicensePlateInput value={truck} onChange={setTruck} />
+      <div className="grid gap-2">
+        <Label>Вид транспорта</Label>
+        <div className="grid grid-cols-2 gap-2">
+          {([["truck", "🚚 Трак"], ["train", "🚂 Поезд"]] as const).map(([v, label]) => (
+            <button key={v} type="button" onClick={() => setTransport(v)}
+              className={
+                "rounded-lg border px-3 py-2 text-sm font-medium transition-colors " +
+                (transport === v ? "border-[var(--primary)] bg-[var(--primary)]/5" : "hover:bg-[var(--muted)]/40")
+              }>
+              {label}
+            </button>
+          ))}
         </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {transport === "truck" && (
+          <div className="grid gap-2">
+            <Label>Номер машины</Label>
+            <LicensePlateInput value={truck} onChange={setTruck} />
+          </div>
+        )}
         <div className="grid gap-2">
           <Label>Дата прибытия</Label>
           <Input type="date" value={arrival} onChange={(e) => setArrival(e.target.value)} />
