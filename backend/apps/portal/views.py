@@ -5,10 +5,20 @@ from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError, APIException
 from apps.accounts.permissions import IsClientUser
 from apps.catalog.models import Product
+from apps.clients.models import Store
+from apps.clients.serializers import StoreSerializer
 from apps.orders.models import Order
 from apps.orders.services import create_client_payment, set_truck_number
 from apps.eventlog.services import log_event
 from .serializers import CatalogProductSerializer, PortalOrderSerializer
+
+
+class PortalStoreViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    serializer_class = StoreSerializer
+    permission_classes = [IsClientUser]
+
+    def get_queryset(self):
+        return Store.objects.filter(client__user=self.request.user)
 
 
 class Conflict(APIException):

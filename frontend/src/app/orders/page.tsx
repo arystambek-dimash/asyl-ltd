@@ -23,7 +23,7 @@ import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { formatMoney } from "@/lib/utils";
 import { Plus, Trash2, Search } from "lucide-react";
-import type { Order, Client, Product } from "@/lib/types";
+import type { Order, Client, Product, Store } from "@/lib/types";
 
 export default function OrdersPage() {
   const router = useRouter();
@@ -167,7 +167,9 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
   const router = useRouter();
   const { data: clients } = useApi<Client[]>("/clients/");
   const { data: products } = useApi<Product[]>("/products/");
+  const { data: stores } = useApi<Store[]>("/stores/");
   const [client, setClient] = useState("");
+  const [store, setStore] = useState("");
   const [truck, setTruck] = useState("");
   const [arrival, setArrival] = useState("");
   const [rows, setRows] = useState<{ product: string; quantity: string }[]>([{ product: "", quantity: "" }]);
@@ -187,6 +189,7 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
       if (!items.length) throw new Error("empty");
       const { data } = await api.post("/orders/", {
         client: Number(client),
+        store: store ? Number(store) : null,
         truck_number: truck,
         arrival_date: arrival || null,
         items,
@@ -201,12 +204,26 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-5">
-      <div className="grid gap-2">
-        <Label>Клиент</Label>
-        <Select value={client} onChange={(e) => setClient(e.target.value)} required>
-          <option value="">Выберите клиента</option>
-          {(clients ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </Select>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="grid gap-2">
+          <Label>Клиент</Label>
+          <Select value={client} onChange={(e) => { setClient(e.target.value); setStore(""); }} required>
+            <option value="">Выберите клиента</option>
+            {(clients ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+        </div>
+        {(() => {
+          const clientStores = (stores ?? []).filter((s) => String(s.client) === client);
+          return clientStores.length > 0 ? (
+            <div className="grid gap-2">
+              <Label>Магазин (необязательно)</Label>
+              <Select value={store} onChange={(e) => setStore(e.target.value)}>
+                <option value="">Без магазина</option>
+                {clientStores.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </Select>
+            </div>
+          ) : null;
+        })()}
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

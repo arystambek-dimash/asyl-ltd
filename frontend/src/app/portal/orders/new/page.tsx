@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
+import type { Store } from "@/lib/types";
 import { formatMoney } from "@/lib/utils";
 import { Trash2, Plus } from "lucide-react";
 
@@ -17,8 +18,10 @@ interface PortalProduct { id: number; label: string; price: string; weight_kg: s
 export default function PortalNewOrderPage() {
   const router = useRouter();
   const { data: products } = useApi<PortalProduct[]>("/portal/catalog/");
+  const { data: stores } = useApi<Store[]>("/portal/stores/");
   const [rows, setRows] = useState([{ product: "", quantity: "" }]);
   const [intent, setIntent] = useState<"debt" | "instant">("debt");
+  const [store, setStore] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -33,7 +36,9 @@ export default function PortalNewOrderPage() {
       const items = rows.filter((r) => r.product && Number(r.quantity) > 0)
         .map((r) => ({ product: Number(r.product), quantity: Number(r.quantity) }));
       if (!items.length) throw new Error("empty");
-      await api.post("/portal/orders/", { items, settlement_intent: intent });
+      await api.post("/portal/orders/", {
+        items, settlement_intent: intent, store: store ? Number(store) : null,
+      });
       router.push("/portal/orders");
     } catch (err) {
       setError(err instanceof Error && err.message === "empty"
@@ -70,6 +75,15 @@ export default function PortalNewOrderPage() {
               onClick={() => setRows([...rows, { product: "", quantity: "" }])}>
               <Plus className="size-4" /> Добавить позицию
             </Button>
+            {(stores?.length ?? 0) > 0 && (
+              <div className="border-t pt-4">
+                <Label className="mb-1.5 block">Магазин (необязательно)</Label>
+                <Select value={store} onChange={(e) => setStore(e.target.value)}>
+                  <option value="">Без магазина (на себя)</option>
+                  {(stores ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </Select>
+              </div>
+            )}
             <div className="border-t pt-4">
               <Label className="mb-2 block">Способ расчёта</Label>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
