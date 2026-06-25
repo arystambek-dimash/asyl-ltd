@@ -126,6 +126,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Badge tone="muted">{order.transport_type === "train" ? "🚂 Поезд" : "🚚 Трак"}</Badge>
             <StatusBadge status={order.status} dot />
             {order.status === "shipped" && order.payment_status && (
               <Badge tone={PAYMENT_STATUS_TONE[order.payment_status] ?? "muted"} dot>

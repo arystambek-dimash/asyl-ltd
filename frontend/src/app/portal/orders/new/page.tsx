@@ -20,6 +20,7 @@ export default function PortalNewOrderPage() {
   const { data: stores } = useApi<Store[]>("/portal/stores/");
   const [rows, setRows] = useState([{ product: "", quantity: "" }]);
   const [intent, setIntent] = useState<"debt" | "instant">("debt");
+  const [transport, setTransport] = useState<"truck" | "train">("truck");
   const [store, setStore] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -31,7 +32,8 @@ export default function PortalNewOrderPage() {
         .map((r) => ({ product: Number(r.product), quantity: Number(r.quantity) }));
       if (!items.length) throw new Error("empty");
       await api.post("/portal/orders/", {
-        items, settlement_intent: intent, store: store ? Number(store) : null,
+        items, settlement_intent: intent, transport_type: transport,
+        store: store ? Number(store) : null,
       });
       router.push("/portal/orders");
     } catch (err) {
@@ -78,6 +80,20 @@ export default function PortalNewOrderPage() {
                 </Select>
               </div>
             )}
+            <div className="border-t pt-4">
+              <Label className="mb-2 block">Вид транспорта</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {([["truck", "🚚 Трак"], ["train", "🚂 Поезд"]] as const).map(([v, label]) => (
+                  <button key={v} type="button" onClick={() => setTransport(v)}
+                    className={
+                      "rounded-lg border px-3 py-2 text-sm font-medium transition-colors " +
+                      (transport === v ? "border-[var(--primary)] bg-[var(--primary)]/5" : "hover:bg-[var(--muted)]/40")
+                    }>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="border-t pt-4">
               <Label className="mb-2 block">Способ расчёта</Label>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">

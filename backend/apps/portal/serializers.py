@@ -34,6 +34,8 @@ class PortalOrderSerializer(serializers.ModelSerializer):
     items = PortalOrderItemSerializer(many=True)
     settlement_intent = serializers.ChoiceField(
         choices=Order.SETTLEMENT_INTENTS, required=False, default="debt")
+    transport_type = serializers.ChoiceField(
+        choices=Order.TRANSPORT_TYPES, required=False, default="truck")
     store = serializers.PrimaryKeyRelatedField(
         queryset=Store.objects.all(), required=False, allow_null=True)
     store_name = serializers.CharField(source="store.name", read_only=True, default=None)
@@ -43,7 +45,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ["id", "status", "payment_status", "settlement_intent",
+        fields = ["id", "status", "payment_status", "settlement_intent", "transport_type",
                   "store", "store_name",
                   "items", "total_amount", "paid_total", "remaining_amount",
                   "truck_number", "debt_requested", "debt_override", "created_at"]
@@ -61,10 +63,12 @@ class PortalOrderSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         items = validated_data.pop("items")
         intent = validated_data.get("settlement_intent", "debt")
+        transport = validated_data.get("transport_type", "truck")
         store = validated_data.get("store")
         client = self.context["request"].user.client_profile
         order = Order.objects.create(client=client, status="pending",
-                                     settlement_intent=intent, store=store)
+                                     settlement_intent=intent, store=store,
+                                     transport_type=transport)
         for item in items:
             OrderItem.objects.create(order=order, **item)
         return order

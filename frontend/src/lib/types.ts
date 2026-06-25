@@ -34,7 +34,7 @@ export interface StatusChangeRequest {
 }
 export interface Order {
   id: number; client: number; store?: number | null; client_name?: string; client_phone?: string;
-  status: string; payment_status?: string; settlement_intent?: string;
+  status: string; payment_status?: string; settlement_intent?: string; transport_type?: "truck" | "train";
   truck_number: string; truck_number_set_by?: number | null;
   arrival_date?: string | null;
   items: OrderItem[]; total_amount: string; paid_total: string; remaining_amount?: string;
