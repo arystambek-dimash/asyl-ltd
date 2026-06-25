@@ -3,6 +3,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .env
+/config/
+/backups/
+/deploy/certbot/conf/
+/deploy/certbot/www/
 venv/
 .venv/
 node_modules/

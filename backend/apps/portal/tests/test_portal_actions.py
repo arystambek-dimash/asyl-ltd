@@ -26,21 +26,28 @@ def test_create_order_is_pending(db, make_user, auth_client):
 
 
 def test_pay_creates_pending_payment(client_and_order, auth_client):
-    # Оплата доступна после въезда (статус "arrived").
+    # Оплата доступна после отгрузки.
     user, o = client_and_order
-    o.status = "arrived"; o.save()
+    o.status = "shipped"; o.save()
     r = auth_client(user).post(f"/api/portal/orders/{o.id}/pay/", {"method": "kaspi"}, format="json")
     assert r.status_code == 201
     assert o.payments.filter(status="pending", method="kaspi").exists()
 
 
 def test_request_debt(client_and_order, auth_client):
-    # Долг доступен после въезда (статус "arrived").
+    # Долг фиксируется после отгрузки.
     user, o = client_and_order
-    o.status = "arrived"; o.save()
+    o.status = "shipped"; o.save()
     r = auth_client(user).post(f"/api/portal/orders/{o.id}/request-debt/")
     assert r.status_code == 200
     o.refresh_from_db(); assert o.debt_requested is True
+
+
+def test_pay_blocked_before_shipped(client_and_order, auth_client):
+    user, o = client_and_order
+    o.status = "arrived"; o.save()
+    r = auth_client(user).post(f"/api/portal/orders/{o.id}/pay/", {"method": "kaspi"}, format="json")
+    assert r.status_code == 400
 
 
 def test_truck_blocked_before_confirmed(client_and_order, auth_client):

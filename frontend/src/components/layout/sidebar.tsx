@@ -5,7 +5,7 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Boxes, ClipboardList, Users, Truck,
-  ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings, X,
+  ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings, X, Store, Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { can } from "@/lib/can";
@@ -26,6 +26,7 @@ const STAFF_SECTIONS: NavSection[] = [
     title: "Обзор",
     items: [
       { href: "/dashboard", label: "Дашборд", icon: LayoutDashboard },
+      { href: "/debts", label: "Долги", icon: Wallet, perm: "orders.view" },
       { href: "/reports", label: "Отчёты", icon: BarChart3, perm: "reports.view" },
     ],
   },
@@ -36,6 +37,7 @@ const STAFF_SECTIONS: NavSection[] = [
       { href: "/shipping", label: "Пост отгрузки", icon: Truck, perm: "shipping.view" },
       { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },
       { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
+      { href: "/stores", label: "Магазины", icon: Store, perm: "clients.view" },
       { href: "/catalog/products", label: "Товары", icon: Package, perm: "catalog.view" },
     ],
   },

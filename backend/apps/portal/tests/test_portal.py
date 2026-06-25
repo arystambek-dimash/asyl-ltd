@@ -25,6 +25,19 @@ def test_client_creates_own_pending_order(auth_client, client_user):
     order = Order.objects.get()
     assert order.status == "pending"
     assert order.client.user_id == client_user.id
+    assert order.settlement_intent == "debt"  # по умолчанию
+
+
+def test_client_can_choose_instant_intent(auth_client, client_user):
+    _client_for(client_user)
+    prod = _product()
+    resp = auth_client(client_user).post(
+        "/api/portal/orders/",
+        {"items": [{"product": prod.id, "quantity": 1}], "settlement_intent": "instant"},
+        format="json",
+    )
+    assert resp.status_code == 201
+    assert Order.objects.get().settlement_intent == "instant"
 
 
 def test_client_sees_only_own_orders(auth_client, client_user, make_user):

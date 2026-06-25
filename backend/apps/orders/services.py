@@ -6,11 +6,10 @@ from rest_framework.exceptions import ValidationError
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
 from apps.clients.services import is_payment_window_open
-from .models import Order, Payment
+from .models import Order, Payment, StatusChangeRequest
 
 
-@transaction.atomic
-def add_payment(order: Order, amount, user, method="cash", status="confirmed") -> Payment:
+def _validate_payment_open(order: Order) -> None:
     if order.status != "shipped":
         raise ValidationError(
             {"detail": "Оплата доступна только после отгрузки", "code": "payment_not_open"}
@@ -20,6 +19,11 @@ def add_payment(order: Order, amount, user, method="cash", status="confirmed") -
             {"detail": f"Оплата для магазина «{order.store.name}» сегодня недоступна",
              "code": "payment_window_closed"}
         )
+
+
+@transaction.atomic
+def add_payment(order: Order, amount, user, method="cash", status="confirmed") -> Payment:
+    _validate_payment_open(order)
     if amount is None or Decimal(str(amount)) <= 0:
         raise ValidationError(
             {"detail": "Сумма оплаты должна быть больше нуля", "code": "invalid_amount"}
@@ -33,11 +37,25 @@ def add_payment(order: Order, amount, user, method="cash", status="confirmed") -
 
 
 @transaction.atomic
+def pay_via_bank(order: Order, user) -> Payment:
+    """Моментальная оплата через банк (заглушка): гасит остаток одним платежом."""
+    _validate_payment_open(order)
+    remaining = order.total_amount - order.paid_total
+    if remaining <= 0:
+        raise ValidationError({"detail": "Заказ уже оплачен", "code": "already_paid"})
+    # TODO: здесь будет реальный запрос в банк. Пока — заглушка, сразу подтверждаем.
+    payment = Payment.objects.create(
+        order=order, amount=remaining, method="card", status="confirmed", recorded_by=user)
+    log_event("payment", f"Банковская оплата {remaining} (заглушка)",
+              user=user, order=order,
+              payload={"amount": str(remaining), "method": "card", "channel": "bank_stub"})
+    _apply_payment_status(order, user)
+    return payment
+
+
+@transaction.atomic
 def create_client_payment(order: Order, method: str, user) -> Payment:
-    # Оплата происходит после въезда машины (статус «arrived»).
-    if order.status != "arrived":
-        raise ValidationError(
-            {"detail": "Оплата доступна после въезда машины", "code": "invalid_status"})
+    _validate_payment_open(order)
     if method not in ("card", "kaspi"):
         raise ValidationError({"detail": "Недопустимый способ оплаты", "code": "bad_method"})
     remaining = order.total_amount - order.paid_total
@@ -81,18 +99,32 @@ def approve_debt(order: Order, user) -> Order:
     return order
 
 
-def _apply_payment_status(order: Order, user) -> None:
-    order.refresh_from_db()
+def _payment_status_for(order: Order) -> str:
     paid = order.paid_total
     if paid <= 0:
-        new = "unpaid"
-    elif paid >= order.total_amount:
-        new = "settled"
-    else:
-        new = "partial"
+        return "unpaid"
+    if paid >= order.total_amount and order.total_amount > 0:
+        return "settled"
+    return "partial"
+
+
+def sync_payment_status(order: Order) -> str:
+    """Привести payment_status в соответствие с фактическими оплатами. Идемпотентно.
+
+    Без пользователя — используется и при оплате, и для бэкфилла легаси-данных.
+    """
+    order.refresh_from_db()
+    new = _payment_status_for(order)
     if new != order.payment_status:
         order.payment_status = new
         order.save(update_fields=["payment_status"])
+    return new
+
+
+def _apply_payment_status(order: Order, user) -> None:
+    old = order.payment_status
+    new = sync_payment_status(order)
+    if new != old:
         log_event("payment", f"Статус оплаты: {new}", user=user, order=order,
                   payload={"payment_status": new})
 
@@ -164,3 +196,66 @@ def set_truck_number(order: Order, value: str, user) -> Order:
               payload={"truck_number": value})
     notify(order.client, f"Ваш КАМАЗ {value} отправляется")
     return order
+
+
+def _can_edit_status(user) -> bool:
+    return bool(user) and not getattr(user, "is_client", False) and user.has_perm_code("orders.edit")
+
+
+@transaction.atomic
+def _force_set_status(order: Order, to_status: str, user) -> Order:
+    if to_status not in Order.STATUSES:
+        raise ValidationError({"detail": "Неизвестный статус", "code": "bad_status"})
+    old = order.status
+    order.status = to_status
+    order.save(update_fields=["status"])
+    log_event("status_override",
+              f"Статус заказа изменён вручную: {old} → {to_status}",
+              user=user, order=order, payload={"from": old, "to": to_status})
+    return order
+
+
+@transaction.atomic
+def request_status_change(order: Order, to_status: str, user) -> dict:
+    """Главный оператор (orders.edit) меняет сразу; остальные создают запрос."""
+    if to_status not in Order.STATUSES:
+        raise ValidationError({"detail": "Неизвестный статус", "code": "bad_status"})
+    if to_status == order.status:
+        raise ValidationError({"detail": "Статус уже такой", "code": "no_change"})
+    if _can_edit_status(user):
+        _force_set_status(order, to_status, user)
+        return {"applied": True, "request": None}
+    req = StatusChangeRequest.objects.create(
+        order=order, to_status=to_status, requested_by=user)
+    log_event("status_request",
+              f"Запрос ручной смены статуса: {order.status} → {to_status}",
+              user=user, order=order,
+              payload={"request_id": req.id, "from": order.status, "to": to_status})
+    return {"applied": False, "request": req}
+
+
+@transaction.atomic
+def approve_status_change(req: StatusChangeRequest, user) -> StatusChangeRequest:
+    if req.status != "pending":
+        raise ValidationError({"detail": "Запрос уже обработан", "code": "already_decided"})
+    _force_set_status(req.order, req.to_status, user)
+    req.status = "approved"
+    req.decided_by = user
+    req.decided_at = timezone.now()
+    req.save(update_fields=["status", "decided_by", "decided_at"])
+    log_event("status_request", "Запрос смены статуса одобрен", user=user, order=req.order,
+              payload={"request_id": req.id})
+    return req
+
+
+@transaction.atomic
+def reject_status_change(req: StatusChangeRequest, user) -> StatusChangeRequest:
+    if req.status != "pending":
+        raise ValidationError({"detail": "Запрос уже обработан", "code": "already_decided"})
+    req.status = "rejected"
+    req.decided_by = user
+    req.decided_at = timezone.now()
+    req.save(update_fields=["status", "decided_by", "decided_at"])
+    log_event("status_request", "Запрос смены статуса отклонён", user=user, order=req.order,
+              payload={"request_id": req.id})
+    return req

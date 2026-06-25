@@ -8,7 +8,7 @@ from apps.orders import services
 @pytest.fixture
 def order(db):
     c = Client.objects.create(first_name="A", last_name="B", phone="1")
-    return Order.objects.create(client=c, status="paid")
+    return Order.objects.create(client=c, status="confirmed")
 
 
 def test_client_sets_then_only_client_can_change(order, make_user):

@@ -12,26 +12,23 @@ import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
 import {
   Truck, ChevronDown, User, Phone, Package, Scale, CheckCircle2, Circle,
-  AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Order } from "@/lib/types";
 
-const QUEUE_STATUSES = ["confirmed", "arrived", "paid", "loading", "loaded"];
+const QUEUE_STATUSES = ["confirmed", "arrived", "loading", "loaded"];
 
-// шаги жизненного цикла на посту (новый порядок: въезд → оплата → загрузка → выезд)
+// Шаги поста: начальный вес фиксируется внутри прибытия, оплата идёт после выезда.
 const STEPS = [
-  { key: "confirmed", label: "Прибытие" },
-  { key: "arrived", label: "Оплата" },
-  { key: "loading", label: "Загрузка" },
-  { key: "shipped", label: "Выезд" },
+  { label: "Прибытие" },
+  { label: "Загрузка" },
+  { label: "Выезд" },
 ];
 function stepIndex(status: string) {
   if (status === "confirmed") return 0;
-  if (status === "paid") return 2;   // оплачено — ждём загрузку
-  if (status === "loaded") return 2; // «Загрузка» завершена, ждём выезд
-  const i = STEPS.findIndex((s) => s.key === status);
-  return i < 0 ? 0 : i;
+  if (status === "arrived" || status === "loading") return 1;
+  if (status === "loaded" || status === "shipped") return 2;
+  return 0;
 }
 
 function Stepper({ status, compact = false }: { status: string; compact?: boolean }) {
@@ -42,7 +39,7 @@ function Stepper({ status, compact = false }: { status: string; compact?: boolea
         const done = i < current;
         const active = i === current;
         return (
-          <div key={s.key} className="flex items-center">
+          <div key={s.label} className="flex items-center">
             <div className="flex flex-col items-center gap-1">
               {done ? (
                 <CheckCircle2 className={cn(compact ? "size-3.5" : "size-5", "text-[var(--success)]")} />
@@ -103,9 +100,6 @@ export default function ShippingPage() {
     </AppShell>
   );
 }
-
-// Сравнение фактического веса груза (выезд − въезд) с ожидаемым (мешки × вес).
-// Авторитетный расчёт делает бэкенд (eventlog); здесь — предпросмотр для оператора.
 
 function QueueRow({
   order, open, onToggle, onChange,
@@ -184,12 +178,6 @@ function QueueRow({
                   </span>
                 </div>
               )}
-              {order.status === "arrived" && (
-                <div className="flex items-center gap-2 rounded-md bg-[var(--warning)]/12 px-3 py-2 text-xs text-[var(--warning)]">
-                  <AlertTriangle className="size-4 shrink-0" />
-                  Ожидается оплата клиентом (или долг). Загрузка начнётся после оплаты.
-                </div>
-              )}
             </div>
 
             {/* действие текущего шага */}
@@ -213,18 +201,8 @@ function QueueRow({
                 </>
               )}
 
-              {/* Прибыл — ждём оплату клиента (загрузка после оплаты). */}
+              {/* Машина въехала — оператор сразу начинает загрузку (оплата после отгрузки). */}
               {order.status === "arrived" && (
-                <>
-                  <Label>Оплата</Label>
-                  <p className="text-sm text-[var(--muted-foreground)]">
-                    Машина принята. Загрузка станет доступна после оплаты заказа клиентом.
-                  </p>
-                </>
-              )}
-
-              {/* Оплачен: оператор фиксирует количество и начинает загрузку. */}
-              {order.status === "paid" && (
                 <>
                   <Label>Загрузка</Label>
                   <Input type="number" min={0} placeholder="Количество мешков" value={bags}
@@ -236,18 +214,17 @@ function QueueRow({
                 </>
               )}
 
-              {/* Идёт загрузка: можно обновить количество и завершить. */}
+              {/* Идёт загрузка: оператор вводит итоговое количество и завершает. */}
               {order.status === "loading" && (
                 <>
                   <Label>Загрузка</Label>
                   <Input type="number" min={0} placeholder="Количество мешков" value={bags}
                     onChange={(e) => setBags(e.target.value)} />
-                  <Button disabled={busy || !bags} variant="outline"
-                    onClick={() => act(() => api.post(`/orders/${order.id}/load/`, { bags }))}>
-                    Сохранить мешки
-                  </Button>
-                  <Button disabled={busy}
-                    onClick={() => act(() => api.post(`/orders/${order.id}/finish-loading/`, {}))}>
+                  <Button disabled={busy || !bags}
+                    onClick={() => act(async () => {
+                      await api.post(`/orders/${order.id}/load/`, { bags });
+                      await api.post(`/orders/${order.id}/finish-loading/`, {});
+                    })}>
                     Загрузка завершена
                   </Button>
                 </>

@@ -26,12 +26,11 @@ export const registerClient = (payload: RegisterPayload) =>
 
 export type ClientStep = "pending" | "pay" | "rejected" | "truck" | "shipping" | "done";
 
-export function clientStep(status: string): ClientStep {
+export function clientStep(status: string, paymentStatus?: string): ClientStep {
   if (status === "pending" || status === "draft") return "pending";
   if (status === "rejected" || status === "cancelled") return "rejected";
-  // Новый порядок: подтверждён → ввод КАМАЗа, въезд → оплата, дальше склад.
+  // Подтверждён → ввод КАМАЗа → склад → отгрузка → оплата.
   if (status === "confirmed") return "truck";
-  if (status === "arrived") return "pay";
-  if (status === "shipped") return "done";
-  return "shipping"; // paid/loading/loaded
+  if (status === "shipped") return paymentStatus === "settled" ? "done" : "pay";
+  return "shipping";
 }

@@ -5,10 +5,20 @@ from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError, APIException
 from apps.accounts.permissions import IsClientUser
 from apps.catalog.models import Product
+from apps.clients.models import Store
+from apps.clients.serializers import StoreSerializer
 from apps.orders.models import Order
 from apps.orders.services import create_client_payment, set_truck_number
 from apps.eventlog.services import log_event
 from .serializers import CatalogProductSerializer, PortalOrderSerializer
+
+
+class PortalStoreViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    serializer_class = StoreSerializer
+    permission_classes = [IsClientUser]
+
+    def get_queryset(self):
+        return Store.objects.filter(client__user=self.request.user)
 
 
 class Conflict(APIException):
@@ -43,8 +53,8 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     @action(detail=True, methods=["post"], url_path="request-debt")
     def request_debt(self, request, pk=None):
         order = self.get_object()
-        if order.status != "arrived":
-            raise ValidationError({"detail": "Долг доступен после въезда машины",
+        if order.status != "shipped":
+            raise ValidationError({"detail": "Долг фиксируется после отгрузки",
                                    "code": "invalid_status"})
         order.debt_requested = True
         order.save(update_fields=["debt_requested"])
