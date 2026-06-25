@@ -16,7 +16,78 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "list": "clients.view", "retrieve": "clients.view",
         "create": "clients.create", "update": "clients.edit",
         "partial_update": "clients.edit", "destroy": "clients.delete",
+        "debts": "clients.view",
+        "debt_detail": "clients.view",
     }
+
+    def _debt_orders(self, client):
+        return (client.orders
+                .filter(status="shipped")
+                .exclude(payment_status="settled")
+                .select_related("client", "store")
+                .prefetch_related("items__product", "payments")
+                .order_by("-created_at"))
+
+    def _debt_total(self, orders):
+        return sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
+
+    @action(detail=False, methods=["get"], url_path="debts")
+    def debts(self, request):
+        """Агрегированные долги по клиентам."""
+        today = date.today()
+        rows = []
+        for client in Client.objects.prefetch_related("orders__payments", "stores").all():
+            orders = list(self._debt_orders(client))
+            debt = self._debt_total(orders)
+            if debt <= 0:
+                continue
+            stores = [s for s in client.stores.all()
+                      if any(o.store_id == s.id for o in orders)]
+            rows.append({
+                "client_id": client.id,
+                "client_name": client.name,
+                "client_phone": client.phone,
+                "debt_total": str(debt.quantize(Decimal("0.01"))),
+                "orders_count": len(orders),
+                "unpaid_count": sum(1 for o in orders if o.payment_status == "unpaid"),
+                "partial_count": sum(1 for o in orders if o.payment_status == "partial"),
+                "stores_count": len(stores),
+                "overdue_count": sum(
+                    1 for s in stores
+                    if s.payment_schedule_type != "none" and is_payment_window_open(s, today)
+                ),
+            })
+        rows.sort(key=lambda r: Decimal(r["debt_total"]), reverse=True)
+        return Response(rows)
+
+    @action(detail=True, methods=["get"], url_path="debt-detail")
+    def debt_detail(self, request, pk=None):
+        """Детали долга клиента: агрегат и непогашенные заказы."""
+        from apps.orders.serializers import OrderSerializer
+        client = self.get_object()
+        today = date.today()
+        orders = list(self._debt_orders(client))
+        debt = self._debt_total(orders)
+        stores = [s for s in client.stores.all()
+                  if any(o.store_id == s.id for o in orders)]
+        return Response({
+            "client": ClientSerializer(client).data,
+            "debt_total": str(debt.quantize(Decimal("0.01"))),
+            "orders_count": len(orders),
+            "unpaid_count": sum(1 for o in orders if o.payment_status == "unpaid"),
+            "partial_count": sum(1 for o in orders if o.payment_status == "partial"),
+            "stores": [
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "payment_schedule_type": s.payment_schedule_type,
+                    "payment_days": s.payment_days,
+                    "window_open": is_payment_window_open(s, today),
+                }
+                for s in stores
+            ],
+            "orders": OrderSerializer(orders, many=True, context={"request": request}).data,
+        })
 
 
 class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
