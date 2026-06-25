@@ -4,10 +4,9 @@ import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/use-api";
-import { formatMoney } from "@/lib/utils";
 import { ShoppingCart } from "lucide-react";
 
-interface PortalProduct { id: number; label: string; price: string; weight_kg: string; available_bags: number; }
+interface PortalProduct { id: number; label: string; weight_kg: string; available_bags: number; }
 
 export default function PortalCatalogPage() {
   const { data: products, loading } = useApi<PortalProduct[]>("/portal/catalog/");
@@ -27,8 +26,7 @@ export default function PortalCatalogPage() {
             <Card key={p.id} className="p-6">
               <div className="font-medium">{p.label}</div>
               <div className="mt-1 text-xs text-[var(--muted-foreground)]">{p.weight_kg} кг / мешок</div>
-              <div className="mt-3 text-2xl font-bold tabular-nums">{formatMoney(p.price)} ₸</div>
-              <div className="mt-2 text-xs font-medium text-[var(--success)]">В наличии: {p.available_bags} меш.</div>
+              <div className="mt-3 text-xs font-medium text-[var(--success)]">В наличии: {p.available_bags} меш.</div>
             </Card>
           ))}
         </div>
