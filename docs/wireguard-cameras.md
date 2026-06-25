@@ -17,7 +17,7 @@ On the server, set these values in `.env`:
 ```env
 WG_SERVERURL=78.40.109.240
 WG_SERVERPORT=51820
-WG_PEERS=operator-laptop
+WG_PEERS=operatorlaptop
 WG_PEERDNS=1.1.1.1
 WG_INTERNAL_SUBNET=10.13.13.0
 WG_ALLOWEDIPS=10.13.13.0/24,192.168.1.0/24
@@ -33,8 +33,11 @@ reachable from the Docker host. Examples:
 To add more operator devices, extend `WG_PEERS`:
 
 ```env
-WG_PEERS=operator-laptop,manager-laptop,phone
+WG_PEERS=operatorlaptop,managerlaptop,phone
 ```
+
+Peer names must be alphanumeric because the linuxserver/wireguard image skips
+names with punctuation.
 
 ## 2. Open the VPN port on the server
 
@@ -61,7 +64,7 @@ docker compose logs -f wireguard
 The peer config is generated under:
 
 ```text
-config/peer_operator-laptop/peer_operator-laptop.conf
+config/peer_operatorlaptop/peer_operatorlaptop.conf
 ```
 
 If `config/` was generated earlier with the wrong `SERVERURL` or `ALLOWEDIPS`,
@@ -73,7 +76,7 @@ are already in use.
 Install the WireGuard app on the operator computer and import:
 
 ```text
-config/peer_operator-laptop/peer_operator-laptop.conf
+config/peer_operatorlaptop/peer_operatorlaptop.conf
 ```
 
 After connecting, test:
