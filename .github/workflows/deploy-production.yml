@@ -1,0 +1,49 @@
+name: Deploy production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to production server
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PROD_HOST: ${{ secrets.PROD_HOST || '78.40.109.240' }}
+      PROD_PORT: ${{ secrets.PROD_PORT || '22' }}
+      PROD_USER: ${{ secrets.PROD_USER || 'ubuntu' }}
+      PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+
+    steps:
+      - name: Skip until deploy key is configured
+        if: ${{ env.PROD_SSH_KEY == '' }}
+        run: echo "PROD_SSH_KEY is not configured; skipping production deploy."
+
+      - name: Deploy over SSH
+        if: ${{ env.PROD_SSH_KEY != '' }}
+        run: |
+          set -euo pipefail
+
+          test -n "$PROD_HOST"
+          test -n "$PROD_PORT"
+          test -n "$PROD_USER"
+          test -n "$PROD_SSH_KEY"
+
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/asyl_ltd_deploy_key
+          chmod 600 ~/.ssh/asyl_ltd_deploy_key
+          ssh-keyscan -p "$PROD_PORT" -H "$PROD_HOST" >> ~/.ssh/known_hosts
+
+          ssh \
+            -i ~/.ssh/asyl_ltd_deploy_key \
+            -p "$PROD_PORT" \
+            -o IdentitiesOnly=yes \
+            "$PROD_USER@$PROD_HOST" \
+            'BRANCH=main /home/ubuntu/asyl-ltd/deploy/remote-deploy.sh'

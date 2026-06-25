@@ -125,12 +125,49 @@ docker compose -f docker-compose.prod.yml exec -T db pg_restore \
   < backups/asyl-latest.dump
 ```
 
-## 7. WireGuard peer config
+## 7. CI/CD
+
+Production auto-deploy is defined in:
+
+```text
+.github/workflows/deploy-production.yml
+```
+
+It runs on every push to `main` and executes this script on the server:
+
+```text
+deploy/remote-deploy.sh
+```
+
+The workflow connects to `ubuntu@78.40.109.240` by SSH key. Add this GitHub
+Actions repository secret:
+
+```text
+PROD_SSH_KEY
+```
+
+Optional override secrets:
+
+```text
+PROD_HOST
+PROD_PORT
+PROD_USER
+```
+
+Manual secret setup with GitHub CLI:
+
+```bash
+gh secret set PROD_SSH_KEY < config/github-actions-deploy-key
+```
+
+The private key must stay out of git. The `config/` directory is ignored.
+
+## 8. WireGuard peer config
 
 Generated configs are under:
 
 ```text
-config/peer_operator-laptop/peer_operator-laptop.conf
+config/peer_operatorlaptop/peer_operatorlaptop.conf
 ```
 
 Import that file into the WireGuard client on the remote computer.
