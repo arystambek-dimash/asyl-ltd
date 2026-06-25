@@ -22,12 +22,11 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     def _debt_orders(self, client):
         qs = (client.orders
-              .filter(status="shipped")
               .select_related("client", "store")
               .prefetch_related("items__product", "payments")
               .order_by("-created_at"))
-        # Реальный долг — остаток > 0; не доверяем хранимому payment_status.
-        return [o for o in qs if o.remaining_amount > 0]
+        # Долг — только отгружённый заказ «в долг» с непогашенным остатком.
+        return [o for o in qs if o.is_debt]
 
     def _debt_total(self, orders):
         return sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
@@ -109,10 +108,10 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         from apps.orders.serializers import OrderSerializer
         store = self.get_object()
         today = date.today()
-        qs = (store.orders.filter(status="shipped")
+        qs = (store.orders
               .select_related("client").prefetch_related("items__product", "payments")
               .order_by("created_at"))
-        orders = [o for o in qs if o.remaining_amount > 0]
+        orders = [o for o in qs if o.is_debt]
         debt = sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
         return Response({
             "store": StoreSerializer(store).data,
@@ -128,8 +127,7 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         today = date.today()
         rows = []
         for store in Store.objects.select_related("client").prefetch_related("orders__payments").all():
-            qs = store.orders.filter(status="shipped")
-            orders = [o for o in qs if o.remaining_amount > 0]
+            orders = [o for o in store.orders.all() if o.is_debt]
             debt = sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
             if debt <= 0:
                 continue
