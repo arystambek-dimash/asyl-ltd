@@ -34,9 +34,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         """Все отгруженные заказы с непогашенным долгом."""
         qs = (self.get_queryset()
               .filter(status="shipped")
-              .exclude(payment_status="settled")
-              .select_related("store"))
-        data = OrderSerializer(qs, many=True, context={"request": request}).data
+              .select_related("store")
+              .prefetch_related("payments"))
+        # Реальный признак долга — остаток > 0 (не доверяем хранимому payment_status).
+        orders = [o for o in qs if o.remaining_amount > 0]
+        data = OrderSerializer(orders, many=True, context={"request": request}).data
         return Response(data)
 
     @action(detail=True, methods=["post"], url_path="payments")

@@ -2,7 +2,7 @@ import pytest
 from rest_framework.test import APIClient
 from apps.catalog.models import Product
 from apps.clients.models import Client
-from apps.orders.models import Order, OrderItem
+from apps.orders.models import Order, OrderItem, Payment
 
 pytestmark = pytest.mark.django_db
 
@@ -29,6 +29,7 @@ def _shipped_order(intent="debt"):
 def test_debts_endpoint_lists_unsettled_shipped(boss):
     o = _shipped_order()
     settled = _shipped_order()
+    Payment.objects.create(order=settled, amount=settled.total_amount, status="confirmed")
     settled.payment_status = "settled"; settled.save()
     r = _api(boss).get("/api/orders/debts/")
     assert r.status_code == 200

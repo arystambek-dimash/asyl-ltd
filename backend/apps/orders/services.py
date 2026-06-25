@@ -99,18 +99,32 @@ def approve_debt(order: Order, user) -> Order:
     return order
 
 
-def _apply_payment_status(order: Order, user) -> None:
-    order.refresh_from_db()
+def _payment_status_for(order: Order) -> str:
     paid = order.paid_total
     if paid <= 0:
-        new = "unpaid"
-    elif paid >= order.total_amount:
-        new = "settled"
-    else:
-        new = "partial"
+        return "unpaid"
+    if paid >= order.total_amount and order.total_amount > 0:
+        return "settled"
+    return "partial"
+
+
+def sync_payment_status(order: Order) -> str:
+    """Привести payment_status в соответствие с фактическими оплатами. Идемпотентно.
+
+    Без пользователя — используется и при оплате, и для бэкфилла легаси-данных.
+    """
+    order.refresh_from_db()
+    new = _payment_status_for(order)
     if new != order.payment_status:
         order.payment_status = new
         order.save(update_fields=["payment_status"])
+    return new
+
+
+def _apply_payment_status(order: Order, user) -> None:
+    old = order.payment_status
+    new = sync_payment_status(order)
+    if new != old:
         log_event("payment", f"Статус оплаты: {new}", user=user, order=order,
                   payload={"payment_status": new})
 

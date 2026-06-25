@@ -21,12 +21,13 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     }
 
     def _debt_orders(self, client):
-        return (client.orders
-                .filter(status="shipped")
-                .exclude(payment_status="settled")
-                .select_related("client", "store")
-                .prefetch_related("items__product", "payments")
-                .order_by("-created_at"))
+        qs = (client.orders
+              .filter(status="shipped")
+              .select_related("client", "store")
+              .prefetch_related("items__product", "payments")
+              .order_by("-created_at"))
+        # Реальный долг — остаток > 0; не доверяем хранимому payment_status.
+        return [o for o in qs if o.remaining_amount > 0]
 
     def _debt_total(self, orders):
         return sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
@@ -108,9 +109,10 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         from apps.orders.serializers import OrderSerializer
         store = self.get_object()
         today = date.today()
-        orders = (store.orders.filter(status="shipped").exclude(payment_status="settled")
-                  .select_related("client").prefetch_related("items__product", "payments")
-                  .order_by("created_at"))
+        qs = (store.orders.filter(status="shipped")
+              .select_related("client").prefetch_related("items__product", "payments")
+              .order_by("created_at"))
+        orders = [o for o in qs if o.remaining_amount > 0]
         debt = sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
         return Response({
             "store": StoreSerializer(store).data,
@@ -125,9 +127,9 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         """Долги по магазинам: сумма непогашенного, расписание, окно/просрочка."""
         today = date.today()
         rows = []
-        for store in Store.objects.select_related("client").all():
-            orders = (store.orders
-                      .filter(status="shipped").exclude(payment_status="settled"))
+        for store in Store.objects.select_related("client").prefetch_related("orders__payments").all():
+            qs = store.orders.filter(status="shipped")
+            orders = [o for o in qs if o.remaining_amount > 0]
             debt = sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
             if debt <= 0:
                 continue
@@ -140,7 +142,7 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 "payment_schedule_type": store.payment_schedule_type,
                 "payment_days": store.payment_days,
                 "debt_total": str(debt.quantize(Decimal("0.01"))),
-                "orders_count": orders.count(),
+                "orders_count": len(orders),
                 "window_open": window_open,
                 # просрочка: окно сегодня открыто, но долг ещё висит
                 "overdue": window_open and store.payment_schedule_type != "none",
