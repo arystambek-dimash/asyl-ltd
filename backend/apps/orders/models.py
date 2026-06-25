@@ -8,10 +8,12 @@ class Order(models.Model):
                 "loading", "loaded", "shipped", "rejected", "cancelled"]
     PAYMENT_STATUSES = ["unpaid", "partial", "settled"]
     SETTLEMENT_INTENTS = ["debt", "instant"]
+    TRANSPORT_TYPES = ["truck", "train"]
 
     client = models.ForeignKey(
         "clients.Client", on_delete=models.PROTECT, related_name="orders"
     )
+    transport_type = models.CharField(max_length=10, default="truck")
     store = models.ForeignKey(
         "clients.Store", null=True, blank=True,
         on_delete=models.SET_NULL, related_name="orders",
