@@ -20,7 +20,7 @@ import { can } from "@/lib/can";
 import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/utils";
 import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
-import { CheckCircle2, Circle } from "lucide-react";
+import { CheckCircle2, Circle, Layers, Package, Scale, Truck, Boxes } from "lucide-react";
 import type { Order, Payment } from "@/lib/types";
 
 const ORDER_STATUSES = ["draft", "pending", "confirmed", "arrived", "loading", "loaded", "shipped", "cancelled"];
@@ -89,6 +89,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const hasShipment = order.weigh_in_kg != null;
   const counted = order.bags_loaded ?? 0;
   const ordered = order.items.reduce((s, it) => s + Number(it.quantity), 0);
+  const itemsWeight = order.items.reduce((s, it) => s + Number(it.quantity) * Number(it.weight_kg ?? 0), 0);
 
   const isNew = order.status === "draft" || order.status === "pending";
   // «Действия» имеет смысл, только если есть что показать в текущем состоянии.
@@ -125,15 +126,39 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           <Card>
             <CardHeader><CardTitle>Позиции</CardTitle></CardHeader>
             <CardContent>
+              {/* сводка */}
+              <div className="mb-4 grid grid-cols-3 gap-3">
+                <div className="rounded-lg border bg-[var(--muted)]/30 p-3">
+                  <div className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]"><Layers className="size-3.5" /> Позиций</div>
+                  <div className="mt-1 text-xl font-semibold tabular-nums">{order.items.length}</div>
+                </div>
+                <div className="rounded-lg border bg-[var(--muted)]/30 p-3">
+                  <div className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]"><Package className="size-3.5" /> Всего мешков</div>
+                  <div className="mt-1 text-xl font-semibold tabular-nums">{ordered}</div>
+                </div>
+                <div className="rounded-lg border bg-[var(--muted)]/30 p-3">
+                  <div className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]"><Scale className="size-3.5" /> Вес груза</div>
+                  <div className="mt-1 text-xl font-semibold tabular-nums">{formatMoney(String(itemsWeight))} кг</div>
+                </div>
+              </div>
+
               <Table>
-                <THead><TR><TH>Товар</TH><TH>Мешков</TH></TR></THead>
+                <THead><TR><TH>Товар</TH><TH className="text-right">Мешков</TH><TH className="text-right">Цена</TH><TH className="text-right">Сумма</TH></TR></THead>
                 <TBody>
-                  {order.items.map((it, i) => (
-                    <TR key={i}>
-                      <TD className="font-medium">{it.product_label || `Товар #${it.product}`}</TD>
-                      <TD className="tabular-nums">{it.quantity}</TD>
-                    </TR>
-                  ))}
+                  {order.items.map((it, i) => {
+                    const price = Number(it.price ?? 0);
+                    const sum = price * Number(it.quantity);
+                    return (
+                      <TR key={i}>
+                        <TD className="font-medium">{it.product_label || `Товар #${it.product}`}
+                          {it.weight_kg && <span className="block text-xs text-[var(--muted-foreground)]">{it.weight_kg} кг/мешок</span>}
+                        </TD>
+                        <TD className="text-right tabular-nums">{it.quantity}</TD>
+                        <TD className="text-right tabular-nums text-[var(--muted-foreground)]">{price ? `${formatMoney(it.price!)} ₸` : "—"}</TD>
+                        <TD className="text-right tabular-nums font-medium">{formatMoney(String(sum))} ₸</TD>
+                      </TR>
+                    );
+                  })}
                 </TBody>
               </Table>
               <div className="mt-4 flex items-center justify-between border-t pt-4">
@@ -177,10 +202,26 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           {hasShipment && (
             <Card>
               <CardHeader><CardTitle>Вес</CardTitle></CardHeader>
-              <CardContent className="flex flex-col gap-2">
-                <div className="flex justify-between text-sm">
-                  <span className="text-[var(--muted-foreground)]">Вес КАМАЗа</span>
+              <CardContent className="flex flex-col gap-3">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="flex items-center gap-1.5 text-[var(--muted-foreground)]"><Truck className="size-4" /> Вес КАМАЗа</span>
                   <span className="tabular-nums font-medium">{order.weigh_in_kg ? `${formatMoney(order.weigh_in_kg)} кг` : "—"}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="flex items-center gap-1.5 text-[var(--muted-foreground)]"><Package className="size-4" /> Мешков {order.status === "shipped" ? "(камера)" : "(заказано)"}</span>
+                  <span className="tabular-nums font-medium">{order.status === "shipped" ? counted : ordered}</span>
+                </div>
+                {Number(order.bag_weight_kg ?? 0) > 0 && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="flex items-center gap-1.5 text-[var(--muted-foreground)]"><Scale className="size-4" /> Вес фасовки</span>
+                    <span className="tabular-nums font-medium">{order.bag_weight_kg} кг</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between border-t pt-3 text-sm">
+                  <span className="flex items-center gap-1.5 font-medium"><Boxes className="size-4 text-[var(--ring)]" /> Вес груза (нетто)</span>
+                  <span className="tabular-nums text-base font-bold text-[var(--ring)]">
+                    {formatMoney(String(order.status === "shipped" ? Number(order.bag_estimate_kg ?? itemsWeight) : itemsWeight))} кг
+                  </span>
                 </div>
               </CardContent>
             </Card>

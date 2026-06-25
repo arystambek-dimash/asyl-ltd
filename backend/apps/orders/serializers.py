@@ -6,10 +6,15 @@ from .services import set_truck_number
 class OrderItemSerializer(serializers.ModelSerializer):
     product_label = serializers.CharField(source="product.__str__", read_only=True)
     cv_class = serializers.CharField(source="product.cv_class", read_only=True)
+    price = serializers.DecimalField(source="product.price", max_digits=12,
+                                     decimal_places=2, read_only=True)
+    weight_kg = serializers.DecimalField(source="product.weight_kg", max_digits=8,
+                                         decimal_places=2, read_only=True)
 
     class Meta:
         model = OrderItem
-        fields = ["id", "product", "product_label", "cv_class", "quantity"]
+        fields = ["id", "product", "product_label", "cv_class", "quantity",
+                  "price", "weight_kg"]
 
 
 class StatusChangeRequestSerializer(serializers.ModelSerializer):
