@@ -61,6 +61,14 @@ class Order(models.Model):
     def remaining_amount(self) -> Decimal:
         return self.total_amount - self.paid_total
 
+    @property
+    def is_debt(self) -> bool:
+        # Долг — только отгруженный заказ «в долг» с непогашенным остатком.
+        # Черновик/на рассмотрении/в работе и моментальная оплата долгом не считаются.
+        return (self.status == "shipped"
+                and self.settlement_intent == "debt"
+                and self.remaining_amount > 0)
+
 
 class OrderItem(models.Model):
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="items")
