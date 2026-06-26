@@ -26,7 +26,7 @@ const STAFF_SECTIONS: NavSection[] = [
     title: "Обзор",
     items: [
       { href: "/dashboard", label: "Дашборд", icon: LayoutDashboard },
-      { href: "/debts", label: "Долги", icon: Wallet, perm: "orders.view" },
+      { href: "/debts", label: "Долги", icon: Wallet, perm: "reports.view" },
       { href: "/reports", label: "Отчёты", icon: BarChart3, perm: "reports.view" },
     ],
   },

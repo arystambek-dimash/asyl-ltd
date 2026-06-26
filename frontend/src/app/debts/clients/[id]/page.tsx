@@ -281,5 +281,5 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
 }
 
 export default function ClientDebtPage(props: { params: Promise<{ id: string }> }) {
-  return <RequirePerm perm="orders.view" title="Долг клиента"><ClientDebtPageInner {...props} /></RequirePerm>;
+  return <RequirePerm perm="reports.view" title="Долг клиента"><ClientDebtPageInner {...props} /></RequirePerm>;
 }

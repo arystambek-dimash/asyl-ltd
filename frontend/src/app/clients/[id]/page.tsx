@@ -228,5 +228,5 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
 }
 
 export default function ClientDetailPage(props: { params: Promise<{ id: string }> }) {
-  return <RequirePerm perm="clients.view" title="Клиент"><ClientDetailPageInner {...props} /></RequirePerm>;
+  return <RequirePerm perm="reports.view" title="Клиент"><ClientDetailPageInner {...props} /></RequirePerm>;
 }

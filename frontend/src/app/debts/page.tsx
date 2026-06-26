@@ -170,5 +170,5 @@ function DebtsPageInner() {
 }
 
 export default function DebtsPage() {
-  return <RequirePerm perm="orders.view" title="Долги"><DebtsPageInner /></RequirePerm>;
+  return <RequirePerm perm="reports.view" title="Долги"><DebtsPageInner /></RequirePerm>;
 }

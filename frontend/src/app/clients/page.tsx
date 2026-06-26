@@ -449,8 +449,9 @@ function ClientsPageInner() {
                 {sorted.map((c) => {
                   const summary = clientSummary.get(c.id) ?? summarizeClientOrders(EMPTY_ORDERS);
                   return (
-                    <TR key={c.id} onClick={() => router.push(`/clients/${c.id}`)}
-                      className="cursor-pointer hover:bg-[var(--muted)]/40">
+                    <TR key={c.id}
+                      onClick={canMoney ? () => router.push(`/clients/${c.id}`) : undefined}
+                      className={canMoney ? "cursor-pointer hover:bg-[var(--muted)]/40" : ""}>
                       <TD className="font-medium">
                         <div>{c.name}</div>
                         {summary.rejected > 0 && (

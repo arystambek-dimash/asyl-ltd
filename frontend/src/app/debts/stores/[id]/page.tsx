@@ -133,5 +133,5 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
 }
 
 export default function StoreDebtPage(props: { params: Promise<{ id: string }> }) {
-  return <RequirePerm perm="clients.view" title="Долг магазина"><StoreDebtPageInner {...props} /></RequirePerm>;
+  return <RequirePerm perm="reports.view" title="Долг магазина"><StoreDebtPageInner {...props} /></RequirePerm>;
 }
