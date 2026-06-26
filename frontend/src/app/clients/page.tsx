@@ -329,6 +329,7 @@ function ClientsPageInner() {
   const { me } = useAuth();
   const canEdit = can(me, "clients.edit");
   const canDelete = can(me, "clients.delete");
+  const canMoney = can(me, "reports.view");  // финансовая аналитика — под reports.view
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Client | null>(null);
   const [q, setQ] = useState("");
@@ -412,7 +413,9 @@ function ClientsPageInner() {
       <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Всего клиентов" value={String(list.length)} />
         <StatCard label="С заказами" value={String(globalSummary.activeClients)} icon={ClipboardList} />
-        <StatCard label="Выручка клиентов" value={`${formatMoney(globalSummary.revenue)} ₸`} accent icon={CircleDollarSign} />
+        {canMoney && (
+          <StatCard label="Выручка клиентов" value={`${formatMoney(globalSummary.revenue)} ₸`} accent icon={CircleDollarSign} />
+        )}
         <StatCard label="Клиентов с долгом" value={String(globalSummary.debtors)} icon={AlertTriangle}
           caption={`Отклонено заказов: ${globalSummary.rejected}`} />
       </section>
@@ -435,7 +438,9 @@ function ClientsPageInner() {
                   <SortableHeader label="Телефон" sortKey="phone" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
                   <TH>Страна</TH>
                   <SortableHeader label="Заказов" sortKey="orders" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-                  <SortableHeader label="Принёс" sortKey="revenue" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                  {canMoney && (
+                    <SortableHeader label="Принёс" sortKey="revenue" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                  )}
                   <SortableHeader label="Долг" sortKey="debt" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
                   <TH></TH>
                 </TR>
@@ -457,7 +462,7 @@ function ClientsPageInner() {
                       <TD className="tabular-nums">{c.phone}</TD>
                       <TD>{c.country || "—"}</TD>
                       <TD className="tabular-nums">{summary.ordersCount}</TD>
-                      <TD className="tabular-nums">{formatMoney(summary.revenue)} ₸</TD>
+                      {canMoney && <TD className="tabular-nums">{formatMoney(summary.revenue)} ₸</TD>}
                       <TD className="tabular-nums">
                         {summary.debt > 0
                           ? <span className="font-medium text-[var(--destructive)]">{formatMoney(summary.debt)} ₸</span>
@@ -483,7 +488,7 @@ function ClientsPageInner() {
                   );
                 })}
                 {sorted.length === 0 && (
-                  <TR><TD colSpan={7} className="py-4 text-center text-[var(--muted-foreground)]">
+                  <TR><TD colSpan={canMoney ? 7 : 6} className="py-4 text-center text-[var(--muted-foreground)]">
                     Клиентов пока нет.</TD></TR>
                 )}
               </TBody>
