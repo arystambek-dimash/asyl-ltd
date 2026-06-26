@@ -11,6 +11,7 @@ import { Modal } from "@/components/ui/modal";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { Plus, Trash2 } from "lucide-react";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { Role, Permission } from "@/lib/types";
 
 const SECTION_LABELS: Record<string, string> = {
@@ -33,6 +34,9 @@ function RolesPageInner() {
   const [codes, setCodes] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [delRole, setDelRole] = useState<Role | null>(null);
+  const [delBusy, setDelBusy] = useState(false);
+  const [delError, setDelError] = useState("");
 
   const sections = Array.from(new Set((perms ?? []).map((p) => p.section)));
 
@@ -55,10 +59,11 @@ function RolesPageInner() {
       setOpen(false); reload();
     } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
   }
-  async function remove(r: Role) {
-    setError("");
-    try { await api.delete(`/roles/${r.id}/`); reload(); }
-    catch (e) { setError(apiError(e)); }
+  async function confirmRemove() {
+    if (!delRole) return;
+    setDelBusy(true); setDelError("");
+    try { await api.delete(`/roles/${delRole.id}/`); setDelRole(null); reload(); }
+    catch (e) { setDelError(apiError(e)); } finally { setDelBusy(false); }
   }
 
   return (
@@ -84,8 +89,10 @@ function RolesPageInner() {
                 Прав: {r.permissions.length} · Сотрудников: {r.employee_count}</p>
               <div className="flex gap-2">
                 <Button size="sm" variant="outline" onClick={() => openEdit(r)}>Изменить</Button>
-                {!r.is_system && r.employee_count === 0 && (
-                  <Button size="sm" variant="ghost" onClick={() => remove(r)}>
+                {r.employee_count === 0 && (
+                  <Button size="sm" variant="ghost"
+                    className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                    onClick={() => { setDelError(""); setDelRole(r); }} title="Удалить">
                     <Trash2 className="size-4" /></Button>)}
               </div>
             </CardContent>
@@ -128,6 +135,18 @@ function RolesPageInner() {
           </div>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        open={!!delRole}
+        onClose={() => setDelRole(null)}
+        title="Удалить роль?"
+        description={delRole
+          ? `Роль «${delRole.name}»${delRole.is_system ? " (системная)" : ""} будет удалена. Действие необратимо.`
+          : ""}
+        busy={delBusy}
+        error={delError}
+        onConfirm={confirmRemove}
+      />
     </AppShell>
   );
 }
