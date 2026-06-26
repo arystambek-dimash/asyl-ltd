@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useState, type ComponentType } from "react";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -46,7 +47,7 @@ function dateGroupLabel(d: Date): string {
   return d.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
 }
 
-export default function EventsPage() {
+function EventsPageInner() {
   const [type, setType] = useState("");
   const [order, setOrder] = useState("");
   const [search, setSearch] = useState("");
@@ -192,4 +193,8 @@ export default function EventsPage() {
       </Card>
     </AppShell>
   );
+}
+
+export default function EventsPage() {
+  return <RequirePerm perm="events.view" title="Журнал"><EventsPageInner /></RequirePerm>;
 }

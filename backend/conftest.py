@@ -65,8 +65,8 @@ def boss(user_with_perms):
     return user_with_perms("boss", codes=[
         "shipping.view", "shipping.arrive", "shipping.load", "shipping.ship",
         "shipping.debt_override", "orders.view", "warehouse.view", "warehouse.adjust",
-        "catalog.view", "clients.view", "employees.view", "employees.manage",
-        "rbac.view", "rbac.manage"])
+        "catalog.view", "clients.view", "clients.edit", "employees.view", "employees.manage",
+        "rbac.view", "rbac.manage", "reports.view"])
 
 
 @pytest.fixture

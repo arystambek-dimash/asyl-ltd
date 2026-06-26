@@ -57,8 +57,18 @@ def test_create_role_rejects_unknown_permission_code(admin_client):
     assert not Role.objects.filter(name="Неверная роль").exists()
 
 
-def test_system_role_cannot_be_deleted(admin_client):
+def test_system_role_without_employees_can_be_deleted(admin_client):
     r = Role.objects.create(name="Сис-роль", is_system=True)
+    resp = admin_client.delete(f"/api/roles/{r.id}/")
+    assert resp.status_code == 204
+    assert not Role.objects.filter(id=r.id).exists()
+
+
+def test_system_role_with_employees_cannot_be_deleted(admin_client, make_user):
+    from apps.employees.models import Employee
+    r = Role.objects.create(name="Сис-роль-2", is_system=True)
+    u = make_user(username="emp_sys")
+    Employee.objects.create(user=u, first_name="A", last_name="B", phone="x", role=r)
     resp = admin_client.delete(f"/api/roles/{r.id}/")
     assert resp.status_code == 400
 

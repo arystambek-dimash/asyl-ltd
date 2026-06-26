@@ -2,6 +2,7 @@
 import { use, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -53,7 +54,7 @@ function scheduleLabel(store: DebtStore) {
     : "Дни не заданы";
 }
 
-export default function ClientDebtPage({ params }: { params: Promise<{ id: string }> }) {
+function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { me } = useAuth();
   const isAccountant = can(me, "payments.create");
@@ -277,4 +278,8 @@ export default function ClientDebtPage({ params }: { params: Promise<{ id: strin
       </div>
     </AppShell>
   );
+}
+
+export default function ClientDebtPage(props: { params: Promise<{ id: string }> }) {
+  return <RequirePerm perm="reports.view" title="Долг клиента"><ClientDebtPageInner {...props} /></RequirePerm>;
 }

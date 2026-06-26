@@ -21,7 +21,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "partial_update": "orders.edit", "destroy": "orders.edit",
         "payments": "payments.create", "confirm": "orders.confirm",
         "pay_bank": "payments.create",
-        "debts": "orders.view",
+        "debts": "reports.view",
         "set_status": "orders.view",
         "status_requests": "orders.view",
         "approve_status": "orders.edit",

@@ -2,6 +2,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,7 +36,7 @@ function paymentState(row: ClientDebt) {
   return { label: "Не оплачен", tone: "destructive" as const };
 }
 
-export default function DebtsPage() {
+function DebtsPageInner() {
   const { data, loading, reload } = useApi<ClientDebt[]>("/clients/debts/");
   const [q, setQ] = useState("");
   const [checkMsg, setCheckMsg] = useState("");
@@ -166,4 +167,8 @@ export default function DebtsPage() {
       </Card>
     </AppShell>
   );
+}
+
+export default function DebtsPage() {
+  return <RequirePerm perm="reports.view" title="Долги"><DebtsPageInner /></RequirePerm>;
 }

@@ -2,6 +2,7 @@
 import { use } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +14,8 @@ import {
   PieChart, Pie, Cell,
 } from "recharts";
 import { useApi } from "@/lib/use-api";
+import { useAuth } from "@/store/auth";
+import { can } from "@/lib/can";
 import { formatMoney } from "@/lib/utils";
 import {
   ArrowLeft, Phone, CircleDollarSign, Wallet, TrendingDown, BarChart3,
@@ -42,8 +45,10 @@ function monthLabel(key: string): string {
   return new Date(Number(y), Number(m) - 1).toLocaleDateString("ru-RU", { month: "short", year: "2-digit" });
 }
 
-export default function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
+function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const { me } = useAuth();
+  const canMoney = can(me, "reports.view");  // финансовые блоки — под reports.view
   const { data } = useApi<Analytics>(`/clients/${id}/analytics/`);
 
   if (!data) {
@@ -81,18 +86,19 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
         </div>
       </div>
 
-      {/* KPI */}
-      <section className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <StatCard label="Принёс" value={`${formatMoney(kpi.revenue)} ₸`} accent icon={CircleDollarSign} />
-        <StatCard label="Оплачено" value={`${formatMoney(kpi.paid)} ₸`} icon={Wallet} />
+      {/* KPI — финансовые показаны только при reports.view */}
+      <section className={`mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 ${canMoney ? "lg:grid-cols-6" : "lg:grid-cols-3"}`}>
+        {canMoney && <StatCard label="Принёс" value={`${formatMoney(kpi.revenue)} ₸`} accent icon={CircleDollarSign} />}
+        {canMoney && <StatCard label="Оплачено" value={`${formatMoney(kpi.paid)} ₸`} icon={Wallet} />}
         <StatCard label="Текущий долг" value={`${formatMoney(kpi.debt)} ₸`} icon={TrendingDown} />
-        <StatCard label="Средний чек" value={`${formatMoney(kpi.average)} ₸`} icon={BarChart3} />
+        {canMoney && <StatCard label="Средний чек" value={`${formatMoney(kpi.average)} ₸`} icon={BarChart3} />}
         <StatCard label="Заказов" value={String(kpi.orders_count)} icon={ClipboardList} />
         <StatCard label="Отклонённые" value={String(kpi.rejected_count)} icon={AlertTriangle} />
       </section>
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        {/* динамика */}
+        {/* динамика — финансовая, под reports.view */}
+        {canMoney && (
         <Card>
           <CardHeader className="flex-row items-center justify-between">
             <CardTitle className="text-base">Динамика по месяцам</CardTitle>
@@ -124,6 +130,7 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
             )}
           </CardContent>
         </Card>
+        )}
 
         {/* статусы */}
         <Card>
@@ -161,7 +168,8 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
           </CardContent>
         </Card>
 
-        {/* топ товаров */}
+        {/* топ товаров — финансовый, под reports.view */}
+        {canMoney && (
         <Card>
           <CardHeader><CardTitle className="text-base">Топ товаров</CardTitle></CardHeader>
           <CardContent>
@@ -185,6 +193,7 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
             )}
           </CardContent>
         </Card>
+        )}
 
         {/* последние заказы */}
         <Card>
@@ -216,4 +225,8 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
       </div>
     </AppShell>
   );
+}
+
+export default function ClientDetailPage(props: { params: Promise<{ id: string }> }) {
+  return <RequirePerm perm="reports.view" title="Клиент"><ClientDetailPageInner {...props} /></RequirePerm>;
 }

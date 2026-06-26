@@ -2,6 +2,7 @@
 import { use, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,7 +29,7 @@ interface StoreDebtDetail {
   window_open: boolean; orders: Order[];
 }
 
-export default function StoreDebtPage({ params }: { params: Promise<{ id: string }> }) {
+function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { me } = useAuth();
   const isAccountant = can(me, "payments.create");
@@ -129,4 +130,8 @@ export default function StoreDebtPage({ params }: { params: Promise<{ id: string
       </div>
     </AppShell>
   );
+}
+
+export default function StoreDebtPage(props: { params: Promise<{ id: string }> }) {
+  return <RequirePerm perm="reports.view" title="Долг магазина"><StoreDebtPageInner {...props} /></RequirePerm>;
 }

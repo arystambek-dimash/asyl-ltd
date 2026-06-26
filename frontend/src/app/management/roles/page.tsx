@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,12 +11,13 @@ import { Modal } from "@/components/ui/modal";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { Plus, Trash2 } from "lucide-react";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { Role, Permission } from "@/lib/types";
 
 const SECTION_LABELS: Record<string, string> = {
-  catalog: "Номенклатура", clients: "Клиенты", warehouse: "Склад", orders: "Заказы",
-  payments: "Оплаты", shipping: "Пост отгрузки", events: "Журнал", reports: "Отчёты",
-  employees: "Сотрудники", rbac: "Доступы",
+  catalog: "Товары", clients: "Клиенты", warehouse: "Склад", orders: "Заказы",
+  payments: "Оплаты", shipping: "Пост отгрузки", train: "Поезд", events: "Журнал",
+  reports: "Отчёты", employees: "Сотрудники", rbac: "Доступы",
 };
 const ACTION_LABELS: Record<string, string> = {
   view: "просмотр", create: "создание", edit: "редакт.", delete: "удаление",
@@ -23,7 +25,7 @@ const ACTION_LABELS: Record<string, string> = {
   ship: "отгрузка", debt_override: "в долг", manage: "управление",
 };
 
-export default function RolesPage() {
+function RolesPageInner() {
   const { data: roles, reload } = useApi<Role[]>("/roles/");
   const { data: perms } = useApi<Permission[]>("/permissions/");
   const [open, setOpen] = useState(false);
@@ -32,6 +34,9 @@ export default function RolesPage() {
   const [codes, setCodes] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [delRole, setDelRole] = useState<Role | null>(null);
+  const [delBusy, setDelBusy] = useState(false);
+  const [delError, setDelError] = useState("");
 
   const sections = Array.from(new Set((perms ?? []).map((p) => p.section)));
 
@@ -54,10 +59,11 @@ export default function RolesPage() {
       setOpen(false); reload();
     } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
   }
-  async function remove(r: Role) {
-    setError("");
-    try { await api.delete(`/roles/${r.id}/`); reload(); }
-    catch (e) { setError(apiError(e)); }
+  async function confirmRemove() {
+    if (!delRole) return;
+    setDelBusy(true); setDelError("");
+    try { await api.delete(`/roles/${delRole.id}/`); setDelRole(null); reload(); }
+    catch (e) { setDelError(apiError(e)); } finally { setDelBusy(false); }
   }
 
   return (
@@ -83,8 +89,10 @@ export default function RolesPage() {
                 Прав: {r.permissions.length} · Сотрудников: {r.employee_count}</p>
               <div className="flex gap-2">
                 <Button size="sm" variant="outline" onClick={() => openEdit(r)}>Изменить</Button>
-                {!r.is_system && r.employee_count === 0 && (
-                  <Button size="sm" variant="ghost" onClick={() => remove(r)}>
+                {r.employee_count === 0 && (
+                  <Button size="sm" variant="ghost"
+                    className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                    onClick={() => { setDelError(""); setDelRole(r); }} title="Удалить">
                     <Trash2 className="size-4" /></Button>)}
               </div>
             </CardContent>
@@ -127,6 +135,22 @@ export default function RolesPage() {
           </div>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        open={!!delRole}
+        onClose={() => setDelRole(null)}
+        title="Удалить роль?"
+        description={delRole
+          ? `Роль «${delRole.name}»${delRole.is_system ? " (системная)" : ""} будет удалена. Действие необратимо.`
+          : ""}
+        busy={delBusy}
+        error={delError}
+        onConfirm={confirmRemove}
+      />
     </AppShell>
   );
+}
+
+export default function RolesPage() {
+  return <RequirePerm perm="rbac.view" title="Роли"><RolesPageInner /></RequirePerm>;
 }

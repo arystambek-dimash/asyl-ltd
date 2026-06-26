@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +12,7 @@ import { api, apiError } from "@/lib/api";
 import { TrainFront, Package, User } from "lucide-react";
 import type { Order } from "@/lib/types";
 
-export default function TrainPage() {
+function TrainPageInner() {
   const { data: orders, reload } = useApi<Order[]>("/orders/train/queue/");
   const queue = orders ?? [];
 
@@ -99,4 +100,8 @@ function TrainRow({ order, onChange }: { order: Order; onChange: () => void }) {
       </CardContent>
     </Card>
   );
+}
+
+export default function TrainPage() {
+  return <RequirePerm perm="train.view" title="Поезда"><TrainPageInner /></RequirePerm>;
 }

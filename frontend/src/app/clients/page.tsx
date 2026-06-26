@@ -9,6 +9,7 @@ import {
   Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -321,13 +322,14 @@ function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCance
     </Form>
   );
 }
-export default function ClientsPage() {
+function ClientsPageInner() {
   const router = useRouter();
   const { data: clients, reload } = useApi<Client[]>("/clients/");
   const { data: orders } = useApi<Order[]>("/orders/");
   const { me } = useAuth();
   const canEdit = can(me, "clients.edit");
   const canDelete = can(me, "clients.delete");
+  const canMoney = can(me, "reports.view");  // финансовая аналитика — под reports.view
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Client | null>(null);
   const [q, setQ] = useState("");
@@ -411,7 +413,9 @@ export default function ClientsPage() {
       <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Всего клиентов" value={String(list.length)} />
         <StatCard label="С заказами" value={String(globalSummary.activeClients)} icon={ClipboardList} />
-        <StatCard label="Выручка клиентов" value={`${formatMoney(globalSummary.revenue)} ₸`} accent icon={CircleDollarSign} />
+        {canMoney && (
+          <StatCard label="Выручка клиентов" value={`${formatMoney(globalSummary.revenue)} ₸`} accent icon={CircleDollarSign} />
+        )}
         <StatCard label="Клиентов с долгом" value={String(globalSummary.debtors)} icon={AlertTriangle}
           caption={`Отклонено заказов: ${globalSummary.rejected}`} />
       </section>
@@ -434,7 +438,9 @@ export default function ClientsPage() {
                   <SortableHeader label="Телефон" sortKey="phone" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
                   <TH>Страна</TH>
                   <SortableHeader label="Заказов" sortKey="orders" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-                  <SortableHeader label="Принёс" sortKey="revenue" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                  {canMoney && (
+                    <SortableHeader label="Принёс" sortKey="revenue" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                  )}
                   <SortableHeader label="Долг" sortKey="debt" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
                   <TH></TH>
                 </TR>
@@ -443,8 +449,9 @@ export default function ClientsPage() {
                 {sorted.map((c) => {
                   const summary = clientSummary.get(c.id) ?? summarizeClientOrders(EMPTY_ORDERS);
                   return (
-                    <TR key={c.id} onClick={() => router.push(`/clients/${c.id}`)}
-                      className="cursor-pointer hover:bg-[var(--muted)]/40">
+                    <TR key={c.id}
+                      onClick={canMoney ? () => router.push(`/clients/${c.id}`) : undefined}
+                      className={canMoney ? "cursor-pointer hover:bg-[var(--muted)]/40" : ""}>
                       <TD className="font-medium">
                         <div>{c.name}</div>
                         {summary.rejected > 0 && (
@@ -456,7 +463,7 @@ export default function ClientsPage() {
                       <TD className="tabular-nums">{c.phone}</TD>
                       <TD>{c.country || "—"}</TD>
                       <TD className="tabular-nums">{summary.ordersCount}</TD>
-                      <TD className="tabular-nums">{formatMoney(summary.revenue)} ₸</TD>
+                      {canMoney && <TD className="tabular-nums">{formatMoney(summary.revenue)} ₸</TD>}
                       <TD className="tabular-nums">
                         {summary.debt > 0
                           ? <span className="font-medium text-[var(--destructive)]">{formatMoney(summary.debt)} ₸</span>
@@ -482,7 +489,7 @@ export default function ClientsPage() {
                   );
                 })}
                 {sorted.length === 0 && (
-                  <TR><TD colSpan={7} className="py-4 text-center text-[var(--muted-foreground)]">
+                  <TR><TD colSpan={canMoney ? 7 : 6} className="py-4 text-center text-[var(--muted-foreground)]">
                     Клиентов пока нет.</TD></TR>
                 )}
               </TBody>
@@ -516,4 +523,8 @@ export default function ClientsPage() {
       />
     </AppShell>
   );
+}
+
+export default function ClientsPage() {
+  return <RequirePerm perm="clients.view" title="Клиенты"><ClientsPageInner /></RequirePerm>;
 }

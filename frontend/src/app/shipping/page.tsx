@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -67,7 +68,7 @@ function Stepper({ status, compact = false }: { status: string; compact?: boolea
   );
 }
 
-export default function ShippingPage() {
+function ShippingPageInner() {
   const { data: orders, reload } = useApi<Order[]>("/orders/");
   const [openId, setOpenId] = useState<number | null>(null);
 
@@ -262,4 +263,8 @@ function QueueRow({
       )}
     </Card>
   );
+}
+
+export default function ShippingPage() {
+  return <RequirePerm perm="shipping.view" title="Пост отгрузки"><ShippingPageInner /></RequirePerm>;
 }
