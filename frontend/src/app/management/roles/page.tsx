@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,7 +24,7 @@ const ACTION_LABELS: Record<string, string> = {
   ship: "отгрузка", debt_override: "в долг", manage: "управление",
 };
 
-export default function RolesPage() {
+function RolesPageInner() {
   const { data: roles, reload } = useApi<Role[]>("/roles/");
   const { data: perms } = useApi<Permission[]>("/permissions/");
   const [open, setOpen] = useState(false);
@@ -129,4 +130,8 @@ export default function RolesPage() {
       </Modal>
     </AppShell>
   );
+}
+
+export default function RolesPage() {
+  return <RequirePerm perm="rbac.view" title="Роли"><RolesPageInner /></RequirePerm>;
 }

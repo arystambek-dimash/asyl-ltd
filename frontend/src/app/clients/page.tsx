@@ -9,6 +9,7 @@ import {
   Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -321,7 +322,7 @@ function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCance
     </Form>
   );
 }
-export default function ClientsPage() {
+function ClientsPageInner() {
   const router = useRouter();
   const { data: clients, reload } = useApi<Client[]>("/clients/");
   const { data: orders } = useApi<Order[]>("/orders/");
@@ -516,4 +517,8 @@ export default function ClientsPage() {
       />
     </AppShell>
   );
+}
+
+export default function ClientsPage() {
+  return <RequirePerm perm="clients.view" title="Клиенты"><ClientsPageInner /></RequirePerm>;
 }

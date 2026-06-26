@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -173,7 +174,7 @@ function StoreForm({ clients, editing, onDone, onCancel }: {
   );
 }
 
-export default function StoresPage() {
+function StoresPageInner() {
   const { data: stores, reload } = useApi<Store[]>("/stores/");
   const { data: clients } = useApi<Client[]>("/clients/");
   const { me } = useAuth();
@@ -273,4 +274,8 @@ export default function StoresPage() {
         busy={delBusy} error={delError} onConfirm={confirmDelete} />
     </AppShell>
   );
+}
+
+export default function StoresPage() {
+  return <RequirePerm perm="clients.view" title="Магазины"><StoresPageInner /></RequirePerm>;
 }

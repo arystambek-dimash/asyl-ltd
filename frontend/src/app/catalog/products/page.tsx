@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,7 +21,7 @@ import { formatMoney } from "@/lib/utils";
 import { Plus, Check, X, Pencil, Trash2 } from "lucide-react";
 import type { Product } from "@/lib/types";
 
-export default function ProductsPage() {
+function ProductsPageInner() {
   const { data: products, reload } = useApi<Product[]>("/products/");
   const { me } = useAuth();
   const canEdit = can(me, "catalog.edit");
@@ -225,4 +226,8 @@ export default function ProductsPage() {
       />
     </AppShell>
   );
+}
+
+export default function ProductsPage() {
+  return <RequirePerm perm="catalog.view" title="Товары"><ProductsPageInner /></RequirePerm>;
 }

@@ -2,6 +2,7 @@
 import { use } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -42,7 +43,7 @@ function monthLabel(key: string): string {
   return new Date(Number(y), Number(m) - 1).toLocaleDateString("ru-RU", { month: "short", year: "2-digit" });
 }
 
-export default function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
+function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { data } = useApi<Analytics>(`/clients/${id}/analytics/`);
 
@@ -216,4 +217,8 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
       </div>
     </AppShell>
   );
+}
+
+export default function ClientDetailPage(props: { params: Promise<{ id: string }> }) {
+  return <RequirePerm perm="clients.view" title="Клиент"><ClientDetailPageInner {...props} /></RequirePerm>;
 }

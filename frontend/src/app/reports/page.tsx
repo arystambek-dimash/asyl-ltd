@@ -5,6 +5,7 @@ import {
 } from "recharts";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
@@ -81,7 +82,7 @@ function MetricCard({ label, value, sub, icon: Icon, accent }: {
   );
 }
 
-export default function ReportsPage() {
+function ReportsPageInner() {
   const { data: orders } = useApi<Order[]>("/orders/");
   const { data: events } = useApi<EventLog[]>("/events/");
 
@@ -281,4 +282,8 @@ export default function ReportsPage() {
       </div>
     </AppShell>
   );
+}
+
+export default function ReportsPage() {
+  return <RequirePerm perm="reports.view" title="Отчёты"><ReportsPageInner /></RequirePerm>;
 }

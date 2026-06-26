@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,7 +26,7 @@ import { formatMoney } from "@/lib/utils";
 import { Plus, Trash2, Search, Info } from "lucide-react";
 import type { Order, Client, Product, Store } from "@/lib/types";
 
-export default function OrdersPage() {
+function OrdersPageInner() {
   const router = useRouter();
   const { data: orders, loading, reload } = useApi<Order[]>("/orders/");
   const { me } = useAuth();
@@ -323,4 +324,8 @@ function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () =
       </div>
     </form>
   );
+}
+
+export default function OrdersPage() {
+  return <RequirePerm perm="orders.view" title="Заказы"><OrdersPageInner /></RequirePerm>;
 }

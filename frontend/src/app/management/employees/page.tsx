@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,7 +20,7 @@ import { can } from "@/lib/can";
 import { Plus, Search, Pencil, Trash2 } from "lucide-react";
 import type { Employee, Role } from "@/lib/types";
 
-export default function EmployeesPage() {
+function EmployeesPageInner() {
   const { data: employees, reload } = useApi<Employee[]>("/employees/");
   const { data: roles } = useApi<Role[]>("/roles/");
   const { me } = useAuth();
@@ -217,4 +218,8 @@ export default function EmployeesPage() {
       />
     </AppShell>
   );
+}
+
+export default function EmployeesPage() {
+  return <RequirePerm perm="employees.view" title="Сотрудники"><EmployeesPageInner /></RequirePerm>;
 }

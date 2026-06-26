@@ -1,6 +1,7 @@
 "use client";
 import { use, useState, useEffect } from "react";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -61,7 +62,7 @@ function OrderStepper({ status }: { status: string }) {
   );
 }
 
-export default function OrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
+function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { me } = useAuth();
   const { data: order, reload } = useApi<Order>(`/orders/${id}/`);
@@ -401,4 +402,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       </div>
     </AppShell>
   );
+}
+
+export default function OrderDetailPage(props: { params: Promise<{ id: string }> }) {
+  return <RequirePerm perm="orders.view" title="Заказ"><OrderDetailPageInner {...props} /></RequirePerm>;
 }

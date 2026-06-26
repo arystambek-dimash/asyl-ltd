@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
@@ -26,7 +27,7 @@ function stockTone(bags: number): { tone: "destructive" | "warning" | "success";
   return { tone: "success", label: "В наличии" };
 }
 
-export default function WarehousePage() {
+function WarehousePageInner() {
   const { data: stock, reload } = useApi<StockItem[]>("/stock/");
   const { data: products } = useApi<Product[]>("/products/");
   const { me } = useAuth();
@@ -191,4 +192,8 @@ export default function WarehousePage() {
       </Modal>
     </AppShell>
   );
+}
+
+export default function WarehousePage() {
+  return <RequirePerm perm="warehouse.view" title="Склад"><WarehousePageInner /></RequirePerm>;
 }
