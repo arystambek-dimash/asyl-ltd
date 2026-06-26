@@ -61,9 +61,12 @@ def create_client_payment(order: Order, method: str, user) -> Payment:
     remaining = order.total_amount - order.paid_total
     if remaining <= 0:
         raise ValidationError({"detail": "Заказ уже оплачен", "code": "already_paid"})
-    payment = Payment.objects.create(
-        order=order, amount=remaining, method=method, status="pending", recorded_by=user)
-    log_event("payment", f"Клиент инициировал оплату {remaining} ({method})",
+    # Несколько кликов «оплатил» не должны плодить дубли — одна заявка на оплату.
+    payment, created = Payment.objects.update_or_create(
+        order=order, status="pending",
+        defaults={"amount": remaining, "method": method, "recorded_by": user},
+    )
+    log_event("payment", f"Клиент {'инициировал' if created else 'обновил'} оплату {remaining} ({method})",
               user=user, order=order, payload={"amount": str(remaining), "method": method})
     return payment
 

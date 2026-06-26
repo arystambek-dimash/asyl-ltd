@@ -143,7 +143,9 @@ class OrderSerializer(serializers.ModelSerializer):
         return StatusChangeRequestSerializer(qs, many=True).data
 
     def get_payments(self, obj):
-        qs = obj.payments.exclude(status="rejected").order_by("paid_at")
+        # История платежей — только подтверждённые (реально полученные деньги).
+        # Неподтверждённые заявки клиента (pending) не показываем как «получено».
+        qs = obj.payments.filter(status="confirmed").order_by("paid_at")
         return PaymentSerializer(qs, many=True).data
 
     def create(self, validated_data):
