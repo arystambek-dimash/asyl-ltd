@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -320,204 +321,8 @@ function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCance
     </Form>
   );
 }
-
-function ClientAnalyticsPanel({ client, analytics }: { client: Client | null; analytics: ClientAnalytics }) {
-  const maxStatusCount = Math.max(1, ...analytics.statusData.map((row) => row.count));
-
-  if (!client) {
-    return (
-      <Card className="min-h-[420px]">
-        <CardContent className="flex h-full min-h-[420px] items-center justify-center text-sm text-[var(--muted-foreground)]">
-          Клиентов пока нет.
-        </CardContent>
-      </Card>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-4">
-      <Card>
-        <CardHeader className="pb-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="text-xs font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
-                Аналитика клиента
-              </div>
-              <CardTitle className="mt-1 text-xl">{client.name}</CardTitle>
-              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[var(--muted-foreground)]">
-                <span className="inline-flex items-center gap-1.5">
-                  <Phone className="size-3.5" /> {client.phone || "—"}
-                </span>
-                <span>{client.country || "Страна не указана"}</span>
-              </div>
-            </div>
-            {analytics.debt > 0 ? (
-              <Link href={`/debts/clients/${client.id}`}>
-                <Button size="sm" variant="outline">
-                  Долг <ArrowUpRight className="size-4" />
-                </Button>
-              </Link>
-            ) : (
-              <Badge tone="success" dot>Без долга</Badge>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <StatCard label="Принёс" value={`${formatMoney(analytics.revenue)} ₸`} accent icon={CircleDollarSign} />
-          <StatCard label="Оплачено" value={`${formatMoney(analytics.paid)} ₸`} icon={Wallet} />
-          <StatCard label="Текущий долг" value={`${formatMoney(analytics.debt)} ₸`} icon={AlertTriangle}
-            caption={analytics.debt > 0 ? "по отгруженным заказам" : "нет непогашенных заказов"} />
-          <StatCard label="Заказов" value={String(analytics.ordersCount)} icon={ClipboardList}
-            caption={`Отклонено: ${analytics.rejected}`} />
-          <StatCard label="Средний чек" value={`${formatMoney(analytics.average)} ₸`} icon={BarChart3} />
-          <StatCard label="Отклонённые" value={String(analytics.rejected)} icon={AlertTriangle} />
-        </CardContent>
-      </Card>
-
-      <div className="grid grid-cols-1 gap-4 2xl:grid-cols-2">
-        <Card>
-          <CardHeader className="flex-row items-center justify-between gap-3 pb-3">
-            <CardTitle className="text-base">Динамика</CardTitle>
-            <BarChart3 className="size-4 text-[var(--muted-foreground)]" />
-          </CardHeader>
-          <CardContent>
-            {analytics.monthData.length === 0 ? (
-              <p className="py-14 text-center text-sm text-[var(--muted-foreground)]">Нет финансовых заказов.</p>
-            ) : (
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={analytics.monthData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                    axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                    axisLine={false} tickLine={false} width={48}
-                    tickFormatter={(value) => (Number(value) >= 1000 ? `${Math.round(Number(value) / 1000)}k` : String(value))} />
-                  <Tooltip
-                    contentStyle={{ background: "var(--card)", borderRadius: 12, border: "1px solid var(--border)", fontSize: 12 }}
-                    formatter={(value: number, name) => [
-                      `${formatMoney(value)} ₸`,
-                      name === "revenue" ? "Принёс" : "Оплачено",
-                    ]}
-                  />
-                  <Bar dataKey="revenue" fill="var(--ring)" radius={[5, 5, 0, 0]} />
-                  <Bar dataKey="paid" fill="var(--success)" radius={[5, 5, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-            <div className="mt-3 flex gap-4 text-xs text-[var(--muted-foreground)]">
-              <span className="flex items-center gap-1.5">
-                <span className="size-2.5 rounded-full bg-[var(--ring)]" /> Принёс
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="size-2.5 rounded-full bg-[var(--success)]" /> Оплачено
-              </span>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex-row items-center justify-between gap-3 pb-3">
-            <CardTitle className="text-base">Статусы</CardTitle>
-            <PieChartIcon className="size-4 text-[var(--muted-foreground)]" />
-          </CardHeader>
-          <CardContent>
-            {analytics.statusData.length === 0 ? (
-              <p className="py-14 text-center text-sm text-[var(--muted-foreground)]">Заказов нет.</p>
-            ) : (
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-[170px_minmax(0,1fr)]">
-                <ResponsiveContainer width="100%" height={180}>
-                  <PieChart>
-                    <Pie data={analytics.statusData} dataKey="count" nameKey="label"
-                      innerRadius={48} outerRadius={74} paddingAngle={3}>
-                      {analytics.statusData.map((row) => (
-                        <Cell key={row.status} fill={row.color} />
-                      ))}
-                    </Pie>
-                    <Tooltip
-                      contentStyle={{ background: "var(--card)", borderRadius: 12, border: "1px solid var(--border)", fontSize: 12 }}
-                      formatter={(value: number, name) => [`${value} заказов`, name]}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="flex flex-col gap-2">
-                  {analytics.statusData.map((row) => (
-                    <div key={row.status} className="space-y-1">
-                      <div className="flex items-center justify-between gap-2 text-xs">
-                        <span className="flex items-center gap-1.5">
-                          <span className="size-2 rounded-full" style={{ background: row.color }} />
-                          {row.label}
-                        </span>
-                        <span className="tabular-nums text-[var(--muted-foreground)]">{row.count}</span>
-                      </div>
-                      <div className="h-1.5 rounded-full bg-[var(--muted)]">
-                        <div className="h-full rounded-full" style={{
-                          width: `${Math.max(8, (row.count / maxStatusCount) * 100)}%`,
-                          background: row.color,
-                        }} />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader className="flex-row items-center justify-between gap-3 pb-3">
-          <CardTitle className="text-base">Последние заказы</CardTitle>
-          <span className="text-xs text-[var(--muted-foreground)]">{analytics.lastOrders.length} из {analytics.ordersCount}</span>
-        </CardHeader>
-        <CardContent>
-          {analytics.lastOrders.length === 0 ? (
-            <p className="py-8 text-center text-sm text-[var(--muted-foreground)]">Заказов нет.</p>
-          ) : (
-            <Table>
-              <THead>
-                <TR>
-                  <TH>Заказ</TH>
-                  <TH>Статус</TH>
-                  <TH>Сумма</TH>
-                  <TH></TH>
-                </TR>
-              </THead>
-              <TBody>
-                {analytics.lastOrders.map((order) => (
-                  <TR key={order.id}>
-                    <TD>
-                      <div className="font-medium">#{order.id}</div>
-                      <div className="text-xs text-[var(--muted-foreground)]">
-                        {new Date(order.created_at).toLocaleDateString("ru-RU", {
-                          day: "2-digit", month: "2-digit", year: "2-digit",
-                        })}
-                      </div>
-                    </TD>
-                    <TD>
-                      <Badge tone={ORDER_STATUS_TONE[order.status] ?? "muted"} dot>
-                        {ORDER_STATUS_LABELS[order.status] ?? order.status}
-                      </Badge>
-                    </TD>
-                    <TD className="tabular-nums">{formatMoney(order.total_amount)} ₸</TD>
-                    <TD>
-                      <Link href={`/orders/${order.id}`}>
-                        <Button size="sm" variant="ghost">
-                          <ArrowUpRight className="size-4" />
-                        </Button>
-                      </Link>
-                    </TD>
-                  </TR>
-                ))}
-              </TBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
 export default function ClientsPage() {
+  const router = useRouter();
   const { data: clients, reload } = useApi<Client[]>("/clients/");
   const { data: orders } = useApi<Order[]>("/orders/");
   const { me } = useAuth();
@@ -528,7 +333,6 @@ export default function ClientsPage() {
   const [q, setQ] = useState("");
   const [sortKey, setSortKey] = useState("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
-  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [delItem, setDelItem] = useState<Client | null>(null);
   const [delError, setDelError] = useState("");
   const [delBusy, setDelBusy] = useState(false);
@@ -538,7 +342,6 @@ export default function ClientsPage() {
     setDelBusy(true); setDelError("");
     try {
       await api.delete(`/clients/${delItem.id}/`);
-      if (selectedId === delItem.id) setSelectedId(null);
       setDelItem(null); reload();
     } catch (e) { setDelError(apiError(e)); } finally { setDelBusy(false); }
   }
@@ -598,10 +401,6 @@ export default function ClientsPage() {
     return sortDir === "asc" ? cmp : -cmp;
   });
 
-  const selectedClient = list.find((client) => client.id === selectedId) ?? sorted[0] ?? null;
-  const selectedOrders = selectedClient ? ordersByClient.get(selectedClient.id) ?? EMPTY_ORDERS : EMPTY_ORDERS;
-  const selectedAnalytics = useMemo(() => buildClientAnalytics(selectedOrders), [selectedOrders]);
-
   return (
     <AppShell title="Клиенты" section="Работа" description="Клиентская база, оборот, долги и статусы заказов по каждому клиенту."
       actions={
@@ -625,7 +424,7 @@ export default function ClientsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(460px,560px)]">
+      <div>
         <Card>
           <CardContent className="pt-6">
             <Table>
@@ -643,10 +442,9 @@ export default function ClientsPage() {
               <TBody>
                 {sorted.map((c) => {
                   const summary = clientSummary.get(c.id) ?? summarizeClientOrders(EMPTY_ORDERS);
-                  const active = selectedClient?.id === c.id;
                   return (
-                    <TR key={c.id} onClick={() => setSelectedId(c.id)}
-                      className={cn("cursor-pointer", active && "bg-[var(--ring)]/8 hover:bg-[var(--ring)]/10")}>
+                    <TR key={c.id} onClick={() => router.push(`/clients/${c.id}`)}
+                      className="cursor-pointer hover:bg-[var(--muted)]/40">
                       <TD className="font-medium">
                         <div>{c.name}</div>
                         {summary.rejected > 0 && (
@@ -691,8 +489,6 @@ export default function ClientsPage() {
             </Table>
           </CardContent>
         </Card>
-
-        <ClientAnalyticsPanel client={selectedClient} analytics={selectedAnalytics} />
       </div>
 
       <Modal open={open} onClose={() => setOpen(false)}
