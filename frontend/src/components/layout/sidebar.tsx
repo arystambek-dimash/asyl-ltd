@@ -61,7 +61,7 @@ const PORTAL_SECTIONS: NavSection[] = [
   {
     title: "Кабинет",
     items: [
-      { href: "/portal/catalog", label: "Каталог", icon: Boxes },
+      { href: "/portal/catalog", label: "Товары", icon: Boxes },
       { href: "/portal/orders/new", label: "Новый заказ", icon: ClipboardList },
       { href: "/portal/orders", label: "Мои заказы", icon: ScrollText },
     ],

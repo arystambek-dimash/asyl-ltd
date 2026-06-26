@@ -55,7 +55,10 @@ export default function PortalNewOrderPage() {
                   <option value="">Товар</option>
                   {(products ?? []).map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.label} · в наличии {p.available_bags} меш.
+                      {p.label}
+                      {p.available_bags > 0
+                        ? ` · в наличии ${p.available_bags} меш.`
+                        : " · остаток уточнит оператор"}
                     </option>
                   ))}
                 </Select>

@@ -4,14 +4,14 @@ import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/use-api";
-import { ShoppingCart } from "lucide-react";
+import { Boxes, ShoppingCart } from "lucide-react";
 
 interface PortalProduct { id: number; label: string; weight_kg: string; available_bags: number; }
 
 export default function PortalCatalogPage() {
   const { data: products, loading } = useApi<PortalProduct[]>("/portal/catalog/");
   return (
-    <AppShell title="Каталог" portal>
+    <AppShell title="Товары" portal>
       <div className="mb-4 flex justify-between">
         <p className="text-sm text-[var(--muted-foreground)]">Доступные товары</p>
         <Link href="/portal/orders/new">
@@ -21,15 +21,33 @@ export default function PortalCatalogPage() {
       {loading ? (
         <p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {(products ?? []).map((p) => (
-            <Card key={p.id} className="p-6">
-              <div className="font-medium">{p.label}</div>
-              <div className="mt-1 text-xs text-[var(--muted-foreground)]">{p.weight_kg} кг / мешок</div>
-              <div className="mt-3 text-xs font-medium text-[var(--success)]">В наличии: {p.available_bags} меш.</div>
-            </Card>
-          ))}
-        </div>
+        (products ?? []).length === 0 ? (
+          <Card>
+            <CardContent className="flex flex-col items-center justify-center gap-2 py-14 text-center">
+              <Boxes className="size-8 text-[var(--muted-foreground)]" />
+              <div className="text-sm font-medium">Товаров пока нет</div>
+              <p className="max-w-sm text-xs text-[var(--muted-foreground)]">
+                Как только менеджер добавит активные товары, они появятся здесь для заказа.
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {(products ?? []).map((p) => (
+              <Card key={p.id} className="p-6">
+                <div className="font-medium">{p.label}</div>
+                <div className="mt-1 text-xs text-[var(--muted-foreground)]">{p.weight_kg} кг / мешок</div>
+                <div className={p.available_bags > 0
+                  ? "mt-3 text-xs font-medium text-[var(--success)]"
+                  : "mt-3 text-xs font-medium text-[var(--muted-foreground)]"}>
+                  {p.available_bags > 0
+                    ? `В наличии: ${p.available_bags} меш.`
+                    : "Остаток уточнит оператор"}
+                </div>
+              </Card>
+            ))}
+          </div>
+        )
       )}
     </AppShell>
   );

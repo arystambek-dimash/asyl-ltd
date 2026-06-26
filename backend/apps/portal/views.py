@@ -29,9 +29,11 @@ class Conflict(APIException):
 class PortalCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     serializer_class = CatalogProductSerializer
     permission_classes = [IsClientUser]
-    # Клиент видит/заказывает только товары, которые есть на складе (остаток > 0).
-    queryset = (Product.objects.filter(is_active=True, stock__bags__gt=0)
-                .select_related("stock"))
+    # Клиент видит активные товары, даже если складская карточка ещё не создана.
+    # Остаток в таком случае показываем как 0, а заказ дальше обрабатывается текущим флоу.
+    queryset = (Product.objects.filter(is_active=True)
+                .select_related("stock")
+                .order_by("name", "color", "weight_kg"))
 
 
 class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,

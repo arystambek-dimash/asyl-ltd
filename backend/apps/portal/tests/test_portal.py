@@ -63,3 +63,19 @@ def test_client_cannot_fetch_foreign_order(auth_client, client_user, make_user):
 def test_staff_cannot_use_portal(auth_client, manager):
     resp = auth_client(manager).get("/api/portal/orders/")
     assert resp.status_code == 403
+
+
+def test_client_catalog_lists_active_products_without_stock(auth_client, client_user):
+    _client_for(client_user)
+    active = _product()
+    inactive = Product.objects.create(
+        name="Скрытый", color="Green", weight_kg="50", price="100.00", is_active=False
+    )
+
+    resp = auth_client(client_user).get("/api/portal/catalog/")
+
+    assert resp.status_code == 200
+    by_id = {p["id"]: p for p in resp.data}
+    assert active.id in by_id
+    assert inactive.id not in by_id
+    assert by_id[active.id]["available_bags"] == 0
