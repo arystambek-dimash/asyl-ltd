@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { ProgressBar } from "@/components/ui/progress-bar";
+import { CreditCard, QrCode, CheckCircle2, Clock } from "lucide-react";
 import { useApi } from "@/lib/use-api";
 import { apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
@@ -88,31 +90,70 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
             Заказ отклонён.</CardContent></Card>
         )}
 
-        {step === "pay" && (
+        {step === "pay" && (() => {
+          const total = Number(order.total_amount ?? 0);
+          const paid = Number(order.paid_total ?? 0);
+          const pct = total > 0 ? Math.min(100, Math.round((paid / total) * 100)) : 0;
+          const partial = paid > 0 && remaining > 0;
+          return (
           <Card>
-            <CardHeader><CardTitle>Оплата · к оплате {formatMoney(remaining)} ₸</CardTitle></CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <p className="text-sm text-[var(--muted-foreground)]">
-                Заказ отгружен. До оплаты сумма числится как долг.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <Button disabled={busy} variant="outline" onClick={() => run(() => payOrder(order.id, "card"))}>Оплатил картой</Button>
-                <Button disabled={busy} variant="outline"
-                  onClick={() => run(async () => { setInfo(await getPaymentInfo()); await payOrder(order.id, "kaspi"); })}>
-                  Оплатить Kaspi QR</Button>
+            <CardHeader><CardTitle>Оплата</CardTitle></CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              {/* сводка */}
+              <div className="grid grid-cols-3 gap-2 text-sm">
+                <div><div className="text-xs text-[var(--muted-foreground)]">Сумма</div>
+                  <div className="tabular-nums font-medium">{formatMoney(order.total_amount)} ₸</div></div>
+                <div><div className="text-xs text-[var(--muted-foreground)]">Оплачено</div>
+                  <div className="tabular-nums text-[var(--success)]">{formatMoney(order.paid_total ?? "0")} ₸</div></div>
+                <div><div className="text-xs text-[var(--muted-foreground)]">Остаток</div>
+                  <div className="tabular-nums font-semibold text-[var(--destructive)]">{formatMoney(remaining)} ₸</div></div>
               </div>
+              <div>
+                <div className="mb-1.5 flex justify-between text-xs text-[var(--muted-foreground)]">
+                  <span>{partial ? "Частично оплачено" : "Прогресс оплаты"}</span>
+                  <span className="tabular-nums">{pct}%</span>
+                </div>
+                <ProgressBar pct={pct} />
+              </div>
+
+              {order.has_pending_payment ? (
+                <div className="flex items-start gap-2 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 p-3 text-sm text-[var(--warning)]">
+                  <Clock className="mt-0.5 size-4 shrink-0" />
+                  Заявка на оплату отправлена. Ожидает подтверждения сотрудником.
+                </div>
+              ) : (
+                <>
+                  <p className="text-sm text-[var(--muted-foreground)]">
+                    Заказ отгружен. Оплатите удобным способом — после подтверждения сотрудником остаток уменьшится.
+                  </p>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <Button disabled={busy} variant="outline" className="justify-start"
+                      onClick={() => run(() => payOrder(order.id, "card"))}>
+                      <CreditCard className="size-4" /> Оплатил картой
+                    </Button>
+                    <Button disabled={busy} variant="outline" className="justify-start"
+                      onClick={() => run(async () => { setInfo(await getPaymentInfo()); await payOrder(order.id, "kaspi"); })}>
+                      <QrCode className="size-4" /> Оплатить Kaspi QR
+                    </Button>
+                  </div>
+                </>
+              )}
+
               {info && (
-                <div className="rounded-md border p-3 text-sm">
+                <div className="rounded-lg border p-3 text-sm">
                   <p>{info.instructions}</p>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   {info.kaspi_qr && <img src={info.kaspi_qr} alt="Kaspi QR" className="mt-2 size-40" />}
                   {info.account && <p className="mt-1">Счёт: {info.account}</p>}
                 </div>
               )}
-              <p className="text-xs text-[var(--muted-foreground)]">Оплата картой/Kaspi подтверждается сотрудником.</p>
+              <p className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
+                <CheckCircle2 className="size-3.5" /> Оплата картой/Kaspi подтверждается сотрудником.
+              </p>
             </CardContent>
           </Card>
-        )}
+          );
+        })()}
 
         {step === "truck" && (
           <Card>

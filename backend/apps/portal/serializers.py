@@ -44,12 +44,14 @@ class PortalOrderSerializer(serializers.ModelSerializer):
     total_amount = serializers.SerializerMethodField()
     paid_total = serializers.SerializerMethodField()
     remaining_amount = serializers.SerializerMethodField()
+    has_pending_payment = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
         fields = ["id", "status", "payment_status", "settlement_intent", "transport_type",
                   "store", "store_name",
                   "items", "total_amount", "paid_total", "remaining_amount",
+                  "has_pending_payment",
                   "truck_number", "debt_requested", "debt_override", "created_at"]
         read_only_fields = ["status", "payment_status",
                             "truck_number", "debt_requested", "debt_override"]
@@ -91,6 +93,10 @@ class PortalOrderSerializer(serializers.ModelSerializer):
         if not self._money_visible(obj):
             return None
         return self._amount(obj.remaining_amount)
+
+    def get_has_pending_payment(self, obj):
+        # Клиент отправил заявку на оплату, ждём подтверждения сотрудником.
+        return obj.payments.filter(status="pending").exists()
 
     def create(self, validated_data):
         items = validated_data.pop("items")
