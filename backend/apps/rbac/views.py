@@ -54,8 +54,8 @@ class RoleViewSet(
         )
 
     def perform_destroy(self, instance):
-        if instance.is_system:
-            raise ValidationError({"detail": "Системную роль нельзя удалить", "code": "system_role"})
+        # Удалять можно любые роли (включая системные), кроме тех, на которые
+        # назначены сотрудники — иначе они остались бы без роли.
         if instance.employees.exists():
             raise ValidationError({"detail": "На роль назначены сотрудники — удаление запрещено", "code": "role_in_use"})
         instance.delete()
