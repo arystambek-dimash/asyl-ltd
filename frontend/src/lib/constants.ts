@@ -22,6 +22,12 @@ export const ORDER_STATUS_TONE: Record<string, "muted" | "primary" | "success" |
   cancelled: "destructive",
 };
 
+export const NON_FINANCIAL_ORDER_STATUSES = new Set(["draft", "pending", "rejected", "cancelled"]);
+
+export function isFinancialOrderStatus(status: string): boolean {
+  return !NON_FINANCIAL_ORDER_STATUSES.has(status);
+}
+
 export const PAYMENT_STATUS_LABELS: Record<string, string> = {
   unpaid: "Не оплачен",
   partial: "Частично оплачен",

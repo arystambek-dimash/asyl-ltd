@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/utils";
-import { ORDER_STATUS_LABELS } from "@/lib/constants";
+import { isFinancialOrderStatus, ORDER_STATUS_LABELS } from "@/lib/constants";
 import { TrendingUp, Wallet, AlertCircle, ClipboardList, ArrowUpRight } from "lucide-react";
 import type { Order, EventLog } from "@/lib/types";
 
@@ -27,6 +27,11 @@ const GROUPS: { key: Group; label: string }[] = [
   { key: "day", label: "По дням" }, { key: "week", label: "По неделям" },
   { key: "month", label: "По месяцам" }, { key: "year", label: "По годам" },
 ];
+
+function isDebtOrder(o: Order): boolean {
+  const remaining = Number(o.remaining_amount ?? (Number(o.total_amount) - Number(o.paid_total)));
+  return o.is_debt ?? (o.status === "shipped" && o.settlement_intent === "debt" && remaining > 0);
+}
 
 // Ключ группировки + подпись для точки времени.
 function bucket(iso: string, g: Group): { key: string; label: string } {
@@ -111,13 +116,16 @@ export default function ReportsPage() {
 
   // KPI
   const revenue = periodOrders
-    .filter((o) => o.status !== "cancelled")
+    .filter((o) => isFinancialOrderStatus(o.status))
     .reduce((s, o) => s + Number(o.total_amount), 0);
   const received = (events ?? [])
     .filter((e) => e.event_type === "payment" && inRange(e.created_at))
     .reduce((s, e) => s + Number((e.payload?.amount as string) ?? 0), 0);
-  const debtors = list.filter((o) => !o.is_fully_paid && o.status !== "draft" && o.status !== "cancelled");
-  const debtTotal = debtors.reduce((s, o) => s + (Number(o.total_amount) - Number(o.paid_total)), 0);
+  const debtors = list.filter((o) => isDebtOrder(o));
+  const debtTotal = debtors.reduce(
+    (s, o) => s + Number(o.remaining_amount ?? (Number(o.total_amount) - Number(o.paid_total))),
+    0,
+  );
 
   // Временной ряд: выручка (по created_at заказа) + поступления (по payment-событиям)
   const series = useMemo(() => {
@@ -127,7 +135,7 @@ export default function ReportsPage() {
       if (!map[b.key]) map[b.key] = { ...b, revenue: 0, received: 0 };
       return map[b.key];
     };
-    periodOrders.filter((o) => o.status !== "cancelled").forEach((o) => {
+    periodOrders.filter((o) => isFinancialOrderStatus(o.status)).forEach((o) => {
       touch(o.created_at).revenue += Number(o.total_amount);
     });
     (events ?? []).filter((e) => e.event_type === "payment" && inRange(e.created_at)).forEach((e) => {

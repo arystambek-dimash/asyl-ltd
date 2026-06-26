@@ -13,3 +13,4 @@ def test_serializer_exposes_payment_fields():
     assert data["payment_status"] == "unpaid"
     assert data["settlement_intent"] == "debt"
     assert "remaining_amount" in data
+    assert data["is_debt"] is False

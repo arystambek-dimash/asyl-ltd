@@ -5,6 +5,7 @@ import { Activity, ChevronRight } from "lucide-react";
 import { ResponsiveContainer, AreaChart, Area } from "recharts";
 import { useApi } from "@/lib/use-api";
 import { formatMoney, cn } from "@/lib/utils";
+import { isFinancialOrderStatus } from "@/lib/constants";
 import type { Order, StockItem, EventLog } from "@/lib/types";
 
 function Panel({
@@ -57,7 +58,7 @@ export function SurveillancePanels() {
       slots[key(d)] = { revenue: 0, received: 0 };
     }
     list.forEach((o) => {
-      if (o.status === "cancelled") return;
+      if (!isFinancialOrderStatus(o.status)) return;
       const d = new Date(o.created_at);
       if (d >= start && d <= today) { const k = key(d); if (slots[k]) slots[k].revenue += Number(o.total_amount); }
     });

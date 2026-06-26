@@ -81,6 +81,7 @@ class OrderSerializer(serializers.ModelSerializer):
     paid_total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     remaining_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     is_fully_paid = serializers.BooleanField(read_only=True)
+    is_debt = serializers.BooleanField(read_only=True)
     client_name = serializers.CharField(source="client.name", read_only=True)
     client_phone = serializers.CharField(source="client.phone", read_only=True)
     weigh_in_kg = serializers.SerializerMethodField()
@@ -97,7 +98,7 @@ class OrderSerializer(serializers.ModelSerializer):
                   "payment_status", "settlement_intent", "transport_type",
                   "truck_number", "arrival_date", "items", "total_amount",
                   "paid_total", "remaining_amount", "is_fully_paid",
-                  "debt_override", "debt_override_by_name", "pending_status_requests",
+                  "is_debt", "debt_override", "debt_override_by_name", "pending_status_requests",
                   "payments",
                   "weigh_in_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at"]

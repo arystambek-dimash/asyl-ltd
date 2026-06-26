@@ -38,7 +38,7 @@ export interface Order {
   truck_number: string; truck_number_set_by?: number | null;
   arrival_date?: string | null;
   items: OrderItem[]; total_amount: string; paid_total: string; remaining_amount?: string;
-  is_fully_paid: boolean; debt_override: boolean; debt_requested?: boolean;
+  is_fully_paid: boolean; is_debt?: boolean; debt_override: boolean; debt_requested?: boolean;
   pending_status_requests?: StatusChangeRequest[];
   payments?: Payment[];
   weigh_in_kg?: string | null;
