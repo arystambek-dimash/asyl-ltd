@@ -91,6 +91,7 @@ class OrderSerializer(serializers.ModelSerializer):
     debt_override_by_name = serializers.SerializerMethodField()
     pending_status_requests = serializers.SerializerMethodField()
     payments = serializers.SerializerMethodField()
+    pending_payments = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -99,7 +100,7 @@ class OrderSerializer(serializers.ModelSerializer):
                   "truck_number", "arrival_date", "items", "total_amount",
                   "paid_total", "remaining_amount", "is_fully_paid",
                   "is_debt", "debt_override", "debt_override_by_name", "pending_status_requests",
-                  "payments",
+                  "payments", "pending_payments",
                   "weigh_in_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at"]
         read_only_fields = ["debt_override"]
@@ -146,6 +147,22 @@ class OrderSerializer(serializers.ModelSerializer):
         # История платежей — только подтверждённые (реально полученные деньги).
         # Неподтверждённые заявки клиента (pending) не показываем как «получено».
         qs = obj.payments.filter(status="confirmed").order_by("paid_at")
+        return PaymentSerializer(qs, many=True).data
+
+    def get_pending_payments(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        has_perm_code = getattr(user, "has_perm_code", None)
+        can_confirm = bool(
+            user and not getattr(user, "is_client", False)
+            and (
+                getattr(user, "is_superuser", False)
+                or (callable(has_perm_code) and has_perm_code("payments.confirm"))
+            )
+        )
+        if not can_confirm:
+            return []
+        qs = obj.payments.filter(status="pending").order_by("paid_at")
         return PaymentSerializer(qs, many=True).data
 
     def create(self, validated_data):

@@ -28,6 +28,19 @@ def test_history_excludes_pending_payments(make_user):
     assert data["paid_total"] == "0.00"
 
 
+def test_pending_payments_visible_to_confirmer(make_user, accountant, auth_client):
+    user = make_user(username="client-pay", client=True)
+    c = Client.objects.create(first_name="A", last_name="B", phone="x", user=user)
+    o = _shipped_order(c)
+    Payment.objects.create(order=o, amount="50", method="card", status="pending", recorded_by=user)
+
+    response = auth_client(accountant).get(f"/api/orders/{o.id}/")
+
+    assert response.status_code == 200
+    assert response.data["payments"] == []
+    assert response.data["pending_payments"][0]["amount"] == "50.00"
+
+
 def test_history_shows_confirmed(make_user):
     user = make_user(client=True)
     c = Client.objects.create(first_name="A", last_name="B", phone="x", user=user)

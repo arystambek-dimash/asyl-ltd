@@ -22,7 +22,7 @@ import { can } from "@/lib/can";
 import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/utils";
 import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
-import { CheckCircle2, Circle, Layers, Package, Scale, Truck, Boxes } from "lucide-react";
+import { CheckCircle2, Circle, CreditCard, Layers, Package, Scale, Truck, Boxes } from "lucide-react";
 import type { Order, Payment } from "@/lib/types";
 
 const ORDER_STATUSES = ["draft", "pending", "confirmed", "arrived", "loading", "loaded", "shipped", "cancelled"];
@@ -73,6 +73,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const isManager = can(me, "orders.confirm");
   const canEditStatus = can(me, "orders.edit");
   const canViewStatus = can(me, "orders.view");
+  const canConfirmPayments = can(me, "payments.confirm");
   const [newStatus, setNewStatus] = useState("");
   // Цены за мешок по позиции (для подтверждения). Предзаполняются ценой клиента.
   const [prices, setPrices] = useState<Record<number, string>>({});
@@ -114,6 +115,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const hasActions =
     (isManager && isNew && !confirmInPriceCard) || order.status === "shipped" || (!isManager && isNew);
   const pendingReqs = order.pending_status_requests ?? [];
+  const pendingPayments = order.pending_payments ?? [];
 
   return (
     <AppShell title={`Заказ #${order.id}`}>
@@ -251,6 +253,44 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             <p className="rounded-lg border border-[var(--border)] bg-[var(--card)] p-3 text-sm text-[var(--destructive)] shadow-card">
               {error}
             </p>
+          )}
+
+          {canConfirmPayments && pendingPayments.length > 0 && (
+            <CollapsibleCard
+              title="Заявки на оплату"
+              defaultOpen
+              badge={<Badge tone="warning">{pendingPayments.length}</Badge>}
+            >
+              <p className="text-xs text-[var(--muted-foreground)]">
+                Эти суммы появятся в отчёте только после подтверждения.
+              </p>
+              {pendingPayments.map((payment) => (
+                <div key={payment.id} className="flex flex-col gap-3 rounded-lg border p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2 text-base font-semibold tabular-nums">
+                        <CreditCard className="size-4 text-[var(--warning)]" />
+                        {formatMoney(payment.amount)} ₸
+                      </div>
+                      <div className="mt-1 text-xs text-[var(--muted-foreground)]">
+                        {payment.recorded_by_name || "Клиент"} · {new Date(payment.paid_at).toLocaleString("ru-RU")}
+                      </div>
+                    </div>
+                    <Badge tone="warning">{payment.method_label || payment.method}</Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button size="sm" disabled={busy}
+                      onClick={() => act(() => api.post(`/orders/${order.id}/payments/${payment.id}/confirm/`))}>
+                      Подтвердить
+                    </Button>
+                    <Button size="sm" variant="ghost" disabled={busy}
+                      onClick={() => act(() => api.post(`/orders/${order.id}/payments/${payment.id}/reject/`))}>
+                      Отклонить
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </CollapsibleCard>
           )}
 
           {/* Подтверждение с ценами — оператор назначает цену каждой позиции для клиента */}

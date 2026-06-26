@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/utils";
 import { isFinancialOrderStatus, ORDER_STATUS_LABELS } from "@/lib/constants";
 import { TrendingUp, Wallet, AlertCircle, ClipboardList, ArrowUpRight } from "lucide-react";
-import type { Order, EventLog } from "@/lib/types";
+import type { Order, Payment } from "@/lib/types";
 
 type Period = "week" | "month" | "year" | "all";
 type Group = "day" | "week" | "month" | "year";
@@ -32,6 +32,11 @@ const GROUPS: { key: Group; label: string }[] = [
 function isDebtOrder(o: Order): boolean {
   const remaining = Number(o.remaining_amount ?? (Number(o.total_amount) - Number(o.paid_total)));
   return o.is_debt ?? (o.status === "shipped" && o.settlement_intent === "debt" && remaining > 0);
+}
+
+function confirmedPayments(orders: Order[]): Payment[] {
+  return orders.flatMap((order) => order.payments ?? [])
+    .filter((payment) => payment.status === "confirmed");
 }
 
 // Ключ группировки + подпись для точки времени.
@@ -84,7 +89,6 @@ function MetricCard({ label, value, sub, icon: Icon, accent }: {
 
 function ReportsPageInner() {
   const { data: orders } = useApi<Order[]>("/orders/");
-  const { data: events } = useApi<EventLog[]>("/events/");
 
   const [period, setPeriod] = useState<Period>("month");
   const [group, setGroup] = useState<Group>("day");
@@ -119,16 +123,17 @@ function ReportsPageInner() {
   const revenue = periodOrders
     .filter((o) => isFinancialOrderStatus(o.status))
     .reduce((s, o) => s + Number(o.total_amount), 0);
-  const received = (events ?? [])
-    .filter((e) => e.event_type === "payment" && inRange(e.created_at))
-    .reduce((s, e) => s + Number((e.payload?.amount as string) ?? 0), 0);
+  const payments = confirmedPayments(list);
+  const received = payments
+    .filter((payment) => inRange(payment.paid_at))
+    .reduce((s, payment) => s + Number(payment.amount), 0);
   const debtors = list.filter((o) => isDebtOrder(o));
   const debtTotal = debtors.reduce(
     (s, o) => s + Number(o.remaining_amount ?? (Number(o.total_amount) - Number(o.paid_total))),
     0,
   );
 
-  // Временной ряд: выручка (по created_at заказа) + поступления (по payment-событиям)
+  // Временной ряд: выручка по заказам + поступления по подтверждённым платежам.
   const series = useMemo(() => {
     const map: Record<string, { key: string; label: string; revenue: number; received: number }> = {};
     const touch = (iso: string) => {
@@ -139,12 +144,12 @@ function ReportsPageInner() {
     periodOrders.filter((o) => isFinancialOrderStatus(o.status)).forEach((o) => {
       touch(o.created_at).revenue += Number(o.total_amount);
     });
-    (events ?? []).filter((e) => e.event_type === "payment" && inRange(e.created_at)).forEach((e) => {
-      touch(e.created_at).received += Number((e.payload?.amount as string) ?? 0);
+    payments.filter((payment) => inRange(payment.paid_at)).forEach((payment) => {
+      touch(payment.paid_at).received += Number(payment.amount);
     });
     return Object.values(map).sort((a, b) => a.key.localeCompare(b.key));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orders, events, group, range.start, range.end]);
+  }, [orders, group, range.start, range.end]);
 
   // По статусам заказов (в периоде)
   const byStatus = useMemo(() => {
@@ -184,7 +189,7 @@ function ReportsPageInner() {
       {/* KPI */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard label="Выручка" value={`${formatMoney(String(revenue))} ₸`} sub="заказов за период" icon={TrendingUp} accent />
-        <MetricCard label="Поступило" value={`${formatMoney(String(received))} ₸`} sub="оплат за период" icon={Wallet} />
+        <MetricCard label="Поступило" value={`${formatMoney(String(received))} ₸`} sub="подтверждённых оплат за период" icon={Wallet} />
         <MetricCard label="Долг" value={`${formatMoney(String(debtTotal))} ₸`} sub={`${debtors.length} заказов`} icon={AlertCircle} />
         <MetricCard label="Заказов" value={String(periodOrders.length)} sub="за период" icon={ClipboardList} />
       </div>

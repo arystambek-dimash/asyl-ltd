@@ -42,6 +42,7 @@ export interface Order {
   is_fully_paid: boolean; is_debt?: boolean; debt_override: boolean; debt_requested?: boolean;
   pending_status_requests?: StatusChangeRequest[];
   payments?: Payment[];
+  pending_payments?: Payment[];
   weigh_in_kg?: string | null;
   bags_loaded?: number; bag_estimate_kg?: string;
   bag_weight_kg?: string; debt_override_by_name?: string | null;

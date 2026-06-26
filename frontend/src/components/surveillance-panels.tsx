@@ -6,7 +6,7 @@ import { ResponsiveContainer, AreaChart, Area } from "recharts";
 import { useApi } from "@/lib/use-api";
 import { formatMoney, cn } from "@/lib/utils";
 import { isFinancialOrderStatus } from "@/lib/constants";
-import type { Order, StockItem, EventLog } from "@/lib/types";
+import type { Order, StockItem, EventLog, Payment } from "@/lib/types";
 
 function Panel({
   title, icon: Icon, children,
@@ -22,6 +22,10 @@ function Panel({
   );
 }
 
+function confirmedPayments(orders: Order[]): Payment[] {
+  return orders.flatMap((order) => order.payments ?? [])
+    .filter((payment) => payment.status === "confirmed");
+}
 
 export function SurveillancePanels() {
   const { data: orders } = useApi<Order[]>("/orders/");
@@ -62,10 +66,9 @@ export function SurveillancePanels() {
       const d = new Date(o.created_at);
       if (d >= start && d <= today) { const k = key(d); if (slots[k]) slots[k].revenue += Number(o.total_amount); }
     });
-    (events ?? []).forEach((e) => {
-      if (e.event_type !== "payment") return;
-      const d = new Date(e.created_at);
-      if (d >= start && d <= today) { const k = key(d); if (slots[k]) slots[k].received += Number((e.payload?.amount as string) ?? 0); }
+    confirmedPayments(list).forEach((payment) => {
+      const d = new Date(payment.paid_at);
+      if (d >= start && d <= today) { const k = key(d); if (slots[k]) slots[k].received += Number(payment.amount); }
     });
     const arr = Object.values(slots);
     return {
@@ -73,7 +76,7 @@ export function SurveillancePanels() {
       periodRevenue: arr.reduce((s, x) => s + x.revenue, 0),
       periodReceived: arr.reduce((s, x) => s + x.received, 0),
     };
-  }, [orders, events]);
+  }, [orders]);
 
   return (
     <div className="flex flex-col gap-4">
