@@ -1,3 +1,4 @@
+from decimal import Decimal
 from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 from apps.catalog.models import Product
@@ -40,9 +41,9 @@ class PortalOrderSerializer(serializers.ModelSerializer):
     store = serializers.PrimaryKeyRelatedField(
         queryset=Store.objects.all(), required=False, allow_null=True)
     store_name = serializers.CharField(source="store.name", read_only=True, default=None)
-    total_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
-    paid_total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
-    remaining_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    total_amount = serializers.SerializerMethodField()
+    paid_total = serializers.SerializerMethodField()
+    remaining_amount = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -69,6 +70,27 @@ class PortalOrderSerializer(serializers.ModelSerializer):
                 "detail": "К аккаунту не привязан профиль клиента.",
                 "code": "missing_client_profile",
             }) from exc
+
+    def _money_visible(self, obj):
+        return obj.status not in ("draft", "pending", "rejected", "cancelled")
+
+    def _amount(self, value):
+        return str(value.quantize(Decimal("0.01")))
+
+    def get_total_amount(self, obj):
+        if not self._money_visible(obj):
+            return None
+        return self._amount(obj.total_amount)
+
+    def get_paid_total(self, obj):
+        if not self._money_visible(obj):
+            return None
+        return self._amount(obj.paid_total)
+
+    def get_remaining_amount(self, obj):
+        if not self._money_visible(obj):
+            return None
+        return self._amount(obj.remaining_amount)
 
     def create(self, validated_data):
         items = validated_data.pop("items")

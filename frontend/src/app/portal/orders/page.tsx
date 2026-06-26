@@ -10,6 +10,11 @@ import { formatMoney } from "@/lib/utils";
 import { Plus } from "lucide-react";
 import type { Order } from "@/lib/types";
 
+function portalMoney(value: string | null | undefined) {
+  if (value == null) return "После подтверждения";
+  return `${formatMoney(value)} ₸`;
+}
+
 export default function PortalOrdersPage() {
   const { data: orders, loading } = useApi<Order[]>("/portal/orders/");
   return (
@@ -35,8 +40,14 @@ export default function PortalOrdersPage() {
                     <TD className="font-medium">
                       <Link href={`/portal/orders/${o.id}`} className="underline">#{o.id}</Link>
                     </TD>
-                    <TD className="tabular-nums">{formatMoney(o.total_amount)} ₸</TD>
-                    <TD className="tabular-nums text-[var(--muted-foreground)]">{formatMoney(o.paid_total)} ₸</TD>
+                    <TD className={o.total_amount == null ? "text-[var(--muted-foreground)]" : "tabular-nums"}>
+                      {portalMoney(o.total_amount)}
+                    </TD>
+                    <TD className={o.paid_total == null
+                      ? "text-[var(--muted-foreground)]"
+                      : "tabular-nums text-[var(--muted-foreground)]"}>
+                      {portalMoney(o.paid_total)}
+                    </TD>
                     <TD><StatusBadge status={o.status} /></TD>
                   </TR>
                 ))}

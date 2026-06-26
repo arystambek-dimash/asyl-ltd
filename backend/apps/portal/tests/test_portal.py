@@ -1,7 +1,7 @@
 import pytest
 from apps.catalog.models import Product
 from apps.clients.models import Client
-from apps.orders.models import Order
+from apps.orders.models import Order, OrderItem
 
 pytestmark = pytest.mark.django_db
 
@@ -92,3 +92,31 @@ def test_client_order_without_profile_returns_400(auth_client, client_user):
 
     assert resp.status_code == 400
     assert resp.data["detail"] == "К аккаунту не привязан профиль клиента."
+
+
+def test_client_pending_order_hides_amounts(auth_client, client_user):
+    client = _client_for(client_user)
+    product = _product()
+    order = Order.objects.create(client=client, status="pending")
+    OrderItem.objects.create(order=order, product=product, quantity=2)
+
+    resp = auth_client(client_user).get(f"/api/portal/orders/{order.id}/")
+
+    assert resp.status_code == 200
+    assert resp.data["total_amount"] is None
+    assert resp.data["paid_total"] is None
+    assert resp.data["remaining_amount"] is None
+
+
+def test_client_confirmed_order_shows_amounts(auth_client, client_user):
+    client = _client_for(client_user)
+    product = _product()
+    order = Order.objects.create(client=client, status="confirmed")
+    OrderItem.objects.create(order=order, product=product, quantity=2, unit_price="100.00")
+
+    resp = auth_client(client_user).get(f"/api/portal/orders/{order.id}/")
+
+    assert resp.status_code == 200
+    assert resp.data["total_amount"] == "200.00"
+    assert resp.data["paid_total"] == "0.00"
+    assert resp.data["remaining_amount"] == "200.00"

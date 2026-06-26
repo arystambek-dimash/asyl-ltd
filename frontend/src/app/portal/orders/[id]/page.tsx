@@ -14,6 +14,11 @@ import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { clientStep, payOrder, setTruck, getPaymentInfo, type PaymentInfo } from "@/lib/portal-actions";
 import type { Order } from "@/lib/types";
 
+function portalMoney(value: string | null | undefined) {
+  if (value == null) return "После подтверждения";
+  return `${formatMoney(value)} ₸`;
+}
+
 export default function PortalOrderDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { data: order, loading, reload } = useApi<Order>(`/portal/orders/${id}/`);
@@ -34,7 +39,9 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
   );
 
   const step = clientStep(order.status, order.payment_status);
-  const remaining = Number(order.remaining_amount ?? (Number(order.total_amount) - Number(order.paid_total)));
+  const remaining = order.remaining_amount == null
+    ? 0
+    : Number(order.remaining_amount);
 
   return (
     <AppShell title={`Заказ #${order.id}`} portal>
@@ -60,7 +67,11 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
             </Table>
             <div className="mt-4 flex justify-between border-t pt-3 text-sm">
               <span className="text-[var(--muted-foreground)]">Итого</span>
-              <span className="font-bold tabular-nums">{formatMoney(order.total_amount)} ₸</span>
+              <span className={order.total_amount == null
+                ? "font-medium text-[var(--muted-foreground)]"
+                : "font-bold tabular-nums"}>
+                {portalMoney(order.total_amount)}
+              </span>
             </div>
           </CardContent>
         </Card>
