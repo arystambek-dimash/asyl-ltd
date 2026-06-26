@@ -15,9 +15,9 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { Role, Permission } from "@/lib/types";
 
 const SECTION_LABELS: Record<string, string> = {
-  catalog: "Номенклатура", clients: "Клиенты", warehouse: "Склад", orders: "Заказы",
-  payments: "Оплаты", shipping: "Пост отгрузки", events: "Журнал", reports: "Отчёты",
-  employees: "Сотрудники", rbac: "Доступы",
+  catalog: "Товары", clients: "Клиенты", warehouse: "Склад", orders: "Заказы",
+  payments: "Оплаты", shipping: "Пост отгрузки", train: "Поезд", events: "Журнал",
+  reports: "Отчёты", employees: "Сотрудники", rbac: "Доступы",
 };
 const ACTION_LABELS: Record<string, string> = {
   view: "просмотр", create: "создание", edit: "редакт.", delete: "удаление",

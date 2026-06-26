@@ -1,7 +1,7 @@
 # Единый источник истины для кодов прав. Все ссылки импортируют отсюда.
 
 _SECTIONS = {
-    "catalog": ("Номенклатура", ["view", "create", "edit", "delete"]),
+    "catalog": ("Товары", ["view", "create", "edit", "delete"]),
     "clients": ("Клиенты", ["view", "create", "edit", "delete"]),
     "warehouse": ("Склад", ["view", "adjust"]),
     "orders": ("Заказы", ["view", "create", "edit", "confirm"]),
