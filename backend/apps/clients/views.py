@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from apps.rbac.permissions import PermViewSetMixin
 from .models import Client, Store
 from .serializers import ClientSerializer, StoreSerializer
-from .services import detect_overdue, is_payment_window_open
+from .services import detect_overdue, is_payment_window_open, client_analytics
 
 
 class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
@@ -18,7 +18,12 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "partial_update": "clients.edit", "destroy": "clients.delete",
         "debts": "clients.view",
         "debt_detail": "clients.view",
+        "analytics": "clients.view",
     }
+
+    @action(detail=True, methods=["get"], url_path="analytics")
+    def analytics(self, request, pk=None):
+        return Response(client_analytics(self.get_object()))
 
     def _debt_orders(self, client):
         qs = (client.orders
