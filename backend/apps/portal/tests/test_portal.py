@@ -79,3 +79,16 @@ def test_client_catalog_lists_active_products_without_stock(auth_client, client_
     assert active.id in by_id
     assert inactive.id not in by_id
     assert by_id[active.id]["available_bags"] == 0
+
+
+def test_client_order_without_profile_returns_400(auth_client, client_user):
+    product = _product()
+
+    resp = auth_client(client_user).post(
+        "/api/portal/orders/",
+        {"items": [{"product": product.id, "quantity": 1}]},
+        format="json",
+    )
+
+    assert resp.status_code == 400
+    assert resp.data["detail"] == "К аккаунту не привязан профиль клиента."

@@ -1,3 +1,4 @@
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 from apps.catalog.models import Product
 from apps.clients.models import Store
@@ -55,17 +56,26 @@ class PortalOrderSerializer(serializers.ModelSerializer):
     def validate_store(self, store):
         if store is None:
             return store
-        client = self.context["request"].user.client_profile
+        client = self._client()
         if store.client_id != client.id:
             raise serializers.ValidationError("Магазин принадлежит другому клиенту.")
         return store
+
+    def _client(self):
+        try:
+            return self.context["request"].user.client_profile
+        except ObjectDoesNotExist as exc:
+            raise serializers.ValidationError({
+                "detail": "К аккаунту не привязан профиль клиента.",
+                "code": "missing_client_profile",
+            }) from exc
 
     def create(self, validated_data):
         items = validated_data.pop("items")
         intent = validated_data.get("settlement_intent", "debt")
         transport = validated_data.get("transport_type", "truck")
         store = validated_data.get("store")
-        client = self.context["request"].user.client_profile
+        client = self._client()
         order = Order.objects.create(client=client, status="pending",
                                      settlement_intent=intent, store=store,
                                      transport_type=transport)
