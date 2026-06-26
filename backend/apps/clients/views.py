@@ -16,9 +16,10 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "list": "clients.view", "retrieve": "clients.view",
         "create": "clients.create", "update": "clients.edit",
         "partial_update": "clients.edit", "destroy": "clients.delete",
-        "debts": "clients.view",
-        "debt_detail": "clients.view",
-        "analytics": "clients.view",
+        # Финансовая аналитика и долги — под reports.view.
+        "debts": "reports.view",
+        "debt_detail": "reports.view",
+        "analytics": "reports.view",
     }
 
     @action(detail=True, methods=["get"], url_path="analytics")
@@ -102,9 +103,11 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "list": "clients.view", "retrieve": "clients.view",
         "create": "clients.create", "update": "clients.edit",
         "partial_update": "clients.edit", "destroy": "clients.delete",
-        "check_overdue": "clients.view",
-        "debts": "clients.view",
-        "debt_detail": "clients.view",
+        # check_overdue создаёт уведомления (side-effect) → требует edit.
+        "check_overdue": "clients.edit",
+        # Долги магазинов — финансовое, под reports.view.
+        "debts": "reports.view",
+        "debt_detail": "reports.view",
     }
 
     @action(detail=True, methods=["get"], url_path="debt-detail")
