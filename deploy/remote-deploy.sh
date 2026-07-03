@@ -23,5 +23,8 @@ docker compose -f "$COMPOSE_FILE" config >/tmp/asyl-ltd-compose-config.yml
 echo "Rebuilding and starting containers..."
 docker compose -f "$COMPOSE_FILE" up -d --build --remove-orphans
 
+echo "Reloading nginx config (bind-mounted, not picked up by compose)..."
+docker compose -f "$COMPOSE_FILE" exec -T nginx nginx -s reload || true
+
 echo "Current containers:"
 docker compose -f "$COMPOSE_FILE" ps
