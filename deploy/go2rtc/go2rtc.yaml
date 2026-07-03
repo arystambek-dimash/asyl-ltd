@@ -1,0 +1,23 @@
+# go2rtc: перекодирование RTSP (HEVC) с камер цеха в H.264 для браузера.
+# Реквизиты берутся из окружения контейнера (.env сервера):
+#   CAMERA_HOST, CAMERA_USER, CAMERA_PASS
+# Потоки поднимаются по требованию — без зрителей ffmpeg не работает.
+
+api:
+  listen: ":1984"
+
+rtsp:
+  listen: ""
+
+webrtc:
+  listen: ""
+
+streams:
+  cam1: ffmpeg:rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam1sub#video=h264
+  cam2: ffmpeg:rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam2sub#video=h264
+  cam3: ffmpeg:rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam3sub#video=h264
+  cam4: ffmpeg:rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam4sub#video=h264
+  cam5: ffmpeg:rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam5sub#video=h264
+  cam6: ffmpeg:rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam6sub#video=h264
+  cam7: ffmpeg:rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam7sub#video=h264
+  cam8: ffmpeg:rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam8sub#video=h264

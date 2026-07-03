@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     "apps.shipments",
     "apps.portal",
     "apps.notifications",
+    "apps.cameras",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

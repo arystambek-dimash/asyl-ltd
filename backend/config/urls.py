@@ -20,6 +20,7 @@ urlpatterns = [
     path("api/", include("apps.notifications.urls")),
     path("api/", include("apps.rbac.urls")),
     path("api/", include("apps.employees.urls")),
+    path("api/", include("apps.cameras.urls")),
 ]
 
 if settings.DEBUG:
