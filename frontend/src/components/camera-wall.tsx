@@ -1,35 +1,45 @@
 "use client";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Video, VideoOff, LayoutGrid, Maximize2, Circle } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
+import { useApi } from "@/lib/use-api";
+import { CameraStream } from "@/components/camera-stream";
 
 export interface CameraFeed {
   id: number;
   name: string;
   zone: string;
-  /** HLS/MP4 stream URL. When null → shows "не подключена" placeholder. */
-  url?: string | null;
+  /** Имя потока в go2rtc (cam1..cam8). */
+  src: string;
 }
 
-// Камеры цеха. Позже сюда подставляются реальные URL потоков (rtsp→hls),
-// и плеер заработает без изменения разметки.
-export const WAREHOUSE_CAMERAS: CameraFeed[] = [
-  { id: 1, name: "Камера 1", zone: "Въезд / весы", url: null },
-  { id: 2, name: "Камера 2", zone: "Зона загрузки", url: null },
-  { id: 3, name: "Камера 3", zone: "Ворота", url: null },
-  { id: 4, name: "Камера 4", zone: "Склад", url: null },
-  { id: 5, name: "Камера 5", zone: "Производство", url: null },
-  { id: 6, name: "Камера 6", zone: "Двор", url: null },
-];
-
-function CameraTile({ cam, big = false }: { cam: CameraFeed; big?: boolean }) {
-  const online = !!cam.url;
+function CameraTile({
+  cam,
+  ready,
+  big = false,
+  onOnline,
+}: {
+  cam: CameraFeed;
+  ready: boolean;
+  big?: boolean;
+  onOnline: (id: number, online: boolean) => void;
+}) {
+  const [online, setOnline] = useState(false);
+  const handleState = useCallback(
+    (v: boolean) => {
+      setOnline(v);
+      onOnline(cam.id, v);
+    },
+    [cam.id, onOnline]
+  );
   return (
     <div className="group relative overflow-hidden rounded-lg border bg-[var(--secondary)] aspect-video">
-      {online ? (
-        <video src={cam.url!} autoPlay muted playsInline controls
-          className="h-full w-full bg-black object-cover" />
-      ) : (
+      {ready && (
+        <CameraStream src={cam.src} onStateChange={handleState}
+          className="absolute inset-0 h-full w-full bg-black object-cover" />
+      )}
+      {!online && (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-[var(--muted-foreground)]">
           <VideoOff className={big ? "size-10" : "size-6"} />
           <span className={big ? "text-sm" : "text-[11px]"}>Нет сигнала</span>
@@ -51,11 +61,32 @@ function CameraTile({ cam, big = false }: { cam: CameraFeed; big?: boolean }) {
   );
 }
 
-export function CameraWall({ cameras = WAREHOUSE_CAMERAS }: { cameras?: CameraFeed[] }) {
+export function CameraWall() {
+  const { data } = useApi<CameraFeed[]>("/cameras/");
+  const cameras = data ?? [];
   const [mode, setMode] = useState<"grid" | "single">("grid");
-  const [activeId, setActiveId] = useState(cameras[0]?.id ?? 1);
+  const [activeId, setActiveId] = useState<number | null>(null);
+  const [tokenReady, setTokenReady] = useState(false);
+  const [onlineIds, setOnlineIds] = useState<Set<number>>(new Set());
+
+  // cookie-доступ к потокам go2rtc; без неё nginx отдаст 403
+  useEffect(() => {
+    api.post("/cameras/token/")
+      .then(() => setTokenReady(true))
+      .catch(() => setTokenReady(false));
+  }, []);
+
+  const handleOnline = useCallback((id: number, online: boolean) => {
+    setOnlineIds((prev) => {
+      if (prev.has(id) === online) return prev;
+      const next = new Set(prev);
+      if (online) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+
   const active = cameras.find((c) => c.id === activeId) ?? cameras[0];
-  const onlineCount = cameras.filter((c) => c.url).length;
 
   return (
     <div className="flex h-full flex-col rounded-xl border bg-[var(--card)] p-4 shadow-sm">
@@ -64,7 +95,7 @@ export function CameraWall({ cameras = WAREHOUSE_CAMERAS }: { cameras?: CameraFe
           <Video className="size-4 text-[var(--muted-foreground)]" />
           Видеонаблюдение
           <span className="rounded-full bg-[var(--muted)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted-foreground)]">
-            {onlineCount}/{cameras.length} онлайн
+            {onlineIds.size}/{cameras.length} онлайн
           </span>
         </div>
         <div className="flex items-center gap-1 rounded-md border p-0.5">
@@ -85,23 +116,25 @@ export function CameraWall({ cameras = WAREHOUSE_CAMERAS }: { cameras?: CameraFe
 
       {mode === "grid" ? (
         <div className="grid flex-1 grid-cols-2 gap-3 xl:grid-cols-3">
-          {cameras.map((c) => <CameraTile key={c.id} cam={c} />)}
+          {cameras.map((c) => (
+            <CameraTile key={c.id} cam={c} ready={tokenReady} onOnline={handleOnline} />
+          ))}
         </div>
-      ) : (
+      ) : active ? (
         <div className="flex flex-1 flex-col gap-3">
-          <CameraTile cam={active} big />
+          <CameraTile key={active.id} cam={active} ready={tokenReady} big onOnline={handleOnline} />
           <div className="flex flex-wrap gap-2">
             {cameras.map((c) => (
               <button key={c.id} onClick={() => setActiveId(c.id)}
                 className={cn("rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
-                  c.id === activeId ? "border-[var(--primary)] bg-[var(--primary)]/10 text-[var(--primary)]"
+                  c.id === active.id ? "border-[var(--primary)] bg-[var(--primary)]/10 text-[var(--primary)]"
                     : "text-[var(--muted-foreground)] hover:bg-[var(--accent)]")}>
                 {c.zone}
               </button>
             ))}
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

@@ -65,6 +65,16 @@ WG_ALLOWEDIPS=10.13.13.0/24,192.168.1.0/24
 
 Replace `192.168.1.0/24` with the actual camera subnet.
 
+For the dashboard camera streams (go2rtc), the server must be in the same
+Tailscale tailnet as the camera PC (`tailscale ping 100.109.156.107`), and
+`.env` must contain the MediaMTX read-only credentials:
+
+```env
+CAMERA_HOST=100.109.156.107
+CAMERA_USER=viewer
+CAMERA_PASS=<viewer-password>
+```
+
 ## 4. Open firewall
 
 ```bash
