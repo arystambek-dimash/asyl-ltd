@@ -1,0 +1,35 @@
+name: Prod diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: Read-only diagnostic command to run on the server
+        required: true
+        default: cd /home/ubuntu/asyl-ltd && docker compose -f docker-compose.prod.yml ps
+
+jobs:
+  diagnose:
+    name: Run diagnostics over SSH
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PROD_HOST: ${{ secrets.PROD_HOST || '78.40.109.240' }}
+      PROD_PORT: ${{ secrets.PROD_PORT || '22' }}
+      PROD_USER: ${{ secrets.PROD_USER || 'ubuntu' }}
+      PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+
+    steps:
+      - name: Run over SSH
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/asyl_ltd_deploy_key
+          chmod 600 ~/.ssh/asyl_ltd_deploy_key
+          ssh-keyscan -p "$PROD_PORT" -H "$PROD_HOST" >> ~/.ssh/known_hosts
+          ssh \
+            -i ~/.ssh/asyl_ltd_deploy_key \
+            -p "$PROD_PORT" \
+            -o IdentitiesOnly=yes \
+            "$PROD_USER@$PROD_HOST" \
+            "${{ inputs.command }}"
