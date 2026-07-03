@@ -26,5 +26,8 @@ docker compose -f "$COMPOSE_FILE" up -d --build --remove-orphans
 echo "Reloading nginx config (bind-mounted, not picked up by compose)..."
 docker compose -f "$COMPOSE_FILE" exec -T nginx nginx -s reload || true
 
+echo "Restarting go2rtc to pick up bind-mounted config..."
+docker compose -f "$COMPOSE_FILE" restart go2rtc || true
+
 echo "Current containers:"
 docker compose -f "$COMPOSE_FILE" ps
