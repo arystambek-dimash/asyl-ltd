@@ -180,3 +180,50 @@ body {
 .dark .shadow-card {
   box-shadow: 0 1px 0 0 rgba(0, 0, 0, 0.4), 0 1px 3px 0 rgba(0, 0, 0, 0.5);
 }
+
+/* ─── Командный центр (дашборд): операторская дека ─────────────────── */
+
+@keyframes cmd-rise {
+  from { opacity: 0; transform: translateY(16px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes cmd-led {
+  0%, 100% { opacity: 1; box-shadow: 0 0 8px 1px currentColor; }
+  50%      { opacity: 0.4; box-shadow: 0 0 2px 0 currentColor; }
+}
+@keyframes cmd-blink { 50% { opacity: 0; } }
+@keyframes cmd-ticker {
+  from { background-position: 0 0; }
+  to   { background-position: 56px 0; }
+}
+
+.cmd-rise { animation: cmd-rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) backwards; }
+.cmd-led  { animation: cmd-led 2.2s ease-in-out infinite; }
+.cmd-blink { animation: cmd-blink 1s steps(1) infinite; }
+
+/* Плёночные полосы поверх видео — как на операторском мониторе */
+.cmd-scan { position: relative; }
+.cmd-scan::after {
+  content: "";
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.045) 0 1px, transparent 1px 3px),
+    radial-gradient(120% 90% at 50% 10%, transparent 55%, rgba(0,0,0,0.38));
+}
+
+/* Зернистость деки */
+.cmd-noise::before {
+  content: "";
+  position: absolute; inset: 0;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Диагональная штриховка для пустых состояний деки */
+.cmd-hatch {
+  background-image: repeating-linear-gradient(
+    -45deg, rgba(255,255,255,0.05) 0 10px, transparent 10px 28px);
+  animation: cmd-ticker 3s linear infinite;
+}
