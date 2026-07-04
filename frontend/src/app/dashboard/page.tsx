@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
-import { ArrowUpRight, ChevronRight, Truck } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ArrowUpRight, BarChart3, ChevronRight, Truck, Video } from "lucide-react";
 import { ResponsiveContainer, AreaChart, Area } from "recharts";
 import { AppShell } from "@/components/layout/app-shell";
 import { CameraWall } from "@/components/camera-wall";
@@ -138,18 +139,66 @@ function FinanceCard() {
   );
 }
 
+/* Переключатель разделов дашборда — в стиле FilterPills. */
+const DASHBOARD_VIEWS = [
+  { key: "analytics", label: "Аналитика", icon: BarChart3 },
+  { key: "cameras", label: "Камеры", icon: Video },
+] as const;
+type DashboardView = (typeof DASHBOARD_VIEWS)[number]["key"];
+const VIEW_STORAGE_KEY = "dashboard:view";
+
+function ViewSwitch({ view, onChange }: { view: DashboardView; onChange: (v: DashboardView) => void }) {
+  return (
+    <div className="inline-flex rounded-md border border-[var(--border)] bg-[var(--muted)] p-0.5">
+      {DASHBOARD_VIEWS.map((v) => (
+        <button
+          key={v.key}
+          type="button"
+          onClick={() => onChange(v.key)}
+          className={cn(
+            "inline-flex h-7 items-center gap-1.5 rounded px-3 text-[13px] transition-colors",
+            view === v.key
+              ? "bg-[var(--card)] font-medium text-[var(--foreground)] shadow-sm"
+              : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
+          )}
+        >
+          <v.icon className="size-3.5" />
+          {v.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function DashboardPage() {
+  const [view, setView] = useState<DashboardView>("analytics");
+
+  // запоминаем выбранный раздел между визитами
+  useEffect(() => {
+    const saved = localStorage.getItem(VIEW_STORAGE_KEY);
+    if (saved === "cameras" || saved === "analytics") setView(saved);
+  }, []);
+  const changeView = (v: DashboardView) => {
+    setView(v);
+    localStorage.setItem(VIEW_STORAGE_KEY, v);
+  };
+
   return (
     <AppShell title="Командный центр">
       <div className="flex flex-col gap-4">
-        <MetricStrip />
-        <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(320px,1fr)]">
-          <div className="flex min-w-0 flex-col gap-4">
-            <CameraWall />
-            <QueueBoard />
-          </div>
-          <FinanceCard />
-        </div>
+        <ViewSwitch view={view} onChange={changeView} />
+
+        {view === "analytics" ? (
+          <>
+            <MetricStrip />
+            <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(320px,1fr)]">
+              <QueueBoard />
+              <FinanceCard />
+            </div>
+          </>
+        ) : (
+          <CameraWall />
+        )}
       </div>
     </AppShell>
   );
