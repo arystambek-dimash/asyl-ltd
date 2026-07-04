@@ -133,6 +133,15 @@ ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
+# Redis-кэш в проде (REDIS_URL из compose); локально/в тестах — память процесса.
+if os.environ.get("REDIS_URL"):
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": os.environ["REDIS_URL"],
+        }
+    }
+
 # Реквизиты оплаты для клиентского портала (MVP — статичный Kaspi QR).
 PORTAL_PAYMENT_INFO = {
     "kaspi_qr": os.environ.get("KASPI_QR", ""),  # URL картинки QR или payload-строка

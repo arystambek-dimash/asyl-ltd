@@ -11,27 +11,11 @@ from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import services
+
 CAM_COOKIE = "cam_token"
 CAM_TOKEN_MAX_AGE = 12 * 3600  # секунд
 _signer = TimestampSigner(salt="cameras")
-
-# Единственный источник правды о камерах. src — имя потока в go2rtc.
-CAMERAS = [
-    {"id": i, "name": f"Камера {i}", "zone": zone, "src": f"cam{i}"}
-    for i, zone in enumerate(
-        [
-            "Въезд / весы",
-            "Зона загрузки",
-            "Ворота",
-            "Склад",
-            "Производство",
-            "Двор",
-            "Мельница",
-            "Периметр",
-        ],
-        start=1,
-    )
-]
 
 
 class IsStaffUser(BasePermission):
@@ -46,7 +30,7 @@ class CameraListView(APIView):
     permission_classes = [IsAuthenticated, IsStaffUser]
 
     def get(self, request):
-        return Response(CAMERAS)
+        return Response(services.discover_cameras())
 
 
 class CameraTokenView(APIView):

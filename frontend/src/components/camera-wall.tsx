@@ -114,7 +114,13 @@ export function CameraWall() {
         </div>
       </div>
 
-      {mode === "grid" ? (
+      {cameras.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 py-10 text-[var(--muted-foreground)]">
+          <VideoOff className="size-8" />
+          <span className="text-sm">Камеры недоступны</span>
+          <span className="text-xs">NVR не в сети или потоки ещё не настроены</span>
+        </div>
+      ) : mode === "grid" ? (
         <div className="grid flex-1 grid-cols-2 gap-3 xl:grid-cols-3">
           {cameras.map((c) => (
             <CameraTile key={c.id} cam={c} ready={tokenReady} onOnline={handleOnline} />
