@@ -20,8 +20,18 @@ fi
 echo "Validating compose config..."
 docker compose -f "$COMPOSE_FILE" config >/tmp/asyl-ltd-compose-config.yml
 
-echo "Rebuilding and starting containers..."
-docker compose -f "$COMPOSE_FILE" up -d --build --remove-orphans
+# Образы собираются в CI (GitHub Actions) и публикуются в GHCR —
+# сервер их только скачивает, ничего не собирая сам.
+if [ -n "${GHCR_TOKEN:-}" ]; then
+  echo "Logging in to ghcr.io..."
+  printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-github}" --password-stdin
+fi
+
+echo "Pulling images..."
+docker compose -f "$COMPOSE_FILE" pull --quiet
+
+echo "Starting containers..."
+docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
 
 echo "Reloading nginx config (bind-mounted, not picked up by compose)..."
 docker compose -f "$COMPOSE_FILE" exec -T nginx nginx -s reload || true

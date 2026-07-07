@@ -22,6 +22,7 @@ services:
     restart: unless-stopped
 
   backend:
+    image: ghcr.io/arystambek-dimash/asyl-ltd-backend:latest
     build: ./backend
     environment:
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
@@ -58,6 +59,7 @@ services:
     restart: unless-stopped
 
   frontend:
+    image: ghcr.io/arystambek-dimash/asyl-ltd-frontend:latest
     build:
       context: ./frontend
       args:
