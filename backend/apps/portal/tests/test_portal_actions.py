@@ -26,12 +26,12 @@ def test_create_order_is_pending(db, make_user, auth_client):
 
 
 def test_pay_creates_pending_payment(client_and_order, auth_client):
-    # Оплата доступна после отгрузки.
+    # Оплата доступна после отгрузки; заявка клиента встаёт в цепочку («принята»).
     user, o = client_and_order
     o.status = "shipped"; o.save()
     r = auth_client(user).post(f"/api/portal/orders/{o.id}/pay/", {"method": "kaspi"}, format="json")
     assert r.status_code == 201
-    assert o.payments.filter(status="pending", method="kaspi").exists()
+    assert o.payments.filter(status="received", method="kaspi").exists()
 
 
 def test_request_debt(client_and_order, auth_client):

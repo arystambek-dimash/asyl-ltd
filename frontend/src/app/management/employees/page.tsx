@@ -13,51 +13,70 @@ import { StatCard } from "@/components/ui/stat-card";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { Field } from "@/components/ui/field";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { PermissionPicker } from "@/components/permission-picker";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { Plus, Search, Pencil, Trash2 } from "lucide-react";
-import type { Employee, Role } from "@/lib/types";
+import type { Employee, Permission, Role } from "@/lib/types";
 
 function EmployeesPageInner() {
   const { data: employees, reload } = useApi<Employee[]>("/employees/");
   const { data: roles } = useApi<Role[]>("/roles/");
+  const { data: perms } = useApi<Permission[]>("/permissions/");
   const { me } = useAuth();
   const canManage = can(me, "employees.manage");
   const empty = { username: "", password: "", first_name: "", last_name: "", phone: "", position: "", role: "" };
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Employee | null>(null);
   const [form, setForm] = useState(empty);
+  // Доступы сотрудника: выбираются кнопками; роль лишь предзаполняет набор.
+  const [codes, setCodes] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [delItem, setDelItem] = useState<Employee | null>(null);
   const [delError, setDelError] = useState("");
   const [delBusy, setDelBusy] = useState(false);
 
-  function openNew() { setEditing(null); setForm(empty); setError(""); setOpen(true); }
+  function openNew() { setEditing(null); setForm(empty); setCodes(new Set()); setError(""); setOpen(true); }
   function openEdit(e: Employee) {
     setEditing(e);
     setForm({
       username: e.username, password: "", first_name: e.first_name, last_name: e.last_name,
       phone: e.phone, position: e.position, role: e.role ? String(e.role) : "",
     });
+    setCodes(new Set(e.permissions ?? []));
     setError(""); setOpen(true);
+  }
+
+  function toggleCode(code: string) {
+    const next = new Set(codes);
+    if (next.has(code)) next.delete(code); else next.add(code);
+    setCodes(next);
+  }
+
+  // Выбор роли — назначение; набор прав предзаполняется её шаблоном.
+  function pickRole(roleId: string) {
+    setForm((f) => ({ ...f, role: roleId }));
+    const preset = (roles ?? []).find((r) => String(r.id) === roleId);
+    setCodes(new Set((preset?.permissions ?? []).map((p) => p.code)));
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError("");
     try {
       const role = form.role ? Number(form.role) : null;
+      const body: Record<string, unknown> = {
+        username: form.username, first_name: form.first_name, last_name: form.last_name,
+        phone: form.phone, position: form.position, role,
+        permission_codes: Array.from(codes),
+      };
       if (editing) {
-        const body: Record<string, unknown> = {
-          username: form.username, first_name: form.first_name, last_name: form.last_name,
-          phone: form.phone, position: form.position, role,
-        };
         if (form.password) body.password = form.password;  // пустой = не менять
         await api.patch(`/employees/${editing.id}/`, body);
       } else {
-        await api.post("/employees/", { ...form, role });
+        await api.post("/employees/", { ...body, password: form.password });
       }
       setForm(empty); setOpen(false); reload();
     } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
@@ -124,7 +143,12 @@ function EmployeesPageInner() {
                 <TD className="font-medium">{e.name}</TD>
                 <TD>{e.username}</TD>
                 <TD>{e.position || "—"}</TD>
-                <TD>{e.role_name || "—"}</TD>
+                <TD>
+                  <div>{e.role_name || "—"}</div>
+                  <div className="text-xs text-[var(--muted-foreground)]">
+                    Доступов: {e.permissions?.length ?? 0}
+                  </div>
+                </TD>
                 <TD><Badge tone={e.is_active ? "success" : "muted"}>{e.is_active ? "Активен" : "Отключён"}</Badge></TD>
                 <TD>
                   {canManage && (
@@ -151,8 +175,8 @@ function EmployeesPageInner() {
       <Modal open={open} onClose={() => setOpen(false)}
         eyebrow={editing ? "Команда · Изменение" : "Команда · Сотрудник"}
         title={editing ? "Изменить сотрудника" : "Новый сотрудник"}
-        description="Создайте аккаунт коллеге и выдайте доступ."
-        className="max-w-xl"
+        description="Создайте аккаунт коллеге и выберите, к чему он имеет доступ."
+        className="max-w-2xl"
         footer={
           <>
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
@@ -194,13 +218,21 @@ function EmployeesPageInner() {
           </section>
 
           <section className="space-y-3 border-t border-[var(--border)] pt-4">
-            <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Роль</h4>
-            <Field label="Роль">
-              <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+            <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Доступы</h4>
+            <Field label="Роль (назначение)"
+              hint="Роль — только подпись и шаблон: при выборе подставит типовой набор доступов.">
+              <Select value={form.role} onChange={(e) => pickRole(e.target.value)}>
                 <option value="">Без роли</option>
                 {(roles ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
               </Select>
             </Field>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">К чему имеет доступ</span>
+                <span className="text-xs text-[var(--muted-foreground)]">Выбрано: {codes.size}</span>
+              </div>
+              <PermissionPicker perms={perms ?? []} selected={codes} onToggle={toggleCode} />
+            </div>
           </section>
 
           {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}

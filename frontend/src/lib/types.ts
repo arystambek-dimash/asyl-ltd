@@ -12,10 +12,13 @@ export interface Product {
   id: number; name: string; color: "Red" | "Green" | "Blue"; color_label: string;
   weight_kg: string; price: string; is_active: boolean; label: string; cv_class: string;
 }
+export type Department = "main" | "field";
+
 export interface Client {
   id: number; first_name: string; last_name: string; phone: string;
   name: string; country: string;
   iin: string; bank: string; bank_account: string; user: number | null;
+  department: Department; manager: number | null; manager_name?: string | null;
   debt_total?: string;
 }
 export interface Store {
@@ -34,6 +37,7 @@ export interface StatusChangeRequest {
 }
 export interface Order {
   id: number; client: number; store?: number | null; client_name?: string; client_phone?: string;
+  department?: Department;
   status: string; payment_status?: string; settlement_intent?: string; transport_type?: "truck" | "train";
   truck_number: string; truck_number_set_by?: number | null;
   arrival_date?: string | null;
@@ -48,9 +52,18 @@ export interface Order {
   bag_weight_kg?: string; debt_override_by_name?: string | null;
   created_at: string;
 }
+export type PaymentStage = "requested" | "received" | "accountant_ok" | "confirmed" | "rejected";
+
 export interface Payment {
   id: number; order: number; amount: string; method: string; method_label?: string;
-  status: string; paid_at: string; recorded_by: number | null; recorded_by_name?: string | null;
+  status: PaymentStage; paid_at: string; recorded_by: number | null; recorded_by_name?: string | null;
+  received_by_name?: string | null; received_at?: string | null;
+  accountant_by_name?: string | null; accountant_at?: string | null;
+  confirmed_by_name?: string | null; confirmed_at?: string | null;
+}
+
+export interface PaymentQueueItem extends Payment {
+  client_name: string; department: Department; order_status: string;
 }
 export interface StockItem {
   id: number; product: number; product_label: string;
@@ -69,7 +82,7 @@ export interface Role {
 export interface Employee {
   id: number; username: string; first_name: string; last_name: string;
   phone: string; position: string; role: number | null; role_name: string | null;
-  name: string; is_active: boolean;
+  name: string; permissions: string[]; is_active: boolean;
 }
 export interface EventLog {
   id: number; event_type: string; message: string;

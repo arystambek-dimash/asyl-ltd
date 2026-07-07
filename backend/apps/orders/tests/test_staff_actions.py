@@ -24,10 +24,18 @@ def test_reject_endpoint(db, manager, auth_client):
     o.refresh_from_db(); assert o.status == "rejected"
 
 
-def test_confirm_payment_endpoint(shipped_order, accountant, auth_client, make_user):
+def test_confirm_payment_endpoint(shipped_order, accountant, cashier, auth_client, make_user):
     pay = services.create_client_payment(shipped_order, "card", make_user(client=True))
     r = auth_client(accountant).post(
         f"/api/orders/{shipped_order.id}/payments/{pay.id}/confirm/")
+    assert r.status_code == 200
+    pay.refresh_from_db()
+    assert pay.status == "accountant_ok"
+    # Деньги учитываются только после подтверждения кассиром.
+    shipped_order.refresh_from_db()
+    assert shipped_order.payment_status == "unpaid"
+    r = auth_client(cashier).post(
+        f"/api/orders/{shipped_order.id}/payments/{pay.id}/cashier-confirm/")
     assert r.status_code == 200
     shipped_order.refresh_from_db()
     assert shipped_order.payment_status == "settled"

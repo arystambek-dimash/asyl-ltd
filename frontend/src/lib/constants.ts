@@ -46,3 +46,32 @@ export const ROLE_LABELS: Record<string, string> = {
   operator: "Оператор",
   boss: "Начальник",
 };
+
+export const DEPARTMENT_LABELS: Record<string, string> = {
+  main: "Отдел 1",
+  field: "Сити",
+};
+
+// Цепочка подтверждения оплаты: каждый шаг фиксируется с автором и временем.
+export const PAYMENT_STAGE_LABELS: Record<string, string> = {
+  requested: "Запрошена",
+  received: "Принята",
+  accountant_ok: "Сверена бухгалтером",
+  confirmed: "Подтверждена кассиром",
+  rejected: "Отклонена",
+};
+
+export const PAYMENT_STAGE_TONE: Record<string, "muted" | "primary" | "success" | "warning" | "destructive"> = {
+  requested: "muted",
+  received: "warning",
+  accountant_ok: "primary",
+  confirmed: "success",
+  rejected: "destructive",
+};
+
+export const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  cash: "Наличные",
+  card: "Карта",
+  kaspi: "Kaspi",
+  debt: "Долг",
+};

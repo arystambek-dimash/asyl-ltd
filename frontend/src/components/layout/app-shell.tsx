@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/store/auth";
+import { homeFor } from "@/lib/can";
 import { Sidebar } from "./sidebar";
 import { Topbar } from "./topbar";
 
@@ -31,7 +32,7 @@ export function AppShell({
   useEffect(() => {
     if (!loading && !me) router.replace("/login");
     if (!loading && me) {
-      if (portal && !me.is_client) router.replace("/dashboard");
+      if (portal && !me.is_client) router.replace(homeFor(me));
       if (!portal && me.is_client) router.replace("/portal/catalog");
     }
   }, [loading, me, portal, router]);

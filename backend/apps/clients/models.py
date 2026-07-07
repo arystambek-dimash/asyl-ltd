@@ -3,6 +3,8 @@ from django.db import models
 
 
 class Client(models.Model):
+    DEPARTMENTS = ["main", "field"]
+
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
     phone = models.CharField(max_length=50)
@@ -10,6 +12,13 @@ class Client(models.Model):
     iin = models.CharField("ИИН/БИН", max_length=20, blank=True, default="")
     bank = models.CharField("Банк", max_length=150, blank=True, default="")
     bank_account = models.CharField("Расчётный счёт", max_length=34, blank=True, default="")
+    # Принадлежность к отделу продаж: main — Отдел 1, field — Отдел 2 «Сити».
+    department = models.CharField(max_length=10, default="main")
+    # Менеджер выездного отдела, который ведёт этого клиента (только для field).
+    manager = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="managed_clients",
+    )
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="client_profile",

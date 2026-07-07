@@ -55,21 +55,51 @@ PAYMENT_METHOD_LABELS = {"cash": "Наличные", "card": "Карта",
                          "kaspi": "Kaspi", "debt": "Долг"}
 
 
+def _username(user):
+    return user.username if user else None
+
+
 class PaymentSerializer(serializers.ModelSerializer):
     recorded_by_name = serializers.SerializerMethodField()
+    received_by_name = serializers.SerializerMethodField()
+    accountant_by_name = serializers.SerializerMethodField()
+    confirmed_by_name = serializers.SerializerMethodField()
     method_label = serializers.SerializerMethodField()
 
     class Meta:
         model = Payment
         fields = ["id", "order", "amount", "method", "method_label", "status",
-                  "paid_at", "recorded_by", "recorded_by_name", "confirmed_by"]
+                  "paid_at", "recorded_by", "recorded_by_name",
+                  "received_by_name", "received_at",
+                  "accountant_by_name", "accountant_at",
+                  "confirmed_by", "confirmed_by_name", "confirmed_at"]
         read_only_fields = ["order", "paid_at", "recorded_by", "confirmed_by"]
 
     def get_recorded_by_name(self, obj):
-        return obj.recorded_by.username if obj.recorded_by else None
+        return _username(obj.recorded_by)
+
+    def get_received_by_name(self, obj):
+        return _username(obj.received_by)
+
+    def get_accountant_by_name(self, obj):
+        return _username(obj.accountant_by)
+
+    def get_confirmed_by_name(self, obj):
+        return _username(obj.confirmed_by)
 
     def get_method_label(self, obj):
         return PAYMENT_METHOD_LABELS.get(obj.method, obj.method)
+
+
+class PaymentQueueSerializer(PaymentSerializer):
+    """Оплата с контекстом заказа — для табло бухгалтера и кассы."""
+    client_name = serializers.CharField(source="order.client.name", read_only=True)
+    department = serializers.CharField(source="order.department", read_only=True)
+    order_status = serializers.CharField(source="order.status", read_only=True)
+
+    class Meta(PaymentSerializer.Meta):
+        fields = PaymentSerializer.Meta.fields + [
+            "client_name", "department", "order_status"]
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -95,7 +125,8 @@ class OrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ["id", "client", "store", "client_name", "client_phone", "status",
+        fields = ["id", "client", "store", "client_name", "client_phone",
+                  "department", "status",
                   "payment_status", "settlement_intent", "transport_type",
                   "truck_number", "arrival_date", "items", "total_amount",
                   "paid_total", "remaining_amount", "is_fully_paid",
@@ -103,7 +134,7 @@ class OrderSerializer(serializers.ModelSerializer):
                   "payments", "pending_payments",
                   "weigh_in_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at"]
-        read_only_fields = ["debt_override"]
+        read_only_fields = ["debt_override", "department"]
         extra_kwargs = {
             "truck_number": {"required": False},
             "arrival_date": {"required": False, "allow_null": True},
@@ -150,27 +181,36 @@ class OrderSerializer(serializers.ModelSerializer):
         return PaymentSerializer(qs, many=True).data
 
     def get_pending_payments(self, obj):
+        # Оплаты в цепочке подтверждения (запрошена/принята/сверена) видят все
+        # сотрудники, которым доступен заказ; клиентам портала — нет.
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        has_perm_code = getattr(user, "has_perm_code", None)
-        can_confirm = bool(
-            user and not getattr(user, "is_client", False)
-            and (
-                getattr(user, "is_superuser", False)
-                or (callable(has_perm_code) and has_perm_code("payments.confirm"))
-            )
-        )
-        if not can_confirm:
+        if not user or getattr(user, "is_client", False):
             return []
-        qs = obj.payments.filter(status="pending").order_by("paid_at")
+        qs = obj.payments.filter(
+            status__in=Payment.IN_PROGRESS_STATUSES).order_by("paid_at")
         return PaymentSerializer(qs, many=True).data
 
+    def validate_client(self, client):
+        # Заказ можно создать только для клиента, видимого пользователю:
+        # менеджер Отдела 2 — исключительно для своих клиентов.
+        from apps.rbac.scoping import scope_by_department
+        from apps.clients.models import Client
+        user = self.context["request"].user
+        if not scope_by_department(Client.objects.filter(pk=client.pk), user,
+                                   "clients.view").exists():
+            raise serializers.ValidationError("Клиент недоступен")
+        return client
+
     def create(self, validated_data):
-        from .services import confirm_order
+        from .services import confirm_order, apply_item_prices
         items = validated_data.pop("items")
         user = self.context["request"].user
         validated_data["created_by"] = user
-        # Оператор создаёт заказ сразу подтверждённым с ценами.
+        # Заказ наследует отдел клиента — данные отделов не смешиваются.
+        validated_data["department"] = validated_data["client"].department
+        # Оператор (orders.confirm) создаёт заказ сразу подтверждённым с ценами;
+        # заявка менеджера Отдела 2 остаётся pending до подтверждения бухгалтером.
         # prices приходит по товару: {product_id: цена} (у позиций ещё нет id).
         prices_by_product = self.initial_data.get("prices")
         if prices_by_product:
@@ -183,7 +223,10 @@ class OrderSerializer(serializers.ModelSerializer):
                                              prices_by_product.get(it.product_id))
                 for it in created
             }
-            confirm_order(order, user, prices=prices_by_item)
+            if user.has_perm_code("orders.confirm"):
+                confirm_order(order, user, prices=prices_by_item)
+            else:
+                apply_item_prices(order, prices_by_item, user)
             order.refresh_from_db()
         return order
 

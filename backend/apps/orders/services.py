@@ -10,6 +10,14 @@ from .models import Order, Payment, StatusChangeRequest
 
 
 def _validate_payment_open(order: Order) -> None:
+    # Отдел 2 «Сити»: менеджер запрашивает и принимает оплату с выезда —
+    # доступно с момента создания заявки, без графика магазина.
+    if order.department == "field":
+        if order.status in ("draft", "rejected", "cancelled"):
+            raise ValidationError(
+                {"detail": "Оплата недоступна для этой заявки", "code": "payment_not_open"}
+            )
+        return
     if order.status != "shipped":
         raise ValidationError(
             {"detail": "Оплата доступна только после отгрузки", "code": "payment_not_open"}
@@ -21,35 +29,70 @@ def _validate_payment_open(order: Order) -> None:
         )
 
 
+PAYMENT_STAGE_LABELS = {
+    "requested": "запрошена", "received": "принята",
+    "accountant_ok": "подтверждена бухгалтером",
+    "confirmed": "подтверждена кассиром", "rejected": "отклонена",
+}
+
+
+def _set_payment_stage(payment: Payment, status: str, user) -> Payment:
+    """Перевести оплату на следующий шаг цепочки с фиксацией автора и времени."""
+    stamp = {
+        "received": ("received_by", "received_at"),
+        "accountant_ok": ("accountant_by", "accountant_at"),
+        "confirmed": ("confirmed_by", "confirmed_at"),
+    }.get(status)
+    payment.status = status
+    fields = ["status"]
+    if stamp:
+        by_field, at_field = stamp
+        setattr(payment, by_field, user)
+        setattr(payment, at_field, timezone.now())
+        fields += [by_field, at_field]
+    payment.save(update_fields=fields)
+    log_event("payment", f"Оплата {payment.amount} {PAYMENT_STAGE_LABELS[status]}",
+              user=user, order=payment.order,
+              payload={"payment_id": payment.id, "amount": str(payment.amount),
+                       "payment_stage": status})
+    return payment
+
+
 @transaction.atomic
-def add_payment(order: Order, amount, user, method="cash", status="confirmed") -> Payment:
+def add_payment(order: Order, amount, user, method="cash", stage="received") -> Payment:
+    """Начало цепочки оплаты: «запрошена» (счёт выставлен) или «принята» (деньги у менеджера)."""
     _validate_payment_open(order)
+    if stage not in ("requested", "received"):
+        raise ValidationError({"detail": "Недопустимый шаг оплаты", "code": "bad_stage"})
     if amount is None or Decimal(str(amount)) <= 0:
         raise ValidationError(
             {"detail": "Сумма оплаты должна быть больше нуля", "code": "invalid_amount"}
         )
     payment = Payment.objects.create(
-        order=order, amount=amount, method=method, status=status, recorded_by=user)
-    log_event("payment", f"Оплата {amount} ({method}/{status})", user=user, order=order,
-              payload={"amount": str(amount), "method": method, "status": status})
-    _apply_payment_status(order, user)
+        order=order, amount=amount, method=method, status=stage, recorded_by=user,
+        **({"received_by": user, "received_at": timezone.now()}
+           if stage == "received" else {}))
+    log_event("payment", f"Оплата {amount} ({method}) {PAYMENT_STAGE_LABELS[stage]}",
+              user=user, order=order,
+              payload={"amount": str(amount), "method": method, "payment_stage": stage})
     return payment
 
 
 @transaction.atomic
 def pay_via_bank(order: Order, user) -> Payment:
-    """Моментальная оплата через банк (заглушка): гасит остаток одним платежом."""
+    """Оплата остатка через банк (заглушка): создаёт оплату «принята» — далее сверка и касса."""
     _validate_payment_open(order)
     remaining = order.total_amount - order.paid_total
     if remaining <= 0:
         raise ValidationError({"detail": "Заказ уже оплачен", "code": "already_paid"})
-    # TODO: здесь будет реальный запрос в банк. Пока — заглушка, сразу подтверждаем.
+    # TODO: здесь будет реальный запрос в банк. Пока — заглушка.
     payment = Payment.objects.create(
-        order=order, amount=remaining, method="card", status="confirmed", recorded_by=user)
-    log_event("payment", f"Банковская оплата {remaining} (заглушка)",
+        order=order, amount=remaining, method="card", status="received",
+        recorded_by=user, received_by=user, received_at=timezone.now())
+    log_event("payment", f"Банковская оплата {remaining} принята (заглушка)",
               user=user, order=order,
-              payload={"amount": str(remaining), "method": "card", "channel": "bank_stub"})
-    _apply_payment_status(order, user)
+              payload={"amount": str(remaining), "method": "card", "channel": "bank_stub",
+                       "payment_stage": "received"})
     return payment
 
 
@@ -63,33 +106,57 @@ def create_client_payment(order: Order, method: str, user) -> Payment:
         raise ValidationError({"detail": "Заказ уже оплачен", "code": "already_paid"})
     # Несколько кликов «оплатил» не должны плодить дубли — одна заявка на оплату.
     payment, created = Payment.objects.update_or_create(
-        order=order, status="pending",
-        defaults={"amount": remaining, "method": method, "recorded_by": user},
+        order=order, status="received",
+        defaults={"amount": remaining, "method": method, "recorded_by": user,
+                  "received_by": user, "received_at": timezone.now()},
     )
     log_event("payment", f"Клиент {'инициировал' if created else 'обновил'} оплату {remaining} ({method})",
               user=user, order=order, payload={"amount": str(remaining), "method": method})
     return payment
 
 
+# Разрешённые переходы цепочки подтверждения оплаты.
+PAYMENT_TRANSITIONS = {
+    "requested": "received",
+    "received": "accountant_ok",
+    "accountant_ok": "confirmed",
+}
+
+
+def _advance_payment(payment: Payment, expected_from: str, user) -> Payment:
+    if payment.status != expected_from:
+        raise ValidationError(
+            {"detail": f"Оплата сейчас в статусе «{PAYMENT_STAGE_LABELS.get(payment.status, payment.status)}»",
+             "code": "invalid_payment_stage"})
+    return _set_payment_stage(payment, PAYMENT_TRANSITIONS[expected_from], user)
+
+
 @transaction.atomic
-def confirm_payment(payment: Payment, user) -> Payment:
-    payment.status = "confirmed"
-    payment.confirmed_by = user
-    payment.confirmed_at = timezone.now()
-    payment.save(update_fields=["status", "confirmed_by", "confirmed_at"])
-    log_event("payment", f"Оплата подтверждена {payment.amount}", user=user, order=payment.order,
-              payload={"payment_id": payment.id, "amount": str(payment.amount)})
+def receive_payment(payment: Payment, user) -> Payment:
+    """Менеджер/оператор отметил: деньги получены от клиента."""
+    return _advance_payment(payment, "requested", user)
+
+
+@transaction.atomic
+def accountant_confirm_payment(payment: Payment, user) -> Payment:
+    """Бухгалтер сверил и подтвердил оплату по заказу."""
+    return _advance_payment(payment, "received", user)
+
+
+@transaction.atomic
+def cashier_confirm_payment(payment: Payment, user) -> Payment:
+    """Кассир подтвердил поступление денег — только теперь оплата учтена."""
+    _advance_payment(payment, "accountant_ok", user)
     _apply_payment_status(payment.order, user)
     return payment
 
 
 @transaction.atomic
 def reject_payment(payment: Payment, user) -> Payment:
-    payment.status = "rejected"
-    payment.save(update_fields=["status"])
-    log_event("payment", f"Оплата отклонена {payment.amount}", user=user, order=payment.order,
-              payload={"payment_id": payment.id})
-    return payment
+    if payment.status in ("confirmed", "rejected"):
+        raise ValidationError(
+            {"detail": "Оплата уже финализирована", "code": "invalid_payment_stage"})
+    return _set_payment_stage(payment, "rejected", user)
 
 
 @transaction.atomic
@@ -170,12 +237,16 @@ def confirm_order(order: Order, user, prices: dict | None = None) -> Order:
 def _apply_prices(order: Order, prices: dict, user) -> None:
     """Зафиксировать договорную цену по каждой позиции и запомнить её для клиента.
 
-    prices: {order_item_id: цена за мешок}. Все позиции обязаны получить цену > 0.
+    prices: {order_item_id: цена за мешок}. Позиция без новой цены сохраняет уже
+    зафиксированную unit_price (заявки Отдела 2 приходят с ценами менеджера) —
+    цена обязана быть > 0 из того или иного источника.
     """
     from apps.catalog.models import ClientPrice
     items = list(order.items.select_related("product").all())
     for item in items:
         raw = prices.get(item.id, prices.get(str(item.id)))
+        if raw is None and item.unit_price is not None and item.unit_price > 0:
+            continue
         if raw is None or Decimal(str(raw)) <= 0:
             raise ValidationError(
                 {"detail": f"Укажите цену для «{item.product}»", "code": "price_required"})
@@ -185,6 +256,15 @@ def _apply_prices(order: Order, prices: dict, user) -> None:
         ClientPrice.objects.update_or_create(
             client=order.client, product=item.product,
             defaults={"price": price, "updated_by": user})
+
+
+def apply_item_prices(order: Order, prices: dict, user) -> None:
+    """Публичная обёртка: зафиксировать цены заявки без смены статуса.
+
+    Используется, когда заявку с ценами создаёт менеджер Отдела 2 —
+    подтверждает её бухгалтер на своём табло.
+    """
+    _apply_prices(order, prices, user)
 
 
 @transaction.atomic

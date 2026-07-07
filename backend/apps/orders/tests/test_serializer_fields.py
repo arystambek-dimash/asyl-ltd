@@ -15,7 +15,8 @@ def _order(client, qty=200, paid=None):
     o = Order.objects.create(client=client, status="draft")
     OrderItem.objects.create(order=o, product=prod, quantity=qty)
     if paid is not None:
-        Payment.objects.create(order=o, amount=paid)
+        # Учтённые деньги — оплата, прошедшая всю цепочку (подтверждена кассиром).
+        Payment.objects.create(order=o, amount=paid, status="confirmed")
     return o, prod
 
 

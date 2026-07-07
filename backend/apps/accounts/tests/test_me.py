@@ -10,8 +10,9 @@ def test_me_returns_permissions(auth_client, make_user):
     role = Role.objects.create(name="R")
     p, _ = Permission.objects.get_or_create(
         code="orders.view", defaults={"section": "orders", "action": "view", "label": "x"})
-    role.permissions.add(p)
-    Employee.objects.create(user=u, first_name="A", last_name="B", phone="x", role=role)
+    emp = Employee.objects.create(user=u, first_name="A", last_name="B", phone="x", role=role)
+    # Права выданы сотруднику персонально; роль в ответе — лишь назначение.
+    emp.permissions.add(p)
     resp = auth_client(u).get("/api/auth/me/")
     assert resp.status_code == 200
     assert "orders.view" in resp.data["permissions"]

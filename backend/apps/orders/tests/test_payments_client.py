@@ -17,20 +17,46 @@ def order(db):
 
 
 def test_client_payment_is_pending_and_does_not_pay(order, make_user):
+    # Заявка клиента встаёт в цепочку на шаг «принята» — деньги ещё не учтены.
     pay = services.create_client_payment(order, "kaspi", make_user(client=True))
-    assert pay.status == "pending"
+    assert pay.status == "received"
     assert pay.amount == Decimal("200")
     order.refresh_from_db()
     assert order.status == "shipped"
+    assert order.payment_status == "unpaid"
 
 
 def test_confirm_payment_sets_settled(order, make_user):
     pay = services.create_client_payment(order, "card", make_user(client=True))
-    services.confirm_payment(pay, make_user(username="staff"))
+    services.accountant_confirm_payment(pay, make_user(username="acc"))
+    services.cashier_confirm_payment(pay, make_user(username="cash"))
     order.refresh_from_db()
     # Логистический статус не меняется оплатой; меняется только статус оплаты.
     assert order.status == "shipped"
     assert order.payment_status == "settled"
+
+
+def test_payment_chain_stamps_users(order, make_user):
+    """Каждый переход цепочки фиксирует пользователя и время (ТЗ 4.5)."""
+    manager = make_user(username="mgr")
+    acc = make_user(username="acc")
+    cash = make_user(username="cash")
+    pay = services.add_payment(order, "200", manager, stage="requested")
+    assert pay.status == "requested" and pay.recorded_by == manager
+    services.receive_payment(pay, manager)
+    assert pay.received_by == manager and pay.received_at is not None
+    services.accountant_confirm_payment(pay, acc)
+    assert pay.accountant_by == acc and pay.accountant_at is not None
+    services.cashier_confirm_payment(pay, cash)
+    pay.refresh_from_db()
+    assert pay.status == "confirmed"
+    assert pay.confirmed_by == cash and pay.confirmed_at is not None
+
+
+def test_payment_chain_cannot_skip_accountant(order, make_user):
+    pay = services.add_payment(order, "200", make_user(username="mgr"))
+    with pytest.raises(ValidationError):
+        services.cashier_confirm_payment(pay, make_user(username="cash"))
 
 
 def test_reject_payment_keeps_arrived(order, make_user):

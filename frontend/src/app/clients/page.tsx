@@ -36,7 +36,7 @@ import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
-  isFinancialOrderStatus, ORDER_STATUS_LABELS, ORDER_STATUS_TONE,
+  DEPARTMENT_LABELS, isFinancialOrderStatus, ORDER_STATUS_LABELS, ORDER_STATUS_TONE,
 } from "@/lib/constants";
 import type { Client, Order } from "@/lib/types";
 
@@ -46,6 +46,7 @@ const schema = z.object({
   phone: z
     .string()
     .refine((v) => v.replace(/\D/g, "").length === 11, "Введите номер полностью"),
+  department: z.enum(["main", "field"]),
   country: z.string().optional(),
   iin: z.string().optional().refine(
     (v) => !v || /^\d{12}$/.test(v), "ИИН/БИН — 12 цифр"
@@ -195,10 +196,11 @@ function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCance
     resolver: zodResolver(schema),
     defaultValues: editing ? {
       first_name: editing.first_name, last_name: editing.last_name, phone: editing.phone,
+      department: editing.department ?? "main",
       country: editing.country ?? "", iin: editing.iin ?? "",
       bank: editing.bank ?? "", bank_account: editing.bank_account ?? "",
     } : {
-      first_name: "", last_name: "", phone: "", country: "",
+      first_name: "", last_name: "", phone: "", department: "main" as const, country: "",
       iin: "", bank: "", bank_account: "",
     },
   });
@@ -261,6 +263,25 @@ function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCance
               </FormControl>
               <SelectContent>
                 {COUNTRIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <FormMessage />
+          </FormItem>
+        )} />
+
+        <FormField control={form.control} name="department" render={({ field }) => (
+          <FormItem>
+            <FormLabel>Отдел</FormLabel>
+            <Select value={field.value} onValueChange={field.onChange}>
+              <FormControl>
+                <SelectTrigger>
+                  <SelectValue placeholder="Выберите отдел" />
+                </SelectTrigger>
+              </FormControl>
+              <SelectContent>
+                {Object.entries(DEPARTMENT_LABELS).map(([k, v]) => (
+                  <SelectItem key={k} value={k}>{v}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <FormMessage />
@@ -330,6 +351,7 @@ function ClientsPageInner() {
   const canEdit = can(me, "clients.edit");
   const canDelete = can(me, "clients.delete");
   const canMoney = can(me, "reports.view");  // финансовая аналитика — под reports.view
+  const showDept = can(me, "dept2.view_all"); // сводная картина обоих отделов
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Client | null>(null);
   const [q, setQ] = useState("");
@@ -435,6 +457,7 @@ function ClientsPageInner() {
               <THead>
                 <TR>
                   <SortableHeader label="Имя" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                  {showDept && <TH>Отдел</TH>}
                   <SortableHeader label="Телефон" sortKey="phone" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
                   <TH>Страна</TH>
                   <SortableHeader label="Заказов" sortKey="orders" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
@@ -460,6 +483,13 @@ function ClientsPageInner() {
                           </div>
                         )}
                       </TD>
+                      {showDept && (
+                        <TD>
+                          <Badge tone={c.department === "field" ? "primary" : "muted"}>
+                            {DEPARTMENT_LABELS[c.department] ?? c.department}
+                          </Badge>
+                        </TD>
+                      )}
                       <TD className="tabular-nums">{c.phone}</TD>
                       <TD>{c.country || "—"}</TD>
                       <TD className="tabular-nums">{summary.ordersCount}</TD>
@@ -489,7 +519,7 @@ function ClientsPageInner() {
                   );
                 })}
                 {sorted.length === 0 && (
-                  <TR><TD colSpan={canMoney ? 7 : 6} className="py-4 text-center text-[var(--muted-foreground)]">
+                  <TR><TD colSpan={(canMoney ? 7 : 6) + (showDept ? 1 : 0)} className="py-4 text-center text-[var(--muted-foreground)]">
                     Клиентов пока нет.</TD></TR>
                 )}
               </TBody>

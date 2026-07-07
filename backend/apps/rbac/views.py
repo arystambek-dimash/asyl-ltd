@@ -20,9 +20,10 @@ class PermissionViewSet(
     queryset = Permission.objects.order_by("section", "action", "code")
     serializer_class = PermissionSerializer
     http_method_names = ["get", "head", "options"]
+    # Каталог прав нужен и тому, кто создаёт сотрудников (выбор доступов в форме).
     required_perms = {
-        "list": RBAC_VIEW,
-        "retrieve": RBAC_VIEW,
+        "list": (RBAC_VIEW, "employees.manage"),
+        "retrieve": (RBAC_VIEW, "employees.manage"),
     }
 
 

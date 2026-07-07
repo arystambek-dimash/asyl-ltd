@@ -1,6 +1,6 @@
 import pytest
 from apps.rbac.permissions import HasPerm
-from apps.rbac.models import Permission, Role
+from apps.rbac.models import Permission
 
 pytestmark = pytest.mark.django_db
 
@@ -18,10 +18,9 @@ def test_superuser_allowed(make_user):
 def test_user_with_code_allowed(make_user):
     from apps.employees.models import Employee
     u = make_user(username="m")
-    role = Role.objects.create(name="R")
     p, _ = Permission.objects.get_or_create(code="orders.view", defaults={"section":"orders","action":"view","label":"x"})
-    role.permissions.add(p)
-    Employee.objects.create(user=u, first_name="A", last_name="B", phone="x", role=role)
+    emp = Employee.objects.create(user=u, first_name="A", last_name="B", phone="x")
+    emp.permissions.add(p)
     assert HasPerm("orders.view").has_permission(_Req(u), None) is True
     assert HasPerm("orders.create").has_permission(_Req(u), None) is False
 

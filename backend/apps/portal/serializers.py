@@ -95,8 +95,9 @@ class PortalOrderSerializer(serializers.ModelSerializer):
         return self._amount(obj.remaining_amount)
 
     def get_has_pending_payment(self, obj):
-        # Клиент отправил заявку на оплату, ждём подтверждения сотрудником.
-        return obj.payments.filter(status="pending").exists()
+        # Клиент отправил заявку на оплату, идёт цепочка подтверждения.
+        from apps.orders.models import Payment
+        return obj.payments.filter(status__in=Payment.IN_PROGRESS_STATUSES).exists()
 
     def create(self, validated_data):
         items = validated_data.pop("items")
@@ -105,6 +106,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
         store = validated_data.get("store")
         client = self._client()
         order = Order.objects.create(client=client, status="pending",
+                                     department=client.department,
                                      settlement_intent=intent, store=store,
                                      transport_type=transport)
         for item in items:

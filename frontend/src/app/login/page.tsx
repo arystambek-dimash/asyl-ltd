@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
 import { useAuth } from "@/store/auth";
+import { homeFor } from "@/lib/can";
 import { apiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,7 +20,7 @@ export default function LoginPage() {
 
   useEffect(() => { loadMe(); }, [loadMe]);
   useEffect(() => {
-    if (me) router.replace(me.is_client ? "/portal/catalog" : "/dashboard");
+    if (me) router.replace(homeFor(me));
   }, [me, router]);
 
   async function submit(e: React.FormEvent) {
@@ -27,7 +28,7 @@ export default function LoginPage() {
     setBusy(true); setError("");
     try {
       const m = await login(username, password);
-      router.replace(m.is_client ? "/portal/catalog" : "/dashboard");
+      router.replace(homeFor(m));
     } catch (err) {
       setError(apiError(err));
     } finally { setBusy(false); }

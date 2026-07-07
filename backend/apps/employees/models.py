@@ -10,8 +10,13 @@ class Employee(models.Model):
     last_name = models.CharField(max_length=100)
     phone = models.CharField(max_length=50, blank=True, default="")
     position = models.CharField(max_length=100, blank=True, default="")
+    # Роль — только назначение (ярлык) и шаблон прав при создании.
     role = models.ForeignKey(
         "rbac.Role", null=True, blank=True, on_delete=models.PROTECT, related_name="employees"
+    )
+    # Фактические доступы сотрудника: назначаются персонально, не через роль.
+    permissions = models.ManyToManyField(
+        "rbac.Permission", blank=True, related_name="employees"
     )
     is_active = models.BooleanField(default=True)
 

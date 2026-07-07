@@ -6,9 +6,10 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Boxes, ClipboardList, Users, Truck,
   ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings, X, Store, Wallet, TrainFront,
+  Briefcase, Calculator, HandCoins, MapPin,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { can } from "@/lib/can";
+import { can, isDept2Only } from "@/lib/can";
 import type { Me } from "@/lib/types";
 
 interface NavChild { href: string; label: string; perm?: string; }
@@ -34,12 +35,21 @@ const STAFF_SECTIONS: NavSection[] = [
     title: "Работа",
     items: [
       { href: "/orders", label: "Заказы", icon: ClipboardList, perm: "orders.view" },
+      { href: "/accounting", label: "Табло бухгалтера", icon: Calculator, perm: "payments.confirm" },
+      { href: "/cashier", label: "Касса", icon: HandCoins, perm: "payments.cashier" },
       { href: "/shipping", label: "Пост отгрузки", icon: Truck, perm: "shipping.view" },
       { href: "/train", label: "Поезда", icon: TrainFront, perm: "train.view" },
       { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },
       { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
       { href: "/stores", label: "Магазины", icon: Store, perm: "clients.view" },
       { href: "/catalog/products", label: "Товары", icon: Package, perm: "catalog.view" },
+    ],
+  },
+  {
+    title: "Отдел «Сити»",
+    items: [
+      { href: "/city/orders", label: "Заявки Сити", icon: Briefcase, perm: "dept2.view" },
+      { href: "/city/clients", label: "Клиенты Сити", icon: MapPin, perm: "dept2.view" },
     ],
   },
   {
@@ -144,7 +154,9 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
         .map((i) => i.children
           ? { ...i, children: i.children.filter((c) => !c.perm || can(me, c.perm)) }
           : i)
-        .filter((i) => (!i.perm || can(me, i.perm)) && (!i.children || i.children.length > 0)),
+        .filter((i) => (!i.perm || can(me, i.perm)) && (!i.children || i.children.length > 0))
+        // Менеджеру выездного отдела дашборд комплекса не показываем.
+        .filter((i) => !(i.href === "/dashboard" && isDept2Only(me))),
     }))
     .filter((s) => s.items.length > 0);
 

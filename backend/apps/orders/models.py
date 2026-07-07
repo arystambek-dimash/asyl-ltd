@@ -13,6 +13,8 @@ class Order(models.Model):
     client = models.ForeignKey(
         "clients.Client", on_delete=models.PROTECT, related_name="orders"
     )
+    # Денормализовано из клиента при создании: заказы отделов не смешиваются.
+    department = models.CharField(max_length=10, default="main")
     transport_type = models.CharField(max_length=10, default="truck")
     store = models.ForeignKey(
         "clients.Store", null=True, blank=True,
@@ -81,17 +83,31 @@ class OrderItem(models.Model):
 
 class Payment(models.Model):
     METHODS = ["cash", "card", "kaspi", "debt"]
-    STATUSES = ["pending", "confirmed", "rejected"]
+    # Цепочка подтверждения: запрошена → принята (менеджер/оператор) →
+    # сверена бухгалтером → подтверждена кассиром (только тогда деньги учтены).
+    STATUSES = ["requested", "received", "accountant_ok", "confirmed", "rejected"]
+    IN_PROGRESS_STATUSES = ["requested", "received", "accountant_ok"]
 
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="payments")
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     method = models.CharField(max_length=10, default="cash")
-    status = models.CharField(max_length=10, default="confirmed")
+    status = models.CharField(max_length=20, default="requested")
     paid_at = models.DateTimeField(auto_now_add=True)
     recorded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="recorded_payments",
     )
+    received_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="received_payments",
+    )
+    received_at = models.DateTimeField(null=True, blank=True)
+    accountant_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="accountant_payments",
+    )
+    accountant_at = models.DateTimeField(null=True, blank=True)
+    # Финальное подтверждение кассира — фактическое поступление денег.
     confirmed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="confirmed_payments",

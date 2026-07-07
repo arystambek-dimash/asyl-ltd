@@ -21,7 +21,7 @@ def test_history_excludes_pending_payments(make_user):
     user = make_user(client=True)
     c = Client.objects.create(first_name="A", last_name="B", phone="x", user=user)
     o = _shipped_order(c)
-    Payment.objects.create(order=o, amount="50", method="card", status="pending")
+    Payment.objects.create(order=o, amount="50", method="card", status="received")
     data = OrderSerializer(o).data
     # Неподтверждённая оплата не должна показываться как полученные деньги.
     assert data["payments"] == []
@@ -32,7 +32,7 @@ def test_pending_payments_visible_to_confirmer(make_user, accountant, auth_clien
     user = make_user(username="client-pay", client=True)
     c = Client.objects.create(first_name="A", last_name="B", phone="x", user=user)
     o = _shipped_order(c)
-    Payment.objects.create(order=o, amount="50", method="card", status="pending", recorded_by=user)
+    Payment.objects.create(order=o, amount="50", method="card", status="received", recorded_by=user)
 
     response = auth_client(accountant).get(f"/api/orders/{o.id}/")
 
@@ -58,4 +58,4 @@ def test_client_pay_does_not_duplicate_pending(make_user):
     create_client_payment(o, "kaspi", user)
     create_client_payment(o, "card", user)
     # Несколько кликов «оплатил» не плодят дубли — одна заявка на оплату.
-    assert o.payments.filter(status="pending").count() == 1
+    assert o.payments.filter(status="received").count() == 1

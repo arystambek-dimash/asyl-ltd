@@ -28,13 +28,15 @@ def user_with_perms(make_user):
 
     def _make(username="emp", codes=()):
         user = make_user(username=username)
+        # Роль — только назначение; фактические права лежат на сотруднике.
         role = Role.objects.create(name=f"role-{username}")
+        emp = Employee.objects.create(
+            user=user, first_name="A", last_name="B", phone="x", role=role)
         for c in codes:
             p, _ = Permission.objects.get_or_create(
                 code=c,
                 defaults={"section": c.split(".")[0], "action": c.split(".")[1], "label": c})
-            role.permissions.add(p)
-        Employee.objects.create(user=user, first_name="A", last_name="B", phone="x", role=role)
+            emp.permissions.add(p)
         return user
     return _make
 
@@ -49,8 +51,11 @@ def manager(user_with_perms):
 
 @pytest.fixture
 def accountant(user_with_perms):
-    return user_with_perms("accountant", codes=["payments.view", "payments.create",
-                                                "payments.confirm", "orders.view"])
+    # Соответствует пресету «Бухгалтер»: табло с подтверждением заказов,
+    # отправкой и сверкой оплат по обоим отделам.
+    return user_with_perms("accountant", codes=[
+        "payments.view", "payments.create", "payments.confirm",
+        "orders.view", "orders.confirm", "orders.edit", "dept2.view_all"])
 
 
 @pytest.fixture
@@ -67,6 +72,34 @@ def boss(user_with_perms):
         "shipping.debt_override", "orders.view", "warehouse.view", "warehouse.adjust",
         "catalog.view", "clients.view", "clients.edit", "employees.view", "employees.manage",
         "rbac.view", "rbac.manage", "reports.view"])
+
+
+@pytest.fixture
+def cashier(user_with_perms):
+    return user_with_perms("cashier", codes=[
+        "payments.view", "payments.cashier", "orders.view", "dept2.view_all"])
+
+
+@pytest.fixture
+def dept2_manager(user_with_perms):
+    return user_with_perms("citymanager", codes=[
+        "dept2.view", "dept2.create", "payments.view", "payments.create"])
+
+
+@pytest.fixture
+def settle_payment():
+    """Провести оплату по всей цепочке до подтверждения кассиром."""
+    def _settle(payment, user):
+        from apps.orders import services
+        if payment.status == "requested":
+            services.receive_payment(payment, user)
+        if payment.status == "received":
+            services.accountant_confirm_payment(payment, user)
+        if payment.status == "accountant_ok":
+            services.cashier_confirm_payment(payment, user)
+        payment.refresh_from_db()
+        return payment
+    return _settle
 
 
 @pytest.fixture

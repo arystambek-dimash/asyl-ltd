@@ -30,11 +30,12 @@ def test_payment_blocked_outside_window(boss):
     assert e.value.detail["code"] == "payment_window_closed"
 
 
-def test_payment_allowed_inside_window(boss):
+def test_payment_allowed_inside_window(boss, settle_payment):
     o, s = _shipped_store_order()
     with patch("apps.orders.services.date") as d:
         d.today.return_value = date(2026, 6, 5)
-        add_payment(o, "100", boss)
+        pay = add_payment(o, "100", boss)
+    settle_payment(pay, boss)
     o.refresh_from_db()
     assert o.payment_status == "settled"
 

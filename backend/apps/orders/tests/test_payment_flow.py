@@ -24,11 +24,11 @@ def test_payment_blocked_before_shipped(boss):
     assert e.value.detail["code"] == "payment_not_open"
 
 
-def test_partial_then_full_payment(boss):
+def test_partial_then_full_payment(boss, settle_payment):
     o = _order(boss, status="shipped")
-    add_payment(o, "100", boss)
+    settle_payment(add_payment(o, "100", boss), boss)
     o.refresh_from_db()
     assert o.payment_status == "partial"
-    add_payment(o, "100", boss)
+    settle_payment(add_payment(o, "100", boss), boss)
     o.refresh_from_db()
     assert o.payment_status == "settled"

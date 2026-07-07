@@ -21,8 +21,9 @@ import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/utils";
-import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
-import { CheckCircle2, Circle, CreditCard, Layers, Package, Scale, Truck, Boxes } from "lucide-react";
+import { DEPARTMENT_LABELS, ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
+import { PaymentChain, AddPaymentActions, paymentOpen } from "@/components/payment-chain";
+import { CheckCircle2, Circle, Layers, Package, Scale, Truck, Boxes } from "lucide-react";
 import type { Order, Payment } from "@/lib/types";
 
 const ORDER_STATUSES = ["draft", "pending", "confirmed", "arrived", "loading", "loaded", "shipped", "cancelled"];
@@ -73,7 +74,6 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const isManager = can(me, "orders.confirm");
   const canEditStatus = can(me, "orders.edit");
   const canViewStatus = can(me, "orders.view");
-  const canConfirmPayments = can(me, "payments.confirm");
   const [newStatus, setNewStatus] = useState("");
   // Цены за мешок по позиции (для подтверждения). Предзаполняются ценой клиента.
   const [prices, setPrices] = useState<Record<number, string>>({});
@@ -111,9 +111,12 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const isNew = order.status === "draft" || order.status === "pending";
   // Подтверждение с ценами рендерится отдельной карточкой (заказы с позициями).
   const confirmInPriceCard = isManager && isNew && order.items.length > 0;
+  // Начать цепочку оплаты можно, пока есть непогашенный остаток.
+  const canStartPayment = can(me, "payments.create") && paymentOpen(order) && remaining > 0;
   // «Действия» имеет смысл, только если есть что показать в текущем состоянии.
   const hasActions =
-    (isManager && isNew && !confirmInPriceCard) || order.status === "shipped" || (!isManager && isNew);
+    (isManager && isNew && !confirmInPriceCard) || order.status === "shipped" || (!isManager && isNew)
+    || canStartPayment;
   const pendingReqs = order.pending_status_requests ?? [];
   const pendingPayments = order.pending_payments ?? [];
 
@@ -129,9 +132,14 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {order.department && (
+              <Badge tone={order.department === "field" ? "primary" : "muted"}>
+                {DEPARTMENT_LABELS[order.department] ?? order.department}
+              </Badge>
+            )}
             <Badge tone="muted">{order.transport_type === "train" ? "🚂 Поезд" : "🚚 Трак"}</Badge>
             <StatusBadge status={order.status} dot />
-            {order.status === "shipped" && order.payment_status && (
+            {(order.status === "shipped" || order.department === "field") && order.payment_status && (
               <Badge tone={PAYMENT_STATUS_TONE[order.payment_status] ?? "muted"} dot>
                 {PAYMENT_STATUS_LABELS[order.payment_status] ?? order.payment_status}
               </Badge>
@@ -255,41 +263,16 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             </p>
           )}
 
-          {canConfirmPayments && pendingPayments.length > 0 && (
+          {pendingPayments.length > 0 && (
             <CollapsibleCard
-              title="Заявки на оплату"
+              title="Цепочка оплаты"
               defaultOpen
               badge={<Badge tone="warning">{pendingPayments.length}</Badge>}
             >
               <p className="text-xs text-[var(--muted-foreground)]">
-                Эти суммы появятся в отчёте только после подтверждения.
+                Оплата учитывается только после подтверждения кассиром.
               </p>
-              {pendingPayments.map((payment) => (
-                <div key={payment.id} className="flex flex-col gap-3 rounded-lg border p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2 text-base font-semibold tabular-nums">
-                        <CreditCard className="size-4 text-[var(--warning)]" />
-                        {formatMoney(payment.amount)} ₸
-                      </div>
-                      <div className="mt-1 text-xs text-[var(--muted-foreground)]">
-                        {payment.recorded_by_name || "Клиент"} · {new Date(payment.paid_at).toLocaleString("ru-RU")}
-                      </div>
-                    </div>
-                    <Badge tone="warning">{payment.method_label || payment.method}</Badge>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button size="sm" disabled={busy}
-                      onClick={() => act(() => api.post(`/orders/${order.id}/payments/${payment.id}/confirm/`))}>
-                      Подтвердить
-                    </Button>
-                    <Button size="sm" variant="ghost" disabled={busy}
-                      onClick={() => act(() => api.post(`/orders/${order.id}/payments/${payment.id}/reject/`))}>
-                      Отклонить
-                    </Button>
-                  </div>
-                </div>
-              ))}
+              <PaymentChain order={order} me={me} onChanged={reload} />
             </CollapsibleCard>
           )}
 
@@ -358,7 +341,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                   Подтвердить заказ
                 </Button>
               )}
-              {order.status === "shipped" && order.payment_status !== "settled" && (
+              {(order.status === "shipped" || canStartPayment) && order.payment_status !== "settled" && (
                 <>
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-[var(--muted-foreground)]">Остаток долга</span>
@@ -366,9 +349,14 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                       {formatMoney(String(remaining))} ₸
                     </span>
                   </div>
-                  <Link href={`/debts/clients/${order.client}`}>
-                    <Button size="sm" className="w-full">Перейти к оплате долга</Button>
-                  </Link>
+                  {canStartPayment && (
+                    <AddPaymentActions order={order} me={me} onChanged={reload} />
+                  )}
+                  {order.status === "shipped" && (
+                    <Link href={`/debts/clients/${order.client}`}>
+                      <Button size="sm" className="w-full" variant="outline">Перейти к оплате долга</Button>
+                    </Link>
+                  )}
                 </>
               )}
               {order.status === "shipped" && order.payment_status === "settled" && (
@@ -445,5 +433,9 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
 }
 
 export default function OrderDetailPage(props: { params: Promise<{ id: string }> }) {
-  return <RequirePerm perm="orders.view" title="Заказ"><OrderDetailPageInner {...props} /></RequirePerm>;
+  return (
+    <RequirePerm perm={["orders.view", "dept2.view", "dept2.view_all"]} title="Заказ">
+      <OrderDetailPageInner {...props} />
+    </RequirePerm>
+  );
 }

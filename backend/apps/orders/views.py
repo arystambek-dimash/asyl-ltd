@@ -3,12 +3,15 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 from apps.rbac.permissions import PermViewSetMixin
+from apps.rbac.scoping import scope_by_department
 from apps.shipments.services import (
     start_train_loading, record_count, finish_train_loading)
 from .models import Order, Payment, StatusChangeRequest
-from .serializers import OrderSerializer, PaymentSerializer, StatusChangeRequestSerializer
+from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerializer,
+                          StatusChangeRequestSerializer)
 from .services import (add_payment, pay_via_bank, confirm_order, reject_order,
-                       confirm_payment, reject_payment, approve_debt,
+                       receive_payment, accountant_confirm_payment,
+                       cashier_confirm_payment, reject_payment, approve_debt,
                        request_status_change, approve_status_change, reject_status_change)
 
 
@@ -16,8 +19,10 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     queryset = Order.objects.select_related("client").prefetch_related("items__product")
     serializer_class = OrderSerializer
     required_perms = {
-        "list": "orders.view", "retrieve": "orders.view",
-        "create": "orders.create", "update": "orders.edit",
+        "list": ("orders.view", "dept2.view"),
+        "retrieve": ("orders.view", "dept2.view"),
+        "create": ("orders.create", "dept2.create"),
+        "update": "orders.edit",
         "partial_update": "orders.edit", "destroy": "orders.edit",
         "payments": "payments.create", "confirm": "orders.confirm",
         "pay_bank": "payments.create",
@@ -27,12 +32,44 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "approve_status": "orders.edit",
         "reject_status": "orders.edit",
         "reject": "orders.confirm",
+        "receive_payment": "payments.create",
         "confirm_payment": "payments.confirm",
-        "reject_payment": "payments.confirm",
+        "cashier_confirm_payment": "payments.cashier",
+        "reject_payment": ("payments.confirm", "payments.cashier"),
+        "payments_queue": ("payments.confirm", "payments.cashier"),
         "approve_debt": "shipping.debt_override",
         "train_queue": "train.view",
         "train": "train.load",
     }
+
+    def get_queryset(self):
+        qs = scope_by_department(
+            super().get_queryset(), self.request.user, "orders.view",
+            owner_field="client__manager")
+        if self.action == "list":
+            params = self.request.query_params
+            for field in ("department", "status", "payment_status"):
+                value = params.get(field)
+                if value:
+                    qs = qs.filter(**{field: value})
+        return qs
+
+    @action(detail=False, methods=["get"], url_path="payments-queue")
+    def payments_queue(self, request):
+        """Очередь оплат для табло бухгалтера (received) и кассы (accountant_ok)."""
+        stage = request.query_params.get("stage")
+        stages = [stage] if stage in Payment.STATUSES else Payment.IN_PROGRESS_STATUSES
+        qs = (Payment.objects
+              .filter(status__in=stages,
+                      order__in=scope_by_department(
+                          Order.objects.all(), request.user, "orders.view",
+                          owner_field="client__manager"))
+              .select_related("order__client", "recorded_by", "received_by")
+              .order_by("paid_at"))
+        department = request.query_params.get("department")
+        if department:
+            qs = qs.filter(order__department=department)
+        return Response(PaymentQueueSerializer(qs, many=True).data)
 
     @action(detail=False, methods=["get"], url_path="train/queue")
     def train_queue(self, request):
@@ -67,9 +104,26 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="payments")
     def payments(self, request, pk=None):
+        """Начало цепочки: stage=requested (счёт выставлен) или received (деньги приняты)."""
         order = self.get_object()
-        payment = add_payment(order, request.data.get("amount"), request.user)
+        payment = add_payment(
+            order, request.data.get("amount"), request.user,
+            method=request.data.get("method") or "cash",
+            stage=request.data.get("stage") or "received")
         return Response(PaymentSerializer(payment).data, status=201)
+
+    @action(detail=True, methods=["post"], url_path="payments/(?P<pid>[^/.]+)/receive")
+    def receive_payment(self, request, pk=None, pid=None):
+        payment = Payment.objects.get(pk=pid, order=self.get_object())
+        receive_payment(payment, request.user)
+        return Response(OrderSerializer(payment.order, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"],
+            url_path="payments/(?P<pid>[^/.]+)/cashier-confirm")
+    def cashier_confirm_payment(self, request, pk=None, pid=None):
+        payment = Payment.objects.get(pk=pid, order=self.get_object())
+        cashier_confirm_payment(payment, request.user)
+        return Response(OrderSerializer(payment.order, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="pay-bank")
     def pay_bank(self, request, pk=None):
@@ -89,8 +143,9 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="payments/(?P<pid>[^/.]+)/confirm")
     def confirm_payment(self, request, pk=None, pid=None):
+        """Сверка бухгалтером: received → accountant_ok."""
         payment = Payment.objects.get(pk=pid, order=self.get_object())
-        confirm_payment(payment, request.user)
+        accountant_confirm_payment(payment, request.user)
         return Response(OrderSerializer(payment.order, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="payments/(?P<pid>[^/.]+)/reject")

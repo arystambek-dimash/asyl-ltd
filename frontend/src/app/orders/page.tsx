@@ -17,7 +17,7 @@ import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { FilterPills } from "@/components/ui/filter-pills";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
-import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
+import { DEPARTMENT_LABELS, ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
@@ -31,13 +31,16 @@ function OrdersPageInner() {
   const { data: orders, loading, reload } = useApi<Order[]>("/orders/");
   const { me } = useAuth();
   const canCreate = can(me, "orders.create");
+  // Сводная картина обоих отделов — руководителю/бухгалтеру/кассиру.
+  const showDept = can(me, "dept2.view_all");
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
+  const [dept, setDept] = useState("all");
   const [sortKey, setSortKey] = useState("id");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
-  const list = orders ?? [];
+  const list = (orders ?? []).filter((o) => dept === "all" || o.department === dept);
   const activeCount = list.filter(
     (o) => o.status !== "shipped" && o.status !== "cancelled"
   ).length;
@@ -97,6 +100,13 @@ function OrdersPageInner() {
             value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
         <div className="flex items-center gap-2 overflow-x-auto">
+          {showDept && (
+            <FilterPills active={dept} onChange={setDept} items={[
+              { key: "all", label: "Все отделы", count: (orders ?? []).length },
+              { key: "main", label: DEPARTMENT_LABELS.main, count: (orders ?? []).filter((o) => o.department === "main").length },
+              { key: "field", label: DEPARTMENT_LABELS.field, count: (orders ?? []).filter((o) => o.department === "field").length },
+            ]} />
+          )}
           <FilterPills items={pills} active={status} onChange={setStatus} />
         </div>
       </div>
@@ -110,6 +120,7 @@ function OrdersPageInner() {
               <THead>
                 <TR>
                   <SortableHeader label="№" sortKey="id" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                  {showDept && <TH>Отдел</TH>}
                   <SortableHeader label="Клиент" sortKey="client" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
                   <TH>Машина</TH>
                   <TH>Прибытие</TH>
@@ -126,6 +137,13 @@ function OrdersPageInner() {
                       <Link href={`/orders/${o.id}`} className="hover:underline"
                         onClick={(e) => e.stopPropagation()}>#{o.id}</Link>
                     </TD>
+                    {showDept && (
+                      <TD>
+                        <Badge tone={o.department === "field" ? "primary" : "muted"}>
+                          {DEPARTMENT_LABELS[o.department ?? "main"] ?? o.department}
+                        </Badge>
+                      </TD>
+                    )}
                     <TD>{o.client_name || `Клиент #${o.client}`}</TD>
                     <TD className="font-medium tabular-nums">{o.truck_number ? formatPlate(o.truck_number) : "—"}</TD>
                     <TD>{o.arrival_date ? new Date(o.arrival_date).toLocaleDateString("ru-RU") : "—"}</TD>
@@ -144,7 +162,7 @@ function OrdersPageInner() {
                   </TR>
                 ))}
                 {sorted.length === 0 && (
-                  <TR><TD colSpan={7} className="py-4 text-center text-[var(--muted-foreground)]">
+                  <TR><TD colSpan={showDept ? 8 : 7} className="py-4 text-center text-[var(--muted-foreground)]">
                     Заказов пока нет.</TD></TR>)}
               </TBody>
             </Table>

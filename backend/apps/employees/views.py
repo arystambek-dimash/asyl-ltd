@@ -5,7 +5,8 @@ from .serializers import EmployeeSerializer
 
 
 class EmployeeViewSet(PermViewSetMixin, viewsets.ModelViewSet):
-    queryset = Employee.objects.select_related("user", "role")
+    queryset = (Employee.objects.select_related("user", "role")
+                .prefetch_related("permissions"))
     serializer_class = EmployeeSerializer
     required_perms = {
         "list": "employees.view", "retrieve": "employees.view",

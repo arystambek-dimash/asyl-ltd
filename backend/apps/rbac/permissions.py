@@ -2,8 +2,10 @@ from rest_framework.permissions import BasePermission
 
 
 class HasPerm(BasePermission):
-    def __init__(self, code):
-        self.code = code
+    """Право доступа: один код или несколько (достаточно любого из них)."""
+
+    def __init__(self, *codes):
+        self.codes = codes
 
     def has_permission(self, request, view):
         user = request.user
@@ -11,11 +13,11 @@ class HasPerm(BasePermission):
             return False
         if getattr(user, "is_client", False):
             return False
-        return user.has_perm_code(self.code)
+        return any(user.has_perm_code(c) for c in self.codes)
 
 
 class PermViewSetMixin:
-    """Resolve required_perms[action] → HasPerm(code)."""
+    """Resolve required_perms[action] → HasPerm(code | (code, ...))."""
     required_perms: dict = {}
 
     def get_permissions(self):
@@ -23,4 +25,5 @@ class PermViewSetMixin:
         if code is None:
             from rest_framework.permissions import IsAuthenticated
             return [IsAuthenticated()]
-        return [HasPerm(code)]
+        codes = code if isinstance(code, (tuple, list)) else (code,)
+        return [HasPerm(*codes)]

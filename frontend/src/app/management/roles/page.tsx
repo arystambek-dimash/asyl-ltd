@@ -12,18 +12,8 @@ import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { Plus, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { PermissionPicker } from "@/components/permission-picker";
 import type { Role, Permission } from "@/lib/types";
-
-const SECTION_LABELS: Record<string, string> = {
-  catalog: "Товары", clients: "Клиенты", warehouse: "Склад", orders: "Заказы",
-  payments: "Оплаты", shipping: "Пост отгрузки", train: "Поезд", events: "Журнал",
-  reports: "Отчёты", employees: "Сотрудники", rbac: "Доступы",
-};
-const ACTION_LABELS: Record<string, string> = {
-  view: "просмотр", create: "создание", edit: "редакт.", delete: "удаление",
-  adjust: "корректировка", confirm: "подтвержд.", arrive: "приём", load: "загрузка",
-  ship: "отгрузка", debt_override: "в долг", manage: "управление",
-};
 
 function RolesPageInner() {
   const { data: roles, reload } = useApi<Role[]>("/roles/");
@@ -37,8 +27,6 @@ function RolesPageInner() {
   const [delRole, setDelRole] = useState<Role | null>(null);
   const [delBusy, setDelBusy] = useState(false);
   const [delError, setDelError] = useState("");
-
-  const sections = Array.from(new Set((perms ?? []).map((p) => p.section)));
 
   function openNew() { setEditing(null); setName(""); setCodes(new Set()); setError(""); setOpen(true); }
   function openEdit(r: Role) {
@@ -67,7 +55,8 @@ function RolesPageInner() {
   }
 
   return (
-    <AppShell title="Роли" section="Управление" description="Гибкие роли с настраиваемыми правами по разделам и действиям."
+    <AppShell title="Роли" section="Управление"
+      description="Роль — назначение сотрудника и шаблон прав. Фактические доступы настраиваются в карточке сотрудника."
       actions={
         <Button size="sm" onClick={openNew}>
           <Plus className="size-4" /> <span className="hidden sm:inline">Новая роль</span>
@@ -110,23 +99,8 @@ function RolesPageInner() {
             <Input value={name} required onChange={(e) => setName(e.target.value)}
               disabled={editing?.is_system} /></div>
           <div className="flex flex-col gap-4">
-            <Label>Права доступа</Label>
-            {sections.map((sec) => (
-              <div key={sec} className="rounded-lg border p-3">
-                <div className="mb-2 text-sm font-semibold">{SECTION_LABELS[sec] ?? sec}</div>
-                <div className="flex flex-wrap gap-2">
-                  {(perms ?? []).filter((p) => p.section === sec).map((p) => (
-                    <button key={p.code} type="button" onClick={() => toggle(p.code)}
-                      className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
-                        codes.has(p.code)
-                          ? "border-[var(--primary)] bg-[var(--primary)]/10 text-[var(--primary)]"
-                          : "text-[var(--muted-foreground)] hover:bg-[var(--accent)]"}`}>
-                      {ACTION_LABELS[p.action] ?? p.action}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
+            <Label>Шаблон прав (подставляется сотруднику при выборе роли)</Label>
+            <PermissionPicker perms={perms ?? []} selected={codes} onToggle={toggle} />
           </div>
           {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
           <div className="flex justify-end gap-2 border-t pt-5">

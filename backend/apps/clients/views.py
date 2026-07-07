@@ -4,6 +4,7 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from apps.rbac.permissions import PermViewSetMixin
+from apps.rbac.scoping import scope_by_department
 from .models import Client, Store
 from .serializers import ClientSerializer, StoreSerializer
 from .services import detect_overdue, is_payment_window_open, client_analytics
@@ -13,14 +14,25 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
     required_perms = {
-        "list": "clients.view", "retrieve": "clients.view",
-        "create": "clients.create", "update": "clients.edit",
-        "partial_update": "clients.edit", "destroy": "clients.delete",
+        "list": ("clients.view", "dept2.view"),
+        "retrieve": ("clients.view", "dept2.view"),
+        "create": ("clients.create", "dept2.create"),
+        "update": ("clients.edit", "dept2.create"),
+        "partial_update": ("clients.edit", "dept2.create"),
+        "destroy": "clients.delete",
         # Финансовая аналитика и долги — под reports.view.
         "debts": "reports.view",
         "debt_detail": "reports.view",
         "analytics": "reports.view",
     }
+
+    def get_queryset(self):
+        qs = scope_by_department(super().get_queryset(), self.request.user, "clients.view")
+        if self.action == "list":
+            department = self.request.query_params.get("department")
+            if department:
+                qs = qs.filter(department=department)
+        return qs
 
     @action(detail=True, methods=["get"], url_path="analytics")
     def analytics(self, request, pk=None):
@@ -39,10 +51,10 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="debts")
     def debts(self, request):
-        """Агрегированные долги по клиентам."""
+        """Агрегированные долги по клиентам (в рамках видимых отделов)."""
         today = date.today()
         rows = []
-        for client in Client.objects.prefetch_related("orders__payments", "stores").all():
+        for client in self.get_queryset().prefetch_related("orders__payments", "stores"):
             orders = list(self._debt_orders(client))
             debt = self._debt_total(orders)
             if debt <= 0:
@@ -99,6 +111,12 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     queryset = Store.objects.select_related("client").all()
     serializer_class = StoreSerializer
+
+    def get_queryset(self):
+        return scope_by_department(
+            super().get_queryset(), self.request.user, "clients.view",
+            dept_field="client__department", owner_field="client__manager")
+
     required_perms = {
         "list": "clients.view", "retrieve": "clients.view",
         "create": "clients.create", "update": "clients.edit",
@@ -134,7 +152,7 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         """Долги по магазинам: сумма непогашенного, расписание, окно/просрочка."""
         today = date.today()
         rows = []
-        for store in Store.objects.select_related("client").prefetch_related("orders__payments").all():
+        for store in self.get_queryset().prefetch_related("orders__payments"):
             orders = [o for o in store.orders.all() if o.is_debt]
             debt = sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
             if debt <= 0:

@@ -7,7 +7,8 @@ from .models import Product, ClientPrice
 from .serializers import ProductSerializer
 
 _PERMS = {
-    "list": "catalog.view", "retrieve": "catalog.view",
+    # Просмотр товаров нужен и менеджеру Отдела 2 для составления заявки.
+    "list": ("catalog.view", "dept2.view"), "retrieve": ("catalog.view", "dept2.view"),
     "create": "catalog.create", "update": "catalog.edit",
     "partial_update": "catalog.edit", "destroy": "catalog.delete",
 }
@@ -22,7 +23,7 @@ class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 class ClientPricesView(APIView):
     """Текущие цены клиента: {product_id: price} — для предзаполнения формы заказа."""
     def get_permissions(self):
-        return [HasPerm("orders.create")]
+        return [HasPerm("orders.create", "dept2.create")]
 
     def get(self, request):
         client_id = request.query_params.get("client")

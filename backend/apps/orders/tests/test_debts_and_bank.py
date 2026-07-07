@@ -38,17 +38,24 @@ def test_debts_endpoint_lists_unsettled_shipped(boss):
     assert settled.id not in ids
 
 
-def test_pay_bank_settles_full(accountant):
+def test_pay_bank_settles_full(accountant, settle_payment):
     o = _shipped_order(intent="instant")
     r = _api(accountant).post(f"/api/orders/{o.id}/pay-bank/")
     assert r.status_code == 201
+    # Банковская оплата тоже проходит цепочку: бухгалтер → кассир.
+    settle_payment(Payment.objects.get(pk=r.data["id"]), accountant)
     o.refresh_from_db()
     assert o.payment_status == "settled"
 
 
-def test_payments_history_in_order(accountant):
+def test_payments_history_in_order(accountant, settle_payment):
     o = _shipped_order()
-    _api(accountant).post(f"/api/orders/{o.id}/payments/", {"amount": "50"}, format="json")
+    r = _api(accountant).post(f"/api/orders/{o.id}/payments/", {"amount": "50"}, format="json")
+    # До подтверждения кассиром оплата в истории «полученных» не отображается.
+    mid = _api(accountant).get(f"/api/orders/{o.id}/")
+    assert mid.data["payments"] == []
+    assert len(mid.data["pending_payments"]) == 1
+    settle_payment(Payment.objects.get(pk=r.data["id"]), accountant)
     r = _api(accountant).get(f"/api/orders/{o.id}/")
     assert r.status_code == 200
     assert len(r.data["payments"]) == 1
