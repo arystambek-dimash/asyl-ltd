@@ -13,7 +13,6 @@ import { useEffect, useRef, useState } from "react";
 
 interface ManagedMediaSourceCtor {
   new (): MediaSource;
-  isTypeSupported(type: string): boolean;
 }
 
 type ManagedVideo = HTMLVideoElement & {
@@ -159,12 +158,19 @@ export function CameraStream({
           if (objectUrl) URL.revokeObjectURL(objectUrl);
         };
 
-        ms.addEventListener("sourceopen", () => {
-          // Просим у сервера дорожки в H.264-профилях, что играет этот браузер.
-          const codecs = ["avc1.640029", "avc1.64001F", "avc1.42E01F", "mp4a.40.2"]
-            .filter((c) => !MS.isTypeSupported || MS.isTypeSupported(`video/mp4; codecs="${c}"`) || c.startsWith("mp4a"));
-          ws?.send(JSON.stringify({ type: "mse", value: codecs.join(",") }));
-        }, { once: true });
+        // Запрос дорожек шлём, только когда открыты И WebSocket, И MediaSource
+        // (порядок этих событий не гарантирован — иначе send() теряется).
+        let wsOpen = false;
+        let msOpen = false;
+        let codecsSent = false;
+        const requestCodecs = () => {
+          if (!wsOpen || !msOpen || codecsSent || !ws) return;
+          codecsSent = true;
+          ws.send(JSON.stringify({ type: "mse", value: "avc1.640029,avc1.64001F,avc1.42E01F,mp4a.40.2" }));
+        };
+
+        ws.onopen = () => { wsOpen = true; requestCodecs(); };
+        ms.addEventListener("sourceopen", () => { msOpen = true; requestCodecs(); }, { once: true });
 
         ws.onmessage = (ev) => {
           try {
