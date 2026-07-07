@@ -45,5 +45,7 @@ jobs:
             -i ~/.ssh/asyl_ltd_deploy_key \
             -p "$PROD_PORT" \
             -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 \
             "$PROD_USER@$PROD_HOST" \
             'BRANCH=main /home/ubuntu/asyl-ltd/deploy/remote-deploy.sh'
