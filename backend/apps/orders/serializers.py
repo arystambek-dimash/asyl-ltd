@@ -27,11 +27,20 @@ class OrderItemSerializer(serializers.ModelSerializer):
         return str(p)
 
     def get_client_price(self, obj):
-        # Подсказка для предзаполнения: текущая цена клиента на этот товар, если есть.
+        # Подсказка для предзаполнения: текущая цена клиента на этот товар.
+        # Нужна только пока цена не зафиксирована; прайс клиента грузим один раз
+        # на запрос (кэш в context), а не отдельным запросом на каждую позицию.
+        if obj.unit_price is not None:
+            return None
         from apps.catalog.models import ClientPrice
-        cp = ClientPrice.objects.filter(
-            client=obj.order.client, product=obj.product).first()
-        return str(cp.price) if cp else None
+        cache = self.context.setdefault("_client_prices", {})
+        client_id = obj.order.client_id
+        if client_id not in cache:
+            cache[client_id] = {
+                cp.product_id: str(cp.price)
+                for cp in ClientPrice.objects.filter(client_id=client_id)
+            }
+        return cache[client_id].get(obj.product_id)
 
 
 class StatusChangeRequestSerializer(serializers.ModelSerializer):
@@ -153,17 +162,24 @@ class OrderSerializer(serializers.ModelSerializer):
         s = self._shipment(obj)
         return s.bags_loaded if s else 0
 
+    def _first_item(self, obj):
+        # items предзагружены — берём из кэша, .first() породил бы новый запрос.
+        items = list(obj.items.all())
+        return items[0] if items else None
+
     def get_bag_estimate_kg(self, obj):
         # Ожидаемый вес по ФАКТУ камеры = посчитанные мешки × вес фасовки.
         from decimal import Decimal
         s = self._shipment(obj)
         bags = s.bags_loaded if s else 0
-        per = obj.items.first().product.weight_kg if obj.items.exists() else Decimal("0")
+        first = self._first_item(obj)
+        per = first.product.weight_kg if first else Decimal("0")
         return str(bags * per)
 
     def get_bag_weight_kg(self, obj):
         from decimal import Decimal
-        per = obj.items.first().product.weight_kg if obj.items.exists() else Decimal("0")
+        first = self._first_item(obj)
+        per = first.product.weight_kg if first else Decimal("0")
         return str(per)
 
     def get_debt_override_by_name(self, obj):
@@ -171,14 +187,19 @@ class OrderSerializer(serializers.ModelSerializer):
         return u.username if u else None
 
     def get_pending_status_requests(self, obj):
-        qs = obj.status_requests.filter(status="pending")
-        return StatusChangeRequestSerializer(qs, many=True).data
+        # Фильтруем по предзагруженному кэшу, без запроса на каждый заказ.
+        reqs = [r for r in obj.status_requests.all() if r.status == "pending"]
+        return StatusChangeRequestSerializer(reqs, many=True).data
+
+    def _payments_by_status(self, obj, statuses):
+        rows = [p for p in obj.payments.all() if p.status in statuses]
+        rows.sort(key=lambda p: p.paid_at)
+        return rows
 
     def get_payments(self, obj):
-        # История платежей — только подтверждённые (реально полученные деньги).
-        # Неподтверждённые заявки клиента (pending) не показываем как «получено».
-        qs = obj.payments.filter(status="confirmed").order_by("paid_at")
-        return PaymentSerializer(qs, many=True).data
+        # История платежей — только подтверждённые кассой (реально полученные).
+        rows = self._payments_by_status(obj, ("confirmed",))
+        return PaymentSerializer(rows, many=True).data
 
     def get_pending_payments(self, obj):
         # Оплаты в цепочке подтверждения (запрошена/принята/сверена) видят все
@@ -187,9 +208,8 @@ class OrderSerializer(serializers.ModelSerializer):
         user = getattr(request, "user", None)
         if not user or getattr(user, "is_client", False):
             return []
-        qs = obj.payments.filter(
-            status__in=Payment.IN_PROGRESS_STATUSES).order_by("paid_at")
-        return PaymentSerializer(qs, many=True).data
+        rows = self._payments_by_status(obj, Payment.IN_PROGRESS_STATUSES)
+        return PaymentSerializer(rows, many=True).data
 
     def validate_client(self, client):
         # Заказ можно создать только для клиента, видимого пользователю:
@@ -201,6 +221,15 @@ class OrderSerializer(serializers.ModelSerializer):
                                    "clients.view").exists():
             raise serializers.ValidationError("Клиент недоступен")
         return client
+
+    def validate(self, attrs):
+        store = attrs.get("store")
+        client = attrs.get("client") or getattr(self.instance, "client", None)
+        if store and client and store.client_id != client.id:
+            raise serializers.ValidationError(
+                {"detail": "Магазин принадлежит другому клиенту",
+                 "code": "store_mismatch"})
+        return attrs
 
     def create(self, validated_data):
         from .services import confirm_order, apply_item_prices
@@ -231,9 +260,20 @@ class OrderSerializer(serializers.ModelSerializer):
         return order
 
     def update(self, instance, validated_data):
-        new_truck = validated_data.pop("truck_number", None)
+        from .services import replace_items
         user = self.context["request"].user
+        # Клиент фиксируется при создании: у него свой прайс и отдел.
+        new_client = validated_data.pop("client", None)
+        if new_client is not None and new_client.id != instance.client_id:
+            raise serializers.ValidationError(
+                {"detail": "Клиента изменить нельзя — создайте новый заказ",
+                 "code": "client_locked"})
+        new_truck = validated_data.pop("truck_number", None)
         if new_truck is not None and new_truck != instance.truck_number:
             set_truck_number(instance, new_truck, user)
+            instance.refresh_from_db()
+        items = validated_data.pop("items", None)
+        if items is not None:
+            replace_items(instance, items, self.initial_data.get("prices"), user)
             instance.refresh_from_db()
         return super().update(instance, validated_data)

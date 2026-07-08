@@ -450,7 +450,66 @@ function ClientsPageInner() {
         </div>
       </div>
 
-      <div>
+      {/* Мобильные карточки: таблица на телефоне нечитаемая. */}
+      <div className="flex flex-col gap-3 md:hidden">
+        {sorted.length === 0 ? (
+          <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Клиентов пока нет.</p>
+        ) : sorted.map((c) => {
+          const summary = clientSummary.get(c.id) ?? summarizeClientOrders(EMPTY_ORDERS);
+          return (
+            <div key={c.id}
+              onClick={canMoney ? () => router.push(`/clients/${c.id}`) : undefined}
+              className={cn("flex flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card",
+                canMoney && "cursor-pointer")}>
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold">{c.name}</div>
+                  <a href={`tel:${c.phone}`} onClick={(e) => e.stopPropagation()}
+                    className="flex items-center gap-1.5 text-sm text-[var(--muted-foreground)]">
+                    <Phone className="size-3.5" /> {c.phone}
+                  </a>
+                </div>
+                {showDept && (
+                  <Badge tone={c.department === "field" ? "primary" : "muted"}>
+                    {DEPARTMENT_LABELS[c.department] ?? c.department}
+                  </Badge>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div>
+                  <div className="text-[11px] text-[var(--muted-foreground)]">Заказов</div>
+                  <div className="tabular-nums">{summary.ordersCount}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-[var(--muted-foreground)]">Долг</div>
+                  {summary.debt > 0
+                    ? <div className="font-medium tabular-nums text-[var(--destructive)]">{formatMoney(summary.debt)} ₸</div>
+                    : <div className="text-[var(--muted-foreground)]">—</div>}
+                </div>
+              </div>
+              {(canEdit || canDelete) && (
+                <div className="flex items-center justify-end gap-1 border-t pt-2"
+                  onClick={(e) => e.stopPropagation()}>
+                  {canEdit && (
+                    <Button size="sm" variant="outline" onClick={() => { setEditing(c); setOpen(true); }}>
+                      <Pencil className="size-3.5" /> Изменить
+                    </Button>
+                  )}
+                  {canDelete && (
+                    <Button size="sm" variant="ghost"
+                      className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                      onClick={() => { setDelError(""); setDelItem(c); }}>
+                      <Trash2 className="size-4" />
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="hidden md:block">
         <Card>
           <CardContent className="pt-6">
             <Table>

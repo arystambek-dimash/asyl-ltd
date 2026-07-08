@@ -16,7 +16,11 @@ from .services import (add_payment, pay_via_bank, confirm_order, reject_order,
 
 
 class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
-    queryset = Order.objects.select_related("client").prefetch_related("items__product")
+    # Всё, что сериализатор трогает на каждой строке, загружаем заранее —
+    # список заказов не должен порождать запросы «на заказ» (N+1).
+    queryset = (Order.objects
+                .select_related("client", "store", "shipment", "debt_override_by")
+                .prefetch_related("items__product", "payments", "status_requests"))
     serializer_class = OrderSerializer
     required_perms = {
         "list": ("orders.view", "dept2.view"),
@@ -97,8 +101,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="debts")
     def debts(self, request):
         """Все отгруженные заказы «в долг» с непогашенным остатком."""
-        qs = (self.get_queryset().select_related("store").prefetch_related("payments"))
-        orders = [o for o in qs if o.is_debt]
+        orders = [o for o in self.get_queryset() if o.is_debt]
         data = OrderSerializer(orders, many=True, context={"request": request}).data
         return Response(data)
 

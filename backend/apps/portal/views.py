@@ -42,9 +42,10 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     permission_classes = [IsClientUser]
 
     def get_queryset(self):
+        # paid_total и has_pending_payment обходят оплаты — грузим заранее.
         return Order.objects.filter(
             client__user=self.request.user
-        ).prefetch_related("items__product")
+        ).prefetch_related("items__product", "payments")
 
     @action(detail=True, methods=["post"], url_path="pay")
     def pay(self, request, pk=None):

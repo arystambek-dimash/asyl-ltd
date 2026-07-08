@@ -11,7 +11,11 @@ from .services import detect_overdue, is_payment_window_open, client_analytics
 
 
 class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
-    queryset = Client.objects.all()
+    # debt_total в сериализаторе обходит заказы с позициями и оплатами —
+    # грузим их заранее, иначе список клиентов даёт N+1 на каждую строку.
+    queryset = (Client.objects
+                .select_related("manager")
+                .prefetch_related("orders__items__product", "orders__payments"))
     serializer_class = ClientSerializer
     required_perms = {
         "list": ("clients.view", "dept2.view"),
@@ -39,12 +43,11 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         return Response(client_analytics(self.get_object()))
 
     def _debt_orders(self, client):
-        qs = (client.orders
-              .select_related("client", "store")
-              .prefetch_related("items__product", "payments")
-              .order_by("-created_at"))
-        # Долг — только отгружённый заказ «в долг» с непогашенным остатком.
-        return [o for o in qs if o.is_debt]
+        # Заказы уже предзагружены queryset'ом — фильтруем кэш, не создавая
+        # новый запрос на каждого клиента.
+        orders = [o for o in client.orders.all() if o.is_debt]
+        orders.sort(key=lambda o: o.created_at, reverse=True)
+        return orders
 
     def _debt_total(self, orders):
         return sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
@@ -54,7 +57,7 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         """Агрегированные долги по клиентам (в рамках видимых отделов)."""
         today = date.today()
         rows = []
-        for client in self.get_queryset().prefetch_related("orders__payments", "stores"):
+        for client in self.get_queryset().prefetch_related("stores"):
             orders = list(self._debt_orders(client))
             debt = self._debt_total(orders)
             if debt <= 0:
@@ -152,7 +155,8 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         """Долги по магазинам: сумма непогашенного, расписание, окно/просрочка."""
         today = date.today()
         rows = []
-        for store in self.get_queryset().prefetch_related("orders__payments"):
+        for store in self.get_queryset().prefetch_related(
+                "orders__items__product", "orders__payments"):
             orders = [o for o in store.orders.all() if o.is_debt]
             debt = sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
             if debt <= 0:

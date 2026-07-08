@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
@@ -7,33 +7,38 @@ import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
 import { Modal } from "@/components/ui/modal";
-import { LicensePlateInput, formatPlate } from "@/components/ui/license-plate-input";
+import { formatPlate } from "@/components/ui/license-plate-input";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { FilterPills } from "@/components/ui/filter-pills";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
+import { OrderForm } from "@/components/order-form";
 import { DEPARTMENT_LABELS, ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
-import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { formatMoney } from "@/lib/utils";
-import { Plus, Trash2, Search, Info } from "lucide-react";
-import type { Order, Client, Product, Store } from "@/lib/types";
+import { Pencil, Plus, Search } from "lucide-react";
+import type { Order } from "@/lib/types";
+
+// Позиции и цены редактируются до начала загрузки.
+function isEditable(o: Order): boolean {
+  return ["draft", "pending", "confirmed"].includes(o.status);
+}
 
 function OrdersPageInner() {
   const router = useRouter();
   const { data: orders, loading, reload } = useApi<Order[]>("/orders/");
   const { me } = useAuth();
   const canCreate = can(me, "orders.create");
+  const canEdit = can(me, "orders.edit");
   // Сводная картина обоих отделов — руководителю/бухгалтеру/кассиру.
   const showDept = can(me, "dept2.view_all");
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<Order | null>(null);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
   const [dept, setDept] = useState("all");
@@ -111,7 +116,67 @@ function OrdersPageInner() {
         </div>
       </div>
 
-      <Card>
+      {/* Мобильные карточки: таблица на телефоне нечитаемая. */}
+      <div className="flex flex-col gap-3 md:hidden">
+        {loading ? (
+          <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+        ) : sorted.length === 0 ? (
+          <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Заказов пока нет.</p>
+        ) : sorted.map((o) => (
+          <div key={o.id} onClick={() => router.push(`/orders/${o.id}`)}
+            className="flex cursor-pointer flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold">#{o.id}</span>
+                {showDept && (
+                  <Badge tone={o.department === "field" ? "primary" : "muted"}>
+                    {DEPARTMENT_LABELS[o.department ?? "main"] ?? o.department}
+                  </Badge>
+                )}
+              </div>
+              <StatusBadge status={o.status} dot />
+            </div>
+            <div className="text-sm font-medium">{o.client_name || `Клиент #${o.client}`}</div>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <div>
+                <div className="text-[11px] text-[var(--muted-foreground)]">Сумма</div>
+                <div className="font-semibold tabular-nums">{formatMoney(o.total_amount)} ₸</div>
+              </div>
+              <div>
+                <div className="text-[11px] text-[var(--muted-foreground)]">Оплачено</div>
+                <div className="tabular-nums">{formatMoney(o.paid_total)} ₸</div>
+              </div>
+              {o.truck_number && (
+                <div>
+                  <div className="text-[11px] text-[var(--muted-foreground)]">Машина</div>
+                  <div className="tabular-nums">{formatPlate(o.truck_number)}</div>
+                </div>
+              )}
+              {o.arrival_date && (
+                <div>
+                  <div className="text-[11px] text-[var(--muted-foreground)]">Прибытие</div>
+                  <div>{new Date(o.arrival_date).toLocaleDateString("ru-RU")}</div>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center justify-between border-t pt-2">
+              {o.status === "shipped" && o.payment_status ? (
+                <Badge tone={PAYMENT_STATUS_TONE[o.payment_status] ?? "muted"}>
+                  {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
+                </Badge>
+              ) : <span />}
+              {canEdit && isEditable(o) && (
+                <Button size="sm" variant="outline"
+                  onClick={(e) => { e.stopPropagation(); setEditing(o); }}>
+                  <Pencil className="size-3.5" /> Изменить
+                </Button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <Card className="hidden md:block">
         <CardContent className="pt-6">
           {loading ? (
             <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
@@ -127,6 +192,7 @@ function OrdersPageInner() {
                   <SortableHeader label="Сумма" sortKey="amount" activeKey={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
                   <TH>Оплачено</TH>
                   <SortableHeader label="Статус" sortKey="status" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                  {canEdit && <TH></TH>}
                 </TR>
               </THead>
               <TBody>
@@ -159,10 +225,20 @@ function OrdersPageInner() {
                         )}
                       </div>
                     </TD>
+                    {canEdit && (
+                      <TD onClick={(e) => e.stopPropagation()}>
+                        {isEditable(o) && (
+                          <Button size="sm" variant="ghost" title="Изменить заказ"
+                            onClick={() => setEditing(o)}>
+                            <Pencil className="size-4" />
+                          </Button>
+                        )}
+                      </TD>
+                    )}
                   </TR>
                 ))}
                 {sorted.length === 0 && (
-                  <TR><TD colSpan={showDept ? 8 : 7} className="py-4 text-center text-[var(--muted-foreground)]">
+                  <TR><TD colSpan={(showDept ? 8 : 7) + (canEdit ? 1 : 0)} className="py-4 text-center text-[var(--muted-foreground)]">
                     Заказов пока нет.</TD></TR>)}
               </TBody>
             </Table>
@@ -173,174 +249,22 @@ function OrdersPageInner() {
       <Modal open={open} onClose={() => setOpen(false)}
         eyebrow="Работа · Заказ"
         title="Новый заказ"
-        description="Клиент, позиции и плановая дата прибытия."
+        description="Отдел, клиент, позиции и плановая дата прибытия."
         className="max-w-2xl">
-        {open && <NewOrderForm onCancel={() => setOpen(false)}
+        {open && <OrderForm onCancel={() => setOpen(false)}
           onDone={() => { setOpen(false); reload(); }} />}
       </Modal>
+
+      <Modal open={!!editing} onClose={() => setEditing(null)}
+        eyebrow={editing ? `Работа · Заказ #${editing.id}` : "Работа · Заказ"}
+        title="Изменить заказ"
+        description="Позиции, цены, машина и дата прибытия. Изменения фиксируются в журнале."
+        className="max-w-2xl">
+        {editing && <OrderForm editing={editing}
+          onCancel={() => setEditing(null)}
+          onDone={() => { setEditing(null); reload(); }} />}
+      </Modal>
     </AppShell>
-  );
-}
-
-function NewOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () => void }) {
-  const router = useRouter();
-  const { data: clients } = useApi<Client[]>("/clients/");
-  const { data: products } = useApi<Product[]>("/products/");
-  const { data: stores } = useApi<Store[]>("/stores/");
-  const [client, setClient] = useState("");
-  const [store, setStore] = useState("");
-  const [transport, setTransport] = useState<"truck" | "train">("truck");
-  const [truck, setTruck] = useState("");
-  const [arrival, setArrival] = useState("");
-  const [rows, setRows] = useState<{ product: string; quantity: string; price: string }[]>([{ product: "", quantity: "", price: "" }]);
-  const [clientPrices, setClientPrices] = useState<Record<string, string>>({});
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  // При выборе клиента подтягиваем его цены и предзаполняем строки.
-  useEffect(() => {
-    if (!client) { setClientPrices({}); return; }
-    api.get<Record<string, string>>(`/client-prices/?client=${client}`)
-      .then((r) => {
-        setClientPrices(r.data);
-        setRows((rs) => rs.map((row) =>
-          row.product && !row.price && r.data[row.product]
-            ? { ...row, price: r.data[row.product] } : row));
-      })
-      .catch(() => setClientPrices({}));
-  }, [client]);
-
-  const total = rows.reduce((s, r) => s + Number(r.price || 0) * Number(r.quantity || 0), 0);
-  const allPriced = rows.filter((r) => r.product && Number(r.quantity) > 0)
-    .every((r) => Number(r.price) > 0);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault(); setBusy(true); setError("");
-    try {
-      const valid = rows.filter((r) => r.product && Number(r.quantity) > 0);
-      if (!valid.length) throw new Error("empty");
-      const items = valid.map((r) => ({ product: Number(r.product), quantity: Number(r.quantity) }));
-      const prices = Object.fromEntries(valid.map((r) => [r.product, r.price]));
-      const { data } = await api.post("/orders/", {
-        client: Number(client),
-        store: store ? Number(store) : null,
-        transport_type: transport,
-        truck_number: transport === "train" ? "" : truck,
-        arrival_date: arrival || null,
-        items,
-        prices,
-      });
-      onDone();
-      router.push(`/orders/${data.id}`);
-    } catch (err) {
-      setError(err instanceof Error && err.message === "empty"
-        ? "Добавьте хотя бы одну позицию." : apiError(err));
-    } finally { setBusy(false); }
-  }
-
-  return (
-    <form onSubmit={submit} className="flex flex-col gap-5">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="grid gap-2">
-          <Label>Клиент</Label>
-          <Select value={client} onChange={(e) => { setClient(e.target.value); setStore(""); }} required>
-            <option value="">Выберите клиента</option>
-            {(clients ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </Select>
-        </div>
-        {(() => {
-          const clientStores = (stores ?? []).filter((s) => String(s.client) === client);
-          return (
-            <div className="grid gap-2">
-              <Label>Магазин (необязательно)</Label>
-              <Select value={store} onChange={(e) => setStore(e.target.value)}
-                disabled={!client || clientStores.length === 0}>
-                <option value="">Без магазина (на клиента)</option>
-                {clientStores.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </Select>
-              {client && clientStores.length === 0 && (
-                <span className="text-xs text-[var(--muted-foreground)]">
-                  У клиента нет магазинов — добавьте в разделе «Магазины».
-                </span>
-              )}
-            </div>
-          );
-        })()}
-      </div>
-
-      <div className="grid gap-2">
-        <Label>Вид транспорта</Label>
-        <div className="grid grid-cols-2 gap-2">
-          {([["truck", "🚚 Трак"], ["train", "🚂 Поезд"]] as const).map(([v, label]) => (
-            <button key={v} type="button" onClick={() => setTransport(v)}
-              className={
-                "rounded-lg border px-3 py-2 text-sm font-medium transition-colors " +
-                (transport === v ? "border-[var(--primary)] bg-[var(--primary)]/5" : "hover:bg-[var(--muted)]/40")
-              }>
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {transport === "truck" && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div className="grid gap-2">
-            <Label>Номер машины</Label>
-            <LicensePlateInput value={truck} onChange={setTruck} />
-          </div>
-          <div className="grid gap-2">
-            <Label>Дата прибытия</Label>
-            <Input type="date" value={arrival} onChange={(e) => setArrival(e.target.value)} />
-          </div>
-        </div>
-      )}
-
-      <div className="grid gap-2">
-        <Label>Позиции (в мешках)</Label>
-        {rows.map((r, i) => (
-          <div key={i} className="flex flex-wrap gap-2">
-            <Select className="min-w-40 flex-1" value={r.product}
-              onChange={(e) => {
-                const product = e.target.value;
-                setRows(rows.map((x, j) => j === i
-                  ? { ...x, product, price: x.price || clientPrices[product] || "" } : x));
-              }}>
-              <option value="">Товар</option>
-              {(products ?? []).map((p) => (
-                <option key={p.id} value={p.id}>{p.label}</option>
-              ))}
-            </Select>
-            <Input type="number" min="1" placeholder="Мешков" className="w-20 sm:w-24" value={r.quantity}
-              onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, quantity: e.target.value } : x))} />
-            <Input type="number" min="0" placeholder="Цена/мешок" className="w-28 sm:w-36" value={r.price}
-              onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, price: e.target.value } : x))} />
-            <Button type="button" variant="ghost" size="icon"
-              onClick={() => setRows(rows.length > 1 ? rows.filter((_, j) => j !== i) : rows)}>
-              <Trash2 className="size-4" />
-            </Button>
-          </div>
-        ))}
-        <Button type="button" variant="outline" size="sm" className="self-start"
-          onClick={() => setRows([...rows, { product: "", quantity: "", price: "" }])}>
-          <Plus className="size-4" /> Добавить позицию
-        </Button>
-      </div>
-
-      <div className="flex items-center justify-between border-t pt-4">
-        <span className="text-sm text-[var(--muted-foreground)]">Итого</span>
-        <span className="text-xl font-bold tabular-nums">{formatMoney(String(total))} ₸</span>
-      </div>
-      <div className="flex items-start gap-2 rounded-lg border bg-[var(--muted)]/30 px-3 py-2.5 text-xs text-[var(--muted-foreground)]">
-        <Info className="mt-0.5 size-3.5 shrink-0" />
-        Цена подставляется из прайса клиента. Заказ создаётся сразу подтверждённым.
-      </div>
-      {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" onClick={onCancel}>Отмена</Button>
-        <Button type="submit" disabled={busy || !client || !allPriced}>{busy ? "Создание…" : "Создать заказ"}</Button>
-      </div>
-    </form>
   );
 }
 

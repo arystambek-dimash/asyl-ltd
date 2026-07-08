@@ -62,6 +62,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [amounts, setAmounts] = useState<Record<number, string>>({});
   const [busyId, setBusyId] = useState<number | null>(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   if (!data) {
     return (
@@ -81,7 +82,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   }
 
   async function pay(order: Order, channel: "manual" | "bank") {
-    setBusyId(order.id); setError("");
+    setBusyId(order.id); setError(""); setNotice("");
     try {
       if (channel === "bank") {
         await api.post(`/orders/${order.id}/pay-bank/`);
@@ -91,6 +92,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
         await api.post(`/orders/${order.id}/payments/`, { amount });
         setAmounts((a) => ({ ...a, [order.id]: "" }));
       }
+      setNotice(`Оплата по заказу #${order.id} принята — долг спишется после сверки бухгалтером и подтверждения кассой.`);
       await reload();
     } catch (e) { setError(apiError(e)); } finally { setBusyId(null); }
   }
@@ -125,7 +127,8 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
         <p className="mt-4 border-t pt-4 text-sm text-[var(--muted-foreground)]">
           {isAccountant ? (
             <>Внесите оплату по каждому заказу ниже. Долг гасится частями или полностью.
-            После полной оплаты все заказы перейдут в статус <b className="text-[var(--foreground)]">«Оплачен»</b>.</>
+            Деньги учитываются после сверки бухгалтером и подтверждения
+            <b className="text-[var(--foreground)]"> кассой</b> — до этого сумма висит «на подтверждении».</>
           ) : (
             "Долги клиента по отгруженным заказам. Оплату вносит бухгалтер."
           )}
@@ -160,6 +163,11 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
       )}
 
       {error && <p className="mb-4 text-sm text-[var(--destructive)]">{error}</p>}
+      {notice && (
+        <p className="mb-4 rounded-lg border border-[var(--success)]/30 bg-[var(--success)]/10 px-3 py-2 text-sm text-[var(--success)]">
+          {notice}
+        </p>
+      )}
 
       <div className="mb-2 flex items-center justify-between">
         <span className="text-lg font-semibold tracking-tight">Заказы в долге</span>
@@ -223,6 +231,19 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                   </div>
                   <ProgressBar pct={(Number(order.paid_total) / Math.max(1, Number(order.total_amount))) * 100} />
                 </div>
+
+                {/* оплаты в цепочке подтверждения — ещё не учтены в «Оплачено» */}
+                {(order.pending_payments?.length ?? 0) > 0 && (
+                  <div className="flex items-center justify-between rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2 text-xs">
+                    <span className="flex items-center gap-1.5 text-[var(--warning)]">
+                      <Clock className="size-3.5" />
+                      На подтверждении (бухгалтер → касса)
+                    </span>
+                    <span className="tabular-nums font-semibold text-[var(--warning)]">
+                      {formatMoney(String(order.pending_payments!.reduce((s, p) => s + Number(p.amount), 0)))} ₸
+                    </span>
+                  </div>
+                )}
 
                 {/* история платежей */}
                 {(order.payments?.length ?? 0) > 0 && (

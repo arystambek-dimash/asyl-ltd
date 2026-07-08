@@ -267,6 +267,46 @@ def apply_item_prices(order: Order, prices: dict, user) -> None:
     _apply_prices(order, prices, user)
 
 
+# Состав заказа можно менять, пока машина не начала грузиться.
+ITEMS_EDITABLE_STATUSES = ("draft", "pending", "confirmed")
+
+
+@transaction.atomic
+def replace_items(order: Order, items_data: list, prices: dict | None, user) -> Order:
+    """Заменить позиции заказа (редактирование).
+
+    prices приходит по товару: {product_id: цена за мешок}. Для подтверждённого
+    заказа каждая позиция обязана получить цену — иначе сумма «поплывёт».
+    """
+    from .models import OrderItem
+    if order.status not in ITEMS_EDITABLE_STATUSES:
+        raise ValidationError(
+            {"detail": "Позиции можно менять только до начала загрузки",
+             "code": "items_locked"})
+    if not items_data:
+        raise ValidationError(
+            {"detail": "В заказе должна остаться хотя бы одна позиция",
+             "code": "items_empty"})
+    order.items.all().delete()
+    created = [OrderItem.objects.create(order=order, **item) for item in items_data]
+    prices = prices or {}
+    prices_by_item = {
+        it.id: prices.get(str(it.product_id), prices.get(it.product_id))
+        for it in created
+    }
+    if any(v is not None for v in prices_by_item.values()) or order.status == "confirmed":
+        _apply_prices(order, prices_by_item, user)
+    log_event("order_edit",
+              f"Позиции заказа обновлены ({len(created)} шт.)",
+              user=user, order=order,
+              payload={"items": [
+                  {"product": it.product_id, "quantity": it.quantity,
+                   "unit_price": str(it.unit_price) if it.unit_price is not None else None}
+                  for it in created
+              ]})
+    return order
+
+
 @transaction.atomic
 def reject_order(order: Order, user) -> Order:
     if order.status != "pending":

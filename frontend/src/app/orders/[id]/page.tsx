@@ -23,7 +23,9 @@ import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/utils";
 import { DEPARTMENT_LABELS, ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { PaymentChain, AddPaymentActions, paymentOpen } from "@/components/payment-chain";
-import { CheckCircle2, Circle, Layers, Package, Scale, Truck, Boxes } from "lucide-react";
+import { OrderForm } from "@/components/order-form";
+import { Modal } from "@/components/ui/modal";
+import { CheckCircle2, Circle, Layers, Package, Pencil, Scale, Truck, Boxes } from "lucide-react";
 import type { Order, Payment } from "@/lib/types";
 
 const ORDER_STATUSES = ["draft", "pending", "confirmed", "arrived", "loading", "loaded", "shipped", "cancelled"];
@@ -70,6 +72,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { reload: reloadPay } = useApi<Payment[]>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   const isManager = can(me, "orders.confirm");
   const canEditStatus = can(me, "orders.edit");
@@ -109,6 +112,9 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const itemsWeight = order.items.reduce((s, it) => s + Number(it.quantity) * Number(it.weight_kg ?? 0), 0);
 
   const isNew = order.status === "draft" || order.status === "pending";
+  // Позиции и цены редактируются до начала загрузки.
+  const canEditOrder = canEditStatus
+    && ["draft", "pending", "confirmed"].includes(order.status);
   // Подтверждение с ценами рендерится отдельной карточкой (заказы с позициями).
   const confirmInPriceCard = isManager && isNew && order.items.length > 0;
   // Начать цепочку оплаты можно, пока есть непогашенный остаток.
@@ -132,6 +138,11 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {canEditOrder && (
+              <Button size="sm" variant="outline" onClick={() => setEditOpen(true)}>
+                <Pencil className="size-3.5" /> Изменить
+              </Button>
+            )}
             {order.department && (
               <Badge tone={order.department === "field" ? "primary" : "muted"}>
                 {DEPARTMENT_LABELS[order.department] ?? order.department}
@@ -428,6 +439,18 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
           )}
         </div>
       </div>
+
+      <Modal open={editOpen} onClose={() => setEditOpen(false)}
+        eyebrow={`Работа · Заказ #${order.id}`}
+        title="Изменить заказ"
+        description="Позиции, цены, машина и дата прибытия. Изменения фиксируются в журнале."
+        className="max-w-2xl">
+        {editOpen && (
+          <OrderForm editing={order}
+            onCancel={() => setEditOpen(false)}
+            onDone={() => { setEditOpen(false); reload(); }} />
+        )}
+      </Modal>
     </AppShell>
   );
 }

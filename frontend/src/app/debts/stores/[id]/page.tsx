@@ -37,6 +37,7 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [amounts, setAmounts] = useState<Record<number, string>>({});
   const [busyId, setBusyId] = useState<number | null>(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   if (!data) return <AppShell title="Долг магазина"><p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p></AppShell>;
 
@@ -46,10 +47,11 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   async function pay(orderId: number) {
     const amount = amounts[orderId];
     if (!amount) return;
-    setBusyId(orderId); setError("");
+    setBusyId(orderId); setError(""); setNotice("");
     try {
       await api.post(`/orders/${orderId}/payments/`, { amount });
       setAmounts((a) => ({ ...a, [orderId]: "" }));
+      setNotice(`Оплата по заказу #${orderId} принята — долг спишется после сверки бухгалтером и подтверждения кассой.`);
       await reload();
     } catch (e) { setError(apiError(e)); } finally { setBusyId(null); }
   }
@@ -84,6 +86,11 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
       </section>
 
       {error && <p className="mb-4 text-sm text-[var(--destructive)]">{error}</p>}
+      {notice && (
+        <p className="mb-4 rounded-lg border border-[var(--success)]/30 bg-[var(--success)]/10 px-3 py-2 text-sm text-[var(--success)]">
+          {notice}
+        </p>
+      )}
       {blocked && (
         <p className="mb-4 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-4 py-2 text-sm text-[var(--warning)]">
           Оплата заблокирована — сегодня не день оплаты по расписанию магазина.
@@ -114,6 +121,14 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                   <div><span className="text-[var(--muted-foreground)]">Оплачено</span><div className="tabular-nums text-[var(--success)]">{formatMoney(o.paid_total)} ₸</div></div>
                   <div><span className="text-[var(--muted-foreground)]">Остаток</span><div className="tabular-nums font-medium text-[var(--destructive)]">{formatMoney(String(remaining))} ₸</div></div>
                 </div>
+                {(o.pending_payments?.length ?? 0) > 0 && (
+                  <div className="flex items-center justify-between rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2 text-xs">
+                    <span className="text-[var(--warning)]">На подтверждении (бухгалтер → касса)</span>
+                    <span className="tabular-nums font-semibold text-[var(--warning)]">
+                      {formatMoney(String(o.pending_payments!.reduce((s, p) => s + Number(p.amount), 0)))} ₸
+                    </span>
+                  </div>
+                )}
                 {isAccountant && remaining > 0 && (
                   <div className="flex gap-2 border-t pt-3">
                     <Input type="number" placeholder="Сумма" disabled={blocked}
