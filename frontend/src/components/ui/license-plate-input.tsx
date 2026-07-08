@@ -105,3 +105,38 @@ export function formatPlate(value: string): string {
   const { digits, letters, region } = parse(value);
   return [digits, letters, region].filter(Boolean).join(" ");
 }
+
+/** Госномер как знак: белая табличка с синей полосой KZ. Для очередей и шапок. */
+export function PlateBadge({ value, size = "md", className }: {
+  value: string;
+  size?: "md" | "lg";
+  className?: string;
+}) {
+  const { digits, letters, region } = parse(value);
+  if (!digits && !letters) {
+    return <span className={cn("font-semibold tabular-nums", className)}>—</span>;
+  }
+  const lg = size === "lg";
+  return (
+    <span className={cn(
+      "inline-flex select-none items-stretch overflow-hidden rounded-md border-2 border-neutral-800 bg-white font-bold tabular-nums text-neutral-900 shadow-sm",
+      className
+    )}>
+      <span className={cn(
+        "flex flex-col items-center justify-center bg-[#0057b8] px-1 leading-none text-white",
+        lg ? "text-[10px]" : "text-[8px]"
+      )}>
+        KZ
+      </span>
+      <span className={cn("flex items-center tracking-wider", lg ? "px-3 text-2xl" : "px-2 text-sm")}>
+        {digits}&nbsp;{letters}
+      </span>
+      <span className={cn(
+        "flex items-center border-l-2 border-neutral-300",
+        lg ? "px-2 text-2xl" : "px-1.5 text-sm"
+      )}>
+        {region}
+      </span>
+    </span>
+  );
+}

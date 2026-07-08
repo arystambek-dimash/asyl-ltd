@@ -3,10 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
-import { formatPlate } from "@/components/ui/license-plate-input";
-import { StatusBadge } from "@/components/status-badge";
+import { PlateBadge } from "@/components/ui/license-plate-input";
 import { CameraStream } from "@/components/camera-stream";
 import type { CameraFeed } from "@/components/camera-wall";
 import { useApi } from "@/lib/use-api";
@@ -15,19 +12,25 @@ import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { cn, formatMoney } from "@/lib/utils";
 import {
-  CheckCircle2, Circle, LogOut, Minus, Package, Phone, Plus, Scale,
-  Truck, User, VideoOff,
+  Check, LogOut, Minus, Package, Phone, Plus, Scale, Truck, User, VideoOff,
 } from "lucide-react";
 import type { Order } from "@/lib/types";
 
 const QUEUE_STATUSES = ["confirmed", "arrived", "loading", "loaded"];
 const POLL_MS = 10_000; // очередь и счётчик обновляются сами — пост «живой»
 
-// Шаги поста: вес фиксируется при въезде, оплата — после отгрузки.
+// Этапы поста и их цвета: ожидает въезда → погрузка → готов к выезду.
+const STAGES = {
+  confirmed: { label: "Ожидает въезда", color: "var(--ring)" },
+  arrived: { label: "Погрузка", color: "var(--warning)" },
+  loading: { label: "Погрузка", color: "var(--warning)" },
+  loaded: { label: "Готов к выезду", color: "var(--success)" },
+} as const;
+
 const STEPS = [
-  { key: "arrive", label: "Прибытие" },
-  { key: "load", label: "Погрузка" },
-  { key: "exit", label: "Выезд" },
+  { key: "arrive", label: "Прибытие", icon: Scale },
+  { key: "load", label: "Погрузка", icon: Package },
+  { key: "exit", label: "Выезд", icon: LogOut },
 ];
 function stepIndex(status: string) {
   if (status === "confirmed") return 0;
@@ -35,30 +38,25 @@ function stepIndex(status: string) {
   return 2; // loaded | shipped
 }
 
-function Stepper({ status }: { status: string }) {
+/** Сегментированный прогресс этапов — как трекер статуса заказа в доставках. */
+function StageTrack({ status }: { status: string }) {
   const current = stepIndex(status);
   return (
-    <div className="flex items-center">
+    <div className="flex w-full gap-1.5 sm:w-auto">
       {STEPS.map((s, i) => {
         const done = i < current;
         const active = i === current;
+        const Icon = s.icon;
         return (
-          <div key={s.key} className="flex items-center">
-            <div className="flex items-center gap-1.5">
-              {done
-                ? <CheckCircle2 className="size-5 text-[var(--success)]" />
-                : <Circle className={cn("size-5",
-                    active ? "text-[var(--primary)]" : "text-[var(--muted-foreground)]/40")}
-                    {...(active ? { fill: "currentColor", fillOpacity: 0.15 } : {})} />}
-              <span className={cn("text-sm",
-                active ? "font-semibold" : done ? "text-[var(--success)]" : "text-[var(--muted-foreground)]")}>
-                {s.label}
-              </span>
-            </div>
-            {i < STEPS.length - 1 && (
-              <div className={cn("mx-3 h-0.5 w-8 rounded-full sm:w-14",
-                i < current ? "bg-[var(--success)]" : "bg-[var(--border)]")} />
-            )}
+          <div key={s.key}
+            className={cn(
+              "flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium sm:flex-none",
+              done && "bg-[var(--success)]/10 text-[var(--success)]",
+              active && "bg-[var(--foreground)] text-[var(--background)]",
+              !done && !active && "bg-[var(--muted)] text-[var(--muted-foreground)]"
+            )}>
+            {done ? <Check className="size-4" /> : <Icon className="size-4" />}
+            <span className="whitespace-nowrap">{s.label}</span>
           </div>
         );
       })}
@@ -66,7 +64,7 @@ function Stepper({ status }: { status: string }) {
   );
 }
 
-/** Живая камера поста: зона подбирается по шагу, можно переключить вручную. */
+/** Живая камера поста: зона по шагу, переключение — чипами поверх видео. */
 function PostCamera({ cameras, tokenReady, zoneKeywords }: {
   cameras: CameraFeed[];
   tokenReady: boolean;
@@ -84,32 +82,40 @@ function PostCamera({ cameras, tokenReady, zoneKeywords }: {
   const [online, setOnline] = useState(false);
 
   return (
-    <div className="overflow-hidden rounded-xl border bg-[#1c1c1e]">
-      <div className="relative aspect-video">
-        {cam && tokenReady && (
-          <CameraStream key={cam.id} src={cam.src} onStateChange={setOnline}
-            className="absolute inset-0 h-full w-full object-cover" />
-        )}
-        {!online && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-white/30">
-            <VideoOff className="size-6" />
-            <span className="text-xs">{cam ? "Нет сигнала" : "Камеры недоступны"}</span>
-          </div>
-        )}
-        {cam && (
-          <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/70 to-transparent px-3 pb-2 pt-6">
-            <span className="text-xs font-medium text-white">{cam.zone}</span>
-            <span className={cn("size-1.5 rounded-full", online ? "bg-emerald-400" : "bg-white/30")} />
-          </div>
-        )}
-      </div>
+    <div className="relative min-h-[260px] flex-1 overflow-hidden rounded-2xl bg-[#141416]">
+      {cam && tokenReady && (
+        <CameraStream key={cam.id} src={cam.src} onStateChange={setOnline}
+          className="absolute inset-0 h-full w-full object-cover" />
+      )}
+      {!online && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/25">
+          <VideoOff className="size-7" />
+          <span className="text-xs">{cam ? "Нет сигнала" : "Камеры недоступны"}</span>
+        </div>
+      )}
+
+      {/* зона и live-индикатор поверх видео — как в UniFi Protect */}
+      {cam && (
+        <div className="absolute left-3 top-3 flex items-center gap-1.5 rounded-md bg-black/55 px-2.5 py-1 backdrop-blur-sm">
+          <span className={cn("size-1.5 rounded-full", online ? "bg-emerald-400" : "bg-white/40")} />
+          <span className="text-xs font-medium text-white">{cam.zone}</span>
+        </div>
+      )}
+
+      {/* переключение камер: чипы внизу видео */}
       {cameras.length > 1 && (
-        <div className="border-t border-white/10 p-2">
-          <Select value={String(cam?.id ?? "")}
-            onChange={(e) => setManualId(Number(e.target.value))}
-            className="h-8 border-0 bg-transparent text-xs text-white/70">
-            {cameras.map((c) => <option key={c.id} value={c.id}>{c.zone}</option>)}
-          </Select>
+        <div className="absolute inset-x-3 bottom-3 flex gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {cameras.map((c) => (
+            <button key={c.id} onClick={() => setManualId(c.id)}
+              className={cn(
+                "shrink-0 whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium backdrop-blur-sm transition-colors",
+                c.id === cam?.id
+                  ? "bg-white text-black"
+                  : "bg-black/45 text-white/80 hover:bg-black/65"
+              )}>
+              {c.zone}
+            </button>
+          ))}
         </div>
       )}
     </div>
@@ -124,8 +130,8 @@ function BagCounter({ order, onSaved }: { order: Order; onSaved: () => void }) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSaved = useRef(order.bags_loaded ?? 0);
 
-  // Если счёт обновил кто-то другой (или камера) — подтягиваем при поллинге,
-  // но не перетираем то, что контролёр набирает прямо сейчас.
+  // Чужие обновления (второй планшет, камера) подтягиваем при поллинге,
+  // не перетирая то, что контролёр набирает прямо сейчас.
   useEffect(() => {
     const remote = order.bags_loaded ?? 0;
     if (remote !== lastSaved.current && timer.current === null) {
@@ -157,35 +163,50 @@ function BagCounter({ order, onSaved }: { order: Order; onSaved: () => void }) {
   const pct = ordered > 0 ? Math.min(100, Math.round((bags / ordered) * 100)) : 0;
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-end justify-between">
-        <div>
-          <div className="text-xs text-[var(--muted-foreground)]">Погружено мешков</div>
-          <div className="text-5xl font-bold tabular-nums leading-tight">
-            {bags}
-            <span className="ml-2 text-lg font-normal text-[var(--muted-foreground)]">/ {ordered}</span>
-          </div>
+    <div className="flex flex-col gap-4">
+      <div>
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
+            Погружено мешков
+          </span>
+          <span className={cn("text-xs tabular-nums",
+            saving ? "text-[var(--muted-foreground)]" : "opacity-0")}>
+            сохранение…
+          </span>
         </div>
-        <span className={cn("text-sm tabular-nums",
-          pct >= 100 ? "font-semibold text-[var(--success)]" : "text-[var(--muted-foreground)]")}>
-          {pct}%{saving ? " · сохранение…" : ""}
-        </span>
+        <div className="mt-1 flex items-baseline gap-2">
+          <span className={cn("text-6xl font-bold tabular-nums leading-none tracking-tight sm:text-7xl",
+            pct >= 100 && "text-[var(--success)]")}>
+            {bags}
+          </span>
+          <span className="text-xl text-[var(--muted-foreground)]">/ {ordered}</span>
+          <span className={cn("ml-auto text-lg font-semibold tabular-nums",
+            pct >= 100 ? "text-[var(--success)]" : "text-[var(--muted-foreground)]")}>
+            {pct}%
+          </span>
+        </div>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-[var(--muted)]">
-        <div className={cn("h-full rounded-full transition-all",
-          pct >= 100 ? "bg-[var(--success)]" : "bg-[var(--primary)]")}
-          style={{ width: `${pct}%` }} />
+
+      <div className="h-2.5 overflow-hidden rounded-full bg-[var(--muted)]">
+        <div className="h-full rounded-full transition-all duration-300"
+          style={{
+            width: `${pct}%`,
+            background: pct >= 100 ? "var(--success)" : "var(--warning)",
+          }} />
       </div>
+
       {/* планшет: крупные кнопки */}
-      <div className="grid grid-cols-3 gap-2">
-        <Button variant="outline" className="h-14 text-lg" disabled={bags <= 0}
+      <div className="grid grid-cols-[1fr_1.4fr_1.4fr] gap-2">
+        <Button variant="outline" className="h-16 rounded-xl" disabled={bags <= 0}
           onClick={() => change(-1)} aria-label="Минус один мешок">
-          <Minus className="size-5" />
+          <Minus className="size-6" />
         </Button>
-        <Button variant="outline" className="h-14 text-lg" onClick={() => change(1)}>
+        <Button variant="outline" className="h-16 rounded-xl text-xl font-semibold"
+          onClick={() => change(1)}>
           <Plus className="size-5" /> 1
         </Button>
-        <Button variant="outline" className="h-14 text-lg" onClick={() => change(5)}>
+        <Button variant="outline" className="h-16 rounded-xl text-xl font-semibold"
+          onClick={() => change(5)}>
           <Plus className="size-5" /> 5
         </Button>
       </div>
@@ -217,8 +238,7 @@ function ShippingPageInner() {
     return () => clearInterval(t);
   }, [reload]);
 
-  // Очередь FIFO со стабильным порядком: API не гарантирует сортировку,
-  // а прыжки карточек (и «выбранного») после каждого обновления недопустимы.
+  // Очередь FIFO со стабильным порядком: прыжки карточек недопустимы.
   const queue = (orders ?? [])
     .filter((o) => o.transport_type !== "train" && QUEUE_STATUSES.includes(o.status))
     .sort((a, b) => a.id - b.id);
@@ -240,94 +260,124 @@ function ShippingPageInner() {
     finally { setBusy(false); }
   }
 
+  const stage = selected ? STAGES[selected.status as keyof typeof STAGES] : null;
+
   return (
-    <AppShell title="Пост погрузки" section="Работа"
-      description="Планшет контролёра: выберите машину на весах, примите вес, следите за погрузкой по камере и выпускайте.">
+    <AppShell title="Пост погрузки" section="Работа">
       {queue.length === 0 ? (
-        <div className="flex flex-col items-center gap-2 rounded-xl border bg-[var(--card)] py-16 text-center">
-          <Truck className="size-8 text-[var(--muted-foreground)]/50" />
-          <p className="text-sm text-[var(--muted-foreground)]">
-            Нет машин в очереди. Заказы появляются после подтверждения.
+        <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed py-20 text-center">
+          <span className="flex size-14 items-center justify-center rounded-2xl bg-[var(--muted)]">
+            <Truck className="size-7 text-[var(--muted-foreground)]" />
+          </span>
+          <div className="text-base font-semibold">Нет машин в очереди</div>
+          <p className="max-w-sm text-sm text-[var(--muted-foreground)]">
+            Подтверждённые заказы с машиной появятся здесь автоматически.
           </p>
         </div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
-          {/* Очередь машин: крупные карточки под палец */}
-          <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible">
-            {queue.map((o) => {
-              const active = selected?.id === o.id;
-              return (
-                <button key={o.id} onClick={() => { setSelectedId(o.id); setWeighIn(""); setError(""); }}
-                  className={cn(
-                    "min-w-[240px] shrink-0 rounded-xl border bg-[var(--card)] p-4 text-left transition-colors lg:min-w-0",
-                    active ? "border-[var(--primary)] ring-2 ring-[var(--primary)]/30"
-                      : "hover:border-[var(--ring)]/50"
-                  )}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-lg font-bold tabular-nums">
-                      {o.truck_number ? formatPlate(o.truck_number) : `Заказ #${o.id}`}
-                    </span>
-                    <StatusBadge status={o.status} dot />
-                  </div>
-                  <div className="mt-1 text-sm text-[var(--muted-foreground)]">
-                    {o.client_name || "—"} · #{o.id}
-                  </div>
-                  <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">
-                    {o.items.reduce((s, it) => s + Number(it.quantity), 0)} меш. · {formatMoney(o.total_amount)} ₸
-                  </div>
-                </button>
-              );
-            })}
+        <div className="grid items-start gap-4 lg:grid-cols-[300px_1fr]">
+          {/* Очередь машин */}
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between px-1 pb-1">
+              <span className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+                Очередь
+              </span>
+              <span className="rounded-full bg-[var(--muted)] px-2 py-0.5 text-xs font-semibold tabular-nums">
+                {queue.length}
+              </span>
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible">
+              {queue.map((o) => {
+                const active = selected?.id === o.id;
+                const st = STAGES[o.status as keyof typeof STAGES];
+                return (
+                  <button key={o.id}
+                    onClick={() => { setSelectedId(o.id); setWeighIn(""); setError(""); }}
+                    style={{ borderLeftColor: st?.color }}
+                    className={cn(
+                      "min-w-[230px] shrink-0 rounded-xl border border-l-4 bg-[var(--card)] p-3.5 text-left transition-all lg:min-w-0",
+                      active
+                        ? "shadow-md ring-2 ring-[var(--foreground)]/80"
+                        : "hover:shadow-sm"
+                    )}>
+                    <div className="flex items-center justify-between gap-2">
+                      <PlateBadge value={o.truck_number} />
+                      <span className="text-xs font-medium" style={{ color: st?.color }}>
+                        {st?.label}
+                      </span>
+                    </div>
+                    <div className="mt-2 truncate text-sm font-medium">{o.client_name || "—"}</div>
+                    <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">
+                      Заказ #{o.id} · {o.items.reduce((s, it) => s + Number(it.quantity), 0)} меш.
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
-          {/* Выбранная машина */}
+          {/* Рабочая зона выбранной машины */}
           {selected && (
-            <div className="flex flex-col gap-4 rounded-xl border bg-[var(--card)] p-5">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <div className="text-2xl font-bold tabular-nums">
-                    {selected.truck_number ? formatPlate(selected.truck_number) : `Заказ #${selected.id}`}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--muted-foreground)]">
-                    <span className="flex items-center gap-1.5"><User className="size-3.5" /> {selected.client_name || "—"}</span>
+            <div className="overflow-hidden rounded-2xl border bg-[var(--card)] shadow-card">
+              {/* шапка: номер как госзнак + этапы */}
+              <div className="flex flex-wrap items-center justify-between gap-4 border-b px-5 py-4">
+                <div className="flex flex-wrap items-center gap-4">
+                  <PlateBadge value={selected.truck_number} size="lg" />
+                  <div className="leading-tight">
+                    <div className="flex items-center gap-1.5 text-sm font-semibold">
+                      <User className="size-3.5 text-[var(--muted-foreground)]" />
+                      {selected.client_name || "—"}
+                    </div>
                     {selected.client_phone && (
-                      <span className="flex items-center gap-1.5"><Phone className="size-3.5" /> {selected.client_phone}</span>
+                      <a href={`tel:${selected.client_phone}`}
+                        className="mt-0.5 flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
+                        <Phone className="size-3" /> {selected.client_phone}
+                      </a>
                     )}
                   </div>
                 </div>
-                <Stepper status={selected.status} />
+                <StageTrack status={selected.status} />
               </div>
 
-              <div className="flex flex-wrap gap-x-5 gap-y-1 rounded-lg border bg-[var(--muted)]/30 px-4 py-3 text-sm">
-                <span className="flex items-center gap-1.5">
-                  <Package className="size-4 text-[var(--muted-foreground)]" />
-                  {selected.items.map((it) => `${it.product_label ?? "Товар"} × ${it.quantity}`).join(" · ")}
-                </span>
+              {/* груз и вес */}
+              <div className="flex flex-wrap items-center gap-2 border-b bg-[var(--muted)]/30 px-5 py-3">
+                {selected.items.map((it, i) => (
+                  <span key={i} className="flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm">
+                    <Package className="size-3.5 text-[var(--muted-foreground)]" />
+                    {it.product_label ?? "Товар"}
+                    <b className="tabular-nums">× {it.quantity}</b>
+                  </span>
+                ))}
                 {selected.weigh_in_kg && (
-                  <span className="flex items-center gap-1.5">
-                    <Scale className="size-4 text-[var(--muted-foreground)]" />
-                    Вес на въезде: <b className="tabular-nums">{formatMoney(selected.weigh_in_kg)} кг</b>
+                  <span className="flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm">
+                    <Scale className="size-3.5 text-[var(--muted-foreground)]" />
+                    На въезде <b className="tabular-nums">{formatMoney(selected.weigh_in_kg)} кг</b>
                   </span>
                 )}
               </div>
 
-              <div className="grid gap-4 xl:grid-cols-2">
-                {/* Камера шага: весы на прибытии, зона погрузки дальше */}
+              {/* видео + действие шага */}
+              <div className="grid gap-4 p-5 xl:grid-cols-[1.4fr_1fr]">
                 <PostCamera cameras={cameras ?? []} tokenReady={tokenReady}
                   zoneKeywords={selected.status === "confirmed" ? ["вес", "въезд"] : ["загруз"]} />
 
-                {/* Действие текущего шага */}
-                <div className="flex flex-col justify-center gap-3">
+                <div className="flex flex-col justify-center gap-4 rounded-2xl bg-[var(--muted)]/40 p-5">
                   {selected.status === "confirmed" && (
                     canArrive ? (
                       <>
-                        <div className="text-sm text-[var(--muted-foreground)]">
-                          Машина встала на весы — введите вес с индикатора.
+                        <div>
+                          <div className="text-base font-semibold">Машина на весах</div>
+                          <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
+                            Введите вес с индикатора и примите машину.
+                          </p>
                         </div>
-                        <Input type="number" inputMode="numeric" placeholder="Вес КАМАЗа, кг"
-                          className="h-14 text-2xl tabular-nums" value={weighIn}
-                          onChange={(e) => setWeighIn(e.target.value)} />
-                        <Button className="h-14 text-base" disabled={busy || !weighIn}
+                        <div className="relative">
+                          <input type="number" inputMode="numeric" placeholder="0"
+                            value={weighIn} onChange={(e) => setWeighIn(e.target.value)}
+                            className="h-20 w-full rounded-xl border bg-[var(--card)] pl-5 pr-16 text-right text-5xl font-bold tabular-nums outline-none focus:ring-[3px] focus:ring-[var(--ring)]/40" />
+                          <span className="absolute right-5 top-1/2 -translate-y-1/2 text-lg text-[var(--muted-foreground)]">кг</span>
+                        </div>
+                        <Button className="h-14 rounded-xl text-base" disabled={busy || !weighIn}
                           onClick={() => act(() => api.post(`/orders/${selected.id}/arrive/`, { weigh_in_kg: weighIn }))}>
                           <Scale className="size-5" /> Принять машину
                         </Button>
@@ -339,14 +389,14 @@ function ShippingPageInner() {
                     canLoad ? (
                       <>
                         <BagCounter key={selected.id} order={selected} onSaved={reload} />
-                        <Button className="h-14 text-base" disabled={busy}
+                        <Button className="h-14 rounded-xl text-base" disabled={busy}
                           onClick={() => act(async () => {
                             if (selected.status === "arrived") {
                               await api.post(`/orders/${selected.id}/load/`, { bags: selected.bags_loaded ?? 0 });
                             }
                             await api.post(`/orders/${selected.id}/finish-loading/`, {});
                           })}>
-                          <CheckCircle2 className="size-5" /> Погрузка завершена
+                          <Check className="size-5" /> Погрузка завершена
                         </Button>
                       </>
                     ) : <p className="text-sm text-[var(--muted-foreground)]">Идёт погрузка.</p>
@@ -355,13 +405,27 @@ function ShippingPageInner() {
                   {selected.status === "loaded" && (
                     canShip ? (
                       <>
-                        <div className="text-sm text-[var(--muted-foreground)]">
-                          Погружено <b className="tabular-nums text-[var(--foreground)]">{selected.bags_loaded ?? 0}</b> меш.
-                          — выпускайте машину.
+                        <div>
+                          <div className="text-base font-semibold">Готов к выезду</div>
+                          <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
+                            Проверьте машину и выпускайте.
+                          </p>
                         </div>
-                        <Button className="h-14 text-base" disabled={busy}
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="rounded-xl border bg-[var(--card)] p-3">
+                            <div className="text-xs text-[var(--muted-foreground)]">Погружено</div>
+                            <div className="text-2xl font-bold tabular-nums">{selected.bags_loaded ?? 0} <span className="text-sm font-normal">меш.</span></div>
+                          </div>
+                          <div className="rounded-xl border bg-[var(--card)] p-3">
+                            <div className="text-xs text-[var(--muted-foreground)]">Вес на въезде</div>
+                            <div className="text-2xl font-bold tabular-nums">
+                              {selected.weigh_in_kg ? formatMoney(selected.weigh_in_kg) : "—"} <span className="text-sm font-normal">кг</span>
+                            </div>
+                          </div>
+                        </div>
+                        <Button className="h-14 rounded-xl text-base" disabled={busy}
                           onClick={() => act(() => api.post(`/orders/${selected.id}/ship/`, {}))}>
-                          <LogOut className="size-5" /> Отгрузить (выезд)
+                          <LogOut className="size-5" /> Отгрузить — выезд
                         </Button>
                       </>
                     ) : <p className="text-sm text-[var(--muted-foreground)]">Готов к выезду.</p>
