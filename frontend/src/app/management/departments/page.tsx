@@ -85,5 +85,9 @@ function DepartmentsInner() {
 }
 
 export default function DepartmentsPage() {
-  return <RequirePerm perm="rbac.manage" title="Отделы"><DepartmentsInner /></RequirePerm>;
+  return (
+    <RequirePerm perm="rbac.manage" superuserOnly title="Отделы">
+      <DepartmentsInner />
+    </RequirePerm>
+  );
 }

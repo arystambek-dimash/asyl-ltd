@@ -10,15 +10,19 @@ import { ShieldOff } from "lucide-react";
  * Оборачивает страницу: если у текущего пользователя нет нужного права —
  * показывает заглушку «Нет доступа» вместо содержимого.
  * perm — строка или массив (нужно ЛЮБОЕ из прав).
+ * superuserOnly — раздел доступен только суперадмину (perm игнорируется).
  */
-export function RequirePerm({ perm, title = "Раздел", children }: {
+export function RequirePerm({ perm, superuserOnly = false, title = "Раздел", children }: {
   perm: string | string[];
+  superuserOnly?: boolean;
   title?: string;
   children: ReactNode;
 }) {
   const { me, loading } = useAuth();
   const codes = Array.isArray(perm) ? perm : [perm];
-  const allowed = !!me && codes.some((c) => can(me, c));
+  const allowed = superuserOnly
+    ? !!me?.is_superuser
+    : !!me && codes.some((c) => can(me, c));
 
   if (loading) {
     return <AppShell title={title}><p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p></AppShell>;

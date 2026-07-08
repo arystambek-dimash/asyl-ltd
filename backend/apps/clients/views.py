@@ -4,23 +4,25 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import mixins
-from apps.rbac.permissions import PermViewSetMixin
+from rest_framework.permissions import IsAuthenticated
+from apps.rbac.permissions import IsSuperuser, PermViewSetMixin
 from apps.rbac.scoping import scope_by_department
 from .models import Client, Department, Store
 from .serializers import ClientSerializer, DepartmentSerializer, StoreSerializer
 from .services import detect_overdue, is_payment_window_open, client_analytics
 
 
-class DepartmentViewSet(PermViewSetMixin, mixins.ListModelMixin,
+class DepartmentViewSet(mixins.ListModelMixin,
                         mixins.UpdateModelMixin, viewsets.GenericViewSet):
-    """Названия отделов продаж: смотрят все сотрудники, меняет админ."""
+    """Названия отделов продаж: смотрят все сотрудники, меняет только суперадмин."""
     queryset = Department.objects.order_by("code")
     serializer_class = DepartmentSerializer
     http_method_names = ["get", "patch", "put", "head", "options"]
-    required_perms = {
-        "update": "rbac.manage",
-        "partial_update": "rbac.manage",
-    }
+
+    def get_permissions(self):
+        if self.action in ("update", "partial_update"):
+            return [IsSuperuser()]
+        return [IsAuthenticated()]
 
 
 class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):

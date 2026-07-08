@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import { can, deptLabel, isDept2Only } from "@/lib/can";
 import type { Me } from "@/lib/types";
 
-interface NavChild { href: string; label: string; perm?: string; }
+interface NavChild { href: string; label: string; perm?: string; superuser?: boolean; }
 interface NavItem {
   href?: string;
   label: string;
@@ -63,7 +63,8 @@ function staffSections(fieldName: string): NavSection[] {
           children: [
             { href: "/management/employees", label: "Сотрудники", perm: "employees.view" },
             { href: "/management/roles", label: "Роли", perm: "rbac.view" },
-            { href: "/management/departments", label: "Отделы", perm: "rbac.manage" },
+            // Переименование отделов — только суперадмину.
+            { href: "/management/departments", label: "Отделы", superuser: true },
           ],
         },
       ],
@@ -88,6 +89,7 @@ function NavLeaf({ href, label, icon: Icon }: { href: string; label: string; ico
   return (
     <Link
       href={href}
+      data-tour={`nav:${href}`}
       className={cn(
         "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
         active
@@ -156,7 +158,8 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
       ...s,
       items: s.items
         .map((i) => i.children
-          ? { ...i, children: i.children.filter((c) => !c.perm || can(me, c.perm)) }
+          ? { ...i, children: i.children.filter((c) =>
+              (!c.perm || can(me, c.perm)) && (!c.superuser || me.is_superuser)) }
           : i)
         .filter((i) => (!i.perm || can(me, i.perm)) && (!i.children || i.children.length > 0))
         // Менеджеру выездного отдела дашборд комплекса не показываем.
@@ -218,7 +221,8 @@ export function Sidebar({
   return (
     <>
       {/* десктоп: постоянный сайдбар */}
-      <aside className="hidden w-[248px] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)] md:flex">
+      <aside data-tour="nav"
+        className="hidden w-[248px] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)] md:flex">
         <SidebarContent me={me} />
       </aside>
 

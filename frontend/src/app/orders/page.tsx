@@ -13,7 +13,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
-import { FilterPills } from "@/components/ui/filter-pills";
+import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { OrderForm } from "@/components/order-form";
 import { isFinancialOrderStatus, ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
@@ -107,15 +107,15 @@ function OrdersPageInner() {
           <Input className="pl-9" placeholder="Поиск по клиенту, номеру или #ID"
             value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
-        <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-center">
+        <div className="flex flex-wrap items-center gap-2">
           {showDept && (
-            <FilterPills active={dept} onChange={setDept} items={[
-              { key: "all", label: "Все отделы", count: (orders ?? []).length },
+            <FilterDropdown label="Отдел" active={dept} onChange={setDept} options={[
+              { key: "all", label: "Все", count: (orders ?? []).length },
               { key: "main", label: deptLabel(me, "main"), count: (orders ?? []).filter((o) => o.department === "main").length },
               { key: "field", label: deptLabel(me, "field"), count: (orders ?? []).filter((o) => o.department === "field").length },
             ]} />
           )}
-          <FilterPills items={pills} active={status} onChange={setStatus} />
+          <FilterDropdown label="Статус" options={pills} active={status} onChange={setStatus} />
         </div>
       </div>
 

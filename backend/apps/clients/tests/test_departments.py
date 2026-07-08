@@ -25,8 +25,15 @@ def test_any_staff_sees_department_names(operator):
     assert {row["code"] for row in r.data} == {"main", "field"}
 
 
-def test_admin_renames_department(user_with_perms):
-    admin = user_with_perms("adm", codes=["rbac.manage"])
+def _superadmin(make_user):
+    u = make_user(username="root")
+    u.is_superuser = True
+    u.save()
+    return u
+
+
+def test_superadmin_renames_department(make_user):
+    admin = _superadmin(make_user)
     d = _dept("field", "Сити")
     r = _api(admin).patch(f"/api/departments/{d.id}/", {"name": "Выездной отдел"}, format="json")
     assert r.status_code == 200
@@ -34,14 +41,19 @@ def test_admin_renames_department(user_with_perms):
     assert d.name == "Выездной отдел"
 
 
-def test_rename_requires_rbac_manage(operator):
+def test_rename_requires_superuser(operator, user_with_perms):
     d = _dept()
+    # Обычному сотруднику нельзя.
     r = _api(operator).patch(f"/api/departments/{d.id}/", {"name": "Хак"}, format="json")
+    assert r.status_code == 403
+    # Даже держателю rbac.manage (не суперадмину) — нельзя.
+    manager = user_with_perms("rbacman", codes=["rbac.manage"])
+    r = _api(manager).patch(f"/api/departments/{d.id}/", {"name": "Хак"}, format="json")
     assert r.status_code == 403
 
 
-def test_code_is_immutable(user_with_perms):
-    admin = user_with_perms("adm2", codes=["rbac.manage"])
+def test_code_is_immutable(make_user):
+    admin = _superadmin(make_user)
     d = _dept("field", "Сити")
     r = _api(admin).patch(f"/api/departments/{d.id}/", {"code": "hacked", "name": "X"}, format="json")
     assert r.status_code == 200

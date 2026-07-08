@@ -16,6 +16,14 @@ class HasPerm(BasePermission):
         return any(user.has_perm_code(c) for c in self.codes)
 
 
+class IsSuperuser(BasePermission):
+    """Только суперадмин — для настроек уровня всей системы."""
+
+    def has_permission(self, request, view):
+        user = request.user
+        return bool(user and user.is_authenticated and user.is_superuser)
+
+
 class PermViewSetMixin:
     """Resolve required_perms[action] → HasPerm(code | (code, ...))."""
     required_perms: dict = {}

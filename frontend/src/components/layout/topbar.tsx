@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useState, type ReactNode } from "react";
-import { LogOut, Sun, Moon, Monitor, Menu } from "lucide-react";
+import { LogOut, Sun, Moon, Monitor, Menu, CircleHelp } from "lucide-react";
 import { NotificationBell } from "@/components/notification-bell";
+import { TOUR_START_EVENT } from "@/components/onboarding-tour";
 import { useAuth } from "@/store/auth";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -72,9 +73,19 @@ export function Topbar({ me, title, section, actions, onMenu }: { me: Me; title:
       </div>
       <div className="flex items-center gap-2 sm:gap-3">
         {actions}
+        {!me.is_client && (
+          <button
+            onClick={() => window.dispatchEvent(new Event(TOUR_START_EVENT))}
+            className="hidden size-8 items-center justify-center rounded-lg border text-[var(--muted-foreground)] hover:text-[var(--foreground)] sm:flex"
+            title="Обучение по системе"
+            aria-label="Обучение по системе"
+          >
+            <CircleHelp className="size-4" />
+          </button>
+        )}
         <ThemeToggle />
         {me.is_client && <NotificationBell />}
-        <div className="flex items-center gap-2.5 border-l pl-3">
+        <div data-tour="profile" className="flex items-center gap-2.5 border-l pl-3">
           <div className="flex size-8 items-center justify-center rounded-full bg-[var(--secondary)] text-xs font-semibold">
             {me.username.slice(0, 2).toUpperCase()}
           </div>

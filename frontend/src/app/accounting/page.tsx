@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/status-badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
-import { FilterPills } from "@/components/ui/filter-pills";
+import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { PaymentStageBadge } from "@/components/payment-chain";
 import {
   PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE,
@@ -52,7 +52,7 @@ function AccountingInner() {
     && ["confirmed", "arrived", "loading", "loaded"].includes(o.status));
 
   const pills = [
-    { key: "all", label: "Все отделы", count: (orders ?? []).length },
+    { key: "all", label: "Все", count: (orders ?? []).length },
     { key: "main", label: deptLabel(me, "main"), count: (orders ?? []).filter((o) => o.department === "main").length },
     { key: "field", label: deptLabel(me, "field"), count: (orders ?? []).filter((o) => o.department === "field").length },
   ];
@@ -83,7 +83,7 @@ function AccountingInner() {
       </section>
 
       <div className="mb-4">
-        <FilterPills items={pills} active={dept} onChange={setDept} />
+        <FilterDropdown label="Отдел" options={pills} active={dept} onChange={setDept} />
       </div>
 
       {error && (

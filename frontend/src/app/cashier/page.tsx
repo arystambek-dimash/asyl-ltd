@@ -6,7 +6,7 @@ import { RequirePerm } from "@/components/require-perm";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/ui/stat-card";
-import { FilterPills } from "@/components/ui/filter-pills";
+import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { PAYMENT_METHOD_LABELS } from "@/lib/constants";
 import { deptLabel } from "@/lib/can";
 import { useAuth } from "@/store/auth";
@@ -31,7 +31,7 @@ function CashierInner() {
     .reduce((s, p) => s + Number(p.amount), 0);
 
   const pills = [
-    { key: "all", label: "Все отделы", count: all.length },
+    { key: "all", label: "Все", count: all.length },
     { key: "main", label: deptLabel(me, "main"), count: all.filter((p) => p.department === "main").length },
     { key: "field", label: deptLabel(me, "field"), count: all.filter((p) => p.department === "field").length },
   ];
@@ -53,7 +53,7 @@ function CashierInner() {
       </section>
 
       <div className="mb-4">
-        <FilterPills items={pills} active={dept} onChange={setDept} />
+        <FilterDropdown label="Отдел" options={pills} active={dept} onChange={setDept} />
       </div>
 
       {error && (

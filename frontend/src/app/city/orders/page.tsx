@@ -11,7 +11,7 @@ import { Modal } from "@/components/ui/modal";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/ui/stat-card";
-import { FilterPills } from "@/components/ui/filter-pills";
+import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { PaymentChain, AddPaymentActions } from "@/components/payment-chain";
 import {
   ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE,
@@ -78,8 +78,8 @@ function CityOrdersInner() {
           <Input className="pl-9" placeholder="Поиск по клиенту или #ID"
             value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
-        <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-center">
-          <FilterPills items={pills} active={status} onChange={setStatus} />
+        <div className="flex flex-wrap items-center gap-2">
+          <FilterDropdown label="Статус" options={pills} active={status} onChange={setStatus} />
         </div>
       </div>
 
