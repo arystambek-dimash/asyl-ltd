@@ -5,6 +5,16 @@ APP_DIR="${APP_DIR:-/home/ubuntu/asyl-ltd}"
 BRANCH="${BRANCH:-main}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 
+# Только один деплой одновременно: ретрай из CI не должен гоняться с ещё
+# живой первой попыткой (git pull об index.lock, docker compose о контейнеры).
+# Ждём завершения предыдущего экземпляра до 15 минут.
+LOCK_FILE="${LOCK_FILE:-/tmp/asyl-ltd-deploy.lock}"
+exec 9>"$LOCK_FILE"
+if ! flock -w 900 9; then
+  echo "Не дождались завершения другого деплоя за 15 минут — выходим." >&2
+  exit 1
+fi
+
 cd "$APP_DIR"
 
 echo "Deploying ${BRANCH} in ${APP_DIR}"

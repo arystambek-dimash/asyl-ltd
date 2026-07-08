@@ -15,5 +15,10 @@ pg_dump \
   -Fc \
   -f "$tmp_file"
 
+# Прошлый дамп сохраняем как .prev: повторный запуск (ретрай деплоя после
+# миграций) не должен затирать единственный снапшот до-миграционного состояния.
+if [ -f "$backup_file" ]; then
+  cp -p "$backup_file" "${backup_file}.prev"
+fi
 mv "$tmp_file" "$backup_file"
 echo "Backup written to $backup_file"

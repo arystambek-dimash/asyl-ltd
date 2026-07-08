@@ -58,7 +58,7 @@ function RolesPageInner() {
     <AppShell title="Роли" section="Управление"
       description="Роль — назначение сотрудника и шаблон прав. Фактические доступы настраиваются в карточке сотрудника."
       actions={
-        <Button size="sm" onClick={openNew}>
+        <Button size="sm" onClick={openNew} aria-label="Новая роль">
           <Plus className="size-4" /> <span className="hidden sm:inline">Новая роль</span>
         </Button>
       }>

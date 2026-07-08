@@ -428,15 +428,16 @@ function ClientsPageInner() {
   return (
     <AppShell title="Клиенты" section="Работа" description="Клиентская база, оборот, долги и статусы заказов по каждому клиенту."
       actions={
-        <Button size="sm" onClick={() => { setEditing(null); setOpen(true); }}>
+        <Button size="sm" aria-label="Добавить клиента" onClick={() => { setEditing(null); setOpen(true); }}>
           <Plus className="size-4" /> <span className="hidden sm:inline">Добавить клиента</span>
         </Button>
       }>
-      <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <StatCard label="Всего клиентов" value={String(list.length)} />
         <StatCard label="С заказами" value={String(globalSummary.activeClients)} icon={ClipboardList} />
         {canMoney && (
-          <StatCard label="Выручка клиентов" value={`${formatMoney(globalSummary.revenue)} ₸`} accent icon={CircleDollarSign} />
+          <StatCard label="Выручка клиентов" value={`${formatMoney(globalSummary.revenue)} ₸`} accent icon={CircleDollarSign}
+            className="col-span-2 xl:col-span-1" />
         )}
         <StatCard label="Клиентов с долгом" value={String(globalSummary.debtors)} icon={AlertTriangle}
           caption={`Отклонено заказов: ${globalSummary.rejected}`} />

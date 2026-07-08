@@ -112,9 +112,9 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const itemsWeight = order.items.reduce((s, it) => s + Number(it.quantity) * Number(it.weight_kg ?? 0), 0);
 
   const isNew = order.status === "draft" || order.status === "pending";
-  // Позиции и цены редактируются до начала загрузки.
+  // Позиции и цены редактируются до начала загрузки (включая «ожидает загрузки»).
   const canEditOrder = canEditStatus
-    && ["draft", "pending", "confirmed"].includes(order.status);
+    && ["draft", "pending", "confirmed", "arrived"].includes(order.status);
   // Подтверждение с ценами рендерится отдельной карточкой (заказы с позициями).
   const confirmInPriceCard = isManager && isNew && order.items.length > 0;
   // Начать цепочку оплаты можно, пока есть непогашенный остаток.

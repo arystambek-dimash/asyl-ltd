@@ -114,7 +114,7 @@ function EmployeesPageInner() {
   return (
     <AppShell title="Сотрудники" section="Управление" description="Учётные записи сотрудников и их роли. Создавайте аккаунты и назначайте доступ."
       actions={canManage ? (
-        <Button size="sm" onClick={openNew}>
+        <Button size="sm" onClick={openNew} aria-label="Добавить сотрудника">
           <Plus className="size-4" /> <span className="hidden sm:inline">Добавить сотрудника</span>
         </Button>
       ) : undefined}>

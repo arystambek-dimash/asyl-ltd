@@ -98,7 +98,7 @@ function ProductsPageInner() {
   return (
     <AppShell title="Товары" section="Работа" description="Товары: сорт, цвет (тип) и фасовка. Управляйте ценами и активностью."
       actions={
-        <Button size="sm" onClick={openNew}>
+        <Button size="sm" onClick={openNew} aria-label="Создать товар">
           <Plus className="size-4" /> <span className="hidden sm:inline">Создать товар</span>
         </Button>
       }>

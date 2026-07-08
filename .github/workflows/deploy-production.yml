@@ -58,7 +58,9 @@ jobs:
     name: Deploy to production server
     runs-on: ubuntu-latest
     needs: build
-    timeout-minutes: 15
+    # Бюджет worst-case: ожидание SSH (до 10 мин суммарно на обе попытки) +
+    # два полных прогона remote-deploy.sh + health check.
+    timeout-minutes: 30
     env:
       PROD_HOST: ${{ secrets.PROD_HOST || '78.40.109.240' }}
       PROD_PORT: ${{ secrets.PROD_PORT || '22' }}
@@ -85,17 +87,75 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/asyl_ltd_deploy_key
           chmod 600 ~/.ssh/asyl_ltd_deploy_key
-          ssh-keyscan -T 15 -p "$PROD_PORT" -H "$PROD_HOST" >> ~/.ssh/known_hosts
+
+          run_ssh() {
+            # ServerAlive 15с × 6 — мёртвое соединение обнаруживается за ~1.5
+            # минуты, а не висит десятки минут до job-таймаута.
+            ssh \
+              -i ~/.ssh/asyl_ltd_deploy_key \
+              -p "$PROD_PORT" \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=10 \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=6 \
+              "$PROD_USER@$PROD_HOST" "$@"
+          }
+
+          # Хостинг может перезагрузить сервер в любой момент — ждём SSH
+          # до ~5 минут вместо мгновенного падения. Ошибку ssh не глотаем:
+          # при неудаче показываем её (ключ/доступ vs недоступный хост).
+          wait_for_ssh() {
+            for i in $(seq 1 30); do
+              if run_ssh true 2>/tmp/ssh-probe-err.log; then
+                echo "SSH доступен (попытка $i)."
+                return 0
+              fi
+              echo "SSH недоступен, ждём 10с (попытка $i/30)…"
+              sleep 10
+            done
+            echo "::error::Сервер недоступен по SSH. Последняя ошибка ssh:"
+            cat /tmp/ssh-probe-err.log || true
+            return 1
+          }
 
           # Репозиторий (и сам деплой-скрипт) обновляется ДО запуска скрипта,
           # чтобы изменения деплоя вступали в силу в этом же прогоне.
-          ssh \
-            -i ~/.ssh/asyl_ltd_deploy_key \
-            -p "$PROD_PORT" \
-            -o IdentitiesOnly=yes \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=20 \
-            "$PROD_USER@$PROD_HOST" \
-            "cd /home/ubuntu/asyl-ltd \
-             && git fetch origin main && git checkout main && git pull --ff-only origin main \
-             && BRANCH=main GHCR_USER=$GHCR_USER GHCR_TOKEN=$GHCR_TOKEN ./deploy/remote-deploy.sh"
+          # На сервере remote-deploy.sh держит flock — ретрай не гоняется
+          # с ещё живой первой попыткой.
+          deploy() {
+            run_ssh \
+              "cd /home/ubuntu/asyl-ltd \
+               && git fetch origin main && git checkout main && git pull --ff-only origin main \
+               && BRANCH=main GHCR_USER=$GHCR_USER GHCR_TOKEN=$GHCR_TOKEN ./deploy/remote-deploy.sh"
+          }
+
+          wait_for_ssh
+
+          # Одна повторная попытка: покрывает обрыв связи или перезагрузку
+          # посреди деплоя. Перед ретраем снова ждём SSH — сервер мог уйти
+          # в ребут на несколько минут.
+          if ! deploy; then
+            echo "Деплой не удался — ждём сервер и пробуем ещё раз…"
+            sleep 30
+            wait_for_ssh
+            deploy
+          fi
+
+      - name: Health check
+        if: ${{ env.PROD_SSH_KEY != '' }}
+        run: |
+          set -euo pipefail
+          url="${SITE_URL:-https://asyl-ltd.kz}/api/auth/me/"
+          # Бэкенд стартует не мгновенно (миграции, gunicorn) — ждём до 3 минут.
+          for i in $(seq 1 36); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" || true)
+            if [ "$code" = "401" ] || [ "$code" = "200" ]; then
+              echo "API отвечает (HTTP $code) — деплой здоров."
+              exit 0
+            fi
+            echo "API ещё не готов (HTTP $code), попытка $i/36…"
+            sleep 5
+          done
+          echo "::error::API не поднялся после деплоя (последний код: $code)."
+          exit 1

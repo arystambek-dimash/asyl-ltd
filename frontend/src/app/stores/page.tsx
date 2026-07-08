@@ -200,7 +200,7 @@ function StoresPageInner() {
   return (
     <AppShell title="Магазины" section="Работа" description="Магазины клиентов и их расписание оплат."
       actions={canCreate &&
-        <Button size="sm" onClick={() => { setEditing(null); setOpen(true); }}>
+        <Button size="sm" aria-label="Добавить магазин" onClick={() => { setEditing(null); setOpen(true); }}>
           <Plus className="size-4" /> <span className="hidden sm:inline">Добавить магазин</span>
         </Button>
       }>

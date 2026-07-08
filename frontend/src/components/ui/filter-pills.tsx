@@ -13,7 +13,9 @@ export function FilterPills({
   onChange: (key: string) => void;
 }) {
   return (
-    <div className="inline-flex bg-[var(--muted)] border border-[var(--border)] rounded-md p-0.5">
+    // Группа скроллится по горизонтали (без видимого скроллбара),
+    // ярлыки не переносятся; в flex-строке группа умеет ужиматься.
+    <div className="inline-flex max-w-full overflow-x-auto rounded-md border border-[var(--border)] bg-[var(--muted)] p-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {items.map((it) => {
         const on = it.key === active;
         return (
@@ -22,7 +24,7 @@ export function FilterPills({
             type="button"
             onClick={() => onChange(it.key)}
             className={cn(
-              "h-7 px-2.5 inline-flex items-center gap-1.5 text-[13px] rounded transition-colors",
+              "h-7 shrink-0 whitespace-nowrap px-2.5 inline-flex items-center gap-1.5 text-[13px] rounded transition-colors",
               on
                 ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm font-medium"
                 : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"

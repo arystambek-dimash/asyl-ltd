@@ -68,7 +68,7 @@ function DebtsPageInner() {
   return (
     <AppShell title="Долги" section="Обзор" description="Общий долг клиента с переходом к заказам внутри."
       actions={
-        <Button size="sm" variant="outline" disabled={busy} onClick={checkOverdue}>
+        <Button size="sm" variant="outline" disabled={busy} onClick={checkOverdue} aria-label="Проверить просрочки">
           <RefreshCw className={"size-4" + (busy ? " animate-spin" : "")} />
           <span className="hidden sm:inline">Проверить просрочки</span>
         </Button>

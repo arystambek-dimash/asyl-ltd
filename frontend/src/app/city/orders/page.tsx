@@ -57,15 +57,16 @@ function CityOrdersInner() {
     <AppShell title="Заявки Сити" section="Отдел «Сити»"
       description="Заявки выездного отдела: сбор с выезда, запрос и приём оплаты у клиента."
       actions={canCreate ? (
-        <Button size="sm" onClick={() => setOpen(true)}>
+        <Button size="sm" aria-label="Новая заявка" onClick={() => setOpen(true)}>
           <Plus className="size-4" /> <span className="hidden sm:inline">Новая заявка</span>
         </Button>
       ) : undefined}>
-      <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <section className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <StatCard label="Заявок" value={String(list.length)}
           caption={`Активных: ${active.length}`} />
         <StatCard label="Оплат в цепочке" value={String(awaitingChain.length)} />
-        <StatCard label="Сумма" value={`${formatMoney(totalSum)} ₸`} accent />
+        <StatCard label="Сумма" value={`${formatMoney(totalSum)} ₸`} accent
+          className="col-span-2 sm:col-span-1" />
       </section>
 
       <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -74,7 +75,7 @@ function CityOrdersInner() {
           <Input className="pl-9" placeholder="Поиск по клиенту или #ID"
             value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
-        <div className="flex items-center gap-2 overflow-x-auto">
+        <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-center">
           <FilterPills items={pills} active={status} onChange={setStatus} />
         </div>
       </div>

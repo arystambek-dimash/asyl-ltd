@@ -24,9 +24,9 @@ import { formatMoney } from "@/lib/utils";
 import { Pencil, Plus, Search } from "lucide-react";
 import type { Order } from "@/lib/types";
 
-// Позиции и цены редактируются до начала загрузки.
+// Позиции и цены редактируются до начала загрузки (включая «ожидает загрузки»).
 function isEditable(o: Order): boolean {
-  return ["draft", "pending", "confirmed"].includes(o.status);
+  return ["draft", "pending", "confirmed", "arrived"].includes(o.status);
 }
 
 function OrdersPageInner() {
@@ -88,14 +88,15 @@ function OrdersPageInner() {
   return (
     <AppShell title="Заказы" section="Работа" description="Заказы клиентов: позиции, оплаты, машина и плановая дата прибытия на отгрузку."
       actions={canCreate ? (
-        <Button size="sm" onClick={() => setOpen(true)}>
+        <Button size="sm" aria-label="Новый заказ" onClick={() => setOpen(true)}>
           <Plus className="size-4" /> <span className="hidden sm:inline">Новый заказ</span>
         </Button>
       ) : undefined}>
-      <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <section className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <StatCard label="Всего заказов" value={String(list.length)} />
         <StatCard label="В процессе" value={String(activeCount)} />
-        <StatCard label="Сумма" value={`${formatMoney(totalSum)} ₸`} accent />
+        <StatCard label="Сумма" value={`${formatMoney(totalSum)} ₸`} accent
+          className="col-span-2 sm:col-span-1" />
       </section>
 
       <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -104,7 +105,7 @@ function OrdersPageInner() {
           <Input className="pl-9" placeholder="Поиск по клиенту, номеру или #ID"
             value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
-        <div className="flex items-center gap-2 overflow-x-auto">
+        <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-center">
           {showDept && (
             <FilterPills active={dept} onChange={setDept} items={[
               { key: "all", label: "Все отделы", count: (orders ?? []).length },

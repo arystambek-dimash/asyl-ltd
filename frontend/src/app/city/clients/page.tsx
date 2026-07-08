@@ -32,7 +32,7 @@ function CityClientsInner() {
     <AppShell title="Клиенты Сити" section="Отдел «Сити»"
       description="Клиенты выездного отдела. Новые клиенты автоматически попадают в отдел «Сити»."
       actions={canCreate ? (
-        <Button size="sm" onClick={() => { setEditing(null); setOpen(true); }}>
+        <Button size="sm" aria-label="Добавить клиента" onClick={() => { setEditing(null); setOpen(true); }}>
           <Plus className="size-4" /> <span className="hidden sm:inline">Добавить клиента</span>
         </Button>
       ) : undefined}>

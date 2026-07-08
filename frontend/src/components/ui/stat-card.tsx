@@ -7,20 +7,23 @@ export function StatCard({
   accent,
   caption,
   icon: Icon,
+  className,
 }: {
   label: string;
   value: React.ReactNode;
   accent?: boolean;
   caption?: string;
   icon?: React.ElementType;
+  className?: string;
 }) {
   return (
     <div
       className={cn(
-        "flex flex-col gap-3 rounded-lg border p-4 sm:p-5 transition-colors",
+        "flex flex-col gap-2 sm:gap-3 rounded-lg border p-3 sm:p-5 transition-colors",
         accent
           ? "border-[var(--ring)]/20 bg-[var(--ring)]/10"
-          : "border-[var(--border)] bg-[var(--card)] hover:border-[var(--ring)]/40"
+          : "border-[var(--border)] bg-[var(--card)] hover:border-[var(--ring)]/40",
+        className
       )}
     >
       <div className="flex items-start justify-between gap-2">
@@ -34,7 +37,7 @@ export function StatCard({
       </div>
       <div
         className={cn(
-          "text-[24px] sm:text-[30px] leading-[1.1] tracking-tight tabular-nums font-semibold",
+          "text-[20px] sm:text-[30px] leading-[1.1] tracking-tight tabular-nums font-semibold",
           accent ? "text-[var(--ring)]" : "text-[var(--foreground)]"
         )}
       >

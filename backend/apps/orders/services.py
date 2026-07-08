@@ -267,18 +267,23 @@ def apply_item_prices(order: Order, prices: dict, user) -> None:
     _apply_prices(order, prices, user)
 
 
-# Состав заказа можно менять, пока машина не начала грузиться.
-ITEMS_EDITABLE_STATUSES = ("draft", "pending", "confirmed")
+# Состав заказа можно менять, пока машина не начала грузиться
+# (включая «ожидает загрузки»: машина въехала, но погрузка не стартовала).
+ITEMS_EDITABLE_STATUSES = ("draft", "pending", "confirmed", "arrived")
 
 
 @transaction.atomic
 def replace_items(order: Order, items_data: list, prices: dict | None, user) -> Order:
     """Заменить позиции заказа (редактирование).
 
-    prices приходит по товару: {product_id: цена за мешок}. Для подтверждённого
-    заказа каждая позиция обязана получить цену — иначе сумма «поплывёт».
+    prices приходит по товару: {product_id: цена за мешок}. После подтверждения
+    каждая позиция обязана получить цену — иначе сумма «поплывёт» на базовый
+    прайс и испортит долги.
     """
     from .models import OrderItem
+    # Блокируем строку заказа: правка не должна гоняться со стартом загрузки
+    # (склад переводит arrived → loading в этот же момент).
+    order = Order.objects.select_for_update().get(pk=order.pk)
     if order.status not in ITEMS_EDITABLE_STATUSES:
         raise ValidationError(
             {"detail": "Позиции можно менять только до начала загрузки",
@@ -294,8 +299,11 @@ def replace_items(order: Order, items_data: list, prices: dict | None, user) -> 
         it.id: prices.get(str(it.product_id), prices.get(it.product_id))
         for it in created
     }
-    if any(v is not None for v in prices_by_item.values()) or order.status == "confirmed":
+    if (any(v is not None for v in prices_by_item.values())
+            or order.status in ("confirmed", "arrived")):
         _apply_prices(order, prices_by_item, user)
+    # Сумма могла измениться — сохранённый статус оплаты приводим к факту.
+    _apply_payment_status(order, user)
     log_event("order_edit",
               f"Позиции заказа обновлены ({len(created)} шт.)",
               user=user, order=order,

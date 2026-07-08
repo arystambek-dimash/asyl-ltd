@@ -63,6 +63,32 @@ def test_edit_items_on_confirmed_requires_prices(manager):
     assert o.total_amount == Decimal("330.00")
 
 
+def test_edit_items_allowed_while_awaiting_loading(manager):
+    """«Ожидает загрузки» (arrived): машина въехала, но состав ещё можно менять."""
+    o = _order(status="arrived")
+    p2 = _product()
+    r = _api(manager).patch(f"/api/orders/{o.id}/", {
+        "items": [{"product": p2.id, "quantity": 4}],
+        "prices": {str(p2.id): "130.00"},
+    }, format="json")
+    assert r.status_code == 200
+    o.refresh_from_db()
+    assert o.total_amount == Decimal("520.00")
+
+
+def test_edit_items_on_arrived_requires_prices(manager):
+    """Без цен зафиксированная договорная цена не должна слетать на базовую."""
+    o = _order(status="arrived")
+    p2 = _product()
+    r = _api(manager).patch(f"/api/orders/{o.id}/", {
+        "items": [{"product": p2.id, "quantity": 3}],
+    }, format="json")
+    assert r.status_code == 400
+    o.refresh_from_db()
+    # Старая позиция с ценой не тронута (транзакция откатилась).
+    assert o.items.first().unit_price == Decimal("100.00")
+
+
 def test_edit_items_locked_after_loading_starts(manager):
     o = _order(status="loading")
     p2 = _product()

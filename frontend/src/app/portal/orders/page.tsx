@@ -20,7 +20,7 @@ export default function PortalOrdersPage() {
   return (
     <AppShell title="Мои заказы" portal
       actions={
-        <Link href="/portal/orders/new"><Button size="sm"><Plus className="size-4" /> <span className="hidden sm:inline">Новый заказ</span></Button></Link>
+        <Link href="/portal/orders/new"><Button size="sm" aria-label="Новый заказ"><Plus className="size-4" /> <span className="hidden sm:inline">Новый заказ</span></Button></Link>
       }>
       <div className="mb-4">
         <p className="text-sm text-[var(--muted-foreground)]">{orders?.length ?? 0} заказов</p>
