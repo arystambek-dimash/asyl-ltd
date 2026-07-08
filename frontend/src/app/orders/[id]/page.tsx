@@ -18,10 +18,10 @@ import Link from "next/link";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
-import { can } from "@/lib/can";
+import { can, deptLabel } from "@/lib/can";
 import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/utils";
-import { DEPARTMENT_LABELS, ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
+import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { PaymentChain, AddPaymentActions, paymentOpen } from "@/components/payment-chain";
 import { OrderForm } from "@/components/order-form";
 import { Modal } from "@/components/ui/modal";
@@ -145,7 +145,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             )}
             {order.department && (
               <Badge tone={order.department === "field" ? "primary" : "muted"}>
-                {DEPARTMENT_LABELS[order.department] ?? order.department}
+                {deptLabel(me, order.department)}
               </Badge>
             )}
             <Badge tone="muted">{order.transport_type === "train" ? "🚂 Поезд" : "🚚 Трак"}</Badge>

@@ -1,5 +1,6 @@
 import pytest
 from apps.catalog.models import Product
+from apps.warehouse.models import StockItem
 from apps.clients.models import Client
 from apps.orders.models import Order
 
@@ -7,7 +8,9 @@ pytestmark = pytest.mark.django_db
 
 
 def _product():
-    return Product.objects.create(name="Премиум", color="Red", weight_kg="50", price="100.00")
+    p = Product.objects.create(name="Премиум", color="Red", weight_kg="50", price="100.00")
+    StockItem.objects.create(product=p, bags=500)
+    return p
 
 
 def test_create_order_with_truck_and_date(auth_client, manager):

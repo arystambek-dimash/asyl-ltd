@@ -2,6 +2,7 @@ import pytest
 from decimal import Decimal
 from apps.clients.models import Client
 from apps.catalog.models import Product
+from apps.warehouse.models import StockItem
 from apps.orders.models import Order, OrderItem
 
 
@@ -10,6 +11,7 @@ def client_and_order(db, make_user):
     user = make_user(username="cli", client=True)
     c = Client.objects.create(user=user, first_name="A", last_name="B", phone="1")
     p = Product.objects.create(name="F", color="Red", weight_kg=Decimal("50"), price=Decimal("100"))
+    StockItem.objects.create(product=p, bags=500)
     o = Order.objects.create(client=c, status="confirmed")
     OrderItem.objects.create(order=o, product=p, quantity=1)
     return user, o
@@ -19,6 +21,7 @@ def test_create_order_is_pending(db, make_user, auth_client):
     user = make_user(username="cli", client=True)
     Client.objects.create(user=user, first_name="A", last_name="B", phone="1")
     p = Product.objects.create(name="F", color="Red", weight_kg=Decimal("50"), price=Decimal("100"))
+    StockItem.objects.create(product=p, bags=500)
     r = auth_client(user).post("/api/portal/orders/",
                                {"items": [{"product": p.id, "quantity": 2}]}, format="json")
     assert r.status_code == 201

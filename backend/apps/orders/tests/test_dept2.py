@@ -23,10 +23,14 @@ def _api(user):
 _seq = [0]
 
 
-def _product():
+def _product(bags=500):
+    from apps.warehouse.models import StockItem
     _seq[0] += 1
-    return Product.objects.create(
+    p = Product.objects.create(
         name=f"P{_seq[0]}", color="Red", weight_kg="50", price="100.00")
+    if bags:
+        StockItem.objects.create(product=p, bags=bags)
+    return p
 
 
 def _client(dept="main", manager=None, name="A"):

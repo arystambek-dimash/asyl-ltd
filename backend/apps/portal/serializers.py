@@ -100,7 +100,10 @@ class PortalOrderSerializer(serializers.ModelSerializer):
         return obj.payments.filter(status__in=Payment.IN_PROGRESS_STATUSES).exists()
 
     def create(self, validated_data):
+        from apps.warehouse.services import ensure_products_available
         items = validated_data.pop("items")
+        # Клиент портала тоже заказывает только товар в наличии.
+        ensure_products_available(item["product"] for item in items)
         intent = validated_data.get("settlement_intent", "debt")
         transport = validated_data.get("transport_type", "truck")
         store = validated_data.get("store")

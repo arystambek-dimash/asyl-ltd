@@ -10,7 +10,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
-import { can } from "@/lib/can";
+import { can, deptLabel } from "@/lib/can";
 import { formatMoney, formatPhone } from "@/lib/utils";
 import { Pencil, Phone, Plus, Search, UserRound } from "lucide-react";
 import type { Client } from "@/lib/types";
@@ -29,8 +29,8 @@ function CityClientsInner() {
     !q || `${c.name} ${c.phone}`.toLowerCase().includes(q.toLowerCase()));
 
   return (
-    <AppShell title="Клиенты Сити" section="Отдел «Сити»"
-      description="Клиенты выездного отдела. Новые клиенты автоматически попадают в отдел «Сити»."
+    <AppShell title={`Клиенты ${deptLabel(me, "field")}`} section={`Отдел «${deptLabel(me, "field")}»`}
+      description={`Клиенты выездного отдела. Новые клиенты автоматически попадают в отдел «${deptLabel(me, "field")}».`}
       actions={canCreate ? (
         <Button size="sm" aria-label="Добавить клиента" onClick={() => { setEditing(null); setOpen(true); }}>
           <Plus className="size-4" /> <span className="hidden sm:inline">Добавить клиента</span>
@@ -98,7 +98,7 @@ function CityClientsInner() {
       )}
 
       <Modal open={open} onClose={() => setOpen(false)}
-        eyebrow="Отдел «Сити» · Клиент"
+        eyebrow={`Отдел «${deptLabel(me, "field")}» · Клиент`}
         title={editing ? "Изменить клиента" : "Новый клиент"}
         description="Клиент будет закреплён за вами в отделе «Сити»."
         className="max-w-md">

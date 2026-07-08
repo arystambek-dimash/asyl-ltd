@@ -13,6 +13,28 @@ def _apply(item, delta, reason, user, note=""):
     )
 
 
+def ensure_products_available(products):
+    """Заказ принимается только на товар, имеющийся на складе.
+
+    products — итерируемое Product; товар без складской карточки или с
+    нулевым/отрицательным остатком считается отсутствующим.
+    """
+    seen = set()
+    missing = []
+    for p in products:
+        if p.id in seen:
+            continue
+        seen.add(p.id)
+        stock = getattr(p, "stock", None)
+        if stock is None or stock.bags <= 0:
+            missing.append(str(p))
+    if missing:
+        raise ValidationError({
+            "detail": f"Нет в наличии на складе: {', '.join(missing)}",
+            "code": "out_of_stock",
+        })
+
+
 @transaction.atomic
 def adjust_stock(product, delta, user, note=""):
     """Ручная корректировка остатка на +delta (может быть отрицательной)."""

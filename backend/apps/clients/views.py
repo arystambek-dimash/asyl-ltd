@@ -3,11 +3,24 @@ from decimal import Decimal
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework import mixins
 from apps.rbac.permissions import PermViewSetMixin
 from apps.rbac.scoping import scope_by_department
-from .models import Client, Store
-from .serializers import ClientSerializer, StoreSerializer
+from .models import Client, Department, Store
+from .serializers import ClientSerializer, DepartmentSerializer, StoreSerializer
 from .services import detect_overdue, is_payment_window_open, client_analytics
+
+
+class DepartmentViewSet(PermViewSetMixin, mixins.ListModelMixin,
+                        mixins.UpdateModelMixin, viewsets.GenericViewSet):
+    """Названия отделов продаж: смотрят все сотрудники, меняет админ."""
+    queryset = Department.objects.order_by("code")
+    serializer_class = DepartmentSerializer
+    http_method_names = ["get", "patch", "put", "head", "options"]
+    required_perms = {
+        "update": "rbac.manage",
+        "partial_update": "rbac.manage",
+    }
 
 
 class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):

@@ -281,6 +281,9 @@ def replace_items(order: Order, items_data: list, prices: dict | None, user) -> 
     прайс и испортит долги.
     """
     from .models import OrderItem
+    from apps.warehouse.services import ensure_products_available
+    # Позиции только по товару в наличии — как и при создании заказа.
+    ensure_products_available(item["product"] for item in items_data)
     # Блокируем строку заказа: правка не должна гоняться со стартом загрузки
     # (склад переводит arrived → loading в этот же момент).
     order = Order.objects.select_for_update().get(pk=order.pk)

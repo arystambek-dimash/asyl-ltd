@@ -9,7 +9,7 @@ import {
   Briefcase, Calculator, HandCoins, MapPin,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { can, isDept2Only } from "@/lib/can";
+import { can, deptLabel, isDept2Only } from "@/lib/can";
 import type { Me } from "@/lib/types";
 
 interface NavChild { href: string; label: string; perm?: string; }
@@ -22,50 +22,54 @@ interface NavItem {
 }
 interface NavSection { title: string; items: NavItem[]; }
 
-const STAFF_SECTIONS: NavSection[] = [
-  {
-    title: "Обзор",
-    items: [
-      { href: "/dashboard", label: "Дашборд", icon: LayoutDashboard },
-      { href: "/debts", label: "Долги", icon: Wallet, perm: "reports.view" },
-      { href: "/reports", label: "Отчёты", icon: BarChart3, perm: "reports.view" },
-    ],
-  },
-  {
-    title: "Работа",
-    items: [
-      { href: "/orders", label: "Заказы", icon: ClipboardList, perm: "orders.view" },
-      { href: "/accounting", label: "Табло бухгалтера", icon: Calculator, perm: "payments.confirm" },
-      { href: "/cashier", label: "Касса", icon: HandCoins, perm: "payments.cashier" },
-      { href: "/shipping", label: "Пост отгрузки", icon: Truck, perm: "shipping.view" },
-      { href: "/train", label: "Поезда", icon: TrainFront, perm: "train.view" },
-      { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },
-      { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
-      { href: "/stores", label: "Магазины", icon: Store, perm: "clients.view" },
-      { href: "/catalog/products", label: "Товары", icon: Package, perm: "catalog.view" },
-    ],
-  },
-  {
-    title: "Отдел «Сити»",
-    items: [
-      { href: "/city/orders", label: "Заявки Сити", icon: Briefcase, perm: "dept2.view" },
-      { href: "/city/clients", label: "Клиенты Сити", icon: MapPin, perm: "dept2.view" },
-    ],
-  },
-  {
-    title: "Управление",
-    items: [
-      { href: "/events", label: "Журнал", icon: ScrollText, perm: "events.view" },
-      {
-        label: "Доступы", icon: Settings,
-        children: [
-          { href: "/management/employees", label: "Сотрудники", perm: "employees.view" },
-          { href: "/management/roles", label: "Роли", perm: "rbac.view" },
-        ],
-      },
-    ],
-  },
-];
+// Название второго отдела редактируется админом — секции строятся динамически.
+function staffSections(fieldName: string): NavSection[] {
+  return [
+    {
+      title: "Обзор",
+      items: [
+        { href: "/dashboard", label: "Дашборд", icon: LayoutDashboard },
+        { href: "/debts", label: "Долги", icon: Wallet, perm: "reports.view" },
+        { href: "/reports", label: "Отчёты", icon: BarChart3, perm: "reports.view" },
+      ],
+    },
+    {
+      title: "Работа",
+      items: [
+        { href: "/orders", label: "Заказы", icon: ClipboardList, perm: "orders.view" },
+        { href: "/accounting", label: "Табло бухгалтера", icon: Calculator, perm: "payments.confirm" },
+        { href: "/cashier", label: "Касса", icon: HandCoins, perm: "payments.cashier" },
+        { href: "/shipping", label: "Пост отгрузки", icon: Truck, perm: "shipping.view" },
+        { href: "/train", label: "Поезда", icon: TrainFront, perm: "train.view" },
+        { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },
+        { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
+        { href: "/stores", label: "Магазины", icon: Store, perm: "clients.view" },
+        { href: "/catalog/products", label: "Товары", icon: Package, perm: "catalog.view" },
+      ],
+    },
+    {
+      title: `Отдел «${fieldName}»`,
+      items: [
+        { href: "/city/orders", label: `Заявки ${fieldName}`, icon: Briefcase, perm: "dept2.view" },
+        { href: "/city/clients", label: `Клиенты ${fieldName}`, icon: MapPin, perm: "dept2.view" },
+      ],
+    },
+    {
+      title: "Управление",
+      items: [
+        { href: "/events", label: "Журнал", icon: ScrollText, perm: "events.view" },
+        {
+          label: "Доступы", icon: Settings,
+          children: [
+            { href: "/management/employees", label: "Сотрудники", perm: "employees.view" },
+            { href: "/management/roles", label: "Роли", perm: "rbac.view" },
+            { href: "/management/departments", label: "Отделы", perm: "rbac.manage" },
+          ],
+        },
+      ],
+    },
+  ];
+}
 
 const PORTAL_SECTIONS: NavSection[] = [
   {
@@ -146,7 +150,7 @@ function NavGroup({ item }: { item: NavItem }) {
 }
 
 function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void }) {
-  const sections = me.is_client ? PORTAL_SECTIONS : STAFF_SECTIONS;
+  const sections = me.is_client ? PORTAL_SECTIONS : staffSections(deptLabel(me, "field"));
   const visible = sections
     .map((s) => ({
       ...s,

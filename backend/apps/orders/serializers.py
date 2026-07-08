@@ -233,7 +233,10 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         from .services import confirm_order, apply_item_prices
+        from apps.warehouse.services import ensure_products_available
         items = validated_data.pop("items")
+        # Заказ только на товар в наличии — «нет на складе» отклоняем сразу.
+        ensure_products_available(item["product"] for item in items)
         user = self.context["request"].user
         validated_data["created_by"] = user
         # Заказ наследует отдел клиента — данные отделов не смешиваются.

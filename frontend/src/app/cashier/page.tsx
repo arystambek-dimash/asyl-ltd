@@ -7,7 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/ui/stat-card";
 import { FilterPills } from "@/components/ui/filter-pills";
-import { DEPARTMENT_LABELS, PAYMENT_METHOD_LABELS } from "@/lib/constants";
+import { PAYMENT_METHOD_LABELS } from "@/lib/constants";
+import { deptLabel } from "@/lib/can";
+import { useAuth } from "@/store/auth";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
@@ -15,6 +17,7 @@ import { Banknote, HandCoins } from "lucide-react";
 import type { PaymentQueueItem } from "@/lib/types";
 
 function CashierInner() {
+  const { me } = useAuth();
   const { data: queue, loading, reload } =
     useApi<PaymentQueueItem[]>("/orders/payments-queue/?stage=accountant_ok");
   const [dept, setDept] = useState("all");
@@ -29,8 +32,8 @@ function CashierInner() {
 
   const pills = [
     { key: "all", label: "Все отделы", count: all.length },
-    { key: "main", label: DEPARTMENT_LABELS.main, count: all.filter((p) => p.department === "main").length },
-    { key: "field", label: DEPARTMENT_LABELS.field, count: all.filter((p) => p.department === "field").length },
+    { key: "main", label: deptLabel(me, "main"), count: all.filter((p) => p.department === "main").length },
+    { key: "field", label: deptLabel(me, "field"), count: all.filter((p) => p.department === "field").length },
   ];
 
   async function act(fn: () => Promise<unknown>) {
@@ -75,7 +78,7 @@ function CashierInner() {
                 </div>
                 <div className="flex flex-col items-end gap-1">
                   <Badge tone={p.department === "field" ? "primary" : "muted"}>
-                    {DEPARTMENT_LABELS[p.department] ?? p.department}
+                    {deptLabel(me, p.department)}
                   </Badge>
                   <Badge tone="outline">
                     {p.method_label || PAYMENT_METHOD_LABELS[p.method] || p.method}

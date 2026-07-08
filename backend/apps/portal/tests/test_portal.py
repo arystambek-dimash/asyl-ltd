@@ -1,5 +1,6 @@
 import pytest
 from apps.catalog.models import Product
+from apps.warehouse.models import StockItem
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
 
@@ -7,7 +8,9 @@ pytestmark = pytest.mark.django_db
 
 
 def _product():
-    return Product.objects.create(name="Премиум", color="Red", weight_kg="50", price="100.00")
+    p = Product.objects.create(name="Премиум", color="Red", weight_kg="50", price="100.00")
+    StockItem.objects.create(product=p, bags=500)
+    return p
 
 
 def _client_for(user):
@@ -67,7 +70,10 @@ def test_staff_cannot_use_portal(auth_client, manager):
 
 def test_client_catalog_lists_active_products_without_stock(auth_client, client_user):
     _client_for(client_user)
-    active = _product()
+    # Товар без складской карточки виден в каталоге с остатком 0
+    # (но заказать его нельзя — проверяется отдельно).
+    active = Product.objects.create(
+        name="БезСклада", color="Blue", weight_kg="50", price="100.00")
     inactive = Product.objects.create(
         name="Скрытый", color="Green", weight_kg="50", price="100.00", is_active=False
     )

@@ -6,11 +6,13 @@ export interface Me {
   permissions: string[];
   role_name: string | null;
   client_id: number | null;
+  department_names?: Record<string, string>;
 }
 
 export interface Product {
   id: number; name: string; color: "Red" | "Green" | "Blue"; color_label: string;
   weight_kg: string; price: string; is_active: boolean; label: string; cv_class: string;
+  available_bags?: number;
 }
 export type Department = "main" | "field";
 

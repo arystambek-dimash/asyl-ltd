@@ -1,5 +1,6 @@
 import pytest
 from apps.catalog.models import Product
+from apps.warehouse.models import StockItem
 from apps.clients.models import Client, Store
 from apps.orders.models import Order
 
@@ -28,6 +29,7 @@ def test_portal_order_with_own_store(auth_client, client_user):
     c = _client_for(client_user)
     s = Store.objects.create(client=c, name="Мой магазин")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
+    StockItem.objects.create(product=p, bags=500)
     r = auth_client(client_user).post("/api/portal/orders/", {
         "items": [{"product": p.id, "quantity": 1}], "store": s.id,
     }, format="json")
@@ -41,6 +43,7 @@ def test_portal_order_rejects_foreign_store(auth_client, client_user, make_user)
     other_c = Client.objects.create(first_name="O", last_name="O", phone="y", user=other_user)
     foreign = Store.objects.create(client=other_c, name="Чужой")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
+    StockItem.objects.create(product=p, bags=500)
     r = auth_client(client_user).post("/api/portal/orders/", {
         "items": [{"product": p.id, "quantity": 1}], "store": foreign.id,
     }, format="json")

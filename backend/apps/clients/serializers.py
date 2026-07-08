@@ -1,6 +1,15 @@
 from rest_framework import serializers
 from decimal import Decimal
-from .models import Client, Store
+from .models import Client, Department, Store
+
+
+class DepartmentSerializer(serializers.ModelSerializer):
+    # Код фиксирован — переименовать можно только название.
+    code = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = Department
+        fields = ["id", "code", "name"]
 
 
 class ClientSerializer(serializers.ModelSerializer):

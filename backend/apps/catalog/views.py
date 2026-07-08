@@ -15,7 +15,7 @@ _PERMS = {
 
 
 class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
-    queryset = Product.objects.all()
+    queryset = Product.objects.select_related("stock")
     serializer_class = ProductSerializer
     required_perms = _PERMS
 

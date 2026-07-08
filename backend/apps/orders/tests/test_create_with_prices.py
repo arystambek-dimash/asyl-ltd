@@ -2,6 +2,7 @@ import pytest
 from decimal import Decimal
 from rest_framework.test import APIClient
 from apps.catalog.models import Product, ClientPrice
+from apps.warehouse.models import StockItem
 from apps.clients.models import Client
 from apps.orders.models import Order
 
@@ -15,6 +16,7 @@ def _api(user):
 def test_staff_create_with_prices_confirms_immediately(manager):
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
+    StockItem.objects.create(product=p, bags=500)
     r = _api(manager).post("/api/orders/", {
         "client": c.id,
         "items": [{"product": p.id, "quantity": 3}],
@@ -30,6 +32,7 @@ def test_staff_create_with_prices_confirms_immediately(manager):
 def test_staff_create_without_prices_stays_draft(manager):
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
+    StockItem.objects.create(product=p, bags=500)
     r = _api(manager).post("/api/orders/", {
         "client": c.id,
         "items": [{"product": p.id, "quantity": 1}],

@@ -16,10 +16,10 @@ import { StatCard } from "@/components/ui/stat-card";
 import { FilterPills } from "@/components/ui/filter-pills";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { OrderForm } from "@/components/order-form";
-import { DEPARTMENT_LABELS, ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
+import { isFinancialOrderStatus, ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
-import { can } from "@/lib/can";
+import { can, deptLabel } from "@/lib/can";
 import { formatMoney } from "@/lib/utils";
 import { Pencil, Plus, Search } from "lucide-react";
 import type { Order } from "@/lib/types";
@@ -46,10 +46,11 @@ function OrdersPageInner() {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   const list = (orders ?? []).filter((o) => dept === "all" || o.department === dept);
-  const activeCount = list.filter(
-    (o) => o.status !== "shipped" && o.status !== "cancelled"
-  ).length;
-  const totalSum = list.reduce((s, o) => s + Number(o.total_amount || 0), 0);
+  // Сумма и «в процессе» — только по реальным заказам: черновики,
+  // отклонённые и отменённые не искажают оборот.
+  const financial = list.filter((o) => isFinancialOrderStatus(o.status));
+  const activeCount = financial.filter((o) => o.status !== "shipped").length;
+  const totalSum = financial.reduce((s, o) => s + Number(o.total_amount || 0), 0);
 
   const presentStatuses = Array.from(new Set(list.map((o) => o.status)));
   const pills = [
@@ -96,6 +97,7 @@ function OrdersPageInner() {
         <StatCard label="Всего заказов" value={String(list.length)} />
         <StatCard label="В процессе" value={String(activeCount)} />
         <StatCard label="Сумма" value={`${formatMoney(totalSum)} ₸`} accent
+          caption="Без отменённых и отклонённых"
           className="col-span-2 sm:col-span-1" />
       </section>
 
@@ -109,8 +111,8 @@ function OrdersPageInner() {
           {showDept && (
             <FilterPills active={dept} onChange={setDept} items={[
               { key: "all", label: "Все отделы", count: (orders ?? []).length },
-              { key: "main", label: DEPARTMENT_LABELS.main, count: (orders ?? []).filter((o) => o.department === "main").length },
-              { key: "field", label: DEPARTMENT_LABELS.field, count: (orders ?? []).filter((o) => o.department === "field").length },
+              { key: "main", label: deptLabel(me, "main"), count: (orders ?? []).filter((o) => o.department === "main").length },
+              { key: "field", label: deptLabel(me, "field"), count: (orders ?? []).filter((o) => o.department === "field").length },
             ]} />
           )}
           <FilterPills items={pills} active={status} onChange={setStatus} />
@@ -131,7 +133,7 @@ function OrdersPageInner() {
                 <span className="text-sm font-semibold">#{o.id}</span>
                 {showDept && (
                   <Badge tone={o.department === "field" ? "primary" : "muted"}>
-                    {DEPARTMENT_LABELS[o.department ?? "main"] ?? o.department}
+                    {deptLabel(me, o.department ?? "main")}
                   </Badge>
                 )}
               </div>
@@ -207,7 +209,7 @@ function OrdersPageInner() {
                     {showDept && (
                       <TD>
                         <Badge tone={o.department === "field" ? "primary" : "muted"}>
-                          {DEPARTMENT_LABELS[o.department ?? "main"] ?? o.department}
+                          {deptLabel(me, o.department ?? "main")}
                         </Badge>
                       </TD>
                     )}

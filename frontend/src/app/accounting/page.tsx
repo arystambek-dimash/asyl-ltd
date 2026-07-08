@@ -13,8 +13,10 @@ import { StatCard } from "@/components/ui/stat-card";
 import { FilterPills } from "@/components/ui/filter-pills";
 import { PaymentStageBadge } from "@/components/payment-chain";
 import {
-  DEPARTMENT_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE,
+  PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE,
 } from "@/lib/constants";
+import { deptLabel } from "@/lib/can";
+import { useAuth } from "@/store/auth";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
@@ -22,16 +24,18 @@ import { CheckCheck, ClipboardCheck, Send } from "lucide-react";
 import type { Order, PaymentQueueItem } from "@/lib/types";
 
 function DepartmentBadge({ department }: { department?: string }) {
+  const { me } = useAuth();
   if (!department) return null;
   return (
     <Badge tone={department === "field" ? "primary" : "muted"}>
-      {DEPARTMENT_LABELS[department] ?? department}
+      {deptLabel(me, department)}
     </Badge>
   );
 }
 
 function AccountingInner() {
   const router = useRouter();
+  const { me } = useAuth();
   const { data: orders, reload: reloadOrders } = useApi<Order[]>("/orders/");
   const { data: queue, reload: reloadQueue } =
     useApi<PaymentQueueItem[]>("/orders/payments-queue/?stage=received");
@@ -49,8 +53,8 @@ function AccountingInner() {
 
   const pills = [
     { key: "all", label: "Все отделы", count: (orders ?? []).length },
-    { key: "main", label: DEPARTMENT_LABELS.main, count: (orders ?? []).filter((o) => o.department === "main").length },
-    { key: "field", label: DEPARTMENT_LABELS.field, count: (orders ?? []).filter((o) => o.department === "field").length },
+    { key: "main", label: deptLabel(me, "main"), count: (orders ?? []).filter((o) => o.department === "main").length },
+    { key: "field", label: deptLabel(me, "field"), count: (orders ?? []).filter((o) => o.department === "field").length },
   ];
 
   async function act(fn: () => Promise<unknown>) {

@@ -11,10 +11,14 @@ pytestmark = pytest.mark.django_db
 _seq = [0]
 
 
-def _product(price="100.00"):
+def _product(price="100.00", bags=500):
+    from apps.warehouse.models import StockItem
     _seq[0] += 1
-    return Product.objects.create(
+    p = Product.objects.create(
         name=f"P{_seq[0]}", color="Red", weight_kg="50", price=price)
+    if bags:
+        StockItem.objects.create(product=p, bags=bags)
+    return p
 
 
 def _order(status="pending", unit_price="100.00"):
@@ -134,6 +138,32 @@ def test_foreign_store_rejected(manager):
     foreign_store = Store.objects.create(client=stranger, name="Чужой")
     r = _api(manager).patch(f"/api/orders/{o.id}/", {"store": foreign_store.id}, format="json")
     assert r.status_code == 400
+
+
+def test_order_requires_stock_on_create(manager):
+    """Заказ принимается только на товар, имеющийся на складе."""
+    client = Client.objects.create(first_name="A", last_name="B", phone="x")
+    empty = _product(bags=0)  # складской карточки нет вовсе
+    r = _api(manager).post("/api/orders/", {
+        "client": client.id,
+        "items": [{"product": empty.id, "quantity": 1}],
+        "prices": {str(empty.id): "100.00"},
+    }, format="json")
+    assert r.status_code == 400
+    assert "наличии" in str(r.data.get("detail", ""))
+
+
+def test_edit_requires_stock_for_new_items(manager):
+    o = _order(status="pending")
+    from apps.warehouse.models import StockItem
+    zero = _product(bags=0)
+    StockItem.objects.create(product=zero, bags=0)  # карточка есть, остаток 0
+    r = _api(manager).patch(f"/api/orders/{o.id}/", {
+        "items": [{"product": zero.id, "quantity": 1}],
+        "prices": {str(zero.id): "100.00"},
+    }, format="json")
+    assert r.status_code == 400
+    assert "наличии" in str(r.data.get("detail", ""))
 
 
 def test_edit_requires_orders_edit_perm(operator):

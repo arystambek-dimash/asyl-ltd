@@ -33,10 +33,10 @@ import {
   Pencil, Phone, PieChart as PieChartIcon, Plus, Search, Trash2, Wallet,
 } from "lucide-react";
 import { useAuth } from "@/store/auth";
-import { can } from "@/lib/can";
+import { can, deptLabel, deptLabels } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
-  DEPARTMENT_LABELS, isFinancialOrderStatus, ORDER_STATUS_LABELS, ORDER_STATUS_TONE,
+  isFinancialOrderStatus, ORDER_STATUS_LABELS, ORDER_STATUS_TONE,
 } from "@/lib/constants";
 import type { Client, Order } from "@/lib/types";
 
@@ -191,6 +191,7 @@ function buildClientAnalytics(orders: Order[]): ClientAnalytics {
 }
 
 function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCancel: () => void; editing?: Client | null }) {
+  const { me } = useAuth();
   const [serverError, setServerError] = useState("");
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -279,7 +280,7 @@ function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCance
                 </SelectTrigger>
               </FormControl>
               <SelectContent>
-                {Object.entries(DEPARTMENT_LABELS).map(([k, v]) => (
+                {Object.entries(deptLabels(me)).map(([k, v]) => (
                   <SelectItem key={k} value={k}>{v}</SelectItem>
                 ))}
               </SelectContent>
@@ -472,7 +473,7 @@ function ClientsPageInner() {
                 </div>
                 {showDept && (
                   <Badge tone={c.department === "field" ? "primary" : "muted"}>
-                    {DEPARTMENT_LABELS[c.department] ?? c.department}
+                    {deptLabel(me, c.department)}
                   </Badge>
                 )}
               </div>
@@ -546,7 +547,7 @@ function ClientsPageInner() {
                       {showDept && (
                         <TD>
                           <Badge tone={c.department === "field" ? "primary" : "muted"}>
-                            {DEPARTMENT_LABELS[c.department] ?? c.department}
+                            {deptLabel(me, c.department)}
                           </Badge>
                         </TD>
                       )}

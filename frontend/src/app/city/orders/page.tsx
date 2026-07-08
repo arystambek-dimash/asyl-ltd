@@ -19,7 +19,7 @@ import {
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
-import { can } from "@/lib/can";
+import { can, deptLabel } from "@/lib/can";
 import { formatMoney } from "@/lib/utils";
 import { Plus, Search, Trash2, Info } from "lucide-react";
 import type { Order, Client, Product } from "@/lib/types";
@@ -35,7 +35,10 @@ function CityOrdersInner() {
   const list = orders ?? [];
   const active = list.filter((o) => !["shipped", "rejected", "cancelled"].includes(o.status));
   const awaitingChain = list.filter((o) => (o.pending_payments?.length ?? 0) > 0);
-  const totalSum = list.reduce((s, o) => s + Number(o.total_amount || 0), 0);
+  // Оборот без отклонённых и отменённых заявок.
+  const totalSum = list
+    .filter((o) => !["rejected", "cancelled"].includes(o.status))
+    .reduce((s, o) => s + Number(o.total_amount || 0), 0);
 
   const presentStatuses = Array.from(new Set(list.map((o) => o.status)));
   const pills = [
@@ -54,7 +57,7 @@ function CityOrdersInner() {
   });
 
   return (
-    <AppShell title="Заявки Сити" section="Отдел «Сити»"
+    <AppShell title={`Заявки ${deptLabel(me, "field")}`} section={`Отдел «${deptLabel(me, "field")}»`}
       description="Заявки выездного отдела: сбор с выезда, запрос и приём оплаты у клиента."
       actions={canCreate ? (
         <Button size="sm" aria-label="Новая заявка" onClick={() => setOpen(true)}>
@@ -133,7 +136,7 @@ function CityOrdersInner() {
       )}
 
       <Modal open={open} onClose={() => setOpen(false)}
-        eyebrow="Отдел «Сити» · Заявка"
+        eyebrow={`Отдел «${deptLabel(me, "field")}» · Заявка`}
         title="Новая заявка"
         description="Клиент, позиции и цены. Заявку подтверждает бухгалтер."
         className="max-w-2xl">
@@ -209,9 +212,14 @@ function CityOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () 
                   ? { ...x, product, price: x.price || clientPrices[product] || "" } : x));
               }}>
               <option value="">Товар</option>
-              {(products ?? []).map((p) => (
-                <option key={p.id} value={p.id}>{p.label}</option>
-              ))}
+              {(products ?? []).map((p) => {
+                const bags = p.available_bags ?? 0;
+                return (
+                  <option key={p.id} value={p.id} disabled={bags <= 0}>
+                    {p.label}{bags > 0 ? ` · ${bags} меш.` : " — нет в наличии"}
+                  </option>
+                );
+              })}
             </Select>
             <Input type="number" min="1" placeholder="Мешков" className="w-20 sm:w-24" value={r.quantity}
               onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, quantity: e.target.value } : x))} />

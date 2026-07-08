@@ -54,11 +54,11 @@ export default function PortalNewOrderPage() {
                   onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, product: e.target.value } : x))}>
                   <option value="">Товар</option>
                   {(products ?? []).map((p) => (
-                    <option key={p.id} value={p.id}>
+                    <option key={p.id} value={p.id} disabled={p.available_bags <= 0}>
                       {p.label}
                       {p.available_bags > 0
                         ? ` · в наличии ${p.available_bags} меш.`
-                        : " · остаток уточнит оператор"}
+                        : " — нет в наличии"}
                     </option>
                   ))}
                 </Select>

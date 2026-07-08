@@ -9,9 +9,9 @@ import { LicensePlateInput } from "@/components/ui/license-plate-input";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
-import { can } from "@/lib/can";
+import { can, deptLabel } from "@/lib/can";
 import { formatMoney } from "@/lib/utils";
-import { DEPARTMENT_LABELS } from "@/lib/constants";
+
 import { Plus, Trash2, Info } from "lucide-react";
 import type { Client, Department, Order, Product, Store } from "@/lib/types";
 
@@ -116,7 +116,7 @@ export function OrderForm({ editing, onCancel, onDone }: {
                   "rounded-lg border px-3 py-2 text-sm font-medium transition-colors " +
                   (dept === d ? "border-[var(--primary)] bg-[var(--primary)]/5" : "hover:bg-[var(--muted)]/40")
                 }>
-                {DEPARTMENT_LABELS[d]}
+                {deptLabel(me, d)}
               </button>
             ))}
           </div>
@@ -193,9 +193,14 @@ export function OrderForm({ editing, onCancel, onDone }: {
                   ? { ...x, product, price: x.price || clientPrices[product] || "" } : x));
               }}>
               <option value="">Товар</option>
-              {(products ?? []).map((p) => (
-                <option key={p.id} value={p.id}>{p.label}</option>
-              ))}
+              {(products ?? []).map((p) => {
+                const bags = p.available_bags ?? 0;
+                return (
+                  <option key={p.id} value={p.id} disabled={bags <= 0}>
+                    {p.label}{bags > 0 ? ` · ${bags} меш.` : " — нет в наличии"}
+                  </option>
+                );
+              })}
             </Select>
             <Input type="number" min="1" placeholder="Мешков" className="w-20 sm:w-24" value={r.quantity}
               onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, quantity: e.target.value } : x))} />
