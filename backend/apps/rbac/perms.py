@@ -56,6 +56,9 @@ PRESETS = {
     "Оператор": _codes("shipping.view", "shipping.arrive", "shipping.load",
                        "shipping.ship", "orders.view", "warehouse.view", "events.view"),
     "Загрузчик": _codes("train.view", "train.load"),
+    # Контролёр на посту погрузки (планшет): приём машины на весах,
+    # погрузка с камерой и счётчиком, выезд; плюс загрузка поездов.
+    "Контролёр": _codes("shipping", "train", "orders.view", "warehouse.view"),
     # Кассир: финальное подтверждение поступления денег по обоим отделам.
     "Кассир": _codes("payments.view", "payments.cashier", "orders.view", "dept2.view_all"),
     # Менеджер выездного отдела: работает только в разделе «Сити» со своими данными.

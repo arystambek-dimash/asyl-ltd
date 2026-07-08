@@ -39,7 +39,7 @@ function staffSections(fieldName: string): NavSection[] {
         { href: "/orders", label: "Заказы", icon: ClipboardList, perm: "orders.view" },
         { href: "/accounting", label: "Табло бухгалтера", icon: Calculator, perm: "payments.confirm" },
         { href: "/cashier", label: "Касса", icon: HandCoins, perm: "payments.cashier" },
-        { href: "/shipping", label: "Пост отгрузки", icon: Truck, perm: "shipping.view" },
+        { href: "/shipping", label: "Пост погрузки", icon: Truck, perm: "shipping.view" },
         { href: "/train", label: "Поезда", icon: TrainFront, perm: "train.view" },
         { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },
         { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
