@@ -86,11 +86,15 @@ export function OnboardingTour({ me }: { me: Me }) {
     localStorage.setItem(TOUR_DONE_KEY, "1");
   }, []);
 
-  // Первый вход — показываем обучение один раз; повторно — по событию.
+  // Автоматически — ровно один раз (первый вход): флаг ставится сразу при
+  // показе, чтобы тур не выскакивал на каждой странице. Дальше — только «?».
   useEffect(() => {
     const start = () => { setStep(0); setActive(true); };
     if (!localStorage.getItem(TOUR_DONE_KEY)) {
-      const t = setTimeout(start, 900);
+      const t = setTimeout(() => {
+        localStorage.setItem(TOUR_DONE_KEY, "1");
+        start();
+      }, 900);
       window.addEventListener(TOUR_START_EVENT, start);
       return () => { clearTimeout(t); window.removeEventListener(TOUR_START_EVENT, start); };
     }
