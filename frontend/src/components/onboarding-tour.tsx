@@ -98,13 +98,23 @@ export function OnboardingTour({ me }: { me: Me }) {
     return () => window.removeEventListener(TOUR_START_EVENT, start);
   }, []);
 
-  // Пересчёт позиции подсветки на каждом шаге и при ресайзе.
+  // Пересчёт позиции подсветки на каждом шаге, при ресайзе; Esc — выход.
   useEffect(() => {
     if (!active) return;
-    const update = () => setRect(targetRect(steps[step]?.target));
+    const target = steps[step]?.target;
+    if (target) {
+      document.querySelector(`[data-tour="${target}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+    }
+    const update = () => setRect(targetRect(target));
     update();
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") finish(); };
     window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("keydown", onKey);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, step]);
 
@@ -112,31 +122,46 @@ export function OnboardingTour({ me }: { me: Me }) {
   const current = steps[step];
   const last = step === steps.length - 1;
 
-  // Позиция карточки: под элементом, если не влезает — над ним; без цели — по центру.
-  const cardWidth = Math.min(340, typeof window !== "undefined" ? window.innerWidth - 24 : 340);
+  // Позиция карточки: снизу → сверху → справа от элемента; координаты всегда
+  // зажимаются в видимую область, чтобы карточка не «улетала» за экран
+  // (например, у сайдбара высота во весь экран — «снизу» не существует).
+  const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+  const cardWidth = Math.min(340, vw - 24);
+  const cardH = 220; // оценка высоты карточки для расчёта, ниже всё зажимается
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi));
   let cardStyle: React.CSSProperties;
   if (rect) {
-    const below = rect.top + rect.height + 12;
-    const fitsBelow = typeof window === "undefined" || below + 200 < window.innerHeight;
+    let top: number;
+    let left = rect.left;
+    if (rect.top + rect.height + 12 + cardH < vh) {
+      top = rect.top + rect.height + 12;                    // снизу
+    } else if (rect.top - cardH - 12 > 0) {
+      top = rect.top - cardH - 12;                          // сверху
+    } else {
+      top = rect.top + rect.height / 2 - cardH / 2;         // сбоку по центру
+      left = rect.left + rect.width + 12;
+    }
     cardStyle = {
       position: "fixed",
-      top: fitsBelow ? below : undefined,
-      bottom: fitsBelow ? undefined : window.innerHeight - rect.top + 12,
-      left: Math.max(12, Math.min(rect.left, (typeof window !== "undefined" ? window.innerWidth : 0) - cardWidth - 12)),
+      top: clamp(top, 12, vh - cardH - 12),
+      left: clamp(left, 12, vw - cardWidth - 12),
       width: cardWidth,
     };
   } else {
+    // Без transform: его перебила бы анимация появления (animate-fade-up).
     cardStyle = {
       position: "fixed",
-      left: "50%",
+      left: Math.round((vw - cardWidth) / 2),
       bottom: 24,
-      transform: "translateX(-50%)",
       width: cardWidth,
     };
   }
 
   return (
-    <div className="fixed inset-0 z-[200]" role="dialog" aria-modal="true" aria-label="Обучение по системе">
+    <div className="fixed inset-0 z-[200]" role="dialog" aria-modal="true"
+      aria-label="Обучение по системе"
+      onClick={finish}>
       {/* затемнение с «окном» вокруг подсвеченного элемента */}
       {rect ? (
         <div
@@ -151,7 +176,7 @@ export function OnboardingTour({ me }: { me: Me }) {
         <div className="fixed inset-0 bg-black/55" />
       )}
 
-      <div style={cardStyle}
+      <div style={cardStyle} onClick={(e) => e.stopPropagation()}
         className="animate-fade-up rounded-xl border bg-[var(--card)] p-4 shadow-2xl">
         <div className="flex items-start justify-between gap-3">
           <div className="text-[15px] font-semibold">{current.title}</div>
