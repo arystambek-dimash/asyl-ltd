@@ -44,6 +44,9 @@ services:
       CAMERA_HOST: ${CAMERA_HOST:-100.109.156.107}
       CAMERA_USER: ${CAMERA_USER:-viewer}
       CAMERA_PASS: ${CAMERA_PASS:-}
+      # AI-подсчёт мешков (ai_service на ПК с камерами); пустой ключ = выключен
+      CAMERA_AI_URL: ${CAMERA_AI_URL:-}
+      CAMERA_AI_KEY: ${CAMERA_AI_KEY:-}
       PORTAL_BANK: ${PORTAL_BANK:-Kaspi Bank}
       PORTAL_ACCOUNT: ${PORTAL_ACCOUNT:-}
     depends_on:

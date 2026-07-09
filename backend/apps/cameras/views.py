@@ -11,7 +11,9 @@ from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import services
+from apps.rbac.permissions import HasPerm
+
+from . import ai, services
 
 CAM_COOKIE = "cam_token"
 CAM_TOKEN_MAX_AGE = 12 * 3600  # секунд
@@ -63,3 +65,58 @@ class CameraAuthView(APIView):
         except signing.BadSignature:
             return Response(status=status.HTTP_403_FORBIDDEN)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _ai_response(fn):
+    """Вызов клиента ai_service с маппингом его ошибок в HTTP-ответы."""
+    if not ai.enabled():
+        return Response(
+            {"detail": "AI-подсчёт не настроен на сервере", "code": "ai_disabled"},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    try:
+        return Response(fn())
+    except ai.AiUnavailable:
+        return Response(
+            {"detail": "AI-сервис камер недоступен", "code": "ai_unavailable"},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+    except ai.AiError as e:
+        http = e.status if e.status in (400, 404, 409) else status.HTTP_502_BAD_GATEWAY
+        return Response({"detail": e.detail, "code": "ai_error"}, status=http)
+
+
+class CameraAiView(APIView):
+    """AI-подсчёт мешков: статус, включение и выключение модели на камере."""
+
+    def get_permissions(self):
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return [IsAuthenticated(), IsStaffUser()]
+        return [HasPerm("shipping.load")]
+
+    def get(self, request, cam_id: int):
+        return _ai_response(lambda: ai.status(cam_id) or {"running": False})
+
+    def post(self, request, cam_id: int):
+        def start():
+            current = ai.status(cam_id)
+            if current and current.get("running"):
+                return current  # уже считает (второй планшет) — счёт не сбрасываем
+            return ai.start(cam_id)
+        return _ai_response(start)
+
+    def delete(self, request, cam_id: int):
+        def stop():
+            final = ai.stop(cam_id)
+            return {**(final or {}), "running": False}
+        return _ai_response(stop)
+
+
+class CameraAiResetView(APIView):
+    """Обнулить счётчик работающей модели — новая погрузка на той же камере."""
+
+    def get_permissions(self):
+        return [HasPerm("shipping.load")]
+
+    def post(self, request, cam_id: int):
+        return _ai_response(lambda: ai.reset(cam_id))

@@ -16,9 +16,11 @@ from django.core.cache import cache
 
 log = logging.getLogger(__name__)
 
-CAMERA_HOST = os.environ.get("CAMERA_HOST", "100.109.156.107")
-CAMERA_PORT = int(os.environ.get("CAMERA_PORT", "8554"))
-CAMERA_USER = os.environ.get("CAMERA_USER", "viewer")
+# `or`, а не второй аргумент get: пустая строка из compose не должна
+# перетирать дефолт.
+CAMERA_HOST = os.environ.get("CAMERA_HOST") or "100.109.156.107"
+CAMERA_PORT = int(os.environ.get("CAMERA_PORT") or "8554")
+CAMERA_USER = os.environ.get("CAMERA_USER") or "viewer"
 CAMERA_PASS = os.environ.get("CAMERA_PASS", "")
 
 # Верхняя граница перебора camN; go2rtc пре-провижен на столько же потоков.

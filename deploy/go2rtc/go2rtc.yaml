@@ -88,3 +88,41 @@ streams:
   cam31: ffmpeg:cam31src#video=h264
   cam32src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam32sub
   cam32: ffmpeg:cam32src#video=h264
+
+  # AI-потоки: ai_service на ПК с камерами публикует в MediaMTX camNai —
+  # аннотированное видео подсчёта мешков (боксы, линия, счётчик в кадре).
+  # Уже H.264, транскод не нужен — нативный RTSP-рестрим без ffmpeg.
+  # Пока модель на камере не запущена, MediaMTX отдаёт 404 — go2rtc
+  # поднимает поток по требованию, плеер на фронте ретраит сам.
+  cam1ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam1ai
+  cam2ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam2ai
+  cam3ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam3ai
+  cam4ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam4ai
+  cam5ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam5ai
+  cam6ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam6ai
+  cam7ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam7ai
+  cam8ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam8ai
+  cam9ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam9ai
+  cam10ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam10ai
+  cam11ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam11ai
+  cam12ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam12ai
+  cam13ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam13ai
+  cam14ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam14ai
+  cam15ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam15ai
+  cam16ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam16ai
+  cam17ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam17ai
+  cam18ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam18ai
+  cam19ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam19ai
+  cam20ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam20ai
+  cam21ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam21ai
+  cam22ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam22ai
+  cam23ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam23ai
+  cam24ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam24ai
+  cam25ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam25ai
+  cam26ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam26ai
+  cam27ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam27ai
+  cam28ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam28ai
+  cam29ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam29ai
+  cam30ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam30ai
+  cam31ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam31ai
+  cam32ai: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam32ai

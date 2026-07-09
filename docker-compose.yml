@@ -34,6 +34,13 @@ services:
       SUPER_ADMIN_EMAIL: "${SUPER_ADMIN_EMAIL:-admin@asyl.local}"
       SUPER_ADMIN_PASS: "${SUPER_ADMIN_PASS:-admin12345}"
       SUPER_ADMIN_RESET_PASSWORD: "${SUPER_ADMIN_RESET_PASSWORD:-0}"
+      # Камеры и AI-подсчёт: для локальной отладки укажите хосты в .env
+      # (host.docker.internal — мок на маке); пусто = функции выключены.
+      CAMERA_HOST: "${CAMERA_HOST:-}"
+      CAMERA_PORT: "${CAMERA_PORT:-8554}"
+      CAMERA_PASS: "${CAMERA_PASS:-}"
+      CAMERA_AI_URL: "${CAMERA_AI_URL:-}"
+      CAMERA_AI_KEY: "${CAMERA_AI_KEY:-}"
     depends_on:
       db:
         condition: service_healthy

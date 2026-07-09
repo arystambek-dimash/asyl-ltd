@@ -12,9 +12,11 @@ import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { cn, formatMoney } from "@/lib/utils";
 import {
-  Check, LogOut, Minus, Package, Phone, Plus, Scale, Truck, User, VideoOff,
+  Cctv, Check, LogOut, Minus, Package, Phone, Plus, RotateCcw, Scale, Truck,
+  User, VideoOff,
 } from "lucide-react";
 import type { Order } from "@/lib/types";
+import { useAiCounter, type AiCounter } from "@/lib/use-ai-counter";
 
 const QUEUE_STATUSES = ["confirmed", "arrived", "loading", "loaded"];
 const POLL_MS = 10_000; // очередь и счётчик обновляются сами — пост «живой»
@@ -65,10 +67,12 @@ function StageTrack({ status }: { status: string }) {
 }
 
 /** Живая камера поста: зона по шагу, переключение — чипами поверх видео. */
-function PostCamera({ cameras, tokenReady, zoneKeywords }: {
+function PostCamera({ cameras, tokenReady, zoneKeywords, ai }: {
   cameras: CameraFeed[];
   tokenReady: boolean;
   zoneKeywords: string[];
+  /** Работающий AI-подсчёт: на этой камере показываем аннотированный поток. */
+  ai?: { camId: number; src: string } | null;
 }) {
   const auto = useMemo(() => {
     for (const kw of zoneKeywords) {
@@ -81,10 +85,13 @@ function PostCamera({ cameras, tokenReady, zoneKeywords }: {
   const cam = cameras.find((c) => c.id === manualId) ?? auto;
   const [online, setOnline] = useState(false);
 
+  const aiOn = !!ai && cam?.id === ai.camId;
+  const src = aiOn ? ai.src : cam?.src;
+
   return (
     <div className="relative min-h-[260px] flex-1 overflow-hidden rounded-2xl bg-[#141416]">
-      {cam && tokenReady && (
-        <CameraStream key={cam.id} src={cam.src} onStateChange={setOnline}
+      {cam && src && tokenReady && (
+        <CameraStream key={src} src={src} onStateChange={setOnline}
           className="absolute inset-0 h-full w-full object-cover" />
       )}
       {!online && (
@@ -99,6 +106,14 @@ function PostCamera({ cameras, tokenReady, zoneKeywords }: {
         <div className="absolute left-3 top-3 flex items-center gap-1.5 rounded-md bg-black/55 px-2.5 py-1 backdrop-blur-sm">
           <span className={cn("size-1.5 rounded-full", online ? "bg-emerald-400" : "bg-white/40")} />
           <span className="text-xs font-medium text-white">{cam.zone}</span>
+        </div>
+      )}
+
+      {/* AI-поток: боксы и линия подсчёта рисуются прямо в кадре */}
+      {aiOn && (
+        <div className="absolute right-3 top-3 flex items-center gap-1.5 rounded-md bg-emerald-600/90 px-2.5 py-1 backdrop-blur-sm">
+          <span className="size-1.5 animate-pulse rounded-full bg-white" />
+          <span className="text-xs font-semibold text-white">AI-подсчёт</span>
         </div>
       )}
 
@@ -215,6 +230,88 @@ function BagCounter({ order, onSaved }: { order: Order; onSaved: () => void }) {
   );
 }
 
+// Цвет партии из ai_service (Blue_50, White…) → точка-индикатор в чипе.
+const BAG_COLORS: [RegExp, string][] = [
+  [/blue/i, "#3b82f6"], [/green/i, "#22c55e"], [/red/i, "#ef4444"],
+  [/yellow/i, "#eab308"], [/orange/i, "#f97316"], [/black/i, "#27272a"],
+  [/white/i, "#e4e4e7"],
+];
+function bagColor(name: string) {
+  return BAG_COLORS.find(([re]) => re.test(name))?.[1] ?? "var(--muted-foreground)";
+}
+
+/** AI-подсчёт с камеры: живое число для сверки, «Принять» пишет его в ручной счёт. */
+function AiCounterPanel({ ai, accepted, onAccept }: {
+  ai: AiCounter;
+  accepted: number;
+  onAccept: (bags: number) => void;
+}) {
+  const st = ai.status;
+  if (!st?.running) {
+    return (
+      <div className="flex flex-col gap-2">
+        <Button variant="outline" className="h-12 rounded-xl" disabled={ai.busy}
+          onClick={() => ai.start().catch(() => {})}>
+          <Cctv className="size-5" /> AI-подсчёт по камере
+        </Button>
+        {ai.error && <p className="text-sm text-[var(--destructive)]">{ai.error}</p>}
+      </div>
+    );
+  }
+
+  const warming = st.status !== "онлайн";
+  const total = st.total ?? 0;
+  return (
+    <div className="rounded-xl border border-emerald-600/25 bg-emerald-500/[0.06] p-3.5">
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-600">
+          <span className={cn("size-1.5 rounded-full bg-emerald-500", !warming && "animate-pulse")} />
+          AI-подсчёт{warming && " · запуск модели…"}
+        </span>
+        <button onClick={() => ai.stop().catch(() => {})} disabled={ai.busy}
+          className="text-xs text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]">
+          Выключить
+        </button>
+      </div>
+
+      <div className="mt-1.5 flex items-baseline gap-2">
+        <span className="text-4xl font-bold tabular-nums leading-none">{total}</span>
+        <span className="text-sm text-[var(--muted-foreground)]">меш.</span>
+        {(st.weight ?? 0) > 0 && (
+          <span className="ml-auto text-sm tabular-nums text-[var(--muted-foreground)]">
+            ≈ {formatMoney(st.weight!)} кг
+          </span>
+        )}
+      </div>
+
+      {st.per_color && Object.keys(st.per_color).length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {Object.entries(st.per_color).map(([color, n]) => (
+            <span key={color}
+              className="flex items-center gap-1.5 rounded-md border bg-[var(--card)] px-2 py-0.5 text-xs tabular-nums">
+              <span className="size-2 rounded-full" style={{ background: bagColor(color) }} />
+              {color.replace(/_/g, " ")} · {n}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
+        <Button className="h-11 rounded-lg" disabled={ai.busy || total === accepted}
+          onClick={() => onAccept(total)}>
+          <Check className="size-4" /> Принять {total}
+        </Button>
+        <Button variant="outline" className="h-11 rounded-lg px-3" disabled={ai.busy}
+          onClick={() => ai.reset().catch(() => {})} aria-label="Обнулить AI-счётчик"
+          title="Начать счёт заново">
+          <RotateCcw className="size-4" />
+        </Button>
+      </div>
+      {ai.error && <p className="mt-2 text-sm text-[var(--destructive)]">{ai.error}</p>}
+    </div>
+  );
+}
+
 function ShippingPageInner() {
   const { me } = useAuth();
   const { data: orders, reload } = useApi<Order[]>("/orders/");
@@ -252,6 +349,20 @@ function ShippingPageInner() {
   const canArrive = can(me, "shipping.arrive");
   const canLoad = can(me, "shipping.load");
   const canShip = can(me, "shipping.ship");
+
+  // AI-подсчёт привязан к камере зоны загрузки, а не к той, что контролёр
+  // листает в моменте: переключение вида не должно прятать счётчик.
+  const aiCam = useMemo(
+    () => (cameras ?? []).find((c) => c.zone.toLowerCase().includes("загруз"))
+      ?? cameras?.[0] ?? null,
+    [cameras],
+  );
+  const isLoadStep = !!selected
+    && (selected.status === "arrived" || selected.status === "loading") && canLoad;
+  const ai = useAiCounter(aiCam?.id ?? null, isLoadStep);
+  // Плеер переключаем на аннотированный поток, только когда модель в эфире
+  // (на прогреве поток ещё 404 — держим обычную картинку).
+  const aiLive = ai.running && ai.status?.status === "онлайн";
 
   async function act(fn: () => Promise<unknown>) {
     setBusy(true); setError("");
@@ -359,7 +470,10 @@ function ShippingPageInner() {
               {/* видео + действие шага */}
               <div className="grid gap-4 p-5 xl:grid-cols-[1.4fr_1fr]">
                 <PostCamera cameras={cameras ?? []} tokenReady={tokenReady}
-                  zoneKeywords={selected.status === "confirmed" ? ["вес", "въезд"] : ["загруз"]} />
+                  zoneKeywords={selected.status === "confirmed" ? ["вес", "въезд"] : ["загруз"]}
+                  ai={aiLive && aiCam
+                    ? { camId: aiCam.id, src: ai.status?.stream ?? `${aiCam.src}ai` }
+                    : null} />
 
                 <div className="flex flex-col justify-center gap-4 rounded-2xl bg-[var(--muted)]/40 p-5">
                   {selected.status === "confirmed" && (
@@ -389,12 +503,19 @@ function ShippingPageInner() {
                     canLoad ? (
                       <>
                         <BagCounter key={selected.id} order={selected} onSaved={reload} />
+                        {aiCam && (
+                          <AiCounterPanel ai={ai} accepted={selected.bags_loaded ?? 0}
+                            onAccept={(bags) =>
+                              act(() => api.post(`/orders/${selected.id}/load/`, { bags }))} />
+                        )}
                         <Button className="h-14 rounded-xl text-base" disabled={busy}
                           onClick={() => act(async () => {
                             if (selected.status === "arrived") {
                               await api.post(`/orders/${selected.id}/load/`, { bags: selected.bags_loaded ?? 0 });
                             }
                             await api.post(`/orders/${selected.id}/finish-loading/`, {});
+                            // Погрузка закрыта — освобождаем GPU; сбой стопа не мешает выезду.
+                            if (ai.running) await ai.stop().catch(() => {});
                           })}>
                           <Check className="size-5" /> Погрузка завершена
                         </Button>
