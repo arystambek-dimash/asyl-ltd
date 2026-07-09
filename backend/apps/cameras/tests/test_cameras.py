@@ -55,7 +55,7 @@ def test_discover_prefers_inventory(monkeypatch):
         "nvr:08:3b:c1:5e:8c:27", "nvr:08:3b:c1:5e:8c:26", "nvr:08:3b:c1:5e:8c:29",
         "direct:08:3b:c1:5e:8c:28", "locked:192.168.0.2",
     ]
-    cam1, cam2, direct, locked = cams
+    cam1, cam2, _cam10, direct, locked = cams
     assert (cam1["zone"], cam1["online"]) == ("Въезд / весы", False)
     assert (cam2["src"], cam2["name"]) == ("cam2", "DS-2CD1643G2-LIZU")
     assert direct["src"] == "cam_8c28"
