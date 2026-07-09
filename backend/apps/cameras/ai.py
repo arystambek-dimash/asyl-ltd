@@ -10,14 +10,19 @@
 """
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
-from .services import CAMERA_HOST, MAX_CAMERAS
+from .services import CAMERA_HOST
 
 AI_URL = (os.environ.get("CAMERA_AI_URL") or f"http://{CAMERA_HOST}:8890").rstrip("/")
 AI_KEY = os.environ.get("CAMERA_AI_KEY", "")
 TIMEOUT = 10  # сек; запуск модели асинхронный, долгих ответов у API нет
+
+# Имена камер у ai_service/MediaMTX: cam2 (канал NVR) или cam_8c26 (direct
+# по хвосту MAC). Валидация обязательна — имя попадает в URL запроса.
+CAM_RE = re.compile(r"^cam\w{1,16}$")
 
 
 class AiUnavailable(Exception):
@@ -69,31 +74,44 @@ def _call(method: str, path: str, body: dict | None = None,
     return payload
 
 
-def _path(cam_id: int) -> str:
-    if not 1 <= cam_id <= MAX_CAMERAS:
+def normalize(cam: str) -> str:
+    """Имя камеры к виду ai_service: «2» → cam2; cam_8c26 — как есть."""
+    cam = str(cam).strip()
+    if cam.isdigit():
+        cam = f"cam{cam}"
+    if not CAM_RE.fullmatch(cam):
         raise AiError(400, "Неизвестная камера")
-    return f"/processors/cam{cam_id}"
+    return cam
 
 
-def status(cam_id: int) -> dict | None:
+def _path(cam: str) -> str:
+    return f"/processors/{normalize(cam)}"
+
+
+def inventory() -> dict:
+    """Живой инвентарь сети цеха: devices (nvr-channel/direct/locked) + ai."""
+    return _call("GET", "/cameras") or {}
+
+
+def status(cam: str) -> dict | None:
     """Статус и живой счётчик; None — модель на камере не запущена."""
-    return _call("GET", _path(cam_id), none_on_404=True)
+    return _call("GET", _path(cam), none_on_404=True)
 
 
-def start(cam_id: int, options: dict | None = None) -> dict:
+def start(cam: str, options: dict | None = None) -> dict:
     """Включить модель. options — source/line/direction, дефолты ai_service."""
-    return _call("POST", _path(cam_id), body=options or {})
+    return _call("POST", _path(cam), body=options or {})
 
 
-def reset(cam_id: int) -> dict:
+def reset(cam: str) -> dict:
     """Обнулить счётчик работающей модели (новая погрузка)."""
-    return _call("POST", f"{_path(cam_id)}/reset")
+    return _call("POST", f"{_path(cam)}/reset")
 
 
-def stop(cam_id: int) -> dict | None:
+def stop(cam: str) -> dict | None:
     """Выключить модель; возвращает финальный счётчик (None — не была запущена)."""
-    final = status(cam_id)
+    final = status(cam)
     if final is None:
         return None
-    _call("DELETE", _path(cam_id), none_on_404=True)  # гонка выключений — не ошибка
+    _call("DELETE", _path(cam), none_on_404=True)  # гонка выключений — не ошибка
     return final

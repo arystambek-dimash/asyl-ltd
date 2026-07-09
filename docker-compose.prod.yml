@@ -47,6 +47,8 @@ services:
       # AI-подсчёт мешков (ai_service на ПК с камерами); пустой ключ = выключен
       CAMERA_AI_URL: ${CAMERA_AI_URL:-}
       CAMERA_AI_KEY: ${CAMERA_AI_KEY:-}
+      # внутренний API go2rtc — дозаявка потоков direct-камер из инвентаря
+      GO2RTC_API_URL: ${GO2RTC_API_URL:-http://go2rtc:1984}
       PORTAL_BANK: ${PORTAL_BANK:-Kaspi Bank}
       PORTAL_ACCOUNT: ${PORTAL_ACCOUNT:-}
     depends_on:

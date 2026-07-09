@@ -87,27 +87,31 @@ def _ai_response(fn):
 
 
 class CameraAiView(APIView):
-    """AI-подсчёт мешков: статус, включение и выключение модели на камере."""
+    """AI-подсчёт мешков: статус, включение и выключение модели на камере.
+
+    `cam` — путь камеры у ai_service/MediaMTX: cam2 (канал NVR) или
+    cam_8c26 (direct-камера, хвост MAC).
+    """
 
     def get_permissions(self):
         if self.request.method in ("GET", "HEAD", "OPTIONS"):
             return [IsAuthenticated(), IsStaffUser()]
         return [HasPerm("shipping.load")]
 
-    def get(self, request, cam_id: int):
-        return _ai_response(lambda: ai.status(cam_id) or {"running": False})
+    def get(self, request, cam: str):
+        return _ai_response(lambda: ai.status(cam) or {"running": False})
 
-    def post(self, request, cam_id: int):
+    def post(self, request, cam: str):
         def start():
-            current = ai.status(cam_id)
+            current = ai.status(cam)
             if current and current.get("running"):
                 return current  # уже считает (второй планшет) — счёт не сбрасываем
-            return ai.start(cam_id)
+            return ai.start(cam)
         return _ai_response(start)
 
-    def delete(self, request, cam_id: int):
+    def delete(self, request, cam: str):
         def stop():
-            final = ai.stop(cam_id)
+            final = ai.stop(cam)
             return {**(final or {}), "running": False}
         return _ai_response(stop)
 
@@ -118,5 +122,5 @@ class CameraAiResetView(APIView):
     def get_permissions(self):
         return [HasPerm("shipping.load")]
 
-    def post(self, request, cam_id: int):
-        return _ai_response(lambda: ai.reset(cam_id))
+    def post(self, request, cam: str):
+        return _ai_response(lambda: ai.reset(cam))

@@ -1,17 +1,29 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { Grid2x2, RectangleHorizontal, Video, VideoOff } from "lucide-react";
+import { Grid2x2, Lock, RectangleHorizontal, Video, VideoOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { CameraStream } from "@/components/camera-stream";
 
+/** Камера из живого инвентаря сети (бэкенд строит его из ai_service). */
 export interface CameraFeed {
-  id: number;
+  /** Стабильный ключ: kind + MAC (не меняется при перетасовке каналов NVR). */
+  id: string;
   name: string;
   zone: string;
-  /** Имя потока в go2rtc (cam1..camN). */
-  src: string;
+  /** Имя потока в go2rtc (cam2, cam_8c26); null у locked-камер. */
+  src: string | null;
+  kind: "nvr-channel" | "direct" | "locked";
+  /** Живость источника по данным инвентаря (у locked всегда false). */
+  online: boolean;
+  /** Пояснение для locked: обнаружена, но пароль неизвестен. */
+  note?: string;
+}
+
+/** Камеры, у которых есть поток для просмотра (locked не играют). */
+export function playableCameras(cams: CameraFeed[] | null | undefined) {
+  return (cams ?? []).filter((c): c is CameraFeed & { src: string } => !!c.src);
 }
 
 function CameraTile({
@@ -23,7 +35,7 @@ function CameraTile({
 }: {
   cam: CameraFeed;
   ready: boolean;
-  onOnline: (id: number, online: boolean) => void;
+  onOnline: (id: string, online: boolean) => void;
   onClick?: () => void;
   active?: boolean;
 }) {
@@ -35,6 +47,19 @@ function CameraTile({
     },
     [cam.id, onOnline]
   );
+
+  if (!cam.src) {
+    // Обнаружена в сети, но пароль неизвестен — стрима нет по определению.
+    return (
+      <div className="relative flex aspect-video flex-col items-center justify-center gap-1.5 overflow-hidden rounded-lg border border-dashed border-white/15 bg-[#1c1c1e] text-white/35"
+        title={cam.note}>
+        <Lock className="size-5" />
+        <span className="text-[11px]">Нет доступа</span>
+        <span className="absolute bottom-1.5 left-2.5 text-xs font-medium text-white/50">{cam.name}</span>
+      </div>
+    );
+  }
+
   return (
     <div
       onClick={onClick}
@@ -68,10 +93,11 @@ function CameraTile({
 export function CameraWall() {
   const { data, loading } = useApi<CameraFeed[]>("/cameras/");
   const cameras = data ?? [];
+  const playable = playableCameras(cameras);
   const [mode, setMode] = useState<"grid" | "single">("grid");
-  const [activeId, setActiveId] = useState<number | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [tokenReady, setTokenReady] = useState(false);
-  const [onlineIds, setOnlineIds] = useState<Set<number>>(new Set());
+  const [onlineIds, setOnlineIds] = useState<Set<string>>(new Set());
 
   // cookie-доступ к потокам go2rtc; без неё nginx отдаст 403
   useEffect(() => {
@@ -80,7 +106,7 @@ export function CameraWall() {
       .catch(() => setTokenReady(false));
   }, []);
 
-  const handleOnline = useCallback((id: number, online: boolean) => {
+  const handleOnline = useCallback((id: string, online: boolean) => {
     setOnlineIds((prev) => {
       if (prev.has(id) === online) return prev;
       const next = new Set(prev);
@@ -90,7 +116,8 @@ export function CameraWall() {
     });
   }, []);
 
-  const active = cameras.find((c) => c.id === activeId) ?? cameras[0];
+  // «Одна камера» — только по играбельным; locked остаются в сетке.
+  const active = playable.find((c) => c.id === activeId) ?? playable[0];
 
   return (
     <section className="rounded-xl border bg-[var(--card)] shadow-sm">
@@ -98,9 +125,11 @@ export function CameraWall() {
         <Video className="size-4 text-[var(--muted-foreground)]" />
         <span className="text-sm font-semibold">Камеры</span>
         <span className="text-xs text-[var(--muted-foreground)]">
-          {onlineIds.size} из {cameras.length} онлайн
+          {onlineIds.size} из {playable.length} онлайн
+          {playable.length < cameras.length &&
+            ` · ${cameras.length - playable.length} без доступа`}
         </span>
-        {cameras.length > 1 && (
+        {playable.length > 1 && (
           <div className="ml-auto flex items-center gap-0.5">
             <button
               onClick={() => setMode("grid")}
@@ -137,14 +166,15 @@ export function CameraWall() {
           )}>
             {cameras.map((c) => (
               <CameraTile key={c.id} cam={c} ready={tokenReady} onOnline={handleOnline}
-                onClick={cameras.length > 1 ? () => { setActiveId(c.id); setMode("single"); } : undefined} />
+                onClick={playable.length > 1 && c.src
+                  ? () => { setActiveId(c.id); setMode("single"); } : undefined} />
             ))}
           </div>
         ) : active ? (
           <div className="flex flex-col gap-3">
             <CameraTile key={active.id} cam={active} ready={tokenReady} onOnline={handleOnline} />
             <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
-              {cameras.map((c) => (
+              {playable.map((c) => (
                 <CameraTile key={c.id} cam={c} ready={tokenReady} onOnline={handleOnline}
                   active={c.id === active.id} onClick={() => setActiveId(c.id)} />
               ))}

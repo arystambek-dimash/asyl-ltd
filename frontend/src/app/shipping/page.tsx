@@ -5,7 +5,7 @@ import { RequirePerm } from "@/components/require-perm";
 import { Button } from "@/components/ui/button";
 import { PlateBadge } from "@/components/ui/license-plate-input";
 import { CameraStream } from "@/components/camera-stream";
-import type { CameraFeed } from "@/components/camera-wall";
+import { playableCameras, type CameraFeed } from "@/components/camera-wall";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
@@ -68,11 +68,12 @@ function StageTrack({ status }: { status: string }) {
 
 /** Живая камера поста: зона по шагу, переключение — чипами поверх видео. */
 function PostCamera({ cameras, tokenReady, zoneKeywords, ai }: {
-  cameras: CameraFeed[];
+  /** Только играбельные камеры (locked пост не показывает). */
+  cameras: (CameraFeed & { src: string })[];
   tokenReady: boolean;
   zoneKeywords: string[];
   /** Работающий AI-подсчёт: на этой камере показываем аннотированный поток. */
-  ai?: { camId: number; src: string } | null;
+  ai?: { camId: string; src: string } | null;
 }) {
   const auto = useMemo(() => {
     for (const kw of zoneKeywords) {
@@ -81,7 +82,7 @@ function PostCamera({ cameras, tokenReady, zoneKeywords, ai }: {
     }
     return cameras[0];
   }, [cameras, zoneKeywords]);
-  const [manualId, setManualId] = useState<number | null>(null);
+  const [manualId, setManualId] = useState<string | null>(null);
   const cam = cameras.find((c) => c.id === manualId) ?? auto;
   const [online, setOnline] = useState(false);
 
@@ -297,7 +298,8 @@ function AiCounterPanel({ ai, accepted, onAccept }: {
       )}
 
       <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
-        <Button className="h-11 rounded-lg" disabled={ai.busy || total === accepted}
+        {/* на прогреве счёт ещё нулевой — принять его можно только по ошибке */}
+        <Button className="h-11 rounded-lg" disabled={ai.busy || warming || total === accepted}
           onClick={() => onAccept(total)}>
           <Check className="size-4" /> Принять {total}
         </Button>
@@ -350,16 +352,18 @@ function ShippingPageInner() {
   const canLoad = can(me, "shipping.load");
   const canShip = can(me, "shipping.ship");
 
+  // Пост работает только с играбельными камерами; locked-устройства — тема
+  // дашборда, контролёру они не нужны.
+  const playable = useMemo(() => playableCameras(cameras), [cameras]);
   // AI-подсчёт привязан к камере зоны загрузки, а не к той, что контролёр
   // листает в моменте: переключение вида не должно прятать счётчик.
   const aiCam = useMemo(
-    () => (cameras ?? []).find((c) => c.zone.toLowerCase().includes("загруз"))
-      ?? cameras?.[0] ?? null,
-    [cameras],
+    () => playable.find((c) => c.zone.toLowerCase().includes("загруз")) ?? playable[0] ?? null,
+    [playable],
   );
   const isLoadStep = !!selected
     && (selected.status === "arrived" || selected.status === "loading") && canLoad;
-  const ai = useAiCounter(aiCam?.id ?? null, isLoadStep);
+  const ai = useAiCounter(aiCam?.src ?? null, isLoadStep);
   // Плеер переключаем на аннотированный поток, только когда модель в эфире
   // (на прогреве поток ещё 404 — держим обычную картинку).
   const aiLive = ai.running && ai.status?.status === "онлайн";
@@ -469,7 +473,7 @@ function ShippingPageInner() {
 
               {/* видео + действие шага */}
               <div className="grid gap-4 p-5 xl:grid-cols-[1.4fr_1fr]">
-                <PostCamera cameras={cameras ?? []} tokenReady={tokenReady}
+                <PostCamera cameras={playable} tokenReady={tokenReady}
                   zoneKeywords={selected.status === "confirmed" ? ["вес", "въезд"] : ["загруз"]}
                   ai={aiLive && aiCam
                     ? { camId: aiCam.id, src: ai.status?.stream ?? `${aiCam.src}ai` }

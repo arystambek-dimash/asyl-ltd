@@ -41,6 +41,7 @@ services:
       CAMERA_PASS: "${CAMERA_PASS:-}"
       CAMERA_AI_URL: "${CAMERA_AI_URL:-}"
       CAMERA_AI_KEY: "${CAMERA_AI_KEY:-}"
+      GO2RTC_API_URL: "${GO2RTC_API_URL:-}"
     depends_on:
       db:
         condition: service_healthy

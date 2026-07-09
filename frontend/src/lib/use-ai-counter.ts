@@ -24,37 +24,38 @@ export interface AiStatus {
 const POLL_LIVE_MS = 1500;
 const POLL_IDLE_MS = 10_000;
 
-export function useAiCounter(camId: number | null, active: boolean) {
+/** cam — путь камеры у ai_service/MediaMTX: cam2 или cam_8c26 (по MAC). */
+export function useAiCounter(cam: string | null, active: boolean) {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const refresh = useCallback(async () => {
-    if (camId == null) return;
+    if (!cam) return;
     try {
-      const res = await api.get<AiStatus>(`/cameras/${camId}/ai/`);
+      const res = await api.get<AiStatus>(`/cameras/${cam}/ai/`);
       setStatus(res.data);
     } catch {
       // тик статуса не должен ронять пост — не настроен/недоступен ≈ выключен
       setStatus(null);
     }
-  }, [camId]);
+  }, [cam]);
 
   // Смена камеры или уход с шага — прежний статус больше не про эту камеру.
   useEffect(() => {
     setStatus(null);
     setError("");
-  }, [camId, active]);
+  }, [cam, active]);
 
   const running = !!status?.running;
   useEffect(() => {
-    if (!active || camId == null) return;
+    if (!active || !cam) return;
     refresh();
     const t = setInterval(() => {
       if (!document.hidden) refresh();
     }, running ? POLL_LIVE_MS : POLL_IDLE_MS);
     return () => clearInterval(t);
-  }, [active, camId, refresh, running]);
+  }, [active, cam, refresh, running]);
 
   const act = useCallback(async (fn: () => Promise<{ data: AiStatus }>) => {
     setBusy(true);
@@ -71,16 +72,16 @@ export function useAiCounter(camId: number | null, active: boolean) {
   }, []);
 
   const start = useCallback(
-    () => act(() => api.post<AiStatus>(`/cameras/${camId}/ai/`, {})),
-    [act, camId],
+    () => act(() => api.post<AiStatus>(`/cameras/${cam}/ai/`, {})),
+    [act, cam],
   );
   const stop = useCallback(
-    () => act(() => api.delete<AiStatus>(`/cameras/${camId}/ai/`)),
-    [act, camId],
+    () => act(() => api.delete<AiStatus>(`/cameras/${cam}/ai/`)),
+    [act, cam],
   );
   const reset = useCallback(
-    () => act(() => api.post<AiStatus>(`/cameras/${camId}/ai/reset/`, {})),
-    [act, camId],
+    () => act(() => api.post<AiStatus>(`/cameras/${cam}/ai/reset/`, {})),
+    [act, cam],
   );
 
   return { status, running, busy, error, start, stop, reset };
