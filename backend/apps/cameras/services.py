@@ -121,9 +121,14 @@ def _discover_by_inventory() -> list[dict] | None:
             })
 
     order = {"nvr-channel": 0, "direct": 1, "locked": 2}
-    cameras.sort(key=lambda c: (order.get(c["kind"], 3), c["src"] or c["name"]))
+    cameras.sort(key=lambda c: (order.get(c["kind"], 3), _natural(c["src"] or c["name"])))
     _sync_go2rtc(sync)
     return cameras
+
+
+def _natural(s: str) -> tuple:
+    """Натуральный порядок: cam10 после cam2, а не между cam1 и cam2."""
+    return tuple(int(p) if p.isdigit() else p for p in re.split(r"(\d+)", s))
 
 
 def _static_slot(path: str) -> bool:

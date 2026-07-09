@@ -31,6 +31,8 @@ def fake_probe(statuses):
 INVENTORY = {
     "updated": "2026-07-09 18:23:30",
     "devices": [
+        {"kind": "nvr-channel", "path": "cam10", "sub": "cam10sub", "channel": 10,
+         "mac": "08:3b:c1:5e:8c:29", "model": None, "online": True},
         {"kind": "nvr-channel", "path": "cam2", "sub": "cam2sub", "channel": 2,
          "mac": "08:3b:c1:5e:8c:26", "model": "DS-2CD1643G2-LIZU", "online": True},
         {"kind": "nvr-channel", "path": "cam1", "sub": "cam1sub", "channel": 1,
@@ -48,8 +50,9 @@ def test_discover_prefers_inventory(monkeypatch):
          patch.object(services, "_probe_path") as probe:
         cams = services.discover_cameras()
     probe.assert_not_called()
+    # натуральный порядок: cam10 после cam2, не между cam1 и cam2
     assert [c["id"] for c in cams] == [
-        "nvr:08:3b:c1:5e:8c:27", "nvr:08:3b:c1:5e:8c:26",
+        "nvr:08:3b:c1:5e:8c:27", "nvr:08:3b:c1:5e:8c:26", "nvr:08:3b:c1:5e:8c:29",
         "direct:08:3b:c1:5e:8c:28", "locked:192.168.0.2",
     ]
     cam1, cam2, direct, locked = cams
