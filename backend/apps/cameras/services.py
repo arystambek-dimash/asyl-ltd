@@ -143,6 +143,10 @@ def _sync_go2rtc(pairs: list[tuple[str, str]]) -> None:
     PUT /api/streams идемпотентен; go2rtc держит их до рестарта, а рестарт
     роняет и кэш списка — следующий discover заявит заново. Ошибки не валят
     список: без записи в go2rtc плитка просто останется «Нет сигнала».
+
+    Сабпоток отдаётся браузеру как есть (обычно H.264, транскод не нужен);
+    ffmpeg-источник go2rtc поднимет сам, только если кодек консюмеру не
+    подошёл (та же схема, что у статик-слотов в go2rtc.yaml).
     """
     if not GO2RTC_API:
         return
@@ -150,16 +154,12 @@ def _sync_go2rtc(pairs: list[tuple[str, str]]) -> None:
     for path, sub in pairs:
         if _static_slot(path):
             continue
-        for name, src in (
-            (f"{path}src", f"{base}/{sub}"),
-            (path, f"ffmpeg:{path}src#video=h264"),  # HEVC → H.264 для браузера
-            (f"{path}ai", f"{base}/{path}ai"),
-        ):
-            _go2rtc_put(name, src)
+        _go2rtc_put(path, f"{base}/{sub}", f"ffmpeg:{path}#video=h264")
+        _go2rtc_put(f"{path}ai", f"{base}/{path}ai")
 
 
-def _go2rtc_put(name: str, src: str) -> None:
-    q = urllib.parse.urlencode({"name": name, "src": src})
+def _go2rtc_put(name: str, *srcs: str) -> None:
+    q = urllib.parse.urlencode([("name", name), *(("src", s) for s in srcs)])
     req = urllib.request.Request(f"{GO2RTC_API}/api/streams?{q}", method="PUT")
     try:
         urllib.request.urlopen(req, timeout=3).close()

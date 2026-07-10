@@ -1,5 +1,5 @@
-# go2rtc: перекодирование RTSP (HEVC) с камер цеха в H.264 для браузера.
-# Реквизиты берутся из окружения контейнера (.env сервера):
+# go2rtc: рестрим сабпотоков камер цеха (MediaMTX на ПК с камерами) в MSE
+# для браузера. Реквизиты берутся из окружения контейнера (.env сервера):
 #   CAMERA_HOST, CAMERA_USER, CAMERA_PASS
 #
 # Пути cam1..camN на MediaMTX динамические (по числу каналов NVR), поэтому
@@ -7,16 +7,23 @@
 # требованию, несуществующие/неиспользуемые ничего не стоят. Какие камеры
 # реально есть — определяет бэкенд (apps/cameras/services.py).
 #
-# Двухступенчатая схема: camNsrc забирает поток у MediaMTX нативным
-# RTSP-клиентом go2rtc (ffmpeg напрямую не может — MediaMTX отвечает 400
-# на его авторизованный DESCRIBE), а camN — это ffmpeg-транскод HEVC→H.264
-# с внутреннего rtsp://127.0.0.1:8554/camNsrc уже без авторизации.
+# Кодеки: сабпотоки NVR — уже H.264 (HIK отдаёт H264/Main), браузер играет
+# их без перекодирования — go2rtc лишь ремуксит RTSP→fMP4 (~0% CPU).
+# Забирать поток обязан нативный RTSP-клиент go2rtc: ffmpeg напрямую до
+# MediaMTX не достукивается (400 на авторизованный DESCRIBE).
+#
+# Второй источник (ffmpeg:camN#video=h264) — транскод «по требованию»:
+# go2rtc поднимет его ТОЛЬКО если консюмеру нужен H.264, а камера отдала
+# другой кодек (например, будущая камера с HEVC-сабпотоком). Раньше здесь
+# был безусловный ffmpeg-транскод на каждую камеру — 10 постоянных
+# процессов H.264→H.264 съедали 150% CPU двухъядерного сервера и давали
+# лаги на всех потоках сразу.
 
 api:
   listen: ":1984"
 
-# rtsp-модуль нужен самому go2rtc: через него ffmpeg возвращает
-# перекодированный поток и читает camNsrc. Порт наружу не публикуется.
+# rtsp-модуль нужен самому go2rtc: через него ffmpeg-запаска читает поток
+# и возвращает перекодированный. Порт наружу не публикуется.
 rtsp:
   listen: ":8554"
 
@@ -24,70 +31,102 @@ webrtc:
   listen: ""
 
 streams:
-  cam1src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam1sub
-  cam1: ffmpeg:cam1src#video=h264
-  cam2src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam2sub
-  cam2: ffmpeg:cam2src#video=h264
-  cam3src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam3sub
-  cam3: ffmpeg:cam3src#video=h264
-  cam4src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam4sub
-  cam4: ffmpeg:cam4src#video=h264
-  cam5src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam5sub
-  cam5: ffmpeg:cam5src#video=h264
-  cam6src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam6sub
-  cam6: ffmpeg:cam6src#video=h264
-  cam7src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam7sub
-  cam7: ffmpeg:cam7src#video=h264
-  cam8src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam8sub
-  cam8: ffmpeg:cam8src#video=h264
-  cam9src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam9sub
-  cam9: ffmpeg:cam9src#video=h264
-  cam10src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam10sub
-  cam10: ffmpeg:cam10src#video=h264
-  cam11src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam11sub
-  cam11: ffmpeg:cam11src#video=h264
-  cam12src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam12sub
-  cam12: ffmpeg:cam12src#video=h264
-  cam13src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam13sub
-  cam13: ffmpeg:cam13src#video=h264
-  cam14src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam14sub
-  cam14: ffmpeg:cam14src#video=h264
-  cam15src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam15sub
-  cam15: ffmpeg:cam15src#video=h264
-  cam16src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam16sub
-  cam16: ffmpeg:cam16src#video=h264
-  cam17src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam17sub
-  cam17: ffmpeg:cam17src#video=h264
-  cam18src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam18sub
-  cam18: ffmpeg:cam18src#video=h264
-  cam19src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam19sub
-  cam19: ffmpeg:cam19src#video=h264
-  cam20src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam20sub
-  cam20: ffmpeg:cam20src#video=h264
-  cam21src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam21sub
-  cam21: ffmpeg:cam21src#video=h264
-  cam22src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam22sub
-  cam22: ffmpeg:cam22src#video=h264
-  cam23src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam23sub
-  cam23: ffmpeg:cam23src#video=h264
-  cam24src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam24sub
-  cam24: ffmpeg:cam24src#video=h264
-  cam25src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam25sub
-  cam25: ffmpeg:cam25src#video=h264
-  cam26src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam26sub
-  cam26: ffmpeg:cam26src#video=h264
-  cam27src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam27sub
-  cam27: ffmpeg:cam27src#video=h264
-  cam28src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam28sub
-  cam28: ffmpeg:cam28src#video=h264
-  cam29src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam29sub
-  cam29: ffmpeg:cam29src#video=h264
-  cam30src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam30sub
-  cam30: ffmpeg:cam30src#video=h264
-  cam31src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam31sub
-  cam31: ffmpeg:cam31src#video=h264
-  cam32src: rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam32sub
-  cam32: ffmpeg:cam32src#video=h264
+  cam1:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam1sub
+    - ffmpeg:cam1#video=h264
+  cam2:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam2sub
+    - ffmpeg:cam2#video=h264
+  cam3:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam3sub
+    - ffmpeg:cam3#video=h264
+  cam4:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam4sub
+    - ffmpeg:cam4#video=h264
+  cam5:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam5sub
+    - ffmpeg:cam5#video=h264
+  cam6:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam6sub
+    - ffmpeg:cam6#video=h264
+  cam7:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam7sub
+    - ffmpeg:cam7#video=h264
+  cam8:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam8sub
+    - ffmpeg:cam8#video=h264
+  cam9:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam9sub
+    - ffmpeg:cam9#video=h264
+  cam10:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam10sub
+    - ffmpeg:cam10#video=h264
+  cam11:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam11sub
+    - ffmpeg:cam11#video=h264
+  cam12:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam12sub
+    - ffmpeg:cam12#video=h264
+  cam13:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam13sub
+    - ffmpeg:cam13#video=h264
+  cam14:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam14sub
+    - ffmpeg:cam14#video=h264
+  cam15:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam15sub
+    - ffmpeg:cam15#video=h264
+  cam16:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam16sub
+    - ffmpeg:cam16#video=h264
+  cam17:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam17sub
+    - ffmpeg:cam17#video=h264
+  cam18:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam18sub
+    - ffmpeg:cam18#video=h264
+  cam19:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam19sub
+    - ffmpeg:cam19#video=h264
+  cam20:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam20sub
+    - ffmpeg:cam20#video=h264
+  cam21:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam21sub
+    - ffmpeg:cam21#video=h264
+  cam22:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam22sub
+    - ffmpeg:cam22#video=h264
+  cam23:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam23sub
+    - ffmpeg:cam23#video=h264
+  cam24:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam24sub
+    - ffmpeg:cam24#video=h264
+  cam25:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam25sub
+    - ffmpeg:cam25#video=h264
+  cam26:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam26sub
+    - ffmpeg:cam26#video=h264
+  cam27:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam27sub
+    - ffmpeg:cam27#video=h264
+  cam28:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam28sub
+    - ffmpeg:cam28#video=h264
+  cam29:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam29sub
+    - ffmpeg:cam29#video=h264
+  cam30:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam30sub
+    - ffmpeg:cam30#video=h264
+  cam31:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam31sub
+    - ffmpeg:cam31#video=h264
+  cam32:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam32sub
+    - ffmpeg:cam32#video=h264
 
   # AI-потоки: ai_service на ПК с камерами публикует в MediaMTX camNai —
   # аннотированное видео подсчёта мешков (боксы, линия, счётчик в кадре).

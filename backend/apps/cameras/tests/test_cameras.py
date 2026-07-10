@@ -69,9 +69,16 @@ def test_discover_syncs_dynamic_streams_to_go2rtc(monkeypatch):
     with patch.object(ai, "inventory", return_value=INVENTORY), \
          patch.object(services, "_go2rtc_put") as put:
         services.discover_cameras()
-    # cam1/cam2 — статик-слоты go2rtc.yaml; заявляется только direct-камера
-    assert [c.args[0] for c in put.call_args_list] == [
-        "cam_8c28src", "cam_8c28", "cam_8c28ai",
+    # cam1/cam2 — статик-слоты go2rtc.yaml; заявляется только direct-камера:
+    # нативный сабпоток + ffmpeg-запаска (транскод лишь при чужом кодеке)
+    assert [c.args for c in put.call_args_list] == [
+        ("cam_8c28",
+         f"rtsp://{services.CAMERA_USER}:{services.CAMERA_PASS}"
+         f"@{services.CAMERA_HOST}:{services.CAMERA_PORT}/cam_8c28",
+         "ffmpeg:cam_8c28#video=h264"),
+        ("cam_8c28ai",
+         f"rtsp://{services.CAMERA_USER}:{services.CAMERA_PASS}"
+         f"@{services.CAMERA_HOST}:{services.CAMERA_PORT}/cam_8c28ai"),
     ]
 
 
