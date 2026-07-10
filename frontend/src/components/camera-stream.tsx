@@ -109,6 +109,14 @@ export function CameraStream({
           }
         };
 
+        // Возврат к живому краю (как в референсном video-rtc.js): без него
+        // MSE копит буфер и картинка отстаёт от реального времени.
+        const seekLive = (maxLag: number) => {
+          if (!video.buffered.length) return;
+          const end = video.buffered.end(video.buffered.length - 1);
+          if (end - video.currentTime > maxLag) video.currentTime = end - 0.5;
+        };
+
         const onUpdateEnd = () => {
           if (!sb) return;
           // Досыпаем накопленное
@@ -133,17 +141,25 @@ export function CameraStream({
               } catch { /* не критично */ }
             }
           }
+          // Дрейф-гард: задержка выросла (фоновая вкладка, просадка
+          // декодера) — догоняем край, не дожидаясь опустошения буфера.
+          seekLive(3);
         };
 
         // Safari при просадке ставит видео на паузу — возвращаемся к краю.
         const onWaiting = () => {
-          if (video.buffered.length) {
-            const end = video.buffered.end(video.buffered.length - 1);
-            if (end - video.currentTime > 1) video.currentTime = end - 0.5;
-          }
+          seekLive(1);
           video.play().catch(() => {});
         };
         video.addEventListener("waiting", onWaiting);
+
+        // Вернулись во вкладку — сразу свежая картинка, не догоняющая.
+        const onVisible = () => {
+          if (document.visibilityState !== "visible") return;
+          seekLive(1);
+          video.play().catch(() => {});
+        };
+        document.addEventListener("visibilitychange", onVisible);
 
         // ManagedMediaSource: сигналы «докидывай» / «хватит».
         const onStart = () => { streaming = true; };
@@ -153,6 +169,7 @@ export function CameraStream({
 
         const cleanup = () => {
           video.removeEventListener("waiting", onWaiting);
+          document.removeEventListener("visibilitychange", onVisible);
           (ms as unknown as EventTarget).removeEventListener("startstreaming", onStart);
           (ms as unknown as EventTarget).removeEventListener("endstreaming", onStop);
           if (objectUrl) URL.revokeObjectURL(objectUrl);
