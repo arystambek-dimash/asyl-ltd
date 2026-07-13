@@ -12,6 +12,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/ui/stat-card";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { PaymentChain, AddPaymentActions } from "@/components/payment-chain";
 import {
   ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE,
@@ -25,7 +26,7 @@ import { Plus, Search, Trash2, Info } from "lucide-react";
 import type { Order, Client, Product } from "@/lib/types";
 
 function CityOrdersInner() {
-  const { data: orders, loading, reload } = useApi<Order[]>("/orders/?department=field");
+  const { data: orders, loading, error, reload } = useApi<Order[]>("/orders/?department=field");
   const { me } = useAuth();
   const canCreate = can(me, "dept2.create");
   const [open, setOpen] = useState(false);
@@ -85,6 +86,8 @@ function CityOrdersInner() {
 
       {loading ? (
         <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+      ) : error && !orders ? (
+        <ErrorAlert message={error} onRetry={reload} />
       ) : (
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           {filtered.map((o) => (

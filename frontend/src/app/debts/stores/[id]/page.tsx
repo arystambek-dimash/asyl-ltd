@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/ui/stat-card";
+import { DataGate } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
@@ -33,13 +34,13 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { me } = useAuth();
   const isAccountant = can(me, "payments.create");
-  const { data, reload } = useApi<StoreDebtDetail>(`/stores/${id}/debt-detail/`);
+  const { data, loading, error: loadError, reload } = useApi<StoreDebtDetail>(`/stores/${id}/debt-detail/`);
   const [amounts, setAmounts] = useState<Record<number, string>>({});
   const [busyId, setBusyId] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  if (!data) return <AppShell title="Долг магазина"><p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p></AppShell>;
+  if (!data) return <AppShell title="Долг магазина"><DataGate loading={loading} error={loadError} onRetry={reload} /></AppShell>;
 
   const { store, orders } = data;
   const blocked = store.payment_schedule_type !== "none" && !data.window_open;

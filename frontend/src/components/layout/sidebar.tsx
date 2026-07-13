@@ -28,7 +28,7 @@ function staffSections(fieldName: string): NavSection[] {
     {
       title: "Обзор",
       items: [
-        { href: "/dashboard", label: "Дашборд", icon: LayoutDashboard },
+        { href: "/dashboard", label: "Главная", icon: LayoutDashboard },
         { href: "/debts", label: "Долги", icon: Wallet, perm: "reports.view" },
         { href: "/reports", label: "Отчёты", icon: BarChart3, perm: "reports.view" },
       ],

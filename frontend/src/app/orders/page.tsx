@@ -15,6 +15,7 @@ import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { OrderForm } from "@/components/order-form";
 import { isFinancialOrderStatus, ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { useApi } from "@/lib/use-api";
@@ -31,7 +32,7 @@ function isEditable(o: Order): boolean {
 
 function OrdersPageInner() {
   const router = useRouter();
-  const { data: orders, loading, reload } = useApi<Order[]>("/orders/");
+  const { data: orders, loading, error, reload } = useApi<Order[]>("/orders/");
   const { me } = useAuth();
   const canCreate = can(me, "orders.create");
   const canEdit = can(me, "orders.edit");
@@ -118,6 +119,8 @@ function OrdersPageInner() {
           <FilterDropdown label="Статус" options={pills} active={status} onChange={setStatus} />
         </div>
       </div>
+
+      {error && !orders && <div className="mb-4"><ErrorAlert message={error} onRetry={reload} /></div>}
 
       {/* Мобильные карточки: таблица на телефоне нечитаемая. */}
       <div className="flex flex-col gap-3 md:hidden">

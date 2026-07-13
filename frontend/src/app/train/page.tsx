@@ -7,13 +7,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { TrainFront, Package, User } from "lucide-react";
 import type { Order } from "@/lib/types";
 
 function TrainPageInner() {
-  const { data: orders, reload } = useApi<Order[]>("/orders/train/queue/");
+  const { data: orders, error, reload } = useApi<Order[]>("/orders/train/queue/");
   const queue = orders ?? [];
 
   return (
@@ -24,7 +25,9 @@ function TrainPageInner() {
         <span className="font-semibold">{queue.length}</span>
       </div>
 
-      {queue.length === 0 ? (
+      {error && !orders ? (
+        <ErrorAlert message={error} onRetry={reload} />
+      ) : queue.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-sm text-[var(--muted-foreground)]">
             Нет поездов в очереди. Заказы появляются здесь после подтверждения.

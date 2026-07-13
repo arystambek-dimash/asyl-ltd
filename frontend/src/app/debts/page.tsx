@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
@@ -37,7 +38,7 @@ function paymentState(row: ClientDebt) {
 }
 
 function DebtsPageInner() {
-  const { data, loading, reload } = useApi<ClientDebt[]>("/clients/debts/");
+  const { data, loading, error, reload } = useApi<ClientDebt[]>("/clients/debts/");
   const [q, setQ] = useState("");
   const [checkMsg, setCheckMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -117,6 +118,8 @@ function DebtsPageInner() {
             <TBody>
               {loading ? (
                 <TR><TD colSpan={7} className="py-8 text-center text-[var(--muted-foreground)]">Загрузка…</TD></TR>
+              ) : error && !data ? (
+                <TR><TD colSpan={7} className="py-4"><ErrorAlert message={error} onRetry={reload} /></TD></TR>
               ) : filtered.length === 0 ? (
                 <TR><TD colSpan={7} className="py-8 text-center text-[var(--muted-foreground)]">Долгов нет.</TD></TR>
               ) : filtered.map((row) => {

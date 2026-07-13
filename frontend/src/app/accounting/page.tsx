@@ -11,6 +11,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { PaymentStageBadge } from "@/components/payment-chain";
 import {
   PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE,
@@ -36,7 +37,7 @@ function DepartmentBadge({ department }: { department?: string }) {
 function AccountingInner() {
   const router = useRouter();
   const { me } = useAuth();
-  const { data: orders, reload: reloadOrders } = useApi<Order[]>("/orders/");
+  const { data: orders, error: loadError, reload: reloadOrders } = useApi<Order[]>("/orders/");
   const { data: queue, reload: reloadQueue } =
     useApi<PaymentQueueItem[]>("/orders/payments-queue/?stage=received");
   const [dept, setDept] = useState("all");
@@ -91,6 +92,7 @@ function AccountingInner() {
           {error}
         </p>
       )}
+      {loadError && !orders && <div className="mb-4"><ErrorAlert message={loadError} onRetry={reloadOrders} /></div>}
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <Card>

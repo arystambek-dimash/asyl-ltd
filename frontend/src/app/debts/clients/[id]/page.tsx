@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/ui/stat-card";
 import { ProgressBar } from "@/components/ui/progress-bar";
+import { DataGate } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
@@ -58,7 +59,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { me } = useAuth();
   const isAccountant = can(me, "payments.create");
-  const { data, reload } = useApi<ClientDebtDetail>(`/clients/${id}/debt-detail/`);
+  const { data, loading, error: loadError, reload } = useApi<ClientDebtDetail>(`/clients/${id}/debt-detail/`);
   const [amounts, setAmounts] = useState<Record<number, string>>({});
   const [busyId, setBusyId] = useState<number | null>(null);
   const [error, setError] = useState("");
@@ -67,7 +68,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   if (!data) {
     return (
       <AppShell title="Долг клиента">
-        <p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+        <DataGate loading={loading} error={loadError} onRetry={reload} />
       </AppShell>
     );
   }

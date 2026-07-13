@@ -9,6 +9,7 @@ import {
 } from "recharts";
 import { AppShell } from "@/components/layout/app-shell";
 import { CameraWall } from "@/components/camera-wall";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { StatusBadge } from "@/components/status-badge";
 import { formatPlate } from "@/components/ui/license-plate-input";
 import { useDashboardMetrics, type DashboardMetrics } from "@/lib/use-dashboard-metrics";
@@ -348,6 +349,7 @@ function AnalyticsView() {
   const m = useDashboardMetrics();
   return (
     <>
+      {m.loadError && <ErrorAlert message={m.loadError} onRetry={m.reload} />}
       <MetricStrip m={m} />
       <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,1fr)]">
         <ShipmentsCard m={m} />
@@ -377,7 +379,7 @@ export default function DashboardPage() {
   };
 
   return (
-    <AppShell title="Командный центр">
+    <AppShell title="Главная">
       <div className="flex flex-col gap-4">
         <ViewSwitch view={view} onChange={changeView} />
         {view === "analytics" ? <AnalyticsView /> : <CameraWall />}

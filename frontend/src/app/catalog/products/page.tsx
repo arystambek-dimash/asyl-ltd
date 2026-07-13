@@ -13,6 +13,7 @@ import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
@@ -22,7 +23,7 @@ import { Plus, Check, X, Pencil, Trash2 } from "lucide-react";
 import type { Product } from "@/lib/types";
 
 function ProductsPageInner() {
-  const { data: products, reload } = useApi<Product[]>("/products/");
+  const { data: products, error: loadError, reload } = useApi<Product[]>("/products/");
   const { me } = useAuth();
   const canEdit = can(me, "catalog.edit");
   const canDelete = can(me, "catalog.delete");
@@ -108,6 +109,8 @@ function ProductsPageInner() {
           <StatCard label="Активных" value={String(activeN)} accent />
         </div>
       </div>
+
+      {loadError && !products && <div className="mb-4"><ErrorAlert message={loadError} onRetry={reload} /></div>}
 
       <Card>
         <CardContent className="pt-6">

@@ -12,6 +12,7 @@ import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
@@ -31,7 +32,7 @@ function stockTone(bags: number): { tone: "destructive" | "warning" | "success";
 const QUICK_AMOUNTS = [10, 50, 100, 500];
 
 function WarehousePageInner() {
-  const { data: stock, reload } = useApi<StockItem[]>("/stock/");
+  const { data: stock, error: loadError, reload } = useApi<StockItem[]>("/stock/");
   const { data: products } = useApi<Product[]>("/products/");
   const { me } = useAuth();
   const canAdjust = can(me, "warehouse.adjust");
@@ -144,6 +145,8 @@ function WarehousePageInner() {
           </div>
         </CardContent>
       </Card>
+
+      {loadError && !stock && <div className="mb-4"><ErrorAlert message={loadError} onRetry={reload} /></div>}
 
       {/* мобильные карточки */}
       <div className="flex flex-col gap-3 md:hidden">

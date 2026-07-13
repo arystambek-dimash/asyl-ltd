@@ -22,6 +22,7 @@ import { can, deptLabel } from "@/lib/can";
 import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/utils";
 import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
+import { DataGate } from "@/components/ui/data-state";
 import { PaymentChain, AddPaymentActions, paymentOpen } from "@/components/payment-chain";
 import { OrderForm } from "@/components/order-form";
 import { Modal } from "@/components/ui/modal";
@@ -68,7 +69,7 @@ function OrderStepper({ status }: { status: string }) {
 function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { me } = useAuth();
-  const { data: order, reload } = useApi<Order>(`/orders/${id}/`);
+  const { data: order, loading, error: loadError, reload } = useApi<Order>(`/orders/${id}/`);
   const { reload: reloadPay } = useApi<Payment[]>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -100,7 +101,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
     finally { setBusy(false); }
   }
 
-  if (!order) return <AppShell title="Заказ"><p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p></AppShell>;
+  if (!order) return <AppShell title="Заказ"><DataGate loading={loading} error={loadError} onRetry={reload} /></AppShell>;
 
   const total = Number(order.total_amount);
   const paid = Number(order.paid_total);
@@ -130,14 +131,14 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
     <AppShell title={`Заказ #${order.id}`}>
       {/* шапка со степпером */}
       <div className="mb-6 flex flex-col gap-3 rounded-xl border bg-[var(--card)] p-5 shadow-card">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-y-2">
           <div>
             <div className="text-lg font-bold tracking-tight">Заказ #{order.id}</div>
             <div className="text-sm text-[var(--muted-foreground)]">
               {order.client_name || "—"}{order.truck_number ? ` · ${order.truck_number}` : ""}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {canEditOrder && (
               <Button size="sm" variant="outline" onClick={() => setEditOpen(true)}>
                 <Pencil className="size-3.5" /> Изменить

@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { Badge } from "@/components/ui/badge";
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
@@ -175,7 +176,7 @@ function StoreForm({ clients, editing, onDone, onCancel }: {
 }
 
 function StoresPageInner() {
-  const { data: stores, reload } = useApi<Store[]>("/stores/");
+  const { data: stores, error, reload } = useApi<Store[]>("/stores/");
   const { data: clients } = useApi<Client[]>("/clients/");
   const { me } = useAuth();
   const canCreate = can(me, "clients.create");
@@ -207,6 +208,8 @@ function StoresPageInner() {
       <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <StatCard label="Всего магазинов" value={String(list.length)} />
       </section>
+
+      {error && !stores && <div className="mb-4"><ErrorAlert message={error} onRetry={reload} /></div>}
 
       <Card>
         <CardContent className="pt-6">

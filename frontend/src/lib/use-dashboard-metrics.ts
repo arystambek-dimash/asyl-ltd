@@ -27,10 +27,15 @@ function dayKey(d: Date): string {
 
 /** Все данные «Командного центра». Вызывать один раз на странице. */
 export function useDashboardMetrics() {
-  const { data: orders } = useApi<Order[]>("/orders/");
-  const { data: stock } = useApi<StockItem[]>("/stock/");
-  const { data: events } = useApi<EventLog[]>("/events/");
-  const { data: debts } = useApi<ClientDebt[]>("/clients/debts/");
+  const { data: orders, error: ordersErr, reload: reloadOrders } = useApi<Order[]>("/orders/");
+  const { data: stock, error: stockErr, reload: reloadStock } = useApi<StockItem[]>("/stock/");
+  const { data: events, error: eventsErr, reload: reloadEvents } = useApi<EventLog[]>("/events/");
+  const { data: debts, error: debtsErr, reload: reloadDebts } = useApi<ClientDebt[]>("/clients/debts/");
+
+  // Ошибка видна, только пока соответствующих данных нет совсем — частичный дашборд не глушим.
+  const loadError = (orders == null && ordersErr) || (stock == null && stockErr)
+    || (events == null && eventsErr) || (debts == null && debtsErr) || "";
+  const reload = () => { reloadOrders(); reloadStock(); reloadEvents(); reloadDebts(); };
 
   const list = useMemo(() => orders ?? [], [orders]);
   const queue = useMemo(
@@ -133,6 +138,7 @@ export function useDashboardMetrics() {
     shippedByDay, shippedToday, shippedYesterday, shippedTodayOrders, shippedTotal,
     spark, periodRevenue, periodReceived,
     pipeline, stockByProduct, debtTotal, topDebtors,
+    loadError, reload,
   };
 }
 

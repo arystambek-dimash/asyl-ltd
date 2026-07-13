@@ -13,6 +13,7 @@ import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
   PieChart, Pie, Cell,
 } from "recharts";
+import { DataGate } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
@@ -49,10 +50,10 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
   const { id } = use(params);
   const { me } = useAuth();
   const canMoney = can(me, "reports.view");  // финансовые блоки — под reports.view
-  const { data } = useApi<Analytics>(`/clients/${id}/analytics/`);
+  const { data, loading, error, reload } = useApi<Analytics>(`/clients/${id}/analytics/`);
 
   if (!data) {
-    return <AppShell title="Клиент"><p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p></AppShell>;
+    return <AppShell title="Клиент"><DataGate loading={loading} error={error} onRetry={reload} /></AppShell>;
   }
 
   const { client, kpi } = data;

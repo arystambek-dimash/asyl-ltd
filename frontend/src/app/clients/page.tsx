@@ -17,6 +17,7 @@ import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { Badge } from "@/components/ui/badge";
 import {
   Form, FormField, FormItem, FormLabel, FormControl, FormMessage,
@@ -346,7 +347,7 @@ function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCance
 }
 function ClientsPageInner() {
   const router = useRouter();
-  const { data: clients, reload } = useApi<Client[]>("/clients/");
+  const { data: clients, error, reload } = useApi<Client[]>("/clients/");
   const { data: orders } = useApi<Order[]>("/orders/");
   const { me } = useAuth();
   const canEdit = can(me, "clients.edit");
@@ -451,6 +452,8 @@ function ClientsPageInner() {
             value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
       </div>
+
+      {error && !clients && <div className="mb-4"><ErrorAlert message={error} onRetry={reload} /></div>}
 
       {/* Мобильные карточки: таблица на телефоне нечитаемая. */}
       <div className="flex flex-col gap-3 md:hidden">

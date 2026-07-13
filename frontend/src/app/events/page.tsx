@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import {
   Search, X, CircleDot, Wallet, PackageCheck, Truck,
@@ -65,7 +66,7 @@ function EventsPageInner() {
     return s ? `/events/?${s}` : "/events/";
   }, [type, order, search, dateFrom, dateTo]);
 
-  const { data: events, loading } = useApi<EventLog[]>(url);
+  const { data: events, loading, error, reload } = useApi<EventLog[]>(url);
 
   // Группируем события по календарному дню (сохраняя порядок ленты).
   const groups = useMemo(() => {
@@ -138,6 +139,8 @@ function EventsPageInner() {
         <CardContent className="pt-6">
           {loading ? (
             <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+          ) : error && !events ? (
+            <ErrorAlert message={error} onRetry={reload} />
           ) : groups.length === 0 ? (
             <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">
               {hasFilters ? "Ничего не найдено по фильтрам." : "Событий пока нет."}

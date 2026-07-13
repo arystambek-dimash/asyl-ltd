@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { StatCard } from "@/components/ui/stat-card";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
@@ -16,7 +17,7 @@ import { Pencil, Phone, Plus, Search, UserRound } from "lucide-react";
 import type { Client } from "@/lib/types";
 
 function CityClientsInner() {
-  const { data: clients, loading, reload } = useApi<Client[]>("/clients/?department=field");
+  const { data: clients, loading, error, reload } = useApi<Client[]>("/clients/?department=field");
   const { me } = useAuth();
   const canCreate = can(me, "dept2.create");
   const [open, setOpen] = useState(false);
@@ -49,6 +50,8 @@ function CityClientsInner() {
 
       {loading ? (
         <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+      ) : error && !clients ? (
+        <ErrorAlert message={error} onRetry={reload} />
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map((c) => (

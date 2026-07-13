@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/ui/stat-card";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { PAYMENT_METHOD_LABELS } from "@/lib/constants";
 import { deptLabel } from "@/lib/can";
 import { useAuth } from "@/store/auth";
@@ -18,7 +19,7 @@ import type { PaymentQueueItem } from "@/lib/types";
 
 function CashierInner() {
   const { me } = useAuth();
-  const { data: queue, loading, reload } =
+  const { data: queue, loading, error: loadError, reload } =
     useApi<PaymentQueueItem[]>("/orders/payments-queue/?stage=accountant_ok");
   const [dept, setDept] = useState("all");
   const [busy, setBusy] = useState(false);
@@ -64,6 +65,8 @@ function CashierInner() {
 
       {loading ? (
         <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+      ) : loadError && !queue ? (
+        <ErrorAlert message={loadError} onRetry={reload} />
       ) : (
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           {list.map((p) => (

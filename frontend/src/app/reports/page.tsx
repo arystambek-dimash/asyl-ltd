@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/utils";
@@ -88,7 +89,7 @@ function MetricCard({ label, value, sub, icon: Icon, accent }: {
 }
 
 function ReportsPageInner() {
-  const { data: orders } = useApi<Order[]>("/orders/");
+  const { data: orders, error, reload } = useApi<Order[]>("/orders/");
 
   const [period, setPeriod] = useState<Period>("month");
   const [group, setGroup] = useState<Group>("day");
@@ -185,6 +186,8 @@ function ReportsPageInner() {
           </div>
         </div>
       </div>
+
+      {error && !orders && <div className="mb-5"><ErrorAlert message={error} onRetry={reload} /></div>}
 
       {/* KPI */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">

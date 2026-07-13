@@ -5,6 +5,7 @@ import { RequirePerm } from "@/components/require-perm";
 import { Button } from "@/components/ui/button";
 import { PlateBadge } from "@/components/ui/license-plate-input";
 import { CameraStream } from "@/components/camera-stream";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { playableCameras, type CameraFeed } from "@/components/camera-wall";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
@@ -316,7 +317,7 @@ function AiCounterPanel({ ai, accepted, onAccept }: {
 
 function ShippingPageInner() {
   const { me } = useAuth();
-  const { data: orders, reload } = useApi<Order[]>("/orders/");
+  const { data: orders, error: loadError, reload } = useApi<Order[]>("/orders/");
   const { data: cameras } = useApi<CameraFeed[]>("/cameras/");
   const [tokenReady, setTokenReady] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -379,7 +380,9 @@ function ShippingPageInner() {
 
   return (
     <AppShell title="Пост погрузки" section="Работа">
-      {queue.length === 0 ? (
+      {loadError && !orders ? (
+        <ErrorAlert message={loadError} onRetry={reload} />
+      ) : queue.length === 0 ? (
         <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed py-20 text-center">
           <span className="flex size-14 items-center justify-center rounded-2xl bg-[var(--muted)]">
             <Truck className="size-7 text-[var(--muted-foreground)]" />
