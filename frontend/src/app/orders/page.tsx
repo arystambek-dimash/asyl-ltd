@@ -21,7 +21,7 @@ import { isFinancialOrderStatus, ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAY
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { can, deptLabel } from "@/lib/can";
-import { formatMoney } from "@/lib/utils";
+import { formatDateTime, formatMoney } from "@/lib/utils";
 import { Pencil, Plus, Search } from "lucide-react";
 import type { Order } from "@/lib/types";
 
@@ -80,6 +80,7 @@ function OrdersPageInner() {
     if (sortKey === "amount") { av = Number(a.total_amount || 0); bv = Number(b.total_amount || 0); }
     else if (sortKey === "client") { av = a.client_name ?? ""; bv = b.client_name ?? ""; }
     else if (sortKey === "status") { av = a.status; bv = b.status; }
+    else if (sortKey === "created") { av = a.created_at; bv = b.created_at; }
     else { av = a.id; bv = b.id; }
     const cmp = typeof av === "number" && typeof bv === "number"
       ? av - bv
@@ -143,6 +144,7 @@ function OrdersPageInner() {
               <StatusBadge status={o.status} dot />
             </div>
             <div className="text-sm font-medium">{o.client_name || `Клиент #${o.client}`}</div>
+            <div className="text-xs text-[var(--muted-foreground)]">Создан {formatDateTime(o.created_at)}</div>
             <div className="grid grid-cols-2 gap-2 text-sm">
               <div>
                 <div className="text-[11px] text-[var(--muted-foreground)]">Сумма</div>
@@ -191,6 +193,7 @@ function OrdersPageInner() {
               <THead>
                 <TR>
                   <SortableHeader label="№" sortKey="id" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                  <SortableHeader label="Создан" sortKey="created" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
                   {showDept && <TH>Отдел</TH>}
                   <SortableHeader label="Клиент" sortKey="client" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
                   <TH>Машина</TH>
@@ -208,6 +211,9 @@ function OrdersPageInner() {
                     <TD className="font-medium">
                       <Link href={`/orders/${o.id}`} className="hover:underline"
                         onClick={(e) => e.stopPropagation()}>#{o.id}</Link>
+                    </TD>
+                    <TD className="whitespace-nowrap tabular-nums text-[var(--muted-foreground)]">
+                      {formatDateTime(o.created_at)}
                     </TD>
                     {showDept && (
                       <TD>
@@ -244,7 +250,7 @@ function OrdersPageInner() {
                   </TR>
                 ))}
                 {sorted.length === 0 && (
-                  <TR><TD colSpan={(showDept ? 8 : 7) + (canEdit ? 1 : 0)} className="py-4 text-center text-[var(--muted-foreground)]">
+                  <TR><TD colSpan={(showDept ? 9 : 8) + (canEdit ? 1 : 0)} className="py-4 text-center text-[var(--muted-foreground)]">
                     Заказов пока нет.</TD></TR>)}
               </TBody>
             </Table>

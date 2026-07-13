@@ -13,6 +13,14 @@ export function formatMoney(value: number | string): string {
   }).format(n);
 }
 
+/** Дата и время по-русски: «13.07.2026, 14:32». */
+export function formatDateTime(value: string | Date): string {
+  return new Date(value).toLocaleString("ru-RU", {
+    day: "2-digit", month: "2-digit", year: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
 // Телефон по шаблону +7 (___) ___-__-__ — форматирует ввод по мере набора.
 export function formatPhone(value: string): string {
   const digits = value.replace(/\D/g, "").replace(/^8/, "7").slice(0, 11);

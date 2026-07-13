@@ -21,7 +21,7 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can, deptLabel } from "@/lib/can";
-import { formatMoney } from "@/lib/utils";
+import { formatDateTime, formatMoney } from "@/lib/utils";
 import { Plus, Search, Trash2, Info } from "lucide-react";
 import type { Order, Client, Product } from "@/lib/types";
 
@@ -122,7 +122,7 @@ function CityOrdersInner() {
                 </div>
                 <div>
                   <div className="text-[11px] text-[var(--muted-foreground)]">Создана</div>
-                  <div>{new Date(o.created_at).toLocaleDateString("ru-RU")}</div>
+                  <div className="whitespace-nowrap tabular-nums">{formatDateTime(o.created_at)}</div>
                 </div>
               </div>
 
