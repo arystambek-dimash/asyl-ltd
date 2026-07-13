@@ -84,7 +84,11 @@ export interface Role {
 export interface Employee {
   id: number; username: string; first_name: string; last_name: string;
   phone: string; position: string; role: number | null; role_name: string | null;
-  name: string; permissions: string[]; is_active: boolean;
+  name: string;
+  /** Личные доступы поверх роли; права роли — в role_permissions. */
+  permissions: string[];
+  role_permissions: string[];
+  is_active: boolean;
 }
 export interface EventLog {
   id: number; event_type: string; message: string;

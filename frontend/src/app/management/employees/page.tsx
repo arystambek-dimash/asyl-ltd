@@ -13,6 +13,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { Field } from "@/components/ui/field";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { PermissionPicker } from "@/components/permission-picker";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
@@ -22,16 +23,16 @@ import { Plus, Search, Pencil, Trash2 } from "lucide-react";
 import type { Employee, Permission, Role } from "@/lib/types";
 
 function EmployeesPageInner() {
-  const { data: employees, reload } = useApi<Employee[]>("/employees/");
+  const { data: employees, error: loadError, reload } = useApi<Employee[]>("/employees/");
   const { data: roles } = useApi<Role[]>("/roles/");
   const { data: perms } = useApi<Permission[]>("/permissions/");
-  const { me } = useAuth();
+  const { me, refreshMe } = useAuth();
   const canManage = can(me, "employees.manage");
   const empty = { username: "", password: "", first_name: "", last_name: "", phone: "", position: "", role: "" };
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Employee | null>(null);
   const [form, setForm] = useState(empty);
-  // Доступы сотрудника: выбираются кнопками; роль лишь предзаполняет набор.
+  // Личные доступы поверх роли; права самой роли наследуются автоматически.
   const [codes, setCodes] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -46,7 +47,8 @@ function EmployeesPageInner() {
       username: e.username, password: "", first_name: e.first_name, last_name: e.last_name,
       phone: e.phone, position: e.position, role: e.role ? String(e.role) : "",
     });
-    setCodes(new Set(e.permissions ?? []));
+    const inRole = new Set(e.role_permissions ?? []);
+    setCodes(new Set((e.permissions ?? []).filter((c) => !inRole.has(c))));
     setError(""); setOpen(true);
   }
 
@@ -56,11 +58,14 @@ function EmployeesPageInner() {
     setCodes(next);
   }
 
-  // Выбор роли — назначение; набор прав предзаполняется её шаблоном.
+  // Права выбранной роли действуют сами — из личного набора убираем дубли.
+  const rolePerms = new Set(
+    ((roles ?? []).find((r) => String(r.id) === form.role)?.permissions ?? []).map((p) => p.code));
   function pickRole(roleId: string) {
     setForm((f) => ({ ...f, role: roleId }));
     const preset = (roles ?? []).find((r) => String(r.id) === roleId);
-    setCodes(new Set((preset?.permissions ?? []).map((p) => p.code)));
+    const inRole = new Set((preset?.permissions ?? []).map((p) => p.code));
+    setCodes((prev) => new Set([...prev].filter((c) => !inRole.has(c))));
   }
 
   async function submit(e: React.FormEvent) {
@@ -79,6 +84,7 @@ function EmployeesPageInner() {
         await api.post("/employees/", { ...body, password: form.password });
       }
       setForm(empty); setOpen(false); reload();
+      refreshMe(true); // если админ менял свои же доступы — применить сразу
     } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
   }
 
@@ -129,6 +135,7 @@ function EmployeesPageInner() {
             value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
       </div>
+      {loadError && !employees && <div className="mb-4"><ErrorAlert message={loadError} onRetry={reload} /></div>}
       <Card><CardContent className="pt-6">
         <Table>
           <THead><TR>
@@ -146,7 +153,7 @@ function EmployeesPageInner() {
                 <TD>
                   <div>{e.role_name || "—"}</div>
                   <div className="text-xs text-[var(--muted-foreground)]">
-                    Доступов: {e.permissions?.length ?? 0}
+                    Доступов: {new Set([...(e.role_permissions ?? []), ...(e.permissions ?? [])]).size}
                   </div>
                 </TD>
                 <TD><Badge tone={e.is_active ? "success" : "muted"}>{e.is_active ? "Активен" : "Отключён"}</Badge></TD>
@@ -219,8 +226,8 @@ function EmployeesPageInner() {
 
           <section className="space-y-3 border-t border-[var(--border)] pt-4">
             <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Доступы</h4>
-            <Field label="Роль (назначение)"
-              hint="Роль — только подпись и шаблон: при выборе подставит типовой набор доступов.">
+            <Field label="Роль"
+              hint="Роль сразу даёт свои доступы. Поменяете права роли — изменится доступ у всех сотрудников с ней.">
               <Select value={form.role} onChange={(e) => pickRole(e.target.value)}>
                 <option value="">Без роли</option>
                 {(roles ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
@@ -229,9 +236,12 @@ function EmployeesPageInner() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">К чему имеет доступ</span>
-                <span className="text-xs text-[var(--muted-foreground)]">Выбрано: {codes.size}</span>
+                <span className="text-xs text-[var(--muted-foreground)]">
+                  {rolePerms.size > 0 ? `Из роли: ${rolePerms.size} · ` : ""}Личных: {codes.size}
+                </span>
               </div>
-              <PermissionPicker perms={perms ?? []} selected={codes} onToggle={toggleCode} />
+              <PermissionPicker perms={perms ?? []} selected={codes} onToggle={toggleCode}
+                inherited={rolePerms} />
             </div>
           </section>
 

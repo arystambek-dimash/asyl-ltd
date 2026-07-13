@@ -12,9 +12,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False, min_length=6)
     role_name = serializers.CharField(source="role.name", read_only=True)
     name = serializers.CharField(read_only=True)
-    # Фактические доступы сотрудника (коды). Роль — лишь назначение и шаблон:
-    # при создании без явного списка права копируются из роли.
+    # Права роли наследуются «вживую»; permissions — личные доступы поверх роли.
     permissions = serializers.SerializerMethodField()
+    role_permissions = serializers.SerializerMethodField()
     permission_codes = serializers.SlugRelatedField(
         many=True, write_only=True, required=False,
         source="permissions", slug_field="code",
@@ -25,10 +25,15 @@ class EmployeeSerializer(serializers.ModelSerializer):
         model = Employee
         fields = ["id", "username", "password", "first_name", "last_name",
                   "phone", "position", "role", "role_name", "name",
-                  "permissions", "permission_codes", "is_active"]
+                  "permissions", "role_permissions", "permission_codes", "is_active"]
 
     def get_permissions(self, obj):
         return sorted(p.code for p in obj.permissions.all())
+
+    def get_role_permissions(self, obj):
+        if not obj.role_id:
+            return []
+        return sorted(p.code for p in obj.role.permissions.all())
 
     def validate(self, attrs):
         if not self.instance and not attrs.get("password"):
@@ -47,8 +52,6 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 {"detail": "Пользователь с таким логином уже существует", "code": "username_taken"})
         user = User.objects.create_user(username=username, password=password)
         employee = Employee.objects.create(user=user, **validated_data)
-        if permissions is None and employee.role:
-            permissions = employee.role.permissions.all()
         employee.permissions.set(permissions or [])
         return employee
 

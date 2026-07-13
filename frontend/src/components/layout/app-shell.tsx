@@ -22,13 +22,26 @@ export function AppShell({
   portal?: boolean;
   actions?: React.ReactNode;
 }) {
-  const { me, loading, loadMe } = useAuth();
+  const { me, loading, loadMe, refreshMe } = useAuth();
   const router = useRouter();
   const [navOpen, setNavOpen] = useState(false);
 
   useEffect(() => {
     if (!me) loadMe();
   }, [me, loadMe]);
+
+  // Права могли поменять, пока вкладка была в фоне — тихо перечитываем.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshMe();
+    };
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [refreshMe]);
 
   useEffect(() => {
     if (!loading && !me) router.replace("/login");

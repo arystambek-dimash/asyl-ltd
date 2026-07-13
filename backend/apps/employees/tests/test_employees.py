@@ -55,9 +55,9 @@ def _perm(code):
 
 
 def test_create_with_explicit_permissions(admin_client):
-    """Доступы выбираются в форме; роль — просто назначение."""
+    """Личные доступы добавляются поверх прав роли."""
     role = Role.objects.create(name="Кладовщик")
-    role.permissions.add(_perm("orders.view"))  # шаблон роли игнорируется при явном списке
+    role.permissions.add(_perm("orders.view"))
     resp = admin_client.post("/api/employees/", {
         "username": "anna", "password": "pass12345",
         "first_name": "Анна", "last_name": "С", "phone": "+7",
@@ -66,13 +66,14 @@ def test_create_with_explicit_permissions(admin_client):
     }, format="json")
     assert resp.status_code == 201
     assert resp.data["permissions"] == ["warehouse.adjust", "warehouse.view"]
+    assert resp.data["role_permissions"] == ["orders.view"]
     u = User.objects.get(username="anna")
     assert u.has_perm_code("warehouse.view") is True
-    assert u.has_perm_code("orders.view") is False
+    assert u.has_perm_code("orders.view") is True  # унаследовано от роли
 
 
-def test_create_without_permissions_seeds_from_role(admin_client):
-    """Без явного списка права предзаполняются из роли-шаблона."""
+def test_create_without_permissions_inherits_role(admin_client):
+    """Права роли действуют без копирования: личный список пуст."""
     role = Role.objects.create(name="Оператор-2")
     role.permissions.add(_perm("orders.view"))
     resp = admin_client.post("/api/employees/", {
@@ -80,6 +81,7 @@ def test_create_without_permissions_seeds_from_role(admin_client):
         "first_name": "Олег", "last_name": "К", "phone": "+7", "role": role.id,
     }, format="json")
     assert resp.status_code == 201
+    assert resp.data["permissions"] == []
     assert User.objects.get(username="oleg").has_perm_code("orders.view") is True
 
 
@@ -100,8 +102,8 @@ def test_update_permissions_and_password(admin_client):
     assert u.has_perm_code("clients.view") is True
 
 
-def test_role_change_does_not_touch_permissions(admin_client):
-    """Смена назначения (роли) не переписывает выданные доступы."""
+def test_role_change_switches_inherited_permissions(admin_client):
+    """Смена роли меняет наследуемые доступы, личные не трогает."""
     r1 = Role.objects.create(name="Р1")
     r1.permissions.add(_perm("orders.view"))
     r2 = Role.objects.create(name="Р2")
@@ -109,11 +111,13 @@ def test_role_change_does_not_touch_permissions(admin_client):
     resp = admin_client.post("/api/employees/", {
         "username": "vera", "password": "pass12345",
         "first_name": "Вера", "last_name": "Д", "phone": "+7", "role": r1.id,
+        "permission_codes": ["warehouse.view"],
     }, format="json")
     emp_id = resp.data["id"]
     resp = admin_client.patch(f"/api/employees/{emp_id}/",
                               {"username": "vera", "role": r2.id}, format="json")
     assert resp.status_code == 200
     u = User.objects.get(username="vera")
-    assert u.has_perm_code("orders.view") is True
-    assert u.has_perm_code("clients.view") is False
+    assert u.has_perm_code("orders.view") is False   # права старой роли ушли
+    assert u.has_perm_code("clients.view") is True   # права новой роли действуют
+    assert u.has_perm_code("warehouse.view") is True  # личное право осталось

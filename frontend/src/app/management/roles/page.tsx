@@ -9,14 +9,17 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
 import { useApi } from "@/lib/use-api";
+import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { Plus, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { PermissionPicker } from "@/components/permission-picker";
 import type { Role, Permission } from "@/lib/types";
 
 function RolesPageInner() {
-  const { data: roles, reload } = useApi<Role[]>("/roles/");
+  const { refreshMe } = useAuth();
+  const { data: roles, error: loadError, reload } = useApi<Role[]>("/roles/");
   const { data: perms } = useApi<Permission[]>("/permissions/");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Role | null>(null);
@@ -45,6 +48,7 @@ function RolesPageInner() {
       if (editing) await api.patch(`/roles/${editing.id}/`, body);
       else await api.post("/roles/", body);
       setOpen(false); reload();
+      refreshMe(true); // права роли могли коснуться и текущего пользователя
     } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
   }
   async function confirmRemove() {
@@ -56,7 +60,7 @@ function RolesPageInner() {
 
   return (
     <AppShell title="Роли" section="Управление"
-      description="Роль — назначение сотрудника и шаблон прав. Фактические доступы настраиваются в карточке сотрудника."
+      description="Роль определяет доступы сотрудников. Изменили права роли — они сразу действуют у всех, кому она назначена."
       actions={
         <Button size="sm" onClick={openNew} aria-label="Новая роль">
           <Plus className="size-4" /> <span className="hidden sm:inline">Новая роль</span>
@@ -66,6 +70,7 @@ function RolesPageInner() {
         <p className="text-sm text-[var(--muted-foreground)]">{roles?.length ?? 0} ролей</p>
       </div>
       {error && <p className="mb-3 text-sm text-[var(--destructive)]">{error}</p>}
+      {loadError && !roles && <div className="mb-3"><ErrorAlert message={loadError} onRetry={reload} /></div>}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {(roles ?? []).map((r) => (
           <Card key={r.id}>
@@ -99,7 +104,7 @@ function RolesPageInner() {
             <Input value={name} required onChange={(e) => setName(e.target.value)}
               disabled={editing?.is_system} /></div>
           <div className="flex flex-col gap-4">
-            <Label>Шаблон прав (подставляется сотруднику при выборе роли)</Label>
+            <Label>Права роли — действуют на всех сотрудников с этой ролью</Label>
             <PermissionPicker perms={perms ?? []} selected={codes} onToggle={toggle} />
           </div>
           {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}

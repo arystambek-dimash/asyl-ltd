@@ -33,6 +33,9 @@ def _make_order():
 
 def _count_queries(user, url):
     api = APIClient()
+    # Свежий инстанс из БД — как в реальном запросе (JWT достаёт юзера заново),
+    # иначе кэш effective_perm_codes переживает вызовы и искажает счётчик.
+    user = type(user).objects.get(pk=user.pk)
     api.force_authenticate(user)
     with CaptureQueriesContext(connection) as ctx:
         response = api.get(url)

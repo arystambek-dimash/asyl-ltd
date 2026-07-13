@@ -28,15 +28,15 @@ def test_employee_permissions_grant_code(make_user):
     assert "orders.view" in u.perm_codes
 
 
-def test_role_alone_grants_nothing(make_user):
-    """Роль — назначение: её права не действуют, пока не выданы сотруднику."""
+def test_role_permissions_inherited_live(make_user):
+    """Права роли действуют на сотрудника сразу, без личной копии."""
     from apps.employees.models import Employee
     u = make_user(username="e3")
-    role = Role.objects.create(name="R")
+    role = Role.objects.create(name="Тест-R")
     role.permissions.add(_perm("orders.view"))
     Employee.objects.create(user=u, first_name="A", last_name="B", phone="x", role=role)
-    assert u.has_perm_code("orders.view") is False
-    assert u.perm_codes == set()
+    assert u.has_perm_code("orders.view") is True
+    assert u.perm_codes == {"orders.view"}
 
 
 def test_no_employee_no_codes(make_user):
