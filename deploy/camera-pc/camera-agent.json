@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "mediaRoot": "C:\\mediamtx",
+  "mediaTaskName": "MediaMTX",
+  "syncTaskName": "MediaMTX-NVR-Sync",
+  "requiredPorts": [8554, 8888, 8889],
+  "expectedSources": 20,
+  "minimumConfigSources": 20,
+  "minimumConfigPaths": 20,
+  "majorityLossPercent": 60,
+  "sourceFailureThreshold": 3,
+  "hardFailureCooldownMinutes": 1,
+  "restartCooldownMinutes": 5,
+  "restartFailureBackoffMinutes": [5, 15, 30, 60],
+  "restartReadyTimeoutSeconds": 45,
+  "sourceRecoveryTimeoutSeconds": 45,
+  "tailscaleRepairCooldownMinutes": 10,
+  "tailnetPeer": "",
+  "heartbeatMinutes": 30,
+  "maxLogBytes": 5242880
+}

@@ -15,7 +15,7 @@ from rest_framework.views import APIView
 from apps.rbac.permissions import HasPerm
 from apps.orders.models import Order
 
-from . import ai, services, sessions
+from . import ai, health, services, sessions
 
 CAM_COOKIE = "cam_token"
 CAM_TOKEN_MAX_AGE = 12 * 3600  # секунд
@@ -52,6 +52,21 @@ class CameraTokenView(APIView):
             path="/go2rtc/",
         )
         return resp
+
+
+class CameraHealthView(APIView):
+    """Staff-facing monitor state; full outage/stale heartbeat is HTTP 503."""
+
+    permission_classes = [IsAuthenticated, IsStaffUser]
+
+    def get(self, request):
+        payload = health.state_payload()
+        http_status = (
+            status.HTTP_200_OK
+            if health.exit_code(payload) == 0
+            else status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+        return Response(payload, status=http_status)
 
 
 class CameraAuthView(APIView):

@@ -1,0 +1,80 @@
+name: Camera health monitor
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-camera-health
+  cancel-in-progress: true
+
+jobs:
+  camera-health:
+    name: Verify production camera path
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      PROD_HOST: ${{ secrets.PROD_HOST || '78.40.109.240' }}
+      PROD_PORT: ${{ secrets.PROD_PORT || '22' }}
+      PROD_USER: ${{ secrets.PROD_USER || 'ubuntu' }}
+      PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+
+    steps:
+      - name: Check durable camera heartbeat over SSH
+        run: |
+          set -euo pipefail
+          if [ -z "$PROD_SSH_KEY" ]; then
+            echo "::error::PROD_SSH_KEY is not configured."
+            exit 2
+          fi
+
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/asyl_ltd_camera_monitor_key
+          chmod 600 ~/.ssh/asyl_ltd_camera_monitor_key
+
+          set +e
+          output=$(ssh \
+            -i ~/.ssh/asyl_ltd_camera_monitor_key \
+            -p "$PROD_PORT" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=10 \
+            -o ServerAliveInterval=10 \
+            -o ServerAliveCountMax=2 \
+            "$PROD_USER@$PROD_HOST" \
+            "cd /home/ubuntu/asyl-ltd \
+             && docker compose -f docker-compose.prod.yml exec -T camera-monitor \
+                  python manage.py check_camera_health --max-age 120 --fail-on-degraded" 2>&1)
+          rc=$?
+          set -e
+
+          printf '%s\n' "$output"
+          case "$rc" in
+            0)
+              echo "Camera path heartbeat is current and video is available."
+              ;;
+            2)
+              echo "::error::Camera monitor is unavailable, pending, or stale."
+              exit 2
+              ;;
+            3)
+              echo "::error::Confirmed production camera outage or critical capacity loss."
+              exit 3
+              ;;
+            4)
+              echo "::error::Production camera path is degraded; at least one expected stream is unavailable."
+              exit 4
+              ;;
+            255)
+              echo "::error::Production server is unreachable over SSH."
+              exit 255
+              ;;
+            *)
+              echo "::error::Unexpected camera health check failure (exit $rc)."
+              exit "$rc"
+              ;;
+          esac

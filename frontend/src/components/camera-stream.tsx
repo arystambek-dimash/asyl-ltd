@@ -1,5 +1,49 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { api } from "@/lib/api";
+
+// Cookie живёт 12 часов. Обновляем её заранее, чтобы долгоживущий экран не
+// обнаруживал истечение только в момент следующего реконнекта WebSocket.
+const TOKEN_RENEW_AFTER_MS = 10 * 60 * 60 * 1000;
+const TOKEN_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+const AUTH_RENEW_COOLDOWN_MS = 60 * 1000;
+const STARTUP_TIMEOUT_MS = 20 * 1000;
+const NO_DATA_TIMEOUT_MS = 20 * 1000;
+const NO_FRAME_TIMEOUT_MS = 25 * 1000;
+const WATCHDOG_INTERVAL_MS = 5 * 1000;
+
+let tokenIssuedAt = 0;
+let tokenRequest: Promise<void> | null = null;
+let lastForcedTokenRenewal = 0;
+
+/**
+ * Получение cam_token дедуплицировано для всей страницы: сетка из десяти
+ * камер делает один запрос, а не десять. `force` используется после отказа
+ * WebSocket до первого кадра (nginx при 403 не сообщает браузеру HTTP-код).
+ */
+export function ensureCameraStreamToken(force = false): Promise<void> {
+  const now = Date.now();
+  if (tokenRequest) return tokenRequest;
+  if (!force && tokenIssuedAt && now - tokenIssuedAt < TOKEN_RENEW_AFTER_MS) {
+    return Promise.resolve();
+  }
+  // Все offline-камеры также закрываются до первого кадра. Ограничиваем
+  // принудительное обновление, чтобы такой сбой не создавал request storm.
+  if (force && lastForcedTokenRenewal && now - lastForcedTokenRenewal < AUTH_RENEW_COOLDOWN_MS) {
+    return Promise.resolve();
+  }
+  if (force) lastForcedTokenRenewal = now;
+
+  tokenRequest = api
+    .post("/cameras/token/", undefined, { timeout: 10_000 })
+    .then(() => {
+      tokenIssuedAt = Date.now();
+    })
+    .finally(() => {
+      tokenRequest = null;
+    });
+  return tokenRequest;
+}
 
 /**
  * MSE-плеер потока go2rtc: WebSocket /go2rtc/api/ws?src=<name>,
@@ -57,6 +101,8 @@ export function CameraStream({
 
     let ws: WebSocket | null = null;
     let retry: ReturnType<typeof setTimeout> | null = null;
+    let tokenCheck: ReturnType<typeof setInterval> | null = null;
+    let cleanupCurrent: (() => void) | null = null;
     let attempt = 0;
     let disposed = false;
 
@@ -65,12 +111,33 @@ export function CameraStream({
       onStateChange?.(v);
     };
 
-    const connect = () => {
+    const scheduleReconnect = () => {
+      if (disposed || retry) return;
+      setState(false);
+      attempt += 1;
+      const base = Math.min(30_000, 1000 * 2 ** Math.min(attempt - 1, 5));
+      // Камеры не должны одновременно штурмовать go2rtc после общего сбоя.
+      const delay = Math.round(base * (0.8 + Math.random() * 0.4));
+      retry = setTimeout(() => {
+        retry = null;
+        void connect();
+      }, delay);
+    };
+
+    const connect = async () => {
       if (disposed) return;
       try {
+        // Нельзя открывать WS до установки cookie. Ошибка токена проходит тем
+        // же ограниченным экспоненциальным бэкоффом, что и ошибка потока.
+        await ensureCameraStreamToken();
+        if (disposed) return;
+
         const proto = location.protocol === "https:" ? "wss" : "ws";
         ws = new WebSocket(`${proto}://${location.host}/go2rtc/api/ws?src=${encodeURIComponent(src)}`);
         ws.binaryType = "arraybuffer";
+        const thisWs = ws;
+        const connectedAt = Date.now();
+        let startupDeadlineAt = connectedAt + STARTUP_TIMEOUT_MS;
 
         const ms = new MS();
 
@@ -93,6 +160,10 @@ export function CameraStream({
         // Буфер как в go2rtc: копим байты, пока SourceBuffer занят.
         const bufArr = new Uint8Array(4 * 1024 * 1024);
         let bufLen = 0;
+        let hadMedia = false;
+        let lastMediaAt = connectedAt;
+        let lastFrameAt = connectedAt;
+        let lastVideoTime = video.currentTime;
 
         const append = (data: ArrayBuffer) => {
           if (!sb) return;
@@ -105,7 +176,7 @@ export function CameraStream({
               sb.appendBuffer(bytes);
             }
           } catch {
-            ws?.close();
+            thisWs.close();
           }
         };
 
@@ -125,7 +196,7 @@ export function CameraStream({
               sb.appendBuffer(bufArr.slice(0, bufLen));
               bufLen = 0;
             } catch {
-              ws?.close();
+              thisWs.close();
               return;
             }
           }
@@ -153,9 +224,24 @@ export function CameraStream({
         };
         video.addEventListener("waiting", onWaiting);
 
+        const onFrameProgress = () => {
+          if (video.currentTime > lastVideoTime + 0.01) {
+            lastVideoTime = video.currentTime;
+            lastFrameAt = Date.now();
+          }
+        };
+        video.addEventListener("timeupdate", onFrameProgress);
+        video.addEventListener("playing", onFrameProgress);
+
         // Вернулись во вкладку — сразу свежая картинка, не догоняющая.
         const onVisible = () => {
           if (document.visibilityState !== "visible") return;
+          // После сна вкладки даём декодеру полное окно watchdog на запуск.
+          const now = Date.now();
+          lastMediaAt = now;
+          lastFrameAt = now;
+          lastVideoTime = video.currentTime;
+          if (!hadMedia) startupDeadlineAt = now + STARTUP_TIMEOUT_MS;
           seekLive(1);
           video.play().catch(() => {});
         };
@@ -167,13 +253,44 @@ export function CameraStream({
         (ms as unknown as EventTarget).addEventListener("startstreaming", onStart);
         (ms as unknown as EventTarget).addEventListener("endstreaming", onStop);
 
+        const watchdog = setInterval(() => {
+          if (document.visibilityState !== "visible") return;
+          const now = Date.now();
+          if (thisWs.readyState === WebSocket.CONNECTING) {
+            if (now > startupDeadlineAt) thisWs.close();
+            return;
+          }
+          if (thisWs.readyState !== WebSocket.OPEN) return;
+          onFrameProgress();
+          if (!hadMedia) {
+            if (now > startupDeadlineAt) thisWs.close();
+            return;
+          }
+          // Различаем зависший сокет и зависший декодер: постоянный поток
+          // байтов не должен маскировать картинку, застывшую на одном кадре.
+          if (now - lastMediaAt > NO_DATA_TIMEOUT_MS || now - lastFrameAt > NO_FRAME_TIMEOUT_MS) {
+            thisWs.close();
+          } else if (video.paused) {
+            video.play().catch(() => {});
+          }
+        }, WATCHDOG_INTERVAL_MS);
+
+        let cleaned = false;
         const cleanup = () => {
+          if (cleaned) return;
+          cleaned = true;
+          clearInterval(watchdog);
           video.removeEventListener("waiting", onWaiting);
+          video.removeEventListener("timeupdate", onFrameProgress);
+          video.removeEventListener("playing", onFrameProgress);
           document.removeEventListener("visibilitychange", onVisible);
           (ms as unknown as EventTarget).removeEventListener("startstreaming", onStart);
           (ms as unknown as EventTarget).removeEventListener("endstreaming", onStop);
+          sb?.removeEventListener("updateend", onUpdateEnd);
           if (objectUrl) URL.revokeObjectURL(objectUrl);
+          if (cleanupCurrent === cleanup) cleanupCurrent = null;
         };
+        cleanupCurrent = cleanup;
 
         // Запрос дорожек шлём, только когда открыты И WebSocket, И MediaSource
         // (порядок этих событий не гарантирован — иначе send() теряется).
@@ -181,15 +298,15 @@ export function CameraStream({
         let msOpen = false;
         let codecsSent = false;
         const requestCodecs = () => {
-          if (!wsOpen || !msOpen || codecsSent || !ws) return;
+          if (!wsOpen || !msOpen || codecsSent) return;
           codecsSent = true;
-          ws.send(JSON.stringify({ type: "mse", value: "avc1.640029,avc1.64001F,avc1.42E01F,mp4a.40.2" }));
+          thisWs.send(JSON.stringify({ type: "mse", value: "avc1.640029,avc1.64001F,avc1.42E01F,mp4a.40.2" }));
         };
 
-        ws.onopen = () => { wsOpen = true; requestCodecs(); };
+        thisWs.onopen = () => { wsOpen = true; requestCodecs(); };
         ms.addEventListener("sourceopen", () => { msOpen = true; requestCodecs(); }, { once: true });
 
-        ws.onmessage = (ev) => {
+        thisWs.onmessage = (ev) => {
           try {
             if (typeof ev.data === "string") {
               const msg = JSON.parse(ev.data);
@@ -197,37 +314,51 @@ export function CameraStream({
                 sb = ms.addSourceBuffer(msg.value);
                 sb.mode = "segments";
                 sb.addEventListener("updateend", onUpdateEnd);
-                attempt = 0;
-                setState(true);
                 video.play().catch(() => {});
               }
-            } else if (streaming || !managed) {
+            } else if ((streaming || !managed) && sb) {
+              const now = Date.now();
+              lastMediaAt = now;
+              if (!hadMedia) {
+                hadMedia = true;
+                lastFrameAt = now;
+                attempt = 0;
+                setState(true);
+              }
               append(ev.data);
             }
           } catch {
-            ws?.close();
+            thisWs.close();
           }
         };
-        ws.onclose = () => {
+        thisWs.onclose = () => {
           cleanup();
           if (disposed) return;
           setState(false);
-          attempt += 1;
-          retry = setTimeout(connect, Math.min(15000, 1000 * 2 ** attempt));
+          // 403 на WebSocket недоступен через браузерный API и выглядит как
+          // закрытие до первого сообщения. Сразу обновляем cookie; глобальный
+          // cooldown не даст offline-камере делать это на каждом реконнекте.
+          if (!hadMedia) void ensureCameraStreamToken(true).catch(() => {});
+          scheduleReconnect();
         };
-        ws.onerror = () => ws?.close();
+        thisWs.onerror = () => thisWs.close();
       } catch {
         // любой сбой инициализации — тихий реконнект, а не падение страницы
-        setState(false);
-        attempt += 1;
-        retry = setTimeout(connect, Math.min(15000, 1000 * 2 ** attempt));
+        scheduleReconnect();
       }
     };
 
-    connect();
+    void connect();
+    // Проверка дешёвая (обычно Promise.resolve), сеть используется только
+    // после достижения порога TOKEN_RENEW_AFTER_MS.
+    tokenCheck = setInterval(() => {
+      void ensureCameraStreamToken().catch(() => {});
+    }, TOKEN_CHECK_INTERVAL_MS);
     return () => {
       disposed = true;
       if (retry) clearTimeout(retry);
+      if (tokenCheck) clearInterval(tokenCheck);
+      cleanupCurrent?.();
       ws?.close();
       try {
         video.removeAttribute("src");

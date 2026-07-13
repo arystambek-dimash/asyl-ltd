@@ -3,8 +3,10 @@ import { useCallback, useEffect, useState } from "react";
 import { Grid2x2, Lock, RectangleHorizontal, Video, VideoOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
-import { useApi } from "@/lib/use-api";
-import { CameraStream } from "@/components/camera-stream";
+import { CameraStream, ensureCameraStreamToken } from "@/components/camera-stream";
+
+const CAMERA_REFRESH_MS = 30 * 1000;
+const RETRY_MAX_MS = 60 * 1000;
 
 /** Камера из живого инвентаря сети (бэкенд строит его из ai_service). */
 export interface CameraFeed {
@@ -91,20 +93,129 @@ function CameraTile({
 }
 
 export function CameraWall() {
-  const { data, loading } = useApi<CameraFeed[]>("/cameras/");
-  const cameras = data ?? [];
+  const [cameras, setCameras] = useState<CameraFeed[]>([]);
+  const [loading, setLoading] = useState(true);
   const playable = playableCameras(cameras);
   const [mode, setMode] = useState<"grid" | "single">("grid");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tokenReady, setTokenReady] = useState(false);
   const [onlineIds, setOnlineIds] = useState<Set<string>>(new Set());
 
-  // cookie-доступ к потокам go2rtc; без неё nginx отдаст 403
+  // Живой инвентарь: при ошибке сохраняем последнюю успешную выборку, а
+  // повторяем запрос с ограниченным бэкоффом. После восстановления сети и
+  // возврата во вкладку не ждём следующего таймера.
   useEffect(() => {
-    api.post("/cameras/token/")
-      .then(() => setTokenReady(true))
-      .catch(() => setTokenReady(false));
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let inFlight = false;
+    let rerun = false;
+    let failures = 0;
+
+    const schedule = (delay: number) => {
+      if (disposed) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        void refresh();
+      }, delay);
+    };
+
+    const refresh = async () => {
+      if (disposed) return;
+      if (inFlight) {
+        rerun = true;
+        return;
+      }
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      inFlight = true;
+      let nextDelay = CAMERA_REFRESH_MS;
+      try {
+        const response = await api.get<CameraFeed[]>("/cameras/", { timeout: 10_000 });
+        if (!Array.isArray(response.data)) throw new Error("invalid camera inventory");
+        if (!disposed) setCameras(response.data);
+        failures = 0;
+      } catch {
+        failures += 1;
+        nextDelay = Math.min(RETRY_MAX_MS, 1000 * 2 ** Math.min(failures - 1, 6));
+      } finally {
+        inFlight = false;
+        if (!disposed) setLoading(false);
+        if (rerun) {
+          rerun = false;
+          void refresh();
+        } else {
+          schedule(nextDelay);
+        }
+      }
+    };
+
+    const refreshNow = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    document.addEventListener("visibilitychange", refreshNow);
+    window.addEventListener("online", refreshNow);
+    void refresh();
+
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", refreshNow);
+      window.removeEventListener("online", refreshNow);
+    };
   }, []);
+
+  // cookie-доступ к потокам go2rtc; без неё nginx отдаст 403. Ошибка не
+  // оставляет стену навсегда пустой: повторяем с тем же capped backoff.
+  useEffect(() => {
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let failures = 0;
+
+    const acquire = async () => {
+      try {
+        await ensureCameraStreamToken();
+        if (!disposed) {
+          failures = 0;
+          setTokenReady(true);
+        }
+      } catch {
+        if (disposed) return;
+        setTokenReady(false);
+        failures += 1;
+        const delay = Math.min(30_000, 1000 * 2 ** Math.min(failures - 1, 5));
+        timer = setTimeout(() => void acquire(), delay);
+      }
+    };
+
+    const acquireNow = () => {
+      if (document.visibilityState !== "visible" || tokenReady) return;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      void acquire();
+    };
+    document.addEventListener("visibilitychange", acquireNow);
+    window.addEventListener("online", acquireNow);
+    void acquire();
+
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", acquireNow);
+      window.removeEventListener("online", acquireNow);
+    };
+  }, [tokenReady]);
+
+  // Удалённая из нового инвентаря камера не должна оставаться в счётчике.
+  useEffect(() => {
+    const ids = new Set(cameras.map((camera) => camera.id));
+    setOnlineIds((prev) => {
+      const next = new Set([...prev].filter((id) => ids.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [cameras]);
 
   const handleOnline = useCallback((id: string, online: boolean) => {
     setOnlineIds((prev) => {

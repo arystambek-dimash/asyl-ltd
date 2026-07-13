@@ -28,7 +28,9 @@ if docker compose -f "$COMPOSE_FILE" ps --services --filter status=running | gre
 fi
 
 echo "Validating compose config..."
-docker compose -f "$COMPOSE_FILE" config >/tmp/asyl-ltd-compose-config.yml
+# `config` expands all environment values, including camera/alert credentials.
+# Quiet validation keeps those secrets out of a world-readable /tmp file.
+docker compose -f "$COMPOSE_FILE" config --quiet
 
 # Образы собираются в CI (GitHub Actions) и публикуются в GHCR —
 # сервер их только скачивает, ничего не собирая сам.
@@ -40,14 +42,27 @@ fi
 echo "Pulling images..."
 docker compose -f "$COMPOSE_FILE" pull --quiet
 
+# The camera gate must observe a probe from this deployment, rather than
+# accepting a still-young heartbeat left by the previous monitor container.
+# Add one second because the CLI accepts whole Unix seconds while Django stores
+# microseconds; this closes the same-second race with the previous heartbeat.
+CAMERA_DEPLOY_EPOCH="$(( $(date +%s) + 1 ))"
+
 echo "Starting containers..."
 docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
 
-echo "Reloading nginx config (bind-mounted, not picked up by compose)..."
-docker compose -f "$COMPOSE_FILE" exec -T nginx nginx -s reload || true
-
 echo "Restarting go2rtc to pick up bind-mounted config..."
-docker compose -f "$COMPOSE_FILE" restart go2rtc || true
+docker compose -f "$COMPOSE_FILE" restart go2rtc
+
+echo "Waiting for go2rtc and a fresh camera-monitor heartbeat..."
+APP_DIR="$APP_DIR" \
+COMPOSE_FILE="$COMPOSE_FILE" \
+CAMERA_HEALTH_REQUIRE_SINCE_EPOCH="$CAMERA_DEPLOY_EPOCH" \
+  ./deploy/health/wait-for-camera-health.sh
+
+echo "Validating and reloading nginx config (bind-mounted, not picked up by compose)..."
+docker compose -f "$COMPOSE_FILE" exec -T nginx nginx -t
+docker compose -f "$COMPOSE_FILE" exec -T nginx nginx -s reload
 
 echo "Current containers:"
 docker compose -f "$COMPOSE_FILE" ps

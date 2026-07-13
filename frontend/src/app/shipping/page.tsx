@@ -68,10 +68,9 @@ function StageTrack({ status }: { status: string }) {
 }
 
 /** Живая камера поста: зона по шагу, переключение — чипами поверх видео. */
-function PostCamera({ cameras, tokenReady, zoneKeywords, ai }: {
+function PostCamera({ cameras, zoneKeywords, ai }: {
   /** Только играбельные камеры (locked пост не показывает). */
   cameras: (CameraFeed & { src: string })[];
-  tokenReady: boolean;
   zoneKeywords: string[];
   /** Работающий AI-подсчёт: на этой камере показываем аннотированный поток. */
   ai?: { camId: string; src: string } | null;
@@ -92,7 +91,7 @@ function PostCamera({ cameras, tokenReady, zoneKeywords, ai }: {
 
   return (
     <div className="relative min-h-[260px] flex-1 overflow-hidden rounded-2xl bg-[#141416]">
-      {cam && src && tokenReady && (
+      {cam && src && (
         <CameraStream key={src} src={src} onStateChange={setOnline}
           className="absolute inset-0 h-full w-full object-cover" />
       )}
@@ -331,17 +330,28 @@ function AiCounterPanel({ ai, accepted, onAccept }: {
 function ShippingPageInner() {
   const { me } = useAuth();
   const { data: orders, error: loadError, reload } = useApi<Order[]>("/orders/");
-  const { data: cameras } = useApi<CameraFeed[]>("/cameras/");
-  const [tokenReady, setTokenReady] = useState(false);
+  const { data: cameras, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [weighIn, setWeighIn] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  // cookie-доступ к потокам go2rtc; без неё nginx отдаст 403
+  // Инвентарь камер сам восстанавливается после сбоя MediaMTX/Tailscale.
+  // Последний успешный список остаётся в useApi, пока очередной запрос падает;
+  // CameraStream самостоятельно получает и обновляет cookie видеопотока.
   useEffect(() => {
-    api.post("/cameras/token/").then(() => setTokenReady(true)).catch(() => setTokenReady(false));
-  }, []);
+    const refreshVisible = () => {
+      if (!document.hidden) void reloadCameras();
+    };
+    const timer = setInterval(refreshVisible, 30_000);
+    document.addEventListener("visibilitychange", refreshVisible);
+    window.addEventListener("online", refreshVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshVisible);
+      window.removeEventListener("online", refreshVisible);
+    };
+  }, [reloadCameras]);
 
   // Пост — «живой» экран: очередь и счётчики обновляются сами.
   useEffect(() => {
@@ -489,7 +499,7 @@ function ShippingPageInner() {
 
               {/* видео + действие шага */}
               <div className="grid gap-4 p-5 xl:grid-cols-[1.4fr_1fr]">
-                <PostCamera cameras={playable} tokenReady={tokenReady}
+                <PostCamera cameras={playable}
                   zoneKeywords={selected.status === "confirmed" ? ["вес", "въезд"] : ["загруз"]}
                   ai={aiLive && aiCam
                     ? { camId: aiCam.id, src: ai.status?.stream ?? `${aiCam.src}ai` }

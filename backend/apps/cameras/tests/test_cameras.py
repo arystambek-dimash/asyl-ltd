@@ -16,8 +16,10 @@ def clear_camera_cache(monkeypatch):
     # от env; инвентарные тесты включают его сами.
     monkeypatch.setattr(ai, "AI_KEY", "")
     cache.delete(services.CACHE_KEY)
+    cache.delete(services.LAST_GOOD_CACHE_KEY)
     yield
     cache.delete(services.CACHE_KEY)
+    cache.delete(services.LAST_GOOD_CACHE_KEY)
 
 
 def fake_probe(statuses):
@@ -121,6 +123,30 @@ def test_discover_caches_result(monkeypatch):
 def test_discover_without_password_is_empty(monkeypatch):
     monkeypatch.setattr(services, "CAMERA_PASS", "")
     assert services.discover_cameras() == []
+
+
+def test_discover_preserves_last_good_topology_during_total_outage(monkeypatch):
+    monkeypatch.setattr(services, "CAMERA_PASS", "x")
+    with patch.object(services, "_probe_path", side_effect=fake_probe(["online", "online"])):
+        first = services.discover_cameras()
+    cache.delete(services.CACHE_KEY)
+    with patch.object(services, "_probe_path", return_value="absent"):
+        during_outage = services.discover_cameras()
+
+    assert [camera["id"] for camera in during_outage] == [camera["id"] for camera in first]
+    assert all(camera["online"] is False for camera in during_outage)
+    assert all("переподключ" in camera["note"].lower() for camera in during_outage)
+
+
+def test_empty_discovery_uses_short_cache_ttl(monkeypatch):
+    monkeypatch.setattr(services, "CAMERA_PASS", "")
+    with patch.object(cache, "set", wraps=cache.set) as cache_set:
+        assert services.discover_cameras() == []
+    assert cache_set.call_args_list[-1].args == (
+        services.CACHE_KEY,
+        [],
+        services.EMPTY_CACHE_TTL,
+    )
 
 
 def test_camera_list_for_staff(auth_client, operator):

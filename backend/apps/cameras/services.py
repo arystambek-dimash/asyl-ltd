@@ -38,8 +38,11 @@ GO2RTC_API = (os.environ.get("GO2RTC_API_URL") or "").rstrip("/")
 # он же — верхняя граница резервного перебора.
 MAX_CAMERAS = 32
 PROBE_TIMEOUT = 12  # сек; on-demand источник у MediaMTX поднимается 2–10 с
-CACHE_KEY = "cameras:discovered:v2"  # v2 — строковые id и поля инвентаря
+CACHE_KEY = "cameras:discovered:v3"  # v3 — last-good fallback и короткий outage TTL
 CACHE_TTL = 240  # сек; инвентарь на ПК обновляется раз в ~5 мин
+LAST_GOOD_CACHE_KEY = "cameras:last-good:v3"
+LAST_GOOD_TTL = 7 * 24 * 3600
+EMPTY_CACHE_TTL = 15  # полный сбой не должен приклеить пустую стену на 4 минуты
 
 # Известные зоны цеха по номерам каналов NVR; для остальных — «Камера N».
 ZONES = {
@@ -55,7 +58,13 @@ ZONES = {
 
 
 def discover_cameras() -> list[dict]:
-    """Актуальный список камер (кэшируется на CACHE_TTL секунд)."""
+    """Актуальный список камер с last-known-good fallback.
+
+    При полном сетевом сбое резервные пробы возвращают пустой список. Вместо
+    исчезновения всех плиток сохраняем последнюю известную топологию с
+    ``online=False``: плееры продолжают переподключаться и сами оживают сразу
+    после восстановления. Пустой результат кэшируется лишь кратко.
+    """
     cached = cache.get(CACHE_KEY)
     if cached is not None:
         return cached
@@ -63,7 +72,23 @@ def discover_cameras() -> list[dict]:
     cameras = _discover_by_inventory()
     if cameras is None:
         cameras = _discover_by_probe()
-    cache.set(CACHE_KEY, cameras, CACHE_TTL)
+
+    if cameras:
+        cache.set(LAST_GOOD_CACHE_KEY, cameras, LAST_GOOD_TTL)
+        cache.set(CACHE_KEY, cameras, CACHE_TTL)
+        return cameras
+
+    last_good = cache.get(LAST_GOOD_CACHE_KEY) or []
+    if last_good:
+        cameras = [
+            {
+                **camera,
+                "online": False,
+                "note": camera.get("note") or "Связь потеряна, выполняется переподключение",
+            }
+            for camera in last_good
+        ]
+    cache.set(CACHE_KEY, cameras, EMPTY_CACHE_TTL)
     return cameras
 
 

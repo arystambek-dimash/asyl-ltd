@@ -56,3 +56,82 @@ class AiCountingSession(models.Model):
             )
         ]
 
+
+class CameraHealthState(models.Model):
+    """Last durable result of the end-to-end camera monitor.
+
+    There is deliberately one row.  Keeping the heartbeat in PostgreSQL makes
+    deploy checks independent from the monitor process itself: a dead monitor
+    cannot keep returning a cached green response.
+    """
+
+    INITIALIZING = "initializing"
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    OUTAGE = "outage"
+    STATUSES = (
+        (INITIALIZING, "Initializing"),
+        (HEALTHY, "Healthy"),
+        (DEGRADED, "Degraded"),
+        (OUTAGE, "Outage"),
+    )
+
+    singleton = models.BooleanField(default=True, unique=True, editable=False)
+    status = models.CharField(max_length=16, choices=STATUSES, default=INITIALIZING)
+    observed_status = models.CharField(
+        max_length=16, choices=STATUSES, default=INITIALIZING
+    )
+    expected_count = models.PositiveSmallIntegerField(default=0)
+    online_count = models.PositiveSmallIntegerField(default=0)
+    failure_streak = models.PositiveSmallIntegerField(default=0)
+    degraded_streak = models.PositiveSmallIntegerField(default=0)
+    recovery_streak = models.PositiveSmallIntegerField(default=0)
+    first_failure_at = models.DateTimeField(null=True, blank=True)
+    first_degraded_at = models.DateTimeField(null=True, blank=True)
+    last_checked_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_good_at = models.DateTimeField(null=True, blank=True)
+    last_changed_at = models.DateTimeField(null=True, blank=True)
+    outage_started_at = models.DateTimeField(null=True, blank=True)
+    components = models.JSONField(default=dict, blank=True)
+    streams = models.JSONField(default=dict, blank=True)
+    last_error = models.CharField(max_length=1000, blank=True, default="")
+
+    class Meta:
+        verbose_name = "camera health state"
+
+
+class CameraIncident(models.Model):
+    """Confirmed degraded/outage period and its alert audit trail."""
+
+    DEGRADED = "degraded"
+    OUTAGE = "outage"
+    SEVERITIES = ((DEGRADED, "Degraded"), (OUTAGE, "Outage"))
+
+    singleton = models.BooleanField(default=True, editable=False)
+    started_at = models.DateTimeField(db_index=True)
+    confirmed_at = models.DateTimeField()
+    resolved_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    severity = models.CharField(max_length=12, choices=SEVERITIES, default=OUTAGE)
+    expected_count = models.PositiveSmallIntegerField(default=0)
+    minimum_online_count = models.PositiveSmallIntegerField(default=0)
+    degraded_details = models.JSONField(default=dict, blank=True)
+    outage_details = models.JSONField(default=dict, blank=True)
+    recovery_details = models.JSONField(default=dict, blank=True)
+    degraded_alert_attempted_at = models.DateTimeField(null=True, blank=True)
+    degraded_alert_sent_at = models.DateTimeField(null=True, blank=True)
+    degraded_alert_superseded_at = models.DateTimeField(null=True, blank=True)
+    outage_alert_attempted_at = models.DateTimeField(null=True, blank=True)
+    outage_alert_sent_at = models.DateTimeField(null=True, blank=True)
+    recovery_alert_attempted_at = models.DateTimeField(null=True, blank=True)
+    recovery_alert_sent_at = models.DateTimeField(null=True, blank=True)
+    alert_error = models.CharField(max_length=1000, blank=True, default="")
+
+    class Meta:
+        ordering = ["-started_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["singleton"],
+                condition=Q(resolved_at__isnull=True),
+                name="cameras_one_open_camera_incident",
+            )
+        ]
