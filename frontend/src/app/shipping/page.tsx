@@ -249,10 +249,23 @@ function AiCounterPanel({ ai, accepted, onAccept }: {
   onAccept: (bags: number) => void;
 }) {
   const st = ai.status;
+  if (st?.busy && !st.owned_by_order) {
+    return (
+      <div className="rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-3.5">
+        <div className="flex items-center gap-2 text-sm font-semibold text-amber-700 dark:text-amber-400">
+          <Cctv className="size-4" /> AI-подсчёт занят
+        </div>
+        <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+          Сейчас считается заказ #{st.session_order_id}. Камеры можно смотреть,
+          а новая сессия станет доступна сразу после завершения текущей.
+        </p>
+      </div>
+    );
+  }
   if (!st?.running) {
     return (
       <div className="flex flex-col gap-2">
-        <Button variant="outline" className="h-12 rounded-xl" disabled={ai.busy}
+        <Button variant="outline" className="h-12 rounded-xl" disabled={ai.busy || ai.occupied}
           onClick={() => ai.start().catch(() => {})}>
           <Cctv className="size-5" /> AI-подсчёт по камере
         </Button>
@@ -364,7 +377,7 @@ function ShippingPageInner() {
   );
   const isLoadStep = !!selected
     && (selected.status === "arrived" || selected.status === "loading") && canLoad;
-  const ai = useAiCounter(aiCam?.src ?? null, isLoadStep);
+  const ai = useAiCounter(aiCam?.src ?? null, selected?.id ?? null, isLoadStep);
   // Плеер переключаем на аннотированный поток, только когда модель в эфире
   // (на прогреве поток ещё 404 — держим обычную картинку).
   const aiLive = ai.running && ai.status?.status === "онлайн";

@@ -11,6 +11,15 @@ import { api, apiError } from "@/lib/api";
  */
 export interface AiStatus {
   running: boolean;
+  /** Глобальный GPU-слот занят другим заказом. Видео при этом доступно. */
+  busy?: boolean;
+  available?: boolean;
+  owned_by_order?: boolean;
+  session_id?: number;
+  session_order_id?: number;
+  session_camera?: string;
+  session_started_at?: string;
+  code?: string;
   /** Имя аннотированного потока в go2rtc/MediaMTX (cam2ai). */
   stream?: string;
   /** "запуск..." | "онлайн" | "переподключение: ..." */
@@ -22,40 +31,42 @@ export interface AiStatus {
 }
 
 const POLL_LIVE_MS = 1500;
+const POLL_BUSY_MS = 2500;
 const POLL_IDLE_MS = 10_000;
 
 /** cam — путь камеры у ai_service/MediaMTX: cam2 или cam_8c26 (по MAC). */
-export function useAiCounter(cam: string | null, active: boolean) {
+export function useAiCounter(cam: string | null, orderId: number | null, active: boolean) {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const refresh = useCallback(async () => {
-    if (!cam) return;
+    if (!cam || !orderId) return;
     try {
-      const res = await api.get<AiStatus>(`/cameras/${cam}/ai/`);
+      const res = await api.get<AiStatus>(`/cameras/${cam}/ai/?order_id=${orderId}`);
       setStatus(res.data);
     } catch {
       // тик статуса не должен ронять пост — не настроен/недоступен ≈ выключен
       setStatus(null);
     }
-  }, [cam]);
+  }, [cam, orderId]);
 
   // Смена камеры или уход с шага — прежний статус больше не про эту камеру.
   useEffect(() => {
     setStatus(null);
     setError("");
-  }, [cam, active]);
+  }, [cam, orderId, active]);
 
   const running = !!status?.running;
+  const occupied = !!status?.busy;
   useEffect(() => {
-    if (!active || !cam) return;
+    if (!active || !cam || !orderId) return;
     refresh();
     const t = setInterval(() => {
       if (!document.hidden) refresh();
-    }, running ? POLL_LIVE_MS : POLL_IDLE_MS);
+    }, running ? POLL_LIVE_MS : occupied ? POLL_BUSY_MS : POLL_IDLE_MS);
     return () => clearInterval(t);
-  }, [active, cam, refresh, running]);
+  }, [active, cam, orderId, occupied, refresh, running]);
 
   const act = useCallback(async (fn: () => Promise<{ data: AiStatus }>) => {
     setBusy(true);
@@ -72,19 +83,19 @@ export function useAiCounter(cam: string | null, active: boolean) {
   }, []);
 
   const start = useCallback(
-    () => act(() => api.post<AiStatus>(`/cameras/${cam}/ai/`, {})),
-    [act, cam],
+    () => act(() => api.post<AiStatus>(`/cameras/${cam}/ai/`, { order_id: orderId })),
+    [act, cam, orderId],
   );
   const stop = useCallback(
-    () => act(() => api.delete<AiStatus>(`/cameras/${cam}/ai/`)),
-    [act, cam],
+    () => act(() => api.delete<AiStatus>(`/cameras/${cam}/ai/`, { data: { order_id: orderId } })),
+    [act, cam, orderId],
   );
   const reset = useCallback(
-    () => act(() => api.post<AiStatus>(`/cameras/${cam}/ai/reset/`, {})),
-    [act, cam],
+    () => act(() => api.post<AiStatus>(`/cameras/${cam}/ai/reset/`, { order_id: orderId })),
+    [act, cam, orderId],
   );
 
-  return { status, running, busy, error, start, stop, reset };
+  return { status, running, occupied, busy, error, start, stop, reset };
 }
 
 export type AiCounter = ReturnType<typeof useAiCounter>;

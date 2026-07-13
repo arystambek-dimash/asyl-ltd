@@ -4,6 +4,9 @@ from unittest.mock import patch
 import pytest
 
 from apps.cameras import ai
+from apps.cameras.models import AiCountingSession
+from apps.clients.models import Client
+from apps.orders.models import Order
 
 pytestmark = pytest.mark.django_db
 
@@ -21,6 +24,18 @@ def ai_key(monkeypatch):
 @pytest.fixture
 def loader(user_with_perms):
     return user_with_perms("loader", codes=["shipping.load"])
+
+
+@pytest.fixture
+def loading_order():
+    client = Client.objects.create(first_name="AI", last_name="One", phone="1")
+    return Order.objects.create(client=client, status="arrived", truck_number="01AI1")
+
+
+@pytest.fixture
+def second_loading_order():
+    client = Client.objects.create(first_name="AI", last_name="Two", phone="2")
+    return Order.objects.create(client=client, status="arrived", truck_number="01AI2")
 
 
 # --- клиент ---------------------------------------------------------------
@@ -63,73 +78,151 @@ def test_bad_camera_name_rejected_locally(bad):
 
 # --- вьюхи ----------------------------------------------------------------
 
-def test_get_status_maps_404_to_not_running(api_client, operator):
+def test_get_status_without_session_is_fast_and_idle(api_client, operator, loading_order):
     api_client.force_authenticate(operator)
-    with patch.object(ai, "_request", return_value=(404, {})):
-        resp = api_client.get("/api/cameras/cam2/ai/")
+    with patch.object(ai, "_request") as request:
+        resp = api_client.get(f"/api/cameras/cam2/ai/?order_id={loading_order.pk}")
     assert resp.status_code == 200
-    assert resp.data == {"running": False}
+    assert resp.data["running"] is False
+    assert resp.data["available"] is True
+    request.assert_not_called()  # idle/busy polls do not wait for the camera PC
 
 
-def test_start_attaches_to_running_without_reset(api_client, loader):
+def test_start_attaches_to_same_order_without_reset(api_client, loader, loading_order):
     api_client.force_authenticate(loader)
+    AiCountingSession.objects.create(
+        order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
 
     def fake(method, path, body=None):
         assert method == "GET"  # повторный POST к сервису не уходит
         return 200, RUNNING
 
     with patch.object(ai, "_request", side_effect=fake):
-        resp = api_client.post("/api/cameras/cam2/ai/")
+        resp = api_client.post("/api/cameras/cam2/ai/", {"order_id": loading_order.pk})
     assert resp.status_code == 200
     assert resp.data["total"] == 42
+    assert resp.data["owned_by_order"] is True
 
 
-def test_start_when_idle_posts_to_service(api_client, loader):
+def test_start_when_idle_posts_directly_to_service(api_client, loader, loading_order):
     api_client.force_authenticate(loader)
+    calls = []
 
     def fake(method, path, body=None):
-        if method == "GET":
-            return 404, {}
+        calls.append((method, path))
         assert (method, path) == ("POST", "/processors/cam2")
         return 200, {**RUNNING, "total": 0, "status": "запуск..."}
 
     with patch.object(ai, "_request", side_effect=fake):
-        resp = api_client.post("/api/cameras/cam2/ai/")
+        resp = api_client.post("/api/cameras/cam2/ai/", {"order_id": loading_order.pk})
     assert resp.status_code == 200
     assert resp.data["total"] == 0
+    assert calls == [("POST", "/processors/cam2")]
+    session = AiCountingSession.objects.get()
+    assert session.order == loading_order
+    assert session.status == AiCountingSession.ACTIVE
 
 
-def test_delete_returns_final_with_running_false(api_client, loader):
+def test_delete_returns_final_and_releases_slot(api_client, loader, loading_order):
     api_client.force_authenticate(loader)
+    session = AiCountingSession.objects.create(
+        order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
 
     def fake(method, path, body=None):
         return (200, RUNNING) if method == "GET" else (200, {})
 
     with patch.object(ai, "_request", side_effect=fake):
-        resp = api_client.delete("/api/cameras/cam2/ai/")
+        resp = api_client.delete(
+            "/api/cameras/cam2/ai/", {"order_id": loading_order.pk}, format="json"
+        )
     assert resp.status_code == 200
     assert resp.data["total"] == 42
     assert resp.data["running"] is False
+    session.refresh_from_db()
+    assert session.status == AiCountingSession.CLOSED
+    assert session.final_total == 42
 
 
-def test_limit_409_passes_through(api_client, loader):
+def test_limit_409_passes_through_and_releases_slot(api_client, loader, loading_order):
     api_client.force_authenticate(loader)
 
     def fake(method, path, body=None):
-        if method == "GET":
-            return 404, {}
         return 409, {"detail": "лимит камер"}
 
     with patch.object(ai, "_request", side_effect=fake):
-        resp = api_client.post("/api/cameras/cam2/ai/")
+        resp = api_client.post("/api/cameras/cam2/ai/", {"order_id": loading_order.pk})
     assert resp.status_code == 409
     assert "лимит" in resp.data["detail"]
+    assert not AiCountingSession.objects.filter(
+        status__in=AiCountingSession.OPEN_STATUSES
+    ).exists()
 
 
-def test_unavailable_maps_to_502(api_client, operator):
+def test_other_order_sees_busy_without_calling_worker(
+    api_client, loader, loading_order, second_loading_order,
+):
+    AiCountingSession.objects.create(
+        order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
+    api_client.force_authenticate(loader)
+    with patch.object(ai, "_request") as request:
+        resp = api_client.get(
+            f"/api/cameras/cam2/ai/?order_id={second_loading_order.pk}"
+        )
+    assert resp.status_code == 200
+    assert resp.data["busy"] is True
+    assert resp.data["session_order_id"] == loading_order.pk
+    assert resp.data["running"] is False
+    request.assert_not_called()
+
+
+def test_other_order_cannot_start_until_owner_finishes(
+    api_client, loader, loading_order, second_loading_order,
+):
+    AiCountingSession.objects.create(
+        order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
+    api_client.force_authenticate(loader)
+    with patch.object(ai, "_request") as request:
+        resp = api_client.post(
+            "/api/cameras/cam2/ai/", {"order_id": second_loading_order.pk}
+        )
+    assert resp.status_code == 409
+    assert resp.data["code"] == "ai_busy"
+    assert resp.data["session_order_id"] == loading_order.pk
+    request.assert_not_called()
+
+
+def test_missing_worker_marks_session_failed_and_unlocks(
+    api_client, loader, loading_order,
+):
+    session = AiCountingSession.objects.create(
+        order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
+    api_client.force_authenticate(loader)
+    with patch.object(ai, "_request", return_value=(404, {})):
+        resp = api_client.get(f"/api/cameras/cam2/ai/?order_id={loading_order.pk}")
+    assert resp.status_code == 200
+    assert resp.data["code"] == "ai_processor_stopped"
+    session.refresh_from_db()
+    assert session.status == AiCountingSession.FAILED
+
+
+def test_unavailable_maps_to_502(api_client, operator, loading_order):
+    AiCountingSession.objects.create(
+        order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
+        started_by=operator,
+    )
     api_client.force_authenticate(operator)
     with patch.object(ai, "_request", side_effect=ai.AiUnavailable("boom")):
-        resp = api_client.get("/api/cameras/cam2/ai/")
+        resp = api_client.get(f"/api/cameras/cam2/ai/?order_id={loading_order.pk}")
     assert resp.status_code == 502
     assert resp.data["code"] == "ai_unavailable"
 
