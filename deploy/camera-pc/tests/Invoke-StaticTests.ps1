@@ -134,6 +134,10 @@ try {
     $expanded = Join-Path $tempRoot 'expanded.yml'
     $truncated = Join-Path $tempRoot 'truncated.yml'
     $bad = Join-Path $tempRoot 'bad.yml'
+    $inlineFull = Join-Path $tempRoot 'inline-full.yml'
+    $inlineTruncated = Join-Path $tempRoot 'inline-truncated.yml'
+    $inlineInvalid = Join-Path $tempRoot 'inline-invalid.yml'
+    $onDemandInheritance = Join-Path $tempRoot 'on-demand-inheritance.yml'
     $fullLines = New-Object System.Collections.Generic.List[string]
     $fullLines.Add('paths:') | Out-Null
     foreach ($number in 1..20) {
@@ -152,6 +156,27 @@ try {
     [IO.File]::WriteAllText($expanded, (($expandedLines -join "`n") + "`n"))
     [IO.File]::WriteAllText($truncated, "paths:`n  cam1:`n    source: rtsp://viewer:placeholder@192.0.2.10:554/stream`n    sourceOnDemand: no`n")
     [IO.File]::WriteAllText($bad, "paths:`n  cam1:`n    source: invalid-value`n  cam1:`n    source: rtsp://192.0.2.10:554/stream`n")
+    $inlineLines = New-Object System.Collections.Generic.List[string]
+    $inlineLines.Add('pathDefaults:') | Out-Null
+    $inlineLines.Add('  sourceOnDemand: no') | Out-Null
+    $inlineLines.Add('paths:') | Out-Null
+    foreach ($number in 1..20) {
+        $inlineLines.Add("  cam$($number): rtsp://viewer:placeholder@192.0.2.10:554/stream$number") | Out-Null
+    }
+    $inlineLines.Add('  all_others:') | Out-Null
+    [IO.File]::WriteAllText($inlineFull, (($inlineLines -join "`n") + "`n"))
+    [IO.File]::WriteAllText(
+        $inlineTruncated,
+        "pathDefaults:`n  sourceOnDemand: no`npaths:`n  cam1: rtsp://viewer:placeholder@192.0.2.10:554/stream`n  all_others:`n"
+    )
+    [IO.File]::WriteAllText(
+        $inlineInvalid,
+        "pathDefaults:`n  sourceOnDemand: no`npaths:`n  cam1: definitely-not-an-rtsp-uri`n  all_others:`n"
+    )
+    [IO.File]::WriteAllText(
+        $onDemandInheritance,
+        "pathDefaults:`n  sourceOnDemand: yes`npaths:`n  cam1: rtsp://viewer:placeholder@192.0.2.10:554/stream1`n  cam2:`n    source: rtsp://viewer:placeholder@192.0.2.10:554/stream2`n    sourceOnDemand: no`n  all_others:`n"
+    )
     $floorArgs = @{
         MinimumSourceCount = [int]$settings.minimumConfigSources
         MinimumPathCount = [int]$settings.minimumConfigPaths
@@ -167,6 +192,17 @@ try {
     $fakePaths = [PSCustomObject]@{ Config = $truncated; Inventory = (Join-Path $tempRoot 'missing.json') }
     Assert-True ((Get-ExpectedCameraSourceCount -Settings $settings -Paths $fakePaths) -eq 20) 'Truncated config redefined supervisor expectation below 20.'
     Assert-True (-not (Test-MediaMtxConfig -Path $bad).Valid) 'Invalid/duplicate config was accepted.'
+    $inlineFullResult = Test-MediaMtxConfig -Path $inlineFull @floorArgs
+    Assert-True ($inlineFullResult.Valid) 'Live-style 20-source inline config was rejected.'
+    Assert-True ($inlineFullResult.SourceCount -eq 20) 'Empty all_others was incorrectly counted as a source.'
+    Assert-True ($inlineFullResult.EagerSourceCount -eq 20) 'pathDefaults sourceOnDemand:no was not inherited by inline paths.'
+    Assert-True ($inlineFullResult.PathCount -eq 21) 'Inline path inventory did not include 20 cameras plus all_others.'
+    Assert-True ((Test-MediaMtxConfig -Path $inlineTruncated).Valid) 'Truncated inline fixture must be syntactically valid.'
+    Assert-True (-not (Test-MediaMtxConfig -Path $inlineTruncated @floorArgs).Valid) 'Truncated inline config bypassed protected floors.'
+    Assert-True (-not (Test-MediaMtxConfig -Path $inlineInvalid).Valid) 'Invalid inline RTSP source was accepted.'
+    $inheritanceResult = Test-MediaMtxConfig -Path $onDemandInheritance
+    Assert-True ($inheritanceResult.Valid) 'Valid sourceOnDemand inheritance fixture was rejected.'
+    Assert-True ($inheritanceResult.SourceCount -eq 2 -and $inheritanceResult.EagerSourceCount -eq 1) 'pathDefaults/per-path sourceOnDemand override was calculated incorrectly.'
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -175,5 +211,5 @@ try {
     Result = 'PASS'
     ParsedScripts = $scripts.Count
     DecisionCases = 10
-    ConfigValidationCases = 5
+    ConfigValidationCases = 11
 } | ConvertTo-Json -Depth 3

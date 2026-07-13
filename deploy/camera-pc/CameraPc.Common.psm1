@@ -363,40 +363,112 @@ function Test-MediaMtxConfig {
     if ($content -notmatch '(?m)^paths:\s*$') { $errors.Add('Top-level paths: section is missing.') }
     if ($content.IndexOf([char]0) -ge 0) { $errors.Add('Config contains NUL bytes.') }
 
-    $sourceMatches = [regex]::Matches($content, '(?im)^\s*source:\s*(\S.*?)\s*$')
-    $eagerSourceCount = [regex]::Matches($content, '(?im)^\s*sourceOnDemand:\s*no\s*$').Count
-    if ($sourceMatches.Count -eq 0) { $errors.Add('No source entries were found.') }
-    foreach ($sourceMatch in $sourceMatches) {
-        $source = $sourceMatch.Groups[1].Value.Trim().Trim('"').Trim("'")
-        if ($source -match '^rtsp://') {
-            $uri = $null
-            if (-not [Uri]::TryCreate($source, [UriKind]::Absolute, [ref]$uri)) {
-                $errors.Add('Invalid RTSP source URI.')
-            } elseif ([string]::IsNullOrWhiteSpace($uri.Host)) {
-                $errors.Add('RTSP source has no host.')
-            }
-        } elseif ($source -notin @('publisher', 'redirect', 'rpiCamera')) {
-            $errors.Add("Unsupported source value: $source")
+    function Get-YamlScalar([string]$Value) {
+        $scalar = $Value.Trim()
+        if ($scalar.Length -ge 2 -and
+            (($scalar.StartsWith('"') -and $scalar.EndsWith('"')) -or
+             ($scalar.StartsWith("'") -and $scalar.EndsWith("'")))) {
+            return $scalar.Substring(1, $scalar.Length - 2)
+        }
+        return $scalar
+    }
+
+    function Convert-SourceOnDemand([string]$Value, [string]$Context) {
+        $normalized = (Get-YamlScalar $Value).Trim().ToLowerInvariant()
+        if ($normalized -in @('yes', 'true', '1')) { return $true }
+        if ($normalized -in @('no', 'false', '0')) { return $false }
+        $errors.Add("Invalid sourceOnDemand value for $Context`: $Value")
+        return $null
+    }
+
+    $lines = @($content -split "`r?`n")
+    # MediaMTX defaults sourceOnDemand to no. A path-level value overrides the
+    # global pathDefaults value; inline shorthand paths inherit pathDefaults.
+    $defaultSourceOnDemand = $false
+    $insidePathDefaults = $false
+    foreach ($line in $lines) {
+        if ($line -match '^pathDefaults:\s*$') {
+            $insidePathDefaults = $true
+            continue
+        }
+        if ($insidePathDefaults -and $line -match '^\S') {
+            $insidePathDefaults = $false
+        }
+        if ($insidePathDefaults -and $line -match '^  sourceOnDemand:\s*(.*?)\s*$') {
+            $parsedDefault = Convert-SourceOnDemand $Matches[1] 'pathDefaults'
+            if ($null -ne $parsedDefault) { $defaultSourceOnDemand = [bool]$parsedDefault }
         }
     }
 
-    # MediaMTX path names in generated config are exactly two spaces below
-    # paths:. Duplicate names are a high-risk sign of a truncated/bad sync.
+    # Support both MediaMTX forms:
+    #   cam1: rtsp://...              (inline shorthand)
+    #   cam1:                         (nested mapping)
+    #     source: rtsp://...
+    # An empty catch-all such as all_others: is a path, not a source.
+    $pathRecords = New-Object System.Collections.Generic.List[object]
     $pathNames = New-Object System.Collections.Generic.List[string]
     $insidePaths = $false
-    foreach ($line in ($content -split "`r?`n")) {
+    $currentPath = $null
+    foreach ($line in $lines) {
         if ($line -match '^paths:\s*$') { $insidePaths = $true; continue }
-        if ($insidePaths -and $line -match '^\S') { $insidePaths = $false }
-        if ($insidePaths -and $line -match '^  ([A-Za-z0-9_.-]+):\s*$') {
-            $pathNames.Add($Matches[1])
+        if ($insidePaths -and $line -match '^\S') {
+            $insidePaths = $false
+            $currentPath = $null
+            continue
+        }
+        if (-not $insidePaths) { continue }
+
+        if ($line -match '^  ([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
+            $name = $Matches[1]
+            $inlineValue = Get-YamlScalar $Matches[2]
+            $currentPath = [ordered]@{
+                Name = $name
+                Source = $(if ([string]::IsNullOrWhiteSpace($inlineValue)) { $null } else { $inlineValue })
+                SourceOnDemand = $null
+            }
+            $pathNames.Add($name)
+            $pathRecords.Add($currentPath)
+            continue
+        }
+        if ($null -ne $currentPath -and $line -match '^    source:\s*(.*?)\s*$') {
+            $nestedSource = Get-YamlScalar $Matches[1]
+            $currentPath.Source = $(if ([string]::IsNullOrWhiteSpace($nestedSource)) { $null } else { $nestedSource })
+            continue
+        }
+        if ($null -ne $currentPath -and $line -match '^    sourceOnDemand:\s*(.*?)\s*$') {
+            $currentPath.SourceOnDemand = Convert-SourceOnDemand $Matches[1] ([string]$currentPath.Name)
         }
     }
+
     $duplicates = @($pathNames | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
     if ($duplicates.Count -gt 0) {
         $errors.Add('Duplicate path names: ' + ($duplicates -join ', '))
     }
-    if ($sourceMatches.Count -lt $MinimumSourceCount) {
-        $errors.Add("Config has $($sourceMatches.Count) sources; minimum is $MinimumSourceCount.")
+
+    $sourceRecords = @($pathRecords | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Source) })
+    $eagerSourceCount = 0
+    foreach ($record in $sourceRecords) {
+        $source = [string]$record.Source
+        if ($source -match '(?i)^rtsp://') {
+            $uri = $null
+            if (-not [Uri]::TryCreate($source, [UriKind]::Absolute, [ref]$uri)) {
+                $errors.Add("Invalid RTSP source URI for $($record.Name).")
+            } elseif ([string]::IsNullOrWhiteSpace($uri.Host)) {
+                $errors.Add("RTSP source for $($record.Name) has no host.")
+            }
+        } elseif ($source -notin @('publisher', 'redirect', 'rpiCamera')) {
+            $errors.Add("Unsupported source value for $($record.Name): $source")
+        }
+
+        $sourceOnDemand = $defaultSourceOnDemand
+        if ($null -ne $record.SourceOnDemand) {
+            $sourceOnDemand = [bool]$record.SourceOnDemand
+        }
+        if (-not $sourceOnDemand) { $eagerSourceCount++ }
+    }
+    if ($sourceRecords.Count -eq 0) { $errors.Add('No source entries were found.') }
+    if ($sourceRecords.Count -lt $MinimumSourceCount) {
+        $errors.Add("Config has $($sourceRecords.Count) sources; minimum is $MinimumSourceCount.")
     }
     if ($pathNames.Count -lt $MinimumPathCount) {
         $errors.Add("Config has $($pathNames.Count) paths; minimum is $MinimumPathCount.")
@@ -406,7 +478,7 @@ function Test-MediaMtxConfig {
     }
     [PSCustomObject]@{
         Valid = ($errors.Count -eq 0)
-        SourceCount = $sourceMatches.Count
+        SourceCount = $sourceRecords.Count
         EagerSourceCount = $eagerSourceCount
         PathCount = $pathNames.Count
         Errors = @($errors)
