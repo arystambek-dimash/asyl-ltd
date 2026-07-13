@@ -125,6 +125,23 @@ def test_start_when_idle_posts_directly_to_service(api_client, loader, loading_o
     assert session.status == AiCountingSession.ACTIVE
 
 
+def test_start_accepts_order_id_from_query(api_client, loader, loading_order):
+    """Shipping UI duplicates the selected order in query and JSON.
+
+    Query support prevents body/proxy quirks from losing the order binding.
+    """
+    api_client.force_authenticate(loader)
+    with patch.object(ai, "_request", return_value=(200, RUNNING)):
+        resp = api_client.post(
+            f"/api/cameras/cam2/ai/?order_id={loading_order.pk}",
+            {},
+            format="json",
+        )
+    assert resp.status_code == 200
+    assert resp.data["session_order_id"] == loading_order.pk
+    assert AiCountingSession.objects.get().order_id == loading_order.pk
+
+
 def test_delete_returns_final_and_releases_slot(api_client, loader, loading_order):
     api_client.force_authenticate(loader)
     session = AiCountingSession.objects.create(

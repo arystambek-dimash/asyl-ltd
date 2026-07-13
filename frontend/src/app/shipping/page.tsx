@@ -267,7 +267,7 @@ function AiCounterPanel({ ai, accepted, onAccept }: {
       <div className="flex flex-col gap-2">
         <Button variant="outline" className="h-12 rounded-xl" disabled={ai.busy || ai.occupied}
           onClick={() => ai.start().catch(() => {})}>
-          <Cctv className="size-5" /> AI-подсчёт по камере
+          <Cctv className="size-5" /> AI-подсчёт · заказ #{ai.orderId}
         </Button>
         {ai.error && <p className="text-sm text-[var(--destructive)]">{ai.error}</p>}
       </div>

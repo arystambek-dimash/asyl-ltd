@@ -91,7 +91,11 @@ def _ai_response(fn):
 
 
 def _order_id(request) -> int | None:
-    raw = request.query_params.get("order_id") or request.data.get("order_id")
+    raw = (
+        request.query_params.get("order_id")
+        or request.headers.get("X-Order-Id")
+        or request.data.get("order_id")
+    )
     try:
         return int(raw)
     except (TypeError, ValueError):

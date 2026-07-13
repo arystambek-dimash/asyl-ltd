@@ -82,20 +82,36 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
     }
   }, []);
 
+  // Дублируем order_id в query и JSON. Query переживает старые proxy/body
+  // настройки и делает привязку заказа видимой в access-log; JSON оставляем
+  // для обратной совместимости API.
+  const orderParams = useCallback(() => ({ params: { order_id: orderId } }), [orderId]);
+
   const start = useCallback(
-    () => act(() => api.post<AiStatus>(`/cameras/${cam}/ai/`, { order_id: orderId })),
-    [act, cam, orderId],
+    () => act(() => api.post<AiStatus>(
+      `/cameras/${cam}/ai/`,
+      { order_id: orderId },
+      orderParams(),
+    )),
+    [act, cam, orderId, orderParams],
   );
   const stop = useCallback(
-    () => act(() => api.delete<AiStatus>(`/cameras/${cam}/ai/`, { data: { order_id: orderId } })),
-    [act, cam, orderId],
+    () => act(() => api.delete<AiStatus>(`/cameras/${cam}/ai/`, {
+      ...orderParams(),
+      data: { order_id: orderId },
+    })),
+    [act, cam, orderId, orderParams],
   );
   const reset = useCallback(
-    () => act(() => api.post<AiStatus>(`/cameras/${cam}/ai/reset/`, { order_id: orderId })),
-    [act, cam, orderId],
+    () => act(() => api.post<AiStatus>(
+      `/cameras/${cam}/ai/reset/`,
+      { order_id: orderId },
+      orderParams(),
+    )),
+    [act, cam, orderId, orderParams],
   );
 
-  return { status, running, occupied, busy, error, start, stop, reset };
+  return { status, running, occupied, busy, error, orderId, start, stop, reset };
 }
 
 export type AiCounter = ReturnType<typeof useAiCounter>;
