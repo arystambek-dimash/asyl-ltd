@@ -5,6 +5,21 @@ APP_DIR="${APP_DIR:-/home/ubuntu/asyl-ltd}"
 BRANCH="${BRANCH:-main}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 
+# Production must run the exact manifests built by this CI run. A mutable tag
+# such as `latest` can change between pull and restart (or be overwritten in the
+# registry), so fail closed unless both references are the expected GHCR image
+# names followed by a 64-character hexadecimal sha256 digest.
+if ! printf '%s\n' "${BACKEND_IMAGE_REF:-}" \
+  | grep -Eq '^ghcr\.io/arystambek-dimash/asyl-ltd-backend@sha256:[0-9a-f]{64}$'; then
+  echo "BACKEND_IMAGE_REF must be the immutable asyl-ltd backend digest." >&2
+  exit 1
+fi
+if ! printf '%s\n' "${FRONTEND_IMAGE_REF:-}" \
+  | grep -Eq '^ghcr\.io/arystambek-dimash/asyl-ltd-frontend@sha256:[0-9a-f]{64}$'; then
+  echo "FRONTEND_IMAGE_REF must be the immutable asyl-ltd frontend digest." >&2
+  exit 1
+fi
+
 # Только один деплой одновременно: ретрай из CI не должен гоняться с ещё
 # живой первой попыткой (git pull об index.lock, docker compose о контейнеры).
 # Ждём завершения предыдущего экземпляра до 15 минут.
@@ -49,7 +64,7 @@ docker compose -f "$COMPOSE_FILE" pull --quiet
 CAMERA_DEPLOY_EPOCH="$(( $(date +%s) + 1 ))"
 
 echo "Starting containers..."
-docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
+docker compose -f "$COMPOSE_FILE" up -d --remove-orphans --wait --wait-timeout 180
 
 echo "Restarting go2rtc to pick up bind-mounted config..."
 docker compose -f "$COMPOSE_FILE" restart go2rtc

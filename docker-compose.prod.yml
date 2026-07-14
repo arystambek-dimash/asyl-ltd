@@ -50,6 +50,8 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+    networks:
+      - data
 
   redis:
     image: redis:7-alpine
@@ -57,9 +59,14 @@ services:
     volumes:
       - redisdata:/data
     restart: unless-stopped
+    networks:
+      - data
 
   backend:
-    image: ghcr.io/arystambek-dimash/asyl-ltd-backend:latest
+    # CI supplies an immutable digest reference. The all-zero fallback cannot
+    # resolve to a real manifest: `ps`/`exec` remain usable for an existing
+    # stack, while any manual recreate without a digest fails closed.
+    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
     build: ./backend
     environment: *backend-environment
     depends_on:
@@ -73,9 +80,13 @@ services:
     expose:
       - "8000"
     restart: unless-stopped
+    networks:
+      - edge
+      - data
+      - default
 
   frontend:
-    image: ghcr.io/arystambek-dimash/asyl-ltd-frontend:latest
+    image: ${FRONTEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-frontend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
     build:
       context: ./frontend
       args:
@@ -86,7 +97,36 @@ services:
       - backend
     expose:
       - "3000"
+    # The Next.js process does not need to alter its image or gain Linux
+    # privileges. Writable runtime/cache paths live only in bounded tmpfs.
+    user: "node"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+      - /app/.next/cache:rw,noexec,nosuid,nodev,size=128m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          const http=require('http');const req=http.get({host:process.env.HOSTNAME||'127.0.0.1',port:3000,path:'/login',headers:{Host:'asyl-ltd.kz'}},res=>{const ok=res.statusCode===200&&!res.headers.location&&!res.headers.refresh;res.resume();res.on('end',()=>process.exit(ok?0:1));});req.setTimeout(4000,()=>{req.destroy();process.exit(1);});req.on('error',()=>process.exit(1));
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
+    # The public UI has no reason to reach the Internet or the database. If a
+    # future Node vulnerability is exploited, the process is confined to the
+    # internal edge network and can talk only to nginx/backend peers.
+    networks:
+      - edge
 
   go2rtc:
     image: alexxit/go2rtc:1.9.9
@@ -105,9 +145,12 @@ services:
       retries: 12
       start_period: 10s
     restart: unless-stopped
+    networks:
+      - edge
+      - default
 
   camera-monitor:
-    image: ghcr.io/arystambek-dimash/asyl-ltd-backend:latest
+    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
     environment:
       <<: *backend-environment
       DJANGO_COLLECTSTATIC: "0"
@@ -122,6 +165,9 @@ services:
         condition: service_healthy
     init: true
     restart: unless-stopped
+    networks:
+      - data
+      - default
 
   nginx:
     image: nginx:1.27-alpine
@@ -129,7 +175,7 @@ services:
       backend:
         condition: service_started
       frontend:
-        condition: service_started
+        condition: service_healthy
       go2rtc:
         condition: service_healthy
     ports:
@@ -142,6 +188,9 @@ services:
       - staticdata:/var/www/static:ro
       - mediadata:/var/www/media:ro
     restart: unless-stopped
+    networks:
+      - edge
+      - default
 
   certbot:
     image: certbot/certbot:latest
@@ -170,6 +219,8 @@ services:
       - ./deploy/backup:/backup:ro
     command: /bin/sh -c "crontab /backup/crontab && crond -f -l 8"
     restart: unless-stopped
+    networks:
+      - data
 
   wireguard:
     image: lscr.io/linuxserver/wireguard:latest
@@ -204,3 +255,12 @@ volumes:
   redisdata:
   mediadata:
   staticdata:
+
+networks:
+  # No default gateway: a compromised frontend cannot call attacker-controlled
+  # hosts or scan the data plane.
+  edge:
+    internal: true
+  data:
+    internal: true
+  default:
