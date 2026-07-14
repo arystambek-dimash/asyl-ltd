@@ -216,6 +216,36 @@ def test_other_order_cannot_start_until_owner_finishes(
     request.assert_not_called()
 
 
+def test_parallel_sessions_on_different_cameras(
+    api_client, loader, loading_order, second_loading_order,
+):
+    """Две погрузки идут одновременно на разных камерах — обе стартуют."""
+    from apps.cameras import sessions
+    s1, created1 = sessions.reserve(loading_order, "cam2", loader)
+    s2, created2 = sessions.reserve(second_loading_order, "cam3", loader)
+    assert created1 and created2
+    assert s1.pk != s2.pk
+    open_ = set(
+        AiCountingSession.objects
+        .filter(status__in=AiCountingSession.OPEN_STATUSES)
+        .values_list("camera", flat=True))
+    assert open_ == {"cam2", "cam3"}
+    # Второй заказ, встающий на УЖЕ занятую cam2 — конфликт.
+    with pytest.raises(sessions.AiSessionBusy):
+        sessions.reserve(second_loading_order, "cam2", loader)
+
+
+def test_current_for_camera_isolates_cameras(loader, loading_order, second_loading_order):
+    from apps.cameras import sessions
+    AiCountingSession.objects.create(
+        order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE, started_by=loader)
+    AiCountingSession.objects.create(
+        order=second_loading_order, camera="cam3", status=AiCountingSession.ACTIVE, started_by=loader)
+    assert sessions.current_for_camera("cam2").order_id == loading_order.pk
+    assert sessions.current_for_camera("cam3").order_id == second_loading_order.pk
+    assert sessions.current_for_camera("cam9") is None
+
+
 def test_missing_worker_marks_session_failed_and_unlocks(
     api_client, loader, loading_order,
 ):

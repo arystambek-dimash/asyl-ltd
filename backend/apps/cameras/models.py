@@ -4,11 +4,12 @@ from django.db.models import Q
 
 
 class AiCountingSession(models.Model):
-    """Durable ownership of the single AI/GPU counting slot.
+    """Durable ownership of a per-camera AI counting slot.
 
     The camera worker keeps the live counter, while this row records which
-    order owns it.  A partial unique constraint makes the one-session rule
-    safe across all Django workers and concurrent tablets.
+    order owns a given camera.  A partial unique constraint on `camera`
+    allows several loadings to run in parallel on different cameras, while
+    keeping at most one open session per camera (safe across workers/tablets).
     """
 
     STARTING = "starting"
@@ -17,9 +18,6 @@ class AiCountingSession(models.Model):
     FAILED = "failed"
     OPEN_STATUSES = (STARTING, ACTIVE)
 
-    # Every row has the same value. Combined with the conditional unique
-    # constraint below this gives us one global open slot.
-    singleton = models.BooleanField(default=True, editable=False)
     order = models.ForeignKey(
         "orders.Order", on_delete=models.PROTECT, related_name="ai_counting_sessions"
     )
@@ -50,9 +48,9 @@ class AiCountingSession(models.Model):
         ordering = ["-started_at"]
         constraints = [
             models.UniqueConstraint(
-                fields=["singleton"],
+                fields=["camera"],
                 condition=Q(status__in=["starting", "active"]),
-                name="cameras_one_open_ai_counting_session",
+                name="cameras_one_open_session_per_camera",
             )
         ]
 

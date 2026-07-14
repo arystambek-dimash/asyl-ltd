@@ -11,7 +11,7 @@ from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerial
                           StatusChangeRequestSerializer)
 from .services import (add_payment, pay_via_bank, confirm_order, reject_order,
                        receive_payment, accountant_confirm_payment,
-                       reject_payment, approve_debt,
+                       reject_payment, approve_debt, soft_delete_order, restore_order,
                        request_status_change, approve_status_change, reject_status_change)
 
 
@@ -19,7 +19,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     # Всё, что сериализатор трогает на каждой строке, загружаем заранее —
     # список заказов не должен порождать запросы «на заказ» (N+1).
     queryset = (Order.objects
-                .select_related("client", "store", "shipment", "debt_override_by")
+                .select_related("client", "store", "shipment", "debt_override_by", "deleted_by")
                 .prefetch_related("items__product", "payments", "status_requests"))
     serializer_class = OrderSerializer
     required_perms = {
@@ -28,6 +28,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "create": ("orders.create", "dept2.create"),
         "update": "orders.edit",
         "partial_update": "orders.edit", "destroy": "orders.edit",
+        "trash": "orders.edit", "restore": "orders.edit",
         "payments": "payments.create", "confirm": "orders.confirm",
         "pay_bank": "payments.create",
         "debts": "reports.view",
@@ -43,6 +44,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "approve_debt": "shipping.debt_override",
         "train_queue": "train.view",
         "train": "train.load",
+        "loading_camera": "shipping.load",
     }
 
     def get_queryset(self):
@@ -97,12 +99,60 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             raise ValidationError({"detail": "Неизвестное действие", "code": "bad_action"})
         return Response(OrderSerializer(order, context={"request": request}).data)
 
+    @action(detail=True, methods=["post"], url_path="loading-camera")
+    def loading_camera(self, request, pk=None):
+        """Занять/освободить камеру под погрузку этого заказа. Пустая — освободить."""
+        from apps.cameras import ai
+        order = self.get_object()
+        camera = (request.data.get("camera") or "").strip()
+        if camera:
+            try:
+                camera = ai.normalize(camera)  # переиспользуем валидатор имени камеры
+            except ai.AiError:
+                raise ValidationError({"detail": "Неизвестная камера", "code": "bad_camera"})
+        order.loading_camera = camera
+        order.save(update_fields=["loading_camera"])
+        return Response(OrderSerializer(order, context={"request": request}).data)
+
     @action(detail=False, methods=["get"], url_path="debts")
     def debts(self, request):
         """Все отгруженные заказы «в долг» с непогашенным остатком."""
         orders = [o for o in self.get_queryset() if o.is_debt]
         data = OrderSerializer(orders, many=True, context={"request": request}).data
         return Response(data)
+
+    def destroy(self, request, *args, **kwargs):
+        """Удаление = отправка в корзину (soft-delete). Заказ исчезает из отчётов
+        и списков, но сохраняется и может быть восстановлен."""
+        soft_delete_order(self.get_object(), request.user)
+        from rest_framework import status
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def _deleted_scoped(self):
+        """Удалённые заказы (корзина) в рамках прав пользователя по отделу."""
+        qs = (Order.all_objects.deleted()
+              .select_related("client", "store", "shipment", "debt_override_by", "deleted_by")
+              .prefetch_related("items__product", "payments", "status_requests"))
+        return scope_by_department(qs, self.request.user, "orders.view",
+                                   owner_field="client__manager")
+
+    @action(detail=False, methods=["get"], url_path="trash")
+    def trash(self, request):
+        """Корзина: удалённые заказы, доступные для восстановления."""
+        qs = self._deleted_scoped().order_by("-deleted_at")
+        department = request.query_params.get("department")
+        if department:
+            qs = qs.filter(department=department)
+        return Response(OrderSerializer(qs, many=True, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="restore")
+    def restore(self, request, pk=None):
+        """Восстановить заказ из корзины."""
+        order = self._deleted_scoped().filter(pk=pk).first()
+        if order is None:
+            raise ValidationError({"detail": "Заказ не найден в корзине", "code": "not_found"})
+        restore_order(order, request.user)
+        return Response(OrderSerializer(order, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="payments")
     def payments(self, request, pk=None):

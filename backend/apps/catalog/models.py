@@ -12,6 +12,9 @@ class Product(models.Model):
     weight_kg = models.DecimalField(max_digits=6, decimal_places=2, choices=WEIGHTS)
     price = models.DecimalField(max_digits=12, decimal_places=2)
     is_active = models.BooleanField(default=True)
+    # Если стоит — при въезде машины с этим товаром пост спрашивает вес машины;
+    # иначе вес не спрашивается (используется расчётный по мешкам).
+    ask_truck_weight = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ("name", "color", "weight_kg")

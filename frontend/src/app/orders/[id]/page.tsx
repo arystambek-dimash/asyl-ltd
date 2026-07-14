@@ -1,5 +1,6 @@
 "use client";
 import { use, useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,10 +24,11 @@ import { cn } from "@/lib/utils";
 import { formatMoney } from "@/lib/utils";
 import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { DataGate } from "@/components/ui/data-state";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { PaymentChain, AddPaymentActions, paymentOpen } from "@/components/payment-chain";
 import { OrderForm } from "@/components/order-form";
 import { Modal } from "@/components/ui/modal";
-import { CheckCircle2, Circle, Layers, Package, Pencil, Scale, Truck, Boxes } from "lucide-react";
+import { CheckCircle2, Circle, Layers, Package, Pencil, Scale, Truck, Boxes, Trash2 } from "lucide-react";
 import type { Order, Payment } from "@/lib/types";
 
 const ORDER_STATUSES = ["draft", "pending", "confirmed", "arrived", "loading", "loaded", "shipped", "cancelled"];
@@ -68,12 +70,24 @@ function OrderStepper({ status }: { status: string }) {
 
 function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const router = useRouter();
   const { me } = useAuth();
   const { data: order, loading, error: loadError, reload } = useApi<Order>(`/orders/${id}/`);
   const { reload: reloadPay } = useApi<Payment[]>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [delOpen, setDelOpen] = useState(false);
+  const [delBusy, setDelBusy] = useState(false);
+  const [delError, setDelError] = useState("");
+
+  async function confirmDelete() {
+    setDelBusy(true); setDelError("");
+    try {
+      await api.delete(`/orders/${id}/`);
+      router.push("/orders");
+    } catch (e) { setDelError(apiError(e)); setDelBusy(false); }
+  }
 
   const isManager = can(me, "orders.confirm");
   const canEditStatus = can(me, "orders.edit");
@@ -142,6 +156,13 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             {canEditOrder && (
               <Button size="sm" variant="outline" onClick={() => setEditOpen(true)}>
                 <Pencil className="size-3.5" /> Изменить
+              </Button>
+            )}
+            {canEditStatus && (
+              <Button size="sm" variant="outline" title="Удалить в корзину"
+                className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                onClick={() => { setDelError(""); setDelOpen(true); }}>
+                <Trash2 className="size-3.5" /> Удалить
               </Button>
             )}
             {order.department && (
@@ -452,6 +473,17 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             onDone={() => { setEditOpen(false); reload(); }} />
         )}
       </Modal>
+
+      <ConfirmDialog
+        open={delOpen}
+        onClose={() => setDelOpen(false)}
+        title="Удалить заказ?"
+        description={`Заказ #${order.id} (${order.client_name ?? "клиент"}) уедет в корзину. Из отчётов он исчезнет, но его можно восстановить в разделе «Заказы → Корзина».`}
+        confirmLabel="Удалить"
+        busy={delBusy}
+        error={delError}
+        onConfirm={confirmDelete}
+      />
     </AppShell>
   );
 }

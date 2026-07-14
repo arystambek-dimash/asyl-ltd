@@ -15,11 +15,15 @@ class OrderItemSerializer(serializers.ModelSerializer):
     client_price = serializers.SerializerMethodField()
     weight_kg = serializers.DecimalField(source="product.weight_kg", max_digits=8,
                                          decimal_places=2, read_only=True)
+    # Нужно ли спрашивать вес машины на посту для этого товара.
+    ask_truck_weight = serializers.BooleanField(source="product.ask_truck_weight",
+                                                read_only=True)
 
     class Meta:
         model = OrderItem
         fields = ["id", "product", "product_label", "cv_class", "quantity",
-                  "price", "base_price", "unit_price", "client_price", "weight_kg"]
+                  "price", "base_price", "unit_price", "client_price", "weight_kg",
+                  "ask_truck_weight"]
 
     def get_price(self, obj):
         # Фактическая цена за мешок: зафиксированная договорная или базовая.
@@ -128,6 +132,7 @@ class OrderSerializer(serializers.ModelSerializer):
     bag_estimate_kg = serializers.SerializerMethodField()
     bag_weight_kg = serializers.SerializerMethodField()
     debt_override_by_name = serializers.SerializerMethodField()
+    deleted_by_name = serializers.SerializerMethodField()
     pending_status_requests = serializers.SerializerMethodField()
     payments = serializers.SerializerMethodField()
     pending_payments = serializers.SerializerMethodField()
@@ -142,8 +147,9 @@ class OrderSerializer(serializers.ModelSerializer):
                   "is_debt", "debt_override", "debt_override_by_name", "pending_status_requests",
                   "payments", "pending_payments",
                   "weigh_in_kg",
-                  "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at"]
-        read_only_fields = ["debt_override", "department"]
+                  "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at",
+                  "loading_camera", "deleted_at", "deleted_by_name"]
+        read_only_fields = ["debt_override", "department", "deleted_at"]
         extra_kwargs = {
             "truck_number": {"required": False},
             "arrival_date": {"required": False, "allow_null": True},
@@ -184,6 +190,10 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def get_debt_override_by_name(self, obj):
         u = obj.debt_override_by
+        return u.username if u else None
+
+    def get_deleted_by_name(self, obj):
+        u = obj.deleted_by
         return u.username if u else None
 
     def get_pending_status_requests(self, obj):

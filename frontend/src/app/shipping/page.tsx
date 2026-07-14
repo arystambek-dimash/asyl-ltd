@@ -13,8 +13,8 @@ import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { cn, formatMoney } from "@/lib/utils";
 import {
-  Cctv, Check, LogOut, Minus, Package, Phone, Plus, RotateCcw, Scale, Truck,
-  User, VideoOff,
+  ArrowLeft, Cctv, Check, ChevronRight, LogOut, Minus, Package, Phone, Plus,
+  RotateCcw, Scale, Truck, User, VideoOff,
 } from "lucide-react";
 import type { Order } from "@/lib/types";
 import { useAiCounter, type AiCounter } from "@/lib/use-ai-counter";
@@ -68,20 +68,24 @@ function StageTrack({ status }: { status: string }) {
 }
 
 /** Живая камера поста: зона по шагу, переключение — чипами поверх видео. */
-function PostCamera({ cameras, zoneKeywords, ai }: {
+function PostCamera({ cameras, zoneKeywords, preferId, ai }: {
   /** Только играбельные камеры (locked пост не показывает). */
   cameras: (CameraFeed & { src: string })[];
   zoneKeywords: string[];
+  /** Камера, закреплённая за заказом под погрузку — показываем её первой. */
+  preferId?: string | null;
   /** Работающий AI-подсчёт: на этой камере показываем аннотированный поток. */
   ai?: { camId: string; src: string } | null;
 }) {
   const auto = useMemo(() => {
+    const preferred = preferId ? cameras.find((c) => c.id === preferId) : null;
+    if (preferred) return preferred;
     for (const kw of zoneKeywords) {
       const hit = cameras.find((c) => c.zone.toLowerCase().includes(kw));
       if (hit) return hit;
     }
     return cameras[0];
-  }, [cameras, zoneKeywords]);
+  }, [cameras, zoneKeywords, preferId]);
   const [manualId, setManualId] = useState<string | null>(null);
   const cam = cameras.find((c) => c.id === manualId) ?? auto;
   const [online, setOnline] = useState(false);
@@ -327,6 +331,96 @@ function AiCounterPanel({ ai, accepted, onAccept }: {
   );
 }
 
+/** Центральный список машин: «ожидает въезда» / «в работе». Клик — открыть погрузку. */
+function OrderList({ title, hint, orders, onOpen, accent, empty, showCamera }: {
+  title: string;
+  hint: string;
+  orders: Order[];
+  onOpen: (id: number) => void;
+  accent: string;
+  empty?: string;
+  showCamera?: boolean;
+}) {
+  return (
+    <div className="rounded-2xl border bg-[var(--card)] shadow-card">
+      <div className="flex items-center justify-between gap-2 border-b px-5 py-3.5">
+        <div>
+          <div className="flex items-center gap-2 text-base font-semibold">
+            <span className="size-2 rounded-full" style={{ background: accent }} />
+            {title}
+          </div>
+          <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">{hint}</p>
+        </div>
+        <span className="rounded-full bg-[var(--muted)] px-2.5 py-0.5 text-sm font-semibold tabular-nums">
+          {orders.length}
+        </span>
+      </div>
+      {orders.length === 0 ? (
+        <p className="px-5 py-8 text-center text-sm text-[var(--muted-foreground)]">{empty}</p>
+      ) : (
+        <div className="divide-y">
+          {orders.map((o) => {
+            const st = STAGES[o.status as keyof typeof STAGES];
+            return (
+              <button key={o.id} onClick={() => onOpen(o.id)}
+                className="flex w-full items-center gap-4 px-5 py-4 text-left transition-colors hover:bg-[var(--muted)]/40">
+                <PlateBadge value={o.truck_number} size="lg" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-semibold">{o.client_name || "—"}</div>
+                  <div className="mt-0.5 truncate text-xs text-[var(--muted-foreground)]">
+                    Заказ #{o.id} · {o.items.reduce((s, it) => s + Number(it.quantity), 0)} меш.
+                    {showCamera && o.loading_camera ? " · камера занята" : ""}
+                  </div>
+                </div>
+                <span className="hidden shrink-0 text-xs font-medium sm:inline"
+                  style={{ color: st?.color }}>{st?.label}</span>
+                <ChevronRight className="size-5 shrink-0 text-[var(--muted-foreground)]" />
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Выбор камеры под погрузку заказа (серверная привязка loading_camera). */
+function CameraPicker({ cameras, activeSrc, occupied, onPick, busy }: {
+  cameras: (CameraFeed & { src: string })[];
+  activeSrc: string | null;
+  occupied?: boolean;
+  onPick: (src: string) => void;
+  busy?: boolean;
+}) {
+  return (
+    <div className="rounded-xl border bg-[var(--card)] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+          <Cctv className="size-3.5" /> Камера погрузки
+        </span>
+        {occupied && (
+          <span className="rounded-md bg-[var(--warning)]/15 px-2 py-0.5 text-[11px] font-medium text-[var(--warning)]">
+            занята другим заказом
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {cameras.map((c) => (
+          <button key={c.id} type="button" disabled={busy} onClick={() => onPick(c.src)}
+            className={cn(
+              "rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors",
+              c.src === activeSrc
+                ? "border-[var(--primary)] bg-[var(--primary)]/10 text-[var(--primary)]"
+                : "text-[var(--muted-foreground)] hover:bg-[var(--accent)]"
+            )}>
+            {c.zone}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ShippingPageInner() {
   const { me } = useAuth();
   const { data: orders, error: loadError, reload } = useApi<Order[]>("/orders/");
@@ -361,16 +455,15 @@ function ShippingPageInner() {
     return () => clearInterval(t);
   }, [reload]);
 
-  // Очередь FIFO со стабильным порядком: прыжки карточек недопустимы.
+  // Заказы поста, стабильный порядок по номеру.
   const queue = (orders ?? [])
     .filter((o) => o.transport_type !== "train" && QUEUE_STATUSES.includes(o.status))
     .sort((a, b) => a.id - b.id);
-  const selected = queue.find((o) => o.id === selectedId) ?? queue[0] ?? null;
-
-  // Фиксируем выбор явно, чтобы обновление очереди не переключало машину.
-  useEffect(() => {
-    if (selected && selected.id !== selectedId) setSelectedId(selected.id);
-  }, [selected, selectedId]);
+  // Ожидают въезда (по номеру машины найдут заказ) и уже в работе.
+  const waiting = queue.filter((o) => o.status === "confirmed");
+  const working = queue.filter((o) => o.status !== "confirmed");
+  // Выбранный заказ — только явно открытый оператором; иначе центральный список.
+  const selected = selectedId != null ? queue.find((o) => o.id === selectedId) ?? null : null;
 
   const canArrive = can(me, "shipping.arrive");
   const canLoad = can(me, "shipping.load");
@@ -379,12 +472,19 @@ function ShippingPageInner() {
   // Пост работает только с играбельными камерами; locked-устройства — тема
   // дашборда, контролёру они не нужны.
   const playable = useMemo(() => playableCameras(cameras), [cameras]);
-  // AI-подсчёт привязан к камере зоны загрузки, а не к той, что контролёр
-  // листает в моменте: переключение вида не должно прятать счётчик.
-  const aiCam = useMemo(
+  // Камера погрузки — та, что оператор занял под этот заказ (loading_camera).
+  // Пока не выбрана — дефолт: камера зоны «загрузки».
+  const defaultLoadCam = useMemo(
     () => playable.find((c) => c.zone.toLowerCase().includes("загруз")) ?? playable[0] ?? null,
     [playable],
   );
+  const aiCam = useMemo(() => {
+    const chosen = selected?.loading_camera
+      ? playable.find((c) => c.src === selected.loading_camera)
+      : null;
+    return chosen ?? defaultLoadCam;
+  }, [playable, selected?.loading_camera, defaultLoadCam]);
+
   const isLoadStep = !!selected
     && (selected.status === "arrived" || selected.status === "loading") && canLoad;
   const ai = useAiCounter(aiCam?.src ?? null, selected?.id ?? null, isLoadStep);
@@ -399,63 +499,48 @@ function ShippingPageInner() {
     finally { setBusy(false); }
   }
 
-  const stage = selected ? STAGES[selected.status as keyof typeof STAGES] : null;
+  // Занять камеру под текущий заказ (серверная привязка, видна всем операторам).
+  const assignCamera = (camSrc: string) =>
+    act(() => api.post(`/orders/${selected!.id}/loading-camera/`, { camera: camSrc }));
+
+  const openOrder = (id: number) => { setSelectedId(id); setWeighIn(""); setError(""); };
 
   return (
     <AppShell title="Пост погрузки" section="Работа">
       {loadError && !orders ? (
         <ErrorAlert message={loadError} onRetry={reload} />
-      ) : queue.length === 0 ? (
-        <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed py-20 text-center">
-          <span className="flex size-14 items-center justify-center rounded-2xl bg-[var(--muted)]">
-            <Truck className="size-7 text-[var(--muted-foreground)]" />
-          </span>
-          <div className="text-base font-semibold">Нет машин в очереди</div>
-          <p className="max-w-sm text-sm text-[var(--muted-foreground)]">
-            Подтверждённые заказы с машиной появятся здесь автоматически.
-          </p>
+      ) : !selected ? (
+        /* ── Пустой экран: центральный список машин ─────────────────────── */
+        <div className="mx-auto flex max-w-3xl flex-col gap-6 py-4">
+          {queue.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed py-20 text-center">
+              <span className="flex size-14 items-center justify-center rounded-2xl bg-[var(--muted)]">
+                <Truck className="size-7 text-[var(--muted-foreground)]" />
+              </span>
+              <div className="text-base font-semibold">Пост свободен</div>
+              <p className="max-w-sm text-sm text-[var(--muted-foreground)]">
+                Как только машина заедет на пост, её заказ появится здесь.
+                Откройте заказ, чтобы начать погрузку.
+              </p>
+            </div>
+          ) : (
+            <>
+              <OrderList title="Ожидает въезда" hint="Выберите машину, чтобы открыть погрузку"
+                orders={waiting} onOpen={openOrder} accent="var(--ring)" empty="Нет машин на въезде." />
+              {working.length > 0 && (
+                <OrderList title="В работе" hint="Погрузки, открытые на постах"
+                  orders={working} onOpen={openOrder} accent="var(--warning)" showCamera />
+              )}
+            </>
+          )}
         </div>
       ) : (
-        <div className="grid items-start gap-4 lg:grid-cols-[300px_1fr]">
-          {/* Очередь машин */}
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between px-1 pb-1">
-              <span className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
-                Очередь
-              </span>
-              <span className="rounded-full bg-[var(--muted)] px-2 py-0.5 text-xs font-semibold tabular-nums">
-                {queue.length}
-              </span>
-            </div>
-            <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible">
-              {queue.map((o) => {
-                const active = selected?.id === o.id;
-                const st = STAGES[o.status as keyof typeof STAGES];
-                return (
-                  <button key={o.id}
-                    onClick={() => { setSelectedId(o.id); setWeighIn(""); setError(""); }}
-                    style={{ borderLeftColor: st?.color }}
-                    className={cn(
-                      "min-w-[230px] shrink-0 rounded-xl border border-l-4 bg-[var(--card)] p-3.5 text-left transition-all lg:min-w-0",
-                      active
-                        ? "shadow-md ring-2 ring-[var(--foreground)]/80"
-                        : "hover:shadow-sm"
-                    )}>
-                    <div className="flex items-center justify-between gap-2">
-                      <PlateBadge value={o.truck_number} />
-                      <span className="text-xs font-medium" style={{ color: st?.color }}>
-                        {st?.label}
-                      </span>
-                    </div>
-                    <div className="mt-2 truncate text-sm font-medium">{o.client_name || "—"}</div>
-                    <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">
-                      Заказ #{o.id} · {o.items.reduce((s, it) => s + Number(it.quantity), 0)} меш.
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+        <div className="flex flex-col gap-4">
+          {/* назад к списку */}
+          <button onClick={() => setSelectedId(null)}
+            className="flex w-fit items-center gap-1.5 text-sm font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
+            <ArrowLeft className="size-4" /> К списку машин
+          </button>
 
           {/* Рабочая зона выбранной машины */}
           {selected && (
@@ -501,37 +586,52 @@ function ShippingPageInner() {
               <div className="grid gap-4 p-5 xl:grid-cols-[1.4fr_1fr]">
                 <PostCamera cameras={playable}
                   zoneKeywords={selected.status === "confirmed" ? ["вес", "въезд"] : ["загруз"]}
+                  preferId={aiCam?.id ?? null}
                   ai={aiLive && aiCam
                     ? { camId: aiCam.id, src: ai.status?.stream ?? `${aiCam.src}ai` }
                     : null} />
 
                 <div className="flex flex-col justify-center gap-4 rounded-2xl bg-[var(--muted)]/40 p-5">
                   {selected.status === "confirmed" && (
-                    canArrive ? (
-                      <>
-                        <div>
-                          <div className="text-base font-semibold">Машина на весах</div>
-                          <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
-                            Введите вес с индикатора и примите машину.
-                          </p>
-                        </div>
-                        <div className="relative">
-                          <input type="number" inputMode="numeric" placeholder="0"
-                            value={weighIn} onChange={(e) => setWeighIn(e.target.value)}
-                            className="h-20 w-full rounded-xl border bg-[var(--card)] pl-5 pr-16 text-right text-5xl font-bold tabular-nums outline-none focus:ring-[3px] focus:ring-[var(--ring)]/40" />
-                          <span className="absolute right-5 top-1/2 -translate-y-1/2 text-lg text-[var(--muted-foreground)]">кг</span>
-                        </div>
-                        <Button className="h-14 rounded-xl text-base" disabled={busy || !weighIn}
-                          onClick={() => act(() => api.post(`/orders/${selected.id}/arrive/`, { weigh_in_kg: weighIn }))}>
-                          <Scale className="size-5" /> Принять машину
-                        </Button>
-                      </>
-                    ) : <p className="text-sm text-[var(--muted-foreground)]">Ожидает приёма машины.</p>
+                    canArrive ? (() => {
+                      // Вес спрашиваем только если в заказе есть товар с флагом.
+                      const needsWeighIn = selected.items.some((it) => it.ask_truck_weight);
+                      return (
+                        <>
+                          <div>
+                            <div className="text-base font-semibold">Приём машины</div>
+                            <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
+                              {needsWeighIn
+                                ? "Введите вес машины с весов и примите её."
+                                : "Вес рассчитается по мешкам — просто примите машину."}
+                            </p>
+                          </div>
+                          {needsWeighIn && (
+                            <div className="relative">
+                              <input type="number" inputMode="numeric" placeholder="0"
+                                value={weighIn} onChange={(e) => setWeighIn(e.target.value)}
+                                className="h-16 w-full rounded-xl border bg-[var(--card)] pl-5 pr-14 text-right text-3xl font-bold tabular-nums outline-none focus:ring-[3px] focus:ring-[var(--ring)]/40" />
+                              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-base text-[var(--muted-foreground)]">кг</span>
+                            </div>
+                          )}
+                          <Button className="h-14 rounded-xl text-base"
+                            disabled={busy || (needsWeighIn && !weighIn)}
+                            onClick={() => act(() => api.post(`/orders/${selected.id}/arrive/`,
+                              { weigh_in_kg: needsWeighIn ? weighIn : null }))}>
+                            <Scale className="size-5" /> Принять машину
+                          </Button>
+                        </>
+                      );
+                    })() : <p className="text-sm text-[var(--muted-foreground)]">Ожидает приёма машины.</p>
                   )}
 
                   {(selected.status === "arrived" || selected.status === "loading") && (
                     canLoad ? (
                       <>
+                        {playable.length > 0 && (
+                          <CameraPicker cameras={playable} activeSrc={aiCam?.src ?? null}
+                            occupied={ai.occupied} onPick={assignCamera} busy={busy} />
+                        )}
                         <BagCounter key={selected.id} order={selected} onSaved={reload} />
                         {aiCam && (
                           <AiCounterPanel ai={ai} accepted={selected.bags_loaded ?? 0}

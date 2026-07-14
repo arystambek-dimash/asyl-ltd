@@ -171,11 +171,11 @@ class CameraAiView(APIView):
         def get_status():
             camera = ai.normalize(cam)
             order_id = _order_id(request)
-            session = sessions.current()
+            session = sessions.current_for_camera(camera)
             metadata = _meta(session, order_id, camera)
 
             # A different order never touches the GPU worker. Its polling is a
-            # cheap DB lookup and only reports who owns the single slot.
+            # cheap DB lookup and only reports who owns this camera's slot.
             if session and not metadata["owned_by_order"]:
                 return {"running": False, **metadata}
             if not session:
@@ -238,10 +238,10 @@ class CameraAiView(APIView):
             order = _loading_order(request)
             if order is None:
                 raise ai.AiError(400, "Укажите заказ для завершения AI-сессии")
-            session = sessions.current()
+            session = sessions.current_for_camera(camera)
             if session is None:
                 return {"running": False, **_meta(None, order.pk, camera)}
-            if session.order_id != order.pk or session.camera != camera:
+            if session.order_id != order.pk:
                 raise sessions.AiSessionBusy(session)
             final = ai.stop(camera)
             sessions.finish(session, request.user, final)
@@ -267,8 +267,8 @@ class CameraAiResetView(APIView):
             order = _loading_order(request)
             if order is None:
                 raise ai.AiError(400, "Укажите заказ для сброса AI-счётчика")
-            session = sessions.current()
-            if session is None or session.order_id != order.pk or session.camera != camera:
+            session = sessions.current_for_camera(camera)
+            if session is None or session.order_id != order.pk:
                 if session:
                     raise sessions.AiSessionBusy(session)
                 raise ai.AiError(409, "Активная AI-сессия не найдена")

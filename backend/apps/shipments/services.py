@@ -25,16 +25,26 @@ def _require_transport(order, kind):
         )
 
 
+def estimated_load_kg(order) -> Decimal:
+    """Расчётный вес груза по мешкам: Σ(кол-во × вес фасовки)."""
+    return sum(
+        (i.quantity * i.product.weight_kg for i in order.items.all()), Decimal("0")
+    )
+
+
 @transaction.atomic
 def record_arrival(order, weigh_in_kg, user):
-    # Въезд разрешён без оплаты: машина заезжает, взвешивается,
-    # затем склад грузит заказ, а расчёт идёт после отгрузки.
+    # Въезд разрешён без оплаты: машина заезжает, затем склад грузит заказ,
+    # а расчёт идёт после отгрузки. Вес спрашивается только для товаров с
+    # флагом; если не передан — берём расчётный вес по мешкам.
     _require_transport(order, "truck")
     if order.status != "confirmed":
         raise ValidationError(
             {"detail": "Машину можно принять только для подтверждённого заказа",
              "code": "invalid_status"}
         )
+    if weigh_in_kg is None:
+        weigh_in_kg = estimated_load_kg(order)
     truck = order.truck_number
     order.status = "arrived"
     order.save(update_fields=["status"])
@@ -109,9 +119,7 @@ def _do_ship(order, shipment, user, label):
     order.save(update_fields=["status", "payment_status"])
     log_event("debt", f"Заказ отгружен в долг: {order.total_amount}", user=user, order=order,
               payload={"amount": str(order.total_amount), "intent": order.settlement_intent})
-    bag_estimate = sum(
-        (i.quantity * i.product.weight_kg for i in order.items.all()), Decimal("0")
-    )
+    bag_estimate = estimated_load_kg(order)
     log_event("shipment", label, user=user, order=order,
               payload={"bags_loaded": shipment.bags_loaded,
                        "bag_estimate_kg": str(bag_estimate)})

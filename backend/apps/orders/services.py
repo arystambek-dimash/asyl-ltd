@@ -406,3 +406,31 @@ def reject_status_change(req: StatusChangeRequest, user) -> StatusChangeRequest:
     log_event("status_request", "Запрос смены статуса отклонён", user=user, order=req.order,
               payload={"request_id": req.id})
     return req
+
+
+@transaction.atomic
+def soft_delete_order(order: Order, user) -> Order:
+    """Мягкое удаление: заказ уезжает в «Корзину». Из всех отчётов и списков
+    исчезает (default-manager его не видит), но данные сохраняются и заказ
+    можно восстановить."""
+    if order.deleted_at is not None:
+        raise ValidationError({"detail": "Заказ уже в корзине", "code": "already_deleted"})
+    order.deleted_at = timezone.now()
+    order.deleted_by = user
+    order.save(update_fields=["deleted_at", "deleted_by"])
+    log_event("order", "Заказ удалён в корзину", user=user, order=order,
+              payload={"order_id": order.id})
+    return order
+
+
+@transaction.atomic
+def restore_order(order: Order, user) -> Order:
+    """Восстановить заказ из корзины — снова участвует в отчётах и списках."""
+    if order.deleted_at is None:
+        raise ValidationError({"detail": "Заказ не в корзине", "code": "not_deleted"})
+    order.deleted_at = None
+    order.deleted_by = None
+    order.save(update_fields=["deleted_at", "deleted_by"])
+    log_event("order", "Заказ восстановлен из корзины", user=user, order=order,
+              payload={"order_id": order.id})
+    return order

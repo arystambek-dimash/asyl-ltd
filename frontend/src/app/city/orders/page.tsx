@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/ui/stat-card";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { ErrorAlert } from "@/components/ui/data-state";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { PaymentChain, AddPaymentActions } from "@/components/payment-chain";
 import {
   ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE,
@@ -29,9 +30,22 @@ function CityOrdersInner() {
   const { data: orders, loading, error, reload } = useApi<Order[]>("/orders/?department=field");
   const { me } = useAuth();
   const canCreate = can(me, "dept2.create");
+  const canDelete = can(me, "orders.edit");
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
+  const [delItem, setDelItem] = useState<Order | null>(null);
+  const [delBusy, setDelBusy] = useState(false);
+  const [delError, setDelError] = useState("");
+
+  async function confirmDelete() {
+    if (!delItem) return;
+    setDelBusy(true); setDelError("");
+    try {
+      await api.delete(`/orders/${delItem.id}/`);
+      setDelItem(null); reload();
+    } catch (e) { setDelError(apiError(e)); } finally { setDelBusy(false); }
+  }
 
   const list = orders ?? [];
   const active = list.filter((o) => !["shipped", "rejected", "cancelled"].includes(o.status));
@@ -108,6 +122,13 @@ function CityOrdersInner() {
                       {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
                     </Badge>
                   )}
+                  {canDelete && (
+                    <Button size="sm" variant="ghost" title="Удалить в корзину"
+                      className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                      onClick={() => { setDelError(""); setDelItem(o); }}>
+                      <Trash2 className="size-4" />
+                    </Button>
+                  )}
                 </div>
               </div>
 
@@ -146,6 +167,19 @@ function CityOrdersInner() {
         {open && <CityOrderForm onCancel={() => setOpen(false)}
           onDone={() => { setOpen(false); reload(); }} />}
       </Modal>
+
+      <ConfirmDialog
+        open={!!delItem}
+        onClose={() => setDelItem(null)}
+        title="Удалить заявку?"
+        description={delItem
+          ? `Заявка #${delItem.id} (${delItem.client_name ?? "клиент"}) уедет в корзину. Из отчётов она исчезнет, но её можно восстановить в разделе «Заказы → Корзина».`
+          : ""}
+        confirmLabel="Удалить"
+        busy={delBusy}
+        error={delError}
+        onConfirm={confirmDelete}
+      />
     </AppShell>
   );
 }

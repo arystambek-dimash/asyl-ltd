@@ -34,6 +34,7 @@ function ProductsPageInner() {
   const [color, setColor] = useState("Red");
   const [weight, setWeight] = useState("50");
   const [price, setPrice] = useState("");
+  const [askWeight, setAskWeight] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
@@ -44,18 +45,19 @@ function ProductsPageInner() {
 
   function openNew() {
     setEditing(null); setName(""); setColor("Red"); setWeight("50"); setPrice("");
-    setError(""); setOpen(true);
+    setAskWeight(false); setError(""); setOpen(true);
   }
   function openEdit(p: Product) {
     setEditing(p); setName(p.name); setColor(p.color);
     setWeight(String(Number(p.weight_kg))); setPrice(p.price);
+    setAskWeight(p.ask_truck_weight ?? false);
     setError(""); setOpen(true);
   }
 
   async function save(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError("");
     try {
-      const body = { name, color, weight_kg: weight, price };
+      const body = { name, color, weight_kg: weight, price, ask_truck_weight: askWeight };
       if (editing) await api.patch(`/products/${editing.id}/`, body);
       else await api.post("/products/", body);
       setOpen(false); reload();
@@ -210,6 +212,16 @@ function ProductsPageInner() {
             <Input type="number" step="0.01" value={price}
               onChange={(e) => setPrice(e.target.value)} required />
           </Field>
+          <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border p-3">
+            <input type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]"
+              checked={askWeight} onChange={(e) => setAskWeight(e.target.checked)} />
+            <span className="text-sm">
+              <span className="font-medium">Спрашивать вес машины при въезде</span>
+              <span className="block text-xs text-[var(--muted-foreground)]">
+                Если выключено — вес не спрашивается, берётся расчётный по мешкам.
+              </span>
+            </span>
+          </label>
           {error && (
             <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
               {error}

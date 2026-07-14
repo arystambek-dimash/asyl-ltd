@@ -1,4 +1,4 @@
-"""Order-bound lifecycle for the one global AI counting slot."""
+"""Order-bound lifecycle for per-camera AI counting slots."""
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -9,12 +9,14 @@ from .models import AiCountingSession
 class AiSessionBusy(Exception):
     def __init__(self, session: AiCountingSession):
         self.session = session
-        super().__init__(f"AI slot is owned by order {session.order_id}")
+        super().__init__(
+            f"Camera {session.camera} is owned by order {session.order_id}")
 
 
-def current(*, lock: bool = False) -> AiCountingSession | None:
+def current_for_camera(camera: str, *, lock: bool = False) -> AiCountingSession | None:
+    """Open session (if any) on a specific camera."""
     qs = AiCountingSession.objects.filter(
-        status__in=AiCountingSession.OPEN_STATUSES
+        camera=camera, status__in=AiCountingSession.OPEN_STATUSES
     ).select_related("order")
     if lock:
         qs = qs.select_for_update()
@@ -22,7 +24,7 @@ def current(*, lock: bool = False) -> AiCountingSession | None:
 
 
 def reserve(order, camera: str, user) -> tuple[AiCountingSession, bool]:
-    """Atomically reserve the global slot, or return the same owner session."""
+    """Atomically reserve a camera, or return the same owner session on it."""
     try:
         with transaction.atomic():
             session = AiCountingSession.objects.create(
@@ -33,9 +35,9 @@ def reserve(order, camera: str, user) -> tuple[AiCountingSession, bool]:
             )
         return session, True
     except IntegrityError:
-        # The unique partial index serializes simultaneous POSTs from tablets.
-        session = current()
-        if session and session.order_id == order.pk and session.camera == camera:
+        # The per-camera unique partial index serializes simultaneous POSTs.
+        session = current_for_camera(camera)
+        if session and session.order_id == order.pk:
             return session, False
         if session:
             raise AiSessionBusy(session) from None

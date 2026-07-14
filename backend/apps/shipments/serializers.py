@@ -3,7 +3,10 @@ from .models import Shipment
 
 
 class ArrivalSerializer(serializers.Serializer):
-    weigh_in_kg = serializers.DecimalField(max_digits=12, decimal_places=2)
+    # Вес спрашивается только для товаров с флагом ask_truck_weight; иначе
+    # въезд без веса, и пост подставит расчётный вес по мешкам.
+    weigh_in_kg = serializers.DecimalField(max_digits=12, decimal_places=2,
+                                           required=False, allow_null=True)
 
 
 class LoadSerializer(serializers.Serializer):

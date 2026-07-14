@@ -16,14 +16,17 @@ import { StatCard } from "@/components/ui/stat-card";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { ErrorAlert } from "@/components/ui/data-state";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Tabs } from "@/components/ui/tabs";
 import { OrderForm } from "@/components/order-form";
 import { isFinancialOrderStatus, ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
+import { api, apiError } from "@/lib/api";
 import { can, deptLabel } from "@/lib/can";
 import { formatDateTime, formatMoney } from "@/lib/utils";
-import { Pencil, Plus, Search } from "lucide-react";
-import type { Order } from "@/lib/types";
+import { Pencil, Plus, Search, Trash2, ClipboardList, RotateCcw } from "lucide-react";
+import type { Order, Me } from "@/lib/types";
 
 // Позиции и цены редактируются до начала загрузки (включая «ожидает загрузки»).
 function isEditable(o: Order): boolean {
@@ -45,6 +48,19 @@ function OrdersPageInner() {
   const [dept, setDept] = useState("all");
   const [sortKey, setSortKey] = useState("id");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [tab, setTab] = useState<"orders" | "trash">("orders");
+  const [delItem, setDelItem] = useState<Order | null>(null);
+  const [delBusy, setDelBusy] = useState(false);
+  const [delError, setDelError] = useState("");
+
+  async function confirmDelete() {
+    if (!delItem) return;
+    setDelBusy(true); setDelError("");
+    try {
+      await api.delete(`/orders/${delItem.id}/`);
+      setDelItem(null); reload();
+    } catch (e) { setDelError(apiError(e)); } finally { setDelBusy(false); }
+  }
 
   const list = (orders ?? []).filter((o) => dept === "all" || o.department === dept);
   // Сумма и «в процессе» — только по реальным заказам: черновики,
@@ -95,6 +111,18 @@ function OrdersPageInner() {
           <Plus className="size-4" /> <span className="hidden sm:inline">Новый заказ</span>
         </Button>
       ) : undefined}>
+      {canEdit && (
+        <div className="mb-5">
+          <Tabs variant="bar" active={tab} onChange={(k) => setTab(k as "orders" | "trash")}
+            tabs={[
+              { key: "orders", label: "Заказы", icon: ClipboardList },
+              { key: "trash", label: "Корзина", icon: Trash2 },
+            ]} />
+        </div>
+      )}
+
+      {tab === "trash" ? <TrashTab showDept={showDept} me={me} /> : (
+      <>
       <section className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <StatCard label="Всего заказов" value={String(list.length)} />
         <StatCard label="В процессе" value={String(activeCount)} />
@@ -173,11 +201,20 @@ function OrdersPageInner() {
                   {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
                 </Badge>
               ) : <span />}
-              {canEdit && isEditable(o) && (
-                <Button size="sm" variant="outline"
-                  onClick={(e) => { e.stopPropagation(); setEditing(o); }}>
-                  <Pencil className="size-3.5" /> Изменить
-                </Button>
+              {canEdit && (
+                <div className="flex items-center gap-2">
+                  {isEditable(o) && (
+                    <Button size="sm" variant="outline"
+                      onClick={(e) => { e.stopPropagation(); setEditing(o); }}>
+                      <Pencil className="size-3.5" /> Изменить
+                    </Button>
+                  )}
+                  <Button size="sm" variant="ghost" title="Удалить в корзину"
+                    className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                    onClick={(e) => { e.stopPropagation(); setDelError(""); setDelItem(o); }}>
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
               )}
             </div>
           </div>
@@ -239,12 +276,19 @@ function OrdersPageInner() {
                     </TD>
                     {canEdit && (
                       <TD onClick={(e) => e.stopPropagation()}>
-                        {isEditable(o) && (
-                          <Button size="sm" variant="ghost" title="Изменить заказ"
-                            onClick={() => setEditing(o)}>
-                            <Pencil className="size-4" />
+                        <div className="flex items-center justify-end gap-1">
+                          {isEditable(o) && (
+                            <Button size="sm" variant="ghost" title="Изменить заказ"
+                              onClick={() => setEditing(o)}>
+                              <Pencil className="size-4" />
+                            </Button>
+                          )}
+                          <Button size="sm" variant="ghost" title="Удалить в корзину"
+                            className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                            onClick={() => { setDelError(""); setDelItem(o); }}>
+                            <Trash2 className="size-4" />
                           </Button>
-                        )}
+                        </div>
                       </TD>
                     )}
                   </TR>
@@ -257,6 +301,21 @@ function OrdersPageInner() {
           )}
         </CardContent>
       </Card>
+      </>
+      )}
+
+      <ConfirmDialog
+        open={!!delItem}
+        onClose={() => setDelItem(null)}
+        title="Удалить заказ?"
+        description={delItem
+          ? `Заказ #${delItem.id} (${delItem.client_name ?? "клиент"}) уедет в корзину. Из отчётов он исчезнет, но его можно восстановить.`
+          : ""}
+        confirmLabel="Удалить"
+        busy={delBusy}
+        error={delError}
+        onConfirm={confirmDelete}
+      />
 
       <Modal open={open} onClose={() => setOpen(false)}
         eyebrow="Работа · Заказ"
@@ -277,6 +336,78 @@ function OrdersPageInner() {
           onDone={() => { setEditing(null); reload(); }} />}
       </Modal>
     </AppShell>
+  );
+}
+
+/* ── Корзина: удалённые заказы с восстановлением ─────────────────────────── */
+function TrashTab({ showDept, me }: { showDept: boolean; me: Me | null }) {
+  const { data: trashed, loading, error, reload } = useApi<Order[]>("/orders/trash/");
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [actErr, setActErr] = useState("");
+
+  async function restore(o: Order) {
+    setBusyId(o.id); setActErr("");
+    try { await api.post(`/orders/${o.id}/restore/`); reload(); }
+    catch (e) { setActErr(apiError(e)); } finally { setBusyId(null); }
+  }
+
+  const list = trashed ?? [];
+  return (
+    <>
+      <p className="mb-4 text-sm text-[var(--muted-foreground)]">
+        Удалённые заказы. Они не участвуют в отчётах и списках — восстановите, чтобы вернуть.
+      </p>
+      {actErr && <div className="mb-4"><ErrorAlert message={actErr} /></div>}
+      {error && !trashed && <div className="mb-4"><ErrorAlert message={error} onRetry={reload} /></div>}
+      <Card>
+        <CardContent className="pt-6">
+          <Table>
+            <THead>
+              <TR>
+                <TH>№</TH>
+                {showDept && <TH>Отдел</TH>}
+                <TH>Клиент</TH>
+                <TH className="text-right">Сумма</TH>
+                <TH>Удалён</TH>
+                <TH></TH>
+              </TR>
+            </THead>
+            <TBody>
+              {loading ? (
+                <TR><TD colSpan={showDept ? 6 : 5} className="py-8 text-center text-[var(--muted-foreground)]">Загрузка…</TD></TR>
+              ) : list.length === 0 ? (
+                <TR><TD colSpan={showDept ? 6 : 5} className="py-8 text-center text-[var(--muted-foreground)]">Корзина пуста.</TD></TR>
+              ) : list.map((o) => (
+                <TR key={o.id}>
+                  <TD className="font-medium">#{o.id}</TD>
+                  {showDept && (
+                    <TD>
+                      <Badge tone={o.department === "field" ? "primary" : "muted"}>
+                        {deptLabel(me, o.department ?? "main")}
+                      </Badge>
+                    </TD>
+                  )}
+                  <TD>{o.client_name || `Клиент #${o.client}`}</TD>
+                  <TD className="text-right tabular-nums">{formatMoney(o.total_amount)} ₸</TD>
+                  <TD className="whitespace-nowrap text-[var(--muted-foreground)]">
+                    <div className="text-sm">{o.deleted_at ? formatDateTime(o.deleted_at) : "—"}</div>
+                    {o.deleted_by_name && <div className="text-xs">{o.deleted_by_name}</div>}
+                  </TD>
+                  <TD>
+                    <div className="flex justify-end">
+                      <Button size="sm" variant="outline" disabled={busyId === o.id}
+                        onClick={() => restore(o)}>
+                        <RotateCcw className="size-3.5" /> Восстановить
+                      </Button>
+                    </div>
+                  </TD>
+                </TR>
+              ))}
+            </TBody>
+          </Table>
+        </CardContent>
+      </Card>
+    </>
   );
 }
 

@@ -3,6 +3,21 @@ from django.db import models
 from decimal import Decimal
 
 
+class OrderQuerySet(models.QuerySet):
+    def alive(self):
+        return self.filter(deleted_at__isnull=True)
+
+    def deleted(self):
+        return self.filter(deleted_at__isnull=False)
+
+
+class LiveOrderManager(models.Manager):
+    """Менеджер по умолчанию: удалённые (в корзине) заказы не видны нигде —
+    ни в списках, ни в агрегатах, ни через related (client.orders/store.orders)."""
+    def get_queryset(self):
+        return OrderQuerySet(self.model, using=self._db).filter(deleted_at__isnull=True)
+
+
 class Order(models.Model):
     STATUSES = ["draft", "pending", "confirmed", "arrived",
                 "loading", "loaded", "shipped", "rejected", "cancelled"]
@@ -40,6 +55,25 @@ class Order(models.Model):
         on_delete=models.SET_NULL, related_name="created_orders",
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    # Камера, которую оператор занял под погрузку этого заказа (пост погрузки).
+    # Пустая строка = камера не выбрана. Несколько заказов грузятся параллельно
+    # на разных камерах.
+    loading_camera = models.CharField(max_length=32, blank=True, default="")
+    # Мягкое удаление: заказ уезжает в «Корзину», из отчётов исчезает,
+    # но данные сохраняются и его можно восстановить.
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="deleted_orders",
+    )
+
+    # objects — только «живые» заказы (по умолчанию везде). all_objects — включая корзину.
+    objects = LiveOrderManager()
+    all_objects = OrderQuerySet.as_manager()
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.deleted_at is not None
 
     @property
     def total_amount(self) -> Decimal:

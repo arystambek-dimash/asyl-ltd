@@ -22,7 +22,7 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         serializer.is_valid(raise_exception=True)
         shipment = record_arrival(
             self.get_object(),
-            serializer.validated_data["weigh_in_kg"],
+            serializer.validated_data.get("weigh_in_kg"),  # None → расчётный вес
             request.user,
         )
         return Response(ShipmentSerializer(shipment).data)
