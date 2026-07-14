@@ -5,6 +5,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from apps.clients.models import Client
+from config.throttles import RegisterRateThrottle
 
 User = get_user_model()
 
@@ -34,6 +35,7 @@ class RegisterSerializer(serializers.Serializer):
 
 class RegisterView(generics.CreateAPIView):
     permission_classes = [AllowAny]
+    throttle_classes = [RegisterRateThrottle]
     serializer_class = RegisterSerializer
 
     def create(self, request, *args, **kwargs):

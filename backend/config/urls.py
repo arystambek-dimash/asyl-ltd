@@ -4,10 +4,17 @@ from django.contrib import admin
 from django.urls import include, path
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from apps.accounts.views import MeView
+from config.throttles import LoginRateThrottle
+
+
+class ThrottledTokenObtainPairView(TokenObtainPairView):
+    """Логин под отдельным жёстким лимитом (защита от подбора пароля)."""
+    throttle_classes = [LoginRateThrottle]
+
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("api/auth/login/", TokenObtainPairView.as_view(), name="login"),
+    path("api/auth/login/", ThrottledTokenObtainPairView.as_view(), name="login"),
     path("api/auth/refresh/", TokenRefreshView.as_view(), name="refresh"),
     path("api/auth/me/", MeView.as_view(), name="me"),
     path("api/", include("apps.catalog.urls")),
