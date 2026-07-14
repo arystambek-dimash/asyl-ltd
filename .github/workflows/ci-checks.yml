@@ -1,0 +1,86 @@
+name: CI checks
+
+# Постоянные проверки перед мержем: тесты бэкенда, типы фронта и аудит
+# зависимостей на известные уязвимости. Не блокирует деплой напрямую —
+# запускается на PR и push в main; можно сделать required-проверкой в настройках.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests + audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: asyl
+          POSTGRES_USER: asyl
+          POSTGRES_PASSWORD: asyl
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U asyl" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      SECRET_KEY: ci-test-secret
+      DB_NAME: asyl
+      DB_USER: asyl
+      DB_PASSWORD: asyl
+      DB_HOST: localhost
+      DB_PORT: "5432"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pip-audit
+      - name: Run tests
+        working-directory: backend
+        run: pytest -q
+      - name: Audit Python dependencies
+        working-directory: backend
+        # Аудит информативен: новая CVE в зависимости не должна внезапно
+        # блокировать деплой критичного фикса. Смотрим в логах прогона.
+        continue-on-error: true
+        run: pip-audit -r requirements.txt --strict || true
+
+  frontend:
+    name: Frontend typecheck + audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Typecheck
+        working-directory: frontend
+        run: npx tsc --noEmit
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: /api
+      - name: Audit npm dependencies (high+)
+        working-directory: frontend
+        continue-on-error: true
+        run: npm audit --audit-level=high || true
