@@ -138,6 +138,10 @@ try {
     $inlineTruncated = Join-Path $tempRoot 'inline-truncated.yml'
     $inlineInvalid = Join-Path $tempRoot 'inline-invalid.yml'
     $onDemandInheritance = Join-Path $tempRoot 'on-demand-inheritance.yml'
+    $flowFull = Join-Path $tempRoot 'flow-full.yml'
+    $flowTruncated = Join-Path $tempRoot 'flow-truncated.yml'
+    $flowInvalid = Join-Path $tempRoot 'flow-invalid.yml'
+    $flowSecretInvalid = Join-Path $tempRoot 'flow-secret-invalid.yml'
     $fullLines = New-Object System.Collections.Generic.List[string]
     $fullLines.Add('paths:') | Out-Null
     foreach ($number in 1..20) {
@@ -177,6 +181,33 @@ try {
         $onDemandInheritance,
         "pathDefaults:`n  sourceOnDemand: yes`npaths:`n  cam1: rtsp://viewer:placeholder@192.0.2.10:554/stream1`n  cam2:`n    source: rtsp://viewer:placeholder@192.0.2.10:554/stream2`n    sourceOnDemand: no`n  all_others:`n"
     )
+    $flowLines = New-Object System.Collections.Generic.List[string]
+    $flowLines.Add('pathDefaults:') | Out-Null
+    $flowLines.Add('  sourceOnDemand: yes') | Out-Null
+    $flowLines.Add('paths:') | Out-Null
+    foreach ($number in 1..20) {
+        if (($number % 3) -eq 1) {
+            $flowLines.Add("  cam$($number): { source: `"rtsp://viewer:FLOW_FIXTURE@192.0.2.10:554/stream$number`", sourceOnDemand: no } # live entry") | Out-Null
+        } elseif (($number % 3) -eq 2) {
+            $flowLines.Add("  cam$($number): { sourceOnDemand: 'no', source: 'rtsp://viewer:FLOW_FIXTURE@192.0.2.10:554/stream$number' } # property order swapped") | Out-Null
+        } else {
+            $flowLines.Add("  cam$($number): { source: rtsp://viewer:FLOW_FIXTURE@192.0.2.10:554/stream$number, sourceOnDemand: false } # unquoted source") | Out-Null
+        }
+    }
+    $flowLines.Add('  all_others:') | Out-Null
+    [IO.File]::WriteAllText($flowFull, (($flowLines -join "`n") + "`n"))
+    [IO.File]::WriteAllText(
+        $flowTruncated,
+        "pathDefaults:`n  sourceOnDemand: yes`npaths:`n  cam1: { source: `"rtsp://viewer:FLOW_FIXTURE@192.0.2.10:554/stream1`", sourceOnDemand: no } # live entry`n  all_others:`n"
+    )
+    [IO.File]::WriteAllText(
+        $flowInvalid,
+        "paths:`n  cam1: { source: rtsp://viewer:FLOW_INVALID_LEAK@192.0.2.10:554/stream1 sourceOnDemand: no } # missing comma`n  cam2: { source: `"rtsp://viewer:FLOW_INVALID_LEAK@192.0.2.10:554/stream2`",, sourceOnDemand: no } # doubled comma`n  all_others:`n"
+    )
+    [IO.File]::WriteAllText(
+        $flowSecretInvalid,
+        "paths:`n  cam1: { sourceOnDemand: no, source: `"secretproto://leak-user:FLOW_LEAK_PASSWORD@example.invalid/stream`" } # unsupported and secret`n  cam2: { source: `"rtsp://viewer:placeholder@192.0.2.10:554/stream2`", sourceOnDemand: `"FLOW_LEAK_PASSWORD`" }`n"
+    )
     $floorArgs = @{
         MinimumSourceCount = [int]$settings.minimumConfigSources
         MinimumPathCount = [int]$settings.minimumConfigPaths
@@ -203,6 +234,22 @@ try {
     $inheritanceResult = Test-MediaMtxConfig -Path $onDemandInheritance
     Assert-True ($inheritanceResult.Valid) 'Valid sourceOnDemand inheritance fixture was rejected.'
     Assert-True ($inheritanceResult.SourceCount -eq 2 -and $inheritanceResult.EagerSourceCount -eq 1) 'pathDefaults/per-path sourceOnDemand override was calculated incorrectly.'
+    $flowFullResult = Test-MediaMtxConfig -Path $flowFull @floorArgs
+    Assert-True ($flowFullResult.Valid) 'Live 20-source flow-mapping config was rejected.'
+    Assert-True ($flowFullResult.SourceCount -eq 20) 'Flow mapping sources were not counted correctly.'
+    Assert-True ($flowFullResult.EagerSourceCount -eq 20) 'Flow sourceOnDemand overrides were not applied.'
+    Assert-True ($flowFullResult.PathCount -eq 21) 'Flow path inventory did not include 20 cameras plus all_others.'
+    Assert-True ((Test-MediaMtxConfig -Path $flowTruncated).Valid) 'Truncated flow fixture must remain syntactically valid.'
+    Assert-True (-not (Test-MediaMtxConfig -Path $flowTruncated @floorArgs).Valid) 'Truncated flow config bypassed protected floors.'
+    $flowInvalidResult = Test-MediaMtxConfig -Path $flowInvalid
+    $flowInvalidErrors = @($flowInvalidResult.Errors) -join ' '
+    Assert-True (-not $flowInvalidResult.Valid) 'Malformed flow mapping was accepted.'
+    Assert-True ($flowInvalidErrors -notmatch '(?i)FLOW_INVALID_LEAK|rtsp://') 'Malformed-flow errors leaked a source URI or credentials.'
+    $flowSecretResult = Test-MediaMtxConfig -Path $flowSecretInvalid
+    $flowSecretErrors = @($flowSecretResult.Errors) -join ' '
+    Assert-True (-not $flowSecretResult.Valid) 'Invalid secret-bearing flow mapping was accepted.'
+    Assert-True ($flowSecretResult.SourceCount -eq 2) 'Secret regression did not exercise parsed flow source values.'
+    Assert-True ($flowSecretErrors -notmatch '(?i)FLOW_LEAK_PASSWORD|leak-user|secretproto|example\.invalid|rtsp://') 'Config validation errors leaked a source URI or credentials.'
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -211,5 +258,5 @@ try {
     Result = 'PASS'
     ParsedScripts = $scripts.Count
     DecisionCases = 10
-    ConfigValidationCases = 11
+    ConfigValidationCases = 15
 } | ConvertTo-Json -Depth 3

@@ -373,12 +373,191 @@ function Test-MediaMtxConfig {
         return $scalar
     }
 
+    function Remove-YamlTrailingComment([string]$Value) {
+        $quote = [char]0
+        $escaped = $false
+        for ($index = 0; $index -lt $Value.Length; $index++) {
+            $character = $Value[$index]
+            if ($quote -ne [char]0) {
+                if ($quote -eq '"' -and $character -eq '\' -and -not $escaped) {
+                    $escaped = $true
+                    continue
+                }
+                if ($character -eq $quote -and -not $escaped) { $quote = [char]0 }
+                $escaped = $false
+                continue
+            }
+            if ($character -eq '"' -or $character -eq "'") {
+                $quote = $character
+                continue
+            }
+            if ($character -eq '#' -and
+                ($index -eq 0 -or [char]::IsWhiteSpace($Value[$index - 1]))) {
+                return $Value.Substring(0, $index).TrimEnd()
+            }
+        }
+        return $Value.TrimEnd()
+    }
+
+    function Split-YamlFlowItems([string]$Body, [string]$Context) {
+        $items = New-Object System.Collections.Generic.List[string]
+        $quote = [char]0
+        $escaped = $false
+        $start = 0
+        for ($index = 0; $index -lt $Body.Length; $index++) {
+            $character = $Body[$index]
+            if ($quote -ne [char]0) {
+                if ($quote -eq '"' -and $character -eq '\' -and -not $escaped) {
+                    $escaped = $true
+                    continue
+                }
+                if ($character -eq $quote -and -not $escaped) { $quote = [char]0 }
+                $escaped = $false
+                continue
+            }
+            if ($character -eq '"' -or $character -eq "'") {
+                $quote = $character
+            } elseif ($character -eq ',') {
+                $item = $Body.Substring($start, $index - $start).Trim()
+                if ($item) {
+                    $items.Add($item)
+                } else {
+                    $errors.Add("Malformed flow mapping for path $Context.")
+                }
+                $start = $index + 1
+            }
+        }
+        if ($quote -ne [char]0) {
+            $errors.Add("Malformed flow mapping for path $Context.")
+        }
+        $last = $Body.Substring($start).Trim()
+        if ($last) {
+            $items.Add($last)
+        } elseif (-not [string]::IsNullOrWhiteSpace($Body)) {
+            $errors.Add("Malformed flow mapping for path $Context.")
+        }
+        return $items.ToArray()
+    }
+
+    function Get-YamlPropertySeparator([string]$Item) {
+        $quote = [char]0
+        $escaped = $false
+        for ($index = 0; $index -lt $Item.Length; $index++) {
+            $character = $Item[$index]
+            if ($quote -ne [char]0) {
+                if ($quote -eq '"' -and $character -eq '\' -and -not $escaped) {
+                    $escaped = $true
+                    continue
+                }
+                if ($character -eq $quote -and -not $escaped) { $quote = [char]0 }
+                $escaped = $false
+                continue
+            }
+            if ($character -eq '"' -or $character -eq "'") { $quote = $character }
+            elseif ($character -eq ':') { return $index }
+        }
+        return -1
+    }
+
+    function Test-YamlFlowPropertyValue([string]$Value) {
+        $scalar = $Value.Trim()
+        if ([string]::IsNullOrWhiteSpace($scalar)) { return $true }
+
+        # A quoted flow scalar must end when its closing quote ends. This also
+        # rejects a missing comma before the next property.
+        if ($scalar[0] -eq '"' -or $scalar[0] -eq "'") {
+            $quote = $scalar[0]
+            $escaped = $false
+            for ($index = 1; $index -lt $scalar.Length; $index++) {
+                $character = $scalar[$index]
+                if ($quote -eq '"' -and $character -eq '\' -and -not $escaped) {
+                    $escaped = $true
+                    continue
+                }
+                if ($quote -eq "'" -and $character -eq "'" -and
+                    ($index + 1) -lt $scalar.Length -and $scalar[$index + 1] -eq "'") {
+                    $index++
+                    continue
+                }
+                if ($character -eq $quote -and -not $escaped) {
+                    return [string]::IsNullOrWhiteSpace($scalar.Substring($index + 1))
+                }
+                $escaped = $false
+            }
+            return $false
+        }
+
+        # In the supported MediaMTX subset these are the only path properties
+        # whose appearance after whitespace can indicate an omitted comma.
+        $quote = [char]0
+        $escaped = $false
+        for ($index = 0; $index -lt $scalar.Length; $index++) {
+            $character = $scalar[$index]
+            if ($quote -ne [char]0) {
+                if ($quote -eq '"' -and $character -eq '\' -and -not $escaped) {
+                    $escaped = $true
+                    continue
+                }
+                if ($character -eq $quote -and -not $escaped) { $quote = [char]0 }
+                $escaped = $false
+                continue
+            }
+            if ($character -eq '"' -or $character -eq "'") {
+                $quote = $character
+                continue
+            }
+            if ([char]::IsWhiteSpace($character)) {
+                $remainder = $scalar.Substring($index).TrimStart()
+                if ($remainder -match '^(?i:source|sourceOnDemand)\s*:') { return $false }
+            }
+        }
+        return $true
+    }
+
     function Convert-SourceOnDemand([string]$Value, [string]$Context) {
         $normalized = (Get-YamlScalar $Value).Trim().ToLowerInvariant()
         if ($normalized -in @('yes', 'true', '1')) { return $true }
         if ($normalized -in @('no', 'false', '0')) { return $false }
-        $errors.Add("Invalid sourceOnDemand value for $Context`: $Value")
+        $errors.Add("Invalid sourceOnDemand value for path $Context.")
         return $null
+    }
+
+    function Convert-YamlFlowPath([string]$Value, [string]$Context) {
+        $clean = (Remove-YamlTrailingComment $Value).Trim()
+        $result = [ordered]@{ Source = $null; SourceOnDemand = $null }
+        if (-not $clean.StartsWith('{') -or -not $clean.EndsWith('}')) {
+            $errors.Add("Malformed flow mapping for path $Context.")
+            return $result
+        }
+        $body = $clean.Substring(1, $clean.Length - 2)
+        $seenSource = $false
+        $seenOnDemand = $false
+        foreach ($item in @(Split-YamlFlowItems $body $Context)) {
+            $separator = Get-YamlPropertySeparator $item
+            if ($separator -le 0) {
+                $errors.Add("Malformed flow property for path $Context.")
+                continue
+            }
+            $key = (Get-YamlScalar $item.Substring(0, $separator)).Trim().ToLowerInvariant()
+            $rawPropertyValue = $item.Substring($separator + 1)
+            if (-not (Test-YamlFlowPropertyValue $rawPropertyValue)) {
+                $errors.Add("Malformed flow property for path $Context.")
+                continue
+            }
+            $propertyValue = Get-YamlScalar $rawPropertyValue
+            if ($key -eq 'source') {
+                if ($seenSource) { $errors.Add("Duplicate source property for path $Context.") }
+                $seenSource = $true
+                if (-not [string]::IsNullOrWhiteSpace($propertyValue)) {
+                    $result.Source = $propertyValue
+                }
+            } elseif ($key -eq 'sourceondemand') {
+                if ($seenOnDemand) { $errors.Add("Duplicate sourceOnDemand property for path $Context.") }
+                $seenOnDemand = $true
+                $result.SourceOnDemand = Convert-SourceOnDemand $propertyValue $Context
+            }
+        }
+        return $result
     }
 
     $lines = @($content -split "`r?`n")
@@ -420,11 +599,21 @@ function Test-MediaMtxConfig {
 
         if ($line -match '^  ([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
             $name = $Matches[1]
-            $inlineValue = Get-YamlScalar $Matches[2]
+            $inlineValue = (Remove-YamlTrailingComment $Matches[2]).Trim()
+            $inlineSource = $null
+            $inlineOnDemand = $null
+            if ($inlineValue.StartsWith('{')) {
+                $flow = Convert-YamlFlowPath $inlineValue $name
+                $inlineSource = $flow.Source
+                $inlineOnDemand = $flow.SourceOnDemand
+            } else {
+                $scalarSource = Get-YamlScalar $inlineValue
+                if (-not [string]::IsNullOrWhiteSpace($scalarSource)) { $inlineSource = $scalarSource }
+            }
             $currentPath = [ordered]@{
                 Name = $name
-                Source = $(if ([string]::IsNullOrWhiteSpace($inlineValue)) { $null } else { $inlineValue })
-                SourceOnDemand = $null
+                Source = $inlineSource
+                SourceOnDemand = $inlineOnDemand
             }
             $pathNames.Add($name)
             $pathRecords.Add($currentPath)
@@ -457,7 +646,7 @@ function Test-MediaMtxConfig {
                 $errors.Add("RTSP source for $($record.Name) has no host.")
             }
         } elseif ($source -notin @('publisher', 'redirect', 'rpiCamera')) {
-            $errors.Add("Unsupported source value for $($record.Name): $source")
+            $errors.Add("Unsupported source type for path $($record.Name).")
         }
 
         $sourceOnDemand = $defaultSourceOnDemand
