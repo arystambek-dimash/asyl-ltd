@@ -246,7 +246,7 @@ function CityOrderForm({ onCancel, onDone }: { onCancel: () => void; onDone: () 
       </div>
       <div className="flex items-start gap-2 rounded-lg border bg-[var(--muted)]/30 px-3 py-2.5 text-xs text-[var(--muted-foreground)]">
         <Info className="mt-0.5 size-3.5 shrink-0" />
-        Заявка попадёт на табло бухгалтера для подтверждения. Оплату можно
+        Заявка попадёт в кассу для подтверждения. Оплату можно
         запросить и принять сразу после создания.
       </div>
       {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}

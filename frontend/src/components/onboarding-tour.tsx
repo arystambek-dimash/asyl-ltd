@@ -36,25 +36,15 @@ function buildSteps(me: Me): TourStep[] {
     title: `Заявки ${field}`,
     text: "Заявки выездного отдела: собирайте с выезда, запрашивайте и принимайте оплату прямо у клиента.",
   });
-  if (can(me, "payments.confirm")) steps.push({
+  if (can(me, "payments.confirm") || can(me, "reports.view")) steps.push({
     target: "nav:/accounting",
-    title: "Табло бухгалтера",
-    text: "Подтверждение заявок и сверка оплат по обоим отделам. Сверенные оплаты уходят в кассу.",
-  });
-  if (can(me, "payments.cashier")) steps.push({
-    target: "nav:/cashier",
     title: "Касса",
-    text: "Финальное подтверждение поступления денег. Пока кассир не подтвердил — оплата не считается полученной.",
+    text: "Подтверждение заявок и оплат по обоим отделам — деньги учитываются сразу. Вкладка «Долги»: кто и сколько должен, с окнами оплат по расписанию.",
   });
   if (can(me, "warehouse.view")) steps.push({
     target: "nav:/warehouse",
     title: "Склад",
     text: "Остатки готовой продукции. Кнопка «Изменить остаток» — приёмка и списание с предпросмотром «сейчас → станет».",
-  });
-  if (can(me, "reports.view")) steps.push({
-    target: "nav:/debts",
-    title: "Долги",
-    text: "Кто и сколько должен: по клиентам и магазинам, с окнами оплат по расписанию.",
   });
   steps.push({
     target: "profile",

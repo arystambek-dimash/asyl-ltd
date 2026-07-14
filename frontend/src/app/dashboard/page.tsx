@@ -245,7 +245,7 @@ function PipelineCard({ m }: { m: DashboardMetrics }) {
 function DebtorsCard({ m }: { m: DashboardMetrics }) {
   return (
     <section className="rounded-xl border bg-[var(--card)] shadow-sm">
-      <CardHeader title="Должники" sub="топ-5 по сумме" href="/debts" hrefLabel="Долги" />
+      <CardHeader title="Должники" sub="топ-5 по сумме" href="/accounting?tab=debts" hrefLabel="Долги" />
       {m.topDebtors.length === 0 ? (
         <div className="px-4 py-8 text-center text-sm text-[var(--muted-foreground)]">Долгов нет</div>
       ) : (

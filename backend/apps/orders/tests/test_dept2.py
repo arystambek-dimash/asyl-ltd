@@ -154,17 +154,15 @@ def test_main_order_payment_still_requires_shipped(accountant):
     assert r.status_code == 400
 
 
-def test_payments_queue_for_accountant_and_cashier(accountant, cashier, dept2_manager, settle_payment):
+def test_payments_queue_and_confirm_by_accountant(accountant, dept2_manager):
     from apps.orders import services
     o = _order(_client("field", dept2_manager), status="confirmed")
     pay = services.add_payment(o, "100", dept2_manager)  # received
     r = _api(accountant).get("/api/orders/payments-queue/?stage=received")
     assert [row["id"] for row in r.data] == [pay.id]
     assert r.data[0]["department"] == "field"
-    services.accountant_confirm_payment(pay, accountant)
-    r = _api(cashier).get("/api/orders/payments-queue/?stage=accountant_ok")
-    assert [row["id"] for row in r.data] == [pay.id]
-    r = _api(cashier).post(f"/api/orders/{o.id}/payments/{pay.id}/cashier-confirm/")
+    # Бухгалтер-касса подтверждает — деньги учтены сразу.
+    r = _api(accountant).post(f"/api/orders/{o.id}/payments/{pay.id}/confirm/")
     assert r.status_code == 200
     o.refresh_from_db()
     assert o.payment_status == "settled"
@@ -175,10 +173,10 @@ def test_manager_cannot_access_queue(dept2_manager):
     assert r.status_code == 403
 
 
-def test_department_filter_on_orders(cashier):
+def test_department_filter_on_orders(accountant):
     o1 = _order(_client("main"))
     o2 = _order(_client("field"))
-    r = _api(cashier).get("/api/orders/?department=field")
+    r = _api(accountant).get("/api/orders/?department=field")
     assert [row["id"] for row in r.data] == [o2.id]
-    r = _api(cashier).get("/api/orders/?department=main")
+    r = _api(accountant).get("/api/orders/?department=main")
     assert [row["id"] for row in r.data] == [o1.id]

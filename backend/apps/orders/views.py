@@ -11,7 +11,7 @@ from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerial
                           StatusChangeRequestSerializer)
 from .services import (add_payment, pay_via_bank, confirm_order, reject_order,
                        receive_payment, accountant_confirm_payment,
-                       cashier_confirm_payment, reject_payment, approve_debt,
+                       reject_payment, approve_debt,
                        request_status_change, approve_status_change, reject_status_change)
 
 
@@ -38,9 +38,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "reject": "orders.confirm",
         "receive_payment": "payments.create",
         "confirm_payment": "payments.confirm",
-        "cashier_confirm_payment": "payments.cashier",
-        "reject_payment": ("payments.confirm", "payments.cashier"),
-        "payments_queue": ("payments.confirm", "payments.cashier"),
+        "reject_payment": "payments.confirm",
+        "payments_queue": "payments.confirm",
         "approve_debt": "shipping.debt_override",
         "train_queue": "train.view",
         "train": "train.load",
@@ -60,7 +59,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="payments-queue")
     def payments_queue(self, request):
-        """Очередь оплат для табло бухгалтера (received) и кассы (accountant_ok)."""
+        """Очередь оплат на подтверждение бухгалтером-кассой (received)."""
         stage = request.query_params.get("stage")
         stages = [stage] if stage in Payment.STATUSES else Payment.IN_PROGRESS_STATUSES
         qs = (Payment.objects
@@ -121,13 +120,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         receive_payment(payment, request.user)
         return Response(OrderSerializer(payment.order, context={"request": request}).data)
 
-    @action(detail=True, methods=["post"],
-            url_path="payments/(?P<pid>[^/.]+)/cashier-confirm")
-    def cashier_confirm_payment(self, request, pk=None, pid=None):
-        payment = Payment.objects.get(pk=pid, order=self.get_object())
-        cashier_confirm_payment(payment, request.user)
-        return Response(OrderSerializer(payment.order, context={"request": request}).data)
-
     @action(detail=True, methods=["post"], url_path="pay-bank")
     def pay_bank(self, request, pk=None):
         payment = pay_via_bank(self.get_object(), request.user)
@@ -146,7 +138,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="payments/(?P<pid>[^/.]+)/confirm")
     def confirm_payment(self, request, pk=None, pid=None):
-        """Сверка бухгалтером: received → accountant_ok."""
+        """Подтверждение бухгалтером-кассой: received → confirmed (деньги учтены)."""
         payment = Payment.objects.get(pk=pid, order=self.get_object())
         accountant_confirm_payment(payment, request.user)
         return Response(OrderSerializer(payment.order, context={"request": request}).data)

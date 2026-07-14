@@ -6,5 +6,10 @@ def test_payments_confirm_exists():
 
 
 def test_payments_confirm_in_presets():
-    for role in ("Бухгалтер", "Менеджер", "Начальник"):
+    for role in ("Касса", "Менеджер", "Начальник"):
         assert "payments.confirm" in PRESETS[role]
+
+
+def test_cashier_permission_and_role_removed():
+    assert "payments.cashier" not in ALL_CODES
+    assert "Кассир" not in PRESETS

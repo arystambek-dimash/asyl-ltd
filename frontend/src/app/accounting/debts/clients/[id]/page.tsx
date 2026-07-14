@@ -99,9 +99,9 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   }
 
   return (
-    <AppShell title={`Долг · ${data.client.name}`} section="Обзор"
+    <AppShell title={`Долг · ${data.client.name}`} section="Касса"
       actions={
-        <Link href="/debts">
+        <Link href="/accounting?tab=debts">
           <Button size="sm" variant="outline">
             <ArrowLeft className="size-4" />
             К долгам

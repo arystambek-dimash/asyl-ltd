@@ -5,7 +5,7 @@ _SECTIONS = {
     "clients": ("Клиенты", ["view", "create", "edit", "delete"]),
     "warehouse": ("Склад", ["view", "adjust"]),
     "orders": ("Заказы", ["view", "create", "edit", "confirm"]),
-    "payments": ("Оплаты", ["view", "create", "confirm", "cashier"]),
+    "payments": ("Оплаты", ["view", "create", "confirm"]),
     "shipping": ("Пост отгрузки", ["view", "arrive", "load", "ship", "debt_override"]),
     "train": ("Поезд", ["view", "load"]),
     "dept2": ("Отдел «Сити»", ["view", "create", "view_all"]),
@@ -18,7 +18,7 @@ _SECTIONS = {
 _ACTION_LABELS = {
     "view": "Просмотр", "create": "Создание", "edit": "Редактирование",
     "delete": "Удаление", "adjust": "Корректировка", "confirm": "Подтверждение",
-    "cashier": "Подтверждение кассой", "view_all": "Все данные отдела",
+    "view_all": "Все данные отдела",
     "arrive": "Приём машины", "load": "Загрузка", "ship": "Отгрузка",
     "debt_override": "Отгрузка в долг", "manage": "Управление",
 }
@@ -48,19 +48,17 @@ def _codes(*sections_or_codes):
 PRESETS = {
     "Менеджер": _codes("catalog", "clients", "orders",
                        "payments.view", "payments.confirm", "reports.view", "events.view"),
-    # Бухгалтер: табло — подтверждение заказов, отправка (orders.edit),
-    # сверка оплат по обоим отделам (dept2.view_all).
-    "Бухгалтер": _codes("payments.view", "payments.create", "payments.confirm",
-                        "orders.view", "orders.confirm", "orders.edit", "dept2.view_all",
-                        "clients.view", "reports.view", "events.view"),
+    # Касса (бухгалтер): подтверждение заказов и оплат по обоим отделам,
+    # отправка (orders.edit), долги (reports.view).
+    "Касса": _codes("payments.view", "payments.create", "payments.confirm",
+                    "orders.view", "orders.confirm", "orders.edit", "dept2.view_all",
+                    "clients.view", "reports.view", "events.view"),
     "Оператор": _codes("shipping.view", "shipping.arrive", "shipping.load",
                        "shipping.ship", "orders.view", "warehouse.view", "events.view"),
     "Загрузчик": _codes("train.view", "train.load"),
     # Контролёр на посту погрузки (планшет): приём машины на весах,
     # погрузка с камерой и счётчиком, выезд; плюс загрузка поездов.
     "Контролёр": _codes("shipping", "train", "orders.view", "warehouse.view"),
-    # Кассир: финальное подтверждение поступления денег по обоим отделам.
-    "Кассир": _codes("payments.view", "payments.cashier", "orders.view", "dept2.view_all"),
     # Менеджер выездного отдела: работает только в разделе «Сити» со своими данными.
     "Менеджер Сити": _codes("dept2.view", "dept2.create",
                             "payments.view", "payments.create"),

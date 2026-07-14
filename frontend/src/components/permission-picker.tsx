@@ -11,7 +11,7 @@ export const PERM_SECTION_LABELS: Record<string, string> = {
 };
 export const PERM_ACTION_LABELS: Record<string, string> = {
   view: "просмотр", create: "создание", edit: "редакт.", delete: "удаление",
-  adjust: "корректировка", confirm: "подтвержд.", cashier: "касса",
+  adjust: "корректировка", confirm: "подтвержд.",
   view_all: "все данные", arrive: "приём", load: "загрузка",
   ship: "отгрузка", debt_override: "в долг", manage: "управление",
 };

@@ -84,9 +84,9 @@ class OrderItem(models.Model):
 class Payment(models.Model):
     METHODS = ["cash", "card", "kaspi", "debt"]
     # Цепочка подтверждения: запрошена → принята (менеджер/оператор) →
-    # сверена бухгалтером → подтверждена кассиром (только тогда деньги учтены).
-    STATUSES = ["requested", "received", "accountant_ok", "confirmed", "rejected"]
-    IN_PROGRESS_STATUSES = ["requested", "received", "accountant_ok"]
+    # подтверждена бухгалтером-кассой (только тогда деньги учтены).
+    STATUSES = ["requested", "received", "confirmed", "rejected"]
+    IN_PROGRESS_STATUSES = ["requested", "received"]
 
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="payments")
     amount = models.DecimalField(max_digits=12, decimal_places=2)

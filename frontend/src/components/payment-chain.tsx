@@ -35,8 +35,7 @@ function StageTrace({ p }: { p: Payment }) {
   const steps = [
     { label: "Создана", by: p.recorded_by_name, at: p.paid_at },
     { label: "Принята", by: p.received_by_name, at: p.received_at },
-    { label: "Бухгалтер", by: p.accountant_by_name, at: p.accountant_at },
-    { label: "Касса", by: p.confirmed_by_name, at: p.confirmed_at },
+    { label: "Подтверждена", by: p.confirmed_by_name, at: p.confirmed_at },
   ].filter((s) => s.by || s.at);
   return (
     <div className="flex flex-col gap-0.5 text-[11px] text-[var(--muted-foreground)]">
@@ -51,8 +50,7 @@ function StageTrace({ p }: { p: Payment }) {
 
 /**
  * Оплаты заказа в цепочке подтверждения с действиями по правам:
- * приём (payments.create) → сверка бухгалтером (payments.confirm) →
- * подтверждение кассиром (payments.cashier).
+ * приём (payments.create) → подтверждение бухгалтером-кассой (payments.confirm).
  */
 export function PaymentChain({ order, me, onChanged }: {
   order: Order; me: Me | null; onChanged: () => void;
@@ -94,16 +92,10 @@ export function PaymentChain({ order, me, onChanged }: {
             {p.status === "received" && can(me, "payments.confirm") && (
               <Button size="sm" disabled={busy}
                 onClick={() => act(`/orders/${order.id}/payments/${p.id}/confirm/`)}>
-                Сверено (бухгалтер)
+                Подтвердить оплату
               </Button>
             )}
-            {p.status === "accountant_ok" && can(me, "payments.cashier") && (
-              <Button size="sm" disabled={busy}
-                onClick={() => act(`/orders/${order.id}/payments/${p.id}/cashier-confirm/`)}>
-                Деньги в кассе
-              </Button>
-            )}
-            {(can(me, "payments.confirm") || can(me, "payments.cashier")) && (
+            {can(me, "payments.confirm") && (
               <Button size="sm" variant="ghost" disabled={busy}
                 onClick={() => act(`/orders/${order.id}/payments/${p.id}/reject/`)}>
                 Отклонить
@@ -164,7 +156,7 @@ export function AddPaymentActions({ order, me, onChanged }: {
         title={stage === "requested" ? "Запросить оплату" : "Принять оплату"}
         description={stage === "requested"
           ? "Клиенту выставлен счёт — оплата появится в цепочке подтверждения."
-          : "Деньги получены от клиента. Далее — сверка бухгалтером и касса."}
+          : "Деньги получены от клиента. Далее — подтверждение кассой."}
         className="max-w-sm">
         <form onSubmit={submit} className="flex flex-col gap-4">
           <div className="grid gap-2">

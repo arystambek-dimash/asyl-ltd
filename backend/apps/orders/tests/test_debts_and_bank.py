@@ -42,7 +42,7 @@ def test_pay_bank_settles_full(accountant, settle_payment):
     o = _shipped_order(intent="instant")
     r = _api(accountant).post(f"/api/orders/{o.id}/pay-bank/")
     assert r.status_code == 201
-    # Банковская оплата тоже проходит цепочку: бухгалтер → кассир.
+    # Банковская оплата тоже проходит цепочку: принята → подтверждена кассой.
     settle_payment(Payment.objects.get(pk=r.data["id"]), accountant)
     o.refresh_from_db()
     assert o.payment_status == "settled"
@@ -51,7 +51,7 @@ def test_pay_bank_settles_full(accountant, settle_payment):
 def test_payments_history_in_order(accountant, settle_payment):
     o = _shipped_order()
     r = _api(accountant).post(f"/api/orders/{o.id}/payments/", {"amount": "50"}, format="json")
-    # До подтверждения кассиром оплата в истории «полученных» не отображается.
+    # До подтверждения кассой оплата в истории «полученных» не отображается.
     mid = _api(accountant).get(f"/api/orders/{o.id}/")
     assert mid.data["payments"] == []
     assert len(mid.data["pending_payments"]) == 1

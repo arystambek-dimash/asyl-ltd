@@ -5,22 +5,30 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Boxes, ClipboardList, Users, Truck,
-  ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings, X, Store, Wallet, TrainFront,
-  Briefcase, Calculator, HandCoins, MapPin,
+  ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings, X, Store, TrainFront,
+  Briefcase, HandCoins, MapPin,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { can, deptLabel, isDept2Only } from "@/lib/can";
 import type { Me } from "@/lib/types";
 
-interface NavChild { href: string; label: string; perm?: string; superuser?: boolean; }
+// perm — строка или массив (нужно ЛЮБОЕ из прав), как в RequirePerm.
+type Perm = string | string[];
+interface NavChild { href: string; label: string; perm?: Perm; superuser?: boolean; }
 interface NavItem {
   href?: string;
   label: string;
   icon: React.ElementType;
-  perm?: string;
+  perm?: Perm;
   children?: NavChild[];
 }
 interface NavSection { title: string; items: NavItem[]; }
+
+// Пункт виден, если у пользователя есть ЛЮБОЕ из перечисленных прав.
+function hasNavPerm(me: Me, perm?: Perm): boolean {
+  if (!perm) return true;
+  return (Array.isArray(perm) ? perm : [perm]).some((c) => can(me, c));
+}
 
 // Название второго отдела редактируется админом — секции строятся динамически.
 function staffSections(fieldName: string): NavSection[] {
@@ -29,7 +37,6 @@ function staffSections(fieldName: string): NavSection[] {
       title: "Обзор",
       items: [
         { href: "/dashboard", label: "Главная", icon: LayoutDashboard },
-        { href: "/debts", label: "Долги", icon: Wallet, perm: "reports.view" },
         { href: "/reports", label: "Отчёты", icon: BarChart3, perm: "reports.view" },
       ],
     },
@@ -37,8 +44,8 @@ function staffSections(fieldName: string): NavSection[] {
       title: "Работа",
       items: [
         { href: "/orders", label: "Заказы", icon: ClipboardList, perm: "orders.view" },
-        { href: "/accounting", label: "Табло бухгалтера", icon: Calculator, perm: "payments.confirm" },
-        { href: "/cashier", label: "Касса", icon: HandCoins, perm: "payments.cashier" },
+        // Касса (бывш. Табло бухгалтера): подтверждение оплат + вкладка «Долги».
+        { href: "/accounting", label: "Касса", icon: HandCoins, perm: ["payments.confirm", "reports.view"] },
         { href: "/shipping", label: "Пост погрузки", icon: Truck, perm: "shipping.view" },
         { href: "/train", label: "Поезда", icon: TrainFront, perm: "train.view" },
         { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },
@@ -159,9 +166,9 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
       items: s.items
         .map((i) => i.children
           ? { ...i, children: i.children.filter((c) =>
-              (!c.perm || can(me, c.perm)) && (!c.superuser || me.is_superuser)) }
+              hasNavPerm(me, c.perm) && (!c.superuser || me.is_superuser)) }
           : i)
-        .filter((i) => (!i.perm || can(me, i.perm)) && (!i.children || i.children.length > 0))
+        .filter((i) => hasNavPerm(me, i.perm) && (!i.children || i.children.length > 0))
         // Менеджеру выездного отдела дашборд комплекса не показываем.
         .filter((i) => !(i.href === "/dashboard" && isDept2Only(me))),
     }))

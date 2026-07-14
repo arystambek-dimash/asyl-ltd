@@ -278,7 +278,7 @@ function ReportsPageInner() {
                     <div className="text-2xl font-bold tabular-nums">{debtors.length}</div>
                   </div>
                 </div>
-                <Link href="/debts">
+                <Link href="/accounting?tab=debts">
                   <Button variant="outline" className="w-full">
                     Перейти к долгам <ArrowUpRight className="size-4" />
                   </Button>

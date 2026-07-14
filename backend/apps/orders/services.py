@@ -31,8 +31,7 @@ def _validate_payment_open(order: Order) -> None:
 
 PAYMENT_STAGE_LABELS = {
     "requested": "запрошена", "received": "принята",
-    "accountant_ok": "подтверждена бухгалтером",
-    "confirmed": "подтверждена кассиром", "rejected": "отклонена",
+    "confirmed": "подтверждена бухгалтером", "rejected": "отклонена",
 }
 
 
@@ -40,7 +39,6 @@ def _set_payment_stage(payment: Payment, status: str, user) -> Payment:
     """Перевести оплату на следующий шаг цепочки с фиксацией автора и времени."""
     stamp = {
         "received": ("received_by", "received_at"),
-        "accountant_ok": ("accountant_by", "accountant_at"),
         "confirmed": ("confirmed_by", "confirmed_at"),
     }.get(status)
     payment.status = status
@@ -116,10 +114,10 @@ def create_client_payment(order: Order, method: str, user) -> Payment:
 
 
 # Разрешённые переходы цепочки подтверждения оплаты.
+# Бухгалтер (он же кассир) сверяет и сразу финализирует: received → confirmed.
 PAYMENT_TRANSITIONS = {
     "requested": "received",
-    "received": "accountant_ok",
-    "accountant_ok": "confirmed",
+    "received": "confirmed",
 }
 
 
@@ -139,14 +137,8 @@ def receive_payment(payment: Payment, user) -> Payment:
 
 @transaction.atomic
 def accountant_confirm_payment(payment: Payment, user) -> Payment:
-    """Бухгалтер сверил и подтвердил оплату по заказу."""
-    return _advance_payment(payment, "received", user)
-
-
-@transaction.atomic
-def cashier_confirm_payment(payment: Payment, user) -> Payment:
-    """Кассир подтвердил поступление денег — только теперь оплата учтена."""
-    _advance_payment(payment, "accountant_ok", user)
+    """Бухгалтер (касса) сверил и подтвердил оплату — деньги учтены сразу."""
+    _advance_payment(payment, "received", user)
     _apply_payment_status(payment.order, user)
     return payment
 

@@ -282,7 +282,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
               badge={<Badge tone="warning">{pendingPayments.length}</Badge>}
             >
               <p className="text-xs text-[var(--muted-foreground)]">
-                Оплата учитывается только после подтверждения кассиром.
+                Оплата учитывается только после подтверждения кассой.
               </p>
               <PaymentChain order={order} me={me} onChanged={reload} />
             </CollapsibleCard>
@@ -365,7 +365,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                     <AddPaymentActions order={order} me={me} onChanged={reload} />
                   )}
                   {order.status === "shipped" && (
-                    <Link href={`/debts/clients/${order.client}`}>
+                    <Link href={`/accounting/debts/clients/${order.client}`}>
                       <Button size="sm" className="w-full" variant="outline">Перейти к оплате долга</Button>
                     </Link>
                   )}

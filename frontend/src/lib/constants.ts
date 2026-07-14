@@ -53,18 +53,19 @@ export const DEPARTMENT_LABELS: Record<string, string> = {
 };
 
 // Цепочка подтверждения оплаты: каждый шаг фиксируется с автором и временем.
+// accountant_ok — легаси-стадия (схлопнута в confirmed), подпись для старых записей.
 export const PAYMENT_STAGE_LABELS: Record<string, string> = {
   requested: "Запрошена",
   received: "Принята",
-  accountant_ok: "Сверена бухгалтером",
-  confirmed: "Подтверждена кассиром",
+  accountant_ok: "Подтверждена",
+  confirmed: "Подтверждена",
   rejected: "Отклонена",
 };
 
 export const PAYMENT_STAGE_TONE: Record<string, "muted" | "primary" | "success" | "warning" | "destructive"> = {
   requested: "muted",
   received: "warning",
-  accountant_ok: "primary",
+  accountant_ok: "success",
   confirmed: "success",
   rejected: "destructive",
 };
