@@ -402,11 +402,13 @@ function CashierInner() {
 
   return (
     <AppShell title="Касса" section="Работа"
-      description="Подтверждение заказов и оплат по обоим отделам, контроль долгов клиентов."
-      actions={tabs.length > 1
-        ? <Tabs tabs={tabs} active={active} onChange={changeTab} />
-        : undefined}>
-      {active === "debts" ? <DebtsTab /> : <PaymentsTab />}
+      description="Подтверждение заказов и оплат по обоим отделам, контроль долгов клиентов.">
+      <div className="flex flex-col gap-5">
+        {tabs.length > 1 && (
+          <Tabs variant="bar" tabs={tabs} active={active} onChange={changeTab} />
+        )}
+        {active === "debts" ? <DebtsTab /> : <PaymentsTab />}
+      </div>
     </AppShell>
   );
 }

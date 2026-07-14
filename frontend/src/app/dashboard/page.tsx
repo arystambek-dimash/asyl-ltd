@@ -10,6 +10,7 @@ import {
 import { AppShell } from "@/components/layout/app-shell";
 import { CameraWall } from "@/components/camera-wall";
 import { ErrorAlert } from "@/components/ui/data-state";
+import { Tabs } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/status-badge";
 import { formatPlate } from "@/components/ui/license-plate-input";
 import { useDashboardMetrics, type DashboardMetrics } from "@/lib/use-dashboard-metrics";
@@ -327,21 +328,9 @@ type DashboardView = (typeof DASHBOARD_VIEWS)[number]["key"];
 const VIEW_STORAGE_KEY = "dashboard:view";
 
 function ViewSwitch({ view, onChange }: { view: DashboardView; onChange: (v: DashboardView) => void }) {
+  const tabs = DASHBOARD_VIEWS.map((v) => ({ key: v.key, label: v.label, icon: v.icon }));
   return (
-    <div className="inline-flex rounded-md border border-[var(--border)] bg-[var(--muted)] p-0.5">
-      {DASHBOARD_VIEWS.map((v) => (
-        <button key={v.key} type="button" onClick={() => onChange(v.key)}
-          className={cn(
-            "inline-flex h-7 items-center gap-1.5 rounded px-3 text-[13px] transition-colors",
-            view === v.key
-              ? "bg-[var(--card)] font-medium text-[var(--foreground)] shadow-sm"
-              : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
-          )}>
-          <v.icon className="size-3.5" />
-          {v.label}
-        </button>
-      ))}
-    </div>
+    <Tabs variant="bar" tabs={tabs} active={view} onChange={(k) => onChange(k as DashboardView)} />
   );
 }
 
