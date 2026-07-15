@@ -1,7 +1,7 @@
 from rest_framework import viewsets, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from apps.accounts.permissions import IsClientUser
+from apps.common.permissions import IsClientUser
 from .models import Notification
 from .serializers import NotificationSerializer
 

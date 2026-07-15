@@ -1,37 +1,31 @@
+from apps.common.permissions import HasPerm, PermViewSetMixin
 from rest_framework import viewsets, status
-from rest_framework.views import APIView
-from rest_framework.response import Response
 from rest_framework.decorators import action
-from apps.rbac.permissions import HasPerm
-from apps.rbac.permissions import PermViewSetMixin
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
 from .models import Product, ClientPrice
 from .serializers import ProductSerializer
 from .services import archive_product, restore_product
 
-_PERMS = {
-    # Просмотр товаров нужен и менеджеру Отдела 2 для составления заявки.
-    "list": ("catalog.view", "dept2.view"), "retrieve": ("catalog.view", "dept2.view"),
-    "create": "catalog.create", "update": "catalog.edit",
-    "partial_update": "catalog.edit", "destroy": "catalog.delete",
-    "archive": "catalog.edit", "restore": "catalog.edit",
-}
-
 
 class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     serializer_class = ProductSerializer
-    required_perms = _PERMS
+    required_perms = {
+        "list": ("catalog.view", "dept2.view"),
+        "retrieve": ("catalog.view", "dept2.view"),
+        "create": "catalog.create", "update": "catalog.edit",
+        "partial_update": "catalog.edit", "destroy": "catalog.delete",
+        "archive": "catalog.edit", "restore": "catalog.edit",
+    }
 
     def get_queryset(self):
-        # По умолчанию — только активные товары: архивные не мешают в списке
-        # и не подставляются в новые заказы. ?archived=1 — вкладка «Архив».
         qs = Product.objects.select_related("stock")
         if self.request.query_params.get("archived") in ("1", "true"):
             return qs.filter(is_active=False)
         return qs.filter(is_active=True)
 
     def destroy(self, request, *args, **kwargs):
-        """Удаление = отправка в архив (soft). Товар защищён PROTECT от заказов;
-        архив безопаснее hard-delete и сохраняет связи со старыми заказами."""
         archive_product(self.get_object(), request.user)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -54,6 +48,7 @@ class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
 class ClientPricesView(APIView):
     """Текущие цены клиента: {product_id: price} — для предзаполнения формы заказа."""
+
     def get_permissions(self):
         return [HasPerm("orders.create", "dept2.create")]
 

@@ -24,6 +24,8 @@ export function DataGate({ loading, error, onRetry }: {
   error?: string;
   onRetry?: () => void;
 }) {
-  if (error && !loading) return <ErrorAlert message={error} onRetry={onRetry} />;
-  return <p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p>;
+  if (loading) return <p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p>;
+  if (error) return <ErrorAlert message={error} onRetry={onRetry} />;
+  // Загрузка завершилась без данных и без текста ошибки — например, 403 (алерт уже показан).
+  return <p className="text-sm text-[var(--muted-foreground)]">Данные недоступны.</p>;
 }

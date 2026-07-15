@@ -1,5 +1,5 @@
 from rest_framework import viewsets
-from apps.rbac.permissions import PermViewSetMixin
+from apps.common.permissions import PermViewSetMixin
 from .models import Employee
 from .serializers import EmployeeSerializer
 

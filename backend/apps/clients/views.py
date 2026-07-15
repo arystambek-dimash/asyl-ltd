@@ -5,7 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import mixins
 from rest_framework.permissions import IsAuthenticated
-from apps.rbac.permissions import IsSuperuser, PermViewSetMixin
+from apps.common.permissions import IsSuperuser, PermViewSetMixin
 from apps.rbac.scoping import scope_by_department
 from .models import Client, Department, Store
 from .serializers import ClientSerializer, DepartmentSerializer, StoreSerializer

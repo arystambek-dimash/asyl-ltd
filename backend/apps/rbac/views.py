@@ -2,8 +2,9 @@ from django.db.models import Count
 from rest_framework import mixins, viewsets
 from rest_framework.exceptions import ValidationError
 
+from apps.common.permissions import PermViewSetMixin
+
 from .models import Permission, Role
-from .permissions import PermViewSetMixin
 from .serializers import PermissionSerializer, RoleSerializer
 
 

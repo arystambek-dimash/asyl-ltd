@@ -1,4 +1,5 @@
 import axios, { AxiosError } from "axios";
+import { showToast } from "@/lib/toast";
 
 const BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
@@ -61,14 +62,21 @@ api.interceptors.response.use(
         if (typeof window !== "undefined") window.location.href = "/login";
       }
     }
+    if (error.response?.status === 403) showToast(errorDetail(error));
     return Promise.reject(error);
   }
 );
 
-export function apiError(e: unknown): string {
+function errorDetail(e: unknown): string {
   const err = e as AxiosError<{ detail?: string; code?: string }>;
   const detail = err.response?.data?.detail;
   if (typeof detail === "string") return detail;
   if (detail && typeof detail === "object") return Object.values(detail).flat().join("; ");
   return "Произошла ошибка. Попробуйте ещё раз.";
+}
+
+export function apiError(e: unknown): string {
+  // 403 уже показан всплывающим алертом (интерцептор выше) — на странице не дублируем.
+  if ((e as AxiosError).response?.status === 403) return "";
+  return errorDetail(e);
 }

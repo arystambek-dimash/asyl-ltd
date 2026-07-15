@@ -2,7 +2,7 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from apps.orders.models import Order
-from apps.rbac.permissions import PermViewSetMixin
+from apps.common.permissions import PermViewSetMixin
 from .serializers import ArrivalSerializer, LoadSerializer, ShipmentSerializer
 from .services import finish_loading, record_arrival, record_count, record_shipment
 

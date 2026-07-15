@@ -3,7 +3,7 @@ from rest_framework import viewsets, mixins
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError, APIException
-from apps.accounts.permissions import IsClientUser
+from apps.common.permissions import IsClientUser
 from apps.catalog.models import Product
 from apps.clients.models import Store
 from apps.clients.serializers import StoreSerializer

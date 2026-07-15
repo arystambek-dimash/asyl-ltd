@@ -9,6 +9,7 @@ import { apiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PasswordInput } from "@/components/ui/password-input";
 
 export default function LoginPage() {
   const { login, me, loadMe } = useAuth();
@@ -61,7 +62,7 @@ export default function LoginPage() {
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="p">Пароль</Label>
-              <Input id="p" type="password" value={password}
+              <PasswordInput id="p" value={password}
                 onChange={(e) => setPassword(e.target.value)} required />
             </div>
             {error && (

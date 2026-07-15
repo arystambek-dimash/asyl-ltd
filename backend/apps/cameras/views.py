@@ -1,18 +1,12 @@
-"""Камеры цеха: список для дашборда и доступ к видеопотокам go2rtc.
-
-Видео идёт мимо Django (nginx → go2rtc), поэтому доступ к потокам
-защищён подписанной cookie: `token` ставит её сотруднику, `auth`
-проверяет по субзапросу nginx auth_request.
-"""
 from django.core import signing
 from django.core.signing import TimestampSigner
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.rbac.permissions import HasPerm
+from apps.common.permissions import HasPerm, IsStaff
 from apps.orders.models import Order
 
 from . import ai, health, services, sessions
@@ -22,23 +16,15 @@ CAM_TOKEN_MAX_AGE = 12 * 3600  # секунд
 _signer = TimestampSigner(salt="cameras")
 
 
-class IsStaffUser(BasePermission):
-    """Авторизованный сотрудник (не клиент портала)."""
-
-    def has_permission(self, request, view):
-        u = request.user
-        return bool(u and u.is_authenticated and not getattr(u, "is_client", False))
-
-
 class CameraListView(APIView):
-    permission_classes = [IsAuthenticated, IsStaffUser]
+    permission_classes = [IsStaff]
 
     def get(self, request):
         return Response(services.discover_cameras())
 
 
 class CameraTokenView(APIView):
-    permission_classes = [IsAuthenticated, IsStaffUser]
+    permission_classes = [IsStaff]
 
     def post(self, request):
         resp = Response(status=status.HTTP_204_NO_CONTENT)
@@ -57,7 +43,7 @@ class CameraTokenView(APIView):
 class CameraHealthView(APIView):
     """Staff-facing monitor state; full outage/stale heartbeat is HTTP 503."""
 
-    permission_classes = [IsAuthenticated, IsStaffUser]
+    permission_classes = [IsStaff]
 
     def get(self, request):
         payload = health.state_payload()
@@ -164,7 +150,7 @@ class CameraAiView(APIView):
 
     def get_permissions(self):
         if self.request.method in ("GET", "HEAD", "OPTIONS"):
-            return [IsAuthenticated(), IsStaffUser()]
+            return [IsStaff()]
         return [HasPerm("shipping.load")]
 
     def get(self, request, cam: str):

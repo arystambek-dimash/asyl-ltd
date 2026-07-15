@@ -1,5 +1,5 @@
 import pytest
-from apps.rbac.permissions import HasPerm
+from apps.common.permissions import HasPerm
 from apps.rbac.models import Permission
 
 pytestmark = pytest.mark.django_db

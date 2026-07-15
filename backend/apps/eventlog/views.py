@@ -1,5 +1,5 @@
 from rest_framework import viewsets, mixins
-from apps.rbac.permissions import PermViewSetMixin
+from apps.common.permissions import PermViewSetMixin
 from .models import EventLog
 from .serializers import EventLogSerializer
 

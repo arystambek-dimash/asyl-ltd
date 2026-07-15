@@ -2,7 +2,7 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
-from apps.rbac.permissions import PermViewSetMixin
+from apps.common.permissions import PermViewSetMixin
 from apps.rbac.scoping import scope_by_department
 from apps.shipments.services import (
     start_train_loading, record_count, finish_train_loading)

@@ -3,7 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from apps.catalog.models import Product
-from apps.rbac.permissions import PermViewSetMixin
+from apps.common.permissions import PermViewSetMixin
 from .models import StockItem, StockMovement
 from .serializers import (
     StockAdjustmentSerializer,

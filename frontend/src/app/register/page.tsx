@@ -8,6 +8,7 @@ import { registerClient } from "@/lib/portal-actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PasswordInput } from "@/components/ui/password-input";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -47,7 +48,7 @@ export default function RegisterPage() {
             <div className="flex flex-col gap-1.5"><Label>Логин</Label>
               <Input value={f.username} onChange={upd("username")} required /></div>
             <div className="flex flex-col gap-1.5"><Label>Пароль</Label>
-              <Input type="password" value={f.password} onChange={upd("password")}
+              <PasswordInput value={f.password} onChange={upd("password")}
                 minLength={8} required /></div>
             {error && <p className="rounded-md bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">{error}</p>}
             <Button type="submit" disabled={busy} className="mt-1">

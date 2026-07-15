@@ -5,6 +5,7 @@ import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
@@ -205,7 +206,7 @@ function EmployeesPageInner() {
                 <Input value={form.username} required onChange={(e) => setForm({ ...form, username: e.target.value })} />
               </Field>
               <Field label="Пароль" hint={editing ? "Оставьте пустым, чтобы не менять." : undefined}>
-                <Input type="password" value={form.password} required={!editing} minLength={6}
+                <PasswordInput value={form.password} required={!editing} minLength={6}
                   placeholder={editing ? "••••••" : ""}
                   onChange={(e) => setForm({ ...form, password: e.target.value })} />
               </Field>
