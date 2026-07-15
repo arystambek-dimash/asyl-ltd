@@ -56,3 +56,14 @@ def test_operator_cannot_archive(auth_client, operator):
     p = _product()
     resp = auth_client(operator).post(f"/api/products/{p.id}/archive/")
     assert resp.status_code == 403
+
+
+def test_archived_product_absent_from_default_list_for_order_form(auth_client, manager):
+    _product(name="ДляЗаказа")
+    archived = _product(name="Устаревший")
+    resp = auth_client(manager).post(f"/api/products/{archived.id}/archive/")
+    assert resp.status_code == 200
+    listing = auth_client(manager).get("/api/products/")
+    names = {row["name"] for row in listing.data}
+    assert "ДляЗаказа" in names
+    assert "Устаревший" not in names
