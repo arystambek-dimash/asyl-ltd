@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { Grid2x2, Lock, RectangleHorizontal, Video, VideoOff } from "lucide-react";
+import { Grid2x2, RectangleHorizontal, Video, VideoOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { CameraStream, ensureCameraStreamToken } from "@/components/camera-stream";
@@ -35,7 +35,8 @@ function CameraTile({
   onClick,
   active = false,
 }: {
-  cam: CameraFeed;
+  // Только играбельные камеры (с потоком); недоступные не показываем.
+  cam: CameraFeed & { src: string };
   ready: boolean;
   onOnline: (id: string, online: boolean) => void;
   onClick?: () => void;
@@ -49,18 +50,6 @@ function CameraTile({
     },
     [cam.id, onOnline]
   );
-
-  if (!cam.src) {
-    // Обнаружена в сети, но пароль неизвестен — стрима нет по определению.
-    return (
-      <div className="relative flex aspect-video flex-col items-center justify-center gap-1.5 overflow-hidden rounded-lg border border-dashed border-white/15 bg-[#1c1c1e] text-white/35"
-        title={cam.note}>
-        <Lock className="size-5" />
-        <span className="text-[11px]">Нет доступа</span>
-        <span className="absolute bottom-1.5 left-2.5 text-xs font-medium text-white/50">{cam.name}</span>
-      </div>
-    );
-  }
 
   return (
     <div
@@ -227,7 +216,7 @@ export function CameraWall() {
     });
   }, []);
 
-  // «Одна камера» — только по играбельным; locked остаются в сетке.
+  // Показываем только играбельные камеры; недоступные (locked) не выводим вовсе.
   const active = playable.find((c) => c.id === activeId) ?? playable[0];
 
   return (
@@ -237,8 +226,6 @@ export function CameraWall() {
         <span className="text-sm font-semibold">Камеры</span>
         <span className="text-xs text-[var(--muted-foreground)]">
           {onlineIds.size} из {playable.length} онлайн
-          {playable.length < cameras.length &&
-            ` · ${cameras.length - playable.length} без доступа`}
         </span>
         {playable.length > 1 && (
           <div className="ml-auto flex items-center gap-0.5">
@@ -263,21 +250,21 @@ export function CameraWall() {
       </div>
 
       <div className="p-4">
-        {cameras.length === 0 ? (
+        {playable.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-12 text-[var(--muted-foreground)]">
             <VideoOff className="size-6" />
             <div className="text-sm font-medium">{loading ? "Загрузка…" : "Камеры недоступны"}</div>
             {!loading && <div className="text-xs">NVR не в сети или потоки ещё не настроены</div>}
           </div>
-        ) : mode === "grid" || cameras.length === 1 ? (
+        ) : mode === "grid" || playable.length === 1 ? (
           <div className={cn(
             "grid gap-3",
-            cameras.length === 1 ? "mx-auto max-w-2xl grid-cols-1" :
-            cameras.length <= 4 ? "grid-cols-2" : "grid-cols-2 lg:grid-cols-3",
+            playable.length === 1 ? "mx-auto max-w-2xl grid-cols-1" :
+            playable.length <= 4 ? "grid-cols-2" : "grid-cols-2 lg:grid-cols-3",
           )}>
-            {cameras.map((c) => (
+            {playable.map((c) => (
               <CameraTile key={c.id} cam={c} ready={tokenReady} onOnline={handleOnline}
-                onClick={playable.length > 1 && c.src
+                onClick={playable.length > 1
                   ? () => { setActiveId(c.id); setMode("single"); } : undefined} />
             ))}
           </div>
