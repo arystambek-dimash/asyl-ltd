@@ -44,6 +44,8 @@ function ProductsPageInner() {
   const [arcItem, setArcItem] = useState<Product | null>(null);
   const [arcError, setArcError] = useState("");
   const [arcBusy, setArcBusy] = useState(false);
+  const [restoreError, setRestoreError] = useState("");
+  const [restoreBusyId, setRestoreBusyId] = useState<number | null>(null);
 
   function openNew() {
     setEditing(null); setName(""); setColor("Red"); setWeight("50"); setPrice("");
@@ -76,8 +78,10 @@ function ProductsPageInner() {
   }
 
   async function restore(p: Product) {
+    setRestoreBusyId(p.id); setRestoreError("");
     try { await api.post(`/products/${p.id}/restore/`); reload(); reloadArchived(); }
-    catch (e) { setError(apiError(e)); }
+    catch (e) { setRestoreError(apiError(e)); }
+    finally { setRestoreBusyId(null); }
   }
 
   async function savePrice(p: Product) {
@@ -127,6 +131,11 @@ function ProductsPageInner() {
       {tab === "archive" ? (
         <Card>
           <CardContent className="pt-6">
+            {restoreError && (
+              <p className="mb-3 rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
+                {restoreError}
+              </p>
+            )}
             <Table>
               <THead><TR>
                 <TH>Название</TH><TH>Цвет</TH><TH>Фасовка</TH><TH>Цена</TH><TH></TH>
@@ -142,7 +151,9 @@ function ProductsPageInner() {
                       <div className="flex items-center justify-end gap-1">
                         <Badge tone="muted">В архиве</Badge>
                         {canEdit && (
-                          <Button size="sm" variant="outline" onClick={() => restore(p)}>
+                          <Button size="sm" variant="outline"
+                            disabled={restoreBusyId === p.id}
+                            onClick={() => restore(p)}>
                             <ArchiveRestore className="size-4" /> Восстановить
                           </Button>
                         )}
