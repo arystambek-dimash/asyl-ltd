@@ -13,21 +13,23 @@ import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Tabs } from "@/components/ui/tabs";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { api, apiError } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
-import { Plus, Check, X, Pencil, Trash2 } from "lucide-react";
+import { Plus, Check, X, Pencil, Archive, ArchiveRestore } from "lucide-react";
 import type { Product } from "@/lib/types";
 
 function ProductsPageInner() {
   const { data: products, error: loadError, reload } = useApi<Product[]>("/products/");
+  const { data: archived, reload: reloadArchived } = useApi<Product[]>("/products/?archived=1");
   const { me } = useAuth();
   const canEdit = can(me, "catalog.edit");
-  const canDelete = can(me, "catalog.delete");
 
+  const [tab, setTab] = useState<"active" | "archive">("active");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
   const [name, setName] = useState("");
@@ -39,9 +41,9 @@ function ProductsPageInner() {
   const [busy, setBusy] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
   const [editPrice, setEditPrice] = useState("");
-  const [delItem, setDelItem] = useState<Product | null>(null);
-  const [delError, setDelError] = useState("");
-  const [delBusy, setDelBusy] = useState(false);
+  const [arcItem, setArcItem] = useState<Product | null>(null);
+  const [arcError, setArcError] = useState("");
+  const [arcBusy, setArcBusy] = useState(false);
 
   function openNew() {
     setEditing(null); setName(""); setColor("Red"); setWeight("50"); setPrice("");
@@ -64,13 +66,18 @@ function ProductsPageInner() {
     } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
   }
 
-  async function confirmDelete() {
-    if (!delItem) return;
-    setDelBusy(true); setDelError("");
+  async function confirmArchive() {
+    if (!arcItem) return;
+    setArcBusy(true); setArcError("");
     try {
-      await api.delete(`/products/${delItem.id}/`);
-      setDelItem(null); reload();
-    } catch (e) { setDelError(apiError(e)); } finally { setDelBusy(false); }
+      await api.post(`/products/${arcItem.id}/archive/`);
+      setArcItem(null); reload(); reloadArchived();
+    } catch (e) { setArcError(apiError(e)); } finally { setArcBusy(false); }
+  }
+
+  async function restore(p: Product) {
+    try { await api.post(`/products/${p.id}/restore/`); reload(); reloadArchived(); }
+    catch (e) { setError(apiError(e)); }
   }
 
   async function savePrice(p: Product) {
@@ -78,15 +85,10 @@ function ProductsPageInner() {
     catch (e) { setError(apiError(e)); }
   }
 
-  async function toggleActive(p: Product) {
-    try { await api.patch(`/products/${p.id}/`, { is_active: !p.is_active }); reload(); }
-    catch (e) { setError(apiError(e)); }
-  }
-
   const [sortKey, setSortKey] = useState("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const list = products ?? [];
-  const activeN = list.filter((p) => p.is_active).length;
+  const archiveList = archived ?? [];
   const toggleSort = (k: string) => {
     if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
     else { setSortKey(k); setSortDir("asc"); }
@@ -99,7 +101,7 @@ function ProductsPageInner() {
   });
 
   return (
-    <AppShell title="Товары" section="Работа" description="Товары: сорт, цвет (тип) и фасовка. Управляйте ценами и активностью."
+    <AppShell title="Товары" section="Работа" description="Товары: сорт, цвет (тип) и фасовка. Управляйте ценами и архивом."
       actions={
         <Button size="sm" onClick={openNew} aria-label="Создать товар">
           <Plus className="size-4" /> <span className="hidden sm:inline">Создать товар</span>
@@ -107,75 +109,114 @@ function ProductsPageInner() {
       }>
       <div className="mb-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <StatCard label="Всего товаров" value={String(list.length)} />
-          <StatCard label="Активных" value={String(activeN)} accent />
+          <StatCard label="Активных товаров" value={String(list.length)} accent />
+          <StatCard label="В архиве" value={String(archiveList.length)} />
         </div>
+      </div>
+
+      <div className="mb-4">
+        <Tabs variant="bar" active={tab} onChange={(k) => setTab(k as "active" | "archive")}
+          tabs={[
+            { key: "active", label: "Товары", icon: Check },
+            { key: "archive", label: "Архив", icon: Archive },
+          ]} />
       </div>
 
       {loadError && !products && <div className="mb-4"><ErrorAlert message={loadError} onRetry={reload} /></div>}
 
-      <Card>
-        <CardContent className="pt-6">
-          <Table>
-            <THead><TR>
-              <SortableHeader label="Название" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-              <TH>Цвет</TH>
-              <TH>Фасовка</TH>
-              <SortableHeader label="Цена" sortKey="price" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-              <TH>Статус</TH><TH></TH>
-            </TR></THead>
-            <TBody>
-              {sorted.map((p) => (
-                <TR key={p.id}>
-                  <TD className="font-medium">{p.name}</TD>
-                  <TD>{p.color_label}</TD>
-                  <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
-                  <TD className="tabular-nums">
-                    {editId === p.id ? (
-                      <div className="flex items-center gap-2">
-                        <Input type="number" step="0.01" className="h-8 w-32"
-                          value={editPrice} onChange={(e) => setEditPrice(e.target.value)} />
-                        <Button size="sm" onClick={() => savePrice(p)}><Check className="size-4" /></Button>
-                        <Button size="sm" variant="ghost" onClick={() => setEditId(null)}><X className="size-4" /></Button>
+      {tab === "archive" ? (
+        <Card>
+          <CardContent className="pt-6">
+            <Table>
+              <THead><TR>
+                <TH>Название</TH><TH>Цвет</TH><TH>Фасовка</TH><TH>Цена</TH><TH></TH>
+              </TR></THead>
+              <TBody>
+                {archiveList.map((p) => (
+                  <TR key={p.id}>
+                    <TD className="font-medium">{p.name}</TD>
+                    <TD>{p.color_label}</TD>
+                    <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
+                    <TD className="tabular-nums">{formatMoney(p.price)} ₸</TD>
+                    <TD>
+                      <div className="flex items-center justify-end gap-1">
+                        <Badge tone="muted">В архиве</Badge>
+                        {canEdit && (
+                          <Button size="sm" variant="outline" onClick={() => restore(p)}>
+                            <ArchiveRestore className="size-4" /> Восстановить
+                          </Button>
+                        )}
                       </div>
-                    ) : (
-                      <button className="hover:underline"
-                        onClick={() => { setEditId(p.id); setEditPrice(p.price); }}>
-                        {formatMoney(p.price)} ₸
-                      </button>
-                    )}
-                  </TD>
-                  <TD><Badge tone={p.is_active ? "success" : "muted"}>
-                    {p.is_active ? "Активен" : "Скрыт"}</Badge></TD>
-                  <TD>
-                    <div className="flex items-center justify-end gap-1">
-                      <Button size="sm" variant="outline" onClick={() => toggleActive(p)}>
-                        {p.is_active ? "Скрыть" : "Включить"}
-                      </Button>
-                      {canEdit && (
-                        <Button size="sm" variant="ghost" onClick={() => openEdit(p)} title="Изменить">
-                          <Pencil className="size-4" />
-                        </Button>
+                    </TD>
+                  </TR>
+                ))}
+                {archiveList.length === 0 && (
+                  <TR><TD colSpan={5} className="py-4 text-center text-[var(--muted-foreground)]">
+                    Архив пуст.</TD></TR>
+                )}
+              </TBody>
+            </Table>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="pt-6">
+            <Table>
+              <THead><TR>
+                <SortableHeader label="Название" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                <TH>Цвет</TH>
+                <TH>Фасовка</TH>
+                <SortableHeader label="Цена" sortKey="price" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                <TH></TH>
+              </TR></THead>
+              <TBody>
+                {sorted.map((p) => (
+                  <TR key={p.id}>
+                    <TD className="font-medium">{p.name}</TD>
+                    <TD>{p.color_label}</TD>
+                    <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
+                    <TD className="tabular-nums">
+                      {editId === p.id ? (
+                        <div className="flex items-center gap-2">
+                          <Input type="number" step="0.01" className="h-8 w-32"
+                            value={editPrice} onChange={(e) => setEditPrice(e.target.value)} />
+                          <Button size="sm" onClick={() => savePrice(p)}><Check className="size-4" /></Button>
+                          <Button size="sm" variant="ghost" onClick={() => setEditId(null)}><X className="size-4" /></Button>
+                        </div>
+                      ) : (
+                        <button className="hover:underline"
+                          onClick={() => { setEditId(p.id); setEditPrice(p.price); }}>
+                          {formatMoney(p.price)} ₸
+                        </button>
                       )}
-                      {canDelete && (
-                        <Button size="sm" variant="ghost"
-                          className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                          onClick={() => { setDelError(""); setDelItem(p); }} title="Удалить">
-                          <Trash2 className="size-4" />
-                        </Button>
-                      )}
-                    </div>
-                  </TD>
-                </TR>
-              ))}
-              {sorted.length === 0 && (
-                <TR><TD colSpan={6} className="py-4 text-center text-[var(--muted-foreground)]">
-                  Товаров пока нет.</TD></TR>
-              )}
-            </TBody>
-          </Table>
-        </CardContent>
-      </Card>
+                    </TD>
+                    <TD>
+                      <div className="flex items-center justify-end gap-1">
+                        {canEdit && (
+                          <Button size="sm" variant="ghost" onClick={() => openEdit(p)} title="Изменить">
+                            <Pencil className="size-4" />
+                          </Button>
+                        )}
+                        {canEdit && (
+                          <Button size="sm" variant="ghost"
+                            className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                            onClick={() => { setArcError(""); setArcItem(p); }} title="В архив">
+                            <Archive className="size-4" />
+                          </Button>
+                        )}
+                      </div>
+                    </TD>
+                  </TR>
+                ))}
+                {sorted.length === 0 && (
+                  <TR><TD colSpan={5} className="py-4 text-center text-[var(--muted-foreground)]">
+                    Товаров пока нет.</TD></TR>
+                )}
+              </TBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
 
       <Modal open={open} onClose={() => setOpen(false)}
         eyebrow={editing ? "Номенклатура · Изменение" : "Номенклатура · Товар"}
@@ -231,13 +272,13 @@ function ProductsPageInner() {
       </Modal>
 
       <ConfirmDialog
-        open={!!delItem}
-        onClose={() => setDelItem(null)}
-        title="Удалить товар?"
-        description={delItem ? `«${delItem.label}» будет удалён. Действие необратимо.` : ""}
-        busy={delBusy}
-        error={delError}
-        onConfirm={confirmDelete}
+        open={!!arcItem}
+        onClose={() => setArcItem(null)}
+        title="Отправить товар в архив?"
+        description={arcItem ? `«${arcItem.label}» уйдёт в архив: пропадёт из выбора новых заказов. Старые заказы и отчёты не изменятся. Можно восстановить.` : ""}
+        busy={arcBusy}
+        error={arcError}
+        onConfirm={confirmArchive}
       />
     </AppShell>
   );
