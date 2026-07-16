@@ -14,9 +14,9 @@ import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { cn, formatDateTime, formatMoney } from "@/lib/utils";
 import {
-  Activity, ArrowLeft, Cctv, Check, ChevronRight, Clock3, Layers3, LogOut, Minus,
-  Package, Phone, Play, Plus, Radio, RotateCcw, Scale, Settings2, TrainFront, Truck,
-  User, VideoOff,
+  Activity, ArrowLeft, Cctv, Check, ChevronRight, Clock3, Layers3, LockKeyhole,
+  LogOut, Minus, Package, Phone, Play, Plus, Radio, RotateCcw, Scale, Settings2,
+  TrainFront, Truck, User, VideoOff,
 } from "lucide-react";
 import type { AiCountingSession, Order } from "@/lib/types";
 import { useAiCounter, type AiCounter } from "@/lib/use-ai-counter";
@@ -396,6 +396,32 @@ function CameraPicker({ cameras, activeSrc, occupied, onPick, busy }: {
   );
 }
 
+/** После назначения в «Моноблоке» камера фиксирована за заказом. */
+function BoundCamera({ camera, source }: { camera?: CameraFeed; source: string }) {
+  return (
+    <div className="rounded-xl border border-blue-100 bg-blue-50/65 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-blue-700">
+          <Cctv className="size-3.5" /> Камера погрузки
+        </span>
+        <span className="flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-500 shadow-sm">
+          <LockKeyhole className="size-3" /> закреплена
+        </span>
+      </div>
+      <div className="mt-2 flex items-center gap-2 rounded-lg border border-blue-100/80 bg-white px-3 py-2.5">
+        <span className={cn(
+          "size-2 shrink-0 rounded-full",
+          camera?.online ? "bg-emerald-500" : "bg-amber-400",
+        )} />
+        <span className="min-w-0 flex-1 truncate text-sm font-bold text-slate-800">
+          {camera?.zone || camera?.name || source}
+        </span>
+        <span className="text-[11px] text-slate-400">назначена в «Моноблоке»</span>
+      </div>
+    </div>
+  );
+}
+
 /* ── Лайв-борд: заказы едут по этапам слева направо ─────────────────────── */
 function TransportBadge({ order, size = "md" }: { order: Order; size?: "md" | "lg" }) {
   if (order.transport_type === "train") {
@@ -716,11 +742,24 @@ function ShippingPageInner() {
     [playable],
   );
   const aiCam = useMemo(() => {
-    const chosen = selected?.loading_camera
-      ? playable.find((c) => c.src === selected.loading_camera)
-      : null;
-    return chosen ?? defaultLoadCam;
+    if (selected?.loading_camera) {
+      // Назначенная камера не должна молча подменяться другой, даже если
+      // временно пропала из живого инвентаря.
+      return playable.find((c) => c.src === selected.loading_camera) ?? null;
+    }
+    return defaultLoadCam;
   }, [playable, selected?.loading_camera, defaultLoadCam]);
+  const orderCameras = useMemo(() => {
+    if (!selected?.loading_camera) return playable;
+    const bound = playable.find((camera) => camera.src === selected.loading_camera);
+    return bound ? [bound] : [];
+  }, [playable, selected?.loading_camera]);
+  const boundCamera = useMemo(
+    () => selected?.loading_camera
+      ? (cameras ?? []).find((camera) => camera.src === selected.loading_camera)
+      : undefined,
+    [cameras, selected?.loading_camera],
+  );
 
   const isLoadStep = !!selected && canLoad
     && (isTrain ? selected.status === "loading"
@@ -810,7 +849,7 @@ function ShippingPageInner() {
 
             {/* видео + действие шага */}
             <div className="grid gap-4 p-5 xl:grid-cols-[1.4fr_1fr]">
-              <PostCamera cameras={playable}
+              <PostCamera cameras={orderCameras}
                 zoneKeywords={!isTrain && selected.status === "confirmed" ? ["вес", "въезд"] : ["загруз"]}
                 preferId={aiCam?.id ?? null}
                 ai={aiLive && aiCam
@@ -838,7 +877,9 @@ function ShippingPageInner() {
                 {isTrain && selected.status === "loading" && (
                   canTrain ? (
                     <>
-                      {playable.length > 0 && (
+                      {selected.loading_camera ? (
+                        <BoundCamera camera={boundCamera} source={selected.loading_camera} />
+                      ) : playable.length > 0 && (
                         <CameraPicker cameras={playable} activeSrc={aiCam?.src ?? null}
                           occupied={ai.occupied} onPick={assignCamera} busy={busy} />
                       )}
@@ -896,7 +937,9 @@ function ShippingPageInner() {
                 {!isTrain && (selected.status === "arrived" || selected.status === "loading") && (
                   canLoad ? (
                     <>
-                      {playable.length > 0 && (
+                      {selected.loading_camera ? (
+                        <BoundCamera camera={boundCamera} source={selected.loading_camera} />
+                      ) : playable.length > 0 && (
                         <CameraPicker cameras={playable} activeSrc={aiCam?.src ?? null}
                           occupied={ai.occupied} onPick={assignCamera} busy={busy} />
                       )}
