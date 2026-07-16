@@ -14,10 +14,11 @@ import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { cn, formatDateTime, formatMoney } from "@/lib/utils";
 import {
-  ArrowLeft, Cctv, Check, ChevronRight, Layers3, LogOut, Minus, Package, Phone, Play,
-  Plus, RotateCcw, Scale, Settings2, TrainFront, Truck, User, VideoOff,
+  Activity, ArrowLeft, Cctv, Check, ChevronRight, Clock3, Layers3, LogOut, Minus,
+  Package, Phone, Play, Plus, Radio, RotateCcw, Scale, Settings2, TrainFront, Truck,
+  User, VideoOff,
 } from "lucide-react";
-import type { Order } from "@/lib/types";
+import type { AiCountingSession, Order } from "@/lib/types";
 import { useAiCounter, type AiCounter } from "@/lib/use-ai-counter";
 
 const POLL_MS = 10_000; // борд и счётчики обновляются сами — пост «живой»
@@ -409,9 +410,10 @@ function TransportBadge({ order, size = "md" }: { order: Order; size?: "md" | "l
   return <PlateBadge value={order.truck_number} size={size === "lg" ? "lg" : "md"} />;
 }
 
-function BoardCard({ order, stage, onOpen }: {
+function BoardCard({ order, stage, camera, onOpen }: {
   order: Order;
   stage: (typeof BOARD_STAGES)[number];
+  camera?: CameraFeed;
   onOpen?: (id: number) => void;
 }) {
   const ordered = orderedBags(order);
@@ -439,6 +441,18 @@ function BoardCard({ order, stage, onOpen }: {
             : `${bags} меш.`)}
         </div>
       </div>
+      {order.loading_camera && (
+        <div className="flex items-center gap-1.5 rounded-lg border border-blue-100 bg-blue-50/80 px-2.5 py-1.5 text-[11px] font-semibold text-blue-700">
+          <Cctv className="size-3.5 shrink-0" />
+          <span className="truncate">{camera?.zone || camera?.name || order.loading_camera}</span>
+          {stage.key === "loading" && (
+            <span className="relative ml-auto flex size-2 shrink-0">
+              <span className="absolute inline-flex size-2 animate-ping rounded-full bg-emerald-400 opacity-50" />
+              <span className="relative size-2 rounded-full bg-emerald-500" />
+            </span>
+          )}
+        </div>
+      )}
       {stage.key === "loading" && (
         <div className="h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
           <div className="h-full rounded-full transition-all"
@@ -449,8 +463,9 @@ function BoardCard({ order, stage, onOpen }: {
   );
 }
 
-function LiveBoard({ orders, onOpen }: {
+function LiveBoard({ orders, cameras, onOpen }: {
   orders: Order[];
+  cameras: CameraFeed[];
   onOpen: (id: number) => void;
 }) {
   return (
@@ -513,6 +528,7 @@ function LiveBoard({ orders, onOpen }: {
                   </div>
                 ) : rows.map((o) => (
                   <BoardCard key={o.id} order={o} stage={stage}
+                    camera={cameras.find((camera) => camera.src === o.loading_camera)}
                     onOpen={finished ? undefined : onOpen} />
                 ))}
               </div>
@@ -524,11 +540,131 @@ function LiveBoard({ orders, onOpen }: {
   );
 }
 
+/** Одна активная сессия из «Моноблока»: живой AI-счётчик прямо под бордом. */
+function ActiveLoadingCard({ session, order, camera, onOpen }: {
+  session: AiCountingSession;
+  order?: Order;
+  camera?: CameraFeed;
+  onOpen: (id: number) => void;
+}) {
+  const ai = useAiCounter(session.camera, session.order_id, true);
+  const counted = ai.status?.total ?? session.last_status?.total ?? 0;
+  const expected = order ? orderedBags(order) : 0;
+  const accepted = order?.bags_loaded ?? 0;
+  const percent = expected > 0 ? Math.min(100, Math.round((counted / expected) * 100)) : 0;
+  const isLive = !!ai.status?.running;
+
+  return (
+    <button type="button" onClick={() => onOpen(session.order_id)}
+      className="group relative overflow-hidden rounded-[20px] border border-slate-200/80 bg-white p-4 text-left shadow-[0_12px_32px_rgba(48,70,108,0.07)] transition duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_18px_42px_rgba(48,70,108,0.12)]">
+      <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-blue-500 via-cyan-400 to-emerald-400" />
+      <div className="flex items-start gap-3 pl-1">
+        <span className="relative flex size-11 shrink-0 items-center justify-center rounded-[14px] bg-slate-900 text-white shadow-sm">
+          <Cctv className="size-5" />
+          <span className={cn(
+            "absolute -right-1 -top-1 size-3 rounded-full border-2 border-white",
+            isLive ? "animate-pulse bg-emerald-400" : "bg-amber-400",
+          )} />
+        </span>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[15px] font-bold text-slate-800">Заказ #{session.order_id}</span>
+            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-700">
+              {isLive ? "камера считает" : "подключение"}
+            </span>
+          </div>
+          <p className="mt-0.5 truncate text-[12px] text-slate-500">
+            {order?.client_name || session.order_client_name || "Без клиента"}
+          </p>
+        </div>
+
+        <div className="shrink-0 text-right">
+          <div className="flex items-baseline justify-end gap-1 text-slate-900">
+            <span className="text-4xl font-black tabular-nums leading-none tracking-[-0.05em]">{counted}</span>
+            {expected > 0 && <span className="text-sm font-semibold text-slate-400">/ {expected}</span>}
+          </div>
+          <span className="text-[10px] font-bold uppercase tracking-[0.13em] text-slate-400">мешков камерой</span>
+        </div>
+      </div>
+
+      <div className="mt-4 pl-1">
+        <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+          <div className="h-full rounded-full bg-gradient-to-r from-blue-500 via-cyan-400 to-emerald-400 transition-all duration-500"
+            style={{ width: `${percent}%` }} />
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
+          <span className="flex items-center gap-1.5 font-semibold text-blue-700">
+            <Radio className="size-3.5" /> {camera?.zone || camera?.name || session.camera}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <User className="size-3.5" /> {session.started_by_name}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Clock3 className="size-3.5" /> {formatDateTime(session.started_at)}
+          </span>
+          {accepted !== counted && (
+            <span className="ml-auto tabular-nums text-slate-400">на посту принято: {accepted}</span>
+          )}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function ActiveLoadings({ sessions, orders, cameras, onOpen }: {
+  sessions: AiCountingSession[] | null;
+  orders: Order[];
+  cameras: CameraFeed[];
+  onOpen: (id: number) => void;
+}) {
+  return (
+    <section className="overflow-hidden rounded-[24px] border border-slate-200/80 bg-[linear-gradient(135deg,#f7faff_0%,#f8fbff_55%,#f4fbf8_100%)] p-4 shadow-[0_14px_40px_rgba(48,70,108,0.06)] sm:p-5">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <span className="flex size-10 items-center justify-center rounded-xl bg-slate-900 text-white shadow-sm">
+          <Activity className="size-5" />
+        </span>
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-[18px] font-bold tracking-tight text-slate-800">Сейчас на погрузке</h2>
+            {!!sessions?.length && <span className="size-2 animate-pulse rounded-full bg-emerald-500" />}
+          </div>
+          <p className="text-[12px] text-slate-400">Активные заказы и живой счёт камер</p>
+        </div>
+        <span className="ml-auto rounded-full border border-white bg-white/90 px-3 py-1 text-[12px] font-semibold tabular-nums text-slate-600 shadow-sm">
+          {sessions?.length ?? 0} активн.
+        </span>
+      </div>
+
+      {!sessions?.length ? (
+        <div className="flex min-h-28 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white/65 px-4 text-center">
+          <Cctv className="size-6 text-slate-300" />
+          <p className="mt-2 text-sm font-semibold text-slate-600">Камеры пока не считают</p>
+          <p className="mt-0.5 text-xs text-slate-400">Активная отгрузка появится после запуска в «Моноблоке».</p>
+        </div>
+      ) : (
+        <div className="grid gap-3 xl:grid-cols-2 2xl:grid-cols-3">
+          {sessions.map((session) => (
+            <ActiveLoadingCard key={session.id} session={session}
+              order={orders.find((order) => order.id === session.order_id)}
+              camera={cameras.find((camera) => camera.src === session.camera)}
+              onOpen={onOpen} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 /* ── Страница ───────────────────────────────────────────────────────────── */
 function ShippingPageInner() {
   const { me } = useAuth();
+  const canLoad = can(me, "shipping.load");
   const { data: orders, error: loadError, reload } = useApi<Order[]>("/orders/");
   const { data: cameras, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
+  const { data: sessions, reload: reloadSessions } = useApi<AiCountingSession[]>(
+    canLoad ? "/cameras/ai/sessions/" : null,
+  );
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [weighIn, setWeighIn] = useState("");
   const [busy, setBusy] = useState(false);
@@ -552,10 +688,13 @@ function ShippingPageInner() {
   // Пост — «живой» экран: борд и счётчики обновляются сами.
   useEffect(() => {
     const t = setInterval(() => {
-      if (!document.hidden) void reload();
+      if (!document.hidden) {
+        void reload();
+        void reloadSessions();
+      }
     }, POLL_MS);
     return () => clearInterval(t);
-  }, [reload]);
+  }, [reload, reloadSessions]);
 
   // Единый пост: машины и поезда вместе. «Завершён» — только сегодняшние выезды.
   const board = (orders ?? [])
@@ -567,7 +706,6 @@ function ShippingPageInner() {
   const isTrain = selected?.transport_type === "train";
 
   const canArrive = can(me, "shipping.arrive");
-  const canLoad = can(me, "shipping.load");
   const canShip = can(me, "shipping.ship");
   const canTrain = can(me, "train.load");
 
@@ -617,7 +755,11 @@ function ShippingPageInner() {
       ) : !selected ? (
         <div className="flex flex-col gap-6">
           {/* Лайв-статус заказов по этапам */}
-          <LiveBoard orders={board} onOpen={openOrder} />
+          <LiveBoard orders={board} cameras={cameras ?? []} onOpen={openOrder} />
+          {canLoad && (
+            <ActiveLoadings sessions={sessions} orders={board} cameras={cameras ?? []}
+              onOpen={openOrder} />
+          )}
         </div>
       ) : (
         <div className="flex flex-col gap-4">
