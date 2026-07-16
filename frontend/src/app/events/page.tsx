@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
+import { translateOrderStatusMessage } from "@/lib/constants";
 import {
   Search, X, CircleDot, Wallet, PackageCheck, Truck,
   Forklift, Warehouse, ArrowDownToLine, Scale, Activity,
@@ -24,6 +25,8 @@ type EventMeta = {
 
 const EVENT_META: Record<string, EventMeta> = {
   status:        { label: "Статус",   icon: CircleDot,       color: "var(--ring)" },
+  status_override: { label: "Статус", icon: CircleDot,       color: "var(--ring)" },
+  status_request: { label: "Запрос статуса", icon: CircleDot, color: "var(--warning)" },
   payment:       { label: "Оплата",   icon: Wallet,          color: "var(--success)" },
   receipt:       { label: "Приёмка",  icon: PackageCheck,    color: "var(--ring)" },
   arrival:       { label: "Прибытие", icon: Truck,           color: "var(--ring)" },
@@ -178,7 +181,9 @@ function EventsPageInner() {
                             >
                               {m.label}
                             </span>
-                            <p className="text-sm font-medium text-[var(--foreground)]">{e.message}</p>
+                            <p className="text-sm font-medium text-[var(--foreground)]">
+                              {translateOrderStatusMessage(e.message, e.payload)}
+                            </p>
                           </div>
                           <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
                             {new Date(e.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}

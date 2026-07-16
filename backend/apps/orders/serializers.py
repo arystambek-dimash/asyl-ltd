@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import Order, OrderItem, Payment, StatusChangeRequest
 from .services import set_truck_number
+from .statuses import public_status_label
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -36,13 +37,15 @@ class OrderItemSerializer(serializers.ModelSerializer):
         # на запрос (кэш в context), а не отдельным запросом на каждую позицию.
         if obj.unit_price is not None:
             return None
-        from apps.catalog.models import ClientPrice
         cache = self.context.setdefault("_client_prices", {})
-        client_id = obj.order.client_id
+        client = obj.order.client
+        client_id = client.id
         if client_id not in cache:
+            prefetched = getattr(client, "_prefetched_objects_cache", {}).get("prices")
+            prices = prefetched if prefetched is not None else client.prices.all()
             cache[client_id] = {
                 cp.product_id: str(cp.price)
-                for cp in ClientPrice.objects.filter(client_id=client_id)
+                for cp in prices
             }
         return cache[client_id].get(obj.product_id)
 
@@ -61,11 +64,17 @@ class StatusChangeRequestSerializer(serializers.ModelSerializer):
         return obj.requested_by.username if obj.requested_by else None
 
     def get_to_status_label(self, obj):
-        return obj.to_status
+        return public_status_label(obj.to_status)
 
 
-PAYMENT_METHOD_LABELS = {"cash": "Наличные", "card": "Карта",
-                         "kaspi": "Kaspi", "debt": "Долг"}
+PAYMENT_METHOD_LABELS = {
+    "invoice": "Счет на оплату",
+    "kaspi": "Kaspi",
+    "cash": "Наличные",
+    "debt": "Долг",
+    # Легаси-способ внутренних банковских оплат.
+    "card": "Карта",
+}
 
 
 def _username(user):
@@ -82,7 +91,7 @@ class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
         fields = ["id", "order", "amount", "method", "method_label", "status",
-                  "paid_at", "recorded_by", "recorded_by_name",
+                  "note", "paid_at", "recorded_by", "recorded_by_name",
                   "received_by_name", "received_at",
                   "accountant_by_name", "accountant_at",
                   "confirmed_by", "confirmed_by_name", "confirmed_at"]
@@ -109,10 +118,14 @@ class PaymentQueueSerializer(PaymentSerializer):
     client_name = serializers.CharField(source="order.client.name", read_only=True)
     department = serializers.CharField(source="order.department", read_only=True)
     order_status = serializers.CharField(source="order.status", read_only=True)
+    store = serializers.IntegerField(source="order.store_id", read_only=True,
+                                     allow_null=True)
+    store_name = serializers.CharField(source="order.store.name", read_only=True,
+                                       allow_null=True)
 
     class Meta(PaymentSerializer.Meta):
         fields = PaymentSerializer.Meta.fields + [
-            "client_name", "department", "order_status"]
+            "client_name", "department", "order_status", "store", "store_name"]
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -120,6 +133,7 @@ class OrderSerializer(serializers.ModelSerializer):
     status = serializers.CharField(read_only=True)
     payment_status = serializers.CharField(read_only=True)
     settlement_intent = serializers.CharField(required=False)
+    payment_method = serializers.CharField(read_only=True)
     total_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     paid_total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     remaining_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
@@ -136,19 +150,20 @@ class OrderSerializer(serializers.ModelSerializer):
     pending_status_requests = serializers.SerializerMethodField()
     payments = serializers.SerializerMethodField()
     pending_payments = serializers.SerializerMethodField()
+    shipped_at = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
         fields = ["id", "client", "store", "client_name", "client_phone",
                   "department", "status",
-                  "payment_status", "settlement_intent", "transport_type",
-                  "truck_number", "arrival_date", "items", "total_amount",
+                  "payment_status", "settlement_intent", "payment_method", "transport_type",
+                  "truck_number", "arrival_date", "notes", "items", "total_amount",
                   "paid_total", "remaining_amount", "is_fully_paid",
                   "is_debt", "debt_override", "debt_override_by_name", "pending_status_requests",
                   "payments", "pending_payments",
                   "weigh_in_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at",
-                  "loading_camera", "deleted_at", "deleted_by_name"]
+                  "shipped_at", "loading_camera", "deleted_at", "deleted_by_name"]
         read_only_fields = ["debt_override", "department", "deleted_at"]
         extra_kwargs = {
             "truck_number": {"required": False},
@@ -167,6 +182,11 @@ class OrderSerializer(serializers.ModelSerializer):
     def get_bags_loaded(self, obj):
         s = self._shipment(obj)
         return s.bags_loaded if s else 0
+
+    def get_shipped_at(self, obj):
+        # Заказ, отгруженный вручную (без поста), Shipment не имеет — тогда None.
+        s = self._shipment(obj)
+        return s.shipped_at if s else None
 
     def _first_item(self, obj):
         # items предзагружены — берём из кэша, .first() породил бы новый запрос.
@@ -224,11 +244,9 @@ class OrderSerializer(serializers.ModelSerializer):
     def validate_client(self, client):
         # Заказ можно создать только для клиента, видимого пользователю:
         # менеджер Отдела 2 — исключительно для своих клиентов.
-        from apps.rbac.scoping import scope_by_department
-        from apps.clients.models import Client
+        from apps.clients.querysets import visible_clients
         user = self.context["request"].user
-        if not scope_by_department(Client.objects.filter(pk=client.pk), user,
-                                   "clients.view").exists():
+        if not visible_clients(user).filter(pk=client.pk).exists():
             raise serializers.ValidationError("Клиент недоступен")
         return client
 
@@ -239,6 +257,9 @@ class OrderSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"detail": "Магазин принадлежит другому клиенту",
                  "code": "store_mismatch"})
+        intent = attrs.get("settlement_intent")
+        if intent in Order.SETTLEMENT_INTENTS:
+            attrs["payment_method"] = "debt" if intent == "debt" else "invoice"
         return attrs
 
     def create(self, validated_data):

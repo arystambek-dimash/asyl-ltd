@@ -106,6 +106,13 @@ function ProductsPageInner() {
 
   return (
     <AppShell title="Товары" section="Работа" description="Товары: сорт, цвет (тип) и фасовка. Управляйте ценами и архивом."
+      tabs={
+        <Tabs active={tab} onChange={(k) => setTab(k as "active" | "archive")}
+          tabs={[
+            { key: "active", label: "Товары", icon: Check },
+            { key: "archive", label: "Архив", icon: Archive },
+          ]} />
+      }
       actions={
         <Button size="sm" onClick={openNew} aria-label="Создать товар">
           <Plus className="size-4" /> <span className="hidden sm:inline">Создать товар</span>
@@ -116,14 +123,6 @@ function ProductsPageInner() {
           <StatCard label="Активных товаров" value={String(list.length)} accent />
           <StatCard label="В архиве" value={String(archiveList.length)} />
         </div>
-      </div>
-
-      <div className="mb-4">
-        <Tabs variant="bar" active={tab} onChange={(k) => setTab(k as "active" | "archive")}
-          tabs={[
-            { key: "active", label: "Товары", icon: Check },
-            { key: "archive", label: "Архив", icon: Archive },
-          ]} />
       </div>
 
       {loadError && !products && <div className="mb-4"><ErrorAlert message={loadError} onRetry={reload} /></div>}

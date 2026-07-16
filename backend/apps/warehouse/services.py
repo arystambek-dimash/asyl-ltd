@@ -60,6 +60,34 @@ def adjust_stock(product, delta, user, note=""):
 
 
 @transaction.atomic
+def delete_stock_item(item, user):
+    """Удалить товар из складского списка, сохранив обнуление в истории."""
+    locked = (
+        StockItem.objects.select_for_update()
+        .select_related("product")
+        .get(pk=item.pk)
+    )
+    product = locked.product
+    balance = locked.bags
+    if balance:
+        StockMovement.objects.create(
+            product=product,
+            delta=-balance,
+            balance_after=0,
+            reason="adjustment",
+            note="Удаление из складского списка",
+            created_by=user,
+        )
+    locked.delete()
+    log_event(
+        "stock_remove",
+        f"Товар удалён со склада: {product}",
+        user=user,
+        payload={"product": product.id, "removed_balance": balance},
+    )
+
+
+@transaction.atomic
 def receive_stock(product, bags, user):
     if bags <= 0:
         raise ValidationError(

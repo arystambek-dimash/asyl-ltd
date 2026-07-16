@@ -1,6 +1,9 @@
+from django.urls import path
 from rest_framework.routers import DefaultRouter
-from .views import OrderViewSet
+from .views import OrderViewSet, ReportSummaryView
 
 router = DefaultRouter()
 router.register("orders", OrderViewSet)
-urlpatterns = router.urls
+urlpatterns = [
+    path("reports/summary/", ReportSummaryView.as_view(), name="report-summary"),
+] + router.urls

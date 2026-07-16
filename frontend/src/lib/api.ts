@@ -80,3 +80,7 @@ export function apiError(e: unknown): string {
   if ((e as AxiosError).response?.status === 403) return "";
   return errorDetail(e);
 }
+
+export function isCanceledRequest(error: unknown): boolean {
+  return axios.isCancel(error) || (error as AxiosError | undefined)?.code === "ERR_CANCELED";
+}

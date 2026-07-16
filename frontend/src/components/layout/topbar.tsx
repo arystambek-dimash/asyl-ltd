@@ -43,7 +43,10 @@ function ThemeToggle() {
   );
 }
 
-export function Topbar({ me, title, section, actions, onMenu }: { me: Me; title: string; section?: string; actions?: ReactNode; onMenu?: () => void }) {
+export function Topbar({ me, title, section, tabs, actions, onMenu }: {
+  me: Me; title: string; section?: string;
+  tabs?: ReactNode; actions?: ReactNode; onMenu?: () => void;
+}) {
   const { logout } = useAuth();
   const router = useRouter();
   const roleText = me.is_client
@@ -70,6 +73,14 @@ export function Topbar({ me, title, section, actions, onMenu }: { me: Me; title:
           )}
           <h1 className="truncate text-base font-semibold tracking-tight sm:text-lg">{title}</h1>
         </div>
+        {/* Вкладки страницы — в самом навбаре; подчёркивание ложится на его
+            нижнюю границу. На телефоне переезжают отдельной строкой ниже. */}
+        {tabs && (
+          <div className="ml-4 hidden h-16 min-w-0 self-stretch overflow-x-auto sm:flex
+            [&>div]:h-full [&>div]:border-b-0 [&_button]:h-full [&_button]:whitespace-nowrap">
+            {tabs}
+          </div>
+        )}
       </div>
       <div className="flex items-center gap-2 sm:gap-3">
         {actions}

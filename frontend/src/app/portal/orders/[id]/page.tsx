@@ -8,22 +8,17 @@ import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { ProgressBar } from "@/components/ui/progress-bar";
-import { CreditCard, QrCode, CheckCircle2, Clock } from "lucide-react";
+import { Banknote, CheckCircle2, Clock, FileText, HandCoins, QrCode } from "lucide-react";
 import { useApi } from "@/lib/use-api";
 import { apiError } from "@/lib/api";
-import { formatMoney } from "@/lib/utils";
+import { formatMoney, formatPortalMoney } from "@/lib/utils";
 import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { clientStep, payOrder, setTruck, getPaymentInfo, type PaymentInfo } from "@/lib/portal-actions";
-import type { Order } from "@/lib/types";
-
-function portalMoney(value: string | null | undefined) {
-  if (value == null) return "После подтверждения";
-  return `${formatMoney(value)} ₸`;
-}
+import type { PortalOrder, PortalPaymentMethod } from "@/lib/types";
 
 export default function PortalOrderDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { data: order, loading, reload } = useApi<Order>(`/portal/orders/${id}/`);
+  const { data: order, loading, reload } = useApi<PortalOrder>(`/portal/orders/${id}/`);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [truck, setTruckVal] = useState("");
@@ -32,6 +27,12 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
   async function run(fn: () => Promise<unknown>) {
     setBusy(true); setError("");
     try { await fn(); reload(); } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
+  }
+
+  async function selectPayment(method: PortalPaymentMethod) {
+    if (method === "kaspi") setInfo(await getPaymentInfo());
+    else setInfo(null);
+    await payOrder(Number(id), method);
   }
 
   if (loading || !order) return (
@@ -72,7 +73,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
               <span className={order.total_amount == null
                 ? "font-medium text-[var(--muted-foreground)]"
                 : "font-bold tabular-nums"}>
-                {portalMoney(order.total_amount)}
+                {formatPortalMoney(order.total_amount)}
               </span>
             </div>
           </CardContent>
@@ -102,7 +103,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
               {/* сводка */}
               <div className="grid grid-cols-3 gap-2 text-sm">
                 <div><div className="text-xs text-[var(--muted-foreground)]">Сумма</div>
-                  <div className="tabular-nums font-medium">{formatMoney(order.total_amount)} ₸</div></div>
+                  <div className="tabular-nums font-medium">{formatMoney(order.total_amount ?? 0)} ₸</div></div>
                 <div><div className="text-xs text-[var(--muted-foreground)]">Оплачено</div>
                   <div className="tabular-nums text-[var(--success)]">{formatMoney(order.paid_total ?? "0")} ₸</div></div>
                 <div><div className="text-xs text-[var(--muted-foreground)]">Остаток</div>
@@ -116,7 +117,12 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                 <ProgressBar pct={pct} />
               </div>
 
-              {order.has_pending_payment ? (
+              {order.debt_requested ? (
+                <div className="flex items-start gap-2 rounded-lg border border-[var(--primary)]/25 bg-[var(--primary)]/5 p-3 text-sm">
+                  <HandCoins className="mt-0.5 size-4 shrink-0 text-[var(--primary)]" />
+                  Запрос «В долг» отправлен. Ожидайте решения сотрудника.
+                </div>
+              ) : order.has_pending_payment ? (
                 <div className="flex items-start gap-2 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 p-3 text-sm text-[var(--warning)]">
                   <Clock className="mt-0.5 size-4 shrink-0" />
                   Заявка на оплату отправлена. Ожидает подтверждения сотрудником.
@@ -124,16 +130,24 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
               ) : (
                 <>
                   <p className="text-sm text-[var(--muted-foreground)]">
-                    Заказ отгружен. Оплатите удобным способом — после подтверждения сотрудником остаток уменьшится.
+                    Заказ отгружен. Выберите удобный способ оплаты.
                   </p>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    <Button disabled={busy} variant="outline" className="justify-start"
-                      onClick={() => run(() => payOrder(order.id, "card"))}>
-                      <CreditCard className="size-4" /> Оплатил картой
+                    <Button disabled={busy} variant="outline" className="h-auto justify-start py-3"
+                      onClick={() => run(() => selectPayment("invoice"))}>
+                      <FileText className="size-4" /> Счет на оплату
                     </Button>
-                    <Button disabled={busy} variant="outline" className="justify-start"
-                      onClick={() => run(async () => { setInfo(await getPaymentInfo()); await payOrder(order.id, "kaspi"); })}>
-                      <QrCode className="size-4" /> Оплатить Kaspi QR
+                    <Button disabled={busy} variant="outline" className="h-auto justify-start py-3"
+                      onClick={() => run(() => selectPayment("kaspi"))}>
+                      <QrCode className="size-4" /> Каспи
+                    </Button>
+                    <Button disabled={busy} variant="outline" className="h-auto justify-start py-3"
+                      onClick={() => run(() => selectPayment("cash"))}>
+                      <Banknote className="size-4" /> Наличными
+                    </Button>
+                    <Button disabled={busy} variant="outline" className="h-auto justify-start py-3"
+                      onClick={() => run(() => selectPayment("debt"))}>
+                      <HandCoins className="size-4" /> В долг
                     </Button>
                   </div>
                 </>
@@ -148,7 +162,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                 </div>
               )}
               <p className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
-                <CheckCircle2 className="size-3.5" /> Оплата картой/Kaspi подтверждается сотрудником.
+                <CheckCircle2 className="size-3.5" /> Выбранный способ зафиксируется в заказе.
               </p>
             </CardContent>
           </Card>

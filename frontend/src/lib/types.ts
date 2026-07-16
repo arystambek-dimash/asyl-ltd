@@ -15,14 +15,28 @@ export interface Product {
   available_bags?: number;
   ask_truck_weight?: boolean;
 }
+export interface ClientPriceRow {
+  product: number;
+  product_label: string;
+  base_price: string;
+  price: string | null;
+  updated_at: string | null;
+  updated_by_name: string | null;
+}
+export interface ClientPriceSheet {
+  client: Client;
+  prices: ClientPriceRow[];
+}
 export type Department = "main" | "field";
+export type PortalPaymentMethod = "invoice" | "kaspi" | "cash" | "debt";
+export type PaymentMethod = PortalPaymentMethod | "card";
 
 export interface Client {
   id: number; first_name: string; last_name: string; phone: string;
   name: string; country: string;
   iin: string; bank: string; bank_account: string; user: number | null;
   department: Department; manager: number | null; manager_name?: string | null;
-  debt_total?: string;
+  debt_total?: string; created_at?: string;
 }
 export interface Store {
   id: number; client: number; name: string; address: string; phone: string;
@@ -41,9 +55,11 @@ export interface StatusChangeRequest {
 export interface Order {
   id: number; client: number; store?: number | null; client_name?: string; client_phone?: string;
   department?: Department;
-  status: string; payment_status?: string; settlement_intent?: string; transport_type?: "truck" | "train";
+  status: string; payment_status?: string; settlement_intent?: string;
+  payment_method?: PaymentMethod; transport_type?: "truck" | "train";
   truck_number: string; truck_number_set_by?: number | null;
   arrival_date?: string | null;
+  notes?: string;
   items: OrderItem[]; total_amount: string; paid_total: string; remaining_amount?: string;
   has_pending_payment?: boolean;
   is_fully_paid: boolean; is_debt?: boolean; debt_override: boolean; debt_requested?: boolean;
@@ -54,13 +70,36 @@ export interface Order {
   bags_loaded?: number; bag_estimate_kg?: string;
   bag_weight_kg?: string; debt_override_by_name?: string | null;
   created_at: string;
+  shipped_at?: string | null;
   loading_camera?: string;
   deleted_at?: string | null; deleted_by_name?: string | null;
+}
+
+/** Client-portal projection: prices are deliberately hidden until confirmation. */
+export interface PortalOrder {
+  id: number;
+  status: string;
+  payment_status?: string;
+  settlement_intent: string;
+  payment_method: PortalPaymentMethod;
+  transport_type: "truck" | "train";
+  store: number | null;
+  store_name: string | null;
+  items: OrderItem[];
+  total_amount: string | null;
+  paid_total: string | null;
+  remaining_amount: string | null;
+  has_pending_payment: boolean;
+  truck_number: string;
+  debt_requested: boolean;
+  debt_override: boolean;
+  created_at: string;
 }
 export type PaymentStage = "requested" | "received" | "accountant_ok" | "confirmed" | "rejected";
 
 export interface Payment {
-  id: number; order: number; amount: string; method: string; method_label?: string;
+  id: number; order: number; amount: string; method: PaymentMethod; method_label?: string;
+  note?: string;
   status: PaymentStage; paid_at: string; recorded_by: number | null; recorded_by_name?: string | null;
   received_by_name?: string | null; received_at?: string | null;
   accountant_by_name?: string | null; accountant_at?: string | null;
@@ -69,15 +108,23 @@ export interface Payment {
 
 export interface PaymentQueueItem extends Payment {
   client_name: string; department: Department; order_status: string;
+  store?: number | null; store_name?: string | null;
 }
 export interface StockItem {
   id: number; product: number; product_label: string;
-  grade: string; packaging: string; weight_kg: string; bags: number;
+  grade: string; color: string; color_label: string;
+  packaging: string; weight_kg: string; bags: number;
 }
 export interface Shipment {
   id: number; order: number; truck_number: string;
   weigh_in_kg: string | null; bags_loaded: number;
   arrived_at: string | null; shipped_at: string | null;
+}
+export interface AiCountingSession {
+  id: number; order_id: number; order_client_name: string; order_truck_number: string;
+  camera: string; status: "starting" | "active"; started_at: string;
+  started_by_id: number | null; started_by_name: string; can_stop: boolean;
+  last_status: { total?: number; weight?: number; status?: string; per_color?: Record<string, number> };
 }
 export interface Permission { id: number; code: string; section: string; action: string; label: string; }
 export interface Role {

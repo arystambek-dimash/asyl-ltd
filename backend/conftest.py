@@ -46,6 +46,7 @@ def manager(user_with_perms):
     return user_with_perms("manager", codes=[
         "catalog.view", "catalog.create", "catalog.edit", "catalog.delete",
         "clients.view", "clients.create", "clients.edit", "clients.delete",
+        "clients.set_price",
         "orders.view", "orders.create", "orders.edit", "orders.confirm"])
 
 
@@ -70,14 +71,16 @@ def boss(user_with_perms):
     return user_with_perms("boss", codes=[
         "shipping.view", "shipping.arrive", "shipping.load", "shipping.ship",
         "shipping.debt_override", "orders.view", "warehouse.view", "warehouse.adjust",
-        "catalog.view", "clients.view", "clients.edit", "employees.view", "employees.manage",
+        "catalog.view", "clients.view", "clients.edit", "clients.set_price",
+        "employees.view", "employees.manage",
         "rbac.view", "rbac.manage", "reports.view"])
 
 
 @pytest.fixture
 def dept2_manager(user_with_perms):
     return user_with_perms("citymanager", codes=[
-        "dept2.view", "dept2.create", "payments.view", "payments.create"])
+        "dept2.view", "dept2.create", "clients.set_price",
+        "payments.view", "payments.create"])
 
 
 @pytest.fixture

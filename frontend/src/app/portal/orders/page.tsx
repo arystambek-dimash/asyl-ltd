@@ -6,17 +6,12 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { useApi } from "@/lib/use-api";
-import { formatMoney } from "@/lib/utils";
+import { formatPortalMoney } from "@/lib/utils";
 import { Plus } from "lucide-react";
-import type { Order } from "@/lib/types";
-
-function portalMoney(value: string | null | undefined) {
-  if (value == null) return "После подтверждения";
-  return `${formatMoney(value)} ₸`;
-}
+import type { PortalOrder } from "@/lib/types";
 
 export default function PortalOrdersPage() {
-  const { data: orders, loading } = useApi<Order[]>("/portal/orders/");
+  const { data: orders, loading } = useApi<PortalOrder[]>("/portal/orders/");
   return (
     <AppShell title="Мои заказы" portal
       actions={
@@ -41,12 +36,12 @@ export default function PortalOrdersPage() {
                       <Link href={`/portal/orders/${o.id}`} className="underline">#{o.id}</Link>
                     </TD>
                     <TD className={o.total_amount == null ? "text-[var(--muted-foreground)]" : "tabular-nums"}>
-                      {portalMoney(o.total_amount)}
+                      {formatPortalMoney(o.total_amount)}
                     </TD>
                     <TD className={o.paid_total == null
                       ? "text-[var(--muted-foreground)]"
                       : "tabular-nums text-[var(--muted-foreground)]"}>
-                      {portalMoney(o.paid_total)}
+                      {formatPortalMoney(o.paid_total)}
                     </TD>
                     <TD><StatusBadge status={o.status} /></TD>
                   </TR>

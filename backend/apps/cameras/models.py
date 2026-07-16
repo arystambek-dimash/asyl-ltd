@@ -7,9 +7,10 @@ class AiCountingSession(models.Model):
     """Durable ownership of a per-camera AI counting slot.
 
     The camera worker keeps the live counter, while this row records which
-    order owns a given camera.  A partial unique constraint on `camera`
-    allows several loadings to run in parallel on different cameras, while
-    keeping at most one open session per camera (safe across workers/tablets).
+    order owns a given camera. Partial unique constraints on `camera` and
+    `order` allow several different loadings to run in parallel, while keeping
+    every camera and every order in at most one open session (safe across
+    workers/tablets).
     """
 
     STARTING = "starting"
@@ -51,7 +52,12 @@ class AiCountingSession(models.Model):
                 fields=["camera"],
                 condition=Q(status__in=["starting", "active"]),
                 name="cameras_one_open_session_per_camera",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["order"],
+                condition=Q(status__in=["starting", "active"]),
+                name="cameras_one_open_session_per_order",
+            ),
         ]
 
 

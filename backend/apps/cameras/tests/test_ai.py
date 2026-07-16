@@ -164,6 +164,96 @@ def test_delete_returns_final_and_releases_slot(api_client, loader, loading_orde
     assert session.final_total == 42
 
 
+def test_only_starter_or_admin_can_stop_session(
+    api_client, loader, user_with_perms, loading_order,
+):
+    other_loader = user_with_perms("other-loader", codes=["shipping.load"])
+    session = AiCountingSession.objects.create(
+        order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
+    api_client.force_authenticate(other_loader)
+    with patch.object(ai, "_request") as request:
+        resp = api_client.delete(
+            "/api/cameras/cam2/ai/", {"order_id": loading_order.pk}, format="json"
+        )
+    assert resp.status_code == 403
+    assert "начавший" in resp.data["detail"]
+    request.assert_not_called()
+    session.refresh_from_db()
+    assert session.status == AiCountingSession.ACTIVE
+
+    admin = user_with_perms("session-admin", codes=["shipping.load", "rbac.manage"])
+    api_client.force_authenticate(admin)
+    with patch.object(ai, "_request", side_effect=[(200, RUNNING), (200, {})]):
+        resp = api_client.delete(
+            "/api/cameras/cam2/ai/", {"order_id": loading_order.pk}, format="json"
+        )
+    assert resp.status_code == 200
+    session.refresh_from_db()
+    assert session.status == AiCountingSession.CLOSED
+
+
+def test_open_sessions_list_contains_owner_and_control_flag(
+    api_client, loader, user_with_perms, loading_order,
+):
+    viewer = user_with_perms("session-viewer", codes=["shipping.load"])
+    AiCountingSession.objects.create(
+        order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
+        started_by=loader, last_status={"total": 17},
+    )
+
+    api_client.force_authenticate(viewer)
+    resp = api_client.get("/api/cameras/ai/sessions/")
+    assert resp.status_code == 200
+    assert resp.data[0]["camera"] == "cam2"
+    assert resp.data[0]["started_by_name"] == "A B"
+    assert resp.data[0]["can_stop"] is False
+    assert resp.data[0]["last_status"]["total"] == 17
+
+    api_client.force_authenticate(loader)
+    resp = api_client.get("/api/cameras/ai/sessions/")
+    assert resp.data[0]["can_stop"] is True
+
+
+def test_open_sessions_require_load_permission(api_client, make_user):
+    api_client.force_authenticate(make_user("session-plain-staff"))
+
+    response = api_client.get("/api/cameras/ai/sessions/")
+
+    assert response.status_code == 403
+
+
+def test_open_sessions_hide_other_department(api_client, loader):
+    client = Client.objects.create(
+        first_name="Field", last_name="Client", phone="3", department="field")
+    order = Order.objects.create(
+        client=client, department="field", status="arrived")
+    AiCountingSession.objects.create(
+        order=order, camera="cam3", status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
+    api_client.force_authenticate(loader)
+
+    response = api_client.get("/api/cameras/ai/sessions/")
+
+    assert response.status_code == 200
+    assert response.data == []
+
+
+def test_cannot_start_ai_for_other_department(api_client, loader):
+    client = Client.objects.create(
+        first_name="Field2", last_name="Client", phone="4", department="field")
+    order = Order.objects.create(
+        client=client, department="field", status="arrived")
+    api_client.force_authenticate(loader)
+
+    response = api_client.post(
+        "/api/cameras/cam2/ai/", {"order_id": order.pk}, format="json")
+
+    assert response.status_code == 404
+
+
 def test_limit_409_passes_through_and_releases_slot(api_client, loader, loading_order):
     api_client.force_authenticate(loader)
 
@@ -233,6 +323,18 @@ def test_parallel_sessions_on_different_cameras(
     # Второй заказ, встающий на УЖЕ занятую cam2 — конфликт.
     with pytest.raises(sessions.AiSessionBusy):
         sessions.reserve(second_loading_order, "cam2", loader)
+
+
+def test_same_order_cannot_open_sessions_on_two_cameras(loader, loading_order):
+    from apps.cameras import sessions
+    first, created = sessions.reserve(loading_order, "cam2", loader)
+    assert created is True
+    with pytest.raises(sessions.AiSessionBusy) as exc:
+        sessions.reserve(loading_order, "cam3", loader)
+    assert exc.value.session.pk == first.pk
+    assert AiCountingSession.objects.filter(
+        order=loading_order, status__in=AiCountingSession.OPEN_STATUSES
+    ).count() == 1
 
 
 def test_current_for_camera_isolates_cameras(loader, loading_order, second_loading_order):

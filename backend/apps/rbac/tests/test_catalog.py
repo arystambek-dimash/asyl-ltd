@@ -13,5 +13,6 @@ def test_presets_reference_existing_codes():
 
 
 def test_known_codes_present():
-    for c in ("orders.create", "shipping.debt_override", "employees.manage", "rbac.manage"):
+    for c in ("orders.create", "shipping.debt_override", "clients.set_price",
+              "employees.manage", "rbac.manage"):
         assert c in ALL_CODES

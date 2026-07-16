@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from decimal import Decimal
+from apps.common.money import money_string
 from .models import Client, Department, Store
 
 
@@ -22,12 +23,14 @@ class ClientSerializer(serializers.ModelSerializer):
         model = Client
         fields = ["id", "first_name", "last_name", "phone", "name",
                   "country", "iin", "bank", "bank_account", "user",
-                  "department", "manager", "manager_name", "debt_total"]
+                  "department", "manager", "manager_name", "debt_total",
+                  "created_at"]
+        read_only_fields = ["created_at"]
 
     def get_debt_total(self, obj):
         total = sum((o.remaining_amount for o in obj.orders.all() if o.is_debt),
                     Decimal("0"))
-        return str(total.quantize(Decimal("0.01")))
+        return money_string(total)
 
     def get_manager_name(self, obj):
         return obj.manager.username if obj.manager else None
@@ -55,3 +58,12 @@ class StoreSerializer(serializers.ModelSerializer):
         model = Store
         fields = ["id", "client", "name", "address", "phone",
                   "payment_schedule_type", "payment_days", "contract_signed_at"]
+
+    def validate_client(self, client):
+        # Не позволяем привязать магазин к клиенту из невидимого отдела,
+        # даже если его id был подставлен напрямую в API-запрос.
+        from .querysets import visible_clients
+        request = self.context.get("request")
+        if request and not visible_clients(request.user).filter(pk=client.pk).exists():
+            raise serializers.ValidationError("Клиент недоступен")
+        return client

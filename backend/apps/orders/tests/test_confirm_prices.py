@@ -50,3 +50,28 @@ def test_confirm_updates_existing_client_price(boss):
     confirm_order(o, boss, prices={it.id: "12000.00"})
     cp = ClientPrice.objects.get(client=c, product=p)
     assert cp.price == Decimal("12000.00")  # перезаписалась
+
+
+def test_confirm_does_not_change_personal_price_without_permission(
+        user_with_perms):
+    user = user_with_perms("confirm-only", codes=["orders.confirm"])
+    order, item, client, product = _order(user)
+    ClientPrice.objects.create(client=client, product=product, price="5000.00")
+
+    confirm_order(order, user, prices={item.id: "12000.00"})
+
+    item.refresh_from_db()
+    assert item.unit_price == Decimal("12000.00")
+    assert ClientPrice.objects.get(client=client, product=product).price == Decimal("5000.00")
+
+
+def test_confirm_api_response_contains_fresh_prices(auth_client, manager):
+    o, item, _client, _product = _order(manager)
+
+    response = auth_client(manager).post(
+        f"/api/orders/{o.id}/confirm/",
+        {"prices": {str(item.id): "10000.00"}}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["items"][0]["price"] == "10000.00"
+    assert response.data["total_amount"] == "20000.00"

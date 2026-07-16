@@ -215,14 +215,14 @@ function StockCard({ m }: { m: DashboardMetrics }) {
   );
 }
 
-/* ── Заказы в работе по статусам ─────────────────────────────────── */
+/* ── Заказы по четырём пользовательским статусам ────────────────── */
 
 function PipelineCard({ m }: { m: DashboardMetrics }) {
   const total = m.pipeline.reduce((s, x) => s + x.count, 0);
   const max = Math.max(...m.pipeline.map((x) => x.count), 1);
   return (
     <section className="rounded-xl border bg-[var(--card)] shadow-sm">
-      <CardHeader title="Заказы в работе" sub={`${total} активных`} href="/orders" hrefLabel="Заказы" />
+      <CardHeader title="Заказы по статусам" sub={`${total} всего`} href="/orders" hrefLabel="Заказы" />
       <div className="flex flex-col gap-3 p-4">
         {m.pipeline.map((row) => (
           <div key={row.status} className="flex items-center gap-3">
@@ -246,7 +246,7 @@ function PipelineCard({ m }: { m: DashboardMetrics }) {
 function DebtorsCard({ m }: { m: DashboardMetrics }) {
   return (
     <section className="rounded-xl border bg-[var(--card)] shadow-sm">
-      <CardHeader title="Должники" sub="топ-5 по сумме" href="/accounting?tab=debts" hrefLabel="Долги" />
+      <CardHeader title="Должники" sub="топ-5 по сумме" href="/accounting" hrefLabel="Долги" />
       {m.topDebtors.length === 0 ? (
         <div className="px-4 py-8 text-center text-sm text-[var(--muted-foreground)]">Долгов нет</div>
       ) : (
@@ -330,7 +330,7 @@ const VIEW_STORAGE_KEY = "dashboard:view";
 function ViewSwitch({ view, onChange }: { view: DashboardView; onChange: (v: DashboardView) => void }) {
   const tabs = DASHBOARD_VIEWS.map((v) => ({ key: v.key, label: v.label, icon: v.icon }));
   return (
-    <Tabs variant="bar" tabs={tabs} active={view} onChange={(k) => onChange(k as DashboardView)} />
+    <Tabs tabs={tabs} active={view} onChange={(k) => onChange(k as DashboardView)} />
   );
 }
 
@@ -368,11 +368,8 @@ export default function DashboardPage() {
   };
 
   return (
-    <AppShell title="Главная">
-      <div className="flex flex-col gap-4">
-        <ViewSwitch view={view} onChange={changeView} />
-        {view === "analytics" ? <AnalyticsView /> : <CameraWall />}
-      </div>
+    <AppShell title="Главная" tabs={<ViewSwitch view={view} onChange={changeView} />}>
+      {view === "analytics" ? <AnalyticsView /> : <CameraWall />}
     </AppShell>
   );
 }

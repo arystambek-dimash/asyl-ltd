@@ -1,30 +1,71 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { StatusBadge } from "@/components/status-badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
-import { StatCard } from "@/components/ui/stat-card";
+import { SummaryCard } from "@/components/ui/summary-card";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { ErrorAlert } from "@/components/ui/data-state";
-import { Tabs } from "@/components/ui/tabs";
 import { PaymentStageBadge } from "@/components/payment-chain";
-import {
-  PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE,
-} from "@/lib/constants";
 import { can, deptLabel } from "@/lib/can";
 import { useAuth } from "@/store/auth";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
-import { formatMoney } from "@/lib/utils";
-import { CheckCheck, ClipboardCheck, Send, Wallet, ArrowUpRight, RefreshCw, Search } from "lucide-react";
-import type { Order, PaymentQueueItem } from "@/lib/types";
+import { formatCurrency, formatMoney, todayLocalIsoDate } from "@/lib/utils";
+import { CASHIER_PAYMENT_METHOD_LABELS } from "@/lib/constants";
+import { ArrowUpRight, RefreshCw, Search, Send, SlidersHorizontal, X } from "lucide-react";
+import type { Order, PaymentQueueItem, Store } from "@/lib/types";
+
+const money = formatCurrency;
+
+interface CashFilters {
+  dateFrom: string;
+  dateTo: string;
+  department: string;
+  store: string;
+  remainingMin: string;
+  remainingMax: string;
+}
+
+function apiUrl(path: string, params: Record<string, string>) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value && value !== "all") query.set(key, value);
+  });
+  const suffix = query.toString();
+  return suffix ? `${path}?${suffix}` : path;
+}
+
+function filtersAreValid(filters: CashFilters) {
+  const datesOk = !filters.dateFrom || !filters.dateTo || filters.dateFrom <= filters.dateTo;
+  const min = filters.remainingMin === "" ? null : Number(filters.remainingMin);
+  const max = filters.remainingMax === "" ? null : Number(filters.remainingMax);
+  const remainingOk = min === null || max === null || min <= max;
+  return datesOk && remainingOk;
+}
+
+interface ReportSummary {
+  income: { total: string; cash: string; cashless: string; payments: number };
+  debt_now: { total: string; orders: number };
+}
+
+interface ClientDebt {
+  client_id: number;
+  client_name: string;
+  client_phone: string;
+  debt_total: string;
+  orders_count: number;
+  unpaid_count: number;
+  partial_count: number;
+  stores_count: number;
+  overdue_count: number;
+}
 
 function DepartmentBadge({ department }: { department?: string }) {
   const { me } = useAuth();
@@ -36,34 +77,47 @@ function DepartmentBadge({ department }: { department?: string }) {
   );
 }
 
-/* ── Вкладка «Оплаты»: подтверждение заказов и оплат ────────────────────── */
-function PaymentsTab() {
+function debtPaymentState(row: ClientDebt) {
+  if (row.partial_count > 0 && row.unpaid_count > 0) {
+    return { label: "Есть частичные", tone: "warning" as const };
+  }
+  if (row.partial_count > 0) {
+    return { label: "Частично оплачен", tone: "warning" as const };
+  }
+  return { label: "Не оплачен", tone: "destructive" as const };
+}
+
+/* ── Очередь бухгалтера: заявки, оплаты, отправка заявок Сити ───────────── */
+function QueueSection({ filters }: { filters: CashFilters }) {
   const router = useRouter();
-  const { me } = useAuth();
-  const { data: orders, error: loadError, reload: reloadOrders } = useApi<Order[]>("/orders/");
+  const valid = filtersAreValid(filters);
+  const commonParams = {
+    date_from: filters.dateFrom,
+    date_to: filters.dateTo,
+    department: filters.department,
+    store: filters.store,
+  };
+  // Кассе нужны только заявки и заявки Сити в работе — не весь список заказов.
+  const { data: pending, error: loadError, reload: reloadPending } =
+    useApi<Order[]>(valid ? apiUrl("/orders/", { ...commonParams, status: "pending" }) : null);
+  const { data: fieldOrders, reload: reloadField } =
+    useApi<Order[]>(valid && filters.department !== "main"
+      ? apiUrl("/orders/", { ...commonParams, department: "field" }) : null);
   const { data: queue, reload: reloadQueue } =
-    useApi<PaymentQueueItem[]>("/orders/payments-queue/?stage=received");
-  const [dept, setDept] = useState("all");
+    useApi<PaymentQueueItem[]>(valid
+      ? apiUrl("/orders/payments-queue/", commonParams) : null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const list = (orders ?? []).filter((o) => dept === "all" || o.department === dept);
-  const pendingOrders = list.filter((o) => o.status === "pending");
-  const toReview = (queue ?? []).filter((p) => dept === "all" || p.department === dept);
-  const reviewSum = toReview.reduce((s, p) => s + Number(p.amount), 0);
+  const pendingOrders = valid ? pending ?? [] : [];
+  const toReview = valid ? queue ?? [] : [];
   // Отправка из кассы — только для заявок Отдела 2 (Отдел 1 идёт через пост отгрузки).
-  const toShip = list.filter((o) => o.department === "field"
-    && ["confirmed", "arrived", "loading", "loaded"].includes(o.status));
-
-  const pills = [
-    { key: "all", label: "Все", count: (orders ?? []).length },
-    { key: "main", label: deptLabel(me, "main"), count: (orders ?? []).filter((o) => o.department === "main").length },
-    { key: "field", label: deptLabel(me, "field"), count: (orders ?? []).filter((o) => o.department === "field").length },
-  ];
+  const toShip = (valid ? fieldOrders ?? [] : []).filter((o) =>
+    ["confirmed", "arrived", "loading", "loaded"].includes(o.status));
 
   async function act(fn: () => Promise<unknown>) {
     setBusy(true); setError("");
-    try { await fn(); reloadOrders(); reloadQueue(); }
+    try { await fn(); reloadPending(); reloadField(); reloadQueue(); }
     catch (e) { setError(apiError(e)); }
     finally { setBusy(false); }
   }
@@ -74,27 +128,21 @@ function PaymentsTab() {
     act(() => api.post(`/orders/${o.id}/set-status/`, { status: "shipped" }));
   const confirmPayment = (p: PaymentQueueItem) =>
     act(() => api.post(`/orders/${p.order}/payments/${p.id}/confirm/`));
+  const receivePayment = (p: PaymentQueueItem) =>
+    act(() => api.post(`/orders/${p.order}/payments/${p.id}/receive/`));
   const rejectPayment = (p: PaymentQueueItem) =>
     act(() => api.post(`/orders/${p.order}/payments/${p.id}/reject/`));
 
   return (
-    <>
-      <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <StatCard label="Заявок на подтверждение" value={String(pendingOrders.length)} icon={ClipboardCheck} />
-        <StatCard label="Оплат к подтверждению" value={String(toReview.length)} icon={CheckCheck} />
-        <StatCard label="Сумма к подтверждению" value={`${formatMoney(reviewSum)} ₸`} accent />
-      </section>
-
-      <div className="mb-4">
-        <FilterDropdown label="Отдел" options={pills} active={dept} onChange={setDept} />
-      </div>
+    <section className="flex flex-col gap-4">
+      <h2 className="text-lg font-semibold tracking-tight">Очередь на подтверждение</h2>
 
       {error && (
-        <p className="mb-4 rounded-lg border bg-[var(--card)] p-3 text-sm text-[var(--destructive)] shadow-card">
+        <p className="rounded-lg border bg-[var(--card)] p-3 text-sm text-[var(--destructive)] shadow-card">
           {error}
         </p>
       )}
-      {loadError && !orders && <div className="mb-4"><ErrorAlert message={loadError} onRetry={reloadOrders} /></div>}
+      {loadError && !pending && <ErrorAlert message={loadError} onRetry={reloadPending} />}
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <Card>
@@ -147,7 +195,8 @@ function PaymentsTab() {
                     <div className="text-base font-semibold tabular-nums">{formatMoney(p.amount)} ₸</div>
                     <div className="text-xs text-[var(--muted-foreground)]">
                       <Link href={`/orders/${p.order}`} className="hover:underline">Заказ #{p.order}</Link>
-                      {" · "}{p.client_name} · {p.method_label}
+                      {" · "}{p.client_name} · {CASHIER_PAYMENT_METHOD_LABELS[p.method] ?? p.method_label}
+                      {p.store_name ? ` · ${p.store_name}` : ""}
                       {p.received_by_name ? ` · принял ${p.received_by_name}` : ""}
                     </div>
                   </div>
@@ -157,8 +206,9 @@ function PaymentsTab() {
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <Button size="sm" disabled={busy} onClick={() => confirmPayment(p)}>
-                    Подтвердить оплату
+                  <Button size="sm" disabled={busy}
+                    onClick={() => p.status === "requested" ? receivePayment(p) : confirmPayment(p)}>
+                    {p.status === "requested" ? "Оплата поступила" : "Подтвердить получение"}
                   </Button>
                   <Button size="sm" variant="ghost" disabled={busy} onClick={() => rejectPayment(p)}>
                     Отклонить
@@ -170,93 +220,40 @@ function PaymentsTab() {
         </Card>
       </div>
 
-      <Card className="mt-6">
-        <CardHeader><CardTitle>Контроль заказов и оплат</CardTitle></CardHeader>
-        <CardContent>
-          <Table>
-            <THead>
-              <TR>
-                <TH>№</TH><TH>Отдел</TH><TH>Клиент</TH>
-                <TH className="text-right">Сумма</TH>
-                <TH className="text-right">Оплачено</TH>
-                <TH>Статус</TH><TH>Оплата</TH><TH></TH>
-              </TR>
-            </THead>
-            <TBody>
-              {list.map((o) => (
-                <TR key={o.id} className="cursor-pointer"
-                  onClick={() => router.push(`/orders/${o.id}`)}>
-                  <TD className="font-medium">#{o.id}</TD>
-                  <TD><DepartmentBadge department={o.department} /></TD>
-                  <TD>{o.client_name}</TD>
-                  <TD className="text-right tabular-nums">{formatMoney(o.total_amount)} ₸</TD>
-                  <TD className="text-right tabular-nums text-[var(--muted-foreground)]">
-                    {formatMoney(o.paid_total)} ₸
-                  </TD>
-                  <TD><StatusBadge status={o.status} dot /></TD>
-                  <TD>
-                    {o.payment_status && (
-                      <Badge tone={PAYMENT_STATUS_TONE[o.payment_status] ?? "muted"}>
-                        {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
-                      </Badge>
-                    )}
-                  </TD>
-                  <TD onClick={(e) => e.stopPropagation()}>
-                    {toShip.some((x) => x.id === o.id) && (
-                      <Button size="sm" variant="outline" disabled={busy}
-                        onClick={() => shipOrder(o)} title="Отметить отправленным">
-                        <Send className="size-3.5" /> Отправлен
-                      </Button>
-                    )}
-                  </TD>
-                </TR>
-              ))}
-              {list.length === 0 && (
-                <TR><TD colSpan={8} className="py-4 text-center text-[var(--muted-foreground)]">
-                  Заказов нет.</TD></TR>
-              )}
-            </TBody>
-          </Table>
-        </CardContent>
-      </Card>
-    </>
+      {toShip.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle>Заявки Сити — отправка</CardTitle></CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            {toShip.map((o) => (
+              <div key={o.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                <div className="min-w-0">
+                  <Link href={`/orders/${o.id}`} className="text-sm font-semibold hover:underline">
+                    Заказ #{o.id}
+                  </Link>
+                  <div className="truncate text-xs text-[var(--muted-foreground)]">
+                    {o.client_name} · {formatMoney(o.total_amount)} ₸
+                  </div>
+                </div>
+                <Button size="sm" variant="outline" disabled={busy}
+                  onClick={() => shipOrder(o)} title="Отметить отправленным">
+                  <Send className="size-3.5" /> Отправлен
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+    </section>
   );
 }
 
-/* ── Вкладка «Долги»: общий долг по клиентам ────────────────────────────── */
-interface ClientDebt {
-  client_id: number;
-  client_name: string;
-  client_phone: string;
-  debt_total: string;
-  orders_count: number;
-  unpaid_count: number;
-  partial_count: number;
-  stores_count: number;
-  overdue_count: number;
-}
-
-function debtPaymentState(row: ClientDebt) {
-  if (row.partial_count > 0 && row.unpaid_count > 0) {
-    return { label: "Есть частичные", tone: "warning" as const };
-  }
-  if (row.partial_count > 0) {
-    return { label: "Частично оплачен", tone: "warning" as const };
-  }
-  return { label: "Не оплачен", tone: "destructive" as const };
-}
-
-function DebtsTab() {
-  const { data, loading, error, reload } = useApi<ClientDebt[]>("/clients/debts/");
+/* ── Долги клиентов ─────────────────────────────────────────────────────── */
+function DebtsSection({ rows, loading, error, reload }: {
+  rows: ClientDebt[]; loading: boolean; error: string; reload: () => void;
+}) {
   const [q, setQ] = useState("");
   const [checkMsg, setCheckMsg] = useState("");
   const [busy, setBusy] = useState(false);
-
-  const rows = data ?? [];
-  const totalDebt = rows.reduce((sum, row) => sum + Number(row.debt_total), 0);
-  const totalOrders = rows.reduce((sum, row) => sum + row.orders_count, 0);
-  const partialClients = rows.filter((row) => row.partial_count > 0).length;
-  const overdueClients = rows.filter((row) => row.overdue_count > 0).length;
 
   const filtered = rows.filter((row) =>
     !q || `${row.client_name} ${row.client_phone}`.toLowerCase().includes(q.toLowerCase())
@@ -267,7 +264,7 @@ function DebtsTab() {
     try {
       const r = await api.post<{ checked: number; overdue_notifications: number }>("/stores/check-overdue/");
       setCheckMsg(`Проверено магазинов: ${r.data.checked}. Просрочек: ${r.data.overdue_notifications}.`);
-      await reload();
+      reload();
     } catch (e) {
       setCheckMsg(apiError(e));
     } finally {
@@ -276,40 +273,32 @@ function DebtsTab() {
   }
 
   return (
-    <>
-      <div className="mb-4 flex justify-end">
-        <Button size="sm" variant="outline" disabled={busy} onClick={checkOverdue} aria-label="Проверить просрочки">
-          <RefreshCw className={"size-4" + (busy ? " animate-spin" : "")} />
-          <span className="hidden sm:inline">Проверить просрочки</span>
-        </Button>
-      </div>
-
-      <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-4">
-        <StatCard label="Клиентов с долгом" value={String(rows.length)} />
-        <StatCard label="Общий остаток" value={`${formatMoney(String(totalDebt))} ₸`} accent />
-        <StatCard label="Заказов в долге" value={String(totalOrders)} />
-        <StatCard label="Частично оплачено" value={String(partialClients)} caption={`Просрочек: ${overdueClients}`} />
-      </section>
-
-      {checkMsg && (
-        <p className="mb-4 rounded-lg border bg-[var(--card)] px-4 py-2 text-sm text-[var(--muted-foreground)] shadow-card">
-          {checkMsg}
-        </p>
-      )}
-
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+    <section className="flex flex-col gap-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold tracking-tight">Клиенты</h2>
+          <h2 className="text-lg font-semibold tracking-tight">Долги клиентов</h2>
           <p className="text-sm text-[var(--muted-foreground)]">
             Общий остаток по клиенту. Заказы открываются внутри клиента.
           </p>
         </div>
-        <div className="relative w-full sm:max-w-md">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-          <Input className="pl-9" placeholder="Поиск по клиенту или телефону"
-            value={q} onChange={(e) => setQ(e.target.value)} />
+        <div className="flex items-center gap-2">
+          <div className="relative w-full sm:w-72">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+            <Input className="pl-9" placeholder="Поиск по клиенту или телефону"
+              value={q} onChange={(e) => setQ(e.target.value)} />
+          </div>
+          <Button size="sm" variant="outline" disabled={busy} onClick={checkOverdue} aria-label="Проверить просрочки">
+            <RefreshCw className={"size-4" + (busy ? " animate-spin" : "")} />
+            <span className="hidden sm:inline">Проверить просрочки</span>
+          </Button>
         </div>
       </div>
+
+      {checkMsg && (
+        <p className="rounded-lg border bg-[var(--card)] px-4 py-2 text-sm text-[var(--muted-foreground)] shadow-card">
+          {checkMsg}
+        </p>
+      )}
 
       <Card>
         <CardContent className="pt-6">
@@ -328,7 +317,7 @@ function DebtsTab() {
             <TBody>
               {loading ? (
                 <TR><TD colSpan={7} className="py-8 text-center text-[var(--muted-foreground)]">Загрузка…</TD></TR>
-              ) : error && !data ? (
+              ) : error && rows.length === 0 ? (
                 <TR><TD colSpan={7} className="py-4"><ErrorAlert message={error} onRetry={reload} /></TD></TR>
               ) : filtered.length === 0 ? (
                 <TR><TD colSpan={7} className="py-8 text-center text-[var(--muted-foreground)]">Долгов нет.</TD></TR>
@@ -378,43 +367,218 @@ function DebtsTab() {
           </Table>
         </CardContent>
       </Card>
-    </>
+    </section>
+  );
+}
+
+function CashFiltersPanel({ filters, stores, onChange, onReset }: {
+  filters: CashFilters;
+  stores: Store[];
+  onChange: (patch: Partial<CashFilters>) => void;
+  onReset: () => void;
+}) {
+  const { me } = useAuth();
+  const today = todayLocalIsoDate();
+  const activeCount = [
+    filters.dateFrom !== today || filters.dateTo !== today,
+    filters.department !== "all",
+    filters.store !== "all",
+    filters.remainingMin !== "" || filters.remainingMax !== "",
+  ].filter(Boolean).length;
+  const datesInvalid = Boolean(filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo);
+  const remainingInvalid = Boolean(
+    filters.remainingMin && filters.remainingMax
+    && Number(filters.remainingMin) > Number(filters.remainingMax));
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span className="flex size-8 items-center justify-center rounded-lg bg-[var(--muted)] text-[var(--muted-foreground)]">
+                <SlidersHorizontal className="size-4" />
+              </span>
+              <div>
+                <div className="text-sm font-semibold">Фильтры кассы</div>
+                <div className="text-xs text-[var(--muted-foreground)]">
+                  {activeCount ? `Применено: ${activeCount}` : "Сегодня · все отделы и магазины"}
+                </div>
+              </div>
+            </div>
+            {activeCount > 0 && (
+              <Button size="sm" variant="ghost" onClick={onReset}>
+                <X className="size-4" /> Сбросить
+              </Button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[11px] font-medium text-[var(--muted-foreground)]">С даты</span>
+              <Input type="date" value={filters.dateFrom}
+                onChange={(e) => onChange({ dateFrom: e.target.value })}
+                className="h-9 w-[158px]" />
+            </label>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[11px] font-medium text-[var(--muted-foreground)]">По дату</span>
+              <Input type="date" value={filters.dateTo}
+                onChange={(e) => onChange({ dateTo: e.target.value })}
+                className="h-9 w-[158px]" />
+            </label>
+            <FilterDropdown label="Отдел" active={filters.department}
+              onChange={(department) => onChange({ department })}
+              options={[
+                { key: "all", label: "Все" },
+                { key: "main", label: deptLabel(me, "main") },
+                { key: "field", label: deptLabel(me, "field") },
+              ]} />
+            <FilterDropdown label="Магазин" active={filters.store}
+              onChange={(store) => onChange({ store })}
+              options={[
+                { key: "all", label: "Все" },
+                ...[...stores]
+                  .sort((a, b) => a.name.localeCompare(b.name, "ru"))
+                  .map((store) => ({ key: String(store.id), label: store.name })),
+              ]} />
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[11px] font-medium text-[var(--muted-foreground)]">Остаток долга, ₸</span>
+              <div className="flex items-center gap-1.5">
+                <Input type="number" min="0" inputMode="decimal" placeholder="От"
+                  value={filters.remainingMin}
+                  onChange={(e) => onChange({ remainingMin: e.target.value })}
+                  className="h-9 w-[118px]" />
+                <span className="text-[var(--muted-foreground)]">—</span>
+                <Input type="number" min="0" inputMode="decimal" placeholder="До"
+                  value={filters.remainingMax}
+                  onChange={(e) => onChange({ remainingMax: e.target.value })}
+                  className="h-9 w-[118px]" />
+              </div>
+            </div>
+          </div>
+
+          {(datesInvalid || remainingInvalid) && (
+            <p className="text-xs font-medium text-[var(--destructive)]">
+              {datesInvalid
+                ? "Дата начала не может быть позже даты окончания."
+                : "Минимальный остаток не может быть больше максимального."}
+            </p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
 function CashierInner() {
   const { me } = useAuth();
-  const router = useRouter();
-  const params = useSearchParams();
   const canPayments = can(me, "payments.confirm");
-  const canDebts = can(me, "reports.view");
+  const canReports = can(me, "reports.view");
 
-  const tabs = [
-    ...(canPayments ? [{ key: "payments", label: "Оплаты", icon: CheckCheck }] : []),
-    ...(canDebts ? [{ key: "debts", label: "Долги", icon: Wallet }] : []),
-  ];
-  const requested = params.get("tab");
-  const active = tabs.some((t) => t.key === requested) ? requested! : tabs[0]?.key ?? "payments";
-
-  const changeTab = (key: string) => {
-    router.replace(`/accounting?tab=${key}`, { scroll: false });
+  const today = todayLocalIsoDate();
+  const [filters, setFilters] = useState<CashFilters>({
+    dateFrom: today,
+    dateTo: today,
+    department: "all",
+    store: "all",
+    remainingMin: "",
+    remainingMax: "",
+  });
+  const validFilters = filtersAreValid(filters);
+  const commonParams = {
+    date_from: filters.dateFrom,
+    date_to: filters.dateTo,
+    department: filters.department,
+    store: filters.store,
   };
+  const reportUrl = apiUrl("/reports/summary/", {
+    from: filters.dateFrom,
+    to: filters.dateTo,
+    department: filters.department,
+    store: filters.store,
+  });
+  const debtsUrl = apiUrl("/clients/debts/", {
+    ...commonParams,
+    remaining_min: filters.remainingMin,
+    remaining_max: filters.remainingMax,
+  });
+
+  // Кассовая аналитика — тот же серверный отчёт, что и на «Отчётах».
+  const { data: summary } = useApi<ReportSummary>(
+    canReports && validFilters ? reportUrl : null);
+  const { data: queue } = useApi<PaymentQueueItem[]>(
+    canPayments && validFilters
+      ? apiUrl("/orders/payments-queue/", commonParams) : null);
+  const { data: debts, loading: debtsLoading, error: debtsError, reload: reloadDebts } =
+    useApi<ClientDebt[]>(canReports && validFilters ? debtsUrl : null);
+  const { data: stores } = useApi<Store[]>(canReports ? "/stores/" : null);
+
+  const queueRows = validFilters ? queue ?? [] : [];
+  const toReviewSum = queueRows.reduce((s, p) => s + Number(p.amount), 0);
+  const toReviewCash = queueRows.filter((p) => p.method === "cash")
+    .reduce((s, p) => s + Number(p.amount), 0);
+  const debtRows = validFilters ? debts ?? [] : [];
+  const debtTotal = debtRows.reduce((sum, row) => sum + Number(row.debt_total), 0);
+  const overdueClients = debtRows.filter((r) => r.overdue_count > 0).length;
+  const isToday = filters.dateFrom === today && filters.dateTo === today;
+
+  function resetFilters() {
+    setFilters({
+      dateFrom: today,
+      dateTo: today,
+      department: "all",
+      store: "all",
+      remainingMin: "",
+      remainingMax: "",
+    });
+  }
 
   return (
     <AppShell title="Касса" section="Работа"
-      description="Подтверждение заказов и оплат по обоим отделам, контроль долгов клиентов.">
-      <div className="flex flex-col gap-5">
-        {tabs.length > 1 && (
-          <Tabs variant="bar" tabs={tabs} active={active} onChange={changeTab} />
+      description="Поступления, очередь подтверждений и долги в одном месте.">
+      <div className="flex flex-col gap-8">
+        <CashFiltersPanel filters={filters} stores={stores ?? []}
+          onChange={(patch) => setFilters((current) => ({ ...current, ...patch }))}
+          onReset={resetFilters} />
+
+        {canReports && (
+          <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <SummaryCard title={isToday ? "Поступило сегодня" : "Поступило за период"} tone="success"
+              value={money(summary?.income.total ?? 0)}
+              rows={[
+                { label: "Наличные", value: money(summary?.income.cash ?? 0) },
+                { label: "Безналичные", value: money(summary?.income.cashless ?? 0) },
+              ]} />
+            {canPayments && (
+              <SummaryCard title="Ожидает подтверждения" tone="primary"
+                value={money(toReviewSum)}
+                rows={[
+                  { label: "Оплат в очереди", value: String(queueRows.length) },
+                  { label: "Из них наличными", value: money(toReviewCash) },
+                ]} />
+            )}
+            <SummaryCard title="Дебиторка" tone="destructive"
+              value={money(debtTotal)}
+              rows={[
+                { label: "Клиентов с долгом", value: String(debtRows.length) },
+                { label: "С просрочкой", value: String(overdueClients) },
+              ]} />
+          </section>
         )}
-        {active === "debts" ? <DebtsTab /> : <PaymentsTab />}
+
+        {canPayments && <QueueSection filters={filters} />}
+
+        {canReports && (
+          <DebtsSection rows={debtRows} loading={debtsLoading}
+            error={debtsError} reload={reloadDebts} />
+        )}
       </div>
     </AppShell>
   );
 }
 
 export default function CashierPage() {
-  // Доступ, если есть хотя бы одна из вкладок: оплаты или долги.
+  // Доступ, если есть хотя бы одна из секций: очередь или аналитика с долгами.
   return (
     <RequirePerm perm={["payments.confirm", "reports.view"]} title="Касса">
       <CashierInner />

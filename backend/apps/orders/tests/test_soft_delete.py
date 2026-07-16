@@ -84,6 +84,31 @@ def test_restore_of_live_order_fails(manager):
     assert r.status_code == 400  # не в корзине
 
 
+def test_purge_deletes_forever_only_from_trash(manager):
+    p = _product()
+    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    o = _order(c, p, paid="100.00")
+
+    # Живой заказ навсегда не удалить — сначала корзина.
+    assert _api(manager).delete(f"/api/orders/{o.id}/purge/").status_code == 400
+
+    _api(manager).delete(f"/api/orders/{o.id}/")
+    r = _api(manager).delete(f"/api/orders/{o.id}/purge/")
+    assert r.status_code == 204
+    # Заказ исчез совсем — вместе с позициями и оплатами.
+    assert not Order.all_objects.filter(pk=o.id).exists()
+    assert not Payment.objects.filter(order_id=o.id).exists()
+    assert _api(manager).get("/api/orders/trash/").data == []
+
+
+def test_purge_requires_edit_perm(operator):
+    p = _product()
+    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    o = _order(c, p)
+    Order.all_objects.filter(pk=o.pk).update(deleted_at="2026-07-16T00:00:00Z")
+    assert _api(operator).delete(f"/api/orders/{o.id}/purge/").status_code == 403
+
+
 # ── Удалённый заказ НЕ влияет на отчёты (главное) ─────────────────────────
 
 def test_deleted_order_excluded_from_client_debts(manager, boss):
@@ -115,17 +140,20 @@ def test_deleted_order_excluded_from_store_debts(manager, boss):
     assert Decimal(row["debt_total"]) == Decimal("200.00")
 
 
-def test_deleted_order_excluded_from_client_analytics(manager, boss):
+def test_deleted_order_excluded_from_client_history(manager, boss):
     p = _product()
     c = Client.objects.create(first_name="A", last_name="B", phone="1")
-    _order(c, p, qty=2, paid="200.00", payment_status="settled")  # выручка 200
-    doomed = _order(c, p, qty=5)                                   # 500 удалим
+    kept = _order(c, p, qty=2, paid="200.00", payment_status="settled")  # выручка 200
+    doomed = _order(c, p, qty=5)                                          # 500 удалим
     _api(manager).delete(f"/api/orders/{doomed.id}/")
 
-    r = _api(boss).get(f"/api/clients/{c.id}/analytics/")
+    r = _api(boss).get(f"/api/clients/{c.id}/history/")
     assert r.status_code == 200
-    assert Decimal(r.data["kpi"]["revenue"]) == Decimal("200.00")
-    assert Decimal(r.data["kpi"]["debt"]) == Decimal("0")
+    assert Decimal(r.data["summary"]["revenue"]) == Decimal("200.00")
+    assert Decimal(r.data["summary"]["debt"]) == Decimal("0")
+    # Удалённый заказ и его оплаты не видны ни в продажах, ни в погашениях.
+    assert [row["id"] for row in r.data["sales"]] == [kept.id]
+    assert all(row["order_id"] == kept.id for row in r.data["payments"])
 
 
 def test_deleted_order_excluded_from_orders_debts_endpoint(manager, boss):

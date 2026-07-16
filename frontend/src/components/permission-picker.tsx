@@ -14,6 +14,7 @@ export const PERM_ACTION_LABELS: Record<string, string> = {
   adjust: "корректировка", confirm: "подтвержд.",
   view_all: "все данные", arrive: "приём", load: "загрузка",
   ship: "отгрузка", debt_override: "в долг", manage: "управление",
+  set_price: "закрепление прайса",
 };
 
 /** Кнопки-переключатели прав, сгруппированные по разделам.

@@ -23,8 +23,8 @@ def _shipped_store_order():
 
 def test_payment_blocked_outside_window(boss):
     o, s = _shipped_store_order()
-    with patch("apps.orders.services.date") as d:
-        d.today.return_value = date(2026, 6, 6)  # not the 5th
+    with patch("apps.orders.services.timezone.localdate",
+               return_value=date(2026, 6, 6)):  # not the 5th
         with pytest.raises(ValidationError) as e:
             add_payment(o, "100", boss)
     assert e.value.detail["code"] == "payment_window_closed"
@@ -32,8 +32,8 @@ def test_payment_blocked_outside_window(boss):
 
 def test_payment_allowed_inside_window(boss, settle_payment):
     o, s = _shipped_store_order()
-    with patch("apps.orders.services.date") as d:
-        d.today.return_value = date(2026, 6, 5)
+    with patch("apps.orders.services.timezone.localdate",
+               return_value=date(2026, 6, 5)):
         pay = add_payment(o, "100", boss)
     settle_payment(pay, boss)
     o.refresh_from_db()

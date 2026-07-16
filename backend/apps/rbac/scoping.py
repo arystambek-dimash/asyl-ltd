@@ -29,6 +29,11 @@ def scope_by_department(qs, user, base_view_perm, *,
         q |= Q(**{dept_field: "field"})
     elif user.has_perm_code("dept2.view"):
         q |= Q(**{dept_field: "field", owner_field: user})
+    # ``QuerySet.filter(Q())`` is a no-op, not an empty result.  Returning it
+    # here would expose every department to a staff user with no applicable
+    # scope permission.
+    if not q.children:
+        return qs.none()
     return qs.filter(q)
 
 

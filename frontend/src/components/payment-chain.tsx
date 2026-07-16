@@ -10,7 +10,8 @@ import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { formatMoney } from "@/lib/utils";
 import {
-  PAYMENT_STAGE_LABELS, PAYMENT_STAGE_TONE, PAYMENT_METHOD_LABELS,
+  CASHIER_PAYMENT_METHOD_LABELS, CASHIER_PAYMENT_METHODS,
+  PAYMENT_STAGE_LABELS, PAYMENT_STAGE_TONE,
 } from "@/lib/constants";
 import { HandCoins, ReceiptText } from "lucide-react";
 import type { Me, Order, Payment } from "@/lib/types";
@@ -38,13 +39,16 @@ function StageTrace({ p }: { p: Payment }) {
     { label: "Подтверждена", by: p.confirmed_by_name, at: p.confirmed_at },
   ].filter((s) => s.by || s.at);
   return (
-    <div className="flex flex-col gap-0.5 text-[11px] text-[var(--muted-foreground)]">
-      {steps.map((s) => (
-        <span key={s.label}>
-          {s.label}: {s.by ?? "—"}{s.at ? ` · ${new Date(s.at).toLocaleString("ru-RU")}` : ""}
-        </span>
-      ))}
-    </div>
+    <details className="text-[11px] text-[var(--muted-foreground)]">
+      <summary className="w-fit cursor-pointer select-none hover:text-[var(--foreground)]">История оплаты</summary>
+      <div className="mt-1.5 flex flex-col gap-0.5 border-l pl-2.5">
+        {steps.map((s) => (
+          <span key={s.label}>
+            {s.label}: {s.by ?? "—"}{s.at ? ` · ${new Date(s.at).toLocaleString("ru-RU")}` : ""}
+          </span>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -70,29 +74,35 @@ export function PaymentChain({ order, me, onChanged }: {
   return (
     <div className="flex flex-col gap-3">
       {payments.map((p) => (
-        <div key={p.id} className="flex flex-col gap-2 rounded-lg border p-3">
+        <div key={p.id} className="flex flex-col gap-3 rounded-lg border bg-[var(--muted)]/15 p-4">
           <div className="flex items-start justify-between gap-3">
-            <div className="flex items-center gap-2 text-base font-semibold tabular-nums">
-              <ReceiptText className="size-4 text-[var(--warning)]" />
-              {formatMoney(p.amount)} ₸
-              <span className="text-xs font-normal text-[var(--muted-foreground)]">
-                {p.method_label || PAYMENT_METHOD_LABELS[p.method] || p.method}
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-[var(--warning)]/12 text-[var(--warning)]">
+                <ReceiptText className="size-4" />
               </span>
+              <div>
+                <div className="font-semibold">
+                  {p.status === "received" ? "Проверьте оплату" : "Ожидаем оплату"}
+                </div>
+                <div className="mt-0.5 text-sm text-[var(--muted-foreground)]">
+                  <span className="font-medium tabular-nums text-[var(--foreground)]">{formatMoney(p.amount)} ₸</span>
+                  {" · "}{CASHIER_PAYMENT_METHOD_LABELS[p.method] || p.method_label || p.method}
+                </div>
+              </div>
             </div>
             <PaymentStageBadge status={p.status} />
           </div>
-          <StageTrace p={p} />
           <div className="flex flex-wrap gap-2">
             {p.status === "requested" && can(me, "payments.create") && (
               <Button size="sm" disabled={busy}
                 onClick={() => act(`/orders/${order.id}/payments/${p.id}/receive/`)}>
-                Деньги получены
+                Отметить получение
               </Button>
             )}
             {p.status === "received" && can(me, "payments.confirm") && (
               <Button size="sm" disabled={busy}
                 onClick={() => act(`/orders/${order.id}/payments/${p.id}/confirm/`)}>
-                Подтвердить оплату
+                Подтвердить получение
               </Button>
             )}
             {can(me, "payments.confirm") && (
@@ -102,6 +112,7 @@ export function PaymentChain({ order, me, onChanged }: {
               </Button>
             )}
           </div>
+          <StageTrace p={p} />
         </div>
       ))}
       {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
@@ -113,8 +124,9 @@ export function PaymentChain({ order, me, onChanged }: {
  * Кнопки старта цепочки: «Запросить оплату» (счёт выставлен) и
  * «Принять оплату» (деньги получены с выезда). Требует payments.create.
  */
-export function AddPaymentActions({ order, me, onChanged }: {
+export function AddPaymentActions({ order, me, onChanged, mode = "both" }: {
   order: Order; me: Me | null; onChanged: () => void;
+  mode?: "both" | "request" | "receive";
 }) {
   const [stage, setStage] = useState<"requested" | "received" | null>(null);
   const [amount, setAmount] = useState("");
@@ -144,19 +156,23 @@ export function AddPaymentActions({ order, me, onChanged }: {
   return (
     <>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="outline" onClick={() => open("requested")}>
-          <ReceiptText className="size-4" /> Запросить оплату
-        </Button>
-        <Button size="sm" onClick={() => open("received")}>
-          <HandCoins className="size-4" /> Принять оплату
-        </Button>
+        {mode !== "receive" && (
+          <Button size="sm" variant="outline" onClick={() => open("requested")}>
+            <ReceiptText className="size-4" /> Запросить оплату
+          </Button>
+        )}
+        {mode !== "request" && (
+          <Button size="sm" onClick={() => open("received")}>
+            <HandCoins className="size-4" /> Принять оплату
+          </Button>
+        )}
       </div>
       <Modal open={stage !== null} onClose={() => setStage(null)}
         eyebrow={`Заказ #${order.id} · ${order.client_name ?? ""}`}
         title={stage === "requested" ? "Запросить оплату" : "Принять оплату"}
         description={stage === "requested"
-          ? "Клиенту выставлен счёт — оплата появится в цепочке подтверждения."
-          : "Деньги получены от клиента. Далее — подтверждение кассой."}
+          ? "Клиенту выставлен счёт. После поступления кассир вручную подтвердит получение."
+          : "Оплата добавится в очередь и будет учтена только после ручного подтверждения кассиром."}
         className="max-w-sm">
         <form onSubmit={submit} className="flex flex-col gap-4">
           <div className="grid gap-2">
@@ -167,9 +183,9 @@ export function AddPaymentActions({ order, me, onChanged }: {
           <div className="grid gap-2">
             <Label>Способ</Label>
             <Select value={method} onChange={(e) => setMethod(e.target.value)}>
-              {Object.entries(PAYMENT_METHOD_LABELS)
-                .filter(([k]) => k !== "debt")
-                .map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              {CASHIER_PAYMENT_METHODS.map((key) => (
+                <option key={key} value={key}>{CASHIER_PAYMENT_METHOD_LABELS[key]}</option>
+              ))}
             </Select>
           </div>
           {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}

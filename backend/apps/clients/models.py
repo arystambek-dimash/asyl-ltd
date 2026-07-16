@@ -32,6 +32,7 @@ class Client(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="client_profile",
     )
+    created_at = models.DateTimeField(auto_now_add=True)
 
     @property
     def name(self) -> str:

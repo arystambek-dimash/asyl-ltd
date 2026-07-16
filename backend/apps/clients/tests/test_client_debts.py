@@ -1,4 +1,7 @@
+from datetime import timedelta
+
 import pytest
+from django.utils import timezone
 from rest_framework.test import APIClient
 from apps.catalog.models import Product
 from apps.clients.models import Client, Store
@@ -52,6 +55,40 @@ def test_client_debts_aggregate_by_client(boss):
     assert row["stores_count"] == 1
 
 
+def test_client_debts_filters_department_store_date_and_remaining(boss):
+    p = _product()
+    main = Client.objects.create(
+        first_name="Main", last_name="Client", phone="1", department="main")
+    field = Client.objects.create(
+        first_name="Field", last_name="Client", phone="2", department="field")
+    main_store = Store.objects.create(client=main, name="Main store")
+    other_store = Store.objects.create(client=main, name="Other store")
+    field_store = Store.objects.create(client=field, name="Field store")
+    old = _order(main, p, qty=9, store=other_store)
+    current = _order(main, p, qty=3, store=main_store)
+    _order(field, p, qty=7, store=field_store)
+    Order.objects.filter(pk=old.pk).update(
+        created_at=timezone.now() - timedelta(days=20))
+    today = timezone.localdate().isoformat()
+
+    r = _api(boss).get("/api/clients/debts/", {
+        "department": "main",
+        "store": main_store.id,
+        "date_from": today,
+        "date_to": today,
+        "remaining_min": "250",
+        "remaining_max": "350",
+    })
+
+    assert r.status_code == 200
+    assert [row["client_id"] for row in r.data] == [main.id]
+    assert r.data[0]["debt_total"] == "300.00"
+
+    assert _api(boss).get("/api/clients/debts/", {
+        "remaining_min": "400", "remaining_max": "100",
+    }).status_code == 400
+
+
 def test_client_debt_detail_returns_unsettled_orders(boss):
     p = _product()
     c = Client.objects.create(first_name="A", last_name="B", phone="1")
@@ -62,6 +99,29 @@ def test_client_debt_detail_returns_unsettled_orders(boss):
 
     assert r.status_code == 200
     assert r.data["debt_total"] == "200.00"
+    # За всё время: погашенный заказ входит в общую задолженность и оплаты.
+    assert r.data["lifetime_total"] == "300.00"
+    assert r.data["lifetime_paid"] == "100.00"
+    assert r.data["overdue_total"] == "0.00"
     ids = [row["id"] for row in r.data["orders"]]
     assert unpaid.id in ids
     assert settled.id not in ids
+
+
+def test_client_debt_detail_overdue_on_payment_day(boss):
+    """Открытое окно оплаты магазина = остаток по его заказам просрочен."""
+    from django.utils import timezone
+    p = _product()
+    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    today = timezone.localdate()
+    store = Store.objects.create(
+        client=c, name="S", payment_schedule_type="monthly",
+        payment_days=[today.day])
+    _order(c, p, qty=2, payment_status="unpaid", store=store)  # 200
+    _order(c, p, qty=1, payment_status="unpaid")  # 100, без магазина
+
+    r = _api(boss).get(f"/api/clients/{c.id}/debt-detail/")
+
+    assert r.status_code == 200
+    assert r.data["debt_total"] == "300.00"
+    assert r.data["overdue_total"] == "200.00"

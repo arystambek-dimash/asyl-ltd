@@ -5,16 +5,22 @@ export function StatCard({
   label,
   value,
   accent,
+  tone,
   caption,
   icon: Icon,
   className,
+  children,
 }: {
   label: string;
   value: React.ReactNode;
   accent?: boolean;
+  /** Цвет значения: красный для долгов/просрочки, зелёный для оплат. */
+  tone?: "destructive" | "success";
   caption?: string;
   icon?: React.ElementType;
   className?: string;
+  /** Дополнительное содержимое под подписью (например, бар распределения). */
+  children?: React.ReactNode;
 }) {
   return (
     <div
@@ -38,12 +44,15 @@ export function StatCard({
       <div
         className={cn(
           "text-[20px] sm:text-[30px] leading-[1.1] tracking-tight tabular-nums font-semibold",
-          accent ? "text-[var(--ring)]" : "text-[var(--foreground)]"
+          accent ? "text-[var(--ring)]" : "text-[var(--foreground)]",
+          tone === "destructive" && "text-[var(--destructive)]",
+          tone === "success" && "text-[var(--success)]"
         )}
       >
         {value}
       </div>
       {caption && <span className="text-[12px] text-[var(--muted-foreground)]">{caption}</span>}
+      {children}
     </div>
   );
 }

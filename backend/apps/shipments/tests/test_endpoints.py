@@ -114,3 +114,16 @@ def test_loading_camera_requires_shipping_load(manager):
     # manager не имеет shipping.load
     r = _client(manager).post(f"/api/orders/{o.id}/loading-camera/", {"camera": "3"})
     assert r.status_code == 403
+
+
+def test_shipping_action_cannot_access_other_department(operator, boss):
+    o = _order(boss, status="confirmed")
+    o.department = "field"
+    o.client.department = "field"
+    o.client.save(update_fields=["department"])
+    o.save(update_fields=["department"])
+
+    response = _client(operator).post(
+        f"/api/orders/{o.id}/arrive/", {"weigh_in_kg": "8000"})
+
+    assert response.status_code == 404

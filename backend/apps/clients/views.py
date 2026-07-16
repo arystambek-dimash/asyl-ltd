@@ -1,15 +1,38 @@
-from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+from django.utils import timezone
+from django.db import transaction
+from django.db.models import Prefetch
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import mixins
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import ValidationError
 from apps.common.permissions import IsSuperuser, PermViewSetMixin
+from apps.common.money import money_string
+from apps.common.query_params import parse_iso_date, validate_date_range
 from apps.rbac.scoping import scope_by_department
+from apps.orders.models import Order
+from apps.orders.querysets import with_order_api_relations
+from apps.catalog.models import ClientPrice, Product
+from apps.catalog.serializers import ClientPriceUpdateSerializer
+from apps.eventlog.services import log_event
 from .models import Client, Department, Store
 from .serializers import ClientSerializer, DepartmentSerializer, StoreSerializer
-from .services import detect_overdue, is_payment_window_open, client_analytics
+from .services import detect_overdue, is_payment_window_open, client_history
+
+def _money_param(raw, name):
+    if raw in (None, ""):
+        return None
+    try:
+        value = Decimal(raw)
+    except (InvalidOperation, TypeError):
+        raise ValidationError(
+            {"detail": f"Некорректное значение: {name}", "code": "bad_amount"})
+    if value < 0:
+        raise ValidationError(
+            {"detail": f"{name} не может быть меньше нуля", "code": "bad_amount"})
+    return value
 
 
 class DepartmentViewSet(mixins.ListModelMixin,
@@ -28,9 +51,13 @@ class DepartmentViewSet(mixins.ListModelMixin,
 class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     # debt_total в сериализаторе обходит заказы с позициями и оплатами —
     # грузим их заранее, иначе список клиентов даёт N+1 на каждую строку.
-    queryset = (Client.objects
-                .select_related("manager")
-                .prefetch_related("orders__items__product", "orders__payments"))
+    queryset = (
+        Client.objects
+        .select_related("manager")
+        .prefetch_related(Prefetch(
+            "orders", queryset=with_order_api_relations(Order.objects.all())
+        ))
+    )
     serializer_class = ClientSerializer
     required_perms = {
         "list": ("clients.view", "dept2.view"),
@@ -39,23 +66,82 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "update": ("clients.edit", "dept2.create"),
         "partial_update": ("clients.edit", "dept2.create"),
         "destroy": "clients.delete",
-        # Финансовая аналитика и долги — под reports.view.
+        # Финансовая детализация и долги — под reports.view.
         "debts": "reports.view",
         "debt_detail": "reports.view",
-        "analytics": "reports.view",
+        "history": "reports.view",
+        "prices": "clients.set_price",
     }
 
     def get_queryset(self):
-        qs = scope_by_department(super().get_queryset(), self.request.user, "clients.view")
+        required = self.required_perms.get(self.action, "clients.view")
+        scope_perm = required if isinstance(required, str) else "clients.view"
+        qs = scope_by_department(
+            super().get_queryset(), self.request.user, scope_perm)
         if self.action == "list":
             department = self.request.query_params.get("department")
             if department:
                 qs = qs.filter(department=department)
         return qs
 
-    @action(detail=True, methods=["get"], url_path="analytics")
-    def analytics(self, request, pk=None):
-        return Response(client_analytics(self.get_object()))
+    @action(detail=True, methods=["get"], url_path="history")
+    def history(self, request, pk=None):
+        return Response(client_history(self.get_object()))
+
+    def _price_rows(self, client):
+        prices = {
+            row.product_id: row
+            for row in ClientPrice.objects.filter(client=client).select_related("updated_by")
+        }
+        return [
+            {
+                "product": product.id,
+                "product_label": str(product),
+                "base_price": money_string(product.price),
+                "price": money_string(prices[product.id].price)
+                if product.id in prices else None,
+                "updated_at": prices[product.id].updated_at
+                if product.id in prices else None,
+                "updated_by_name": prices[product.id].updated_by.username
+                if product.id in prices and prices[product.id].updated_by else None,
+            }
+            for product in Product.objects.filter(is_active=True).order_by(
+                "name", "color", "weight_kg")
+        ]
+
+    @action(detail=True, methods=["get", "put"], url_path="prices")
+    def prices(self, request, pk=None):
+        """Личный прайс клиента. Изменять может только сотрудник с отдельным правом."""
+        client = self.get_object()
+        if request.method == "GET":
+            return Response({"client": ClientSerializer(client).data,
+                             "prices": self._price_rows(client)})
+
+        serializer = ClientPriceUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        changed = 0
+        removed = 0
+        with transaction.atomic():
+            for row in serializer.validated_data["prices"]:
+                product = row["product"]
+                price = row.get("price")
+                if price is None:
+                    deleted, _ = ClientPrice.objects.filter(
+                        client=client, product=product).delete()
+                    removed += deleted
+                    continue
+                _, created = ClientPrice.objects.update_or_create(
+                    client=client, product=product,
+                    defaults={"price": price, "updated_by": request.user},
+                )
+                changed += 1
+            log_event(
+                "catalog", f"Прайс-лист клиента «{client.name}» обновлён",
+                user=request.user,
+                payload={"client_id": client.id, "updated": changed, "removed": removed},
+            )
+        return Response({"client": ClientSerializer(client).data,
+                         "prices": self._price_rows(client)})
 
     def _debt_orders(self, client):
         # Заказы уже предзагружены queryset'ом — фильтруем кэш, не создавая
@@ -70,12 +156,43 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="debts")
     def debts(self, request):
         """Агрегированные долги по клиентам (в рамках видимых отделов)."""
-        today = date.today()
+        today = timezone.localdate()
+        params = request.query_params
+        date_from = parse_iso_date(params.get("date_from"))
+        date_to = parse_iso_date(params.get("date_to"))
+        validate_date_range(date_from, date_to)
+        debt_min = _money_param(params.get("remaining_min"), "Минимальный остаток")
+        debt_max = _money_param(params.get("remaining_max"), "Максимальный остаток")
+        if debt_min is not None and debt_max is not None and debt_min > debt_max:
+            raise ValidationError(
+                {"detail": "Минимальный остаток больше максимального",
+                 "code": "bad_range"})
+        store_id = params.get("store")
+        if store_id and not store_id.isdigit():
+            raise ValidationError(
+                {"detail": "Некорректный магазин", "code": "bad_store"})
+
+        clients = self.get_queryset()
+        department = params.get("department")
+        if department:
+            clients = clients.filter(department=department)
         rows = []
-        for client in self.get_queryset().prefetch_related("stores"):
+        for client in clients.prefetch_related("stores"):
             orders = list(self._debt_orders(client))
+            if date_from:
+                orders = [o for o in orders
+                          if timezone.localdate(o.created_at) >= date_from]
+            if date_to:
+                orders = [o for o in orders
+                          if timezone.localdate(o.created_at) <= date_to]
+            if store_id:
+                orders = [o for o in orders if o.store_id == int(store_id)]
             debt = self._debt_total(orders)
             if debt <= 0:
+                continue
+            if debt_min is not None and debt < debt_min:
+                continue
+            if debt_max is not None and debt > debt_max:
                 continue
             stores = [s for s in client.stores.all()
                       if any(o.store_id == s.id for o in orders)]
@@ -83,7 +200,7 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 "client_id": client.id,
                 "client_name": client.name,
                 "client_phone": client.phone,
-                "debt_total": str(debt.quantize(Decimal("0.01"))),
+                "debt_total": money_string(debt),
                 "orders_count": len(orders),
                 "unpaid_count": sum(1 for o in orders if o.payment_status == "unpaid"),
                 "partial_count": sum(1 for o in orders if o.payment_status == "partial"),
@@ -101,14 +218,28 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         """Детали долга клиента: агрегат и непогашенные заказы."""
         from apps.orders.serializers import OrderSerializer
         client = self.get_object()
-        today = date.today()
+        today = timezone.localdate()
         orders = list(self._debt_orders(client))
         debt = self._debt_total(orders)
         stores = [s for s in client.stores.all()
                   if any(o.store_id == s.id for o in orders)]
+        # За всё время: отгруженные заказы «в долг», включая уже погашенные.
+        lifetime = [o for o in client.orders.all()
+                    if o.status == "shipped" and o.settlement_intent == "debt"]
+        # Просрочено = остаток по заказам магазинов, у которых сегодня день оплаты.
+        overdue_stores = {s.id for s in stores
+                          if s.payment_schedule_type != "none"
+                          and is_payment_window_open(s, today)}
+        overdue = sum((o.total_amount - o.paid_total for o in orders
+                       if o.store_id in overdue_stores), Decimal("0"))
         return Response({
             "client": ClientSerializer(client).data,
-            "debt_total": str(debt.quantize(Decimal("0.01"))),
+            "debt_total": money_string(debt),
+            "lifetime_total": money_string(sum(
+                (o.total_amount for o in lifetime), Decimal("0"))),
+            "lifetime_paid": money_string(sum(
+                (o.paid_total for o in lifetime), Decimal("0"))),
+            "overdue_total": money_string(overdue),
             "orders_count": len(orders),
             "unpaid_count": sum(1 for o in orders if o.payment_status == "unpaid"),
             "partial_count": sum(1 for o in orders if o.payment_status == "partial"),
@@ -131,8 +262,9 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     serializer_class = StoreSerializer
 
     def get_queryset(self):
+        base_perm = self.required_perms.get(self.action, "clients.view")
         return scope_by_department(
-            super().get_queryset(), self.request.user, "clients.view",
+            super().get_queryset(), self.request.user, base_perm,
             dept_field="client__department", owner_field="client__manager")
 
     required_perms = {
@@ -151,16 +283,14 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         """Детали долга одного магазина: расписание, окно и непогашенные заказы."""
         from apps.orders.serializers import OrderSerializer
         store = self.get_object()
-        today = date.today()
-        qs = (store.orders
-              .select_related("client").prefetch_related("items__product", "payments")
-              .order_by("created_at"))
+        today = timezone.localdate()
+        qs = with_order_api_relations(store.orders.all()).order_by("created_at")
         orders = [o for o in qs if o.is_debt]
         debt = sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
         return Response({
             "store": StoreSerializer(store).data,
             "client_name": store.client.name,
-            "debt_total": str(debt.quantize(Decimal("0.01"))),
+            "debt_total": money_string(debt),
             "window_open": is_payment_window_open(store, today),
             "orders": OrderSerializer(orders, many=True, context={"request": request}).data,
         })
@@ -168,7 +298,7 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="debts")
     def debts(self, request):
         """Долги по магазинам: сумма непогашенного, расписание, окно/просрочка."""
-        today = date.today()
+        today = timezone.localdate()
         rows = []
         for store in self.get_queryset().prefetch_related(
                 "orders__items__product", "orders__payments"):
@@ -184,7 +314,7 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 "client_name": store.client.name,
                 "payment_schedule_type": store.payment_schedule_type,
                 "payment_days": store.payment_days,
-                "debt_total": str(debt.quantize(Decimal("0.01"))),
+                "debt_total": money_string(debt),
                 "orders_count": len(orders),
                 "window_open": window_open,
                 # просрочка: окно сегодня открыто, но долг ещё висит
@@ -196,10 +326,10 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=["post"], url_path="check-overdue")
     def check_overdue(self, request):
         """Прогнать детектор просрочки по всем магазинам на сегодня."""
-        today = date.today()
+        today = timezone.localdate()
         total = 0
         checked = 0
-        for store in Store.objects.exclude(payment_schedule_type="none"):
+        for store in self.get_queryset().exclude(payment_schedule_type="none"):
             checked += 1
             total += detect_overdue(store, today)
         return Response({"checked": checked, "overdue_notifications": total})

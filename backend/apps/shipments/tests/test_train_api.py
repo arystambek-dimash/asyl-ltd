@@ -59,3 +59,18 @@ def test_train_bad_action_400(loader, boss):
     o = _train_order(boss)
     r = _api(loader).post(f"/api/orders/{o.id}/train/", {"action": "nope"}, format="json")
     assert r.status_code == 400
+
+
+@pytest.mark.parametrize("bags", ["not-a-number", -1, None])
+def test_train_count_rejects_invalid_bags(loader, boss, bags):
+    o = _train_order(boss)
+    api = _api(loader)
+    assert api.post(
+        f"/api/orders/{o.id}/train/", {"action": "start"}, format="json"
+    ).status_code == 200
+
+    response = api.post(
+        f"/api/orders/{o.id}/train/",
+        {"action": "count", "bags": bags}, format="json")
+
+    assert response.status_code == 400

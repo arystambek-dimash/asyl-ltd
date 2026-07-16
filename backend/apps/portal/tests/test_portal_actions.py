@@ -35,6 +35,64 @@ def test_pay_creates_pending_payment(client_and_order, auth_client):
     r = auth_client(user).post(f"/api/portal/orders/{o.id}/pay/", {"method": "kaspi"}, format="json")
     assert r.status_code == 201
     assert o.payments.filter(status="received", method="kaspi").exists()
+    assert r.data["has_pending_payment"] is True
+
+
+@pytest.mark.parametrize("method", ["invoice", "cash"])
+def test_invoice_and_cash_create_requested_payment(
+        client_and_order, auth_client, method):
+    user, order = client_and_order
+    order.status = "shipped"; order.save()
+
+    response = auth_client(user).post(
+        f"/api/portal/orders/{order.id}/pay/", {"method": method}, format="json")
+
+    assert response.status_code == 201
+    payment = order.payments.get()
+    assert payment.method == method
+    assert payment.status == "requested"
+    order.refresh_from_db()
+    assert order.payment_method == method
+    assert order.settlement_intent == "instant"
+
+
+def test_client_can_choose_debt_through_payment_endpoint(client_and_order, auth_client):
+    user, order = client_and_order
+    order.status = "shipped"; order.save()
+
+    response = auth_client(user).post(
+        f"/api/portal/orders/{order.id}/pay/", {"method": "debt"}, format="json")
+
+    assert response.status_code == 201
+    order.refresh_from_db()
+    assert order.payment_method == "debt"
+    assert order.settlement_intent == "debt"
+    assert order.debt_requested is True
+    assert not order.payments.exists()
+
+
+def test_client_payment_method_must_be_supported(client_and_order, auth_client):
+    user, order = client_and_order
+    order.status = "shipped"; order.save()
+    response = auth_client(user).post(
+        f"/api/portal/orders/{order.id}/pay/", {"method": "crypto"}, format="json")
+    assert response.status_code == 400
+    assert response.data["code"] == "bad_method"
+
+
+def test_changing_client_payment_method_reuses_open_request(client_and_order, auth_client):
+    user, order = client_and_order
+    order.status = "shipped"; order.save()
+    endpoint = f"/api/portal/orders/{order.id}/pay/"
+    assert auth_client(user).post(
+        endpoint, {"method": "invoice"}, format="json").status_code == 201
+    assert auth_client(user).post(
+        endpoint, {"method": "kaspi"}, format="json").status_code == 201
+
+    assert order.payments.count() == 1
+    payment = order.payments.get()
+    assert payment.method == "kaspi"
+    assert payment.status == "received"
 
 
 def test_request_debt(client_and_order, auth_client):
@@ -43,7 +101,10 @@ def test_request_debt(client_and_order, auth_client):
     o.status = "shipped"; o.save()
     r = auth_client(user).post(f"/api/portal/orders/{o.id}/request-debt/")
     assert r.status_code == 200
-    o.refresh_from_db(); assert o.debt_requested is True
+    o.refresh_from_db()
+    assert o.debt_requested is True
+    assert o.payment_method == "debt"
+    assert o.settlement_intent == "debt"
 
 
 def test_pay_blocked_before_shipped(client_and_order, auth_client):

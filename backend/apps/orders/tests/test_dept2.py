@@ -8,7 +8,7 @@ import pytest
 from decimal import Decimal
 from rest_framework.test import APIClient
 from apps.catalog.models import Product
-from apps.clients.models import Client
+from apps.clients.models import Client, Store
 from apps.orders.models import Order, OrderItem, Payment
 
 pytestmark = pytest.mark.django_db
@@ -166,6 +166,33 @@ def test_payments_queue_and_confirm_by_accountant(accountant, dept2_manager):
     assert r.status_code == 200
     o.refresh_from_db()
     assert o.payment_status == "settled"
+
+
+def test_payments_queue_filters_store_and_date(accountant):
+    from django.utils import timezone
+    from apps.orders import services
+    client = _client("main")
+    first = Store.objects.create(client=client, name="Первый")
+    second = Store.objects.create(client=client, name="Второй")
+    first_order = _order(client, status="shipped")
+    second_order = _order(client, status="shipped")
+    first_order.store = first
+    first_order.save(update_fields=["store"])
+    second_order.store = second
+    second_order.save(update_fields=["store"])
+    included = services.add_payment(first_order, "100", accountant)
+    services.add_payment(second_order, "200", accountant)
+    today = timezone.localdate().isoformat()
+
+    r = _api(accountant).get("/api/orders/payments-queue/", {
+        "stage": "received", "store": first.id,
+        "date_from": today, "date_to": today,
+    })
+
+    assert r.status_code == 200
+    assert [row["id"] for row in r.data] == [included.id]
+    assert r.data[0]["store"] == first.id
+    assert r.data[0]["store_name"] == "Первый"
 
 
 def test_manager_cannot_access_queue(dept2_manager):

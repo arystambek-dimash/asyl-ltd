@@ -1,5 +1,4 @@
-from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
@@ -7,6 +6,28 @@ from apps.eventlog.services import log_event
 from apps.notifications.services import notify
 from apps.clients.services import is_payment_window_open
 from .models import Order, Payment, StatusChangeRequest
+from .statuses import PUBLIC_MANUAL_STATUSES, PUBLIC_STATUS_LABELS, public_status_label
+
+
+MAX_MONEY = Decimal("9999999999.99")
+
+
+def _positive_money(raw, *, detail: str, code: str) -> Decimal:
+    """Validate public money input before it reaches a DecimalField/database."""
+    try:
+        value = Decimal(str(raw))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValidationError({"detail": detail, "code": code}) from exc
+    if not value.is_finite() or value <= 0 or value > MAX_MONEY:
+        raise ValidationError({"detail": detail, "code": code})
+    return value
+
+
+def _status_message(prefix: str, old: str, new: str) -> str:
+    old_label = public_status_label(old)
+    new_label = public_status_label(new)
+    return (f"{prefix}: {new_label}" if old_label == new_label
+            else f"{prefix}: {old_label} → {new_label}")
 
 
 def _validate_payment_open(order: Order) -> None:
@@ -22,7 +43,7 @@ def _validate_payment_open(order: Order) -> None:
         raise ValidationError(
             {"detail": "Оплата доступна только после отгрузки", "code": "payment_not_open"}
         )
-    if order.store and not is_payment_window_open(order.store, date.today()):
+    if order.store and not is_payment_window_open(order.store, timezone.localdate()):
         raise ValidationError(
             {"detail": f"Оплата для магазина «{order.store.name}» сегодня недоступна",
              "code": "payment_window_closed"}
@@ -57,17 +78,23 @@ def _set_payment_stage(payment: Payment, status: str, user) -> Payment:
 
 
 @transaction.atomic
-def add_payment(order: Order, amount, user, method="cash", stage="received") -> Payment:
+def add_payment(order: Order, amount, user, method="cash", stage="received",
+                note="") -> Payment:
     """Начало цепочки оплаты: «запрошена» (счёт выставлен) или «принята» (деньги у менеджера)."""
     _validate_payment_open(order)
     if stage not in ("requested", "received"):
         raise ValidationError({"detail": "Недопустимый шаг оплаты", "code": "bad_stage"})
-    if amount is None or Decimal(str(amount)) <= 0:
+    amount = _positive_money(
+        amount,
+        detail="Сумма оплаты должна быть положительным денежным значением",
+        code="invalid_amount",
+    )
+    if method not in Payment.CASHIER_METHODS:
         raise ValidationError(
-            {"detail": "Сумма оплаты должна быть больше нуля", "code": "invalid_amount"}
-        )
+            {"detail": "Недопустимый способ оплаты", "code": "bad_method"})
     payment = Payment.objects.create(
-        order=order, amount=amount, method=method, status=stage, recorded_by=user,
+        order=order, amount=amount, method=method, status=stage, note=note,
+        recorded_by=user,
         **({"received_by": user, "received_at": timezone.now()}
            if stage == "received" else {}))
     log_event("payment", f"Оплата {amount} ({method}) {PAYMENT_STAGE_LABELS[stage]}",
@@ -97,20 +124,62 @@ def pay_via_bank(order: Order, user) -> Payment:
 @transaction.atomic
 def create_client_payment(order: Order, method: str, user) -> Payment:
     _validate_payment_open(order)
-    if method not in ("card", "kaspi"):
+    if method not in ("invoice", "kaspi", "cash", "card"):
         raise ValidationError({"detail": "Недопустимый способ оплаты", "code": "bad_method"})
     remaining = order.total_amount - order.paid_total
     if remaining <= 0:
         raise ValidationError({"detail": "Заказ уже оплачен", "code": "already_paid"})
-    # Несколько кликов «оплатил» не должны плодить дубли — одна заявка на оплату.
-    payment, created = Payment.objects.update_or_create(
-        order=order, status="received",
-        defaults={"amount": remaining, "method": method, "recorded_by": user,
-                  "received_by": user, "received_at": timezone.now()},
-    )
+    stage = "received" if method in ("kaspi", "card") else "requested"
+    # Несколько кликов и смена способа не должны плодить параллельные заявки.
+    payment = (order.payments.select_for_update()
+               .filter(status__in=Payment.IN_PROGRESS_STATUSES)
+               .order_by("-paid_at").first())
+    created = payment is None
+    if created:
+        payment = Payment.objects.create(
+            order=order, amount=remaining, method=method, status=stage,
+            recorded_by=user,
+            **({"received_by": user, "received_at": timezone.now()}
+               if stage == "received" else {}),
+        )
+    else:
+        payment.amount = remaining
+        payment.method = method
+        payment.status = stage
+        payment.recorded_by = user
+        payment.received_by = user if stage == "received" else None
+        payment.received_at = timezone.now() if stage == "received" else None
+        payment.save(update_fields=[
+            "amount", "method", "status", "recorded_by", "received_by", "received_at",
+        ])
+    public_method = "invoice" if method == "card" else method
+    order.payment_method = public_method
+    order.settlement_intent = "instant"
+    order.debt_requested = False
+    order.save(update_fields=["payment_method", "settlement_intent", "debt_requested"])
     log_event("payment", f"Клиент {'инициировал' if created else 'обновил'} оплату {remaining} ({method})",
-              user=user, order=order, payload={"amount": str(remaining), "method": method})
+              user=user, order=order,
+              payload={"amount": str(remaining), "method": method,
+                       "payment_stage": stage})
     return payment
+
+
+@transaction.atomic
+def request_client_debt(order: Order, user) -> Order:
+    """Зафиксировать выбор «В долг» без создания денежной оплаты."""
+    if order.status != "shipped":
+        raise ValidationError({"detail": "Долг фиксируется после отгрузки",
+                               "code": "invalid_status"})
+    order.payments.select_for_update().filter(
+        status__in=Payment.IN_PROGRESS_STATUSES,
+    ).update(status="rejected")
+    order.payment_method = "debt"
+    order.settlement_intent = "debt"
+    order.debt_requested = True
+    order.save(update_fields=["payment_method", "settlement_intent", "debt_requested"])
+    log_event("debt_override", "Клиент запросил долг", user=user, order=order,
+              payload={"payment_method": "debt"})
+    return order
 
 
 # Разрешённые переходы цепочки подтверждения оплаты.
@@ -156,7 +225,9 @@ def approve_debt(order: Order, user) -> Order:
     order.debt_override = True
     order.debt_override_by = user
     order.settlement_intent = "debt"
-    order.save(update_fields=["debt_override", "debt_override_by", "settlement_intent"])
+    order.payment_method = "debt"
+    order.save(update_fields=["debt_override", "debt_override_by",
+                              "settlement_intent", "payment_method"])
     log_event("debt_override", "Долг одобрен", user=user, order=order)
     return order
 
@@ -207,12 +278,12 @@ def transition(order: Order, to_status: str, user, message: str | None = None) -
     allowed = ALLOWED_TRANSITIONS.get(order.status, set())
     if to_status not in allowed:
         raise ValidationError(
-            {"detail": f"Недопустимый переход: {order.status} → {to_status}",
+            {"detail": _status_message("Недопустимый переход", order.status, to_status),
              "code": "invalid_transition"})
     old = order.status
     order.status = to_status
     order.save(update_fields=["status"])
-    log_event("status", message or f"Статус: {old} → {to_status}",
+    log_event("status", message or _status_message("Статус", old, to_status),
               user=user, order=order, payload={"from": old, "to": to_status})
     return order
 
@@ -239,15 +310,19 @@ def _apply_prices(order: Order, prices: dict, user) -> None:
         raw = prices.get(item.id, prices.get(str(item.id)))
         if raw is None and item.unit_price is not None and item.unit_price > 0:
             continue
-        if raw is None or Decimal(str(raw)) <= 0:
-            raise ValidationError(
-                {"detail": f"Укажите цену для «{item.product}»", "code": "price_required"})
-        price = Decimal(str(raw))
+        price = _positive_money(
+            raw,
+            detail=f"Укажите корректную цену для «{item.product}»",
+            code="price_required",
+        )
         item.unit_price = price
         item.save(update_fields=["unit_price"])
-        ClientPrice.objects.update_or_create(
-            client=order.client, product=item.product,
-            defaults={"price": price, "updated_by": user})
+        # Цена заказа фиксируется всегда, а личный прайс меняет только сотрудник
+        # с отдельным правом на закрепление цен.
+        if user.has_perm_code("clients.set_price"):
+            ClientPrice.objects.update_or_create(
+                client=order.client, product=item.product,
+                defaults={"price": price, "updated_by": user})
 
 
 def apply_item_prices(order: Order, prices: dict, user) -> None:
@@ -349,24 +424,36 @@ def _can_edit_status(user) -> bool:
     return bool(user) and not getattr(user, "is_client", False) and user.has_perm_code("orders.edit")
 
 
-@transaction.atomic
-def _force_set_status(order: Order, to_status: str, user) -> Order:
+def _validate_manual_status(to_status: str, user) -> None:
     if to_status not in Order.STATUSES:
         raise ValidationError({"detail": "Неизвестный статус", "code": "bad_status"})
+    if not getattr(user, "is_superuser", False) and to_status not in PUBLIC_MANUAL_STATUSES:
+        raise ValidationError({
+            "detail": "Доступны статусы: " + ", ".join(PUBLIC_STATUS_LABELS.values()),
+            "code": "status_not_available",
+        })
+
+
+@transaction.atomic
+def _force_set_status(order: Order, to_status: str, user) -> Order:
+    _validate_manual_status(to_status, user)
     old = order.status
     order.status = to_status
     order.save(update_fields=["status"])
     log_event("status_override",
-              f"Статус заказа изменён вручную: {old} → {to_status}",
+              _status_message("Статус заказа изменён вручную", old, to_status),
               user=user, order=order, payload={"from": old, "to": to_status})
     return order
 
 
 @transaction.atomic
 def request_status_change(order: Order, to_status: str, user) -> dict:
-    """Главный оператор (orders.edit) меняет сразу; остальные создают запрос."""
-    if to_status not in Order.STATUSES:
-        raise ValidationError({"detail": "Неизвестный статус", "code": "bad_status"})
+    """Сотрудник с orders.edit меняет сразу; остальные создают запрос.
+
+    Обычным сотрудникам доступны четыре публичных состояния, суперпользователь
+    может вручную выбрать любой внутренний этап.
+    """
+    _validate_manual_status(to_status, user)
     if to_status == order.status:
         raise ValidationError({"detail": "Статус уже такой", "code": "no_change"})
     if _can_edit_status(user):
@@ -375,7 +462,7 @@ def request_status_change(order: Order, to_status: str, user) -> dict:
     req = StatusChangeRequest.objects.create(
         order=order, to_status=to_status, requested_by=user)
     log_event("status_request",
-              f"Запрос ручной смены статуса: {order.status} → {to_status}",
+              _status_message("Запрос ручной смены статуса", order.status, to_status),
               user=user, order=order,
               payload={"request_id": req.id, "from": order.status, "to": to_status})
     return {"applied": False, "request": req}
@@ -434,3 +521,16 @@ def restore_order(order: Order, user) -> Order:
     log_event("order", "Заказ восстановлен из корзины", user=user, order=order,
               payload={"order_id": order.id})
     return order
+
+
+@transaction.atomic
+def purge_order(order: Order, user) -> None:
+    """Окончательное удаление: только из корзины, данные стираются безвозвратно.
+    Позиции, оплаты и отгрузка каскадом; события журнала остаются (order → null)."""
+    if order.deleted_at is None:
+        raise ValidationError(
+            {"detail": "Сначала переместите заказ в корзину", "code": "not_deleted"})
+    log_event("order", f"Заказ #{order.id} удалён навсегда", user=user,
+              payload={"order_id": order.id, "client_id": order.client_id,
+                       "total_amount": str(order.total_amount)})
+    order.delete()

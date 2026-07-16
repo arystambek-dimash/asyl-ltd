@@ -2,14 +2,17 @@ from django.core import signing
 from django.core.signing import TimestampSigner
 from django.shortcuts import get_object_or_404
 from rest_framework import status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm, IsStaff
 from apps.orders.models import Order
+from apps.rbac.scoping import scope_by_department
 
 from . import ai, health, services, sessions
+from .models import AiCountingSession
 
 CAM_COOKIE = "cam_token"
 CAM_TOKEN_MAX_AGE = 12 * 3600  # секунд
@@ -70,7 +73,7 @@ class CameraAuthView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-def _ai_response(fn):
+def _ai_response(fn, user=None):
     """Вызов клиента ai_service с маппингом его ошибок в HTTP-ответы."""
     if not ai.enabled():
         return Response(
@@ -88,7 +91,7 @@ def _ai_response(fn):
         http = e.status if e.status in (400, 404, 409) else status.HTTP_502_BAD_GATEWAY
         return Response({"detail": e.detail, "code": "ai_error"}, status=http)
     except sessions.AiSessionBusy as e:
-        return _busy_response(e.session)
+        return _busy_response(e.session, user)
 
 
 def _order_id(request) -> int | None:
@@ -107,10 +110,34 @@ def _loading_order(request) -> Order | None:
     order_id = _order_id(request)
     if order_id is None:
         return None
-    return get_object_or_404(Order, pk=order_id)
+    visible = scope_by_department(
+        Order.objects.all(), request.user, "shipping.load",
+        owner_field="client__manager",
+    )
+    return get_object_or_404(visible, pk=order_id)
 
 
-def _meta(session, order_id: int | None, camera: str) -> dict:
+def _started_by_name(session) -> str:
+    user = session.started_by
+    if user is None:
+        return "Система"
+    employee = getattr(user, "employee", None)
+    return employee.name if employee and employee.name else user.username
+
+
+def _can_control(session, user) -> bool:
+    return bool(
+        user
+        and user.is_authenticated
+        and (
+            user.is_superuser
+            or user.has_perm_code("rbac.manage")
+            or session.started_by_id == user.pk
+        )
+    )
+
+
+def _meta(session, order_id: int | None, camera: str, user=None) -> dict:
     if session is None:
         return {
             "available": True,
@@ -126,15 +153,18 @@ def _meta(session, order_id: int | None, camera: str) -> dict:
         "session_order_id": session.order_id,
         "session_camera": session.camera,
         "session_started_at": session.started_at,
+        "session_started_by_id": session.started_by_id,
+        "session_started_by_name": _started_by_name(session),
+        "can_stop": _can_control(session, user),
     }
 
 
-def _busy_response(session) -> Response:
+def _busy_response(session, user=None) -> Response:
     return Response(
         {
             "detail": f"AI-подсчёт занят заказом #{session.order_id}",
             "code": "ai_busy",
-            **_meta(session, None, ""),
+            **_meta(session, None, "", user),
             "running": False,
         },
         status=status.HTTP_409_CONFLICT,
@@ -158,7 +188,7 @@ class CameraAiView(APIView):
             camera = ai.normalize(cam)
             order_id = _order_id(request)
             session = sessions.current_for_camera(camera)
-            metadata = _meta(session, order_id, camera)
+            metadata = _meta(session, order_id, camera, request.user)
 
             # A different order never touches the GPU worker. Its polling is a
             # cheap DB lookup and only reports who owns this camera's slot.
@@ -179,9 +209,10 @@ class CameraAiView(APIView):
                     "owned_by_order": False,
                     "code": "ai_processor_stopped",
                 }
+            sessions.update_status(session, live)
             return {**live, **metadata}
 
-        return _ai_response(get_status)
+        return _ai_response(get_status, request.user)
 
     def post(self, request, cam: str):
         def start():
@@ -202,7 +233,7 @@ class CameraAiView(APIView):
                 if live is None:
                     live = ai.start(camera)
                 sessions.activate(session, live)
-                return {**live, **_meta(session, order.pk, camera)}
+                return {**live, **_meta(session, order.pk, camera, request.user)}
             except ai.AiUnavailable:
                 # A timeout is ambiguous: the Windows worker may have accepted
                 # POST and still be warming the model. Keep ownership so a
@@ -216,7 +247,7 @@ class CameraAiView(APIView):
                     sessions.fail(session, str(e))
                 raise
 
-        return _ai_response(start)
+        return _ai_response(start, request.user)
 
     def delete(self, request, cam: str):
         def stop():
@@ -226,9 +257,13 @@ class CameraAiView(APIView):
                 raise ai.AiError(400, "Укажите заказ для завершения AI-сессии")
             session = sessions.current_for_camera(camera)
             if session is None:
-                return {"running": False, **_meta(None, order.pk, camera)}
+                return {"running": False, **_meta(None, order.pk, camera, request.user)}
             if session.order_id != order.pk:
                 raise sessions.AiSessionBusy(session)
+            if not _can_control(session, request.user):
+                raise PermissionDenied(
+                    "Остановить отгрузку может только начавший её сотрудник или администратор"
+                )
             final = ai.stop(camera)
             sessions.finish(session, request.user, final)
             return {
@@ -238,7 +273,7 @@ class CameraAiView(APIView):
                 "busy": False,
                 "owned_by_order": False,
             }
-        return _ai_response(stop)
+        return _ai_response(stop, request.user)
 
 
 class CameraAiResetView(APIView):
@@ -258,8 +293,50 @@ class CameraAiResetView(APIView):
                 if session:
                     raise sessions.AiSessionBusy(session)
                 raise ai.AiError(409, "Активная AI-сессия не найдена")
+            if not _can_control(session, request.user):
+                raise PermissionDenied(
+                    "Сбросить счётчик может только начавший отгрузку сотрудник или администратор"
+                )
             live = ai.reset(camera)
             sessions.update_status(session, live)
-            return {**live, **_meta(session, order.pk, camera)}
+            return {**live, **_meta(session, order.pk, camera, request.user)}
 
-        return _ai_response(reset)
+        return _ai_response(reset, request.user)
+
+
+class CameraAiSessionListView(APIView):
+    """Открытые отгрузки для моноблока — по одной на каждую камеру."""
+
+    def get_permissions(self):
+        return [HasPerm("shipping.load")]
+
+    def get(self, request):
+        visible_orders = scope_by_department(
+            Order.objects.all(), request.user, "shipping.load",
+            owner_field="client__manager",
+        )
+        open_sessions = (
+            AiCountingSession.objects
+            .filter(
+                status__in=AiCountingSession.OPEN_STATUSES,
+                order__in=visible_orders,
+            )
+            .select_related("order__client", "started_by__employee")
+            .order_by("started_at")
+        )
+        return Response([
+            {
+                "id": session.pk,
+                "order_id": session.order_id,
+                "order_client_name": session.order.client.name,
+                "order_truck_number": session.order.truck_number,
+                "camera": session.camera,
+                "status": session.status,
+                "started_at": session.started_at,
+                "started_by_id": session.started_by_id,
+                "started_by_name": _started_by_name(session),
+                "can_stop": _can_control(session, request.user),
+                "last_status": session.last_status,
+            }
+            for session in open_sessions
+        ])

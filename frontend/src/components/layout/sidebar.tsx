@@ -5,8 +5,8 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Boxes, ClipboardList, Users, Truck,
-  ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings, X, Store, TrainFront,
-  Briefcase, HandCoins, MapPin,
+  ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings, X, Store,
+  Briefcase, HandCoins, MapPin, ScanLine,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { can, deptLabel, isDept2Only } from "@/lib/can";
@@ -46,8 +46,9 @@ function staffSections(fieldName: string): NavSection[] {
         { href: "/orders", label: "Заказы", icon: ClipboardList, perm: "orders.view" },
         // Касса (бывш. Табло бухгалтера): подтверждение оплат + вкладка «Долги».
         { href: "/accounting", label: "Касса", icon: HandCoins, perm: ["payments.confirm", "reports.view"] },
-        { href: "/shipping", label: "Пост погрузки", icon: Truck, perm: "shipping.view" },
-        { href: "/train", label: "Поезда", icon: TrainFront, perm: "train.view" },
+        // Единый пост: машины и поезда вместе — лайв-этапы и моноблок отгрузки.
+        { href: "/shipping", label: "Пост погрузки", icon: Truck, perm: ["shipping.view", "train.view"] },
+        { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "shipping.load" },
         { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },
         { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
         { href: "/stores", label: "Магазины", icon: Store, perm: "clients.view" },

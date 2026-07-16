@@ -123,6 +123,16 @@ def test_edit_fields_without_items(manager):
     assert o.items.count() == 1
 
 
+def test_edit_order_note(manager):
+    o = _order(status="shipped")
+    r = _api(manager).patch(
+        f"/api/orders/{o.id}/", {"notes": "Доставить до 18:00"}, format="json")
+    assert r.status_code == 200
+    o.refresh_from_db()
+    assert o.notes == "Доставить до 18:00"
+    assert r.data["notes"] == "Доставить до 18:00"
+
+
 def test_edit_client_is_locked(manager):
     o = _order(status="pending")
     other = Client.objects.create(first_name="Z", last_name="Z", phone="z")

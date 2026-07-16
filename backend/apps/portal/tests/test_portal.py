@@ -1,5 +1,7 @@
 import pytest
-from apps.catalog.models import Product
+from decimal import Decimal
+
+from apps.catalog.models import ClientPrice, Product
 from apps.warehouse.models import StockItem
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
@@ -29,6 +31,29 @@ def test_client_creates_own_pending_order(auth_client, client_user):
     assert order.status == "pending"
     assert order.client.user_id == client_user.id
     assert order.settlement_intent == "debt"  # по умолчанию
+    assert order.payment_method == "debt"
+
+
+@pytest.mark.parametrize(
+    ("method", "intent"),
+    [("invoice", "instant"), ("kaspi", "instant"),
+     ("cash", "instant"), ("debt", "debt")],
+)
+def test_client_can_choose_one_of_four_payment_methods(
+        auth_client, client_user, method, intent):
+    _client_for(client_user)
+    prod = _product()
+    resp = auth_client(client_user).post(
+        "/api/portal/orders/",
+        {"items": [{"product": prod.id, "quantity": 1}],
+         "payment_method": method},
+        format="json",
+    )
+    assert resp.status_code == 201
+    order = Order.objects.get()
+    assert order.payment_method == method
+    assert order.settlement_intent == intent
+    assert resp.data["payment_method"] == method
 
 
 def test_client_can_choose_instant_intent(auth_client, client_user):
@@ -40,7 +65,9 @@ def test_client_can_choose_instant_intent(auth_client, client_user):
         format="json",
     )
     assert resp.status_code == 201
-    assert Order.objects.get().settlement_intent == "instant"
+    order = Order.objects.get()
+    assert order.settlement_intent == "instant"
+    assert order.payment_method == "invoice"
 
 
 def test_client_sees_only_own_orders(auth_client, client_user, make_user):
@@ -85,6 +112,38 @@ def test_client_catalog_lists_active_products_without_stock(auth_client, client_
     assert active.id in by_id
     assert inactive.id not in by_id
     assert by_id[active.id]["available_bags"] == 0
+    assert by_id[active.id]["price"] is None
+
+
+def test_client_catalog_returns_only_own_personal_price(
+        auth_client, client_user, make_user):
+    client = _client_for(client_user)
+    other_user = make_user(username="priced-other", client=True)
+    other = Client.objects.create(
+        first_name="Другой", last_name="К", phone="2", user=other_user)
+    product = _product()
+    ClientPrice.objects.create(client=client, product=product, price="87.50")
+    ClientPrice.objects.create(client=other, product=product, price="12.00")
+
+    response = auth_client(client_user).get("/api/portal/catalog/")
+
+    assert response.status_code == 200
+    row = next(item for item in response.data if item["id"] == product.id)
+    assert row["price"] == "87.50"
+
+
+def test_portal_order_fixes_personal_price_at_creation(auth_client, client_user):
+    client = _client_for(client_user)
+    product = _product()
+    ClientPrice.objects.create(client=client, product=product, price="91.25")
+
+    response = auth_client(client_user).post(
+        "/api/portal/orders/",
+        {"items": [{"product": product.id, "quantity": 2}]}, format="json",
+    )
+
+    assert response.status_code == 201
+    assert OrderItem.objects.get(order_id=response.data["id"]).unit_price == Decimal("91.25")
 
 
 def test_client_order_without_profile_returns_400(auth_client, client_user):

@@ -64,3 +64,27 @@ def test_movements_endpoint_lists_history(auth_client, boss):
     assert len(resp.data) == 1
     assert resp.data[0]["delta"] == 80
     assert resp.data[0]["balance_after"] == 80
+
+
+def test_delete_stock_item_resets_balance_and_keeps_history(auth_client, boss):
+    prod = _product()
+    item = adjust_stock(prod, 80, boss)
+
+    resp = auth_client(boss).delete(f"/api/stock/{item.id}/")
+
+    assert resp.status_code == 204
+    assert not StockItem.objects.filter(pk=item.id).exists()
+    removal = StockMovement.objects.filter(product=prod).first()
+    assert removal.delta == -80
+    assert removal.balance_after == 0
+    assert removal.note == "Удаление из складского списка"
+
+
+def test_delete_stock_item_manager_only(auth_client, operator, boss):
+    prod = _product()
+    item = adjust_stock(prod, 10, boss)
+
+    resp = auth_client(operator).delete(f"/api/stock/{item.id}/")
+
+    assert resp.status_code == 403
+    assert StockItem.objects.filter(pk=item.id).exists()

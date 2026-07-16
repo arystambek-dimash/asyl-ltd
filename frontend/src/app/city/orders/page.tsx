@@ -16,14 +16,14 @@ import { ErrorAlert } from "@/components/ui/data-state";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { PaymentChain, AddPaymentActions } from "@/components/payment-chain";
 import {
-  ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE,
+  ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE, orderStatusGroup,
 } from "@/lib/constants";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can, deptLabel } from "@/lib/can";
 import { formatDateTime, formatMoney } from "@/lib/utils";
-import { Plus, Search, Trash2, Info } from "lucide-react";
+import { Archive, Plus, Search, Trash2, Info } from "lucide-react";
 import type { Order, Client, Product } from "@/lib/types";
 
 function CityOrdersInner() {
@@ -55,18 +55,18 @@ function CityOrdersInner() {
     .filter((o) => !["rejected", "cancelled"].includes(o.status))
     .reduce((s, o) => s + Number(o.total_amount || 0), 0);
 
-  const presentStatuses = Array.from(new Set(list.map((o) => o.status)));
+  const presentStatuses = Array.from(new Set(list.map((o) => orderStatusGroup(o.status))));
   const pills = [
     { key: "all", label: "Все", count: list.length },
     ...presentStatuses.map((st) => ({
       key: st,
       label: ORDER_STATUS_LABELS[st] ?? st,
-      count: list.filter((o) => o.status === st).length,
+      count: list.filter((o) => orderStatusGroup(o.status) === st).length,
     })),
   ];
 
   const filtered = list.filter((o) => {
-    if (status !== "all" && o.status !== status) return false;
+    if (status !== "all" && orderStatusGroup(o.status) !== status) return false;
     if (!q) return true;
     return `${o.id} ${o.client_name ?? ""}`.toLowerCase().includes(q.toLowerCase());
   });
@@ -123,10 +123,10 @@ function CityOrdersInner() {
                     </Badge>
                   )}
                   {canDelete && (
-                    <Button size="sm" variant="ghost" title="Удалить в корзину"
+                    <Button size="sm" variant="ghost" title="Переместить в архив"
                       className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
                       onClick={() => { setDelError(""); setDelItem(o); }}>
-                      <Trash2 className="size-4" />
+                      <Archive className="size-4" />
                     </Button>
                   )}
                 </div>
@@ -171,11 +171,11 @@ function CityOrdersInner() {
       <ConfirmDialog
         open={!!delItem}
         onClose={() => setDelItem(null)}
-        title="Удалить заявку?"
+        title="Переместить заявку в архив?"
         description={delItem
-          ? `Заявка #${delItem.id} (${delItem.client_name ?? "клиент"}) уедет в корзину. Из отчётов она исчезнет, но её можно восстановить в разделе «Заказы → Корзина».`
+          ? `Заявка #${delItem.id} (${delItem.client_name ?? "клиент"}) исчезнет из рабочих списков и отчётов. Её можно будет восстановить через значок архива на странице заказов.`
           : ""}
-        confirmLabel="Удалить"
+        confirmLabel="В архив"
         busy={delBusy}
         error={delError}
         onConfirm={confirmDelete}

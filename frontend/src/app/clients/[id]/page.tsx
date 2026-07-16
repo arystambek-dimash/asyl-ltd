@@ -1,229 +1,475 @@
 "use client";
-import { use } from "react";
+import { use, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
+import { StatCard } from "@/components/ui/stat-card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { StatCard } from "@/components/ui/stat-card";
+import { Input } from "@/components/ui/input";
+import { Tabs } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/status-badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
-import {
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
-  PieChart, Pie, Cell,
-} from "recharts";
+import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { DataGate } from "@/components/ui/data-state";
-import { useApi } from "@/lib/use-api";
-import { useAuth } from "@/store/auth";
-import { can } from "@/lib/can";
-import { formatMoney } from "@/lib/utils";
 import {
-  ArrowLeft, Phone, CircleDollarSign, Wallet, TrendingDown, BarChart3,
-  ClipboardList, AlertTriangle, ArrowUpRight,
+  Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
+} from "@/components/ui/select-ui";
+import { useApi } from "@/lib/use-api";
+import { formatMoney, formatDateTime } from "@/lib/utils";
+import {
+  ORDER_STATUS_LABELS, PAYMENT_METHOD_LABELS, PAYMENT_STAGE_LABELS, PAYMENT_STAGE_TONE,
+  orderStatusGroup,
+} from "@/lib/constants";
+import {
+  AlertCircle,
+  ArrowLeft,
+  FileText,
+  MapPin,
+  Phone,
+  SlidersHorizontal,
+  TrendingUp,
+  Wallet,
+  X,
 } from "lucide-react";
-import type { Order } from "@/lib/types";
 
-const STATUS_COLORS: Record<string, string> = {
-  draft: "#8a8f98", pending: "#d49a32", confirmed: "#477fca", arrived: "#2f9ab7",
-  loading: "#d28a28", loaded: "#5b67c9", shipped: "#5aa060", rejected: "#d85d57", cancelled: "#6f737a",
-};
-
-interface Analytics {
+interface SaleRow {
+  id: number; date: string; status: string; payment_status: string;
+  settlement_intent: string; items: { label: string; qty: number }[];
+  bags: number; amount: string; paid: string;
+}
+interface PaymentRow {
+  id: number; order_id: number; date: string; employee: string | null;
+  method: string; status: string; amount: string;
+}
+interface DebtRow {
+  id: number; date: string; bags: number;
+  amount: string; paid: string; remaining: string;
+}
+interface History {
   client: { id: number; name: string; phone: string; country: string };
-  kpi: { revenue: string; paid: string; debt: string; average: string; orders_count: number; rejected_count: number };
-  by_status: { status: string; label: string; count: number; amount: string }[];
-  monthly: { month: string; revenue: string; paid: string }[];
-  top_products: { product: number; label: string; qty: number; amount: string }[];
-  recent_orders: Order[];
+  summary: { revenue: string; paid: string; debt: string; orders_count: number };
+  sales: SaleRow[];
+  payments: PaymentRow[];
+  debts: DebtRow[];
 }
 
-function initials(name: string): string {
-  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?";
+const SETTLEMENT_LABELS: Record<string, string> = { debt: "В долг", instant: "Сразу" };
+
+/** Общие для всех вкладок поля строки — по ним работает единый фильтр. */
+interface CommonRow { id: number; date: string; amount: string }
+
+function uniq(values: (string | null | undefined)[]): string[] {
+  return [...new Set(values.filter((v): v is string => !!v))].sort((a, b) => a.localeCompare(b, "ru"));
 }
-function monthLabel(key: string): string {
-  const [y, m] = key.split("-");
-  return new Date(Number(y), Number(m) - 1).toLocaleDateString("ru-RU", { month: "short", year: "2-digit" });
+
+function itemsText(items: { label: string; qty: number }[]): string {
+  return items.map((i) => `${i.label} × ${i.qty}`).join(", ");
+}
+
+function DocLink({ orderId, children }: { orderId: number; children: React.ReactNode }) {
+  return (
+    <Link href={`/orders/${orderId}`} className="font-medium text-[var(--ring)] hover:underline">
+      {children}
+    </Link>
+  );
+}
+
+function EmptyRow({ colSpan, filtered, onReset }: {
+  colSpan: number;
+  filtered: boolean;
+  onReset: () => void;
+}) {
+  return (
+    <TR>
+      <TD colSpan={colSpan} className="py-12 text-center">
+        <div className="mx-auto flex max-w-sm flex-col items-center">
+          <div className="mb-3 flex size-10 items-center justify-center rounded-full bg-[var(--muted)] text-[var(--muted-foreground)]">
+            <FileText className="size-5" />
+          </div>
+          <div className="font-medium">{filtered ? "Документы не найдены" : "Документов пока нет"}</div>
+          <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+            {filtered
+              ? "Попробуйте изменить условия поиска или сбросить фильтры."
+              : "Здесь появятся документы клиента после первой операции."}
+          </p>
+          {filtered && (
+            <Button size="sm" variant="outline" className="mt-4" onClick={onReset}>
+              <X className="size-4" /> Сбросить фильтры
+            </Button>
+          )}
+        </div>
+      </TD>
+    </TR>
+  );
+}
+
+function Money({ value, muted }: { value: string; muted?: boolean }) {
+  if (muted && Number(value) === 0) return <span className="text-[var(--muted-foreground)]">—</span>;
+  return <>{formatMoney(value)} ₸</>;
 }
 
 function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { me } = useAuth();
-  const canMoney = can(me, "reports.view");  // финансовые блоки — под reports.view
-  const { data, loading, error, reload } = useApi<Analytics>(`/clients/${id}/analytics/`);
+  const { data, loading, error, reload } = useApi<History>(`/clients/${id}/history/`);
+
+  const [tab, setTab] = useState("analytics");
+  // Общие фильтры — переживают смену вкладки.
+  const [fFrom, setFFrom] = useState("");
+  const [fTo, setFTo] = useState("");
+  const [fDoc, setFDoc] = useState("");
+  const [fMin, setFMin] = useState("");
+  const [fMax, setFMax] = useState("");
+  // Вкладочные фильтры — сбрасываются при переключении.
+  const [fProduct, setFProduct] = useState("all");
+  const [fPay, setFPay] = useState("all");
+  const [fStatus, setFStatus] = useState("all");
+  const [fEmployee, setFEmployee] = useState("all");
+  const [sortKey, setSortKey] = useState("date");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   if (!data) {
     return <AppShell title="Клиент"><DataGate loading={loading} error={error} onRetry={reload} /></AppShell>;
   }
 
-  const { client, kpi } = data;
-  const hasDebt = Number(kpi.debt) > 0;
-  const monthData = data.monthly.map((m) => ({ ...m, label: monthLabel(m.month), revenue: Number(m.revenue), paid: Number(m.paid) }));
-  const maxProductAmount = Math.max(1, ...data.top_products.map((p) => Number(p.amount)));
+  const { client, summary } = data;
+  const hasDebt = Number(summary.debt) > 0;
+  const initials = client.name.trim().split(/\s+/).slice(0, 2)
+    .map((part) => part[0]).join("").toUpperCase() || "К";
+  const tabs = [
+    { key: "analytics", label: "Аналитика клиента" },
+    { key: "sales", label: `Продажи · ${data.sales.length}` },
+    { key: "payments", label: `Погашения · ${data.payments.length}` },
+    { key: "debts", label: `Долги · ${data.debts.length}` },
+  ];
+
+  const switchTab = (k: string) => {
+    setTab(k); setFProduct("all"); setFPay("all"); setFStatus("all"); setFEmployee("all");
+  };
+  const hasFilters = !!fFrom || !!fTo || !!fDoc || !!fMin || !!fMax
+    || fProduct !== "all" || fPay !== "all" || fStatus !== "all" || fEmployee !== "all";
+  const resetFilters = () => {
+    setFFrom(""); setFTo(""); setFDoc(""); setFMin(""); setFMax("");
+    setFProduct("all"); setFPay("all"); setFStatus("all"); setFEmployee("all");
+  };
+
+  const matches = (r: CommonRow) =>
+    (!fFrom || r.date.slice(0, 10) >= fFrom)
+    && (!fTo || r.date.slice(0, 10) <= fTo)
+    && (!fDoc.trim() || String(r.id).includes(fDoc.replace(/\D/g, "")))
+    && (!fMin || Number(r.amount) >= Number(fMin))
+    && (!fMax || Number(r.amount) <= Number(fMax));
+
+  const sortRows = <T extends CommonRow>(rows: T[]) => [...rows].sort((a, b) => {
+    const cmp = sortKey === "amount" ? Number(a.amount) - Number(b.amount) : a.date.localeCompare(b.date);
+    return sortDir === "asc" ? cmp : -cmp;
+  });
+  const toggleSort = (k: string) => {
+    if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
+    else { setSortKey(k); setSortDir("desc"); }
+  };
+
+  const sales = sortRows(data.sales.filter((r) =>
+    matches(r)
+    && (fProduct === "all" || r.items.some((i) => i.label === fProduct))
+    && (fPay === "all" || r.settlement_intent === fPay)
+    && (fStatus === "all" || orderStatusGroup(r.status) === fStatus)));
+  // № документа у погашения — заказ, к которому оно привязано.
+  const payments = sortRows(data.payments.filter((r) =>
+    matches({ ...r, id: r.order_id })
+    && (fPay === "all" || r.method === fPay)
+    && (fStatus === "all" || r.status === fStatus)
+    && (fEmployee === "all" || r.employee === fEmployee)));
+  const debts = sortRows(data.debts.filter(matches));
+
+  const products = uniq(data.sales.flatMap((r) => r.items.map((i) => i.label)));
+  const saleStatuses = uniq(data.sales.map((r) => orderStatusGroup(r.status)));
+  const paymentStatuses = uniq(data.payments.map((r) => r.status));
+  const employees = uniq(data.payments.map((r) => r.employee));
+
+  const shownCount = tab === "analytics" ? 0
+    : tab === "sales" ? sales.length : tab === "payments" ? payments.length : debts.length;
+  const shownTotal = tab === "analytics" ? 0
+    : tab === "sales" ? sales.reduce((s, r) => s + Number(r.amount), 0)
+    : tab === "payments" ? payments.reduce((s, r) => s + Number(r.amount), 0)
+    : debts.reduce((s, r) => s + Number(r.remaining), 0);
+  const activeTitle = tab === "sales" ? "История продаж"
+    : tab === "payments" ? "История погашений"
+    : "Текущие долги";
+  const activeCaption = tab === "sales" ? "Заказы и отгрузки клиента"
+    : tab === "payments" ? "Все поступившие платежи"
+    : "Заказы с непогашенным остатком";
 
   return (
-    <AppShell title={`Клиент · ${client.name}`} section="Работа"
-      actions={
-        <Link href="/clients"><Button size="sm" variant="outline"><ArrowLeft className="size-4" /> К клиентам</Button></Link>
-      }>
-      {/* шапка */}
-      <div className="mb-5 rounded-xl border bg-[var(--card)] p-5 shadow-card">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-[var(--ring)] text-base font-semibold text-white">
-              {initials(client.name)}
-            </div>
-            <div>
-              <div className="text-lg font-bold tracking-tight">{client.name}</div>
-              <div className="flex items-center gap-3 text-sm text-[var(--muted-foreground)]">
-                <span className="flex items-center gap-1.5"><Phone className="size-3.5" /> {client.phone || "—"}</span>
-                {client.country && <span>{client.country}</span>}
-              </div>
-            </div>
+    <AppShell title="Клиент" section="Работа">
+      {/* Компактная шапка профиля без большой пустой карточки. */}
+      <div className="mb-5 flex items-center gap-3 border-b pb-4">
+        <Link href="/clients" aria-label="К клиентам"
+          className="flex size-9 shrink-0 items-center justify-center rounded-lg border bg-[var(--card)] text-[var(--muted-foreground)] transition-colors hover:border-[var(--input)] hover:bg-[var(--muted)]/60 hover:text-[var(--foreground)]">
+          <ArrowLeft className="size-4.5" />
+        </Link>
+        <div className="flex size-10 shrink-0 items-center justify-center rounded-full border bg-[var(--muted)] text-sm font-medium text-[var(--muted-foreground)]">
+          {initials}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-xl font-semibold leading-tight tracking-tight">{client.name}</h2>
+          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--muted-foreground)]">
+            {client.phone && (
+              <a href={`tel:${client.phone}`}
+                className="flex items-center gap-1.5 hover:text-[var(--foreground)]">
+                <Phone className="size-3.5" /> {client.phone}
+              </a>
+            )}
+            {client.country && (
+              <span className="flex items-center gap-1.5">
+                <MapPin className="size-3.5" /> {client.country}
+              </span>
+            )}
           </div>
-          <Badge tone={hasDebt ? "destructive" : "success"} dot>
-            {hasDebt ? `Долг ${formatMoney(kpi.debt)} ₸` : "Без долга"}
-          </Badge>
         </div>
       </div>
 
-      {/* KPI — финансовые показаны только при reports.view */}
-      <section className={`mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 ${canMoney ? "lg:grid-cols-6" : "lg:grid-cols-3"}`}>
-        {canMoney && <StatCard label="Принёс" value={`${formatMoney(kpi.revenue)} ₸`} accent icon={CircleDollarSign} />}
-        {canMoney && <StatCard label="Оплачено" value={`${formatMoney(kpi.paid)} ₸`} icon={Wallet} />}
-        <StatCard label="Текущий долг" value={`${formatMoney(kpi.debt)} ₸`} icon={TrendingDown} />
-        {canMoney && <StatCard label="Средний чек" value={`${formatMoney(kpi.average)} ₸`} icon={BarChart3} />}
-        <StatCard label="Заказов" value={String(kpi.orders_count)} icon={ClipboardList} />
-        <StatCard label="Отклонённые" value={String(kpi.rejected_count)} icon={AlertTriangle} />
-      </section>
+      <Card className="overflow-hidden">
+        <CardContent className="p-0">
+          <div className="px-4 sm:px-5">
+            <Tabs tabs={tabs} active={tab} onChange={switchTab} />
+          </div>
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        {/* динамика — финансовая, под reports.view */}
-        {canMoney && (
-        <Card>
-          <CardHeader className="flex-row items-center justify-between">
-            <CardTitle className="text-base">Динамика по месяцам</CardTitle>
-            <BarChart3 className="size-4 text-[var(--muted-foreground)]" />
-          </CardHeader>
-          <CardContent>
-            {monthData.length === 0 ? (
-              <p className="py-10 text-center text-sm text-[var(--muted-foreground)]">Нет финансовых заказов.</p>
-            ) : (
-              <>
-                <ResponsiveContainer width="100%" height={240}>
-                  <BarChart data={monthData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                    <XAxis dataKey="label" tick={{ fontSize: 12, fill: "var(--muted-foreground)" }} />
-                    <YAxis tick={{ fontSize: 12, fill: "var(--muted-foreground)" }} width={70}
-                      tickFormatter={(v) => formatMoney(String(v))} />
-                    <Tooltip cursor={{ fill: "var(--muted)", opacity: 0.4 }}
-                      contentStyle={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }}
-                      formatter={(v: number, n) => [`${formatMoney(String(v))} ₸`, n === "revenue" ? "Принёс" : "Оплачено"]} />
-                    <Bar dataKey="revenue" fill="var(--ring)" radius={[5, 5, 0, 0]} />
-                    <Bar dataKey="paid" fill="var(--success)" radius={[5, 5, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-                <div className="mt-2 flex gap-4 text-xs text-[var(--muted-foreground)]">
-                  <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-[var(--ring)]" /> Принёс</span>
-                  <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-[var(--success)]" /> Оплачено</span>
+          {tab === "analytics" ? (
+            <div className="p-4 sm:p-5">
+              <div className="mb-4">
+                <h3 className="font-semibold">Аналитика клиента</h3>
+                <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
+                  Общая картина по продажам, оплатам и текущей задолженности.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                <StatCard label="Продаж" value={String(summary.orders_count)}
+                  caption="всего заказов" icon={FileText} />
+                <StatCard label="Сумма продаж" value={`${formatMoney(summary.revenue)} ₸`}
+                  caption="за всё время" icon={TrendingUp} accent />
+                <StatCard label="Оплачено" value={`${formatMoney(summary.paid)} ₸`}
+                  caption="получено от клиента" icon={Wallet} />
+                <StatCard label="Текущий долг" value={`${formatMoney(summary.debt)} ₸`}
+                  caption={hasDebt ? "ожидает погашения" : "задолженности нет"} icon={AlertCircle}
+                  className={hasDebt ? "border-[var(--destructive)]/25 bg-[var(--destructive)]/6" : undefined} />
+              </div>
+            </div>
+          ) : <>
+          {/* Подписанные фильтры не требуют угадывать назначение полей. */}
+          <div className="border-b bg-[var(--muted)]/20 p-4 sm:p-5">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="size-4 text-[var(--muted-foreground)]" />
+                <span className="text-sm font-medium">Фильтры</span>
+                <span className="text-xs text-[var(--muted-foreground)]">Показано: {shownCount}</span>
+              </div>
+              {hasFilters && (
+                <Button size="sm" variant="ghost" onClick={resetFilters}>
+                  <X className="size-4" /> Сбросить фильтры
+                </Button>
+              )}
+            </div>
+
+            <div className={`grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 ${tab === "debts" ? "2xl:grid-cols-3" : "2xl:grid-cols-6"}`}>
+              <div className="grid gap-1.5">
+                <span className="text-xs font-medium text-[var(--muted-foreground)]">Период</span>
+                <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1.5">
+                  <Input type="date" value={fFrom} onChange={(e) => setFFrom(e.target.value)} aria-label="Период с" />
+                  <span className="text-[var(--muted-foreground)]">—</span>
+                  <Input type="date" value={fTo} onChange={(e) => setFTo(e.target.value)} aria-label="Период по" />
                 </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-        )}
-
-        {/* статусы */}
-        <Card>
-          <CardHeader className="flex-row items-center justify-between">
-            <CardTitle className="text-base">Заказы по статусам</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {data.by_status.length === 0 ? (
-              <p className="py-10 text-center text-sm text-[var(--muted-foreground)]">Заказов нет.</p>
-            ) : (
-              <div className="flex flex-col items-center gap-4 sm:flex-row">
-                <ResponsiveContainer width="100%" height={200} className="max-w-[220px]">
-                  <PieChart>
-                    <Pie data={data.by_status} dataKey="count" nameKey="label" innerRadius={45} outerRadius={80} paddingAngle={2}>
-                      {data.by_status.map((row) => (
-                        <Cell key={row.status} fill={STATUS_COLORS[row.status] ?? "#7a7f87"} />
+              </div>
+              {tab === "sales" && (
+                <div className="grid gap-1.5">
+                  <span className="text-xs font-medium text-[var(--muted-foreground)]">Товар</span>
+                  <Select value={fProduct} onValueChange={setFProduct}>
+                    <SelectTrigger className="h-10"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Все товары</SelectItem>
+                      {products.map((p) => <SelectItem key={p} value={p}>{p}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              {tab !== "debts" && (
+                <div className="grid gap-1.5">
+                  <span className="text-xs font-medium text-[var(--muted-foreground)]">Оплата</span>
+                  <Select value={fPay} onValueChange={setFPay}>
+                    <SelectTrigger className="h-10"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Любой тип</SelectItem>
+                      {tab === "sales"
+                        ? Object.entries(SETTLEMENT_LABELS).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)
+                        : ["cash", "card", "kaspi"].map((m) => (
+                            <SelectItem key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</SelectItem>
+                          ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              {tab !== "debts" && (
+                <div className="grid gap-1.5">
+                  <span className="text-xs font-medium text-[var(--muted-foreground)]">Статус</span>
+                  <Select value={fStatus} onValueChange={setFStatus}>
+                    <SelectTrigger className="h-10"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Любой статус</SelectItem>
+                      {(tab === "sales" ? saleStatuses : paymentStatuses).map((s) => (
+                        <SelectItem key={s} value={s}>
+                          {(tab === "sales" ? ORDER_STATUS_LABELS : PAYMENT_STAGE_LABELS)[s] ?? s}
+                        </SelectItem>
                       ))}
-                    </Pie>
-                    <Tooltip contentStyle={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="flex flex-1 flex-col gap-1.5">
-                  {data.by_status.map((row) => (
-                    <div key={row.status} className="flex items-center justify-between text-sm">
-                      <span className="flex items-center gap-2">
-                        <span className="size-2.5 rounded-full" style={{ background: STATUS_COLORS[row.status] ?? "#7a7f87" }} />
-                        {row.label}
-                      </span>
-                      <span className="tabular-nums font-medium">{row.count}</span>
-                    </div>
-                  ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              {tab === "payments" && employees.length > 0 && (
+                <div className="grid gap-1.5">
+                  <span className="text-xs font-medium text-[var(--muted-foreground)]">Принял</span>
+                  <Select value={fEmployee} onValueChange={setFEmployee}>
+                    <SelectTrigger className="h-10"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Все сотрудники</SelectItem>
+                      {employees.map((e) => <SelectItem key={e} value={e}>{e}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              <label className="grid gap-1.5">
+                <span className="text-xs font-medium text-[var(--muted-foreground)]">Номер документа</span>
+                <Input placeholder="Например, 54" inputMode="numeric"
+                  value={fDoc} onChange={(e) => setFDoc(e.target.value)} />
+              </label>
+              <div className="grid gap-1.5">
+                <span className="text-xs font-medium text-[var(--muted-foreground)]">Сумма, ₸</span>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <Input placeholder="От" inputMode="numeric" value={fMin}
+                    onChange={(e) => setFMin(e.target.value.replace(/\D/g, ""))} />
+                  <Input placeholder="До" inputMode="numeric" value={fMax}
+                    onChange={(e) => setFMax(e.target.value.replace(/\D/g, ""))} />
                 </div>
               </div>
-            )}
-          </CardContent>
-        </Card>
+            </div>
+          </div>
 
-        {/* топ товаров — финансовый, под reports.view */}
-        {canMoney && (
-        <Card>
-          <CardHeader><CardTitle className="text-base">Топ товаров</CardTitle></CardHeader>
-          <CardContent>
-            {data.top_products.length === 0 ? (
-              <p className="py-10 text-center text-sm text-[var(--muted-foreground)]">Нет данных.</p>
-            ) : (
-              <div className="flex flex-col gap-3">
-                {data.top_products.map((p) => (
-                  <div key={p.product} className="flex flex-col gap-1">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="font-medium">{p.label}</span>
-                      <span className="tabular-nums">{formatMoney(p.amount)} ₸ · {p.qty} меш.</span>
-                    </div>
-                    <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--muted)]">
-                      <div className="h-full rounded-full bg-[var(--ring)]"
-                        style={{ width: `${(Number(p.amount) / maxProductAmount) * 100}%` }} />
-                    </div>
-                  </div>
+          <div className="flex flex-wrap items-end justify-between gap-3 border-b px-4 py-4 sm:px-5">
+            <div>
+              <h3 className="font-semibold">{activeTitle}</h3>
+              <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">{activeCaption}</p>
+            </div>
+            <span className="text-sm text-[var(--muted-foreground)]">
+              {shownCount > 0 && <><span className="tabular-nums font-semibold text-[var(--foreground)]">{formatMoney(String(shownTotal))} ₸</span> · итог по списку</>}
+            </span>
+          </div>
+
+          {tab === "sales" && (
+            <Table>
+              <THead>
+                <TR>
+                  <TH>№ документа</TH>
+                  <SortableHeader label="Дата" sortKey="date" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                  <TH>Товар</TH>
+                  <TH className="text-right">Мешков</TH>
+                  <SortableHeader label="Сумма" sortKey="amount" activeKey={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
+                  <TH className="text-right">Оплачено</TH>
+                  <TH>Способ оплаты</TH>
+                  <TH>Статус</TH>
+                </TR>
+              </THead>
+              <TBody>
+                {sales.length === 0 ? <EmptyRow colSpan={8} filtered={hasFilters} onReset={resetFilters} /> : sales.map((r) => (
+                  <TR key={r.id}>
+                    <TD><DocLink orderId={r.id}>№ {r.id}</DocLink></TD>
+                    <TD className="tabular-nums text-[var(--muted-foreground)]">{formatDateTime(r.date)}</TD>
+                    <TD>
+                      <span className="block max-w-70 truncate" title={itemsText(r.items)}>
+                        {r.items.length ? itemsText(r.items) : "—"}
+                      </span>
+                    </TD>
+                    <TD className="text-right tabular-nums">{r.bags || "—"}</TD>
+                    <TD className="text-right tabular-nums font-medium">{formatMoney(r.amount)} ₸</TD>
+                    <TD className="text-right tabular-nums"><Money value={r.paid} muted /></TD>
+                    <TD>{SETTLEMENT_LABELS[r.settlement_intent] ?? r.settlement_intent}</TD>
+                    <TD><StatusBadge status={r.status} dot /></TD>
+                  </TR>
                 ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-        )}
+              </TBody>
+            </Table>
+          )}
 
-        {/* последние заказы */}
-        <Card>
-          <CardHeader><CardTitle className="text-base">Последние заказы</CardTitle></CardHeader>
-          <CardContent>
-            {data.recent_orders.length === 0 ? (
-              <p className="py-10 text-center text-sm text-[var(--muted-foreground)]">Заказов нет.</p>
-            ) : (
-              <Table>
-                <THead><TR><TH>№</TH><TH>Статус</TH><TH className="text-right">Сумма</TH><TH></TH></TR></THead>
-                <TBody>
-                  {data.recent_orders.map((o) => (
-                    <TR key={o.id}>
-                      <TD className="font-medium">#{o.id}</TD>
-                      <TD><StatusBadge status={o.status} dot /></TD>
-                      <TD className="text-right tabular-nums">{formatMoney(o.total_amount)} ₸</TD>
-                      <TD>
-                        <div className="flex justify-end">
-                          <Link href={`/orders/${o.id}`}><Button size="sm" variant="ghost"><ArrowUpRight className="size-4" /></Button></Link>
-                        </div>
-                      </TD>
-                    </TR>
-                  ))}
-                </TBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+          {tab === "payments" && (
+            <Table>
+              <THead>
+                <TR>
+                  <TH>№ документа</TH>
+                  <SortableHeader label="Дата" sortKey="date" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                  <SortableHeader label="Сумма" sortKey="amount" activeKey={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
+                  <TH>Способ оплаты</TH>
+                  <TH>Принял</TH>
+                  <TH>Статус</TH>
+                </TR>
+              </THead>
+              <TBody>
+                {payments.length === 0 ? <EmptyRow colSpan={6} filtered={hasFilters} onReset={resetFilters} /> : payments.map((r) => (
+                  <TR key={r.id}>
+                    <TD><DocLink orderId={r.order_id}>№ {r.order_id}</DocLink></TD>
+                    <TD className="tabular-nums text-[var(--muted-foreground)]">{formatDateTime(r.date)}</TD>
+                    <TD className="text-right tabular-nums font-medium">{formatMoney(r.amount)} ₸</TD>
+                    <TD>{PAYMENT_METHOD_LABELS[r.method] ?? r.method}</TD>
+                    <TD>{r.employee ?? "—"}</TD>
+                    <TD>
+                      <Badge tone={PAYMENT_STAGE_TONE[r.status] ?? "muted"} dot>
+                        {PAYMENT_STAGE_LABELS[r.status] ?? r.status}
+                      </Badge>
+                    </TD>
+                  </TR>
+                ))}
+              </TBody>
+            </Table>
+          )}
+
+          {tab === "debts" && (
+            <Table>
+              <THead>
+                <TR>
+                  <TH>№ документа</TH>
+                  <SortableHeader label="Дата" sortKey="date" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                  <TH className="text-right">Мешков</TH>
+                  <SortableHeader label="Сумма" sortKey="amount" activeKey={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
+                  <TH className="text-right">Оплачено</TH>
+                  <TH className="text-right">Остаток</TH>
+                </TR>
+              </THead>
+              <TBody>
+                {debts.length === 0 ? <EmptyRow colSpan={6} filtered={hasFilters} onReset={resetFilters} /> : debts.map((r) => (
+                  <TR key={r.id}>
+                    <TD><DocLink orderId={r.id}>№ {r.id}</DocLink></TD>
+                    <TD className="tabular-nums text-[var(--muted-foreground)]">{formatDateTime(r.date)}</TD>
+                    <TD className="text-right tabular-nums">{r.bags || "—"}</TD>
+                    <TD className="text-right tabular-nums">{formatMoney(r.amount)} ₸</TD>
+                    <TD className="text-right tabular-nums text-[var(--success)]"><Money value={r.paid} muted /></TD>
+                    <TD className="text-right tabular-nums font-semibold text-[var(--destructive)]">
+                      {formatMoney(r.remaining)} ₸
+                    </TD>
+                  </TR>
+                ))}
+              </TBody>
+            </Table>
+          )}
+
+          {shownCount > 0 && (
+            <div className="flex items-center justify-between border-t bg-[var(--muted)]/20 px-4 py-3 text-[13px] sm:px-5">
+              <span className="text-[var(--muted-foreground)]">Документов: {shownCount}</span>
+              <span className="tabular-nums font-semibold">
+                {tab === "debts" ? "Остаток" : "Итого"}: {formatMoney(String(shownTotal))} ₸
+              </span>
+            </div>
+          )}
+          </>}
+        </CardContent>
+      </Card>
     </AppShell>
   );
 }

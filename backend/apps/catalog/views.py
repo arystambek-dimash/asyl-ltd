@@ -4,6 +4,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.clients.querysets import visible_clients
 from .models import Product, ClientPrice
 from .serializers import ProductSerializer
 from .services import archive_product, restore_product
@@ -54,7 +55,10 @@ class ClientPricesView(APIView):
 
     def get(self, request):
         client_id = request.query_params.get("client")
-        qs = ClientPrice.objects.all()
+        # Договорные цены относятся к клиентским данным: id чужого клиента
+        # не должен обходить разграничение по отделам.
+        qs = ClientPrice.objects.filter(
+            client__in=visible_clients(request.user, "orders.create"))
         if client_id:
             qs = qs.filter(client_id=client_id)
         return Response({str(cp.product_id): str(cp.price) for cp in qs})

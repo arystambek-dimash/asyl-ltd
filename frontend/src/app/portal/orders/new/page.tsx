@@ -9,21 +9,30 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
-import type { Store } from "@/lib/types";
-import { Trash2, Plus, Info } from "lucide-react";
+import type { PortalPaymentMethod, Store } from "@/lib/types";
+import { Banknote, FileText, HandCoins, Info, Plus, QrCode, Trash2 } from "lucide-react";
 
-interface PortalProduct { id: number; label: string; weight_kg: string; available_bags: number; }
+interface PortalProduct {
+  id: number; label: string; weight_kg: string; available_bags: number;
+  price: string | null;
+}
 
 export default function PortalNewOrderPage() {
   const router = useRouter();
   const { data: products } = useApi<PortalProduct[]>("/portal/catalog/");
   const { data: stores } = useApi<Store[]>("/portal/stores/");
   const [rows, setRows] = useState([{ product: "", quantity: "" }]);
-  const [intent, setIntent] = useState<"debt" | "instant">("debt");
+  const [paymentMethod, setPaymentMethod] = useState<PortalPaymentMethod>("debt");
   const [transport, setTransport] = useState<"truck" | "train">("truck");
   const [store, setStore] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const estimatedTotal = rows.reduce((sum, row) => {
+    const product = products?.find((item) => String(item.id) === row.product);
+    return sum + Number(product?.price ?? 0) * Number(row.quantity || 0);
+  }, 0);
+  const hasUnpricedItems = rows.some((row) => row.product
+    && !products?.find((item) => String(item.id) === row.product)?.price);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError("");
@@ -32,7 +41,7 @@ export default function PortalNewOrderPage() {
         .map((r) => ({ product: Number(r.product), quantity: Number(r.quantity) }));
       if (!items.length) throw new Error("empty");
       await api.post("/portal/orders/", {
-        items, settlement_intent: intent, transport_type: transport,
+        items, payment_method: paymentMethod, transport_type: transport,
         store: store ? Number(store) : null,
       });
       router.push("/portal/orders");
@@ -57,7 +66,7 @@ export default function PortalNewOrderPage() {
                     <option key={p.id} value={p.id} disabled={p.available_bags <= 0}>
                       {p.label}
                       {p.available_bags > 0
-                        ? ` · в наличии ${p.available_bags} меш.`
+                        ? ` · ${p.price ? `${Number(p.price).toLocaleString("ru-RU")} ₸ · ` : ""}в наличии ${p.available_bags} меш.`
                         : " — нет в наличии"}
                     </option>
                   ))}
@@ -98,28 +107,50 @@ export default function PortalNewOrderPage() {
               </div>
             </div>
             <div className="border-t pt-4">
-              <Label className="mb-2 block">Способ расчёта</Label>
+              <Label className="mb-2 block">Способ оплаты</Label>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {([
-                  { v: "debt", title: "В долг", desc: "Оплата после отгрузки, поэтапно или полностью" },
-                  { v: "instant", title: "Моментальная оплата", desc: "Оплата через банк после отгрузки" },
+                  { v: "invoice", title: "Счет на оплату", desc: "Получить счет для безналичной оплаты", icon: FileText },
+                  { v: "kaspi", title: "Каспи", desc: "Оплатить через Kaspi после отгрузки", icon: QrCode },
+                  { v: "cash", title: "Наличными", desc: "Передать оплату сотруднику", icon: Banknote },
+                  { v: "debt", title: "В долг", desc: "Оформить заказ с отсрочкой оплаты", icon: HandCoins },
                 ] as const).map((opt) => (
-                  <button key={opt.v} type="button" onClick={() => setIntent(opt.v)}
+                  <button key={opt.v} type="button" onClick={() => setPaymentMethod(opt.v)}
+                    aria-pressed={paymentMethod === opt.v}
                     className={
-                      "flex flex-col items-start gap-0.5 rounded-lg border p-3 text-left transition-colors " +
-                      (intent === opt.v
-                        ? "border-[var(--primary)] bg-[var(--primary)]/5"
-                        : "hover:bg-[var(--muted)]/40")
+                      "group flex items-start gap-3 rounded-xl border p-3 text-left transition-all " +
+                      (paymentMethod === opt.v
+                        ? "border-[var(--primary)] bg-[var(--primary)]/5 shadow-sm ring-1 ring-[var(--primary)]/15"
+                        : "hover:border-[var(--primary)]/35 hover:bg-[var(--muted)]/35")
                     }>
-                    <span className="text-sm font-medium">{opt.title}</span>
-                    <span className="text-xs text-[var(--muted-foreground)]">{opt.desc}</span>
+                    <span className={
+                      "grid size-9 shrink-0 place-items-center rounded-lg transition-colors " +
+                      (paymentMethod === opt.v
+                        ? "bg-[var(--primary)] text-white"
+                        : "bg-[var(--muted)] text-[var(--muted-foreground)] group-hover:text-[var(--primary)]")
+                    }>
+                      <opt.icon className="size-4" />
+                    </span>
+                    <span className="flex flex-col gap-0.5">
+                      <span className="text-sm font-semibold">{opt.title}</span>
+                      <span className="text-xs leading-4 text-[var(--muted-foreground)]">{opt.desc}</span>
+                    </span>
                   </button>
                 ))}
               </div>
             </div>
             <div className="flex items-start gap-2 rounded-lg border bg-[var(--muted)]/30 px-3 py-2.5 text-xs text-[var(--muted-foreground)]">
               <Info className="mt-0.5 size-3.5 shrink-0" />
-              Стоимость рассчитает оператор при подтверждении заказа — по вашим ценам.
+              <span>
+                {hasUnpricedItems
+                  ? "Для товаров без закреплённой цены стоимость подтвердит менеджер."
+                  : "Стоимость рассчитана по вашему личному прайс-листу."}
+                {estimatedTotal > 0 && (
+                  <b className="ml-1 text-[var(--foreground)]">
+                    Предварительно: {estimatedTotal.toLocaleString("ru-RU")} ₸
+                  </b>
+                )}
+              </span>
             </div>
             {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
             <Button type="submit" disabled={busy}>{busy ? "Отправка…" : "Отправить заказ"}</Button>

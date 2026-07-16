@@ -20,3 +20,14 @@ def test_create_store_via_api(manager):
     assert r.status_code == 201
     assert r.data["name"] == "Магазин №1"
     assert r.data["payment_days"] == [5, 20]
+
+
+def test_cannot_create_store_for_client_outside_scope(manager):
+    foreign = Client.objects.create(
+        first_name="Field", last_name="Client", phone="x", department="field")
+
+    response = _api(manager).post("/api/stores/", {
+        "client": foreign.id, "name": "Чужой магазин",
+    }, format="json")
+
+    assert response.status_code == 400

@@ -1,7 +1,7 @@
 "use client";
 import { useMemo } from "react";
 import { useApi } from "@/lib/use-api";
-import { isFinancialOrderStatus } from "@/lib/constants";
+import { isFinancialOrderStatus, orderStatusGroup } from "@/lib/constants";
 import type { EventLog, Order, Payment, StockItem } from "@/lib/types";
 
 export interface ClientDebt {
@@ -46,7 +46,9 @@ export function useDashboardMetrics() {
 
   // Отгрузки по дням за 14 дней (мешки) + «сегодня/вчера» для дельты.
   const { shippedByDay, shippedToday, shippedYesterday, shippedTodayOrders, shippedTotal } = useMemo(() => {
-    const bagsOf = (orderId: number) => list.find((o) => o.id === orderId)?.bags_loaded ?? 0;
+    // Events reference orders by id. A map keeps aggregation O(orders + events)
+    // instead of scanning the full order list for every shipment event.
+    const bagsByOrder = new Map(list.map((order) => [order.id, order.bags_loaded ?? 0]));
     const days = 14;
     const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - (days - 1));
     const slots: Record<string, { label: string; bags: number; orders: number }> = {};
@@ -57,7 +59,10 @@ export function useDashboardMetrics() {
     (events ?? []).forEach((e) => {
       if (e.event_type !== "shipment" || !e.order) return;
       const k = dayKey(new Date(e.created_at));
-      if (slots[k]) { slots[k].bags += bagsOf(e.order); slots[k].orders += 1; }
+      if (slots[k]) {
+        slots[k].bags += bagsByOrder.get(e.order) ?? 0;
+        slots[k].orders += 1;
+      }
     });
     const arr = Object.values(slots);
     const today = arr[arr.length - 1];
@@ -100,12 +105,12 @@ export function useDashboardMetrics() {
     };
   }, [list]);
 
-  // Заказы в работе по статусам (воронка текущего дня).
+  // Единая пользовательская воронка: четыре статуса вместо внутренних этапов.
   const pipeline = useMemo(() => {
-    const active = ["pending", "confirmed", "arrived", "loading", "loaded"] as const;
-    return active.map((status) => ({
+    const publicStatuses = ["pending", "loading", "shipped", "cancelled"] as const;
+    return publicStatuses.map((status) => ({
       status,
-      count: list.filter((o) => o.status === status).length,
+      count: list.filter((o) => orderStatusGroup(o.status) === status).length,
     }));
   }, [list]);
 

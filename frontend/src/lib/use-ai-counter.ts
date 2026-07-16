@@ -19,6 +19,9 @@ export interface AiStatus {
   session_order_id?: number;
   session_camera?: string;
   session_started_at?: string;
+  session_started_by_id?: number | null;
+  session_started_by_name?: string;
+  can_stop?: boolean;
   code?: string;
   /** Имя аннотированного потока в go2rtc/MediaMTX (cam2ai). */
   stream?: string;

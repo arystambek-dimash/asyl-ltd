@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Button } from "@/components/ui/button";
@@ -11,24 +12,41 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { cn, formatMoney } from "@/lib/utils";
+import { cn, formatDateTime, formatMoney } from "@/lib/utils";
 import {
-  ArrowLeft, Cctv, Check, ChevronRight, LogOut, Minus, Package, Phone, Plus,
-  RotateCcw, Scale, Truck, User, VideoOff,
+  ArrowLeft, Cctv, Check, ChevronRight, Layers3, LogOut, Minus, Package, Phone, Play,
+  Plus, RotateCcw, Scale, Settings2, TrainFront, Truck, User, VideoOff,
 } from "lucide-react";
 import type { Order } from "@/lib/types";
 import { useAiCounter, type AiCounter } from "@/lib/use-ai-counter";
 
-const QUEUE_STATUSES = ["confirmed", "arrived", "loading", "loaded"];
-const POLL_MS = 10_000; // очередь и счётчик обновляются сами — пост «живой»
+const POLL_MS = 10_000; // борд и счётчики обновляются сами — пост «живой»
 
-// Этапы поста и их цвета: ожидает въезда → погрузка → готов к выезду.
-const STAGES = {
-  confirmed: { label: "Ожидает въезда", color: "var(--ring)" },
-  arrived: { label: "Погрузка", color: "var(--warning)" },
-  loading: { label: "Погрузка", color: "var(--warning)" },
-  loaded: { label: "Готов к выезду", color: "var(--success)" },
-} as const;
+/* ── Этапы единого поста: заказ едет по колонкам слева направо ──────────── */
+const BOARD_STAGES = [
+  { key: "waiting", label: "Ожидание въезда", color: "var(--ring)", statuses: ["confirmed"],
+    hint: "Подтверждённые заказы", image: null, tint: "#f3f7ff" },
+  { key: "loading", label: "Загружается", color: "var(--warning)", statuses: ["arrived", "loading"],
+    hint: "Идёт погрузка", image: "/shipping/loading-forklift.jpg", tint: "#fffbf0" },
+  { key: "loaded", label: "Отгружен", color: "var(--success)", statuses: ["loaded"],
+    hint: "Готов к выезду", image: "/shipping/loaded-truck.jpg", tint: "#f4fbf5" },
+  { key: "done", label: "Завершён", color: "var(--muted-foreground)", statuses: ["shipped"],
+    hint: "Выехали сегодня", image: "/shipping/completed-clipboard.jpg", tint: "#f7f9fc" },
+] as const;
+
+const ACTIVE_STATUSES = ["confirmed", "arrived", "loading", "loaded"];
+
+function orderedBags(o: Order): number {
+  return o.items.reduce((s, it) => s + Number(it.quantity), 0);
+}
+
+function isToday(iso: string | null | undefined): boolean {
+  if (!iso) return false;
+  const d = new Date(iso);
+  const now = new Date();
+  return d.getFullYear() === now.getFullYear()
+    && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+}
 
 const STEPS = [
   { key: "arrive", label: "Прибытие", icon: Scale },
@@ -142,8 +160,12 @@ function PostCamera({ cameras, zoneKeywords, preferId, ai }: {
   );
 }
 
-/** Крупный счётчик мешков под палец: −/+1/+5, автосохранение с дебаунсом. */
-function BagCounter({ order, onSaved }: { order: Order; onSaved: () => void }) {
+/** Крупный счётчик мешков под палец: −/+1/+5, автосохранение с дебаунсом.
+ * Куда писать счёт (машина: /load/, поезд: train count) решает onSave. */
+function BagCounter({ order, onSave }: {
+  order: Order;
+  onSave: (bags: number) => Promise<unknown>;
+}) {
   const [bags, setBags] = useState(order.bags_loaded ?? 0);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -163,12 +185,11 @@ function BagCounter({ order, onSaved }: { order: Order; onSaved: () => void }) {
   const save = useCallback(async (value: number) => {
     setSaving(true); setError("");
     try {
-      await api.post(`/orders/${order.id}/load/`, { bags: value });
+      await onSave(value);
       lastSaved.current = value;
-      onSaved();
     } catch (e) { setError(apiError(e)); }
     finally { setSaving(false); }
-  }, [order.id, onSaved]);
+  }, [onSave]);
 
   function change(delta: number) {
     setBags((prev) => {
@@ -179,7 +200,7 @@ function BagCounter({ order, onSaved }: { order: Order; onSaved: () => void }) {
     });
   }
 
-  const ordered = order.items.reduce((s, it) => s + Number(it.quantity), 0);
+  const ordered = orderedBags(order);
   const pct = ordered > 0 ? Math.min(100, Math.round((bags / ordered) * 100)) : 0;
 
   return (
@@ -286,10 +307,16 @@ function AiCounterPanel({ ai, accepted, onAccept }: {
           <span className={cn("size-1.5 rounded-full bg-emerald-500", !warming && "animate-pulse")} />
           AI-подсчёт{warming && " · запуск модели…"}
         </span>
-        <button onClick={() => ai.stop().catch(() => {})} disabled={ai.busy}
-          className="text-xs text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]">
-          Выключить
-        </button>
+        {st.can_stop ? (
+          <button onClick={() => ai.stop().catch(() => {})} disabled={ai.busy}
+            className="text-xs text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]">
+            Выключить
+          </button>
+        ) : (
+          <span className="text-xs text-[var(--muted-foreground)]" title="Остановить может автор или администратор">
+            запустил: {st.session_started_by_name || "другой сотрудник"}
+          </span>
+        )}
       </div>
 
       <div className="mt-1.5 flex items-baseline gap-2">
@@ -320,66 +347,13 @@ function AiCounterPanel({ ai, accepted, onAccept }: {
           onClick={() => onAccept(total)}>
           <Check className="size-4" /> Принять {total}
         </Button>
-        <Button variant="outline" className="h-11 rounded-lg px-3" disabled={ai.busy}
+        <Button variant="outline" className="h-11 rounded-lg px-3" disabled={ai.busy || !st.can_stop}
           onClick={() => ai.reset().catch(() => {})} aria-label="Обнулить AI-счётчик"
           title="Начать счёт заново">
           <RotateCcw className="size-4" />
         </Button>
       </div>
       {ai.error && <p className="mt-2 text-sm text-[var(--destructive)]">{ai.error}</p>}
-    </div>
-  );
-}
-
-/** Центральный список машин: «ожидает въезда» / «в работе». Клик — открыть погрузку. */
-function OrderList({ title, hint, orders, onOpen, accent, empty, showCamera }: {
-  title: string;
-  hint: string;
-  orders: Order[];
-  onOpen: (id: number) => void;
-  accent: string;
-  empty?: string;
-  showCamera?: boolean;
-}) {
-  return (
-    <div className="rounded-2xl border bg-[var(--card)] shadow-card">
-      <div className="flex items-center justify-between gap-2 border-b px-5 py-3.5">
-        <div>
-          <div className="flex items-center gap-2 text-base font-semibold">
-            <span className="size-2 rounded-full" style={{ background: accent }} />
-            {title}
-          </div>
-          <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">{hint}</p>
-        </div>
-        <span className="rounded-full bg-[var(--muted)] px-2.5 py-0.5 text-sm font-semibold tabular-nums">
-          {orders.length}
-        </span>
-      </div>
-      {orders.length === 0 ? (
-        <p className="px-5 py-8 text-center text-sm text-[var(--muted-foreground)]">{empty}</p>
-      ) : (
-        <div className="divide-y">
-          {orders.map((o) => {
-            const st = STAGES[o.status as keyof typeof STAGES];
-            return (
-              <button key={o.id} onClick={() => onOpen(o.id)}
-                className="flex w-full items-center gap-4 px-5 py-4 text-left transition-colors hover:bg-[var(--muted)]/40">
-                <PlateBadge value={o.truck_number} size="lg" />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-semibold">{o.client_name || "—"}</div>
-                  <div className="mt-0.5 truncate text-xs text-[var(--muted-foreground)]">
-                    Заказ #{o.id} · {o.items.reduce((s, it) => s + Number(it.quantity), 0)} меш.
-                    {showCamera && o.loading_camera ? " · камера занята" : ""}
-                  </div>
-                </div>
-                <span className="hidden shrink-0 text-xs font-medium sm:inline"
-                  style={{ color: st?.color }}>{st?.label}</span>
-                <ChevronRight className="size-5 shrink-0 text-[var(--muted-foreground)]" />
-              </button>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }
@@ -421,6 +395,136 @@ function CameraPicker({ cameras, activeSrc, occupied, onPick, busy }: {
   );
 }
 
+/* ── Лайв-борд: заказы едут по этапам слева направо ─────────────────────── */
+function TransportBadge({ order, size = "md" }: { order: Order; size?: "md" | "lg" }) {
+  if (order.transport_type === "train") {
+    return (
+      <span className={cn(
+        "flex items-center gap-1.5 rounded-md border bg-[var(--muted)] font-semibold",
+        size === "lg" ? "px-3 py-1.5 text-sm" : "px-2 py-1 text-xs")}>
+        <TrainFront className={size === "lg" ? "size-4" : "size-3.5"} /> Поезд
+      </span>
+    );
+  }
+  return <PlateBadge value={order.truck_number} size={size === "lg" ? "lg" : "md"} />;
+}
+
+function BoardCard({ order, stage, onOpen }: {
+  order: Order;
+  stage: (typeof BOARD_STAGES)[number];
+  onOpen?: (id: number) => void;
+}) {
+  const ordered = orderedBags(order);
+  const bags = order.bags_loaded ?? 0;
+  const pct = ordered > 0 ? Math.min(100, Math.round((bags / ordered) * 100)) : 0;
+  const clickable = !!onOpen;
+  const Comp = clickable ? "button" : "div";
+  return (
+    <Comp {...(clickable ? { type: "button" as const, onClick: () => onOpen!(order.id) } : {})}
+      className={cn(
+        "flex w-full flex-col gap-2 rounded-xl border bg-[var(--card)] p-3 text-left shadow-card",
+        clickable && "cursor-pointer transition-all hover:-translate-y-px hover:shadow-md")}>
+      <div className="flex items-center justify-between gap-2">
+        <TransportBadge order={order} />
+        <span className="text-xs font-semibold text-[var(--muted-foreground)]">#{order.id}</span>
+      </div>
+      <div className="min-w-0">
+        <div className="truncate text-sm font-semibold">{order.client_name || "—"}</div>
+        <div className="mt-0.5 text-xs tabular-nums text-[var(--muted-foreground)]">
+          {stage.key === "waiting" && `${ordered} меш. к погрузке`}
+          {stage.key === "loading" && `${bags} / ${ordered} меш.`}
+          {stage.key === "loaded" && `${bags} меш. · готов к выезду`}
+          {stage.key === "done" && (order.shipped_at
+            ? `выехал ${formatDateTime(order.shipped_at)}`
+            : `${bags} меш.`)}
+        </div>
+      </div>
+      {stage.key === "loading" && (
+        <div className="h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
+          <div className="h-full rounded-full transition-all"
+            style={{ width: `${pct}%`, background: pct >= 100 ? "var(--success)" : "var(--warning)" }} />
+        </div>
+      )}
+    </Comp>
+  );
+}
+
+function LiveBoard({ orders, onOpen }: {
+  orders: Order[];
+  onOpen: (id: number) => void;
+}) {
+  return (
+    <section>
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <span className="flex size-10 items-center justify-center rounded-xl border border-blue-100 bg-blue-50 text-blue-600 shadow-sm">
+          <Layers3 className="size-5" />
+        </span>
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-[20px] font-bold tracking-tight text-slate-800">Заказы на посту</h2>
+            <span className="relative flex size-2">
+              <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-50" />
+              <span className="relative size-2 rounded-full bg-emerald-500" />
+            </span>
+          </div>
+          <span className="text-[12px] text-slate-400">обновляется автоматически</span>
+        </div>
+        <button type="button" className="ml-auto flex h-10 items-center gap-2 rounded-xl border bg-white px-4 text-[13px] font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-900">
+          <Settings2 className="size-4" /> Настроить колонки
+        </button>
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {BOARD_STAGES.map((stage, i) => {
+          const rows = orders.filter((o) => (stage.statuses as readonly string[]).includes(o.status));
+          const finished = stage.key === "done";
+          return (
+            <div key={stage.key} className="flex min-h-[350px] flex-col overflow-hidden rounded-[22px] border shadow-[0_10px_30px_rgba(45,62,94,0.04)]" style={{ background: stage.tint }}>
+              <div className="flex items-center gap-2.5 px-4 py-4">
+                <span className="flex size-7 items-center justify-center rounded-full bg-white/80 shadow-sm">
+                  <span className="size-2 rounded-full" style={{ background: stage.color }} />
+                </span>
+                <span className="text-[15px] font-bold text-slate-700">{stage.label}</span>
+                <span className="ml-auto rounded-full border border-white/80 bg-white/85 px-2.5 py-0.5 text-xs font-semibold tabular-nums text-slate-600 shadow-sm">
+                  {rows.length}
+                </span>
+                {i < BOARD_STAGES.length - 1 && (
+                  <ChevronRight className="hidden size-4 text-[var(--muted-foreground)]/50 xl:block" />
+                )}
+              </div>
+              <div className="flex flex-1 flex-col gap-2 px-3 pb-3">
+                {rows.length === 0 ? (
+                  <div className="flex flex-1 flex-col items-center justify-center rounded-2xl border border-white/80 bg-white/70 px-5 py-8 text-center shadow-sm">
+                    {stage.image ? (
+                      <div className="relative mb-4 size-32 overflow-hidden rounded-full">
+                        <Image src={stage.image} alt="" fill sizes="128px" className="object-cover" />
+                      </div>
+                    ) : (
+                      <span className="mb-4 flex size-20 items-center justify-center rounded-full bg-blue-50 text-blue-500">
+                        <Truck className="size-9" strokeWidth={1.6} />
+                      </span>
+                    )}
+                    <div className="text-[14px] font-semibold text-slate-600">{stage.hint}: пусто</div>
+                    <p className="mt-1 max-w-[210px] text-[12px] leading-relaxed text-slate-400">
+                      {stage.key === "loading" && "Здесь появятся заказы в процессе погрузки."}
+                      {stage.key === "loaded" && "Заказы, готовые к выезду со склада."}
+                      {stage.key === "done" && "Сегодня ещё нет завершённых отгрузок."}
+                      {stage.key === "waiting" && "Новые подтверждённые заказы появятся здесь."}
+                    </p>
+                  </div>
+                ) : rows.map((o) => (
+                  <BoardCard key={o.id} order={o} stage={stage}
+                    onOpen={finished ? undefined : onOpen} />
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/* ── Страница ───────────────────────────────────────────────────────────── */
 function ShippingPageInner() {
   const { me } = useAuth();
   const { data: orders, error: loadError, reload } = useApi<Order[]>("/orders/");
@@ -431,8 +535,6 @@ function ShippingPageInner() {
   const [error, setError] = useState("");
 
   // Инвентарь камер сам восстанавливается после сбоя MediaMTX/Tailscale.
-  // Последний успешный список остаётся в useApi, пока очередной запрос падает;
-  // CameraStream самостоятельно получает и обновляет cookie видеопотока.
   useEffect(() => {
     const refreshVisible = () => {
       if (!document.hidden) void reloadCameras();
@@ -447,33 +549,30 @@ function ShippingPageInner() {
     };
   }, [reloadCameras]);
 
-  // Пост — «живой» экран: очередь и счётчики обновляются сами.
+  // Пост — «живой» экран: борд и счётчики обновляются сами.
   useEffect(() => {
     const t = setInterval(() => {
-      if (!document.hidden) reload();
+      if (!document.hidden) void reload();
     }, POLL_MS);
     return () => clearInterval(t);
   }, [reload]);
 
-  // Заказы поста, стабильный порядок по номеру.
-  const queue = (orders ?? [])
-    .filter((o) => o.transport_type !== "train" && QUEUE_STATUSES.includes(o.status))
+  // Единый пост: машины и поезда вместе. «Завершён» — только сегодняшние выезды.
+  const board = (orders ?? [])
+    .filter((o) => ACTIVE_STATUSES.includes(o.status)
+      || (o.status === "shipped" && isToday(o.shipped_at ?? o.created_at)))
     .sort((a, b) => a.id - b.id);
-  // Ожидают въезда (по номеру машины найдут заказ) и уже в работе.
-  const waiting = queue.filter((o) => o.status === "confirmed");
-  const working = queue.filter((o) => o.status !== "confirmed");
-  // Выбранный заказ — только явно открытый оператором; иначе центральный список.
-  const selected = selectedId != null ? queue.find((o) => o.id === selectedId) ?? null : null;
+  const active = board.filter((o) => ACTIVE_STATUSES.includes(o.status));
+  const selected = selectedId != null ? active.find((o) => o.id === selectedId) ?? null : null;
+  const isTrain = selected?.transport_type === "train";
 
   const canArrive = can(me, "shipping.arrive");
   const canLoad = can(me, "shipping.load");
   const canShip = can(me, "shipping.ship");
+  const canTrain = can(me, "train.load");
 
-  // Пост работает только с играбельными камерами; locked-устройства — тема
-  // дашборда, контролёру они не нужны.
+  // Пост работает только с играбельными камерами; locked — тема дашборда.
   const playable = useMemo(() => playableCameras(cameras), [cameras]);
-  // Камера погрузки — та, что оператор занял под этот заказ (loading_camera).
-  // Пока не выбрана — дефолт: камера зоны «загрузки».
   const defaultLoadCam = useMemo(
     () => playable.find((c) => c.zone.toLowerCase().includes("загруз")) ?? playable[0] ?? null,
     [playable],
@@ -485,11 +584,10 @@ function ShippingPageInner() {
     return chosen ?? defaultLoadCam;
   }, [playable, selected?.loading_camera, defaultLoadCam]);
 
-  const isLoadStep = !!selected
-    && (selected.status === "arrived" || selected.status === "loading") && canLoad;
+  const isLoadStep = !!selected && canLoad
+    && (isTrain ? selected.status === "loading"
+      : selected.status === "arrived" || selected.status === "loading");
   const ai = useAiCounter(aiCam?.src ?? null, selected?.id ?? null, isLoadStep);
-  // Плеер переключаем на аннотированный поток, только когда модель в эфире
-  // (на прогреве поток ещё 404 — держим обычную картинку).
   const aiLive = ai.running && ai.status?.status === "онлайн";
 
   async function act(fn: () => Promise<unknown>) {
@@ -503,6 +601,13 @@ function ShippingPageInner() {
   const assignCamera = (camSrc: string) =>
     act(() => api.post(`/orders/${selected!.id}/loading-camera/`, { camera: camSrc }));
 
+  // Куда пишется счёт мешков: машина — /load/, поезд — train count.
+  const saveBags = useCallback((order: Order) => (bags: number) =>
+    order.transport_type === "train"
+      ? api.post(`/orders/${order.id}/train/`, { action: "count", bags })
+      : api.post(`/orders/${order.id}/load/`, { bags }),
+  []);
+
   const openOrder = (id: number) => { setSelectedId(id); setWeighIn(""); setError(""); };
 
   return (
@@ -510,183 +615,202 @@ function ShippingPageInner() {
       {loadError && !orders ? (
         <ErrorAlert message={loadError} onRetry={reload} />
       ) : !selected ? (
-        /* ── Пустой экран: центральный список машин ─────────────────────── */
-        <div className="mx-auto flex max-w-3xl flex-col gap-6 py-4">
-          {queue.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed py-20 text-center">
-              <span className="flex size-14 items-center justify-center rounded-2xl bg-[var(--muted)]">
-                <Truck className="size-7 text-[var(--muted-foreground)]" />
-              </span>
-              <div className="text-base font-semibold">Пост свободен</div>
-              <p className="max-w-sm text-sm text-[var(--muted-foreground)]">
-                Как только машина заедет на пост, её заказ появится здесь.
-                Откройте заказ, чтобы начать погрузку.
-              </p>
-            </div>
-          ) : (
-            <>
-              <OrderList title="Ожидает въезда" hint="Выберите машину, чтобы открыть погрузку"
-                orders={waiting} onOpen={openOrder} accent="var(--ring)" empty="Нет машин на въезде." />
-              {working.length > 0 && (
-                <OrderList title="В работе" hint="Погрузки, открытые на постах"
-                  orders={working} onOpen={openOrder} accent="var(--warning)" showCamera />
-              )}
-            </>
-          )}
+        <div className="flex flex-col gap-6">
+          {/* Лайв-статус заказов по этапам */}
+          <LiveBoard orders={board} onOpen={openOrder} />
         </div>
       ) : (
         <div className="flex flex-col gap-4">
-          {/* назад к списку */}
+          {/* назад к посту */}
           <button onClick={() => setSelectedId(null)}
             className="flex w-fit items-center gap-1.5 text-sm font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
-            <ArrowLeft className="size-4" /> К списку машин
+            <ArrowLeft className="size-4" /> К посту
           </button>
 
-          {/* Рабочая зона выбранной машины */}
-          {selected && (
-            <div className="overflow-hidden rounded-2xl border bg-[var(--card)] shadow-card">
-              {/* шапка: номер как госзнак + этапы */}
-              <div className="flex flex-wrap items-center justify-between gap-4 border-b px-5 py-4">
-                <div className="flex flex-wrap items-center gap-4">
-                  <PlateBadge value={selected.truck_number} size="lg" />
-                  <div className="leading-tight">
-                    <div className="flex items-center gap-1.5 text-sm font-semibold">
-                      <User className="size-3.5 text-[var(--muted-foreground)]" />
-                      {selected.client_name || "—"}
-                    </div>
-                    {selected.client_phone && (
-                      <a href={`tel:${selected.client_phone}`}
-                        className="mt-0.5 flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
-                        <Phone className="size-3" /> {selected.client_phone}
-                      </a>
-                    )}
+          {/* Рабочая зона выбранного заказа */}
+          <div className="overflow-hidden rounded-2xl border bg-[var(--card)] shadow-card">
+            {/* шапка: номер как госзнак (или поезд) + этапы */}
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b px-5 py-4">
+              <div className="flex flex-wrap items-center gap-4">
+                <TransportBadge order={selected} size="lg" />
+                <div className="leading-tight">
+                  <div className="flex items-center gap-1.5 text-sm font-semibold">
+                    <User className="size-3.5 text-[var(--muted-foreground)]" />
+                    {selected.client_name || "—"}
                   </div>
+                  {selected.client_phone && (
+                    <a href={`tel:${selected.client_phone}`}
+                      className="mt-0.5 flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
+                      <Phone className="size-3" /> {selected.client_phone}
+                    </a>
+                  )}
                 </div>
-                <StageTrack status={selected.status} />
               </div>
+              {!isTrain && <StageTrack status={selected.status} />}
+            </div>
 
-              {/* груз и вес */}
-              <div className="flex flex-wrap items-center gap-2 border-b bg-[var(--muted)]/30 px-5 py-3">
-                {selected.items.map((it, i) => (
-                  <span key={i} className="flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm">
-                    <Package className="size-3.5 text-[var(--muted-foreground)]" />
-                    {it.product_label ?? "Товар"}
-                    <b className="tabular-nums">× {it.quantity}</b>
-                  </span>
-                ))}
-                {selected.weigh_in_kg && (
-                  <span className="flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm">
-                    <Scale className="size-3.5 text-[var(--muted-foreground)]" />
-                    На въезде <b className="tabular-nums">{formatMoney(selected.weigh_in_kg)} кг</b>
-                  </span>
+            {/* груз и вес */}
+            <div className="flex flex-wrap items-center gap-2 border-b bg-[var(--muted)]/30 px-5 py-3">
+              {selected.items.map((it, i) => (
+                <span key={i} className="flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm">
+                  <Package className="size-3.5 text-[var(--muted-foreground)]" />
+                  {it.product_label ?? "Товар"}
+                  <b className="tabular-nums">× {it.quantity}</b>
+                </span>
+              ))}
+              {selected.weigh_in_kg && (
+                <span className="flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm">
+                  <Scale className="size-3.5 text-[var(--muted-foreground)]" />
+                  На въезде <b className="tabular-nums">{formatMoney(selected.weigh_in_kg)} кг</b>
+                </span>
+              )}
+            </div>
+
+            {/* видео + действие шага */}
+            <div className="grid gap-4 p-5 xl:grid-cols-[1.4fr_1fr]">
+              <PostCamera cameras={playable}
+                zoneKeywords={!isTrain && selected.status === "confirmed" ? ["вес", "въезд"] : ["загруз"]}
+                preferId={aiCam?.id ?? null}
+                ai={aiLive && aiCam
+                  ? { camId: aiCam.id, src: ai.status?.stream ?? `${aiCam.src}ai` }
+                  : null} />
+
+              <div className="flex flex-col justify-center gap-4 rounded-2xl bg-[var(--muted)]/40 p-5">
+                {/* ── Поезд: старт → счёт → финиш (без въезда и весов) ── */}
+                {isTrain && selected.status === "confirmed" && (
+                  canTrain ? (
+                    <>
+                      <div>
+                        <div className="text-base font-semibold">Загрузка поезда</div>
+                        <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
+                          Поезд грузится без въезда и взвешивания — начните загрузку.
+                        </p>
+                      </div>
+                      <Button className="h-14 rounded-xl text-base" disabled={busy}
+                        onClick={() => act(() => api.post(`/orders/${selected.id}/train/`, { action: "start" }))}>
+                        <Play className="size-5" /> Начать загрузку
+                      </Button>
+                    </>
+                  ) : <p className="text-sm text-[var(--muted-foreground)]">Ожидает старта загрузки.</p>
                 )}
-              </div>
+                {isTrain && selected.status === "loading" && (
+                  canTrain ? (
+                    <>
+                      {playable.length > 0 && (
+                        <CameraPicker cameras={playable} activeSrc={aiCam?.src ?? null}
+                          occupied={ai.occupied} onPick={assignCamera} busy={busy} />
+                      )}
+                      <BagCounter key={selected.id} order={selected} onSave={saveBags(selected)} />
+                      {aiCam && (
+                        <AiCounterPanel ai={ai} accepted={selected.bags_loaded ?? 0}
+                          onAccept={(bags) => act(() => saveBags(selected)(bags))} />
+                      )}
+                      <Button className="h-14 rounded-xl text-base" disabled={busy}
+                        onClick={() => act(async () => {
+                          await api.post(`/orders/${selected.id}/train/`, { action: "finish" });
+                          if (ai.running) await ai.stop().catch(() => {});
+                          setSelectedId(null);
+                        })}>
+                        <Check className="size-5" /> Завершить и отгрузить
+                      </Button>
+                    </>
+                  ) : <p className="text-sm text-[var(--muted-foreground)]">Идёт загрузка поезда.</p>
+                )}
 
-              {/* видео + действие шага */}
-              <div className="grid gap-4 p-5 xl:grid-cols-[1.4fr_1fr]">
-                <PostCamera cameras={playable}
-                  zoneKeywords={selected.status === "confirmed" ? ["вес", "въезд"] : ["загруз"]}
-                  preferId={aiCam?.id ?? null}
-                  ai={aiLive && aiCam
-                    ? { camId: aiCam.id, src: ai.status?.stream ?? `${aiCam.src}ai` }
-                    : null} />
-
-                <div className="flex flex-col justify-center gap-4 rounded-2xl bg-[var(--muted)]/40 p-5">
-                  {selected.status === "confirmed" && (
-                    canArrive ? (() => {
-                      // Вес спрашиваем только если в заказе есть товар с флагом.
-                      const needsWeighIn = selected.items.some((it) => it.ask_truck_weight);
-                      return (
-                        <>
-                          <div>
-                            <div className="text-base font-semibold">Приём машины</div>
-                            <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
-                              {needsWeighIn
-                                ? "Введите вес машины с весов и примите её."
-                                : "Вес рассчитается по мешкам — просто примите машину."}
-                            </p>
-                          </div>
-                          {needsWeighIn && (
-                            <div className="relative">
-                              <input type="number" inputMode="numeric" placeholder="0"
-                                value={weighIn} onChange={(e) => setWeighIn(e.target.value)}
-                                className="h-16 w-full rounded-xl border bg-[var(--card)] pl-5 pr-14 text-right text-3xl font-bold tabular-nums outline-none focus:ring-[3px] focus:ring-[var(--ring)]/40" />
-                              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-base text-[var(--muted-foreground)]">кг</span>
-                            </div>
-                          )}
-                          <Button className="h-14 rounded-xl text-base"
-                            disabled={busy || (needsWeighIn && !weighIn)}
-                            onClick={() => act(() => api.post(`/orders/${selected.id}/arrive/`,
-                              { weigh_in_kg: needsWeighIn ? weighIn : null }))}>
-                            <Scale className="size-5" /> Принять машину
-                          </Button>
-                        </>
-                      );
-                    })() : <p className="text-sm text-[var(--muted-foreground)]">Ожидает приёма машины.</p>
-                  )}
-
-                  {(selected.status === "arrived" || selected.status === "loading") && (
-                    canLoad ? (
-                      <>
-                        {playable.length > 0 && (
-                          <CameraPicker cameras={playable} activeSrc={aiCam?.src ?? null}
-                            occupied={ai.occupied} onPick={assignCamera} busy={busy} />
-                        )}
-                        <BagCounter key={selected.id} order={selected} onSaved={reload} />
-                        {aiCam && (
-                          <AiCounterPanel ai={ai} accepted={selected.bags_loaded ?? 0}
-                            onAccept={(bags) =>
-                              act(() => api.post(`/orders/${selected.id}/load/`, { bags }))} />
-                        )}
-                        <Button className="h-14 rounded-xl text-base" disabled={busy}
-                          onClick={() => act(async () => {
-                            if (selected.status === "arrived") {
-                              await api.post(`/orders/${selected.id}/load/`, { bags: selected.bags_loaded ?? 0 });
-                            }
-                            await api.post(`/orders/${selected.id}/finish-loading/`, {});
-                            // Погрузка закрыта — освобождаем GPU; сбой стопа не мешает выезду.
-                            if (ai.running) await ai.stop().catch(() => {});
-                          })}>
-                          <Check className="size-5" /> Погрузка завершена
-                        </Button>
-                      </>
-                    ) : <p className="text-sm text-[var(--muted-foreground)]">Идёт погрузка.</p>
-                  )}
-
-                  {selected.status === "loaded" && (
-                    canShip ? (
+                {/* ── Машина: приём → погрузка → выезд ── */}
+                {!isTrain && selected.status === "confirmed" && (
+                  canArrive ? (() => {
+                    // Вес спрашиваем только если в заказе есть товар с флагом.
+                    const needsWeighIn = selected.items.some((it) => it.ask_truck_weight);
+                    return (
                       <>
                         <div>
-                          <div className="text-base font-semibold">Готов к выезду</div>
+                          <div className="text-base font-semibold">Приём машины</div>
                           <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
-                            Проверьте машину и выпускайте.
+                            {needsWeighIn
+                              ? "Введите вес машины с весов и примите её."
+                              : "Вес рассчитается по мешкам — просто примите машину."}
                           </p>
                         </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div className="rounded-xl border bg-[var(--card)] p-3">
-                            <div className="text-xs text-[var(--muted-foreground)]">Погружено</div>
-                            <div className="text-2xl font-bold tabular-nums">{selected.bags_loaded ?? 0} <span className="text-sm font-normal">меш.</span></div>
+                        {needsWeighIn && (
+                          <div className="relative">
+                            <input type="number" inputMode="numeric" placeholder="0"
+                              value={weighIn} onChange={(e) => setWeighIn(e.target.value)}
+                              className="h-16 w-full rounded-xl border bg-[var(--card)] pl-5 pr-14 text-right text-3xl font-bold tabular-nums outline-none focus:ring-[3px] focus:ring-[var(--ring)]/40" />
+                            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-base text-[var(--muted-foreground)]">кг</span>
                           </div>
-                          <div className="rounded-xl border bg-[var(--card)] p-3">
-                            <div className="text-xs text-[var(--muted-foreground)]">Вес на въезде</div>
-                            <div className="text-2xl font-bold tabular-nums">
-                              {selected.weigh_in_kg ? formatMoney(selected.weigh_in_kg) : "—"} <span className="text-sm font-normal">кг</span>
-                            </div>
-                          </div>
-                        </div>
-                        <Button className="h-14 rounded-xl text-base" disabled={busy}
-                          onClick={() => act(() => api.post(`/orders/${selected.id}/ship/`, {}))}>
-                          <LogOut className="size-5" /> Отгрузить — выезд
+                        )}
+                        <Button className="h-14 rounded-xl text-base"
+                          disabled={busy || (needsWeighIn && !weighIn)}
+                          onClick={() => act(() => api.post(`/orders/${selected.id}/arrive/`,
+                            { weigh_in_kg: needsWeighIn ? weighIn : null }))}>
+                          <Scale className="size-5" /> Принять машину
                         </Button>
                       </>
-                    ) : <p className="text-sm text-[var(--muted-foreground)]">Готов к выезду.</p>
-                  )}
+                    );
+                  })() : <p className="text-sm text-[var(--muted-foreground)]">Ожидает приёма машины.</p>
+                )}
 
-                  {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
-                </div>
+                {!isTrain && (selected.status === "arrived" || selected.status === "loading") && (
+                  canLoad ? (
+                    <>
+                      {playable.length > 0 && (
+                        <CameraPicker cameras={playable} activeSrc={aiCam?.src ?? null}
+                          occupied={ai.occupied} onPick={assignCamera} busy={busy} />
+                      )}
+                      <BagCounter key={selected.id} order={selected} onSave={saveBags(selected)} />
+                      {aiCam && (
+                        <AiCounterPanel ai={ai} accepted={selected.bags_loaded ?? 0}
+                          onAccept={(bags) => act(() => saveBags(selected)(bags))} />
+                      )}
+                      <Button className="h-14 rounded-xl text-base" disabled={busy}
+                        onClick={() => act(async () => {
+                          if (selected.status === "arrived") {
+                            await api.post(`/orders/${selected.id}/load/`, { bags: selected.bags_loaded ?? 0 });
+                          }
+                          await api.post(`/orders/${selected.id}/finish-loading/`, {});
+                          // Погрузка закрыта — освобождаем GPU; сбой стопа не мешает выезду.
+                          if (ai.running) await ai.stop().catch(() => {});
+                        })}>
+                        <Check className="size-5" /> Погрузка завершена
+                      </Button>
+                    </>
+                  ) : <p className="text-sm text-[var(--muted-foreground)]">Идёт погрузка.</p>
+                )}
+
+                {!isTrain && selected.status === "loaded" && (
+                  canShip ? (
+                    <>
+                      <div>
+                        <div className="text-base font-semibold">Готов к выезду</div>
+                        <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
+                          Проверьте машину и выпускайте.
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="rounded-xl border bg-[var(--card)] p-3">
+                          <div className="text-xs text-[var(--muted-foreground)]">Погружено</div>
+                          <div className="text-2xl font-bold tabular-nums">{selected.bags_loaded ?? 0} <span className="text-sm font-normal">меш.</span></div>
+                        </div>
+                        <div className="rounded-xl border bg-[var(--card)] p-3">
+                          <div className="text-xs text-[var(--muted-foreground)]">Вес на въезде</div>
+                          <div className="text-2xl font-bold tabular-nums">
+                            {selected.weigh_in_kg ? formatMoney(selected.weigh_in_kg) : "—"} <span className="text-sm font-normal">кг</span>
+                          </div>
+                        </div>
+                      </div>
+                      <Button className="h-14 rounded-xl text-base" disabled={busy}
+                        onClick={() => act(() => api.post(`/orders/${selected.id}/ship/`, {}))}>
+                        <LogOut className="size-5" /> Отгрузить — выезд
+                      </Button>
+                    </>
+                  ) : <p className="text-sm text-[var(--muted-foreground)]">Готов к выезду.</p>
+                )}
+
+                {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
               </div>
             </div>
-          )}
+          </div>
         </div>
       )}
     </AppShell>
@@ -694,5 +818,9 @@ function ShippingPageInner() {
 }
 
 export default function ShippingPage() {
-  return <RequirePerm perm="shipping.view" title="Пост погрузки"><ShippingPageInner /></RequirePerm>;
+  return (
+    <RequirePerm perm={["shipping.view", "train.view"]} title="Пост погрузки">
+      <ShippingPageInner />
+    </RequirePerm>
+  );
 }

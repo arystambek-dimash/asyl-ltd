@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 from .models import Product
 
@@ -18,3 +20,22 @@ class ProductSerializer(serializers.ModelSerializer):
         # Остаток склада: заказ доступен только по товару в наличии.
         stock = getattr(obj, "stock", None)
         return stock.bags if stock else 0
+
+
+class ClientPriceUpdateItemSerializer(serializers.Serializer):
+    product = serializers.PrimaryKeyRelatedField(
+        queryset=Product.objects.filter(is_active=True))
+    price = serializers.DecimalField(
+        max_digits=12, decimal_places=2, min_value=Decimal("0.01"),
+        required=False, allow_null=True,
+    )
+
+
+class ClientPriceUpdateSerializer(serializers.Serializer):
+    prices = ClientPriceUpdateItemSerializer(many=True)
+
+    def validate_prices(self, rows):
+        product_ids = [row["product"].id for row in rows]
+        if len(product_ids) != len(set(product_ids)):
+            raise serializers.ValidationError("Товар в прайс-листе указан повторно.")
+        return rows

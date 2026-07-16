@@ -2,7 +2,7 @@
 
 _SECTIONS = {
     "catalog": ("Товары", ["view", "create", "edit", "delete"]),
-    "clients": ("Клиенты", ["view", "create", "edit", "delete"]),
+    "clients": ("Клиенты", ["view", "create", "edit", "delete", "set_price"]),
     "warehouse": ("Склад", ["view", "adjust"]),
     "orders": ("Заказы", ["view", "create", "edit", "confirm"]),
     "payments": ("Оплаты", ["view", "create", "confirm"]),
@@ -21,6 +21,7 @@ _ACTION_LABELS = {
     "view_all": "Все данные отдела",
     "arrive": "Приём машины", "load": "Загрузка", "ship": "Отгрузка",
     "debt_override": "Отгрузка в долг", "manage": "Управление",
+    "set_price": "Закрепление прайса",
 }
 
 # train.load переиспользует label "Загрузка" из _ACTION_LABELS.
@@ -60,7 +61,7 @@ PRESETS = {
     # погрузка с камерой и счётчиком, выезд; плюс загрузка поездов.
     "Контролёр": _codes("shipping", "train", "orders.view", "warehouse.view"),
     # Менеджер выездного отдела: работает только в разделе «Сити» со своими данными.
-    "Менеджер Сити": _codes("dept2.view", "dept2.create",
+    "Менеджер Сити": _codes("dept2.view", "dept2.create", "clients.set_price",
                             "payments.view", "payments.create"),
     "Начальник": _codes("catalog", "clients", "orders", "payments", "warehouse",
                         "shipping", "train", "dept2", "employees", "rbac",

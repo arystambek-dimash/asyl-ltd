@@ -23,6 +23,7 @@ class Order(models.Model):
                 "loading", "loaded", "shipped", "rejected", "cancelled"]
     PAYMENT_STATUSES = ["unpaid", "partial", "settled"]
     SETTLEMENT_INTENTS = ["debt", "instant"]
+    PAYMENT_METHODS = ["invoice", "kaspi", "cash", "debt"]
     TRANSPORT_TYPES = ["truck", "train"]
 
     client = models.ForeignKey(
@@ -38,12 +39,17 @@ class Order(models.Model):
     status = models.CharField(max_length=20, default="draft")
     payment_status = models.CharField(max_length=20, default="unpaid")
     settlement_intent = models.CharField(max_length=20, default="debt")
+    # Выбор клиента. settlement_intent сохраняем как совместимый финансовый
+    # признак: debt для долга, instant для остальных способов.
+    payment_method = models.CharField(max_length=10, default="debt")
     truck_number = models.CharField(max_length=30, blank=True, default="")
     truck_number_set_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="truck_numbers_set",
     )
     arrival_date = models.DateField(null=True, blank=True)
+    # Короткая внутренняя заметка для оператора на детальной странице заказа.
+    notes = models.TextField(blank=True, default="")
     debt_requested = models.BooleanField(default=False)
     debt_override = models.BooleanField(default=False)
     debt_override_by = models.ForeignKey(
@@ -116,7 +122,8 @@ class OrderItem(models.Model):
 
 
 class Payment(models.Model):
-    METHODS = ["cash", "card", "kaspi", "debt"]
+    METHODS = ["cash", "card", "kaspi", "invoice", "debt"]
+    CASHIER_METHODS = ["cash", "kaspi", "invoice"]
     # Цепочка подтверждения: запрошена → принята (менеджер/оператор) →
     # подтверждена бухгалтером-кассой (только тогда деньги учтены).
     STATUSES = ["requested", "received", "confirmed", "rejected"]
@@ -126,6 +133,8 @@ class Payment(models.Model):
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     method = models.CharField(max_length=10, default="cash")
     status = models.CharField(max_length=20, default="requested")
+    # Примечание бухгалтера при внесении оплаты (видно в истории и на сверке).
+    note = models.TextField(blank=True, default="")
     paid_at = models.DateTimeField(auto_now_add=True)
     recorded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,

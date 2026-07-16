@@ -13,6 +13,7 @@ export function AppShell({
   description,
   children,
   portal = false,
+  tabs,
   actions,
 }: {
   title: string;
@@ -20,6 +21,7 @@ export function AppShell({
   description?: string;
   children: React.ReactNode;
   portal?: boolean;
+  tabs?: React.ReactNode;
   actions?: React.ReactNode;
 }) {
   const { me, loading, loadMe, refreshMe } = useAuth();
@@ -64,8 +66,10 @@ export function AppShell({
       {!me.is_client && <OnboardingTour me={me} />}
       <Sidebar me={me} mobileOpen={navOpen} onClose={() => setNavOpen(false)} />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <Topbar me={me} title={title} section={section} actions={actions}
+        <Topbar me={me} title={title} section={section} tabs={tabs} actions={actions}
           onMenu={() => setNavOpen(true)} />
+        {/* На телефоне вкладкам нет места в навбаре — отдельная строка под ним. */}
+        {tabs && <div className="overflow-x-auto px-4 sm:hidden">{tabs}</div>}
         <main className="flex-1 overflow-y-auto bg-[var(--background)] px-4 py-5 sm:px-8 sm:py-7">
           <div className="animate-fade-up">
             {/* Заголовок уже показан в топбаре — здесь только пояснение,

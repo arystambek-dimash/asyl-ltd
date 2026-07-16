@@ -11,16 +11,22 @@ from .serializers import (
     StockMovementSerializer,
     StockReceiptSerializer,
 )
-from .services import adjust_stock, receive_stock
+from .services import adjust_stock, delete_stock_item, receive_stock
 
 
-class StockViewSet(PermViewSetMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
+class StockViewSet(
+    PermViewSetMixin,
+    mixins.ListModelMixin,
+    mixins.DestroyModelMixin,
+    viewsets.GenericViewSet,
+):
     serializer_class = StockItemSerializer
     required_perms = {
         "list": "warehouse.view",
         "movements": "warehouse.view",
         "adjust": "warehouse.adjust",
         "receive": "warehouse.adjust",
+        "destroy": "warehouse.adjust",
     }
 
     def get_queryset(self):
@@ -33,6 +39,9 @@ class StockViewSet(PermViewSetMixin, mixins.ListModelMixin, viewsets.GenericView
         if product is None:
             raise ValidationError({"product": "Товар не найден"})
         return product
+
+    def perform_destroy(self, instance):
+        delete_stock_item(instance, self.request.user)
 
     @action(detail=False, methods=["post"])
     def adjust(self, request):

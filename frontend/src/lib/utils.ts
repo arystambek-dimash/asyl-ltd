@@ -13,6 +13,29 @@ export function formatMoney(value: number | string): string {
   }).format(n);
 }
 
+export function formatCurrency(value: number | string): string {
+  return `${formatMoney(value)} ₸`;
+}
+
+export function formatPortalMoney(value: string | null | undefined): string {
+  return value == null ? "После подтверждения" : formatCurrency(value);
+}
+
+/** Calendar date in local time; unlike toISOString(), does not shift by UTC. */
+export function toLocalIsoDate(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+export function todayLocalIsoDate(): string {
+  return toLocalIsoDate(new Date());
+}
+
+export function monthStartLocalIsoDate(): string {
+  const today = new Date();
+  return toLocalIsoDate(new Date(today.getFullYear(), today.getMonth(), 1));
+}
+
 /** Дата и время по-русски: «13.07.2026, 14:32». */
 export function formatDateTime(value: string | Date): string {
   return new Date(value).toLocaleString("ru-RU", {

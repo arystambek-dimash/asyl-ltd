@@ -23,6 +23,16 @@ def current_for_camera(camera: str, *, lock: bool = False) -> AiCountingSession 
     return qs.order_by("started_at").first()
 
 
+def current_for_order(order_id: int, *, lock: bool = False) -> AiCountingSession | None:
+    """Open session for an order; an order cannot span multiple cameras."""
+    qs = AiCountingSession.objects.filter(
+        order_id=order_id, status__in=AiCountingSession.OPEN_STATUSES
+    ).select_related("order")
+    if lock:
+        qs = qs.select_for_update()
+    return qs.order_by("started_at").first()
+
+
 def reserve(order, camera: str, user) -> tuple[AiCountingSession, bool]:
     """Atomically reserve a camera, or return the same owner session on it."""
     try:
@@ -35,12 +45,15 @@ def reserve(order, camera: str, user) -> tuple[AiCountingSession, bool]:
             )
         return session, True
     except IntegrityError:
-        # The per-camera unique partial index serializes simultaneous POSTs.
+        # Partial indexes serialize simultaneous POSTs by both camera and order.
         session = current_for_camera(camera)
         if session and session.order_id == order.pk:
             return session, False
         if session:
             raise AiSessionBusy(session) from None
+        order_session = current_for_order(order.pk)
+        if order_session:
+            raise AiSessionBusy(order_session) from None
         # Extremely small race with a transaction that rolled back; retry once.
         with transaction.atomic():
             session = AiCountingSession.objects.create(
@@ -83,4 +96,3 @@ def fail(session: AiCountingSession, message: str) -> None:
         ended_at=timezone.now(),
         error=message[:500],
     )
-
