@@ -35,11 +35,15 @@ import { cn, formatDateTime, formatMoney } from "@/lib/utils";
 import { useDismiss } from "@/lib/use-dismiss";
 import {
   Archive,
+  BarChart3,
   Building2,
   CalendarDays,
   Check,
   ChevronDown,
   ChevronLeft,
+  CircleDollarSign,
+  Clock3,
+  ListChecks,
   Pencil,
   Plus,
   RotateCcw,
@@ -337,48 +341,155 @@ function DepartmentManager({ onChanged }: { onChanged: () => void }) {
   );
 }
 
-function DepartmentAnalytics({ rows, active, onSelect }: {
+function OrdersAnalytics({
+  rows,
+  active,
+  onSelect,
+  orders,
+  activeCount,
+  total,
+}: {
   rows: DepartmentSummary[];
   active: string;
   onSelect: (code: string) => void;
+  orders: Order[];
+  activeCount: number;
+  total: number;
 }) {
-  if (rows.length === 0) return null;
+  const [view, setView] = useState<"departments" | "overview">("departments");
   const totalOrders = rows.reduce((sum, row) => sum + row.orders, 0);
+  const activeDepartment = rows.find((row) => row.code === active);
+
   return (
     <section className="mb-5 overflow-hidden rounded-2xl border bg-[var(--card)] shadow-card">
-      <div className="flex flex-wrap items-end justify-between gap-3 border-b px-5 py-4">
+      <div className="flex flex-col gap-4 border-b px-4 py-4 sm:px-5 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <div className="flex items-center gap-2 text-sm font-bold"><Building2 className="size-4" /> По отделам</div>
-          <p className="mt-1 text-xs text-[var(--muted-foreground)]">Живая структура заказов за выбранный период</p>
+          <div className="flex items-center gap-2 text-sm font-bold">
+            <BarChart3 className="size-4 text-[var(--ring)]" /> Аналитика заказов
+          </div>
+          <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+            {view === "departments"
+              ? "Сравнение отделов и быстрый переход к их заказам"
+              : "Общие показатели по текущим фильтрам и поиску"}
+          </p>
         </div>
-        <button type="button" onClick={() => onSelect("all")}
-          className={cn("rounded-full px-3 py-1.5 text-xs font-semibold transition",
-            active === "all" ? "bg-[var(--foreground)] text-[var(--background)]" : "bg-[var(--muted)] hover:bg-[var(--accent)]")}>
-          Все отделы · {totalOrders}
-        </button>
-      </div>
-      <div className="grid sm:grid-cols-2 xl:grid-cols-3">
-        {rows.map((row) => (
-          <button key={row.code} type="button" onClick={() => onSelect(row.code)}
+        <div
+          role="tablist"
+          aria-label="Вид аналитики заказов"
+          className="grid grid-cols-2 rounded-xl border bg-[var(--muted)]/55 p-1 sm:w-fit"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "departments"}
+            aria-controls="orders-department-analytics"
+            onClick={() => setView("departments")}
             className={cn(
-              "relative min-h-32 border-b p-5 text-left transition hover:bg-[var(--muted)]/35 sm:border-r",
-              active === row.code && "bg-[var(--muted)]/45",
-            )}>
-            <span className="absolute inset-y-4 left-0 w-1 rounded-r-full" style={{ backgroundColor: row.color }} />
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-bold">{row.name}</div>
-                <div className="mt-0.5 text-[11px] text-[var(--muted-foreground)]">{row.active} сейчас в работе</div>
-              </div>
-              <span className="text-2xl font-black tabular-nums">{row.orders}</span>
-            </div>
-            <div className="mt-5 flex items-end justify-between gap-3">
-              <span className="text-xs text-[var(--muted-foreground)]">{row.shipped} завершено</span>
-              <span className="text-sm font-bold tabular-nums">{formatMoney(row.revenue)} ₸</span>
-            </div>
+              "flex min-h-9 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold transition-all",
+              view === "departments"
+                ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm ring-1 ring-[var(--border)]"
+                : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
+            )}
+          >
+            <Building2 className="size-3.5" /> По отделам
           </button>
-        ))}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "overview"}
+            aria-controls="orders-overview-analytics"
+            onClick={() => setView("overview")}
+            className={cn(
+              "flex min-h-9 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold transition-all",
+              view === "overview"
+                ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm ring-1 ring-[var(--border)]"
+                : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
+            )}
+          >
+            <BarChart3 className="size-3.5" /> Общая
+          </button>
+        </div>
       </div>
+
+      {view === "departments" ? (
+        <div id="orders-department-analytics" role="tabpanel" className="p-3 sm:p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1">
+            <p className="text-xs text-[var(--muted-foreground)]">
+              {activeDepartment
+                ? <>Показаны заказы отдела <strong className="text-[var(--foreground)]">{activeDepartment.name}</strong></>
+                : <>Все отделы · <strong className="text-[var(--foreground)] tabular-nums">{totalOrders}</strong> заказов</>}
+            </p>
+            {active !== "all" && (
+              <button
+                type="button"
+                onClick={() => onSelect("all")}
+                className="rounded-full bg-[var(--muted)] px-3 py-1.5 text-[11px] font-semibold transition hover:bg-[var(--accent)]"
+              >
+                Сбросить выбор
+              </button>
+            )}
+          </div>
+          {rows.length > 0 ? (
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-3">
+              {rows.map((row) => (
+                <button
+                  key={row.code}
+                  type="button"
+                  onClick={() => onSelect(row.code)}
+                  aria-pressed={active === row.code}
+                  className={cn(
+                    "group relative min-h-36 overflow-hidden rounded-xl border p-4 text-left transition-all hover:-translate-y-0.5 hover:border-[var(--ring)]/35 hover:shadow-md sm:p-5",
+                    active === row.code
+                      ? "border-[var(--ring)]/45 bg-[var(--muted)]/45 ring-1 ring-[var(--ring)]/20"
+                      : "bg-[var(--card)]",
+                  )}
+                >
+                  <span className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: row.color }} />
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-bold">{row.name}</div>
+                      <div className="mt-1 flex items-center gap-1.5 text-[11px] text-[var(--muted-foreground)]">
+                        <span className="size-1.5 rounded-full" style={{ backgroundColor: row.color }} />
+                        {row.active} сейчас в работе
+                      </div>
+                    </div>
+                    <span className="text-2xl font-black tabular-nums">{row.orders}</span>
+                  </div>
+                  <div className="mt-6 grid grid-cols-2 gap-3 border-t pt-3">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Завершено</div>
+                      <div className="mt-1 text-sm font-bold tabular-nums">{row.shipped}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Выручка</div>
+                      <div className="mt-1 truncate text-sm font-bold tabular-nums">{formatMoney(row.revenue)} ₸</div>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed px-4 py-10 text-center text-sm text-[var(--muted-foreground)]">
+              За выбранный период данных по отделам нет.
+            </div>
+          )}
+        </div>
+      ) : (
+        <div id="orders-overview-analytics" role="tabpanel" className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 sm:p-4">
+          <StatCard label="Всего заказов" value={String(orders.length)} icon={ListChecks} />
+          <StatCard label="В процессе" value={String(activeCount)} icon={Clock3} />
+          <StatCard
+            label="Сумма"
+            value={`${formatMoney(total)} ₸`}
+            icon={CircleDollarSign}
+            accent
+            caption="Без отменённых и отклонённых"
+            className="col-span-2 sm:col-span-1"
+          >
+            <StatusShareBar orders={orders} total={total} />
+          </StatCard>
+        </div>
+      )}
     </section>
   );
 }
@@ -638,16 +749,14 @@ function OrdersPageInner() {
         />
       ) : (
       <>
-      <DepartmentAnalytics rows={departmentSummary ?? []} active={dept} onSelect={setDept} />
-      <section className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <StatCard label="Всего заказов" value={String(list.length)} />
-        <StatCard label="В процессе" value={String(activeCount)} />
-        <StatCard label="Сумма" value={`${formatMoney(totalSum)} ₸`} accent
-          caption="Без отменённых и отклонённых"
-          className="col-span-2 sm:col-span-1">
-          <StatusShareBar orders={countable} total={totalSum} />
-        </StatCard>
-      </section>
+      <OrdersAnalytics
+        rows={departmentSummary ?? []}
+        active={dept}
+        onSelect={setDept}
+        orders={countable}
+        activeCount={activeCount}
+        total={totalSum}
+      />
 
       <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div className="relative max-w-md flex-1">
