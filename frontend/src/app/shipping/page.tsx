@@ -1,9 +1,10 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import Image from "next/image";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Button } from "@/components/ui/button";
+import { Modal } from "@/components/ui/modal";
 import { PlateBadge } from "@/components/ui/license-plate-input";
 import { CameraStream } from "@/components/camera-stream";
 import { ErrorAlert } from "@/components/ui/data-state";
@@ -14,11 +15,13 @@ import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { cn, formatDateTime, formatMoney } from "@/lib/utils";
 import {
-  Activity, ArrowLeft, Cctv, Check, ChevronRight, Clock3, Layers3, LockKeyhole,
-  LogOut, Minus, Package, Phone, Play, Plus, Radio, RotateCcw, Scale,
-  TrainFront, Truck, User, VideoOff,
+  Activity, Archive, ArrowLeft, CalendarDays, Cctv, Check, ChevronRight, Clock3,
+  Film, GripVertical, Layers3, LockKeyhole, LogOut, Minus, Package, Phone, Play,
+  Plus, Radio, RotateCcw, Scale, Settings2, TrainFront, Truck, User, VideoOff,
 } from "lucide-react";
-import type { AiCountingSession, Order } from "@/lib/types";
+import type {
+  AiCountingHistory, AiCountingSession, AiRecording, Order, ShippingBoardSettings,
+} from "@/lib/types";
 import { useAiCounter, type AiCounter } from "@/lib/use-ai-counter";
 
 const POLL_MS = 10_000; // борд и счётчики обновляются сами — пост «живой»
@@ -32,21 +35,14 @@ const BOARD_STAGES = [
   { key: "loaded", label: "Отгружен", color: "var(--success)", statuses: ["loaded"],
     hint: "Готов к выезду", image: "/shipping/loaded-truck.jpg", tint: "#f4fbf5" },
   { key: "done", label: "Завершён", color: "var(--muted-foreground)", statuses: ["shipped"],
-    hint: "Выехали сегодня", image: "/shipping/completed-clipboard.jpg", tint: "#f7f9fc" },
+    hint: "Завершённые отгрузки", image: "/shipping/completed-clipboard.jpg", tint: "#f7f9fc" },
 ] as const;
 
 const ACTIVE_STATUSES = ["confirmed", "arrived", "loading", "loaded"];
+type BoardStageKey = (typeof BOARD_STAGES)[number]["key"];
 
 function orderedBags(o: Order): number {
   return o.items.reduce((s, it) => s + Number(it.quantity), 0);
-}
-
-function isToday(iso: string | null | undefined): boolean {
-  if (!iso) return false;
-  const d = new Date(iso);
-  const now = new Date();
-  return d.getFullYear() === now.getFullYear()
-    && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
 }
 
 const STEPS = [
@@ -423,25 +419,53 @@ function TransportBadge({ order, size = "md" }: { order: Order; size?: "md" | "l
   return <PlateBadge value={order.truck_number} size={size === "lg" ? "lg" : "md"} />;
 }
 
-function BoardCard({ order, stage, camera, onOpen }: {
+function BoardCard({ order, stage, camera, history, onOpen, onHistory, draggable, moving, onDragStart, onDragEnd }: {
   order: Order;
   stage: (typeof BOARD_STAGES)[number];
   camera?: CameraFeed;
+  history?: AiCountingHistory;
   onOpen?: (id: number) => void;
+  onHistory?: (history: AiCountingHistory) => void;
+  draggable?: boolean;
+  moving?: boolean;
+  onDragStart?: (event: DragEvent<HTMLDivElement>) => void;
+  onDragEnd?: () => void;
 }) {
   const ordered = orderedBags(order);
   const bags = order.bags_loaded ?? 0;
   const pct = ordered > 0 ? Math.min(100, Math.round((bags / ordered) * 100)) : 0;
-  const clickable = !!onOpen;
-  const Comp = clickable ? "button" : "div";
+  const clickable = !!onOpen || (!!history && !!onHistory);
+  const cameraTotal = history?.final_total ?? history?.last_status?.total;
   return (
-    <Comp {...(clickable ? { type: "button" as const, onClick: () => onOpen!(order.id) } : {})}
+    <div
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onClick={() => {
+        if (onOpen) onOpen(order.id);
+        else if (history && onHistory) onHistory(history);
+      }}
+      onKeyDown={(event) => {
+        if (clickable && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault();
+          if (onOpen) onOpen(order.id);
+          else if (history && onHistory) onHistory(history);
+        }
+      }}
+      role={clickable ? "button" : undefined}
+      tabIndex={clickable ? 0 : undefined}
       className={cn(
-        "flex w-full flex-col gap-2 rounded-xl border bg-[var(--card)] p-3 text-left shadow-card",
-        clickable && "cursor-pointer transition-all hover:-translate-y-px hover:shadow-md")}>
+        "group relative flex w-full flex-col gap-2 overflow-hidden rounded-xl border bg-[var(--card)] p-3 text-left shadow-card outline-none transition-all",
+        clickable && "cursor-pointer hover:-translate-y-px hover:shadow-md focus-visible:ring-2 focus-visible:ring-blue-500",
+        draggable && "cursor-grab active:cursor-grabbing",
+        moving && "pointer-events-none scale-[0.98] opacity-50",
+      )}>
       <div className="flex items-center justify-between gap-2">
         <TransportBadge order={order} />
-        <span className="text-xs font-semibold text-[var(--muted-foreground)]">#{order.id}</span>
+        <span className="flex items-center gap-1.5 text-xs font-semibold text-[var(--muted-foreground)]">
+          {draggable && <GripVertical className="size-3.5 opacity-45" />}
+          #{order.id}
+        </span>
       </div>
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold">{order.client_name || "—"}</div>
@@ -472,15 +496,44 @@ function BoardCard({ order, stage, camera, onOpen }: {
             style={{ width: `${pct}%`, background: pct >= 100 ? "var(--success)" : "var(--warning)" }} />
         </div>
       )}
-    </Comp>
+      {stage.key === "done" && history && (
+        <div className="absolute inset-x-0 bottom-0 flex translate-y-[calc(100%-4px)] items-center justify-between gap-3 bg-slate-900/95 px-3 py-2.5 text-white backdrop-blur-sm transition-transform duration-200 group-hover:translate-y-0 group-focus-visible:translate-y-0">
+          <span className="flex min-w-0 items-center gap-2 text-xs font-semibold">
+            <Cctv className="size-4 shrink-0 text-cyan-300" />
+            <span className="truncate">Камера насчитала</span>
+          </span>
+          <span className="flex shrink-0 items-center gap-2">
+            <b className="text-lg tabular-nums">{cameraTotal ?? "—"}</b>
+            {history.has_recording && <Film className="size-4 text-emerald-300" />}
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 
-function LiveBoard({ orders, cameras, onOpen }: {
+function LiveBoard({ orders, cameras, histories, completedDays, onOpen, onHistory, nextStage, onMove, movingId, error }: {
   orders: Order[];
   cameras: CameraFeed[];
+  histories: AiCountingHistory[];
+  completedDays: number;
   onOpen: (id: number) => void;
+  onHistory: (history: AiCountingHistory) => void;
+  nextStage: (order: Order) => BoardStageKey | null;
+  onMove: (order: Order, stage: BoardStageKey) => void;
+  movingId: number | null;
+  error?: string;
 }) {
+  const [draggedId, setDraggedId] = useState<number | null>(null);
+  const [overStage, setOverStage] = useState<BoardStageKey | null>(null);
+  const historyByOrder = useMemo(() => {
+    const result = new Map<number, AiCountingHistory>();
+    for (const item of histories) if (!result.has(item.order_id)) result.set(item.order_id, item);
+    return result;
+  }, [histories]);
+  const dragged = orders.find((order) => order.id === draggedId);
+
+  const completedLabel = completedDays === 1 ? "сегодня" : `за ${completedDays} дн.`;
   return (
     <section>
       <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -495,15 +548,37 @@ function LiveBoard({ orders, cameras, onOpen }: {
               <span className="relative size-2 rounded-full bg-emerald-500" />
             </span>
           </div>
-          <span className="text-[12px] text-slate-400">обновляется автоматически</span>
+          <span className="text-[12px] text-slate-400">обновляется автоматически · завершённые {completedLabel}</span>
         </div>
       </div>
+      {error && <div className="mb-3"><ErrorAlert message={error} /></div>}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {BOARD_STAGES.map((stage, i) => {
           const rows = orders.filter((o) => (stage.statuses as readonly string[]).includes(o.status));
           const finished = stage.key === "done";
           return (
-            <div key={stage.key} className="flex min-h-[350px] flex-col overflow-hidden rounded-[22px] border shadow-[0_10px_30px_rgba(45,62,94,0.04)]" style={{ background: stage.tint }}>
+            <div key={stage.key}
+              onDragOver={(event) => {
+                if (dragged && nextStage(dragged) === stage.key) {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  setOverStage(stage.key);
+                }
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node)) setOverStage(null);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setOverStage(null);
+                if (dragged && nextStage(dragged) === stage.key) onMove(dragged, stage.key);
+                setDraggedId(null);
+              }}
+              className={cn(
+                "flex min-h-[350px] flex-col overflow-hidden rounded-[22px] border shadow-[0_10px_30px_rgba(45,62,94,0.04)] transition-all",
+                overStage === stage.key && "-translate-y-1 border-blue-400 ring-4 ring-blue-100",
+              )}
+              style={{ background: stage.tint }}>
               <div className="flex items-center gap-2.5 px-4 py-4">
                 <span className="flex size-7 items-center justify-center rounded-full bg-white/80 shadow-sm">
                   <span className="size-2 rounded-full" style={{ background: stage.color }} />
@@ -532,21 +607,194 @@ function LiveBoard({ orders, cameras, onOpen }: {
                     <p className="mt-1 max-w-[210px] text-[12px] leading-relaxed text-slate-400">
                       {stage.key === "loading" && "Здесь появятся заказы в процессе погрузки."}
                       {stage.key === "loaded" && "Заказы, готовые к выезду со склада."}
-                      {stage.key === "done" && "Сегодня ещё нет завершённых отгрузок."}
+                      {stage.key === "done" && `Нет завершённых отгрузок ${completedDays === 1 ? "за сегодня" : `за последние ${completedDays} дней`}.`}
                       {stage.key === "waiting" && "Новые подтверждённые заказы появятся здесь."}
                     </p>
                   </div>
                 ) : rows.map((o) => (
                   <BoardCard key={o.id} order={o} stage={stage}
                     camera={cameras.find((camera) => camera.src === o.loading_camera)}
-                    onOpen={finished ? undefined : onOpen} />
+                    history={historyByOrder.get(o.id)}
+                    onOpen={finished ? undefined : onOpen}
+                    onHistory={finished ? onHistory : undefined}
+                    draggable={!!nextStage(o) && movingId == null}
+                    moving={movingId === o.id}
+                    onDragStart={(event) => {
+                      event.dataTransfer.effectAllowed = "move";
+                      event.dataTransfer.setData("text/plain", String(o.id));
+                      setDraggedId(o.id);
+                    }}
+                    onDragEnd={() => { setDraggedId(null); setOverStage(null); }} />
                 ))}
+                {dragged && nextStage(dragged) === stage.key && rows.length > 0 && (
+                  <div className={cn(
+                    "rounded-xl border-2 border-dashed px-3 py-4 text-center text-xs font-semibold transition-colors",
+                    overStage === stage.key ? "border-blue-500 bg-blue-50 text-blue-700" : "border-slate-300 text-slate-400",
+                  )}>
+                    Переместить заказ #{dragged.id} сюда
+                  </div>
+                )}
               </div>
             </div>
           );
         })}
       </div>
     </section>
+  );
+}
+
+function CompletedOrdersSettingsModal({ open, settings, onClose, onSaved }: {
+  open: boolean;
+  settings: ShippingBoardSettings | null;
+  onClose: () => void;
+  onSaved: () => Promise<unknown>;
+}) {
+  const [days, setDays] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (open) {
+      setDays(settings?.completed_orders_days ?? 1);
+      setError("");
+    }
+  }, [open, settings?.completed_orders_days]);
+
+  async function save() {
+    setBusy(true); setError("");
+    try {
+      await api.patch("/cameras/shipping-settings/", { completed_orders_days: days });
+      await onSaved();
+      onClose();
+    } catch (e) { setError(apiError(e)); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} eyebrow="Настройка администратора"
+      title="Завершённые заказы"
+      description="Выберите, сколько дней завершённые отгрузки остаются на живом посту."
+      footer={<>
+        <Button variant="ghost" onClick={onClose}>Отмена</Button>
+        <Button disabled={busy || days < 1 || days > 90} onClick={save}>
+          <Check className="size-4" /> Сохранить
+        </Button>
+      </>}>
+      <div className="rounded-2xl border bg-slate-50 p-4">
+        <div className="flex items-center gap-3">
+          <span className="flex size-11 items-center justify-center rounded-xl bg-blue-600 text-white">
+            <CalendarDays className="size-5" />
+          </span>
+          <div>
+            <div className="text-sm font-bold text-slate-800">Период на доске</div>
+            <div className="text-xs text-slate-500">От 1 до 90 дней</div>
+          </div>
+          <div className="relative ml-auto">
+            <input type="number" min={1} max={90} value={days}
+              onChange={(event) => setDays(Number(event.target.value))}
+              className="h-12 w-24 rounded-xl border bg-white pr-9 text-center text-xl font-black tabular-nums outline-none focus:ring-2 focus:ring-blue-500" />
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">дн.</span>
+          </div>
+        </div>
+        <div className="mt-4 grid grid-cols-5 gap-2">
+          {[1, 3, 7, 14, 30].map((value) => (
+            <button type="button" key={value} onClick={() => setDays(value)}
+              className={cn(
+                "rounded-lg border py-2 text-xs font-bold transition-colors",
+                days === value ? "border-blue-600 bg-blue-600 text-white" : "bg-white text-slate-600 hover:border-blue-300",
+              )}>
+              {value === 1 ? "Сегодня" : value}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="mt-4 flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+        <Archive className="mt-0.5 size-4 shrink-0" />
+        Видео подсчёта хранится отдельно на компьютере камер {settings?.video_retention_days ?? 14} дней.
+      </div>
+      {error && <p className="mt-3 text-sm text-[var(--destructive)]">{error}</p>}
+    </Modal>
+  );
+}
+
+function CountingHistoryModal({ history, onClose }: {
+  history: AiCountingHistory | null;
+  onClose: () => void;
+}) {
+  const recordingUrl = history ? `/cameras/ai/history/${history.id}/recording/` : null;
+  const { data: recording, loading, error } = useApi<AiRecording>(recordingUrl);
+  const [segmentIndex, setSegmentIndex] = useState(0);
+  useEffect(() => setSegmentIndex(0), [history?.id]);
+  const segments = recording?.segments ?? [];
+  const segment = segments[segmentIndex] ?? segments[0];
+  const videoUrl = useMemo(() => {
+    if (!segment?.video_url || typeof window === "undefined") return "";
+    const configured = String(api.defaults.baseURL || "");
+    const origin = /^https?:\/\//.test(configured)
+      ? new URL(configured).origin
+      : window.location.origin;
+    return new URL(segment.video_url, origin).toString();
+  }, [segment?.video_url]);
+  const total = history?.final_total ?? history?.last_status?.total;
+
+  return (
+    <Modal open={!!history} onClose={onClose} className="max-w-3xl"
+      eyebrow={history ? `История отгрузки · заказ #${history.order_id}` : undefined}
+      title="Как камера считала мешки"
+      description="Запись хранится на компьютере камер и не занимает место на сервере.">
+      {history && (
+        <div className="grid gap-4 md:grid-cols-[0.85fr_1.4fr]">
+          <div className="flex flex-col gap-3">
+            <div className="rounded-2xl bg-slate-950 p-5 text-white">
+              <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-cyan-300">Итог модели</div>
+              <div className="mt-2 text-6xl font-black tabular-nums tracking-[-0.06em]">{total ?? "—"}</div>
+              <div className="text-sm text-white/55">мешков насчитано камерой</div>
+            </div>
+            <div className="rounded-2xl border p-4 text-sm">
+              <div className="flex items-center gap-2 font-bold"><Cctv className="size-4 text-blue-600" /> {history.camera_name}</div>
+              <div className="mt-3 grid gap-2 text-xs text-slate-500">
+                <span><b className="text-slate-700">Клиент:</b> {history.order_client_name}</span>
+                <span><b className="text-slate-700">Оператор:</b> {history.started_by_name || "—"}</span>
+                <span><b className="text-slate-700">Начало:</b> {formatDateTime(history.started_at)}</span>
+                {history.ended_at && <span><b className="text-slate-700">Завершение:</b> {formatDateTime(history.ended_at)}</span>}
+              </div>
+            </div>
+          </div>
+          <div className="min-h-[280px] overflow-hidden rounded-2xl border bg-[#111315]">
+            {videoUrl ? (
+              <div className="flex h-full flex-col">
+                <video key={videoUrl} controls preload="metadata" src={videoUrl}
+                  className="aspect-video w-full flex-1 bg-black object-contain" />
+                {segments.length > 1 && (
+                  <div className="flex gap-2 overflow-x-auto border-t border-white/10 p-3">
+                    {segments.map((item, index) => (
+                      <button key={`${item.start}-${index}`} type="button" onClick={() => setSegmentIndex(index)}
+                        className={cn(
+                          "shrink-0 rounded-lg px-3 py-2 text-xs font-semibold",
+                          index === segmentIndex ? "bg-white text-black" : "bg-white/10 text-white/70 hover:bg-white/15",
+                        )}>
+                        Фрагмент {index + 1} · {Math.max(1, Math.round(item.duration / 60))} мин
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex h-full min-h-[280px] flex-col items-center justify-center px-8 text-center text-white/50">
+                <Film className="size-10" />
+                <div className="mt-3 text-sm font-bold text-white/75">
+                  {loading ? "Ищем запись на компьютере камер…" : "Запись сейчас недоступна"}
+                </div>
+                <p className="mt-1 max-w-sm text-xs leading-relaxed">
+                  {error || recording?.detail || (history.has_recording
+                    ? "Компьютер камер выключен либо срок хранения записи истёк."
+                    : "Эта сессия была завершена до включения локального архива.")}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -670,12 +918,37 @@ function ActiveLoadings({ sessions, orders, cameras, onOpen }: {
 function ShippingPageInner() {
   const { me } = useAuth();
   const canLoad = can(me, "shipping.load");
-  const { data: orders, error: loadError, reload } = useApi<Order[]>("/orders/");
+  const canArrive = can(me, "shipping.arrive");
+  const canShip = can(me, "shipping.ship");
+  const canTrain = can(me, "train.load");
+  const canManage = can(me, "rbac.manage");
+  const canViewHistory = can(me, "shipping.view");
+  const { data: orders, error: loadError, reload } = useApi<Order[]>("/orders/?post_board=1");
   const { data: cameras, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
   const { data: sessions, reload: reloadSessions } = useApi<AiCountingSession[]>(
     canLoad ? "/cameras/ai/sessions/" : null,
   );
+  const { data: boardSettings, reload: reloadBoardSettings } = useApi<ShippingBoardSettings>(
+    canViewHistory || canManage ? "/cameras/shipping-settings/" : null,
+  );
+  const board = useMemo(() => (orders ?? [])
+    .filter((order) => ACTIVE_STATUSES.includes(order.status) || order.status === "shipped")
+    .sort((a, b) => a.id - b.id), [orders]);
+  const historyOrderIds = useMemo(() => board
+    .filter((order) => order.status === "shipped")
+    .map((order) => order.id)
+    .join(","), [board]);
+  const historyUrl = canViewHistory && historyOrderIds
+    ? `/cameras/ai/history/?order_ids=${historyOrderIds}`
+    : null;
+  const { data: histories, reload: reloadHistories } = useApi<AiCountingHistory[]>(historyUrl);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedHistory, setSelectedHistory] = useState<AiCountingHistory | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [movingId, setMovingId] = useState<number | null>(null);
+  const [moveError, setMoveError] = useState("");
+  const [arrivalDropOrder, setArrivalDropOrder] = useState<Order | null>(null);
+  const [arrivalWeight, setArrivalWeight] = useState("");
   const [weighIn, setWeighIn] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -701,23 +974,15 @@ function ShippingPageInner() {
       if (!document.hidden) {
         void reload();
         void reloadSessions();
+        void reloadHistories();
       }
     }, POLL_MS);
     return () => clearInterval(t);
-  }, [reload, reloadSessions]);
+  }, [reload, reloadHistories, reloadSessions]);
 
-  // Единый пост: машины и поезда вместе. «Завершён» — только сегодняшние выезды.
-  const board = (orders ?? [])
-    .filter((o) => ACTIVE_STATUSES.includes(o.status)
-      || (o.status === "shipped" && isToday(o.shipped_at ?? o.created_at)))
-    .sort((a, b) => a.id - b.id);
   const active = board.filter((o) => ACTIVE_STATUSES.includes(o.status));
   const selected = selectedId != null ? active.find((o) => o.id === selectedId) ?? null : null;
   const isTrain = selected?.transport_type === "train";
-
-  const canArrive = can(me, "shipping.arrive");
-  const canShip = can(me, "shipping.ship");
-  const canTrain = can(me, "train.load");
 
   // Пост работает только с играбельными камерами; locked — тема дашборда.
   const playable = useMemo(() => playableCameras(cameras), [cameras]);
@@ -761,14 +1026,84 @@ function ShippingPageInner() {
 
   const openOrder = (id: number) => { setSelectedId(id); setWeighIn(""); setError(""); };
 
+  const nextBoardStage = useCallback((order: Order): BoardStageKey | null => {
+    if (order.status === "confirmed") {
+      if (order.transport_type === "train") return canTrain ? "loading" : null;
+      return canArrive ? "loading" : null;
+    }
+    if (order.transport_type === "train" && order.status === "loading") {
+      return canTrain ? "done" : null;
+    }
+    if (order.status === "arrived" || order.status === "loading") return canLoad ? "loaded" : null;
+    if (order.status === "loaded") return canShip ? "done" : null;
+    return null;
+  }, [canArrive, canLoad, canShip, canTrain]);
+
+  const stopOrderAi = useCallback(async (order: Order) => {
+    const session = sessions?.find((item) => item.order_id === order.id && item.can_stop);
+    if (!session) return;
+    await api.delete(`/cameras/${session.camera}/ai/`, {
+      params: { order_id: order.id }, data: { order_id: order.id },
+    }).catch(() => {});
+  }, [sessions]);
+
+  const executeMove = useCallback(async (order: Order, target: BoardStageKey, weight?: string) => {
+    if (nextBoardStage(order) !== target) return;
+    setMovingId(order.id); setMoveError("");
+    try {
+      if (target === "loading") {
+        if (order.transport_type === "train") {
+          await api.post(`/orders/${order.id}/train/`, { action: "start" });
+        } else {
+          await api.post(`/orders/${order.id}/arrive/`, { weigh_in_kg: weight || null });
+        }
+      } else if (target === "loaded") {
+        if (order.status === "arrived") {
+          await api.post(`/orders/${order.id}/load/`, { bags: order.bags_loaded ?? 0 });
+        }
+        await api.post(`/orders/${order.id}/finish-loading/`, {});
+        await stopOrderAi(order);
+      } else if (target === "done") {
+        if (order.transport_type === "train") {
+          await api.post(`/orders/${order.id}/train/`, { action: "finish" });
+          await stopOrderAi(order);
+        } else {
+          await api.post(`/orders/${order.id}/ship/`, {});
+        }
+      }
+      await Promise.all([reload(), reloadSessions(), reloadHistories()]);
+    } catch (e) { setMoveError(apiError(e)); }
+    finally { setMovingId(null); }
+  }, [nextBoardStage, reload, reloadHistories, reloadSessions, stopOrderAi]);
+
+  const moveOrder = useCallback((order: Order, target: BoardStageKey) => {
+    const needsWeight = order.transport_type !== "train" && order.status === "confirmed"
+      && order.items.some((item) => item.ask_truck_weight);
+    if (needsWeight) {
+      setArrivalDropOrder(order);
+      setArrivalWeight("");
+      return;
+    }
+    void executeMove(order, target);
+  }, [executeMove]);
+
   return (
-    <AppShell title="Пост погрузки" section="Работа">
+    <AppShell title="Пост погрузки" section="Работа" actions={canManage ? (
+      <Button variant="outline" onClick={() => setSettingsOpen(true)}>
+        <Settings2 className="size-4" />
+        <span className="hidden sm:inline">Завершённые: {boardSettings?.completed_orders_days === 1 || !boardSettings ? "сегодня" : `${boardSettings.completed_orders_days} дн.`}</span>
+      </Button>
+    ) : undefined}>
       {loadError && !orders ? (
         <ErrorAlert message={loadError} onRetry={reload} />
       ) : !selected ? (
         <div className="flex flex-col gap-6">
           {/* Лайв-статус заказов по этапам */}
-          <LiveBoard orders={board} cameras={cameras ?? []} onOpen={openOrder} />
+          <LiveBoard orders={board} cameras={cameras ?? []} histories={histories ?? []}
+            completedDays={boardSettings?.completed_orders_days ?? 1}
+            onOpen={openOrder} onHistory={setSelectedHistory}
+            nextStage={nextBoardStage} onMove={moveOrder}
+            movingId={movingId} error={moveError} />
           {canLoad && (
             <ActiveLoadings sessions={sessions} orders={board} cameras={cameras ?? []}
               onOpen={openOrder} />
@@ -971,6 +1306,30 @@ function ShippingPageInner() {
           </div>
         </div>
       )}
+      <CompletedOrdersSettingsModal open={settingsOpen} settings={boardSettings}
+        onClose={() => setSettingsOpen(false)}
+        onSaved={async () => { await Promise.all([reloadBoardSettings(), reload()]); }} />
+      <CountingHistoryModal history={selectedHistory} onClose={() => setSelectedHistory(null)} />
+      <Modal open={!!arrivalDropOrder} onClose={() => setArrivalDropOrder(null)}
+        eyebrow={arrivalDropOrder ? `Заказ #${arrivalDropOrder.id}` : undefined}
+        title="Вес машины на въезде"
+        description="Для этого товара вес обязателен. После сохранения заказ перейдёт в «Загружается»."
+        footer={<>
+          <Button variant="ghost" onClick={() => setArrivalDropOrder(null)}>Отмена</Button>
+          <Button disabled={!arrivalWeight || movingId != null} onClick={() => {
+            if (!arrivalDropOrder) return;
+            const order = arrivalDropOrder;
+            setArrivalDropOrder(null);
+            void executeMove(order, "loading", arrivalWeight);
+          }}><Scale className="size-4" /> Принять машину</Button>
+        </>}>
+        <div className="relative">
+          <input autoFocus type="number" min="1" inputMode="numeric" value={arrivalWeight}
+            onChange={(event) => setArrivalWeight(event.target.value)} placeholder="0"
+            className="h-20 w-full rounded-2xl border bg-slate-50 px-5 pr-16 text-right text-4xl font-black tabular-nums outline-none focus:ring-2 focus:ring-blue-500" />
+          <span className="absolute right-5 top-1/2 -translate-y-1/2 font-semibold text-slate-400">кг</span>
+        </div>
+      </Modal>
     </AppShell>
   );
 }

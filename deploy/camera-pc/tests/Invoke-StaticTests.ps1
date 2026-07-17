@@ -25,6 +25,8 @@ foreach ($script in $scripts) {
 $settingsPath = Join-Path $PackageRoot 'camera-agent.json'
 $settings = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-True ([int]$settings.expectedSources -eq 20) 'Site baseline must remain 20 main+sub sources.'
+Assert-True (9996 -in @([int[]]$settings.requiredPorts)) 'Local recording playback port is not health-checked.'
+Assert-True ([int]$settings.recordingRetentionDays -eq 14) 'AI recording retention must default to 14 days.'
 Assert-True ([int]$settings.minimumConfigSources -ge 20) 'Minimum source-entry floor must be at least 20.'
 Assert-True ([int]$settings.minimumConfigPaths -ge 20) 'Minimum path floor must be at least 20.'
 Assert-True ([int]$settings.majorityLossPercent -gt 50) 'Majority threshold must not classify one camera as an outage.'
@@ -142,6 +144,7 @@ try {
     $flowTruncated = Join-Path $tempRoot 'flow-truncated.yml'
     $flowInvalid = Join-Path $tempRoot 'flow-invalid.yml'
     $flowSecretInvalid = Join-Path $tempRoot 'flow-secret-invalid.yml'
+    $recordingConfig = Join-Path $tempRoot 'recording.yml'
     $fullLines = New-Object System.Collections.Generic.List[string]
     $fullLines.Add('paths:') | Out-Null
     foreach ($number in 1..20) {
@@ -208,6 +211,23 @@ try {
         $flowSecretInvalid,
         "paths:`n  cam1: { sourceOnDemand: no, source: `"secretproto://leak-user:FLOW_LEAK_PASSWORD@example.invalid/stream`" } # unsupported and secret`n  cam2: { source: `"rtsp://viewer:placeholder@192.0.2.10:554/stream2`", sourceOnDemand: `"FLOW_LEAK_PASSWORD`" }`n"
     )
+    [IO.File]::WriteAllText(
+        $recordingConfig,
+        "api: no`nplayback: no`npaths:`n  cam1:`n    source: rtsp://viewer:placeholder@192.0.2.10:554/stream`n"
+    )
+    Enable-AiRecordingConfig -Path $recordingConfig -MediaRoot 'C:\mediamtx' `
+        -RetentionDays 14 -SegmentMinutes 5 | Out-Null
+    $recordingText = Get-Content -LiteralPath $recordingConfig -Raw -Encoding UTF8
+    Assert-True ($recordingText -match '(?m)^playback: yes$') 'Playback server was not enabled.'
+    Assert-True ($recordingText -match 'recordDeleteAfter: 336h') 'Two-week retention was not configured.'
+    Assert-True ($recordingText.Contains('"~^cam[A-Za-z0-9_]*ai$":')) 'AI-only recording path is missing.'
+    Enable-AiRecordingConfig -Path $recordingConfig -MediaRoot 'C:\mediamtx' `
+        -RetentionDays 14 -SegmentMinutes 5 | Out-Null
+    $markerCount = ([regex]::Matches(
+        (Get-Content -LiteralPath $recordingConfig -Raw -Encoding UTF8),
+        'ASYL-AI-RECORDING-BEGIN'
+    )).Count
+    Assert-True ($markerCount -eq 1) 'AI recording config is not idempotent.'
     $floorArgs = @{
         MinimumSourceCount = [int]$settings.minimumConfigSources
         MinimumPathCount = [int]$settings.minimumConfigPaths

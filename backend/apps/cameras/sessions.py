@@ -69,13 +69,22 @@ def activate(session: AiCountingSession, payload: dict) -> AiCountingSession:
     session.status = AiCountingSession.ACTIVE
     session.activated_at = session.activated_at or timezone.now()
     session.last_status = payload
+    stream = payload.get("stream")
+    if isinstance(stream, str) and stream:
+        session.recording_stream = stream[:64]
     session.error = ""
-    session.save(update_fields=["status", "activated_at", "last_status", "error"])
+    session.save(update_fields=[
+        "status", "activated_at", "recording_stream", "last_status", "error",
+    ])
     return session
 
 
 def update_status(session: AiCountingSession, payload: dict) -> None:
-    AiCountingSession.objects.filter(pk=session.pk).update(last_status=payload)
+    updates = {"last_status": payload}
+    stream = payload.get("stream")
+    if isinstance(stream, str) and stream:
+        updates["recording_stream"] = stream[:64]
+    AiCountingSession.objects.filter(pk=session.pk).update(**updates)
 
 
 def finish(session: AiCountingSession, user, payload: dict | None = None) -> None:

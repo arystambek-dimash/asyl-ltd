@@ -1,10 +1,15 @@
 """Прокси AI-подсчёта мешков: маппинг ответов ai_service и права доступа."""
 from unittest.mock import patch
+from datetime import timedelta
+from io import BytesIO
 
 import pytest
+from django.core import signing
+from django.utils import timezone
 
-from apps.cameras import ai
+from apps.cameras import ai, recordings
 from apps.cameras.models import AiCountingSession
+from apps.cameras.views import RECORDING_TOKEN_SALT
 from apps.clients.models import Client
 from apps.orders.models import Order
 
@@ -150,6 +155,7 @@ def test_start_when_idle_posts_directly_to_service(api_client, loader, loading_o
     session = AiCountingSession.objects.get()
     assert session.order == loading_order
     assert session.status == AiCountingSession.ACTIVE
+    assert session.recording_stream == "cam2ai"
 
 
 def test_start_accepts_order_id_from_query(api_client, loader, loading_order):
@@ -414,3 +420,136 @@ def test_clients_cannot_even_read(api_client, make_user):
     api_client.force_authenticate(portal_client)
     resp = api_client.get("/api/cameras/cam2/ai/")
     assert resp.status_code == 403
+
+
+def test_history_returns_final_count_and_local_recording_metadata(
+    api_client, user_with_perms, loader, loading_order,
+):
+    viewer = user_with_perms("history-viewer", codes=["shipping.view"])
+    ended = timezone.now() - timedelta(hours=1)
+    session = AiCountingSession.objects.create(
+        order=loading_order,
+        camera="cam2",
+        status=AiCountingSession.CLOSED,
+        started_by=loader,
+        ended_at=ended,
+        final_total=73,
+        recording_stream="cam2ai",
+        last_status={"total": 73, "stream": "cam2ai"},
+    )
+    api_client.force_authenticate(viewer)
+
+    response = api_client.get(
+        f"/api/cameras/ai/history/?order_id={loading_order.pk}"
+    )
+
+    assert response.status_code == 200
+    assert response.data[0]["id"] == session.pk
+    assert response.data[0]["final_total"] == 73
+    assert response.data[0]["has_recording"] is True
+    assert response.data[0]["recording_available_until"] is not None
+
+
+def test_recording_list_is_resolved_on_camera_pc(
+    api_client, user_with_perms, loader, loading_order,
+):
+    viewer = user_with_perms("recording-viewer", codes=["shipping.view"])
+    session = AiCountingSession.objects.create(
+        order=loading_order,
+        camera="cam2",
+        status=AiCountingSession.CLOSED,
+        started_by=loader,
+        ended_at=timezone.now(),
+        final_total=12,
+        recording_stream="cam2ai",
+    )
+    segment = {"start": "2026-07-17T10:00:00+06:00", "duration": 60.0}
+    api_client.force_authenticate(viewer)
+
+    with patch.object(recordings, "list_segments", return_value=[segment]) as listing:
+        response = api_client.get(
+            f"/api/cameras/ai/history/{session.pk}/recording/"
+        )
+
+    assert response.status_code == 200
+    assert response.data["available"] is True
+    assert response.data["retention_days"] == 14
+    assert response.data["segments"][0]["video_url"].startswith("/api/cameras/ai/history/")
+    assert listing.call_args.args[0] == "cam2ai"
+
+
+def test_recording_video_proxies_bytes_without_server_storage(
+    api_client, user_with_perms, loader, loading_order,
+):
+    viewer = user_with_perms("video-viewer", codes=["shipping.view"])
+    session = AiCountingSession.objects.create(
+        order=loading_order,
+        camera="cam2",
+        status=AiCountingSession.CLOSED,
+        started_by=loader,
+        ended_at=timezone.now(),
+        recording_stream="cam2ai",
+    )
+    segment = {"start": "2026-07-17T10:00:00+06:00", "duration": 2.5}
+    upstream = BytesIO(b"local-video")
+    upstream.headers = {"Content-Length": "11"}
+    api_client.force_authenticate(viewer)
+    token = signing.dumps({
+        "session": session.pk,
+        "start": segment["start"],
+        "duration": segment["duration"],
+    }, salt=RECORDING_TOKEN_SALT)
+
+    with patch.object(recordings, "list_segments", return_value=[segment]), \
+         patch.object(recordings, "open_segment", return_value=upstream) as opening:
+        response = api_client.get(
+            f"/api/cameras/ai/history/{session.pk}/recording/video/",
+            {"token": token},
+        )
+        content = b"".join(response.streaming_content)
+
+    assert response.status_code == 200
+    assert response["Content-Type"] == "video/mp4"
+    assert content == b"local-video"
+    opening.assert_called_once_with("cam2ai", segment["start"], 2.5)
+
+
+def test_recording_archive_expires_but_count_metadata_remains(
+    api_client, user_with_perms, loader, loading_order,
+):
+    viewer = user_with_perms("expired-video-viewer", codes=["shipping.view"])
+    old = timezone.now() - timedelta(days=15)
+    session = AiCountingSession.objects.create(
+        order=loading_order,
+        camera="cam2",
+        status=AiCountingSession.CLOSED,
+        started_by=loader,
+        ended_at=old,
+        final_total=81,
+        recording_stream="cam2ai",
+    )
+    AiCountingSession.objects.filter(pk=session.pk).update(started_at=old)
+    api_client.force_authenticate(viewer)
+
+    history = api_client.get(f"/api/cameras/ai/history/?order_id={loading_order.pk}")
+    with patch.object(recordings, "list_segments") as listing:
+        archive = api_client.get(f"/api/cameras/ai/history/{session.pk}/recording/")
+
+    assert history.status_code == 200
+    assert history.data[0]["final_total"] == 81
+    assert archive.status_code == 200
+    assert archive.data["available"] is False
+    listing.assert_not_called()
+
+
+def test_local_playback_requests_browser_playable_fmp4():
+    with patch.object(recordings, "_request", return_value=object()) as request:
+        result = recordings.open_segment("cam2ai", "2026-07-17T10:00:00+06:00", 60)
+
+    assert result is request.return_value
+    assert "format=fmp4" in request.call_args.args[0]
+
+
+def test_history_requires_shipping_view(api_client, make_user):
+    api_client.force_authenticate(make_user("history-denied"))
+    assert api_client.get("/api/cameras/ai/history/").status_code == 403

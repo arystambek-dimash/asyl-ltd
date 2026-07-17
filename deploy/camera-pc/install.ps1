@@ -256,6 +256,17 @@ Invoke-WithCameraMutationLock -TimeoutSeconds 30 -ScriptBlock {
     }
     Write-AtomicJsonFile -Path (Join-Path $InstallRoot 'camera-agent.json') -Value $packageSettings
 
+    Enable-AiRecordingConfig -Path $paths.Config -MediaRoot $MediaRoot `
+        -RetentionDays ([int]$packageSettings.recordingRetentionDays) `
+        -SegmentMinutes ([int]$packageSettings.recordingSegmentMinutes) | Out-Null
+    $recordingValidation = Test-MediaMtxConfig -Path $paths.Config `
+        -MinimumSourceCount ([int]$packageSettings.minimumConfigSources) `
+        -MinimumPathCount ([int]$packageSettings.minimumConfigPaths) `
+        -MinimumEagerSourceCount ([int]$packageSettings.expectedSources)
+    if (-not $recordingValidation.Valid) {
+        throw ('AI recording config failed validation: ' + ($recordingValidation.Errors -join '; '))
+    }
+
     # These scripts execute as SYSTEM. A writable InstallRoot would be a local
     # privilege escalation path, so ACL hardening is a mandatory install gate.
     Protect-CameraAgentPath -Path $InstallRoot

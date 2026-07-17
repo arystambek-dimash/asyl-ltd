@@ -42,6 +42,9 @@ class AiCountingSession(models.Model):
     activated_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     final_total = models.PositiveIntegerField(null=True, blank=True)
+    # Имя аннотированного MediaMTX-потока (например cam2ai). Само видео
+    # остаётся на ПК камер; в PostgreSQL хранится только ссылка на поток.
+    recording_stream = models.CharField(max_length=64, blank=True, default="")
     last_status = models.JSONField(default=dict, blank=True)
     error = models.CharField(max_length=500, blank=True, default="")
 
@@ -67,6 +70,9 @@ class MonoblockCameraSettings(models.Model):
     singleton = models.BooleanField(default=True, unique=True, editable=False)
     camera_sources = models.JSONField(default=list, blank=True)
     camera_names = models.JSONField(default=dict, blank=True)
+    # Сколько календарных дней держать завершённые заказы на живом борде.
+    # 1 означает «только сегодня».
+    completed_orders_days = models.PositiveSmallIntegerField(default=1)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,

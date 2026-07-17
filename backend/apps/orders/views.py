@@ -4,7 +4,10 @@ from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
+from datetime import timedelta
 from decimal import Decimal
+from django.db.models import Q
+from django.utils import timezone
 from apps.common.permissions import HasPerm, PermViewSetMixin
 from apps.common.money import money_string
 from apps.common.query_params import parse_iso_date, parse_store_id, validate_date_range
@@ -76,6 +79,20 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         qs = super().get_queryset()
         if self.action == "list":
             params = self.request.query_params
+            if params.get("post_board") == "1":
+                # Живой пост не должен тянуть всю историю заказов. Политика
+                # хранения завершённых управляется админом, клиент её не
+                # переопределяет query-параметром.
+                from apps.cameras.models import MonoblockCameraSettings
+                row = MonoblockCameraSettings.objects.filter(singleton=True).only(
+                    "completed_orders_days"
+                ).first()
+                days = row.completed_orders_days if row else 1
+                since = timezone.localdate() - timedelta(days=max(0, days - 1))
+                qs = qs.filter(
+                    Q(status__in=("confirmed", "arrived", "loading", "loaded"))
+                    | Q(status="shipped", shipment__shipped_at__date__gte=since)
+                )
             for field in ("department", "status", "payment_status"):
                 value = params.get(field)
                 if value:

@@ -57,6 +57,9 @@ Invoke-WithCameraMutationLock -TimeoutSeconds 30 -ScriptBlock {
     )
     try {
         Write-AtomicTextFile -Path $paths.Config -Content $candidateContent
+        Enable-AiRecordingConfig -Path $paths.Config -MediaRoot ([string]$settings.mediaRoot) `
+            -RetentionDays ([int]$settings.recordingRetentionDays) `
+            -SegmentMinutes ([int]$settings.recordingSegmentMinutes) | Out-Null
         $installedValidation = Test-MediaMtxConfig -Path $paths.Config `
             -MinimumSourceCount $effectiveMinimumSources `
             -MinimumPathCount $effectiveMinimumPaths `

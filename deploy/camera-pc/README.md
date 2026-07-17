@@ -1,7 +1,7 @@
 # Windows camera agent
 
 Этот пакет защищает Windows-ПК камер от повторения полного обрыва. Он следит за
-задачей и процессом MediaMTX, портами `8554/8888/8889`, количеством RTSP-связей с
+задачей и процессом MediaMTX, портами `8554/8888/8889/9996`, количеством RTSP-связей с
 NVR и состоянием Tailscale. Секретов и реквизитов камер в пакете нет.
 
 ## Что именно делает агент
@@ -24,6 +24,10 @@ NVR и состоянием Tailscale. Секретов и реквизитов 
 - отключает задачи со старым `nvr-watchdog.ps1`, сохраняя их XML для rollback;
 - пишет атомарный status в
   `C:\ProgramData\ASYL-Camera-Agent\state.json` и ротируемый `agent.log`.
+- записывает только аннотированные AI-потоки `cam…ai` в
+  `C:\mediamtx\recordings`, нарезает их по 5 минут и автоматически удаляет
+  старше 14 дней; веб-сервер получает видео через локальный playback API и не
+  хранит копии файлов.
 
 ## Установка
 
@@ -64,8 +68,13 @@ C:\mediamtx\camera-agent\status.ps1 -AsJson
 Get-Content C:\ProgramData\ASYL-Camera-Agent\agent.log -Tail 50
 ```
 
-Нормальное состояние: `AgentStatus=healthy`, один процесс MediaMTX, все три
+Нормальное состояние: `AgentStatus=healthy`, один процесс MediaMTX, все четыре
 listener-порта, ожидаемое число sources и `Tailscale.Healthy=true`.
+
+Архив доступен приложению только пока Windows-ПК камер включён. Проверить его
+локально можно командой `Invoke-WebRequest http://127.0.0.1:9996/list`; политика
+14 дней восстанавливается installer-ом после каждого NVR-sync и безопасного
+обновления `mediamtx.yml`.
 
 ## Безопасное обновление mediamtx.yml
 

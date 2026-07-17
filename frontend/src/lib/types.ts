@@ -153,6 +153,39 @@ export interface AiCountingSession {
   started_by_id: number | null; started_by_name: string; can_stop: boolean;
   last_status: { total?: number; weight?: number; status?: string; per_color?: Record<string, number> };
 }
+export interface AiCountingHistory {
+  id: number;
+  order_id: number;
+  order_client_name: string;
+  order_truck_number: string;
+  camera: string;
+  camera_name: string;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  started_by_id: number | null;
+  started_by_name: string;
+  final_total: number | null;
+  last_status: { total?: number; weight?: number; status?: string; per_color?: Record<string, number> };
+  has_recording: boolean;
+  recording_available_until: string | null;
+}
+export interface AiRecordingSegment {
+  start: string;
+  duration: number;
+  video_url: string;
+}
+export interface AiRecording {
+  available: boolean;
+  detail?: string;
+  retention_days?: number;
+  segments: AiRecordingSegment[];
+}
+export interface ShippingBoardSettings {
+  completed_orders_days: number;
+  video_retention_days: number;
+  updated_at: string | null;
+}
 export interface MonoblockCameraSettings {
   camera_sources: string[];
   updated_at: string | null;

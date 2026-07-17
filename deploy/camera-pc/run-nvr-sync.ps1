@@ -65,6 +65,9 @@ try {
         if (-not (Test-Path -LiteralPath $paths.Config -PathType Leaf)) {
             throw 'NVR sync removed mediamtx.yml.'
         }
+        Enable-AiRecordingConfig -Path $paths.Config -MediaRoot ([string]$settings.mediaRoot) `
+            -RetentionDays ([int]$settings.recordingRetentionDays) `
+            -SegmentMinutes ([int]$settings.recordingSegmentMinutes) | Out-Null
         $afterHash = (Get-FileHash -LiteralPath $paths.Config -Algorithm SHA256).Hash
         $changed = ($snapshot.BeforeHash -ne $afterHash)
         if ($changed) {

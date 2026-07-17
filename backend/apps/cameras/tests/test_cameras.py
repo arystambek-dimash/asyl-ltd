@@ -218,6 +218,45 @@ def test_admin_configures_monoblock_camera_allowlist(auth_client, boss, operator
     assert response.data["camera_sources"] == ["cam2", "cam3"]
 
 
+def test_shipping_board_settings_default_to_today(auth_client, operator):
+    response = auth_client(operator).get("/api/cameras/shipping-settings/")
+
+    assert response.status_code == 200
+    assert response.data["completed_orders_days"] == 1
+    assert response.data["video_retention_days"] == 14
+
+
+def test_admin_changes_completed_order_retention(auth_client, boss, operator):
+    response = auth_client(boss).patch(
+        "/api/cameras/shipping-settings/",
+        {"completed_orders_days": 7},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert response.data["completed_orders_days"] == 7
+    row = MonoblockCameraSettings.objects.get(singleton=True)
+    assert row.completed_orders_days == 7
+    assert row.updated_by == boss
+
+    denied = auth_client(operator).patch(
+        "/api/cameras/shipping-settings/",
+        {"completed_orders_days": 3},
+        format="json",
+    )
+    assert denied.status_code == 403
+
+
+@pytest.mark.parametrize("value", [0, 91, "bad", True])
+def test_shipping_board_retention_is_validated(auth_client, boss, value):
+    response = auth_client(boss).patch(
+        "/api/cameras/shipping-settings/",
+        {"completed_orders_days": value},
+        format="json",
+    )
+    assert response.status_code == 400
+
+
 def test_operator_cannot_change_monoblock_camera_allowlist(auth_client, operator):
     response = auth_client(operator).put(
         "/api/cameras/monoblock-settings/",

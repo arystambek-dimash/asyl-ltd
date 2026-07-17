@@ -13,6 +13,7 @@ function Get-CameraAgentSettings {
     $settings = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
     $required = @(
         'mediaRoot', 'mediaTaskName', 'requiredPorts', 'expectedSources',
+        'recordingRetentionDays', 'recordingSegmentMinutes',
         'minimumConfigSources', 'minimumConfigPaths', 'majorityLossPercent',
         'sourceFailureThreshold', 'hardFailureCooldownMinutes', 'restartCooldownMinutes',
         'restartFailureBackoffMinutes', 'restartReadyTimeoutSeconds',
@@ -32,6 +33,14 @@ function Get-CameraAgentSettings {
     }
     if ([int]$settings.expectedSources -lt 1) {
         throw 'expectedSources must be a positive site baseline.'
+    }
+    if ([int]$settings.recordingRetentionDays -lt 1 -or
+        [int]$settings.recordingRetentionDays -gt 90) {
+        throw 'recordingRetentionDays must be between 1 and 90.'
+    }
+    if ([int]$settings.recordingSegmentMinutes -lt 1 -or
+        [int]$settings.recordingSegmentMinutes -gt 60) {
+        throw 'recordingSegmentMinutes must be between 1 and 60.'
     }
     if ([int]$settings.minimumConfigSources -lt [int]$settings.expectedSources) {
         throw 'minimumConfigSources must not be below expectedSources.'
@@ -120,6 +129,71 @@ function Write-AtomicJsonFile {
         [int]$Depth = 8
     )
     Write-AtomicTextFile -Path $Path -Content ($Value | ConvertTo-Json -Depth $Depth)
+}
+
+function Enable-AiRecordingConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$MediaRoot,
+        [int]$RetentionDays = 14,
+        [int]$SegmentMinutes = 5
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "MediaMTX config not found: $Path"
+    }
+    if ($RetentionDays -lt 1 -or $RetentionDays -gt 90) {
+        throw 'Recording retention must be between 1 and 90 days.'
+    }
+    if ($SegmentMinutes -lt 1 -or $SegmentMinutes -gt 60) {
+        throw 'Recording segment duration must be between 1 and 60 minutes.'
+    }
+
+    $content = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    $original = $content
+    $globals = [ordered]@{
+        api = 'yes'
+        apiAddress = '127.0.0.1:9997'
+        playback = 'yes'
+        playbackAddress = ':9996'
+    }
+    foreach ($entry in $globals.GetEnumerator()) {
+        $pattern = '(?m)^' + [regex]::Escape([string]$entry.Key) + ':\s*.*$'
+        if ([regex]::IsMatch($content, $pattern)) {
+            $content = [regex]::Replace(
+                $content, $pattern, ([string]$entry.Key + ': ' + [string]$entry.Value)
+            )
+        } else {
+            $content = ([string]$entry.Key + ': ' + [string]$entry.Value + "`r`n") + $content
+        }
+    }
+
+    # The NVR synchronizer rewrites camera paths. Recreate this marked regex
+    # block after every sync, so only annotated AI publisher paths are recorded.
+    $markerPattern = '(?ms)^  # ASYL-AI-RECORDING-BEGIN\r?\n.*?^  # ASYL-AI-RECORDING-END\r?\n?'
+    $content = [regex]::Replace($content, $markerPattern, '')
+    if (-not [regex]::IsMatch($content, '(?m)^paths:\s*$')) {
+        throw 'MediaMTX config has no block-style paths section.'
+    }
+    $recordRoot = ($MediaRoot -replace '\\', '/').TrimEnd('/')
+    $block = @(
+        '  # ASYL-AI-RECORDING-BEGIN',
+        '  "~^cam[A-Za-z0-9_]*ai$":',
+        '    record: yes',
+        ('    recordPath: "' + $recordRoot + '/recordings/%path/%Y-%m-%d_%H-%M-%S-%f"'),
+        '    recordFormat: fmp4',
+        '    recordPartDuration: 1s',
+        ('    recordSegmentDuration: ' + $SegmentMinutes + 'm'),
+        ('    recordDeleteAfter: ' + ($RetentionDays * 24) + 'h'),
+        '  # ASYL-AI-RECORDING-END'
+    ) -join "`r`n"
+    $pathsPattern = New-Object Text.RegularExpressions.Regex('(?m)^paths:\s*$')
+    $content = $pathsPattern.Replace($content, ("paths:`r`n" + $block), 1)
+
+    if ($content -ne $original) {
+        Write-AtomicTextFile -Path $Path -Content $content
+        return $true
+    }
+    return $false
 }
 
 function Read-CameraAgentState {
@@ -771,6 +845,7 @@ function Wait-MediaMtxReady {
 Export-ModuleMember -Function @(
     'Get-CameraAgentSettings', 'Get-CameraAgentPaths', 'Initialize-CameraAgentDataRoot',
     'Invoke-WithCameraMutationLock', 'Write-AtomicTextFile', 'Write-AtomicJsonFile',
+    'Enable-AiRecordingConfig',
     'Read-CameraAgentState', 'Write-CameraAgentState', 'Write-CameraAgentLog',
     'Test-CameraTcpPort', 'Get-ExpectedCameraSourceCount', 'Get-NvrAddressFromConfig',
     'Get-MediaMtxHealth', 'Get-TailscaleHealth', 'Test-MediaMtxConfig',
