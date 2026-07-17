@@ -26,18 +26,6 @@ def _train_order(boss, status="confirmed", qty=10, stock=100):
     return o
 
 
-def test_train_queue_lists_only_train_orders(loader, boss):
-    t = _train_order(boss)
-    # truck order должен быть исключён
-    c2 = Client.objects.create(first_name="T", last_name="T", phone="y")
-    Order.objects.create(client=c2, status="confirmed", transport_type="truck")
-    r = _api(loader).get("/api/orders/train/queue/")
-    assert r.status_code == 200
-    ids = [o["id"] for o in r.data]
-    assert t.id in ids
-    assert all(o["transport_type"] == "train" for o in r.data)
-
-
 def test_train_action_flow(loader, boss):
     o = _train_order(boss, qty=10)
     api = _api(loader)

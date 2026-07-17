@@ -3,7 +3,7 @@ from decimal import Decimal
 from rest_framework.exceptions import ValidationError
 from apps.clients.models import Client
 from apps.catalog.models import Product
-from apps.orders.models import Order, OrderItem, Payment
+from apps.orders.models import Order, OrderItem
 from apps.orders import services
 
 
@@ -62,15 +62,6 @@ def test_reject_payment_keeps_arrived(order, make_user):
     pay.refresh_from_db(); order.refresh_from_db()
     assert pay.status == "rejected"
     assert order.status == "shipped"
-
-
-def test_approve_debt_sets_override(order, make_user):
-    services.approve_debt(order, make_user(username="boss"))
-    order.refresh_from_db()
-    # Долг больше не меняет логистический статус — лишь фиксирует override.
-    assert order.status == "shipped"
-    assert order.debt_override is True
-    assert order.settlement_intent == "debt"
 
 
 def test_client_payment_requires_shipped(order, make_user):

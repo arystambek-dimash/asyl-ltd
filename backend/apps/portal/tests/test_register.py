@@ -17,6 +17,17 @@ def test_register_creates_client_user_and_returns_tokens(api_client):
 
 
 @pytest.mark.django_db
+def test_register_weak_password_rejected(api_client):
+    # Числовой пароль режется AUTH_PASSWORD_VALIDATORS, а не только min_length.
+    r = api_client.post("/api/portal/register/",
+                        {"username": "weakcli", "password": "12345678",
+                         "first_name": "A", "last_name": "B", "phone": "1"},
+                        format="json")
+    assert r.status_code == 400
+    assert not get_user_model().objects.filter(username="weakcli").exists()
+
+
+@pytest.mark.django_db
 def test_register_duplicate_username_rejected(api_client, make_user):
     make_user(username="taken")
     r = api_client.post("/api/portal/register/",

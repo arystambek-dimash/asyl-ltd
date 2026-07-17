@@ -4,9 +4,6 @@ from decimal import Decimal
 
 
 class OrderQuerySet(models.QuerySet):
-    def alive(self):
-        return self.filter(deleted_at__isnull=True)
-
     def deleted(self):
         return self.filter(deleted_at__isnull=False)
 
@@ -78,10 +75,6 @@ class Order(models.Model):
     all_objects = OrderQuerySet.as_manager()
 
     @property
-    def is_deleted(self) -> bool:
-        return self.deleted_at is not None
-
-    @property
     def total_amount(self) -> Decimal:
         # Цена за мешок — зафиксированная договорная (unit_price); пока не задана,
         # используем базовую цену товара (для черновиков и обратной совместимости).
@@ -122,7 +115,6 @@ class OrderItem(models.Model):
 
 
 class Payment(models.Model):
-    METHODS = ["cash", "card", "kaspi", "invoice", "debt"]
     CASHIER_METHODS = ["cash", "kaspi", "invoice"]
     # Цепочка подтверждения: запрошена → принята (менеджер/оператор) →
     # подтверждена бухгалтером-кассой (только тогда деньги учтены).
@@ -145,11 +137,6 @@ class Payment(models.Model):
         on_delete=models.SET_NULL, related_name="received_payments",
     )
     received_at = models.DateTimeField(null=True, blank=True)
-    accountant_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="accountant_payments",
-    )
-    accountant_at = models.DateTimeField(null=True, blank=True)
     # Финальное подтверждение кассира — фактическое поступление денег.
     confirmed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,

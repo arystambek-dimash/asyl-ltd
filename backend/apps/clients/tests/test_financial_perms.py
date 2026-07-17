@@ -32,13 +32,6 @@ def test_store_debts_requires_reports_view(user_with_perms):
     assert _api(reporter).get("/api/stores/debts/").status_code == 200
 
 
-def test_orders_debts_requires_reports_view(user_with_perms):
-    viewer = user_with_perms("ov", codes=["orders.view"])
-    reporter = user_with_perms("rv4", codes=["reports.view"])
-    assert _api(viewer).get("/api/orders/debts/").status_code == 403
-    assert _api(reporter).get("/api/orders/debts/").status_code == 200
-
-
 def test_check_overdue_requires_clients_edit(user_with_perms):
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
     Store.objects.create(client=c, name="S", payment_schedule_type="none")

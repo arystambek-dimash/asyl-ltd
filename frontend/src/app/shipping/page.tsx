@@ -15,7 +15,7 @@ import { can } from "@/lib/can";
 import { cn, formatDateTime, formatMoney } from "@/lib/utils";
 import {
   Activity, ArrowLeft, Cctv, Check, ChevronRight, Clock3, Layers3, LockKeyhole,
-  LogOut, Minus, Package, Phone, Play, Plus, Radio, RotateCcw, Scale, Settings2,
+  LogOut, Minus, Package, Phone, Play, Plus, Radio, RotateCcw, Scale,
   TrainFront, Truck, User, VideoOff,
 } from "lucide-react";
 import type { AiCountingSession, Order } from "@/lib/types";
@@ -172,6 +172,10 @@ function BagCounter({ order, onSave }: {
   const [saving, setSaving] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSaved = useRef(order.bags_loaded ?? 0);
+  // Для сброса на размонтировании: несохранённый счёт и актуальный onSave.
+  const pending = useRef<number | null>(null);
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
 
   // Чужие обновления (второй планшет, камера) подтягиваем при поллинге,
   // не перетирая то, что контролёр набирает прямо сейчас.
@@ -195,11 +199,31 @@ function BagCounter({ order, onSave }: {
   function change(delta: number) {
     setBags((prev) => {
       const next = Math.max(0, prev + delta);
+      pending.current = next;
       if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => { timer.current = null; save(next); }, 700);
+      timer.current = setTimeout(() => {
+        timer.current = null;
+        pending.current = null;
+        save(next);
+      }, 700);
       return next;
     });
   }
+
+  // Уход со счётчика в пределах дебаунса не должен терять последние клики:
+  // отменяем таймер и сохраняем несохранённое напрямую (без setState).
+  useEffect(() => () => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    if (pending.current !== null) {
+      void onSaveRef.current(pending.current).catch(() => {
+        // экран уже закрыт — показать ошибку некому, счёт добьёт поллинг
+      });
+      pending.current = null;
+    }
+  }, []);
 
   const ordered = orderedBags(order);
   const pct = ordered > 0 ? Math.min(100, Math.round((bags / ordered) * 100)) : 0;
@@ -473,9 +497,6 @@ function LiveBoard({ orders, cameras, onOpen }: {
           </div>
           <span className="text-[12px] text-slate-400">обновляется автоматически</span>
         </div>
-        <button type="button" className="ml-auto flex h-10 items-center gap-2 rounded-xl border bg-white px-4 text-[13px] font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-900">
-          <Settings2 className="size-4" /> Настроить колонки
-        </button>
       </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {BOARD_STAGES.map((stage, i) => {

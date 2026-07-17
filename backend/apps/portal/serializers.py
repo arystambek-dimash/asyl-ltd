@@ -1,4 +1,5 @@
 from django.core.exceptions import ObjectDoesNotExist
+from django.db import transaction
 from rest_framework import serializers
 from apps.common.money import money_string
 from apps.catalog.models import ClientPrice, Product
@@ -31,6 +32,8 @@ class CatalogProductSerializer(serializers.ModelSerializer):
 class PortalOrderItemSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(read_only=True)
     product_label = serializers.CharField(source="product.__str__", read_only=True)
+    # PositiveIntegerField пропускает 0 — заказ из «нулевых» позиций бессмыслен.
+    quantity = serializers.IntegerField(min_value=1)
 
     class Meta:
         model = OrderItem
@@ -129,7 +132,9 @@ class PortalOrderSerializer(serializers.ModelSerializer):
             for payment in obj.payments.all()
         )
 
+    @transaction.atomic
     def create(self, validated_data):
+        # Атомарно: сбой на любой позиции не должен оставлять заказ-сироту.
         from apps.warehouse.services import ensure_products_available
         items = validated_data.pop("items")
         # Клиент портала тоже заказывает только товар в наличии.

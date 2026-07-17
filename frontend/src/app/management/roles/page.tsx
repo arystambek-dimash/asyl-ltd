@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
+import { can } from "@/lib/can";
 import { api, apiError } from "@/lib/api";
 import { Plus, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -18,7 +19,8 @@ import { PermissionPicker } from "@/components/permission-picker";
 import type { Role, Permission } from "@/lib/types";
 
 function RolesPageInner() {
-  const { refreshMe } = useAuth();
+  const { me, refreshMe } = useAuth();
+  const canManage = can(me, "rbac.manage");
   const { data: roles, error: loadError, reload } = useApi<Role[]>("/roles/");
   const { data: perms } = useApi<Permission[]>("/permissions/");
   const [open, setOpen] = useState(false);
@@ -61,11 +63,11 @@ function RolesPageInner() {
   return (
     <AppShell title="Роли" section="Управление"
       description="Роль определяет доступы сотрудников. Изменили права роли — они сразу действуют у всех, кому она назначена."
-      actions={
+      actions={canManage && (
         <Button size="sm" onClick={openNew} aria-label="Новая роль">
           <Plus className="size-4" /> <span className="hidden sm:inline">Новая роль</span>
         </Button>
-      }>
+      )}>
       <div className="mb-4">
         <p className="text-sm text-[var(--muted-foreground)]">{roles?.length ?? 0} ролей</p>
       </div>
@@ -82,8 +84,10 @@ function RolesPageInner() {
               <p className="text-xs text-[var(--muted-foreground)]">
                 Прав: {r.permissions.length} · Сотрудников: {r.employee_count}</p>
               <div className="flex gap-2">
-                <Button size="sm" variant="outline" onClick={() => openEdit(r)}>Изменить</Button>
-                {r.employee_count === 0 && (
+                <Button size="sm" variant="outline" onClick={() => openEdit(r)}>
+                  {canManage ? "Изменить" : "Посмотреть"}
+                </Button>
+                {canManage && r.employee_count === 0 && (
                   <Button size="sm" variant="ghost"
                     className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
                     onClick={() => { setDelError(""); setDelRole(r); }} title="Удалить">
@@ -109,8 +113,12 @@ function RolesPageInner() {
           </div>
           {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
           <div className="flex justify-end gap-2 border-t pt-5">
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
-            <Button type="submit" disabled={busy}>{busy ? "Сохранение…" : "Сохранить"}</Button>
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+              {canManage ? "Отмена" : "Закрыть"}
+            </Button>
+            {canManage && (
+              <Button type="submit" disabled={busy}>{busy ? "Сохранение…" : "Сохранить"}</Button>
+            )}
           </div>
         </form>
       </Modal>

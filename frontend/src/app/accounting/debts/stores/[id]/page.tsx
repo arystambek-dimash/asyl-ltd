@@ -60,7 +60,7 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   return (
     <AppShell title={`Долг · ${store.name}`} section="Касса"
       actions={
-        <Link href="/accounting?tab=debts"><Button size="sm" variant="outline"><ArrowLeft className="size-4" /> К долгам</Button></Link>
+        <Link href="/accounting"><Button size="sm" variant="outline"><ArrowLeft className="size-4" /> К долгам</Button></Link>
       }>
       <div className="mb-5 rounded-xl border bg-[var(--card)] p-5 shadow-card">
         <div className="flex flex-wrap items-start justify-between gap-3">

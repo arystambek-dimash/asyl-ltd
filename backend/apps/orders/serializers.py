@@ -1,3 +1,4 @@
+from django.db import transaction
 from rest_framework import serializers
 from apps.clients.models import Department
 from .models import Order, OrderItem, Payment, StatusChangeRequest
@@ -8,6 +9,8 @@ from .statuses import public_status_label
 class OrderItemSerializer(serializers.ModelSerializer):
     product_label = serializers.CharField(source="product.__str__", read_only=True)
     cv_class = serializers.CharField(source="product.cv_class", read_only=True)
+    # PositiveIntegerField пропускает 0 — заказ из «нулевых» позиций бессмыслен.
+    quantity = serializers.IntegerField(min_value=1)
     # base_price — справочная цена товара; price — фактическая (договорная при подтверждении).
     base_price = serializers.DecimalField(source="product.price", max_digits=12,
                                           decimal_places=2, read_only=True)
@@ -85,7 +88,6 @@ def _username(user):
 class PaymentSerializer(serializers.ModelSerializer):
     recorded_by_name = serializers.SerializerMethodField()
     received_by_name = serializers.SerializerMethodField()
-    accountant_by_name = serializers.SerializerMethodField()
     confirmed_by_name = serializers.SerializerMethodField()
     method_label = serializers.SerializerMethodField()
 
@@ -94,7 +96,6 @@ class PaymentSerializer(serializers.ModelSerializer):
         fields = ["id", "order", "amount", "method", "method_label", "status",
                   "note", "paid_at", "recorded_by", "recorded_by_name",
                   "received_by_name", "received_at",
-                  "accountant_by_name", "accountant_at",
                   "confirmed_by", "confirmed_by_name", "confirmed_at"]
         read_only_fields = ["order", "paid_at", "recorded_by", "confirmed_by"]
 
@@ -104,9 +105,6 @@ class PaymentSerializer(serializers.ModelSerializer):
     def get_received_by_name(self, obj):
         return _username(obj.received_by)
 
-    def get_accountant_by_name(self, obj):
-        return _username(obj.accountant_by)
-
     def get_confirmed_by_name(self, obj):
         return _username(obj.confirmed_by)
 
@@ -114,7 +112,29 @@ class PaymentSerializer(serializers.ModelSerializer):
         return PAYMENT_METHOD_LABELS.get(obj.method, obj.method)
 
 
-class PaymentQueueSerializer(PaymentSerializer):
+class DepartmentLabelMixin:
+    """department_name/department_color по коду отдела — один справочник на
+    сериализацию списка (кэш на инстансе), без запроса на каждую строку."""
+
+    def _department_code(self, obj):
+        return obj.department
+
+    def _department(self, code):
+        if not hasattr(self, "_departments"):
+            self._departments = {row.code: row for row in Department.objects.all()}
+        return self._departments.get(code)
+
+    def get_department_name(self, obj):
+        code = self._department_code(obj)
+        row = self._department(code)
+        return row.name if row else code
+
+    def get_department_color(self, obj):
+        row = self._department(self._department_code(obj))
+        return row.color if row else "#64748B"
+
+
+class PaymentQueueSerializer(DepartmentLabelMixin, PaymentSerializer):
     """Оплата с контекстом заказа — для табло бухгалтера и кассы."""
     client_name = serializers.CharField(source="order.client.name", read_only=True)
     department = serializers.CharField(source="order.department", read_only=True)
@@ -131,21 +151,11 @@ class PaymentQueueSerializer(PaymentSerializer):
             "client_name", "department", "department_name", "department_color",
             "order_status", "store", "store_name"]
 
-    def _department(self, code):
-        if not hasattr(self, "_departments"):
-            self._departments = {row.code: row for row in Department.objects.all()}
-        return self._departments.get(code)
-
-    def get_department_name(self, obj):
-        row = self._department(obj.order.department)
-        return row.name if row else obj.order.department
-
-    def get_department_color(self, obj):
-        row = self._department(obj.order.department)
-        return row.color if row else "#64748B"
+    def _department_code(self, obj):
+        return obj.order.department
 
 
-class OrderSerializer(serializers.ModelSerializer):
+class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     items = OrderItemSerializer(many=True)
     status = serializers.CharField(read_only=True)
     payment_status = serializers.CharField(read_only=True)
@@ -194,19 +204,6 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def _shipment(self, obj):
         return getattr(obj, "shipment", None)
-
-    def _department(self, code):
-        if not hasattr(self, "_departments"):
-            self._departments = {row.code: row for row in Department.objects.all()}
-        return self._departments.get(code)
-
-    def get_department_name(self, obj):
-        row = self._department(obj.department)
-        return row.name if row else obj.department
-
-    def get_department_color(self, obj):
-        row = self._department(obj.department)
-        return row.color if row else "#64748B"
 
     def get_weigh_in_kg(self, obj):
         s = self._shipment(obj)
@@ -303,7 +300,10 @@ class OrderSerializer(serializers.ModelSerializer):
             attrs["payment_method"] = "debt" if intent == "debt" else "invoice"
         return attrs
 
+    @transaction.atomic
     def create(self, validated_data):
+        # Атомарно: упавшее подтверждение (например, price_required) не должно
+        # оставлять в базе заказ-сироту без цен.
         from .services import confirm_order, apply_item_prices
         from apps.warehouse.services import ensure_products_available
         items = validated_data.pop("items")

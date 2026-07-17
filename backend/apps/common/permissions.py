@@ -20,13 +20,6 @@ class IsClientUser(BasePermission):
         return _auth(request) and request.user.is_client
 
 
-class IsSuperuser(BasePermission):
-    """Только суперадмин — для настроек уровня всей системы."""
-
-    def has_permission(self, request, view):
-        return _auth(request) and request.user.is_superuser
-
-
 class HasPerm(BasePermission):
     """Право доступа: один код или несколько (достаточно любого из них)."""
 

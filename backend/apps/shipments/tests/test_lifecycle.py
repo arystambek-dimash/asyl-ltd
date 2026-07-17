@@ -5,7 +5,7 @@ from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
 from apps.warehouse.services import receive_stock
 from rest_framework.exceptions import ValidationError
-from apps.shipments.services import (record_arrival, start_loading, record_count,
+from apps.shipments.services import (record_arrival, record_count,
                                 finish_loading, record_shipment)
 
 pytestmark = pytest.mark.django_db
@@ -39,7 +39,6 @@ def test_full_flow_deducts_stock(boss, operator):
     # Новый поток: въезд → загрузка (без оплаты) → отгрузка в долг.
     o, prod = _order(boss, status="confirmed", bags_in_stock=100, qty=50)
     record_arrival(o, Decimal("8000"), operator)
-    start_loading(o, operator)
     record_count(o, 50, operator)
     finish_loading(o, operator)
     record_shipment(o, operator)
@@ -55,7 +54,6 @@ def test_full_flow_deducts_stock(boss, operator):
 def test_double_ship_rejected(boss, operator):
     o, _ = _order(boss, status="confirmed")
     record_arrival(o, Decimal("8000"), operator)
-    start_loading(o, operator)
     record_count(o, 50, operator)
     finish_loading(o, operator)
     record_shipment(o, operator)

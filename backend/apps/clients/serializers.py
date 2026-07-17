@@ -81,7 +81,9 @@ class ClientSerializer(serializers.ModelSerializer):
         fields = ["id", "first_name", "last_name", "phone", "name",
                   "country", "iin", "bank", "bank_account", "user",
                   "debt_total", "created_at"]
-        read_only_fields = ["created_at"]
+        # user связывает клиента с аккаунтом портала (создаётся при регистрации).
+        # Запись через staff-API позволила бы перепривязать чужой аккаунт.
+        read_only_fields = ["user", "created_at"]
 
     def get_debt_total(self, obj):
         total = sum((o.remaining_amount for o in obj.orders.all() if o.is_debt),

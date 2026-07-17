@@ -39,3 +39,30 @@ def test_staff_create_without_prices_stays_draft(manager):
     }, format="json")
     assert r.status_code == 201
     assert Order.objects.get().status == "draft"
+
+
+def test_failed_price_confirmation_leaves_no_orphan_order(manager):
+    # Регресс: create() атомарен — упавшее подтверждение цен не должно
+    # оставлять в базе заказ без цен.
+    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
+    StockItem.objects.create(product=p, bags=500)
+    r = _api(manager).post("/api/orders/", {
+        "client": c.id,
+        "items": [{"product": p.id, "quantity": 3}],
+        "prices": {str(p.id): "0"},  # недопустимая цена → price_required
+    }, format="json")
+    assert r.status_code == 400
+    assert Order.objects.count() == 0
+
+
+def test_zero_quantity_rejected(manager):
+    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
+    StockItem.objects.create(product=p, bags=500)
+    r = _api(manager).post("/api/orders/", {
+        "client": c.id,
+        "items": [{"product": p.id, "quantity": 0}],
+    }, format="json")
+    assert r.status_code == 400
+    assert Order.objects.count() == 0

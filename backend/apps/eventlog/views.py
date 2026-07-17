@@ -1,4 +1,5 @@
 from rest_framework import viewsets, mixins
+from rest_framework.response import Response
 from django.db.models import Q
 from apps.common.permissions import PermViewSetMixin
 from apps.common.query_params import parse_iso_date, validate_date_range
@@ -10,6 +11,13 @@ from .serializers import EventLogSerializer
 class EventLogViewSet(PermViewSetMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
     serializer_class = EventLogSerializer
     required_perms = {"list": "events.view"}
+    # Журнал append-only и растёт бесконечно — без потолка каждый заход в
+    # «События» выгружал бы всю историю целиком.
+    MAX_ROWS = 1000
+
+    def list(self, request, *args, **kwargs):
+        qs = self.filter_queryset(self.get_queryset())[: self.MAX_ROWS]
+        return Response(self.get_serializer(qs, many=True).data)
 
     def get_queryset(self):
         visible_orders = Order.objects.all()

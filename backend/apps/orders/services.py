@@ -96,24 +96,6 @@ def add_payment(order: Order, amount, user, method="cash", stage="received",
 
 
 @transaction.atomic
-def pay_via_bank(order: Order, user) -> Payment:
-    """Оплата остатка через банк (заглушка): создаёт оплату «принята» — далее сверка и касса."""
-    _validate_payment_open(order)
-    remaining = order.total_amount - order.paid_total
-    if remaining <= 0:
-        raise ValidationError({"detail": "Заказ уже оплачен", "code": "already_paid"})
-    # TODO: здесь будет реальный запрос в банк. Пока — заглушка.
-    payment = Payment.objects.create(
-        order=order, amount=remaining, method="card", status="received",
-        recorded_by=user, received_by=user, received_at=timezone.now())
-    log_event("payment", f"Банковская оплата {remaining} принята (заглушка)",
-              user=user, order=order,
-              payload={"amount": str(remaining), "method": "card", "channel": "bank_stub",
-                       "payment_stage": "received"})
-    return payment
-
-
-@transaction.atomic
 def create_client_payment(order: Order, method: str, user) -> Payment:
     _validate_payment_open(order)
     if method not in ("invoice", "kaspi", "cash", "card"):
@@ -210,18 +192,6 @@ def reject_payment(payment: Payment, user) -> Payment:
         raise ValidationError(
             {"detail": "Оплата уже финализирована", "code": "invalid_payment_stage"})
     return _set_payment_stage(payment, "rejected", user)
-
-
-@transaction.atomic
-def approve_debt(order: Order, user) -> Order:
-    order.debt_override = True
-    order.debt_override_by = user
-    order.settlement_intent = "debt"
-    order.payment_method = "debt"
-    order.save(update_fields=["debt_override", "debt_override_by",
-                              "settlement_intent", "payment_method"])
-    log_event("debt_override", "Долг одобрен", user=user, order=order)
-    return order
 
 
 def _payment_status_for(order: Order) -> str:

@@ -122,7 +122,6 @@ export interface Payment {
   note?: string;
   status: PaymentStage; paid_at: string; recorded_by: number | null; recorded_by_name?: string | null;
   received_by_name?: string | null; received_at?: string | null;
-  accountant_by_name?: string | null; accountant_at?: string | null;
   confirmed_by_name?: string | null; confirmed_at?: string | null;
 }
 
@@ -136,10 +135,17 @@ export interface StockItem {
   grade: string; color: string; color_label: string;
   packaging: string; weight_kg: string; bags: number;
 }
-export interface Shipment {
-  id: number; order: number; truck_number: string;
-  weigh_in_kg: string | null; bags_loaded: number;
-  arrived_at: string | null; shipped_at: string | null;
+/** Строка агрегата GET /clients/debts/. */
+export interface ClientDebt {
+  client_id: number;
+  client_name: string;
+  client_phone: string;
+  debt_total: string;
+  orders_count: number;
+  unpaid_count: number;
+  partial_count: number;
+  stores_count: number;
+  overdue_count: number;
 }
 export interface AiCountingSession {
   id: number; order_id: number; order_client_name: string; order_truck_number: string;

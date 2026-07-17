@@ -22,3 +22,12 @@ def validate_date_range(date_from: date | None, date_to: date | None) -> None:
         raise ValidationError(
             {"detail": "Начало периода позже конца", "code": "bad_range"}
         )
+
+
+def parse_store_id(raw: str | None) -> int | None:
+    """Parse an optional ?store= id while preserving the public error contract."""
+    if not raw:
+        return None
+    if not raw.isdigit():
+        raise ValidationError({"detail": "Некорректный магазин", "code": "bad_store"})
+    return int(raw)

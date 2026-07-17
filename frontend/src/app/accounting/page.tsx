@@ -20,7 +20,7 @@ import { api, apiError } from "@/lib/api";
 import { formatCurrency, formatMoney, todayLocalIsoDate } from "@/lib/utils";
 import { CASHIER_PAYMENT_METHOD_LABELS } from "@/lib/constants";
 import { ArrowUpRight, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
-import type { Department, Order, PaymentQueueItem, Store } from "@/lib/types";
+import type { ClientDebt, Department, Order, PaymentQueueItem, Store } from "@/lib/types";
 
 const money = formatCurrency;
 
@@ -53,18 +53,6 @@ function filtersAreValid(filters: CashFilters) {
 interface ReportSummary {
   income: { total: string; cash: string; cashless: string; payments: number };
   debt_now: { total: string; orders: number };
-}
-
-interface ClientDebt {
-  client_id: number;
-  client_name: string;
-  client_phone: string;
-  debt_total: string;
-  orders_count: number;
-  unpaid_count: number;
-  partial_count: number;
-  stores_count: number;
-  overdue_count: number;
 }
 
 function DepartmentBadge({ name, color }: { name?: string; color?: string }) {

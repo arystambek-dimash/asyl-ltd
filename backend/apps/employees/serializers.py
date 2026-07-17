@@ -1,4 +1,6 @@
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
 from apps.rbac.models import Permission
@@ -9,7 +11,7 @@ User = get_user_model()
 
 class EmployeeSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username")
-    password = serializers.CharField(write_only=True, required=False, min_length=6)
+    password = serializers.CharField(write_only=True, required=False)
     role_name = serializers.CharField(source="role.name", read_only=True)
     name = serializers.CharField(read_only=True)
     # Права роли наследуются «вживую»; permissions — личные доступы поверх роли.
@@ -35,6 +37,15 @@ class EmployeeSerializer(serializers.ModelSerializer):
             return []
         return sorted(p.code for p in obj.role.permissions.all())
 
+    def validate_password(self, value):
+        # Единые правила паролей проекта (AUTH_PASSWORD_VALIDATORS) — иначе
+        # сотруднику можно было бы завести «123456».
+        try:
+            validate_password(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages)
+        return value
+
     def validate(self, attrs):
         if not self.instance and not attrs.get("password"):
             raise serializers.ValidationError(
@@ -50,7 +61,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
         if User.objects.filter(username=username).exists():
             raise serializers.ValidationError(
                 {"detail": "Пользователь с таким логином уже существует", "code": "username_taken"})
-        user = User.objects.create_user(username=username, password=password)
+        user = User.objects.create_user(
+            username=username, password=password,
+            is_active=validated_data.get("is_active", True))
         employee = Employee.objects.create(user=user, **validated_data)
         employee.permissions.set(permissions or [])
         return employee
@@ -76,4 +89,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
         instance.save()
         if permissions is not None:
             instance.permissions.set(permissions)
+        # JWT-аутентификация проверяет user.is_active на каждом запросе —
+        # синхронизация мгновенно отключает доступ деактивированному сотруднику.
+        if instance.user.is_active != instance.is_active:
+            instance.user.is_active = instance.is_active
+            instance.user.save(update_fields=["is_active"])
         return instance

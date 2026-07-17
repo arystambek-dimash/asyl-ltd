@@ -355,12 +355,13 @@ function AnalyticsView() {
 }
 
 export default function DashboardPage() {
-  const [view, setView] = useState<DashboardView>("analytics");
-
-  // запоминаем выбранный раздел между визитами
+  // null до чтения localStorage: иначе AnalyticsView успевает смонтироваться
+  // и выстрелить своими запросами даже у тех, кто живёт на камерах.
+  // (Читать в инициализаторе useState нельзя — SSR-разметка разойдётся с клиентом.)
+  const [view, setView] = useState<DashboardView | null>(null);
   useEffect(() => {
     const saved = localStorage.getItem(VIEW_STORAGE_KEY);
-    if (saved === "cameras" || saved === "analytics") setView(saved);
+    setView(saved === "cameras" ? "cameras" : "analytics");
   }, []);
   const changeView = (v: DashboardView) => {
     setView(v);
@@ -368,8 +369,9 @@ export default function DashboardPage() {
   };
 
   return (
-    <AppShell title="Главная" tabs={<ViewSwitch view={view} onChange={changeView} />}>
-      {view === "analytics" ? <AnalyticsView /> : <CameraWall />}
+    <AppShell title="Главная"
+      tabs={view && <ViewSwitch view={view} onChange={changeView} />}>
+      {view && (view === "analytics" ? <AnalyticsView /> : <CameraWall />)}
     </AppShell>
   );
 }

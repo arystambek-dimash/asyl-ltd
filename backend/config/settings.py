@@ -14,6 +14,13 @@ SECRET_KEY = os.environ.get(
 )
 DEBUG = os.environ.get("DEBUG", "1") == "1"
 
+# Fail closed: прод (DEBUG=0) не должен молча подписывать JWT публичным
+# fallback-ключом из репозитория.
+if not DEBUG and SECRET_KEY.startswith("django-insecure-"):
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured("SECRET_KEY must be set when DEBUG is off")
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -55,7 +62,6 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": os.environ.get("THROTTLE_ANON", "60/min"),
         "user": os.environ.get("THROTTLE_USER", "600/min"),
-        "burst": os.environ.get("THROTTLE_BURST", "30/sec"),
         "login": os.environ.get("THROTTLE_LOGIN", "10/min"),
         "register": os.environ.get("THROTTLE_REGISTER", "5/min"),
     },

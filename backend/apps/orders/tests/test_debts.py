@@ -31,21 +31,11 @@ def test_debts_endpoint_lists_unsettled_shipped(boss):
     settled = _shipped_order()
     Payment.objects.create(order=settled, amount=settled.total_amount, status="confirmed")
     settled.payment_status = "settled"; settled.save()
-    r = _api(boss).get("/api/orders/debts/")
+    r = _api(boss).get("/api/clients/debts/")
     assert r.status_code == 200
-    ids = [row["id"] for row in r.data]
-    assert o.id in ids
-    assert settled.id not in ids
-
-
-def test_pay_bank_settles_full(accountant, settle_payment):
-    o = _shipped_order(intent="instant")
-    r = _api(accountant).post(f"/api/orders/{o.id}/pay-bank/")
-    assert r.status_code == 201
-    # Банковская оплата тоже проходит цепочку: принята → подтверждена кассой.
-    settle_payment(Payment.objects.get(pk=r.data["id"]), accountant)
-    o.refresh_from_db()
-    assert o.payment_status == "settled"
+    client_ids = [row["client_id"] for row in r.data]
+    assert o.client_id in client_ids
+    assert settled.client_id not in client_ids
 
 
 def test_payments_history_in_order(accountant, settle_payment):

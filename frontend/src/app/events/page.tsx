@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
+import { useDebounced } from "@/lib/use-debounced";
 import { translateOrderStatusMessage } from "@/lib/constants";
 import {
   Search, X, CircleDot, Wallet, PackageCheck, Truck,
@@ -57,17 +58,20 @@ function EventsPageInner() {
   const [search, setSearch] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  // Свободный ввод не должен дёргать API на каждую букву.
+  const debouncedSearch = useDebounced(search);
+  const debouncedOrder = useDebounced(order);
 
   const url = useMemo(() => {
     const q = new URLSearchParams();
     if (type) q.set("event_type", type);
-    if (order) q.set("order", order);
-    if (search) q.set("search", search);
+    if (debouncedOrder) q.set("order", debouncedOrder);
+    if (debouncedSearch) q.set("search", debouncedSearch);
     if (dateFrom) q.set("date_from", dateFrom);
     if (dateTo) q.set("date_to", dateTo);
     const s = q.toString();
     return s ? `/events/?${s}` : "/events/";
-  }, [type, order, search, dateFrom, dateTo]);
+  }, [type, debouncedOrder, debouncedSearch, dateFrom, dateTo]);
 
   const { data: events, loading, error, reload } = useApi<EventLog[]>(url);
 

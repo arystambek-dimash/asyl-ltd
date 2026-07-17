@@ -16,7 +16,8 @@ class User(AbstractUser):
             from apps.rbac.perms import ALL_CODES
             return set(ALL_CODES)
         emp = self._employee
-        if emp is None:
+        # Деактивированный сотрудник теряет все права, даже если роль осталась.
+        if emp is None or not emp.is_active:
             return set()
         return emp.effective_perm_codes
 
@@ -24,4 +25,5 @@ class User(AbstractUser):
         if self.is_superuser:
             return True
         emp = self._employee
-        return emp is not None and code in emp.effective_perm_codes
+        return (emp is not None and emp.is_active
+                and code in emp.effective_perm_codes)

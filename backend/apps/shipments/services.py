@@ -7,6 +7,13 @@ from apps.warehouse.services import deduct_stock
 from .models import Shipment
 
 
+def _locked(order):
+    """Перечитать заказ под блокировкой строки. Переходы статуса — это
+    read-check-write: без блокировки двойной клик или две вкладки провели бы
+    один шаг дважды (у отгрузки — двойное списание склада и двойной долг)."""
+    return type(order).objects.select_for_update().get(pk=order.pk)
+
+
 def _require_shipment(order):
     shipment = getattr(order, "shipment", None)
     if shipment is None:
@@ -37,6 +44,7 @@ def record_arrival(order, weigh_in_kg, user):
     # Въезд разрешён без оплаты: машина заезжает, затем склад грузит заказ,
     # а расчёт идёт после отгрузки. Вес спрашивается только для товаров с
     # флагом; если не передан — берём расчётный вес по мешкам.
+    order = _locked(order)
     _require_transport(order, "truck")
     if order.status != "confirmed":
         raise ValidationError(
@@ -61,20 +69,8 @@ def record_arrival(order, weigh_in_kg, user):
 
 
 @transaction.atomic
-def start_loading(order, user):
-    if order.status != "arrived":
-        raise ValidationError(
-            {"detail": "Загрузку можно начать только после въезда машины", "code": "invalid_status"}
-        )
-    shipment = _require_shipment(order)
-    order.status = "loading"
-    order.save(update_fields=["status"])
-    log_event("loading_start", "Начата загрузка", user=user, order=order)
-    return shipment
-
-
-@transaction.atomic
 def record_count(order, bags, user):
+    order = _locked(order)
     if order.status in ("arrived", "loading"):
         shipment = _require_shipment(order)
     else:
@@ -96,6 +92,7 @@ def record_count(order, bags, user):
 
 @transaction.atomic
 def finish_loading(order, user):
+    order = _locked(order)
     if order.status != "loading":
         raise ValidationError(
             {"detail": "Завершить можно только идущую загрузку", "code": "invalid_status"}
@@ -128,6 +125,7 @@ def _do_ship(order, shipment, user, label):
 
 @transaction.atomic
 def record_shipment(order, user):
+    order = _locked(order)
     _require_transport(order, "truck")
     if order.status != "loaded":
         raise ValidationError(
@@ -142,6 +140,7 @@ def record_shipment(order, user):
 @transaction.atomic
 def start_train_loading(order, user):
     """Поезд: старт сессии загрузки (без въезда и взвешивания)."""
+    order = _locked(order)
     _require_transport(order, "train")
     if order.status != "confirmed":
         raise ValidationError(
@@ -160,6 +159,7 @@ def start_train_loading(order, user):
 @transaction.atomic
 def finish_train_loading(order, user):
     """Поезд: завершить загрузку и сразу отгрузить (авто)."""
+    order = _locked(order)
     _require_transport(order, "train")
     if order.status != "loading":
         raise ValidationError(

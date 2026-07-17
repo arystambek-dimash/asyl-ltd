@@ -16,9 +16,6 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         "ship": "shipping.ship",
     }
 
-    def get_queryset(self):
-        return super().get_queryset()
-
     @action(detail=True, methods=["post"], url_path="arrive")
     def arrive(self, request, pk=None):
         serializer = ArrivalSerializer(data=request.data)

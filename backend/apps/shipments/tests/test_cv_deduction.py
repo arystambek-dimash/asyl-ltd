@@ -5,7 +5,7 @@ from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
 from apps.warehouse.services import receive_stock, deduct_stock
 from apps.warehouse.models import StockItem
-from apps.shipments.services import (record_arrival, start_loading, record_count,
+from apps.shipments.services import (record_arrival, record_count,
                                 finish_loading, record_shipment)
 
 pytestmark = pytest.mark.django_db
@@ -31,7 +31,6 @@ def test_shipment_deducts_by_order_items(boss, operator):
     # Полный поток: confirmed → въезд → загрузка → выезд (оплата после shipped).
     o, red = _setup(boss, bags_in_stock=100)
     record_arrival(o, Decimal("8000"), operator)
-    start_loading(o, operator)
     record_count(o, 50, operator)
     finish_loading(o, operator)
     record_shipment(o, operator)

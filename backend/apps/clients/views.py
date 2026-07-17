@@ -7,12 +7,10 @@ from django.db.models import Prefetch
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework import mixins
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import ValidationError
 from apps.common.permissions import HasPerm, IsStaff, PermViewSetMixin
 from apps.common.money import money_string
-from apps.common.query_params import parse_iso_date, validate_date_range
+from apps.common.query_params import parse_iso_date, parse_store_id, validate_date_range
 from apps.orders.models import Order
 from apps.orders.querysets import with_order_api_relations
 from apps.catalog.models import ClientPrice, Product
@@ -78,14 +76,7 @@ class DepartmentViewSet(viewsets.ModelViewSet):
 
 
 class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
-    # debt_total в сериализаторе обходит заказы с позициями и оплатами —
-    # грузим их заранее, иначе список клиентов даёт N+1 на каждую строку.
-    queryset = (
-        Client.objects
-        .prefetch_related(Prefetch(
-            "orders", queryset=with_order_api_relations(Order.objects.all())
-        ))
-    )
+    queryset = Client.objects.all()
     serializer_class = ClientSerializer
     required_perms = {
         "list": "clients.view",
@@ -102,7 +93,16 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     }
 
     def get_queryset(self):
-        return super().get_queryset()
+        if self.action == "debt_detail":
+            # Здесь заказы сериализуются целиком — нужен полный план загрузки.
+            return Client.objects.prefetch_related(Prefetch(
+                "orders", queryset=with_order_api_relations(Order.objects.all())
+            ))
+        # debt_total и агрегаты долгов обходят заказы только по позициям и
+        # оплатам — без предзагрузки список клиентов даёт N+1 на каждую строку,
+        # а полный план (статусы, прайсы, отгрузки) здесь лишний.
+        return Client.objects.prefetch_related(
+            "orders__items__product", "orders__payments")
 
     @action(detail=True, methods=["get"], url_path="history")
     def history(self, request, pk=None):
@@ -187,10 +187,7 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             raise ValidationError(
                 {"detail": "Минимальный остаток больше максимального",
                  "code": "bad_range"})
-        store_id = params.get("store")
-        if store_id and not store_id.isdigit():
-            raise ValidationError(
-                {"detail": "Некорректный магазин", "code": "bad_store"})
+        store_id = parse_store_id(params.get("store"))
 
         clients = self.get_queryset()
         department = params.get("department")
@@ -206,7 +203,7 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 orders = [o for o in orders
                           if timezone.localdate(o.created_at) <= date_to]
             if store_id:
-                orders = [o for o in orders if o.store_id == int(store_id)]
+                orders = [o for o in orders if o.store_id == store_id]
             debt = self._debt_total(orders)
             if debt <= 0:
                 continue
@@ -280,9 +277,6 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     queryset = Store.objects.select_related("client").all()
     serializer_class = StoreSerializer
-
-    def get_queryset(self):
-        return super().get_queryset()
 
     required_perms = {
         "list": "clients.view", "retrieve": "clients.view",

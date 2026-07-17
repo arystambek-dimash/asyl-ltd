@@ -57,9 +57,14 @@ api.interceptors.response.use(
         const access = await refreshing;
         original.headers!.Authorization = `Bearer ${access}`;
         return api(original);
-      } catch {
-        clearTokens();
-        if (typeof window !== "undefined") window.location.href = "/login";
+      } catch (refreshError) {
+        // Разлогиниваем только по вердикту сервера о refresh-токене. Сетевой
+        // сбой (сервер перезагружается) не должен выбрасывать кассира из смены.
+        const status = (refreshError as AxiosError).response?.status;
+        if (status === 401 || status === 403) {
+          clearTokens();
+          if (typeof window !== "undefined") window.location.href = "/login";
+        }
       }
     }
     if (error.response?.status === 403) showToast(errorDetail(error));

@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, apiError } from "@/lib/api";
 
 /**
@@ -42,15 +42,19 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const latestPoll = useRef(0);
 
   const refresh = useCallback(async () => {
     if (!cam || !orderId) return;
+    // Ответы поллинга могут приходить не по порядку — устаревший тик не должен
+    // откатывать счётчик назад.
+    const requestId = ++latestPoll.current;
     try {
       const res = await api.get<AiStatus>(`/cameras/${cam}/ai/?order_id=${orderId}`);
-      setStatus(res.data);
+      if (requestId === latestPoll.current) setStatus(res.data);
     } catch {
       // тик статуса не должен ронять пост — не настроен/недоступен ≈ выключен
-      setStatus(null);
+      if (requestId === latestPoll.current) setStatus(null);
     }
   }, [cam, orderId]);
 
@@ -76,6 +80,7 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
     setError("");
     try {
       const res = await fn();
+      latestPoll.current += 1; // ответ действия свежее любого выпущенного тика
       setStatus(res.data);
     } catch (e) {
       setError(apiError(e));

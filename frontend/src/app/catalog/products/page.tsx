@@ -27,6 +27,7 @@ function ProductsPageInner() {
   const { data: products, error: loadError, reload } = useApi<Product[]>("/products/");
   const { data: archived, reload: reloadArchived } = useApi<Product[]>("/products/?archived=1");
   const { me } = useAuth();
+  const canCreate = can(me, "catalog.create");
   const canEdit = can(me, "catalog.edit");
 
   const [tab, setTab] = useState<"active" | "archive">("active");
@@ -41,6 +42,7 @@ function ProductsPageInner() {
   const [busy, setBusy] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
   const [editPrice, setEditPrice] = useState("");
+  const [priceError, setPriceError] = useState("");
   const [arcItem, setArcItem] = useState<Product | null>(null);
   const [arcError, setArcError] = useState("");
   const [arcBusy, setArcBusy] = useState(false);
@@ -85,8 +87,10 @@ function ProductsPageInner() {
   }
 
   async function savePrice(p: Product) {
-    try { await api.patch(`/products/${p.id}/`, { price: editPrice }); setEditId(null); reload(); }
-    catch (e) { setError(apiError(e)); }
+    // Свой стейт ошибки: `error` рисуется только внутри модалки товара,
+    // которая при инлайн-правке цены закрыта.
+    try { await api.patch(`/products/${p.id}/`, { price: editPrice }); setEditId(null); setPriceError(""); reload(); }
+    catch (e) { setPriceError(apiError(e)); }
   }
 
   const [sortKey, setSortKey] = useState("name");
@@ -113,11 +117,11 @@ function ProductsPageInner() {
             { key: "archive", label: "Архив", icon: Archive },
           ]} />
       }
-      actions={
+      actions={canCreate && (
         <Button size="sm" onClick={openNew} aria-label="Создать товар">
           <Plus className="size-4" /> <span className="hidden sm:inline">Создать товар</span>
         </Button>
-      }>
+      )}>
       <div className="mb-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <StatCard label="Активных товаров" value={String(list.length)} accent />
@@ -171,6 +175,11 @@ function ProductsPageInner() {
       ) : (
         <Card>
           <CardContent className="pt-6">
+            {priceError && (
+              <p className="mb-3 rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
+                {priceError}
+              </p>
+            )}
             <Table>
               <THead><TR>
                 <SortableHeader label="Название" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
@@ -193,11 +202,13 @@ function ProductsPageInner() {
                           <Button size="sm" onClick={() => savePrice(p)}><Check className="size-4" /></Button>
                           <Button size="sm" variant="ghost" onClick={() => setEditId(null)}><X className="size-4" /></Button>
                         </div>
-                      ) : (
+                      ) : canEdit ? (
                         <button className="hover:underline"
                           onClick={() => { setEditId(p.id); setEditPrice(p.price); }}>
                           {formatMoney(p.price)} ₸
                         </button>
+                      ) : (
+                        <>{formatMoney(p.price)} ₸</>
                       )}
                     </TD>
                     <TD>

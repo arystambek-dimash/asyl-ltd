@@ -1,4 +1,6 @@
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers, generics
 from rest_framework.permissions import AllowAny
@@ -21,6 +23,15 @@ class RegisterSerializer(serializers.Serializer):
     def validate_username(self, value):
         if User.objects.filter(username=value).exists():
             raise serializers.ValidationError("Это имя пользователя уже занято")
+        return value
+
+    def validate_password(self, value):
+        # Публичная регистрация — применяем настроенные правила паролей,
+        # а не только минимальную длину.
+        try:
+            validate_password(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages)
         return value
 
     @transaction.atomic

@@ -2,19 +2,7 @@
 import { useMemo } from "react";
 import { useApi } from "@/lib/use-api";
 import { isFinancialOrderStatus, orderStatusGroup } from "@/lib/constants";
-import type { EventLog, Order, Payment, StockItem } from "@/lib/types";
-
-export interface ClientDebt {
-  client_id: number;
-  client_name: string;
-  client_phone: string;
-  debt_total: string;
-  orders_count: number;
-  unpaid_count: number;
-  partial_count: number;
-  stores_count: number;
-  overdue_count: number;
-}
+import type { ClientDebt, EventLog, Order, Payment, StockItem } from "@/lib/types";
 
 function confirmedPayments(orders: Order[]): Payment[] {
   return orders.flatMap((order) => order.payments ?? [])
@@ -45,7 +33,7 @@ export function useDashboardMetrics() {
   const totalBags = (stock ?? []).reduce((s, i) => s + i.bags, 0);
 
   // Отгрузки по дням за 14 дней (мешки) + «сегодня/вчера» для дельты.
-  const { shippedByDay, shippedToday, shippedYesterday, shippedTodayOrders, shippedTotal } = useMemo(() => {
+  const { shippedByDay, shippedToday, shippedYesterday, shippedTodayOrders } = useMemo(() => {
     // Events reference orders by id. A map keeps aggregation O(orders + events)
     // instead of scanning the full order list for every shipment event.
     const bagsByOrder = new Map(list.map((order) => [order.id, order.bags_loaded ?? 0]));
@@ -67,14 +55,11 @@ export function useDashboardMetrics() {
     const arr = Object.values(slots);
     const today = arr[arr.length - 1];
     const yesterday = arr[arr.length - 2];
-    let total = 0;
-    list.forEach((o) => { if (o.status === "shipped") total += o.bags_loaded ?? 0; });
     return {
       shippedByDay: arr,
       shippedToday: today?.bags ?? 0,
       shippedYesterday: yesterday?.bags ?? 0,
       shippedTodayOrders: today?.orders ?? 0,
-      shippedTotal: total,
     };
   }, [list, events]);
 
@@ -140,7 +125,7 @@ export function useDashboardMetrics() {
 
   return {
     queue, totalBags,
-    shippedByDay, shippedToday, shippedYesterday, shippedTodayOrders, shippedTotal,
+    shippedByDay, shippedToday, shippedYesterday, shippedTodayOrders,
     spark, periodRevenue, periodReceived,
     pipeline, stockByProduct, debtTotal, topDebtors,
     loadError, reload,

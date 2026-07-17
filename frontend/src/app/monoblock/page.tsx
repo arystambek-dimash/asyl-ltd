@@ -31,6 +31,9 @@ import { cn, formatDateTime } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 
 const SESSION_POLL_MS = 3_000;
+// Заказы/камеры/настройки меняются редко — не гоняем полный список заказов
+// каждые 3 секунды на экране, который висит открытым весь день.
+const SLOW_POLL_MS = 30_000;
 
 function CameraChoice({
   camera,
@@ -198,8 +201,13 @@ function SessionCard({
   const stream = ai.status?.stream ?? (live ? `${session.camera}ai` : camera?.src);
 
   async function stop() {
-    await ai.stop();
-    onStopped();
+    try {
+      await ai.stop();
+    } catch {
+      // ошибка уже показана через ai.error — карточку всё равно обновляем
+    } finally {
+      onStopped();
+    }
   }
 
   return (
@@ -291,20 +299,26 @@ function MonoblockPageInner() {
   }, [cameraSettings?.camera_sources, playable]);
 
   useEffect(() => {
-    const refresh = () => {
+    const refreshSessions = () => {
+      if (document.hidden) return;
+      void reloadSessions();
+    };
+    const refreshRest = () => {
       if (document.hidden) return;
       void reloadOrders();
       void reloadCameras();
-      void reloadSessions();
       void reloadCameraSettings();
     };
-    const timer = setInterval(refresh, SESSION_POLL_MS);
-    document.addEventListener("visibilitychange", refresh);
-    window.addEventListener("online", refresh);
+    const refreshAll = () => { refreshSessions(); refreshRest(); };
+    const fast = setInterval(refreshSessions, SESSION_POLL_MS);
+    const slow = setInterval(refreshRest, SLOW_POLL_MS);
+    document.addEventListener("visibilitychange", refreshAll);
+    window.addEventListener("online", refreshAll);
     return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", refresh);
-      window.removeEventListener("online", refresh);
+      clearInterval(fast);
+      clearInterval(slow);
+      document.removeEventListener("visibilitychange", refreshAll);
+      window.removeEventListener("online", refreshAll);
     };
   }, [reloadCameraSettings, reloadCameras, reloadOrders, reloadSessions]);
 

@@ -13,3 +13,11 @@ class EmployeeViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "create": "employees.manage", "update": "employees.manage",
         "partial_update": "employees.manage", "destroy": "employees.manage",
     }
+
+    def perform_destroy(self, instance):
+        # Удаление сотрудника не должно оставлять «живой» User с JWT-доступом.
+        user = instance.user
+        instance.delete()
+        if user.is_active:
+            user.is_active = False
+            user.save(update_fields=["is_active"])

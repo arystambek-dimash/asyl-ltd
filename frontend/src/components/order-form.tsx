@@ -56,14 +56,19 @@ export function OrderForm({ editing, onCancel, onDone }: {
   // При выборе клиента подтягиваем его цены и предзаполняем строки.
   useEffect(() => {
     if (!client) { setClientPrices({}); return; }
+    // Быстрое переключение клиентов: медленный старый ответ не должен
+    // перезаписать цены уже выбранного клиента.
+    let stale = false;
     api.get<Record<string, string>>(`/client-prices/?client=${client}`)
       .then((r) => {
+        if (stale) return;
         setClientPrices(r.data);
         setRows((rs) => rs.map((row) =>
           row.product && !row.price && r.data[row.product]
             ? { ...row, price: r.data[row.product] } : row));
       })
-      .catch(() => setClientPrices({}));
+      .catch(() => { if (!stale) setClientPrices({}); });
+    return () => { stale = true; };
   }, [client]);
 
   const total = rows.reduce((s, r) => s + Number(r.price || 0) * Number(r.quantity || 0), 0);

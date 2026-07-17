@@ -34,6 +34,6 @@ def test_sync_payment_status_settles_fully_paid():
 
 def test_debts_excludes_fully_paid_even_if_status_stale(boss):
     o = _fully_paid_but_stale()  # paid_total == total, but status stale
-    r = _api(boss).get("/api/orders/debts/")
+    r = _api(boss).get("/api/clients/debts/")
     assert r.status_code == 200
-    assert o.id not in [row["id"] for row in r.data]
+    assert o.client_id not in [row["client_id"] for row in r.data]

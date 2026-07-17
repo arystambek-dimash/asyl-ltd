@@ -156,14 +156,16 @@ def test_deleted_order_excluded_from_client_history(manager, boss):
     assert all(row["order_id"] == kept.id for row in r.data["payments"])
 
 
-def test_deleted_order_excluded_from_orders_debts_endpoint(manager, boss):
+def test_deleted_order_excluded_from_debts_endpoint(manager, boss):
     p = _product()
     c = Client.objects.create(first_name="A", last_name="B", phone="1")
     keep = _order(c, p, qty=2)
     doomed = _order(c, p, qty=3)
     _api(manager).delete(f"/api/orders/{doomed.id}/")
-    ids = [o["id"] for o in _api(boss).get("/api/orders/debts/").data]
-    assert keep.id in ids and doomed.id not in ids
+    rows = {row["client_id"]: row for row in _api(boss).get("/api/clients/debts/").data}
+    # Удалённый заказ не участвует в долге: остался только keep (2 × 100).
+    assert rows[c.id]["orders_count"] == 1
+    assert rows[c.id]["debt_total"] == str(keep.total_amount)
 
 
 def test_deleted_order_not_in_payments_queue(manager, accountant):

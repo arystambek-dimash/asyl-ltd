@@ -235,6 +235,7 @@ function ClientsPageInner() {
   const router = useRouter();
   const { data: clients, error, reload } = useApi<Client[]>("/clients/");
   const { me } = useAuth();
+  const canCreate = can(me, "clients.create");
   const canEdit = can(me, "clients.edit");
   const canDelete = can(me, "clients.delete");
   const canSetPrice = can(me, "clients.set_price");
@@ -291,11 +292,11 @@ function ClientsPageInner() {
 
   return (
     <AppShell title="Клиенты" section="Работа" description="Клиентская база: контакты, реквизиты и задолженность по каждому клиенту."
-      actions={
+      actions={canCreate && (
         <Button size="sm" aria-label="Добавить клиента" onClick={() => { setEditing(null); setOpen(true); }}>
           <Plus className="size-4" /> <span className="hidden sm:inline">Добавить клиента</span>
         </Button>
-      }>
+      )}>
       {/* Общая задолженность — как в кассовых системах: одна цифра, красным. */}
       <div className="mb-5 inline-flex min-w-56 flex-col gap-1 rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-card">
         <span className="text-[13px] font-medium text-[var(--muted-foreground)]">Общая задолженность</span>

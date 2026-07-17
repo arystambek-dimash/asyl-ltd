@@ -7,7 +7,7 @@ from django.shortcuts import get_object_or_404
 from decimal import Decimal
 from apps.common.permissions import HasPerm, PermViewSetMixin
 from apps.common.money import money_string
-from apps.common.query_params import parse_iso_date, validate_date_range
+from apps.common.query_params import parse_iso_date, parse_store_id, validate_date_range
 from apps.clients.models import Department
 from apps.shipments.services import (
     start_train_loading, record_count, finish_train_loading)
@@ -18,9 +18,9 @@ from .reports import summary_report
 from .statuses import PUBLIC_STATUS_LABELS, statuses_in_group
 from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerializer,
                           StatusChangeRequestSerializer)
-from .services import (add_payment, pay_via_bank, confirm_order, reject_order,
+from .services import (add_payment, confirm_order, reject_order,
                        receive_payment, accountant_confirm_payment,
-                       reject_payment, approve_debt, soft_delete_order, restore_order,
+                       reject_payment, soft_delete_order, restore_order,
                        purge_order,
                        request_status_change, approve_status_change, reject_status_change)
 
@@ -38,11 +38,8 @@ class ReportSummaryView(APIView):
         department = request.query_params.get("department")
         if department:
             qs = qs.filter(department=department)
-        store = request.query_params.get("store")
+        store = parse_store_id(request.query_params.get("store"))
         if store:
-            if not store.isdigit():
-                raise ValidationError(
-                    {"detail": "Некорректный магазин", "code": "bad_store"})
             qs = qs.filter(store_id=store)
         return Response(summary_report(qs, date_from, date_to))
 
@@ -61,8 +58,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "trash": "orders.edit", "restore": "orders.edit",
         "purge": "orders.edit",
         "payments": "payments.create", "confirm": "orders.confirm",
-        "pay_bank": "payments.create",
-        "debts": "reports.view",
         "set_status": "orders.view",
         "status_requests": "orders.view",
         "approve_status": "orders.edit",
@@ -72,8 +67,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "confirm_payment": "payments.confirm",
         "reject_payment": "payments.confirm",
         "payments_queue": "payments.confirm",
-        "approve_debt": "shipping.debt_override",
-        "train_queue": "train.view",
         "train": "train.load",
         "loading_camera": "shipping.load",
         "department_summary": "orders.view",
@@ -103,11 +96,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 qs = qs.filter(created_at__date__gte=date_from)
             if date_to:
                 qs = qs.filter(created_at__date__lte=date_to)
-            store = params.get("store")
+            store = parse_store_id(params.get("store"))
             if store:
-                if not store.isdigit():
-                    raise ValidationError(
-                        {"detail": "Некорректный магазин", "code": "bad_store"})
                 qs = qs.filter(store_id=store)
         return qs
 
@@ -115,7 +105,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     def department_summary(self, request):
         """Оперативная аналитика заказов в разрезе динамических отделов."""
         params = request.query_params
-        qs = with_order_api_relations(Order.objects.all())
+        # Нужны только статус/отдел/сумма — полный план загрузки здесь лишний.
+        qs = Order.objects.prefetch_related("items__product")
         date_from = parse_iso_date(params.get("date_from"))
         date_to = parse_iso_date(params.get("date_to"))
         validate_date_range(date_from, date_to)
@@ -171,11 +162,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         department = request.query_params.get("department")
         if department:
             qs = qs.filter(order__department=department)
-        store = request.query_params.get("store")
+        store = parse_store_id(request.query_params.get("store"))
         if store:
-            if not store.isdigit():
-                raise ValidationError(
-                    {"detail": "Некорректный магазин", "code": "bad_store"})
             qs = qs.filter(order__store_id=store)
         date_from = parse_iso_date(request.query_params.get("date_from"))
         date_to = parse_iso_date(request.query_params.get("date_to"))
@@ -185,14 +173,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         if date_to:
             qs = qs.filter(paid_at__date__lte=date_to)
         return Response(PaymentQueueSerializer(qs, many=True).data)
-
-    @action(detail=False, methods=["get"], url_path="train/queue")
-    def train_queue(self, request):
-        """Очередь поездов для загрузчика: подтверждённые и идущие на загрузке."""
-        qs = (self.get_queryset()
-              .filter(transport_type="train", status__in=["confirmed", "loading"])
-              .order_by("created_at"))
-        return Response(OrderSerializer(qs, many=True, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="train")
     def train(self, request, pk=None):
@@ -234,13 +214,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         order.loading_camera = camera
         order.save(update_fields=["loading_camera"])
         return Response(OrderSerializer(order, context={"request": request}).data)
-
-    @action(detail=False, methods=["get"], url_path="debts")
-    def debts(self, request):
-        """Все отгруженные заказы «в долг» с непогашенным остатком."""
-        orders = [o for o in self.get_queryset() if o.is_debt]
-        data = OrderSerializer(orders, many=True, context={"request": request}).data
-        return Response(data)
 
     def destroy(self, request, *args, **kwargs):
         """Удаление = отправка в корзину (soft-delete). Заказ исчезает из отчётов
@@ -298,11 +271,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         receive_payment(payment, request.user)
         return Response(OrderSerializer(payment.order, context={"request": request}).data)
 
-    @action(detail=True, methods=["post"], url_path="pay-bank")
-    def pay_bank(self, request, pk=None):
-        payment = pay_via_bank(self.get_object(), request.user)
-        return Response(PaymentSerializer(payment).data, status=201)
-
     @action(detail=True, methods=["post"], url_path="confirm")
     def confirm(self, request, pk=None):
         order = confirm_order(self.get_object(), request.user,
@@ -329,11 +297,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         payment = get_object_or_404(Payment, pk=pid, order=self.get_object())
         reject_payment(payment, request.user)
         return Response(OrderSerializer(payment.order, context={"request": request}).data)
-
-    @action(detail=True, methods=["post"], url_path="approve-debt")
-    def approve_debt(self, request, pk=None):
-        order = approve_debt(self.get_object(), request.user)
-        return Response(OrderSerializer(order, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="set-status")
     def set_status(self, request, pk=None):

@@ -1,16 +1,3 @@
-/** Полные внутренние этапы — только для суперадмина и служебных экранов. */
-export const ORDER_INTERNAL_STATUS_LABELS: Record<string, string> = {
-  draft: "Черновик",
-  pending: "На рассмотрении",
-  confirmed: "Ожидает въезда",
-  arrived: "Ожидает загрузки",
-  loading: "Загрузка",
-  loaded: "Завершён",
-  shipped: "Отгружен",
-  rejected: "Отклонён",
-  cancelled: "Отменён",
-};
-
 /** Четыре понятных статуса; ключ группы = реальный статус модели,
  * поэтому выбор в селекте отправляется на бэк без маппинга. */
 export const ORDER_STATUS_GROUPS: Record<string, string> = {
@@ -38,10 +25,6 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
 };
 
 export const ORDER_PUBLIC_STATUSES = ["pending", "confirmed", "shipped", "cancelled"] as const;
-export const ORDER_INTERNAL_STATUSES = [
-  "draft", "pending", "confirmed", "arrived", "loading",
-  "loaded", "shipped", "rejected", "cancelled",
-] as const;
 
 export function orderStatusGroup(status: string): string {
   return ORDER_STATUS_GROUPS[status] ?? status;
@@ -99,13 +82,6 @@ export const PAYMENT_STATUS_TONE: Record<string, "muted" | "primary" | "success"
   unpaid: "destructive",
   partial: "warning",
   settled: "success",
-};
-
-export const ROLE_LABELS: Record<string, string> = {
-  manager: "Менеджер",
-  accountant: "Бухгалтер",
-  operator: "Оператор",
-  boss: "Начальник",
 };
 
 // Цепочка подтверждения оплаты: каждый шаг фиксируется с автором и временем.

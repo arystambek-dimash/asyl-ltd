@@ -159,6 +159,9 @@ class CameraAuthView(APIView):
 
     authentication_classes = []
     permission_classes = [AllowAny]
+    # Subrequest'ы nginx приходят без X-Forwarded-For и делили бы один
+    # anon-бакет на всех зрителей — 429 здесь гасил бы всю камерную стену.
+    throttle_classes = []
 
     def get(self, request):
         token = request.COOKIES.get(CAM_COOKIE, "")
