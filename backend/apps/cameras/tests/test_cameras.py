@@ -159,6 +159,38 @@ def test_camera_list_for_staff(auth_client, operator):
     assert resp.data == payload
 
 
+def test_admin_camera_name_is_returned_everywhere(auth_client, boss, operator):
+    payload = [{"id": "nvr:cam1", "name": "Камера 1", "zone": "Въезд / весы",
+                "src": "cam1", "kind": "nvr-channel", "online": True}]
+    with patch.object(services, "discover_cameras", return_value=payload):
+        response = auth_client(boss).patch(
+            "/api/cameras/",
+            {"camera": "cam1", "name": "  Главные   ворота  "},
+            format="json",
+        )
+        assert response.status_code == 200
+        assert response.data == {"camera": "cam1", "name": "Главные ворота"}
+
+        response = auth_client(operator).get("/api/cameras/")
+
+    assert response.status_code == 200
+    assert response.data[0]["zone"] == "Главные ворота"
+    row = MonoblockCameraSettings.objects.get(singleton=True)
+    assert row.camera_names == {"cam1": "Главные ворота"}
+    assert row.updated_by == boss
+
+
+def test_operator_cannot_rename_camera(auth_client, operator):
+    response = auth_client(operator).patch(
+        "/api/cameras/",
+        {"camera": "cam1", "name": "Новое имя"},
+        format="json",
+    )
+
+    assert response.status_code == 403
+    assert not MonoblockCameraSettings.objects.exists()
+
+
 def test_camera_list_denied_for_portal_client(auth_client, client_user):
     resp = auth_client(client_user).get("/api/cameras/")
     assert resp.status_code == 403

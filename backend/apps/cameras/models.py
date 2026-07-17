@@ -62,10 +62,11 @@ class AiCountingSession(models.Model):
 
 
 class MonoblockCameraSettings(models.Model):
-    """Admin-managed allowlist of cameras offered in the Monoblock launcher."""
+    """Admin-managed camera names and allowlist for loading workflows."""
 
     singleton = models.BooleanField(default=True, unique=True, editable=False)
     camera_sources = models.JSONField(default=list, blank=True)
+    camera_names = models.JSONField(default=dict, blank=True)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -81,6 +82,16 @@ class MonoblockCameraSettings(models.Model):
         return {
             source for source in (row.camera_sources if row else [])
             if isinstance(source, str) and source
+        }
+
+    @classmethod
+    def display_names(cls) -> dict[str, str]:
+        row = cls.objects.filter(singleton=True).only("camera_names").first()
+        names = row.camera_names if row and isinstance(row.camera_names, dict) else {}
+        return {
+            source: name.strip()
+            for source, name in names.items()
+            if isinstance(source, str) and isinstance(name, str) and name.strip()
         }
 
 

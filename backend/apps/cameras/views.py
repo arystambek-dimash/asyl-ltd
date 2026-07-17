@@ -20,10 +20,56 @@ _signer = TimestampSigner(salt="cameras")
 
 
 class CameraListView(APIView):
-    permission_classes = [IsStaff]
+    def get_permissions(self):
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return [IsStaff()]
+        return [HasPerm("rbac.manage")]
 
     def get(self, request):
-        return Response(services.discover_cameras())
+        names = MonoblockCameraSettings.display_names()
+        cameras = [
+            {
+                **camera,
+                "zone": names.get(camera.get("src"), camera.get("zone")),
+            }
+            for camera in services.discover_cameras()
+        ]
+        return Response(cameras)
+
+    def patch(self, request):
+        raw_source = request.data.get("camera")
+        raw_name = request.data.get("name")
+        if not isinstance(raw_source, str) or not isinstance(raw_name, str):
+            raise ValidationError({
+                "detail": "Передайте камеру и новое имя",
+                "code": "bad_camera_name",
+            })
+        try:
+            source = ai.normalize(raw_source)
+        except ai.AiError:
+            raise ValidationError({
+                "detail": "Неизвестная камера",
+                "code": "bad_camera",
+            })
+
+        name = " ".join(raw_name.split())
+        if not name:
+            raise ValidationError({
+                "detail": "Название камеры не может быть пустым",
+                "code": "empty_camera_name",
+            })
+        if len(name) > 80:
+            raise ValidationError({
+                "detail": "Название камеры не должно превышать 80 символов",
+                "code": "camera_name_too_long",
+            })
+
+        row, _ = MonoblockCameraSettings.objects.get_or_create(singleton=True)
+        names = row.camera_names if isinstance(row.camera_names, dict) else {}
+        row.camera_names = {**names, source: name}
+        row.updated_by = request.user
+        row.save(update_fields=["camera_names", "updated_by", "updated_at"])
+        return Response({"camera": source, "name": name})
 
 
 class CameraTokenView(APIView):

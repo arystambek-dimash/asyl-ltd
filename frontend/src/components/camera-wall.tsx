@@ -1,9 +1,14 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { Grid2x2, RectangleHorizontal, Video, VideoOff } from "lucide-react";
+import { Check, Grid2x2, Pencil, RectangleHorizontal, Video, VideoOff } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { api } from "@/lib/api";
+import { api, apiError } from "@/lib/api";
+import { can } from "@/lib/can";
 import { CameraStream, ensureCameraStreamToken } from "@/components/camera-stream";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Modal } from "@/components/ui/modal";
+import { useAuth } from "@/store/auth";
 
 const CAMERA_REFRESH_MS = 30 * 1000;
 const RETRY_MAX_MS = 60 * 1000;
@@ -33,6 +38,7 @@ function CameraTile({
   ready,
   onOnline,
   onClick,
+  onRename,
   active = false,
 }: {
   // Только играбельные камеры (с потоком); недоступные не показываем.
@@ -40,6 +46,7 @@ function CameraTile({
   ready: boolean;
   onOnline: (id: string, online: boolean) => void;
   onClick?: () => void;
+  onRename?: (camera: CameraFeed & { src: string }) => void;
   active?: boolean;
 }) {
   const [online, setOnline] = useState(false);
@@ -72,6 +79,17 @@ function CameraTile({
         </div>
       )}
 
+      {onRename && (
+        <button type="button" title="Изменить название камеры"
+          onClick={(event) => {
+            event.stopPropagation();
+            onRename(cam);
+          }}
+          className="absolute right-2 top-2 z-10 flex size-8 items-center justify-center rounded-lg border border-white/15 bg-black/55 text-white/80 opacity-0 shadow-sm backdrop-blur-md transition hover:bg-white hover:text-slate-900 group-hover:opacity-100 focus-visible:opacity-100">
+          <Pencil className="size-3.5" />
+        </button>
+      )}
+
       {/* Нижний скрим с именем камеры и статусом — как в UniFi Protect */}
       <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/70 to-transparent px-2.5 pb-1.5 pt-5">
         <span className="text-xs font-medium text-white drop-shadow-sm">{cam.zone}</span>
@@ -82,6 +100,7 @@ function CameraTile({
 }
 
 export function CameraWall() {
+  const { me } = useAuth();
   const [cameras, setCameras] = useState<CameraFeed[]>([]);
   const [loading, setLoading] = useState(true);
   const playable = playableCameras(cameras);
@@ -89,6 +108,38 @@ export function CameraWall() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tokenReady, setTokenReady] = useState(false);
   const [onlineIds, setOnlineIds] = useState<Set<string>>(new Set());
+  const [editing, setEditing] = useState<(CameraFeed & { src: string }) | null>(null);
+  const [cameraName, setCameraName] = useState("");
+  const [savingName, setSavingName] = useState(false);
+  const [renameError, setRenameError] = useState("");
+  const canRename = can(me, "rbac.manage");
+
+  function editCamera(camera: CameraFeed & { src: string }) {
+    setEditing(camera);
+    setCameraName(camera.zone);
+    setRenameError("");
+  }
+
+  async function saveCameraName() {
+    if (!editing) return;
+    setSavingName(true);
+    setRenameError("");
+    try {
+      const response = await api.patch<{ camera: string; name: string }>("/cameras/", {
+        camera: editing.src,
+        name: cameraName,
+      });
+      setCameras((current) => current.map((camera) =>
+        camera.src === response.data.camera
+          ? { ...camera, zone: response.data.name }
+          : camera));
+      setEditing(null);
+    } catch (cause) {
+      setRenameError(apiError(cause));
+    } finally {
+      setSavingName(false);
+    }
+  }
 
   // Живой инвентарь: при ошибке сохраняем последнюю успешную выборку, а
   // повторяем запрос с ограниченным бэкоффом. После восстановления сети и
@@ -220,66 +271,103 @@ export function CameraWall() {
   const active = playable.find((c) => c.id === activeId) ?? playable[0];
 
   return (
-    <section className="rounded-xl border bg-[var(--card)] shadow-sm">
-      <div className="flex items-center gap-2.5 border-b px-4 py-3">
-        <Video className="size-4 text-[var(--muted-foreground)]" />
-        <span className="text-sm font-semibold">Камеры</span>
-        <span className="text-xs text-[var(--muted-foreground)]">
-          {onlineIds.size} из {playable.length} онлайн
-        </span>
-        {playable.length > 1 && (
-          <div className="ml-auto flex items-center gap-0.5">
-            <button
-              onClick={() => setMode("grid")}
-              title="Сетка"
-              className={cn("rounded-md p-1.5 transition-colors",
-                mode === "grid" ? "bg-[var(--accent)] text-[var(--foreground)]"
-                  : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]")}>
-              <Grid2x2 className="size-4" />
-            </button>
-            <button
-              onClick={() => setMode("single")}
-              title="Одна камера"
-              className={cn("rounded-md p-1.5 transition-colors",
-                mode === "single" ? "bg-[var(--accent)] text-[var(--foreground)]"
-                  : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]")}>
-              <RectangleHorizontal className="size-4" />
-            </button>
-          </div>
-        )}
-      </div>
+    <>
+      <section className="rounded-xl border bg-[var(--card)] shadow-sm">
+        <div className="flex items-center gap-2.5 border-b px-4 py-3">
+          <Video className="size-4 text-[var(--muted-foreground)]" />
+          <span className="text-sm font-semibold">Камеры</span>
+          <span className="text-xs text-[var(--muted-foreground)]">
+            {onlineIds.size} из {playable.length} онлайн
+          </span>
+          {playable.length > 1 && (
+            <div className="ml-auto flex items-center gap-0.5">
+              <button
+                onClick={() => setMode("grid")}
+                title="Сетка"
+                className={cn("rounded-md p-1.5 transition-colors",
+                  mode === "grid" ? "bg-[var(--accent)] text-[var(--foreground)]"
+                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]")}>
+                <Grid2x2 className="size-4" />
+              </button>
+              <button
+                onClick={() => setMode("single")}
+                title="Одна камера"
+                className={cn("rounded-md p-1.5 transition-colors",
+                  mode === "single" ? "bg-[var(--accent)] text-[var(--foreground)]"
+                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]")}>
+                <RectangleHorizontal className="size-4" />
+              </button>
+            </div>
+          )}
+        </div>
 
-      <div className="p-4">
-        {playable.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-12 text-[var(--muted-foreground)]">
-            <VideoOff className="size-6" />
-            <div className="text-sm font-medium">{loading ? "Загрузка…" : "Камеры недоступны"}</div>
-            {!loading && <div className="text-xs">NVR не в сети или потоки ещё не настроены</div>}
-          </div>
-        ) : mode === "grid" || playable.length === 1 ? (
-          <div className={cn(
-            "grid gap-3",
-            playable.length === 1 ? "mx-auto max-w-2xl grid-cols-1" :
-            playable.length <= 4 ? "grid-cols-2" : "grid-cols-2 lg:grid-cols-3",
-          )}>
-            {playable.map((c) => (
-              <CameraTile key={c.id} cam={c} ready={tokenReady} onOnline={handleOnline}
-                onClick={playable.length > 1
-                  ? () => { setActiveId(c.id); setMode("single"); } : undefined} />
-            ))}
-          </div>
-        ) : active ? (
-          <div className="flex flex-col gap-3">
-            <CameraTile key={active.id} cam={active} ready={tokenReady} onOnline={handleOnline} />
-            <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
+        <div className="p-4">
+          {playable.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-12 text-[var(--muted-foreground)]">
+              <VideoOff className="size-6" />
+              <div className="text-sm font-medium">{loading ? "Загрузка…" : "Камеры недоступны"}</div>
+              {!loading && <div className="text-xs">NVR не в сети или потоки ещё не настроены</div>}
+            </div>
+          ) : mode === "grid" || playable.length === 1 ? (
+            <div className={cn(
+              "grid gap-3",
+              playable.length === 1 ? "mx-auto max-w-2xl grid-cols-1" :
+              playable.length <= 4 ? "grid-cols-2" : "grid-cols-2 lg:grid-cols-3",
+            )}>
               {playable.map((c) => (
                 <CameraTile key={c.id} cam={c} ready={tokenReady} onOnline={handleOnline}
-                  active={c.id === active.id} onClick={() => setActiveId(c.id)} />
+                  onRename={canRename ? editCamera : undefined}
+                  onClick={playable.length > 1
+                    ? () => { setActiveId(c.id); setMode("single"); } : undefined} />
               ))}
             </div>
-          </div>
-        ) : null}
-      </div>
-    </section>
+          ) : active ? (
+            <div className="flex flex-col gap-3">
+              <CameraTile key={active.id} cam={active} ready={tokenReady} onOnline={handleOnline}
+                onRename={canRename ? editCamera : undefined} />
+              <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
+                {playable.map((c) => (
+                  <CameraTile key={c.id} cam={c} ready={tokenReady} onOnline={handleOnline}
+                    active={c.id === active.id} onClick={() => setActiveId(c.id)}
+                    onRename={canRename ? editCamera : undefined} />
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </section>
+
+      <Modal open={!!editing} onClose={() => setEditing(null)}
+        eyebrow="Настройка администратора"
+        title="Название камеры"
+        description="Новое имя будет использоваться во всех разделах и на всех устройствах."
+        footer={(
+          <>
+            <Button variant="ghost" onClick={() => setEditing(null)}>Отмена</Button>
+            <Button disabled={savingName || !cameraName.trim()} onClick={() => void saveCameraName()}>
+              <Check className="size-4" /> {savingName ? "Сохранение…" : "Сохранить"}
+            </Button>
+          </>
+        )}>
+        <label className="block">
+          <span className="mb-2 block text-sm font-medium text-slate-700">Имя камеры</span>
+          <Input autoFocus maxLength={80} value={cameraName}
+            onChange={(event) => setCameraName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && cameraName.trim() && !savingName) {
+                event.preventDefault();
+                void saveCameraName();
+              }
+            }}
+            placeholder="Например, Главные ворота" />
+        </label>
+        {editing && (
+          <p className="mt-2 text-xs text-slate-400">
+            Системная камера: {editing.name} · {editing.src}
+          </p>
+        )}
+        {renameError && <p className="mt-3 text-sm text-red-600">{renameError}</p>}
+      </Modal>
+    </>
   );
 }
