@@ -4,7 +4,7 @@ from rest_framework.test import APIClient
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
-from apps.cameras.models import MonoblockCameraSettings
+from apps.cameras.models import AiCountingSession, MonoblockCameraSettings
 from apps.warehouse.services import receive_stock
 from apps.shipments.services import record_arrival, record_count
 
@@ -146,3 +146,50 @@ def test_shipping_action_accepts_order_from_any_department(operator, boss):
         f"/api/orders/{o.id}/arrive/", {"weigh_in_kg": "8000"})
 
     assert response.status_code == 200
+
+
+def test_editor_can_rewind_loading_and_reset_shipment(manager, boss):
+    order = _order(boss, status="confirmed")
+    record_arrival(order, Decimal("8000"), boss)
+    record_count(order, 23, boss)
+    order.loading_camera = "cam3"
+    order.save(update_fields=["loading_camera"])
+
+    response = _client(manager).post(f"/api/orders/{order.id}/rewind-loading/")
+
+    assert response.status_code == 200
+    assert response.data["status"] == "confirmed"
+    order.refresh_from_db()
+    assert order.status == "confirmed"
+    assert order.loading_camera == ""
+    assert not hasattr(order, "shipment")
+
+
+def test_rewind_loading_requires_orders_edit(operator, boss):
+    order = _order(boss, status="confirmed")
+    record_arrival(order, Decimal("8000"), boss)
+
+    response = _client(operator).post(f"/api/orders/{order.id}/rewind-loading/")
+
+    assert response.status_code == 403
+    order.refresh_from_db()
+    assert order.status == "arrived"
+
+
+def test_rewind_loading_requires_ai_session_to_be_stopped(manager, boss):
+    order = _order(boss, status="confirmed")
+    record_arrival(order, Decimal("8000"), boss)
+    record_count(order, 7, boss)
+    AiCountingSession.objects.create(
+        order=order,
+        camera="cam3",
+        status=AiCountingSession.ACTIVE,
+        started_by=manager,
+    )
+
+    response = _client(manager).post(f"/api/orders/{order.id}/rewind-loading/")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "ai_session_active"
+    order.refresh_from_db()
+    assert order.status == "loading"

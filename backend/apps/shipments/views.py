@@ -4,7 +4,9 @@ from rest_framework.response import Response
 from apps.orders.models import Order
 from apps.common.permissions import PermViewSetMixin
 from .serializers import ArrivalSerializer, LoadSerializer, ShipmentSerializer
-from .services import finish_loading, record_arrival, record_count, record_shipment
+from .services import (
+    finish_loading, record_arrival, record_count, record_shipment, rewind_loading,
+)
 
 
 class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
@@ -14,6 +16,7 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         "load": "shipping.load",
         "finish_loading": "shipping.load",
         "ship": "shipping.ship",
+        "rewind_loading": "orders.edit",
     }
 
     @action(detail=True, methods=["post"], url_path="arrive")
@@ -42,6 +45,12 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
     def finish_loading(self, request, pk=None):
         shipment = finish_loading(self.get_object(), request.user)
         return Response(ShipmentSerializer(shipment).data)
+
+    @action(detail=True, methods=["post"], url_path="rewind-loading")
+    def rewind_loading(self, request, pk=None):
+        order = rewind_loading(self.get_object(), request.user)
+        # Клиенту достаточно нового статуса; список доски сразу перечитывается.
+        return Response({"id": order.pk, "status": order.status})
 
     @action(detail=True, methods=["post"], url_path="ship")
     def ship(self, request, pk=None):

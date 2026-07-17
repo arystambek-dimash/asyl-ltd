@@ -512,14 +512,14 @@ function BoardCard({ order, stage, camera, history, onOpen, onHistory, draggable
   );
 }
 
-function LiveBoard({ orders, cameras, histories, completedDays, onOpen, onHistory, nextStage, onMove, movingId, error }: {
+function LiveBoard({ orders, cameras, histories, completedDays, onOpen, onHistory, allowedStages, onMove, movingId, error }: {
   orders: Order[];
   cameras: CameraFeed[];
   histories: AiCountingHistory[];
   completedDays: number;
   onOpen: (id: number) => void;
   onHistory: (history: AiCountingHistory) => void;
-  nextStage: (order: Order) => BoardStageKey | null;
+  allowedStages: (order: Order) => BoardStageKey[];
   onMove: (order: Order, stage: BoardStageKey) => void;
   movingId: number | null;
   error?: string;
@@ -532,6 +532,10 @@ function LiveBoard({ orders, cameras, histories, completedDays, onOpen, onHistor
     return result;
   }, [histories]);
   const dragged = orders.find((order) => order.id === draggedId);
+  const draggedTargets = dragged ? allowedStages(dragged) : [];
+  const draggedStage = dragged
+    ? BOARD_STAGES.find((stage) => (stage.statuses as readonly string[]).includes(dragged.status))
+    : undefined;
 
   const completedLabel = completedDays === 1 ? "сегодня" : `за ${completedDays} дн.`;
   return (
@@ -559,7 +563,7 @@ function LiveBoard({ orders, cameras, histories, completedDays, onOpen, onHistor
           return (
             <div key={stage.key}
               onDragOver={(event) => {
-                if (dragged && nextStage(dragged) === stage.key) {
+                if (draggedTargets.includes(stage.key)) {
                   event.preventDefault();
                   event.dataTransfer.dropEffect = "move";
                   setOverStage(stage.key);
@@ -571,12 +575,14 @@ function LiveBoard({ orders, cameras, histories, completedDays, onOpen, onHistor
               onDrop={(event) => {
                 event.preventDefault();
                 setOverStage(null);
-                if (dragged && nextStage(dragged) === stage.key) onMove(dragged, stage.key);
+                if (dragged && draggedTargets.includes(stage.key)) onMove(dragged, stage.key);
                 setDraggedId(null);
               }}
               className={cn(
                 "flex min-h-[350px] flex-col overflow-hidden rounded-[22px] border shadow-[0_10px_30px_rgba(45,62,94,0.04)] transition-all",
-                overStage === stage.key && "-translate-y-1 border-blue-400 ring-4 ring-blue-100",
+                overStage === stage.key && (stage.key === "waiting"
+                  ? "-translate-y-1 border-amber-400 ring-4 ring-amber-100"
+                  : "-translate-y-1 border-blue-400 ring-4 ring-blue-100"),
               )}
               style={{ background: stage.tint }}>
               <div className="flex items-center gap-2.5 px-4 py-4">
@@ -617,7 +623,7 @@ function LiveBoard({ orders, cameras, histories, completedDays, onOpen, onHistor
                     history={historyByOrder.get(o.id)}
                     onOpen={finished ? undefined : onOpen}
                     onHistory={finished ? onHistory : undefined}
-                    draggable={!!nextStage(o) && movingId == null}
+                    draggable={allowedStages(o).length > 0 && movingId == null}
                     moving={movingId === o.id}
                     onDragStart={(event) => {
                       event.dataTransfer.effectAllowed = "move";
@@ -626,12 +632,16 @@ function LiveBoard({ orders, cameras, histories, completedDays, onOpen, onHistor
                     }}
                     onDragEnd={() => { setDraggedId(null); setOverStage(null); }} />
                 ))}
-                {dragged && nextStage(dragged) === stage.key && rows.length > 0 && (
+                {dragged && draggedTargets.includes(stage.key) && rows.length > 0 && (
                   <div className={cn(
                     "rounded-xl border-2 border-dashed px-3 py-4 text-center text-xs font-semibold transition-colors",
-                    overStage === stage.key ? "border-blue-500 bg-blue-50 text-blue-700" : "border-slate-300 text-slate-400",
+                    overStage === stage.key
+                      ? (stage.key === "waiting" ? "border-amber-500 bg-amber-50 text-amber-800" : "border-blue-500 bg-blue-50 text-blue-700")
+                      : "border-slate-300 text-slate-400",
                   )}>
-                    Переместить заказ #{dragged.id} сюда
+                    {draggedStage && BOARD_STAGES.indexOf(stage) < BOARD_STAGES.indexOf(draggedStage)
+                      ? `Вернуть заказ #${dragged.id} сюда`
+                      : `Переместить заказ #${dragged.id} сюда`}
                   </div>
                 )}
               </div>
@@ -921,6 +931,7 @@ function ShippingPageInner() {
   const canArrive = can(me, "shipping.arrive");
   const canShip = can(me, "shipping.ship");
   const canTrain = can(me, "train.load");
+  const canEditStatus = can(me, "orders.edit");
   const canManage = can(me, "rbac.manage");
   const canViewHistory = can(me, "shipping.view");
   const { data: orders, error: loadError, reload } = useApi<Order[]>("/orders/?post_board=1");
@@ -948,6 +959,7 @@ function ShippingPageInner() {
   const [movingId, setMovingId] = useState<number | null>(null);
   const [moveError, setMoveError] = useState("");
   const [arrivalDropOrder, setArrivalDropOrder] = useState<Order | null>(null);
+  const [rewindDropOrder, setRewindDropOrder] = useState<Order | null>(null);
   const [arrivalWeight, setArrivalWeight] = useState("");
   const [weighIn, setWeighIn] = useState("");
   const [busy, setBusy] = useState(false);
@@ -983,6 +995,9 @@ function ShippingPageInner() {
   const active = board.filter((o) => ACTIVE_STATUSES.includes(o.status));
   const selected = selectedId != null ? active.find((o) => o.id === selectedId) ?? null : null;
   const isTrain = selected?.transport_type === "train";
+  const rewindSession = rewindDropOrder
+    ? sessions?.find((item) => item.order_id === rewindDropOrder.id) ?? null
+    : null;
 
   // Пост работает только с играбельными камерами; locked — тема дашборда.
   const playable = useMemo(() => playableCameras(cameras), [cameras]);
@@ -1026,18 +1041,23 @@ function ShippingPageInner() {
 
   const openOrder = (id: number) => { setSelectedId(id); setWeighIn(""); setError(""); };
 
-  const nextBoardStage = useCallback((order: Order): BoardStageKey | null => {
+  const allowedBoardStages = useCallback((order: Order): BoardStageKey[] => {
+    const stages: BoardStageKey[] = [];
     if (order.status === "confirmed") {
-      if (order.transport_type === "train") return canTrain ? "loading" : null;
-      return canArrive ? "loading" : null;
+      if (order.transport_type === "train" ? canTrain : canArrive) stages.push("loading");
+      return stages;
+    }
+    if ((order.status === "arrived" || order.status === "loading") && canEditStatus) {
+      stages.push("waiting");
     }
     if (order.transport_type === "train" && order.status === "loading") {
-      return canTrain ? "done" : null;
+      if (canTrain) stages.push("done");
+      return stages;
     }
-    if (order.status === "arrived" || order.status === "loading") return canLoad ? "loaded" : null;
-    if (order.status === "loaded") return canShip ? "done" : null;
-    return null;
-  }, [canArrive, canLoad, canShip, canTrain]);
+    if ((order.status === "arrived" || order.status === "loading") && canLoad) stages.push("loaded");
+    if (order.status === "loaded" && canShip) stages.push("done");
+    return stages;
+  }, [canArrive, canEditStatus, canLoad, canShip, canTrain]);
 
   const stopOrderAi = useCallback(async (order: Order) => {
     const session = sessions?.find((item) => item.order_id === order.id && item.can_stop);
@@ -1048,10 +1068,13 @@ function ShippingPageInner() {
   }, [sessions]);
 
   const executeMove = useCallback(async (order: Order, target: BoardStageKey, weight?: string) => {
-    if (nextBoardStage(order) !== target) return;
+    if (!allowedBoardStages(order).includes(target)) return;
     setMovingId(order.id); setMoveError("");
     try {
-      if (target === "loading") {
+      if (target === "waiting") {
+        await stopOrderAi(order);
+        await api.post(`/orders/${order.id}/rewind-loading/`, {});
+      } else if (target === "loading") {
         if (order.transport_type === "train") {
           await api.post(`/orders/${order.id}/train/`, { action: "start" });
         } else {
@@ -1074,9 +1097,13 @@ function ShippingPageInner() {
       await Promise.all([reload(), reloadSessions(), reloadHistories()]);
     } catch (e) { setMoveError(apiError(e)); }
     finally { setMovingId(null); }
-  }, [nextBoardStage, reload, reloadHistories, reloadSessions, stopOrderAi]);
+  }, [allowedBoardStages, reload, reloadHistories, reloadSessions, stopOrderAi]);
 
   const moveOrder = useCallback((order: Order, target: BoardStageKey) => {
+    if (target === "waiting") {
+      setRewindDropOrder(order);
+      return;
+    }
     const needsWeight = order.transport_type !== "train" && order.status === "confirmed"
       && order.items.some((item) => item.ask_truck_weight);
     if (needsWeight) {
@@ -1102,7 +1129,7 @@ function ShippingPageInner() {
           <LiveBoard orders={board} cameras={cameras ?? []} histories={histories ?? []}
             completedDays={boardSettings?.completed_orders_days ?? 1}
             onOpen={openOrder} onHistory={setSelectedHistory}
-            nextStage={nextBoardStage} onMove={moveOrder}
+            allowedStages={allowedBoardStages} onMove={moveOrder}
             movingId={movingId} error={moveError} />
           {canLoad && (
             <ActiveLoadings sessions={sessions} orders={board} cameras={cameras ?? []}
@@ -1328,6 +1355,57 @@ function ShippingPageInner() {
             onChange={(event) => setArrivalWeight(event.target.value)} placeholder="0"
             className="h-20 w-full rounded-2xl border bg-slate-50 px-5 pr-16 text-right text-4xl font-black tabular-nums outline-none focus:ring-2 focus:ring-blue-500" />
           <span className="absolute right-5 top-1/2 -translate-y-1/2 font-semibold text-slate-400">кг</span>
+        </div>
+      </Modal>
+      <Modal open={!!rewindDropOrder} onClose={() => setRewindDropOrder(null)}
+        eyebrow={rewindDropOrder ? `Заказ #${rewindDropOrder.id}` : undefined}
+        title="Вернуть в ожидание въезда?"
+        description="Заказ вернётся в первую колонку, а назначенная камера снова станет свободной."
+        footer={<>
+          <Button variant="ghost" onClick={() => setRewindDropOrder(null)}>Отмена</Button>
+          <Button disabled={movingId != null || (!!rewindSession && !rewindSession.can_stop)}
+            onClick={() => {
+              if (!rewindDropOrder) return;
+              const order = rewindDropOrder;
+              setRewindDropOrder(null);
+              void executeMove(order, "waiting");
+            }}>
+            <RotateCcw className="size-4" /> Вернуть в ожидание
+          </Button>
+        </>}>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <div className="text-xs font-medium uppercase tracking-wide text-amber-700">Сбросится</div>
+              <div className="mt-1 text-2xl font-black tabular-nums text-amber-950">
+                {rewindDropOrder?.bags_loaded ?? 0} <span className="text-sm font-semibold">меш.</span>
+              </div>
+            </div>
+            <div className="rounded-xl border bg-slate-50 p-4">
+              <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Камера</div>
+              <div className="mt-1 truncate text-sm font-bold text-slate-800">
+                {rewindDropOrder?.loading_camera
+                  ? (cameras ?? []).find((camera) => camera.src === rewindDropOrder.loading_camera)?.name
+                    ?? rewindDropOrder.loading_camera
+                  : "Не назначена"}
+              </div>
+            </div>
+          </div>
+          {rewindSession && (
+            <div className={cn(
+              "rounded-xl border px-4 py-3 text-sm",
+              rewindSession.can_stop
+                ? "border-blue-200 bg-blue-50 text-blue-900"
+                : "border-red-200 bg-red-50 text-red-900",
+            )}>
+              {rewindSession.can_stop
+                ? "Перед возвратом активный AI-подсчёт будет остановлен автоматически."
+                : `AI-подсчёт запустил ${rewindSession.started_by_name || "другой сотрудник"}. Сначала он или администратор должен остановить сессию.`}
+            </div>
+          )}
+          <p className="text-sm leading-relaxed text-slate-500">
+            Вес въезда и текущий результат незавершённой погрузки будут очищены. Действие запишется в журнал.
+          </p>
         </div>
       </Modal>
     </AppShell>

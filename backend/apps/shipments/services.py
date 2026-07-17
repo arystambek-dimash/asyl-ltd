@@ -105,6 +105,52 @@ def finish_loading(order, user):
     return shipment
 
 
+@transaction.atomic
+def rewind_loading(order, user):
+    """Вернуть въехавший/загружаемый заказ обратно в ожидание въезда.
+
+    Это отдельная бизнес-операция, а не голая ручная смена статуса: очищаем
+    незавершённую отгрузку и освобождаем назначенную камеру. Работающую
+    AI-сессию сначала обязан остановить её автор или администратор.
+    """
+    order = _locked(order)
+    if order.status not in ("arrived", "loading"):
+        raise ValidationError({
+            "detail": "Вернуть в ожидание можно только заказ на этапе въезда или погрузки",
+            "code": "invalid_status",
+        })
+
+    # Импорт локальный: cameras зависит от orders, а доменная операция не
+    # должна создавать циклический импорт при старте Django.
+    from apps.cameras.models import AiCountingSession
+    has_open_ai = AiCountingSession.objects.filter(
+        order=order,
+        status__in=AiCountingSession.OPEN_STATUSES,
+    ).exists()
+    if has_open_ai:
+        raise ValidationError({
+            "detail": "Сначала остановите AI-подсчёт. Это может сделать начавший отгрузку или администратор",
+            "code": "ai_session_active",
+        })
+
+    old = order.status
+    shipment = getattr(order, "shipment", None)
+    reset_bags = shipment.bags_loaded if shipment else 0
+    if shipment:
+        shipment.delete()
+    order.status = "confirmed"
+    order.loading_camera = ""
+    order.save(update_fields=["status", "loading_camera"])
+    log_event(
+        "shipping_rewind",
+        "Заказ возвращён в ожидание въезда",
+        user=user,
+        order=order,
+        payload={"from": old, "to": "confirmed", "reset_bags": reset_bags},
+    )
+    return order
+
+
 def _do_ship(order, shipment, user, label):
     """Списать со склада и зафиксировать отгрузку в долг. Общее для трака и поезда."""
     for item in order.items.select_related("product").all():
