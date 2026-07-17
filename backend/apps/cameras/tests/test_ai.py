@@ -106,6 +106,31 @@ def test_monoblock_starts_confirmed_train_without_arrival_step(api_client, loade
     assert order.shipment.loading_started_at is not None
 
 
+def test_monoblock_rejects_unbound_order_that_is_already_loading(
+    api_client, loader,
+):
+    client = Client.objects.create(first_name="AI", last_name="Already", phone="12")
+    order = Order.objects.create(
+        client=client,
+        status="loading",
+        truck_number="01LATE",
+        loading_camera="",
+    )
+    api_client.force_authenticate(loader)
+
+    with patch.object(ai, "_request") as request:
+        response = api_client.post(
+            "/api/cameras/cam2/ai/",
+            {"order_id": order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    assert "Ожидание въезда" in response.data["detail"]
+    assert not AiCountingSession.objects.filter(order=order).exists()
+    request.assert_not_called()
+
+
 # --- клиент ---------------------------------------------------------------
 
 def test_status_none_when_not_running():

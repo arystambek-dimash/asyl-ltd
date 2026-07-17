@@ -379,8 +379,26 @@ class CameraAiView(APIView):
             order = _loading_order(request)
             if order is None:
                 raise ai.AiError(400, "Укажите заказ для AI-подсчёта")
-            if order.status not in ("confirmed", "arrived", "loading"):
-                raise ai.AiError(400, "Заказ не ожидает погрузку")
+
+            # Конфликт владения важнее проверки статуса: оператор должен
+            # увидеть, какой именно заказ уже занял камеру (HTTP 409), а не
+            # безликое сообщение о недопустимом переходе.
+            camera_session = sessions.current_for_camera(camera)
+            if camera_session and camera_session.order_id != order.pk:
+                raise sessions.AiSessionBusy(camera_session)
+            order_session = sessions.current_for_order(order.pk)
+            if order_session and order_session.camera != camera:
+                raise sessions.AiSessionBusy(order_session)
+
+            restoring_same_binding = (
+                order.status in ("arrived", "loading")
+                and order.loading_camera == camera
+            )
+            if order.status != "confirmed" and not restoring_same_binding:
+                raise ai.AiError(
+                    400,
+                    "Для новой отгрузки выберите заказ в статусе «Ожидание въезда»",
+                )
             if camera not in MonoblockCameraSettings.allowed_sources():
                 raise ai.AiError(
                     400,

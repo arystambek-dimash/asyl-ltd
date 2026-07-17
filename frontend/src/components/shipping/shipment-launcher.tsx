@@ -196,7 +196,7 @@ export function ShipmentLauncher({
               label="Заказ"
               value={orderId}
               displayValue={order ? `#${order.id} · ${order.client_name || "Без клиента"}` : undefined}
-              placeholder={orders.length ? "Выберите заказ" : "Нет заказов к погрузке"}
+              placeholder={orders.length ? "Выберите заказ" : "Нет заказов в ожидании въезда"}
               onChange={setOrderId}
             >
               {orders.map((item) => (
@@ -209,8 +209,8 @@ export function ShipmentLauncher({
         </div>
 
         <p className="mt-5 max-w-[570px] text-center text-[14px] font-medium leading-relaxed text-[#415174] sm:text-[15px]">
-          Выберите заказ и свободную камеру — погрузка привяжется к заказу,
-          и начнётся живое считывание мешков.
+          Выберите ожидающий въезда заказ и свободную камеру — заказ перейдёт
+          в «Загружается», и начнётся живое считывание мешков.
         </p>
         {error && <p className="mt-2 text-center text-sm font-medium text-red-600">{error}</p>}
 

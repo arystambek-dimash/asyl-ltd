@@ -328,7 +328,10 @@ function MonoblockPageInner() {
   const sessionOrderIds = new Set((sessions ?? []).map((session) => session.order_id));
   const startable = (orders ?? []).filter((order) => {
     if (sessionOrderIds.has(order.id)) return false;
-    return ["confirmed", "arrived", "loading"].includes(order.status);
+    // Новая сессия начинается только из колонки «Ожидание въезда».
+    // После привязки камеры backend сразу переводит заказ в `loading`,
+    // поэтому активный заказ больше не должен оставаться в этом списке.
+    return order.status === "confirmed";
   });
   const cameraOwners = useMemo(() => {
     const result: Record<string, number> = {};

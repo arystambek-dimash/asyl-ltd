@@ -49,9 +49,16 @@ def begin_camera_loading(order, camera: str, user):
     заказу; ограничение продублировано частичным UNIQUE-индексом в PostgreSQL.
     """
     order = _locked(order)
-    if order.status not in ("confirmed", "arrived", "loading"):
+    # Новый запуск возможен только для заказа, ожидающего въезда. Состояния
+    # arrived/loading принимаем исключительно идемпотентно: когда эта же
+    # камера уже была закреплена, а worker после перезапуска надо поднять снова.
+    restoring_same_binding = (
+        order.status in ("arrived", "loading")
+        and order.loading_camera == camera
+    )
+    if order.status != "confirmed" and not restoring_same_binding:
         raise ValidationError({
-            "detail": "Камеру можно назначить только заказу перед погрузкой или во время неё",
+            "detail": "Новая камера назначается только заказу в статусе «Ожидание въезда»",
             "code": "invalid_status",
         })
 
