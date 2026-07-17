@@ -72,6 +72,7 @@ export function ShipmentLauncher({
   orders,
   cameras,
   busyCameras = [],
+  cameraOwners = {},
   activeSessionCount = 0,
   onStart,
   className,
@@ -79,6 +80,7 @@ export function ShipmentLauncher({
   orders: Order[];
   cameras: PlayableCamera[];
   busyCameras?: string[];
+  cameraOwners?: Record<string, number>;
   activeSessionCount?: number;
   onStart: (order: Order, camera: PlayableCamera) => Promise<void>;
   className?: string;
@@ -88,11 +90,15 @@ export function ShipmentLauncher({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const availableCameras = useMemo(
-    () => cameras.filter((camera) => !busyCameras.includes(camera.src)),
-    [busyCameras, cameras],
-  );
   const order = orders.find((item) => String(item.id) === orderId) ?? null;
+  const availableCameras = useMemo(
+    () => cameras.filter((camera) => {
+      const ownerId = cameraOwners[camera.src];
+      if (ownerId != null) return ownerId === order?.id;
+      return !busyCameras.includes(camera.src);
+    }),
+    [busyCameras, cameraOwners, cameras, order?.id],
+  );
   const camera = availableCameras.find((item) => item.src === cameraSrc) ?? null;
   const equipmentOnline = cameras.some((item) => item.online);
 

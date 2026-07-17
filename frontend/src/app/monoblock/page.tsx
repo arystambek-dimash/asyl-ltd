@@ -325,19 +325,29 @@ function MonoblockPageInner() {
   const sessionOrderIds = new Set((sessions ?? []).map((session) => session.order_id));
   const startable = (orders ?? []).filter((order) => {
     if (sessionOrderIds.has(order.id)) return false;
-    if (order.transport_type === "train") return ["confirmed", "loading"].includes(order.status);
-    return ["arrived", "loading"].includes(order.status);
+    return ["confirmed", "arrived", "loading"].includes(order.status);
   });
+  const cameraOwners = useMemo(() => {
+    const result: Record<string, number> = {};
+    for (const order of orders ?? []) {
+      if (order.loading_camera && ["confirmed", "arrived", "loading"].includes(order.status)) {
+        result[order.loading_camera] ??= order.id;
+      }
+    }
+    for (const session of sessions ?? []) result[session.camera] = session.order_id;
+    return result;
+  }, [orders, sessions]);
 
   async function start(order: Order, camera: CameraFeed & { src: string }) {
-    await api.post(`/orders/${order.id}/loading-camera/`, { camera: camera.src });
-    if (order.transport_type === "train" && order.status === "confirmed") {
-      await api.post(`/orders/${order.id}/train/`, { action: "start" });
+    try {
+      await api.post(`/cameras/${camera.src}/ai/`, { order_id: order.id }, {
+        params: { order_id: order.id },
+      });
+    } finally {
+      // Даже если ПК камеры не ответил, сервер мог уже безопасно закрепить
+      // слот и перевести заказ в загрузку — сразу показываем реальное состояние.
+      await Promise.all([reloadOrders(), reloadSessions()]);
     }
-    await api.post(`/cameras/${camera.src}/ai/`, { order_id: order.id }, {
-      params: { order_id: order.id },
-    });
-    await Promise.all([reloadOrders(), reloadSessions()]);
   }
 
   return (
@@ -356,6 +366,7 @@ function MonoblockPageInner() {
             orders={startable}
             cameras={monoblockCameras}
             busyCameras={(sessions ?? []).map((session) => session.camera)}
+            cameraOwners={cameraOwners}
             activeSessionCount={sessions?.length ?? 0}
             onStart={start}
           />
@@ -389,7 +400,7 @@ function MonoblockPageInner() {
                     key={session.id}
                     session={session}
                     camera={playable.find((camera) => camera.src === session.camera)}
-                    onStopped={() => void reloadSessions()}
+                    onStopped={() => { void Promise.all([reloadOrders(), reloadSessions()]); }}
                   />
                 ))}
               </div>

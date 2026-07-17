@@ -8,7 +8,7 @@ from django.core import signing
 from django.utils import timezone
 
 from apps.cameras import ai, recordings
-from apps.cameras.models import AiCountingSession
+from apps.cameras.models import AiCountingSession, MonoblockCameraSettings
 from apps.cameras.views import RECORDING_TOKEN_SALT
 from apps.clients.models import Client
 from apps.orders.models import Order
@@ -24,6 +24,7 @@ RUNNING = {
 @pytest.fixture(autouse=True)
 def ai_key(monkeypatch):
     monkeypatch.setattr(ai, "AI_KEY", "test-key")
+    MonoblockCameraSettings.objects.create(camera_sources=["cam2", "cam3"])
 
 
 @pytest.fixture
@@ -49,25 +50,60 @@ def second_loading_order():
         client=client,
         status="arrived",
         truck_number="01AI2",
-        loading_camera="cam2",
+        loading_camera="cam3",
     )
 
 
-def test_start_requires_camera_bound_by_monoblock(api_client, loader, loading_order):
-    loading_order.loading_camera = ""
-    loading_order.save(update_fields=["loading_camera"])
+def test_monoblock_start_binds_camera_and_moves_confirmed_order_to_loading(
+    api_client, loader,
+):
+    client = Client.objects.create(first_name="AI", last_name="Waiting", phone="10")
+    order = Order.objects.create(
+        client=client,
+        status="confirmed",
+        truck_number="01WAIT",
+    )
     api_client.force_authenticate(loader)
 
-    with patch.object(ai, "_request") as request:
+    with patch.object(ai, "_request", return_value=(200, RUNNING)) as request:
         response = api_client.post(
             "/api/cameras/cam2/ai/",
-            {"order_id": loading_order.pk},
+            {"order_id": order.pk},
             format="json",
         )
 
-    assert response.status_code == 400
-    assert "Моноблок" in response.data["detail"]
-    request.assert_not_called()
+    assert response.status_code == 200
+    order.refresh_from_db()
+    assert order.status == "loading"
+    assert order.loading_camera == "cam2"
+    assert order.shipment.loading_started_at is not None
+    assert AiCountingSession.objects.get().order_id == order.pk
+    request.assert_called_once()
+
+
+def test_monoblock_starts_confirmed_train_without_arrival_step(api_client, loader):
+    client = Client.objects.create(first_name="AI", last_name="Train", phone="11")
+    order = Order.objects.create(
+        client=client,
+        status="confirmed",
+        transport_type="train",
+    )
+    api_client.force_authenticate(loader)
+
+    with patch.object(ai, "_request", return_value=(200, {**RUNNING, "cam": "cam3"})):
+        response = api_client.post(
+            "/api/cameras/cam3/ai/",
+            {"order_id": order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    order.refresh_from_db()
+    assert order.status == "loading"
+    assert order.loading_camera == "cam3"
+    assert order.shipment.arrived_at is None
+    assert order.shipment.weigh_in_kg is None
+    assert order.shipment.loading_started_at is not None
 
 
 # --- клиент ---------------------------------------------------------------
@@ -195,6 +231,8 @@ def test_delete_returns_final_and_releases_slot(api_client, loader, loading_orde
     session.refresh_from_db()
     assert session.status == AiCountingSession.CLOSED
     assert session.final_total == 42
+    loading_order.refresh_from_db()
+    assert loading_order.loading_camera == ""
 
 
 def test_only_starter_or_admin_can_stop_session(
@@ -383,6 +421,8 @@ def test_missing_worker_marks_session_failed_and_unlocks(
     assert resp.data["code"] == "ai_processor_stopped"
     session.refresh_from_db()
     assert session.status == AiCountingSession.FAILED
+    loading_order.refresh_from_db()
+    assert loading_order.loading_camera == ""
 
 
 def test_unavailable_maps_to_502(api_client, operator, loading_order):

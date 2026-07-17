@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm, IsStaff
 from apps.orders.models import Order
+from apps.shipments.services import begin_camera_loading
 
 from . import ai, health, recordings, services, sessions
 from .models import AiCountingSession, MonoblockCameraSettings
@@ -320,6 +321,15 @@ def _busy_response(session, user=None) -> Response:
     )
 
 
+def _release_camera_binding(order_id: int, camera: str) -> None:
+    """Освободить только совпадающую активную привязку, не трогая историю."""
+    Order.objects.filter(
+        pk=order_id,
+        loading_camera=camera,
+        status__in=("confirmed", "arrived", "loading"),
+    ).update(loading_camera="")
+
+
 class CameraAiView(APIView):
     """AI-подсчёт мешков: статус, включение и выключение модели на камере.
 
@@ -351,6 +361,7 @@ class CameraAiView(APIView):
                 # The worker disappeared/restarted: release the stale slot so
                 # this or another order can start again immediately.
                 sessions.fail(session, "AI processor stopped unexpectedly")
+                _release_camera_binding(session.order_id, camera)
                 return {
                     "running": False,
                     "available": True,
@@ -369,15 +380,22 @@ class CameraAiView(APIView):
             order = _loading_order(request)
             if order is None:
                 raise ai.AiError(400, "Укажите заказ для AI-подсчёта")
-            if order.status not in ("arrived", "loading"):
-                raise ai.AiError(400, "Заказ не находится на этапе погрузки")
-            if order.loading_camera != camera:
+            if order.status not in ("confirmed", "arrived", "loading"):
+                raise ai.AiError(400, "Заказ не ожидает погрузку")
+            if camera not in MonoblockCameraSettings.allowed_sources():
                 raise ai.AiError(
                     400,
-                    "Камера не закреплена за заказом через Моноблок",
+                    "Эта камера не разрешена администратором для Моноблока",
                 )
 
             session, created = sessions.reserve(order, camera, request.user)
+
+            try:
+                order = begin_camera_loading(order, camera, request.user)
+            except ValidationError as exc:
+                if created:
+                    sessions.fail(session, str(exc.detail))
+                raise
 
             try:
                 # A new reservation calls POST directly: ai_service already
@@ -399,6 +417,7 @@ class CameraAiView(APIView):
                 # was started. 5xx responses are ambiguous like a timeout.
                 if e.status < 500:
                     sessions.fail(session, str(e))
+                    _release_camera_binding(order.pk, camera)
                 raise
 
         return _ai_response(start, request.user)
@@ -420,6 +439,7 @@ class CameraAiView(APIView):
                 )
             final = ai.stop(camera)
             sessions.finish(session, request.user, final)
+            _release_camera_binding(order.pk, camera)
             return {
                 **(final or {}),
                 "running": False,
@@ -462,7 +482,7 @@ class CameraAiSessionListView(APIView):
     """Открытые отгрузки для моноблока — по одной на каждую камеру."""
 
     def get_permissions(self):
-        return [HasPerm("shipping.load")]
+        return [HasPerm("shipping.load", "shipping.view")]
 
     def get(self, request):
         open_sessions = (

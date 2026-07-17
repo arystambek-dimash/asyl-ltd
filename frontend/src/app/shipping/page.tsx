@@ -419,10 +419,11 @@ function TransportBadge({ order, size = "md" }: { order: Order; size?: "md" | "l
   return <PlateBadge value={order.truck_number} size={size === "lg" ? "lg" : "md"} />;
 }
 
-function BoardCard({ order, stage, camera, history, onOpen, onHistory, draggable, moving, onDragStart, onDragEnd }: {
+function BoardCard({ order, stage, camera, session, history, onOpen, onHistory, draggable, moving, onDragStart, onDragEnd }: {
   order: Order;
   stage: (typeof BOARD_STAGES)[number];
   camera?: CameraFeed;
+  session?: AiCountingSession;
   history?: AiCountingHistory;
   onOpen?: (id: number) => void;
   onHistory?: (history: AiCountingHistory) => void;
@@ -483,9 +484,17 @@ function BoardCard({ order, stage, camera, history, onOpen, onHistory, draggable
           <Cctv className="size-3.5 shrink-0" />
           <span className="truncate">{camera?.zone || camera?.name || order.loading_camera}</span>
           {stage.key === "loading" && (
-            <span className="relative ml-auto flex size-2 shrink-0">
-              <span className="absolute inline-flex size-2 animate-ping rounded-full bg-emerald-400 opacity-50" />
-              <span className="relative size-2 rounded-full bg-emerald-500" />
+            <span className="relative ml-auto flex size-2 shrink-0"
+              title={session?.status === "active" ? "AI-подсчёт активен" : session ? "AI запускается" : "Камера закреплена, AI не запущен"}>
+              {session?.status === "active" && (
+                <span className="absolute inline-flex size-2 animate-ping rounded-full bg-emerald-400 opacity-50" />
+              )}
+              <span className={cn(
+                "relative size-2 rounded-full",
+                session?.status === "active" ? "bg-emerald-500"
+                  : session?.status === "starting" ? "animate-pulse bg-amber-400"
+                    : "bg-slate-300",
+              )} />
             </span>
           )}
         </div>
@@ -512,9 +521,10 @@ function BoardCard({ order, stage, camera, history, onOpen, onHistory, draggable
   );
 }
 
-function LiveBoard({ orders, cameras, histories, completedDays, onOpen, onHistory, allowedStages, onMove, movingId, error }: {
+function LiveBoard({ orders, cameras, sessions, histories, completedDays, onOpen, onHistory, allowedStages, onMove, movingId, error }: {
   orders: Order[];
   cameras: CameraFeed[];
+  sessions: AiCountingSession[];
   histories: AiCountingHistory[];
   completedDays: number;
   onOpen: (id: number) => void;
@@ -620,6 +630,7 @@ function LiveBoard({ orders, cameras, histories, completedDays, onOpen, onHistor
                 ) : rows.map((o) => (
                   <BoardCard key={o.id} order={o} stage={stage}
                     camera={cameras.find((camera) => camera.src === o.loading_camera)}
+                    session={sessions.find((session) => session.order_id === o.id)}
                     history={historyByOrder.get(o.id)}
                     onOpen={finished ? undefined : onOpen}
                     onHistory={finished ? onHistory : undefined}
@@ -937,7 +948,7 @@ function ShippingPageInner() {
   const { data: orders, error: loadError, reload } = useApi<Order[]>("/orders/?post_board=1");
   const { data: cameras, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
   const { data: sessions, reload: reloadSessions } = useApi<AiCountingSession[]>(
-    canLoad ? "/cameras/ai/sessions/" : null,
+    canLoad || canViewHistory ? "/cameras/ai/sessions/" : null,
   );
   const { data: boardSettings, reload: reloadBoardSettings } = useApi<ShippingBoardSettings>(
     canViewHistory || canManage ? "/cameras/shipping-settings/" : null,
@@ -1126,7 +1137,7 @@ function ShippingPageInner() {
       ) : !selected ? (
         <div className="flex flex-col gap-6">
           {/* Лайв-статус заказов по этапам */}
-          <LiveBoard orders={board} cameras={cameras ?? []} histories={histories ?? []}
+          <LiveBoard orders={board} cameras={cameras ?? []} sessions={sessions ?? []} histories={histories ?? []}
             completedDays={boardSettings?.completed_orders_days ?? 1}
             onOpen={openOrder} onHistory={setSelectedHistory}
             allowedStages={allowedBoardStages} onMove={moveOrder}

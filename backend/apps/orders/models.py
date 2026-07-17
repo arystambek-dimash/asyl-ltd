@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 from decimal import Decimal
 
 
@@ -73,6 +74,19 @@ class Order(models.Model):
     # objects — только «живые» заказы (по умолчанию везде). all_objects — включая корзину.
     objects = LiveOrderManager()
     all_objects = OrderQuerySet.as_manager()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["loading_camera"],
+                condition=(
+                    ~Q(loading_camera="")
+                    & Q(status__in=["confirmed", "arrived", "loading"])
+                    & Q(deleted_at__isnull=True)
+                ),
+                name="orders_one_active_order_per_loading_camera",
+            ),
+        ]
 
     @property
     def total_amount(self) -> Decimal:

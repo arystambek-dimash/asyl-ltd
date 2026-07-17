@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from datetime import timedelta
 from decimal import Decimal
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 from apps.common.permissions import HasPerm, PermViewSetMixin
@@ -228,8 +229,39 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                     "detail": "Эта камера не разрешена администратором для Моноблока",
                     "code": "camera_not_allowed",
                 })
-        order.loading_camera = camera
-        order.save(update_fields=["loading_camera"])
+            if order.status not in ("arrived", "loading"):
+                raise ValidationError({
+                    "detail": "Предварительное назначение камеры недоступно: начните заказ через Моноблок",
+                    "code": "invalid_status",
+                })
+        try:
+            with transaction.atomic():
+                order = Order.objects.select_for_update().get(pk=order.pk)
+                if camera:
+                    conflict = (
+                        Order.objects.select_for_update()
+                        .filter(
+                            loading_camera=camera,
+                            status__in=("confirmed", "arrived", "loading"),
+                            deleted_at__isnull=True,
+                        )
+                        .exclude(pk=order.pk)
+                        .only("id")
+                        .first()
+                    )
+                    if conflict:
+                        raise ValidationError({
+                            "detail": f"Камера уже закреплена за заказом #{conflict.pk}",
+                            "code": "camera_busy",
+                            "order_id": conflict.pk,
+                        })
+                order.loading_camera = camera
+                order.save(update_fields=["loading_camera"])
+        except IntegrityError:
+            raise ValidationError({
+                "detail": "Камера уже закреплена за другим активным заказом",
+                "code": "camera_busy",
+            })
         return Response(OrderSerializer(order, context={"request": request}).data)
 
     def destroy(self, request, *args, **kwargs):

@@ -40,6 +40,85 @@ def estimated_load_kg(order) -> Decimal:
 
 
 @transaction.atomic
+def begin_camera_loading(order, camera: str, user):
+    """Закрепить свободную камеру и перевести заказ в активную погрузку.
+
+    Моноблок вызывает эту операцию перед запуском модели. Поэтому заказ из
+    `confirmed` покидает «Ожидание въезда» только в момент фактического старта
+    с выбранной камерой. Одна камера может принадлежать только одному живому
+    заказу; ограничение продублировано частичным UNIQUE-индексом в PostgreSQL.
+    """
+    order = _locked(order)
+    if order.status not in ("confirmed", "arrived", "loading"):
+        raise ValidationError({
+            "detail": "Камеру можно назначить только заказу перед погрузкой или во время неё",
+            "code": "invalid_status",
+        })
+
+    conflict = (
+        type(order).objects.select_for_update()
+        .filter(
+            loading_camera=camera,
+            status__in=("confirmed", "arrived", "loading"),
+            deleted_at__isnull=True,
+        )
+        .exclude(pk=order.pk)
+        .only("id")
+        .first()
+    )
+    if conflict:
+        raise ValidationError({
+            "detail": f"Камера уже закреплена за заказом #{conflict.pk}",
+            "code": "camera_busy",
+            "order_id": conflict.pk,
+        })
+
+    now = timezone.now()
+    old_status = order.status
+    shipment = getattr(order, "shipment", None)
+    if shipment is None:
+        shipment = Shipment.objects.create(
+            order=order,
+            truck_number=order.truck_number if order.transport_type == "truck" else "",
+        )
+
+    if order.transport_type == "truck" and old_status == "confirmed":
+        shipment.truck_number = order.truck_number
+        shipment.weigh_in_kg = estimated_load_kg(order)
+        shipment.arrived_at = now
+        log_event(
+            "arrival",
+            f"Машина {order.truck_number} принята через Моноблок",
+            user=user,
+            order=order,
+            payload={"weigh_in_kg": str(shipment.weigh_in_kg), "source": "monoblock"},
+        )
+
+    shipment.loading_started_at = shipment.loading_started_at or now
+    shipment.save()
+
+    order.status = "loading"
+    order.loading_camera = camera
+    order.save(update_fields=["status", "loading_camera"])
+    if old_status != "loading":
+        log_event(
+            "loading_start",
+            "Начата загрузка через Моноблок",
+            user=user,
+            order=order,
+            payload={"camera": camera, "from": old_status},
+        )
+    log_event(
+        "camera_bound",
+        f"Камера {camera} закреплена за заказом",
+        user=user,
+        order=order,
+        payload={"camera": camera},
+    )
+    return order
+
+
+@transaction.atomic
 def record_arrival(order, weigh_in_kg, user):
     # Въезд разрешён без оплаты: машина заезжает, затем склад грузит заказ,
     # а расчёт идёт после отгрузки. Вес спрашивается только для товаров с
