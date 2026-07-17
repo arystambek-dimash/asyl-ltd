@@ -13,14 +13,14 @@ import { SummaryCard } from "@/components/ui/summary-card";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { PaymentStageBadge } from "@/components/payment-chain";
-import { can, deptLabel } from "@/lib/can";
+import { can } from "@/lib/can";
 import { useAuth } from "@/store/auth";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { formatCurrency, formatMoney, todayLocalIsoDate } from "@/lib/utils";
 import { CASHIER_PAYMENT_METHOD_LABELS } from "@/lib/constants";
-import { ArrowUpRight, RefreshCw, Search, Send, SlidersHorizontal, X } from "lucide-react";
-import type { Order, PaymentQueueItem, Store } from "@/lib/types";
+import { ArrowUpRight, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
+import type { Department, Order, PaymentQueueItem, Store } from "@/lib/types";
 
 const money = formatCurrency;
 
@@ -67,13 +67,13 @@ interface ClientDebt {
   overdue_count: number;
 }
 
-function DepartmentBadge({ department }: { department?: string }) {
-  const { me } = useAuth();
-  if (!department) return null;
+function DepartmentBadge({ name, color }: { name?: string; color?: string }) {
+  if (!name) return null;
   return (
-    <Badge tone={department === "field" ? "primary" : "muted"}>
-      {deptLabel(me, department)}
-    </Badge>
+    <span className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold">
+      <span className="size-2 rounded-full" style={{ backgroundColor: color ?? "#64748B" }} />
+      {name}
+    </span>
   );
 }
 
@@ -87,7 +87,7 @@ function debtPaymentState(row: ClientDebt) {
   return { label: "Не оплачен", tone: "destructive" as const };
 }
 
-/* ── Очередь бухгалтера: заявки, оплаты, отправка заявок Сити ───────────── */
+/* ── Очередь кассира: заявки и оплаты по всем динамическим отделам ─────── */
 function QueueSection({ filters }: { filters: CashFilters }) {
   const router = useRouter();
   const valid = filtersAreValid(filters);
@@ -97,12 +97,9 @@ function QueueSection({ filters }: { filters: CashFilters }) {
     department: filters.department,
     store: filters.store,
   };
-  // Кассе нужны только заявки и заявки Сити в работе — не весь список заказов.
+  // Кассе нужны заявки на подтверждение и оплаты — отбор отдела общий.
   const { data: pending, error: loadError, reload: reloadPending } =
     useApi<Order[]>(valid ? apiUrl("/orders/", { ...commonParams, status: "pending" }) : null);
-  const { data: fieldOrders, reload: reloadField } =
-    useApi<Order[]>(valid && filters.department !== "main"
-      ? apiUrl("/orders/", { ...commonParams, department: "field" }) : null);
   const { data: queue, reload: reloadQueue } =
     useApi<PaymentQueueItem[]>(valid
       ? apiUrl("/orders/payments-queue/", commonParams) : null);
@@ -111,21 +108,15 @@ function QueueSection({ filters }: { filters: CashFilters }) {
 
   const pendingOrders = valid ? pending ?? [] : [];
   const toReview = valid ? queue ?? [] : [];
-  // Отправка из кассы — только для заявок Отдела 2 (Отдел 1 идёт через пост отгрузки).
-  const toShip = (valid ? fieldOrders ?? [] : []).filter((o) =>
-    ["confirmed", "arrived", "loading", "loaded"].includes(o.status));
-
   async function act(fn: () => Promise<unknown>) {
     setBusy(true); setError("");
-    try { await fn(); reloadPending(); reloadField(); reloadQueue(); }
+    try { await fn(); reloadPending(); reloadQueue(); }
     catch (e) { setError(apiError(e)); }
     finally { setBusy(false); }
   }
 
   const confirmOrder = (o: Order) =>
     act(() => api.post(`/orders/${o.id}/confirm/`, {}));
-  const shipOrder = (o: Order) =>
-    act(() => api.post(`/orders/${o.id}/set-status/`, { status: "shipped" }));
   const confirmPayment = (p: PaymentQueueItem) =>
     act(() => api.post(`/orders/${p.order}/payments/${p.id}/confirm/`));
   const receivePayment = (p: PaymentQueueItem) =>
@@ -164,7 +155,7 @@ function QueueSection({ filters }: { filters: CashFilters }) {
                         {o.client_name} · {formatMoney(o.total_amount)} ₸
                       </div>
                     </div>
-                    <DepartmentBadge department={o.department} />
+                    <DepartmentBadge name={o.department_name} color={o.department_color} />
                   </div>
                   {priced ? (
                     <Button size="sm" disabled={busy} onClick={() => confirmOrder(o)}>
@@ -201,7 +192,7 @@ function QueueSection({ filters }: { filters: CashFilters }) {
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-1">
-                    <DepartmentBadge department={p.department} />
+                    <DepartmentBadge name={p.department_name} color={p.department_color} />
                     <PaymentStageBadge status={p.status} />
                   </div>
                 </div>
@@ -220,29 +211,6 @@ function QueueSection({ filters }: { filters: CashFilters }) {
         </Card>
       </div>
 
-      {toShip.length > 0 && (
-        <Card>
-          <CardHeader><CardTitle>Заявки Сити — отправка</CardTitle></CardHeader>
-          <CardContent className="flex flex-col gap-2">
-            {toShip.map((o) => (
-              <div key={o.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
-                <div className="min-w-0">
-                  <Link href={`/orders/${o.id}`} className="text-sm font-semibold hover:underline">
-                    Заказ #{o.id}
-                  </Link>
-                  <div className="truncate text-xs text-[var(--muted-foreground)]">
-                    {o.client_name} · {formatMoney(o.total_amount)} ₸
-                  </div>
-                </div>
-                <Button size="sm" variant="outline" disabled={busy}
-                  onClick={() => shipOrder(o)} title="Отметить отправленным">
-                  <Send className="size-3.5" /> Отправлен
-                </Button>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      )}
     </section>
   );
 }
@@ -371,13 +339,13 @@ function DebtsSection({ rows, loading, error, reload }: {
   );
 }
 
-function CashFiltersPanel({ filters, stores, onChange, onReset }: {
+function CashFiltersPanel({ filters, stores, departments, onChange, onReset }: {
   filters: CashFilters;
   stores: Store[];
+  departments: Department[];
   onChange: (patch: Partial<CashFilters>) => void;
   onReset: () => void;
 }) {
-  const { me } = useAuth();
   const today = todayLocalIsoDate();
   const activeCount = [
     filters.dateFrom !== today || filters.dateTo !== today,
@@ -430,8 +398,10 @@ function CashFiltersPanel({ filters, stores, onChange, onReset }: {
               onChange={(department) => onChange({ department })}
               options={[
                 { key: "all", label: "Все" },
-                { key: "main", label: deptLabel(me, "main") },
-                { key: "field", label: deptLabel(me, "field") },
+                ...departments.map((department) => ({
+                  key: department.code,
+                  label: department.name,
+                })),
               ]} />
             <FilterDropdown label="Магазин" active={filters.store}
               onChange={(store) => onChange({ store })}
@@ -512,6 +482,7 @@ function CashierInner() {
   const { data: debts, loading: debtsLoading, error: debtsError, reload: reloadDebts } =
     useApi<ClientDebt[]>(canReports && validFilters ? debtsUrl : null);
   const { data: stores } = useApi<Store[]>(canReports ? "/stores/" : null);
+  const { data: departments } = useApi<Department[]>("/departments/");
 
   const queueRows = validFilters ? queue ?? [] : [];
   const toReviewSum = queueRows.reduce((s, p) => s + Number(p.amount), 0);
@@ -537,7 +508,7 @@ function CashierInner() {
     <AppShell title="Касса" section="Работа"
       description="Поступления, очередь подтверждений и долги в одном месте.">
       <div className="flex flex-col gap-8">
-        <CashFiltersPanel filters={filters} stores={stores ?? []}
+        <CashFiltersPanel filters={filters} stores={stores ?? []} departments={departments ?? []}
           onChange={(patch) => setFilters((current) => ({ ...current, ...patch }))}
           onReset={resetFilters} />
 

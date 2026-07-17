@@ -13,8 +13,8 @@ from .services import archive_product, restore_product
 class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     serializer_class = ProductSerializer
     required_perms = {
-        "list": ("catalog.view", "dept2.view"),
-        "retrieve": ("catalog.view", "dept2.view"),
+        "list": "catalog.view",
+        "retrieve": "catalog.view",
         "create": "catalog.create", "update": "catalog.edit",
         "partial_update": "catalog.edit", "destroy": "catalog.delete",
         "archive": "catalog.edit", "restore": "catalog.edit",
@@ -51,7 +51,7 @@ class ClientPricesView(APIView):
     """Текущие цены клиента: {product_id: price} — для предзаполнения формы заказа."""
 
     def get_permissions(self):
-        return [HasPerm("orders.create", "dept2.create")]
+        return [HasPerm("orders.create")]
 
     def get(self, request):
         client_id = request.query_params.get("client")

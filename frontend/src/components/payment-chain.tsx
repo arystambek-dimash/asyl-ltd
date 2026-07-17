@@ -16,11 +16,8 @@ import {
 import { HandCoins, ReceiptText } from "lucide-react";
 import type { Me, Order, Payment } from "@/lib/types";
 
-/** Открыт ли приём оплат по заказу: Отдел 2 — с момента заявки, Отдел 1 — после отгрузки. */
+/** Приём оплат открывается после фактической отгрузки для любого отдела. */
 export function paymentOpen(order: Order): boolean {
-  if (order.department === "field") {
-    return !["draft", "rejected", "cancelled"].includes(order.status);
-  }
   return order.status === "shipped";
 }
 

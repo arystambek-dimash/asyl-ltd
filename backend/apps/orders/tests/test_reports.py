@@ -132,22 +132,18 @@ def test_period_filter(auth_client, boss):
         URL, {"from": "2026-07-10", "to": "2026-07-01"}).status_code == 400
 
 
-def test_department_scoping(auth_client, user_with_perms):
+def test_dynamic_department_filter(auth_client, user_with_perms):
     product = _product()
-    _shipped_order(_client(department="main"), product, qty=1, price="1000",
+    _shipped_order(_client(), product, qty=1, price="1000",
                    department="main")
-    _shipped_order(_client(department="field"), product, qty=3, price="1000",
+    _shipped_order(_client(), product, qty=3, price="1000",
                    department="field")
 
     main_only = user_with_perms("mainrep", codes=["reports.view", "orders.view"])
     data = auth_client(main_only).get(URL).json()
-    assert data["shipped"]["revenue"] == "1000.00"
-
-    all_depts = user_with_perms("allrep", codes=[
-        "reports.view", "orders.view", "dept2.view_all"])
-    data = auth_client(all_depts).get(URL).json()
     assert data["shipped"]["revenue"] == "4000.00"
-    data = auth_client(all_depts).get(URL, {"department": "field"}).json()
+
+    data = auth_client(main_only).get(URL, {"department": "field"}).json()
     assert data["shipped"]["revenue"] == "3000.00"
 
 

@@ -16,7 +16,7 @@ import Link from "next/link";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
-import { can, deptLabel } from "@/lib/can";
+import { can } from "@/lib/can";
 import { cn } from "@/lib/utils";
 import { formatDateTime, formatMoney } from "@/lib/utils";
 import {
@@ -163,7 +163,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-xl font-semibold tracking-tight">Заказ #{order.id}</h2>
               <StatusBadge status={order.status} dot />
-              {(order.status === "shipped" || order.department === "field") && order.payment_status && (
+              {order.status === "shipped" && order.payment_status && (
                 <Badge tone={PAYMENT_STATUS_TONE[order.payment_status] ?? "muted"} dot>
                   {PAYMENT_STATUS_LABELS[order.payment_status] ?? order.payment_status}
                 </Badge>
@@ -180,10 +180,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                 <Truck className="size-3.5" />
                 {order.transport_type === "train" ? "Поезд" : order.truck_number || "Машина не указана"}
               </span>
-              {order.department && <span>{deptLabel(me, order.department)}</span>}
-              {client?.manager_name && (
-                <span className="flex items-center gap-1.5"><UserRound className="size-3.5" /> Менеджер: {client.manager_name}</span>
-              )}
+              {order.department_name && <span>{order.department_name}</span>}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2 print:hidden">
@@ -284,7 +281,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             <CardContent className="grid grid-cols-2 gap-4 p-4 pt-2 text-sm md:grid-cols-4">
               <div><div className="text-xs text-[var(--muted-foreground)]">Дата прибытия</div><div className="mt-1 flex items-center gap-1.5 font-medium"><CalendarDays className="size-3.5" /> {order.arrival_date ? new Date(`${order.arrival_date}T00:00:00`).toLocaleDateString("ru-RU") : "Не указана"}</div></div>
               <div><div className="text-xs text-[var(--muted-foreground)]">Способ</div><div className="mt-1 flex items-center gap-1.5 font-medium"><Truck className="size-3.5" /> {order.transport_type === "train" ? "Поезд" : order.truck_number || "Машина"}</div></div>
-              <div><div className="text-xs text-[var(--muted-foreground)]">Отдел</div><div className="mt-1 flex items-center gap-1.5 font-medium"><Building2 className="size-3.5" /> {deptLabel(me, order.department)}</div></div>
+              <div><div className="text-xs text-[var(--muted-foreground)]">Отдел</div><div className="mt-1 flex items-center gap-1.5 font-medium"><Building2 className="size-3.5" /> {order.department_name ?? order.department}</div></div>
               <div><div className="text-xs text-[var(--muted-foreground)]">Склад</div><div className="mt-1 flex items-center gap-1.5 font-medium"><StoreIcon className="size-3.5" /> {store?.name || (order.store ? `Склад #${order.store}` : "Основной")}</div></div>
               {hasShipment && <div className="col-span-2 border-t pt-3 md:col-span-4"><span className="text-[var(--muted-foreground)]">Вес машины: </span><b>{formatMoney(order.weigh_in_kg!)} кг</b><span className="mx-2 text-[var(--border)]">·</span><span className="text-[var(--muted-foreground)]">Вес груза: </span><b>{formatMoney(String(Number(order.bag_estimate_kg ?? itemsWeight)))} кг</b></div>}
             </CardContent>
@@ -381,7 +378,6 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
               <div className="flex justify-between gap-3"><span className="text-[var(--muted-foreground)]">Клиент</span><span className="text-right font-medium">{client?.name || order.client_name || "—"}</span></div>
               {(client?.first_name || client?.last_name) && <div className="flex justify-between gap-3"><span className="text-[var(--muted-foreground)]">Контакт</span><span className="text-right">{[client.first_name, client.last_name].filter(Boolean).join(" ")}</span></div>}
               <div className="flex justify-between gap-3"><span className="text-[var(--muted-foreground)]">Телефон</span><span className="text-right">{client?.phone || order.client_phone || "—"}</span></div>
-              {client?.manager_name && <div className="flex justify-between gap-3"><span className="text-[var(--muted-foreground)]">Менеджер</span><span className="text-right">{client.manager_name}</span></div>}
             </CardContent>
           </Card>
 
@@ -460,7 +456,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
 
 export default function OrderDetailPage(props: { params: Promise<{ id: string }> }) {
   return (
-    <RequirePerm perm={["orders.view", "dept2.view", "dept2.view_all"]} title="Заказ">
+    <RequirePerm perm="orders.view" title="Заказ">
       <OrderDetailPageInner {...props} />
     </RequirePerm>
   );

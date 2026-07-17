@@ -6,13 +6,13 @@ import type { Permission } from "@/lib/types";
 export const PERM_SECTION_LABELS: Record<string, string> = {
   catalog: "Товары", clients: "Клиенты", warehouse: "Склад", orders: "Заказы",
   payments: "Оплаты", shipping: "Пост отгрузки", train: "Поезд",
-  dept2: "Отдел «Сити»", events: "Журнал",
+  events: "Журнал",
   reports: "Отчёты", employees: "Сотрудники", rbac: "Доступы",
 };
 export const PERM_ACTION_LABELS: Record<string, string> = {
   view: "просмотр", create: "создание", edit: "редакт.", delete: "удаление",
   adjust: "корректировка", confirm: "подтвержд.",
-  view_all: "все данные", arrive: "приём", load: "загрузка",
+  arrive: "приём", load: "загрузка",
   ship: "отгрузка", debt_override: "в долг", manage: "управление",
   set_price: "закрепление прайса",
 };

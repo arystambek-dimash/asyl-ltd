@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { can, deptLabel } from "@/lib/can";
+import { can } from "@/lib/can";
 import { cn } from "@/lib/utils";
 import type { Me } from "@/lib/types";
 
@@ -18,7 +18,6 @@ interface TourStep {
 
 // Шаги собираются под права пользователя — каждый видит только свои разделы.
 function buildSteps(me: Me): TourStep[] {
-  const field = deptLabel(me, "field");
   const steps: TourStep[] = [
     {
       target: "nav",
@@ -31,15 +30,10 @@ function buildSteps(me: Me): TourStep[] {
     title: "Заказы",
     text: "Все заказы клиентов: создание, редактирование до начала загрузки, статусы и оплата. Карандаш в строке — быстрое изменение.",
   });
-  if (can(me, "dept2.view")) steps.push({
-    target: "nav:/city/orders",
-    title: `Заявки ${field}`,
-    text: "Заявки выездного отдела: собирайте с выезда, запрашивайте и принимайте оплату прямо у клиента.",
-  });
   if (can(me, "payments.confirm") || can(me, "reports.view")) steps.push({
     target: "nav:/accounting",
     title: "Касса",
-    text: "Подтверждение заявок и оплат по обоим отделам — деньги учитываются сразу. Вкладка «Долги»: кто и сколько должен, с окнами оплат по расписанию.",
+    text: "Подтверждение заявок и оплат — деньги учитываются после ручной проверки. Вкладка «Долги»: кто и сколько должен, с окнами оплат по расписанию.",
   });
   if (can(me, "warehouse.view")) steps.push({
     target: "nav:/warehouse",

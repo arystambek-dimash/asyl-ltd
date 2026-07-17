@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from apps.clients.models import Department
 from .models import Order, OrderItem, Payment, StatusChangeRequest
 from .services import set_truck_number
 from .statuses import public_status_label
@@ -117,6 +118,8 @@ class PaymentQueueSerializer(PaymentSerializer):
     """Оплата с контекстом заказа — для табло бухгалтера и кассы."""
     client_name = serializers.CharField(source="order.client.name", read_only=True)
     department = serializers.CharField(source="order.department", read_only=True)
+    department_name = serializers.SerializerMethodField()
+    department_color = serializers.SerializerMethodField()
     order_status = serializers.CharField(source="order.status", read_only=True)
     store = serializers.IntegerField(source="order.store_id", read_only=True,
                                      allow_null=True)
@@ -125,7 +128,21 @@ class PaymentQueueSerializer(PaymentSerializer):
 
     class Meta(PaymentSerializer.Meta):
         fields = PaymentSerializer.Meta.fields + [
-            "client_name", "department", "order_status", "store", "store_name"]
+            "client_name", "department", "department_name", "department_color",
+            "order_status", "store", "store_name"]
+
+    def _department(self, code):
+        if not hasattr(self, "_departments"):
+            self._departments = {row.code: row for row in Department.objects.all()}
+        return self._departments.get(code)
+
+    def get_department_name(self, obj):
+        row = self._department(obj.order.department)
+        return row.name if row else obj.order.department
+
+    def get_department_color(self, obj):
+        row = self._department(obj.order.department)
+        return row.color if row else "#64748B"
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -151,11 +168,14 @@ class OrderSerializer(serializers.ModelSerializer):
     payments = serializers.SerializerMethodField()
     pending_payments = serializers.SerializerMethodField()
     shipped_at = serializers.SerializerMethodField()
+    department = serializers.CharField(required=False)
+    department_name = serializers.SerializerMethodField()
+    department_color = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
         fields = ["id", "client", "store", "client_name", "client_phone",
-                  "department", "status",
+                  "department", "department_name", "department_color", "status",
                   "payment_status", "settlement_intent", "payment_method", "transport_type",
                   "truck_number", "arrival_date", "notes", "items", "total_amount",
                   "paid_total", "remaining_amount", "is_fully_paid",
@@ -164,7 +184,7 @@ class OrderSerializer(serializers.ModelSerializer):
                   "weigh_in_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at",
                   "shipped_at", "loading_camera", "deleted_at", "deleted_by_name"]
-        read_only_fields = ["debt_override", "department", "deleted_at"]
+        read_only_fields = ["debt_override", "deleted_at"]
         extra_kwargs = {
             "truck_number": {"required": False},
             "arrival_date": {"required": False, "allow_null": True},
@@ -174,6 +194,19 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def _shipment(self, obj):
         return getattr(obj, "shipment", None)
+
+    def _department(self, code):
+        if not hasattr(self, "_departments"):
+            self._departments = {row.code: row for row in Department.objects.all()}
+        return self._departments.get(code)
+
+    def get_department_name(self, obj):
+        row = self._department(obj.department)
+        return row.name if row else obj.department
+
+    def get_department_color(self, obj):
+        row = self._department(obj.department)
+        return row.color if row else "#64748B"
 
     def get_weigh_in_kg(self, obj):
         s = self._shipment(obj)
@@ -242,13 +275,21 @@ class OrderSerializer(serializers.ModelSerializer):
         return PaymentSerializer(rows, many=True).data
 
     def validate_client(self, client):
-        # Заказ можно создать только для клиента, видимого пользователю:
-        # менеджер Отдела 2 — исключительно для своих клиентов.
+        # Заказ можно создать только для клиента, доступного пользователю.
         from apps.clients.querysets import visible_clients
         user = self.context["request"].user
         if not visible_clients(user).filter(pk=client.pk).exists():
             raise serializers.ValidationError("Клиент недоступен")
         return client
+
+    def validate_department(self, code):
+        qs = Department.objects.filter(code=code)
+        if self.instance and self.instance.department == code:
+            if qs.exists():
+                return code
+        if not qs.filter(is_active=True).exists():
+            raise serializers.ValidationError("Выберите действующий отдел")
+        return code
 
     def validate(self, attrs):
         store = attrs.get("store")
@@ -270,8 +311,8 @@ class OrderSerializer(serializers.ModelSerializer):
         ensure_products_available(item["product"] for item in items)
         user = self.context["request"].user
         validated_data["created_by"] = user
-        # Заказ наследует отдел клиента — данные отделов не смешиваются.
-        validated_data["department"] = validated_data["client"].department
+        # Отдел — свойство заказа. Для старых API-клиентов используем основной.
+        validated_data.setdefault("department", Department.default_code())
         # Оператор (orders.confirm) создаёт заказ сразу подтверждённым с ценами;
         # заявка менеджера Отдела 2 остаётся pending до подтверждения бухгалтером.
         # prices приходит по товару: {product_id: цена} (у позиций ещё нет id).
@@ -296,7 +337,7 @@ class OrderSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         from .services import replace_items
         user = self.context["request"].user
-        # Клиент фиксируется при создании: у него свой прайс и отдел.
+        # Клиент фиксируется при создании: у него свой прайс-лист.
         new_client = validated_data.pop("client", None)
         if new_client is not None and new_client.id != instance.client_id:
             raise serializers.ValidationError(

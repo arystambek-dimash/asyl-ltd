@@ -108,11 +108,6 @@ export const ROLE_LABELS: Record<string, string> = {
   boss: "Начальник",
 };
 
-export const DEPARTMENT_LABELS: Record<string, string> = {
-  main: "Отдел 1",
-  field: "Сити",
-};
-
 // Цепочка подтверждения оплаты: каждый шаг фиксируется с автором и временем.
 // accountant_ok — легаси-стадия (схлопнута в confirmed), подпись для старых записей.
 export const PAYMENT_STAGE_LABELS: Record<string, string> = {

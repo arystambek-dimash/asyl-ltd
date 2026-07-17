@@ -49,23 +49,23 @@ def test_event_payload_exposes_related_order(auth_client, operator):
     assert row["order"] == order.id
 
 
-def test_order_events_respect_department_scope(auth_client, operator):
+def test_order_events_include_all_departments(auth_client, operator):
     from apps.clients.models import Client
     from apps.orders.models import Order
     from apps.eventlog.models import EventLog
 
     main = Order.objects.create(client=Client.objects.create(
-        first_name="Main", last_name="Client", phone="1", department="main"))
+        first_name="Main", last_name="Client", phone="1"))
     field = Order.objects.create(
         client=Client.objects.create(
-            first_name="Field", last_name="Client", phone="2", department="field"),
+            first_name="Field", last_name="Client", phone="2"),
         department="field",
     )
     main_event = EventLog.objects.create(
         event_type="status", message="main", order=main)
-    EventLog.objects.create(event_type="status", message="field", order=field)
+    field_event = EventLog.objects.create(event_type="status", message="field", order=field)
 
     response = auth_client(operator).get("/api/events/")
 
     assert response.status_code == 200
-    assert [row["id"] for row in response.data] == [main_event.id]
+    assert {row["id"] for row in response.data} == {main_event.id, field_event.id}

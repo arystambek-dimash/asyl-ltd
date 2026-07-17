@@ -8,8 +8,7 @@ import { SummaryCard } from "@/components/ui/summary-card";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
-import { useAuth } from "@/store/auth";
-import { can, deptLabels } from "@/lib/can";
+import type { Department } from "@/lib/types";
 import {
   formatCurrency, monthStartLocalIsoDate, todayLocalIsoDate,
 } from "@/lib/utils";
@@ -108,14 +107,11 @@ function DaysTable({ data }: { data: ReportSummary }) {
 }
 
 function ReportsPageInner() {
-  const { me } = useAuth();
   const [from, setFrom] = useState(monthStartLocalIsoDate());
   const [to, setTo] = useState(todayLocalIsoDate());
   const [department, setDepartment] = useState("all");
 
-  // Отдел фильтруется только у тех, кто видит оба отдела.
-  const seesAll = !!me && (me.is_superuser || can(me, "dept2.view_all"));
-  const labels = deptLabels(me);
+  const { data: departments } = useApi<Department[]>("/departments/");
 
   const url = useMemo(() => {
     const q = new URLSearchParams();
@@ -172,12 +168,11 @@ function ReportsPageInner() {
             <Input type="date" value={to} onChange={(e) => setTo(e.target.value)}
               className="h-9 w-[160px]" />
           </div>
-          {seesAll && (
+          {(departments?.length ?? 0) > 0 && (
             <FilterDropdown label="Отдел" active={department} onChange={setDepartment}
               options={[
                 { key: "all", label: "Все" },
-                { key: "main", label: labels.main ?? "Отдел 1" },
-                { key: "field", label: labels.field ?? "Сити" },
+                ...(departments ?? []).map((row) => ({ key: row.code, label: row.name })),
               ]} />
           )}
         </div>

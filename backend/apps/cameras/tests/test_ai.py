@@ -251,9 +251,9 @@ def test_open_sessions_require_load_permission(api_client, make_user):
     assert response.status_code == 403
 
 
-def test_open_sessions_hide_other_department(api_client, loader):
+def test_open_sessions_include_every_department(api_client, loader):
     client = Client.objects.create(
-        first_name="Field", last_name="Client", phone="3", department="field")
+        first_name="Field", last_name="Client", phone="3")
     order = Order.objects.create(
         client=client, department="field", status="arrived")
     AiCountingSession.objects.create(
@@ -265,20 +265,8 @@ def test_open_sessions_hide_other_department(api_client, loader):
     response = api_client.get("/api/cameras/ai/sessions/")
 
     assert response.status_code == 200
-    assert response.data == []
-
-
-def test_cannot_start_ai_for_other_department(api_client, loader):
-    client = Client.objects.create(
-        first_name="Field2", last_name="Client", phone="4", department="field")
-    order = Order.objects.create(
-        client=client, department="field", status="arrived")
-    api_client.force_authenticate(loader)
-
-    response = api_client.post(
-        "/api/cameras/cam2/ai/", {"order_id": order.pk}, format="json")
-
-    assert response.status_code == 404
+    assert len(response.data) == 1
+    assert response.data[0]["order_id"] == order.id
 
 
 def test_limit_409_passes_through_and_releases_slot(api_client, loader, loading_order):

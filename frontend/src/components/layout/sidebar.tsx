@@ -6,10 +6,10 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Boxes, ClipboardList, Users, Truck,
   ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings, X, Store,
-  Briefcase, HandCoins, MapPin, ScanLine,
+  HandCoins, ScanLine,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { can, deptLabel, isDept2Only } from "@/lib/can";
+import { can } from "@/lib/can";
 import type { Me } from "@/lib/types";
 
 // perm — строка или массив (нужно ЛЮБОЕ из прав), как в RequirePerm.
@@ -30,8 +30,7 @@ function hasNavPerm(me: Me, perm?: Perm): boolean {
   return (Array.isArray(perm) ? perm : [perm]).some((c) => can(me, c));
 }
 
-// Название второго отдела редактируется админом — секции строятся динамически.
-function staffSections(fieldName: string): NavSection[] {
+function staffSections(): NavSection[] {
   return [
     {
       title: "Обзор",
@@ -56,13 +55,6 @@ function staffSections(fieldName: string): NavSection[] {
       ],
     },
     {
-      title: `Отдел «${fieldName}»`,
-      items: [
-        { href: "/city/orders", label: `Заявки ${fieldName}`, icon: Briefcase, perm: "dept2.view" },
-        { href: "/city/clients", label: `Клиенты ${fieldName}`, icon: MapPin, perm: "dept2.view" },
-      ],
-    },
-    {
       title: "Управление",
       items: [
         { href: "/events", label: "Журнал", icon: ScrollText, perm: "events.view" },
@@ -71,8 +63,6 @@ function staffSections(fieldName: string): NavSection[] {
           children: [
             { href: "/management/employees", label: "Сотрудники", perm: "employees.view" },
             { href: "/management/roles", label: "Роли", perm: "rbac.view" },
-            // Переименование отделов — только суперадмину.
-            { href: "/management/departments", label: "Отделы", superuser: true },
           ],
         },
       ],
@@ -160,7 +150,7 @@ function NavGroup({ item }: { item: NavItem }) {
 }
 
 function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void }) {
-  const sections = me.is_client ? PORTAL_SECTIONS : staffSections(deptLabel(me, "field"));
+  const sections = me.is_client ? PORTAL_SECTIONS : staffSections();
   const visible = sections
     .map((s) => ({
       ...s,
@@ -170,8 +160,6 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
               hasNavPerm(me, c.perm) && (!c.superuser || me.is_superuser)) }
           : i)
         .filter((i) => hasNavPerm(me, i.perm) && (!i.children || i.children.length > 0))
-        // Менеджеру выездного отдела дашборд комплекса не показываем.
-        .filter((i) => !(i.href === "/dashboard" && isDept2Only(me))),
     }))
     .filter((s) => s.items.length > 0);
 

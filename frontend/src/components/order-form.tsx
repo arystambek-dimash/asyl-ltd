@@ -7,9 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { LicensePlateInput } from "@/components/ui/license-plate-input";
 import { useApi } from "@/lib/use-api";
-import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
-import { can, deptLabel } from "@/lib/can";
 import { formatMoney } from "@/lib/utils";
 
 import { Plus, Trash2, Info } from "lucide-react";
@@ -29,13 +27,11 @@ export function OrderForm({ editing, onCancel, onDone }: {
   onDone: () => void;
 }) {
   const router = useRouter();
-  const { me } = useAuth();
   const { data: clients } = useApi<Client[]>("/clients/");
   const { data: products } = useApi<Product[]>("/products/");
   const { data: stores } = useApi<Store[]>("/stores/");
-  // Отдел показываем тем, кто видит оба; остальным список клиентов и так обрезан.
-  const showDept = can(me, "dept2.view_all");
-  const [dept, setDept] = useState<Department>(editing?.department ?? "main");
+  const { data: departments } = useApi<Department[]>("/departments/");
+  const [dept, setDept] = useState(editing?.department ?? "");
   const [client, setClient] = useState(editing ? String(editing.client) : "");
   const [store, setStore] = useState(editing?.store ? String(editing.store) : "");
   const [transport, setTransport] = useState<"truck" | "train">(editing?.transport_type ?? "truck");
@@ -52,8 +48,10 @@ export function OrderForm({ editing, onCancel, onDone }: {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const visibleClients = (clients ?? []).filter(
-    (c) => !showDept || c.department === dept);
+  useEffect(() => {
+    if (dept || !departments?.length) return;
+    setDept((departments.find((department) => department.is_default) ?? departments[0]).code);
+  }, [dept, departments]);
 
   // При выборе клиента подтягиваем его цены и предзаполняем строки.
   useEffect(() => {
@@ -80,6 +78,7 @@ export function OrderForm({ editing, onCancel, onDone }: {
       const items = valid.map((r) => ({ product: Number(r.product), quantity: Number(r.quantity) }));
       const prices = Object.fromEntries(valid.map((r) => [r.product, r.price]));
       const body = {
+        department: dept,
         store: store ? Number(store) : null,
         transport_type: transport,
         truck_number: transport === "train" ? "" : truck,
@@ -105,23 +104,33 @@ export function OrderForm({ editing, onCancel, onDone }: {
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-5">
-      {showDept && !editing && (
-        <div className="grid gap-2">
+      <div className="grid gap-2.5">
+        <div className="flex items-center justify-between gap-3">
           <Label>Отдел продаж</Label>
-          <div className="grid grid-cols-2 gap-2">
-            {(["main", "field"] as const).map((d) => (
-              <button key={d} type="button"
-                onClick={() => { setDept(d); setClient(""); setStore(""); }}
-                className={
-                  "rounded-lg border px-3 py-2 text-sm font-medium transition-colors " +
-                  (dept === d ? "border-[var(--primary)] bg-[var(--primary)]/5" : "hover:bg-[var(--muted)]/40")
-                }>
-                {deptLabel(me, d)}
-              </button>
-            ))}
-          </div>
+          <span className="text-[11px] text-[var(--muted-foreground)]">Учитывается в аналитике заказа</span>
         </div>
-      )}
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {(departments ?? []).map((department) => (
+            <button key={department.code} type="button"
+              onClick={() => setDept(department.code)}
+              className={
+                "group flex min-h-14 items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left text-sm font-semibold transition-all " +
+                (dept === department.code
+                  ? "border-transparent bg-[var(--foreground)] text-[var(--background)] shadow-md"
+                  : "bg-[var(--card)] hover:-translate-y-0.5 hover:shadow-sm")
+              }>
+              <span className="size-2.5 shrink-0 rounded-full ring-4 ring-current/10"
+                style={{ backgroundColor: department.color, color: department.color }} />
+              <span className="truncate">{department.name}</span>
+            </button>
+          ))}
+          {(departments ?? []).length === 0 && (
+            <div className="col-span-full rounded-xl border border-dashed px-4 py-4 text-sm text-[var(--muted-foreground)]">
+              Нет активных отделов. Администратор может добавить их на странице заказов.
+            </div>
+          )}
+          </div>
+      </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="grid gap-2">
@@ -129,7 +138,7 @@ export function OrderForm({ editing, onCancel, onDone }: {
           <Select value={client} disabled={!!editing}
             onChange={(e) => { setClient(e.target.value); setStore(""); }} required>
             <option value="">Выберите клиента</option>
-            {(editing ? (clients ?? []) : visibleClients).map((c) => (
+            {(clients ?? []).map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
           </Select>
@@ -226,14 +235,12 @@ export function OrderForm({ editing, onCancel, onDone }: {
         <Info className="mt-0.5 size-3.5 shrink-0" />
         {editing
           ? "Позиции и цены можно менять до начала загрузки. Изменения попадут в журнал."
-          : dept === "field"
-            ? "Заявка отдела «Сити» попадёт в кассу для подтверждения."
-            : "Цена подставляется из прайса клиента. Заказ создаётся сразу подтверждённым."}
+          : "Цена подставляется из личного прайса клиента, а отдел закрепляется за этим заказом."}
       </div>
       {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onCancel}>Отмена</Button>
-        <Button type="submit" disabled={busy || !client || !allPriced}>
+        <Button type="submit" disabled={busy || !client || !dept || !allPriced}>
           {busy ? "Сохранение…" : editing ? "Сохранить изменения" : "Создать заказ"}
         </Button>
       </div>

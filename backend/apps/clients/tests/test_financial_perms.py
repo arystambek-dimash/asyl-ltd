@@ -48,11 +48,11 @@ def test_check_overdue_requires_clients_edit(user_with_perms):
     assert _api(editor).post("/api/stores/check-overdue/").status_code == 200
 
 
-def test_check_overdue_respects_department_scope(user_with_perms):
+def test_check_overdue_checks_all_clients(user_with_perms):
     main = Client.objects.create(
-        first_name="Main", last_name="Client", phone="1", department="main")
+        first_name="Main", last_name="Client", phone="1")
     field = Client.objects.create(
-        first_name="Field", last_name="Client", phone="2", department="field")
+        first_name="Field", last_name="Client", phone="2")
     main_store = Store.objects.create(
         client=main, name="Main store", payment_schedule_type="weekly", payment_days=[1])
     Store.objects.create(
@@ -63,5 +63,8 @@ def test_check_overdue_respects_department_scope(user_with_perms):
         response = _api(editor).post("/api/stores/check-overdue/")
 
     assert response.status_code == 200
-    assert response.data["checked"] == 1
-    assert [call.args[0].id for call in detect.call_args_list] == [main_store.id]
+    assert response.data["checked"] == 2
+    assert {call.args[0].id for call in detect.call_args_list} == {
+        main_store.id,
+        field.stores.get().id,
+    }

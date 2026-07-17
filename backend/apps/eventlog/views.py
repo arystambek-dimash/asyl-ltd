@@ -3,7 +3,6 @@ from django.db.models import Q
 from apps.common.permissions import PermViewSetMixin
 from apps.common.query_params import parse_iso_date, validate_date_range
 from apps.orders.models import Order
-from apps.rbac.scoping import scope_by_department
 from .models import EventLog
 from .serializers import EventLogSerializer
 
@@ -13,12 +12,8 @@ class EventLogViewSet(PermViewSetMixin, mixins.ListModelMixin, viewsets.GenericV
     required_perms = {"list": "events.view"}
 
     def get_queryset(self):
-        visible_orders = scope_by_department(
-            Order.objects.all(), self.request.user, "events.view",
-            owner_field="client__manager",
-        )
-        # System/warehouse events have no order and remain global; events tied
-        # to an order inherit that order's department visibility.
+        visible_orders = Order.objects.all()
+        # Системные события и события заказов доступны в едином журнале.
         qs = EventLog.objects.filter(
             Q(order__isnull=True) | Q(order__in=visible_orders))
         p = self.request.query_params

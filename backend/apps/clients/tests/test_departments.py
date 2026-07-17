@@ -1,69 +1,58 @@
-"""Названия отделов продаж: видят все сотрудники, переименовывает админ."""
 import pytest
 from rest_framework.test import APIClient
+
 from apps.clients.models import Department
 
 pytestmark = pytest.mark.django_db
 
 
 def _api(user):
-    api = APIClient()
-    api.force_authenticate(user)
-    return api
+    client = APIClient()
+    client.force_authenticate(user)
+    return client
 
 
-def _dept(code="field", name="Сити"):
-    d, _ = Department.objects.get_or_create(code=code, defaults={"name": name})
-    return d
+def test_staff_lists_active_departments(operator):
+    Department.objects.update_or_create(
+        code="main", defaults={"name": "Оптовый", "is_default": True})
+    Department.objects.create(code="hidden", name="Старый", is_active=False)
+
+    response = _api(operator).get("/api/departments/")
+
+    assert response.status_code == 200
+    names = [row["name"] for row in response.data]
+    assert "Оптовый" in names
+    assert "Старый" not in names
 
 
-def test_any_staff_sees_department_names(operator):
-    _dept("main", "Отдел 1")
-    _dept("field", "Сити")
-    r = _api(operator).get("/api/departments/")
-    assert r.status_code == 200
-    assert {row["code"] for row in r.data} == {"main", "field"}
+def test_admin_creates_and_renames_dynamic_department(boss):
+    response = _api(boss).post(
+        "/api/departments/", {"name": "Региональные продажи", "color": "#238C6E"},
+        format="json",
+    )
+    assert response.status_code == 201
+    assert response.data["code"].startswith("department-")
+    assert response.data["is_default"] is False
+
+    response = _api(boss).patch(
+        f"/api/departments/{response.data['id']}/",
+        {"name": "Регионы", "color": "#D68B2C"},
+        format="json",
+    )
+    assert response.status_code == 200
+    assert response.data["name"] == "Регионы"
+    assert response.data["color"] == "#D68B2C"
 
 
-def _superadmin(make_user):
-    u = make_user(username="root")
-    u.is_superuser = True
-    u.save()
-    return u
+def test_regular_staff_cannot_manage_departments(operator):
+    response = _api(operator).post(
+        "/api/departments/", {"name": "Нельзя", "color": "#315FD5"}, format="json")
+    assert response.status_code == 403
 
 
-def test_superadmin_renames_department(make_user):
-    admin = _superadmin(make_user)
-    d = _dept("field", "Сити")
-    r = _api(admin).patch(f"/api/departments/{d.id}/", {"name": "Выездной отдел"}, format="json")
-    assert r.status_code == 200
-    d.refresh_from_db()
-    assert d.name == "Выездной отдел"
-
-
-def test_rename_requires_superuser(operator, user_with_perms):
-    d = _dept()
-    # Обычному сотруднику нельзя.
-    r = _api(operator).patch(f"/api/departments/{d.id}/", {"name": "Хак"}, format="json")
-    assert r.status_code == 403
-    # Даже держателю rbac.manage (не суперадмину) — нельзя.
-    manager = user_with_perms("rbacman", codes=["rbac.manage"])
-    r = _api(manager).patch(f"/api/departments/{d.id}/", {"name": "Хак"}, format="json")
-    assert r.status_code == 403
-
-
-def test_code_is_immutable(make_user):
-    admin = _superadmin(make_user)
-    d = _dept("field", "Сити")
-    r = _api(admin).patch(f"/api/departments/{d.id}/", {"code": "hacked", "name": "X"}, format="json")
-    assert r.status_code == 200
-    d.refresh_from_db()
-    assert d.code == "field"
-
-
-def test_me_returns_department_names(auth_client, operator):
-    _dept("main", "Отдел 1")
-    _dept("field", "Сити")
-    r = auth_client(operator).get("/api/auth/me/")
-    assert r.status_code == 200
-    assert r.data["department_names"]["field"] == "Сити"
+def test_department_name_is_unique_case_insensitive(boss):
+    Department.objects.update_or_create(
+        code="main", defaults={"name": "Оптовый", "is_default": True})
+    response = _api(boss).post(
+        "/api/departments/", {"name": "  оптовый ", "color": "#315FD5"}, format="json")
+    assert response.status_code == 400

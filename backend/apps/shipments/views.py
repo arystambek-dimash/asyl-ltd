@@ -3,7 +3,6 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from apps.orders.models import Order
 from apps.common.permissions import PermViewSetMixin
-from apps.rbac.scoping import scope_by_department
 from .serializers import ArrivalSerializer, LoadSerializer, ShipmentSerializer
 from .services import finish_loading, record_arrival, record_count, record_shipment
 
@@ -18,11 +17,7 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
     }
 
     def get_queryset(self):
-        scope_perm = self.required_perms.get(self.action, "shipping.view")
-        return scope_by_department(
-            super().get_queryset(), self.request.user, scope_perm,
-            owner_field="client__manager",
-        )
+        return super().get_queryset()
 
     @action(detail=True, methods=["post"], url_path="arrive")
     def arrive(self, request, pk=None):

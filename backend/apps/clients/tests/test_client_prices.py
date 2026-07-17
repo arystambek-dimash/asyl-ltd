@@ -64,14 +64,13 @@ def test_employee_without_price_permission_cannot_change_prices(
     assert not ClientPrice.objects.exists()
 
 
-def test_price_manager_cannot_reach_foreign_department_client(
+def test_price_manager_can_reach_any_client(
         auth_client, user_with_perms):
-    owner = user_with_perms("owner", codes=["dept2.view"])
     other = user_with_perms(
-        "other", codes=["dept2.view", "clients.set_price"])
-    client = _client(department="field", manager=owner)
+        "other", codes=["clients.view", "clients.set_price"])
+    client = _client()
     response = auth_client(other).get(f"/api/clients/{client.id}/prices/")
-    assert response.status_code == 404
+    assert response.status_code == 200
 
 
 @pytest.mark.parametrize("price", ["0", "-1", "not-money"])

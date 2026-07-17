@@ -14,8 +14,6 @@ import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { ErrorAlert } from "@/components/ui/data-state";
-import { Badge } from "@/components/ui/badge";
-import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import {
   Form, FormField, FormItem, FormLabel, FormControl, FormMessage,
 } from "@/components/ui/form";
@@ -30,7 +28,7 @@ import {
   BarChart3, MoreVertical, Pencil, Phone, Plus, Search, Tags, Trash2,
 } from "lucide-react";
 import { useAuth } from "@/store/auth";
-import { can, deptLabel, deptLabels } from "@/lib/can";
+import { can } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { Client } from "@/lib/types";
 
@@ -40,7 +38,6 @@ const schema = z.object({
   phone: z
     .string()
     .refine((v) => v.replace(/\D/g, "").length === 11, "Введите номер полностью"),
-  department: z.enum(["main", "field"]),
   country: z.string().optional(),
   iin: z.string().optional().refine(
     (v) => !v || /^\d{12}$/.test(v), "ИИН/БИН — 12 цифр"
@@ -51,17 +48,15 @@ const schema = z.object({
 type FormValues = z.infer<typeof schema>;
 
 function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCancel: () => void; editing?: Client | null }) {
-  const { me } = useAuth();
   const [serverError, setServerError] = useState("");
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: editing ? {
       first_name: editing.first_name, last_name: editing.last_name, phone: editing.phone,
-      department: editing.department ?? "main",
       country: editing.country ?? "", iin: editing.iin ?? "",
       bank: editing.bank ?? "", bank_account: editing.bank_account ?? "",
     } : {
-      first_name: "", last_name: "", phone: "", department: "main" as const, country: "",
+      first_name: "", last_name: "", phone: "", country: "",
       iin: "", bank: "", bank_account: "",
     },
   });
@@ -124,25 +119,6 @@ function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCance
               </FormControl>
               <SelectContent>
                 {COUNTRIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <FormMessage />
-          </FormItem>
-        )} />
-
-        <FormField control={form.control} name="department" render={({ field }) => (
-          <FormItem>
-            <FormLabel>Отдел</FormLabel>
-            <Select value={field.value} onValueChange={field.onChange}>
-              <FormControl>
-                <SelectTrigger>
-                  <SelectValue placeholder="Выберите отдел" />
-                </SelectTrigger>
-              </FormControl>
-              <SelectContent>
-                {Object.entries(deptLabels(me)).map(([k, v]) => (
-                  <SelectItem key={k} value={k}>{v}</SelectItem>
-                ))}
               </SelectContent>
             </Select>
             <FormMessage />
@@ -263,13 +239,11 @@ function ClientsPageInner() {
   const canDelete = can(me, "clients.delete");
   const canSetPrice = can(me, "clients.set_price");
   const canMoney = can(me, "reports.view");  // финансовая аналитика — под reports.view
-  const showDept = can(me, "dept2.view_all"); // сводная картина обоих отделов
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Client | null>(null);
   const [q, setQ] = useState("");
   const [iinQ, setIinQ] = useState("");
   const [phoneQ, setPhoneQ] = useState("");
-  const [dept, setDept] = useState("all");
   const [sortKey, setSortKey] = useState("created");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [delItem, setDelItem] = useState<Client | null>(null);
@@ -291,8 +265,7 @@ function ClientsPageInner() {
   const filtered = list.filter((c) =>
     (!q || c.name.toLowerCase().includes(q.toLowerCase()))
     && (!iinQ || (c.iin ?? "").includes(digits(iinQ)))
-    && (!phoneQ || digits(c.phone).includes(digits(phoneQ)))
-    && (dept === "all" || c.department === dept));
+    && (!phoneQ || digits(c.phone).includes(digits(phoneQ))));
 
   const toggleSort = (k: string) => {
     if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
@@ -342,14 +315,6 @@ function ClientsPageInner() {
           value={iinQ} onChange={(e) => setIinQ(e.target.value)} />
         <Input className="w-full sm:w-48" placeholder="+7 (XXX) XXX-XXXX" inputMode="tel"
           value={phoneQ} onChange={(e) => setPhoneQ(e.target.value)} />
-        {showDept && (
-          <FilterDropdown label="Отдел" active={dept} onChange={setDept}
-            options={[
-              { key: "all", label: "Все", count: list.length },
-              { key: "main", label: deptLabel(me, "main"), count: list.filter((c) => c.department === "main").length },
-              { key: "field", label: deptLabel(me, "field"), count: list.filter((c) => c.department === "field").length },
-            ]} />
-        )}
       </div>
 
       {error && !clients && <div className="mb-4"><ErrorAlert message={error} onRetry={reload} /></div>}
@@ -401,7 +366,6 @@ function ClientsPageInner() {
                   <TH>ИИН/БИН</TH>
                   <TH>Телефон</TH>
                   <SortableHeader label="Сумма задолженностей" sortKey="debt" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-                  {showDept && <TH>Отдел</TH>}
                   <SortableHeader label="Дата" sortKey="created" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
                   <TH></TH>
                 </TR>
@@ -428,13 +392,6 @@ function ClientsPageInner() {
                         ? <span className="font-medium text-[var(--destructive)]">{formatMoney(c.debt_total!)} ₸</span>
                         : <span className="text-[var(--muted-foreground)]">—</span>}
                     </TD>
-                    {showDept && (
-                      <TD>
-                        <Badge tone={c.department === "field" ? "primary" : "muted"}>
-                          {deptLabel(me, c.department)}
-                        </Badge>
-                      </TD>
-                    )}
                     <TD className="tabular-nums text-[var(--muted-foreground)]">
                       {c.created_at ? formatDateTime(c.created_at) : "—"}
                     </TD>
@@ -446,7 +403,7 @@ function ClientsPageInner() {
                   </TR>
                 ))}
                 {sorted.length === 0 && (
-                  <TR><TD colSpan={showDept ? 7 : 6} className="py-14 text-center text-[var(--muted-foreground)]">
+                  <TR><TD colSpan={6} className="py-14 text-center text-[var(--muted-foreground)]">
                     Здесь пусто</TD></TR>
                 )}
               </TBody>

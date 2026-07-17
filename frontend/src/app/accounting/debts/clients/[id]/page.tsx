@@ -18,7 +18,7 @@ import {
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { cn, formatCurrency, formatMoney, formatDateTime } from "@/lib/utils";
-import { can, deptLabel } from "@/lib/can";
+import { can } from "@/lib/can";
 import { useAuth } from "@/store/auth";
 import {
   PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE,
@@ -185,7 +185,6 @@ function OrderDebtCard({ order, selectable, selected, onSelect }: {
   selected: boolean;
   onSelect: () => void;
 }) {
-  const { me } = useAuth();
   const [tab, setTab] = useState("invoice");
   const status = order.payment_status ?? "unpaid";
   const pct = Math.min(100, Math.round((Number(order.paid_total) / Math.max(1, Number(order.total_amount))) * 100));
@@ -220,7 +219,7 @@ function OrderDebtCard({ order, selectable, selected, onSelect }: {
                 )}
                 {order.department && (
                   <span className="flex items-center gap-1.5">
-                    <Building2 className="size-3.5" /> {deptLabel(me, order.department)}
+                    <Building2 className="size-3.5" /> {order.department_name ?? order.department}
                   </span>
                 )}
                 {order.truck_number && <span className="tabular-nums">{order.truck_number}</span>}

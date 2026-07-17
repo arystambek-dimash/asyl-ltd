@@ -9,7 +9,6 @@ from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm, IsStaff
 from apps.orders.models import Order
-from apps.rbac.scoping import scope_by_department
 
 from . import ai, health, services, sessions
 from .models import AiCountingSession, MonoblockCameraSettings
@@ -207,11 +206,7 @@ def _loading_order(request) -> Order | None:
     order_id = _order_id(request)
     if order_id is None:
         return None
-    visible = scope_by_department(
-        Order.objects.all(), request.user, "shipping.load",
-        owner_field="client__manager",
-    )
-    return get_object_or_404(visible, pk=order_id)
+    return get_object_or_404(Order.objects.all(), pk=order_id)
 
 
 def _started_by_name(session) -> str:
@@ -413,15 +408,11 @@ class CameraAiSessionListView(APIView):
         return [HasPerm("shipping.load")]
 
     def get(self, request):
-        visible_orders = scope_by_department(
-            Order.objects.all(), request.user, "shipping.load",
-            owner_field="client__manager",
-        )
         open_sessions = (
             AiCountingSession.objects
             .filter(
                 status__in=AiCountingSession.OPEN_STATUSES,
-                order__in=visible_orders,
+                order__in=Order.objects.all(),
             )
             .select_related("order__client", "started_by__employee")
             .order_by("started_at")

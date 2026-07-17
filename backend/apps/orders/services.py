@@ -31,14 +31,6 @@ def _status_message(prefix: str, old: str, new: str) -> str:
 
 
 def _validate_payment_open(order: Order) -> None:
-    # Отдел 2 «Сити»: менеджер запрашивает и принимает оплату с выезда —
-    # доступно с момента создания заявки, без графика магазина.
-    if order.department == "field":
-        if order.status in ("draft", "rejected", "cancelled"):
-            raise ValidationError(
-                {"detail": "Оплата недоступна для этой заявки", "code": "payment_not_open"}
-            )
-        return
     if order.status != "shipped":
         raise ValidationError(
             {"detail": "Оплата доступна только после отгрузки", "code": "payment_not_open"}

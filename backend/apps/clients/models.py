@@ -3,17 +3,28 @@ from django.db import models
 
 
 class Department(models.Model):
-    """Отдел продаж: код фиксирован (main/field), название редактирует админ."""
-    code = models.CharField(max_length=10, unique=True)
+    """Динамический справочник отделов, выбираемых непосредственно в заказе."""
+    code = models.CharField(max_length=50, unique=True)
     name = models.CharField(max_length=100)
+    color = models.CharField(max_length=7, default="#315FD5")
+    is_active = models.BooleanField(default=True)
+    is_default = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    @classmethod
+    def default_code(cls) -> str:
+        row = (cls.objects.filter(is_active=True, is_default=True).first()
+               or cls.objects.filter(is_active=True).first())
+        return row.code if row else "main"
 
     def __str__(self):
         return self.name
 
 
 class Client(models.Model):
-    DEPARTMENTS = ["main", "field"]
-
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
     phone = models.CharField(max_length=50)
@@ -21,13 +32,6 @@ class Client(models.Model):
     iin = models.CharField("ИИН/БИН", max_length=20, blank=True, default="")
     bank = models.CharField("Банк", max_length=150, blank=True, default="")
     bank_account = models.CharField("Расчётный счёт", max_length=34, blank=True, default="")
-    # Принадлежность к отделу продаж: main — Отдел 1, field — Отдел 2 «Сити».
-    department = models.CharField(max_length=10, default="main")
-    # Менеджер выездного отдела, который ведёт этого клиента (только для field).
-    manager = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="managed_clients",
-    )
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="client_profile",

@@ -1,6 +1,8 @@
 from decimal import Decimal, InvalidOperation
 from django.utils import timezone
 from django.db import transaction
+from django.db.models import Count
+from django.db.models.deletion import ProtectedError
 from django.db.models import Prefetch
 from rest_framework import viewsets
 from rest_framework.decorators import action
@@ -8,10 +10,9 @@ from rest_framework.response import Response
 from rest_framework import mixins
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import ValidationError
-from apps.common.permissions import IsSuperuser, PermViewSetMixin
+from apps.common.permissions import HasPerm, IsStaff, PermViewSetMixin
 from apps.common.money import money_string
 from apps.common.query_params import parse_iso_date, validate_date_range
-from apps.rbac.scoping import scope_by_department
 from apps.orders.models import Order
 from apps.orders.querysets import with_order_api_relations
 from apps.catalog.models import ClientPrice, Product
@@ -35,17 +36,45 @@ def _money_param(raw, name):
     return value
 
 
-class DepartmentViewSet(mixins.ListModelMixin,
-                        mixins.UpdateModelMixin, viewsets.GenericViewSet):
-    """Названия отделов продаж: смотрят все сотрудники, меняет только суперадмин."""
-    queryset = Department.objects.order_by("code")
+class DepartmentViewSet(viewsets.ModelViewSet):
+    """Динамические отделы заказов. Управление встроено в экран заказов."""
+    queryset = Department.objects.all()
     serializer_class = DepartmentSerializer
-    http_method_names = ["get", "patch", "put", "head", "options"]
 
     def get_permissions(self):
-        if self.action in ("update", "partial_update"):
-            return [IsSuperuser()]
-        return [IsAuthenticated()]
+        if self.action in ("list", "retrieve"):
+            return [IsStaff()]
+        return [HasPerm("rbac.manage")]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if self.action == "list" and self.request.query_params.get("all") != "1":
+            qs = qs.filter(is_active=True)
+        return qs
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["department_order_counts"] = dict(
+            Order.all_objects.values("department").annotate(total=Count("id"))
+            .values_list("department", "total")
+        )
+        return context
+
+    def perform_destroy(self, instance):
+        if Order.all_objects.filter(department=instance.code).exists():
+            raise ValidationError({
+                "detail": "Отдел используется в заказах. Отключите его вместо удаления.",
+                "code": "department_in_use",
+            })
+        if instance.is_default:
+            raise ValidationError({
+                "detail": "Сначала назначьте другой основной отдел",
+                "code": "default_department",
+            })
+        try:
+            instance.delete()
+        except ProtectedError as exc:
+            raise ValidationError({"detail": "Отдел используется", "code": "department_in_use"}) from exc
 
 
 class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
@@ -53,18 +82,17 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     # грузим их заранее, иначе список клиентов даёт N+1 на каждую строку.
     queryset = (
         Client.objects
-        .select_related("manager")
         .prefetch_related(Prefetch(
             "orders", queryset=with_order_api_relations(Order.objects.all())
         ))
     )
     serializer_class = ClientSerializer
     required_perms = {
-        "list": ("clients.view", "dept2.view"),
-        "retrieve": ("clients.view", "dept2.view"),
-        "create": ("clients.create", "dept2.create"),
-        "update": ("clients.edit", "dept2.create"),
-        "partial_update": ("clients.edit", "dept2.create"),
+        "list": "clients.view",
+        "retrieve": "clients.view",
+        "create": "clients.create",
+        "update": "clients.edit",
+        "partial_update": "clients.edit",
         "destroy": "clients.delete",
         # Финансовая детализация и долги — под reports.view.
         "debts": "reports.view",
@@ -74,15 +102,7 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     }
 
     def get_queryset(self):
-        required = self.required_perms.get(self.action, "clients.view")
-        scope_perm = required if isinstance(required, str) else "clients.view"
-        qs = scope_by_department(
-            super().get_queryset(), self.request.user, scope_perm)
-        if self.action == "list":
-            department = self.request.query_params.get("department")
-            if department:
-                qs = qs.filter(department=department)
-        return qs
+        return super().get_queryset()
 
     @action(detail=True, methods=["get"], url_path="history")
     def history(self, request, pk=None):
@@ -174,11 +194,11 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
         clients = self.get_queryset()
         department = params.get("department")
-        if department:
-            clients = clients.filter(department=department)
         rows = []
         for client in clients.prefetch_related("stores"):
             orders = list(self._debt_orders(client))
+            if department:
+                orders = [o for o in orders if o.department == department]
             if date_from:
                 orders = [o for o in orders
                           if timezone.localdate(o.created_at) >= date_from]
@@ -262,10 +282,7 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     serializer_class = StoreSerializer
 
     def get_queryset(self):
-        base_perm = self.required_perms.get(self.action, "clients.view")
-        return scope_by_department(
-            super().get_queryset(), self.request.user, base_perm,
-            dept_field="client__department", owner_field="client__manager")
+        return super().get_queryset()
 
     required_perms = {
         "list": "clients.view", "retrieve": "clients.view",

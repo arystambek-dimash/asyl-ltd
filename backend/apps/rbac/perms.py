@@ -8,7 +8,6 @@ _SECTIONS = {
     "payments": ("Оплаты", ["view", "create", "confirm"]),
     "shipping": ("Пост отгрузки", ["view", "arrive", "load", "ship", "debt_override"]),
     "train": ("Поезд", ["view", "load"]),
-    "dept2": ("Отдел «Сити»", ["view", "create", "view_all"]),
     "events": ("Журнал", ["view"]),
     "reports": ("Отчёты", ["view"]),
     "employees": ("Сотрудники", ["view", "manage"]),
@@ -18,7 +17,6 @@ _SECTIONS = {
 _ACTION_LABELS = {
     "view": "Просмотр", "create": "Создание", "edit": "Редактирование",
     "delete": "Удаление", "adjust": "Корректировка", "confirm": "Подтверждение",
-    "view_all": "Все данные отдела",
     "arrive": "Приём машины", "load": "Загрузка", "ship": "Отгрузка",
     "debt_override": "Отгрузка в долг", "manage": "Управление",
     "set_price": "Закрепление прайса",
@@ -49,10 +47,9 @@ def _codes(*sections_or_codes):
 PRESETS = {
     "Менеджер": _codes("catalog", "clients", "orders",
                        "payments.view", "payments.confirm", "reports.view", "events.view"),
-    # Касса (бухгалтер): подтверждение заказов и оплат по обоим отделам,
-    # отправка (orders.edit), долги (reports.view).
+    # Касса: подтверждение заказов и оплат, отправка (orders.edit), долги.
     "Касса": _codes("payments.view", "payments.create", "payments.confirm",
-                    "orders.view", "orders.confirm", "orders.edit", "dept2.view_all",
+                    "orders.view", "orders.confirm", "orders.edit",
                     "clients.view", "reports.view", "events.view"),
     "Оператор": _codes("shipping.view", "shipping.arrive", "shipping.load",
                        "shipping.ship", "orders.view", "warehouse.view", "events.view"),
@@ -60,10 +57,7 @@ PRESETS = {
     # Контролёр на посту погрузки (планшет): приём машины на весах,
     # погрузка с камерой и счётчиком, выезд; плюс загрузка поездов.
     "Контролёр": _codes("shipping", "train", "orders.view", "warehouse.view"),
-    # Менеджер выездного отдела: работает только в разделе «Сити» со своими данными.
-    "Менеджер Сити": _codes("dept2.view", "dept2.create", "clients.set_price",
-                            "payments.view", "payments.create"),
     "Начальник": _codes("catalog", "clients", "orders", "payments", "warehouse",
-                        "shipping", "train", "dept2", "employees", "rbac",
+                        "shipping", "train", "employees", "rbac",
                         "reports.view", "events.view"),
 }

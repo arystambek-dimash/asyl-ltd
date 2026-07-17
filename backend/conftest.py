@@ -52,11 +52,10 @@ def manager(user_with_perms):
 
 @pytest.fixture
 def accountant(user_with_perms):
-    # Пресет «Касса»: подтверждение заказов, отправка и финальное
-    # подтверждение оплат по обоим отделам.
+    # Пресет «Касса»: подтверждение заказов и финальное подтверждение оплат.
     return user_with_perms("accountant", codes=[
         "payments.view", "payments.create", "payments.confirm",
-        "orders.view", "orders.confirm", "orders.edit", "dept2.view_all"])
+        "orders.view", "orders.confirm", "orders.edit"])
 
 
 @pytest.fixture
@@ -74,13 +73,6 @@ def boss(user_with_perms):
         "catalog.view", "clients.view", "clients.edit", "clients.set_price",
         "employees.view", "employees.manage",
         "rbac.view", "rbac.manage", "reports.view"])
-
-
-@pytest.fixture
-def dept2_manager(user_with_perms):
-    return user_with_perms("citymanager", codes=[
-        "dept2.view", "dept2.create", "clients.set_price",
-        "payments.view", "payments.create"])
 
 
 @pytest.fixture

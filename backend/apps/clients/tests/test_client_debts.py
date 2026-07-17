@@ -58,9 +58,9 @@ def test_client_debts_aggregate_by_client(boss):
 def test_client_debts_filters_department_store_date_and_remaining(boss):
     p = _product()
     main = Client.objects.create(
-        first_name="Main", last_name="Client", phone="1", department="main")
+        first_name="Main", last_name="Client", phone="1")
     field = Client.objects.create(
-        first_name="Field", last_name="Client", phone="2", department="field")
+        first_name="Field", last_name="Client", phone="2")
     main_store = Store.objects.create(client=main, name="Main store")
     other_store = Store.objects.create(client=main, name="Other store")
     field_store = Store.objects.create(client=field, name="Field store")

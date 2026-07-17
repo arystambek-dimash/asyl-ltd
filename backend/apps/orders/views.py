@@ -4,9 +4,11 @@ from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
+from decimal import Decimal
 from apps.common.permissions import HasPerm, PermViewSetMixin
+from apps.common.money import money_string
 from apps.common.query_params import parse_iso_date, validate_date_range
-from apps.rbac.scoping import scope_by_department
+from apps.clients.models import Department
 from apps.shipments.services import (
     start_train_loading, record_count, finish_train_loading)
 from apps.shipments.serializers import LoadSerializer
@@ -32,9 +34,7 @@ class ReportSummaryView(APIView):
         date_from = parse_iso_date(request.query_params.get("from"))
         date_to = parse_iso_date(request.query_params.get("to"))
         validate_date_range(date_from, date_to)
-        qs = scope_by_department(
-            Order.objects.all(), request.user, "reports.view",
-            owner_field="client__manager")
+        qs = Order.objects.all()
         department = request.query_params.get("department")
         if department:
             qs = qs.filter(department=department)
@@ -53,9 +53,9 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     queryset = with_order_api_relations(Order.objects.all())
     serializer_class = OrderSerializer
     required_perms = {
-        "list": ("orders.view", "dept2.view"),
-        "retrieve": ("orders.view", "dept2.view"),
-        "create": ("orders.create", "dept2.create"),
+        "list": "orders.view",
+        "retrieve": "orders.view",
+        "create": "orders.create",
         "update": "orders.edit",
         "partial_update": "orders.edit", "destroy": "orders.edit",
         "trash": "orders.edit", "restore": "orders.edit",
@@ -76,14 +76,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "train_queue": "train.view",
         "train": "train.load",
         "loading_camera": "shipping.load",
+        "department_summary": "orders.view",
     }
 
     def get_queryset(self):
-        required = self.required_perms.get(self.action, "orders.view")
-        scope_perm = required if isinstance(required, str) else "orders.view"
-        qs = scope_by_department(
-            super().get_queryset(), self.request.user, scope_perm,
-            owner_field="client__manager")
+        qs = super().get_queryset()
         if self.action == "list":
             params = self.request.query_params
             for field in ("department", "status", "payment_status"):
@@ -114,6 +111,53 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 qs = qs.filter(store_id=store)
         return qs
 
+    @action(detail=False, methods=["get"], url_path="department-summary")
+    def department_summary(self, request):
+        """Оперативная аналитика заказов в разрезе динамических отделов."""
+        params = request.query_params
+        qs = with_order_api_relations(Order.objects.all())
+        date_from = parse_iso_date(params.get("date_from"))
+        date_to = parse_iso_date(params.get("date_to"))
+        validate_date_range(date_from, date_to)
+        if date_from:
+            qs = qs.filter(created_at__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(created_at__date__lte=date_to)
+        group = params.get("status_group")
+        if group:
+            if group not in PUBLIC_STATUS_LABELS:
+                raise ValidationError({"detail": "Неизвестная группа статусов",
+                                       "code": "bad_status_group"})
+            qs = qs.filter(status__in=statuses_in_group(group))
+
+        rows = {department.code: {
+            "id": department.id,
+            "code": department.code,
+            "name": department.name,
+            "color": department.color,
+            "is_active": department.is_active,
+            "orders": 0,
+            "active": 0,
+            "shipped": 0,
+            "revenue": Decimal("0"),
+        } for department in Department.objects.all()}
+        for order in qs:
+            row = rows.get(order.department)
+            if row is None:
+                continue
+            row["orders"] += 1
+            if order.status == "shipped":
+                row["shipped"] += 1
+            elif order.status not in ("rejected", "cancelled"):
+                row["active"] += 1
+            if order.status not in ("rejected", "cancelled"):
+                row["revenue"] += order.total_amount
+        return Response([
+            {**row, "revenue": money_string(row["revenue"])}
+            for row in rows.values()
+            if row["is_active"] or row["orders"]
+        ])
+
     @action(detail=False, methods=["get"], url_path="payments-queue")
     def payments_queue(self, request):
         """Очередь ручной обработки кассиром (requested и received)."""
@@ -121,9 +165,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         stages = [stage] if stage in Payment.STATUSES else Payment.IN_PROGRESS_STATUSES
         qs = (Payment.objects
               .filter(status__in=stages,
-                      order__in=scope_by_department(
-                          Order.objects.all(), request.user, "payments.confirm",
-                          owner_field="client__manager"))
+                      order__in=Order.objects.all())
               .select_related("order__client", "order__store", "recorded_by", "received_by")
               .order_by("paid_at"))
         department = request.query_params.get("department")
@@ -208,10 +250,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def _deleted_scoped(self):
-        """Удалённые заказы (корзина) в рамках прав пользователя по отделу."""
-        qs = with_order_api_relations(Order.all_objects.deleted())
-        return scope_by_department(qs, self.request.user, "orders.edit",
-                                   owner_field="client__manager")
+        """Удалённые заказы (корзина), доступные редактору заказов."""
+        return with_order_api_relations(Order.all_objects.deleted())
 
     @action(detail=False, methods=["get"], url_path="trash")
     def trash(self, request):

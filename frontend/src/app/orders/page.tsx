@@ -30,21 +30,24 @@ import {
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
-import { can, deptLabel } from "@/lib/can";
+import { can } from "@/lib/can";
 import { cn, formatDateTime, formatMoney } from "@/lib/utils";
 import { useDismiss } from "@/lib/use-dismiss";
 import {
   Archive,
+  Building2,
   CalendarDays,
+  Check,
   ChevronDown,
   ChevronLeft,
   Pencil,
   Plus,
   RotateCcw,
   Search,
+  Settings2,
   Trash2,
 } from "lucide-react";
-import type { Order, Me } from "@/lib/types";
+import type { Department, DepartmentSummary, Order } from "@/lib/types";
 
 // Позиции и цены редактируются до начала загрузки (включая «ожидает загрузки»).
 function isEditable(o: Order): boolean {
@@ -184,6 +187,199 @@ function StatusShareBar({ orders, total }: { orders: Order[]; total: number }) {
         ))}
       </div>
     </div>
+  );
+}
+
+function DepartmentBadge({ order }: { order: Order }) {
+  return (
+    <span className="inline-flex max-w-44 items-center gap-1.5 rounded-full border bg-[var(--card)] px-2.5 py-1 text-[11px] font-semibold">
+      <span className="size-2 shrink-0 rounded-full"
+        style={{ backgroundColor: order.department_color ?? "#64748B" }} />
+      <span className="truncate">{order.department_name ?? order.department ?? "Без отдела"}</span>
+    </span>
+  );
+}
+
+const DEPARTMENT_COLORS = [
+  "#315FD5", "#D68B2C", "#238C6E", "#B84A5A", "#7654B3", "#3B7F91", "#6B7280",
+];
+
+function DepartmentManager({ onChanged }: { onChanged: () => void }) {
+  const { data, reload } = useApi<Department[]>("/departments/?all=1");
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<Department | null>(null);
+  const [name, setName] = useState("");
+  const [color, setColor] = useState(DEPARTMENT_COLORS[0]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  function begin(department?: Department) {
+    setEditing(department ?? null);
+    setName(department?.name ?? "");
+    setColor(department?.color ?? DEPARTMENT_COLORS[(data?.length ?? 0) % DEPARTMENT_COLORS.length]);
+    setError("");
+  }
+
+  async function save() {
+    setSaving(true); setError("");
+    try {
+      if (editing) await api.patch(`/departments/${editing.id}/`, { name, color });
+      else await api.post("/departments/", { name, color });
+      begin();
+      await reload();
+      onChanged();
+    } catch (cause) { setError(apiError(cause)); }
+    finally { setSaving(false); }
+  }
+
+  async function update(department: Department, payload: Partial<Department>) {
+    setSaving(true); setError("");
+    try {
+      await api.patch(`/departments/${department.id}/`, payload);
+      await reload();
+      onChanged();
+    } catch (cause) { setError(apiError(cause)); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <>
+      <Button size="sm" variant="outline" onClick={() => { setOpen(true); begin(); }}>
+        <Settings2 className="size-4" /> Отделы
+      </Button>
+      <Modal open={open} onClose={() => setOpen(false)}
+        eyebrow="Заказы · Настройка"
+        title="Отделы продаж"
+        description="Добавляйте отделы здесь — они сразу появятся в новом заказе, фильтрах и аналитике."
+        className="max-w-2xl">
+        <div className="grid gap-5 md:grid-cols-[1.15fr_.85fr]">
+          <div className="flex flex-col gap-2">
+            {(data ?? []).map((department) => (
+              <div key={department.id}
+                className={cn(
+                  "group flex items-center gap-3 rounded-xl border p-3 transition",
+                  department.is_active ? "bg-[var(--card)]" : "bg-[var(--muted)]/35 opacity-65",
+                )}>
+                <span className="size-3 shrink-0 rounded-full ring-4 ring-current/10"
+                  style={{ backgroundColor: department.color, color: department.color }} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-semibold">{department.name}</span>
+                    {department.is_default && (
+                      <span className="rounded-full bg-[var(--muted)] px-2 py-0.5 text-[10px] font-medium text-[var(--muted-foreground)]">основной</span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-[var(--muted-foreground)]">
+                    {department.order_count} заказов · {department.is_active ? "доступен" : "отключён"}
+                  </div>
+                </div>
+                <button type="button" onClick={() => begin(department)}
+                  className="rounded-lg p-2 text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                  title="Изменить отдел">
+                  <Pencil className="size-3.5" />
+                </button>
+                <button type="button" disabled={saving || (department.is_default && department.is_active)}
+                  onClick={() => void update(department, { is_active: !department.is_active })}
+                  className="min-w-20 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium disabled:opacity-40">
+                  {department.is_active ? "Отключить" : "Включить"}
+                </button>
+              </div>
+            ))}
+            {(data ?? []).length === 0 && (
+              <div className="rounded-xl border border-dashed p-8 text-center text-sm text-[var(--muted-foreground)]">
+                Создайте первый отдел для новых заказов.
+              </div>
+            )}
+          </div>
+
+          <div className="h-fit rounded-2xl border bg-[var(--muted)]/25 p-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-bold">{editing ? "Изменить отдел" : "Новый отдел"}</div>
+                <div className="text-[11px] text-[var(--muted-foreground)]">Название и цвет метки</div>
+              </div>
+              {editing && (
+                <button type="button" onClick={() => begin()}
+                  className="text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
+                  Сбросить
+                </button>
+              )}
+            </div>
+            <Input autoFocus value={name} onChange={(event) => setName(event.target.value)}
+              maxLength={100} placeholder="Например, Оптовые продажи" />
+            <div className="mt-3 flex flex-wrap gap-2">
+              {DEPARTMENT_COLORS.map((item) => (
+                <button key={item} type="button" onClick={() => setColor(item)}
+                  aria-label={`Цвет ${item}`}
+                  className={cn("flex size-8 items-center justify-center rounded-full transition-transform hover:scale-110",
+                    color === item && "ring-2 ring-[var(--foreground)] ring-offset-2 ring-offset-[var(--card)]")}
+                  style={{ backgroundColor: item }}>
+                  {color === item && <Check className="size-4 text-white" />}
+                </button>
+              ))}
+            </div>
+            {error && <p className="mt-3 text-sm text-[var(--destructive)]">{error}</p>}
+            <Button className="mt-4 w-full" disabled={saving || !name.trim()}
+              onClick={() => void save()}>
+              {saving ? "Сохранение…" : editing ? "Сохранить изменения" : "Добавить отдел"}
+            </Button>
+            {editing && !editing.is_default && (
+              <button type="button" disabled={saving}
+                onClick={() => void update(editing, { is_default: true, is_active: true })}
+                className="mt-3 w-full text-center text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
+                Сделать основным
+              </button>
+            )}
+          </div>
+        </div>
+      </Modal>
+    </>
+  );
+}
+
+function DepartmentAnalytics({ rows, active, onSelect }: {
+  rows: DepartmentSummary[];
+  active: string;
+  onSelect: (code: string) => void;
+}) {
+  if (rows.length === 0) return null;
+  const totalOrders = rows.reduce((sum, row) => sum + row.orders, 0);
+  return (
+    <section className="mb-5 overflow-hidden rounded-2xl border bg-[var(--card)] shadow-card">
+      <div className="flex flex-wrap items-end justify-between gap-3 border-b px-5 py-4">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-bold"><Building2 className="size-4" /> По отделам</div>
+          <p className="mt-1 text-xs text-[var(--muted-foreground)]">Живая структура заказов за выбранный период</p>
+        </div>
+        <button type="button" onClick={() => onSelect("all")}
+          className={cn("rounded-full px-3 py-1.5 text-xs font-semibold transition",
+            active === "all" ? "bg-[var(--foreground)] text-[var(--background)]" : "bg-[var(--muted)] hover:bg-[var(--accent)]")}>
+          Все отделы · {totalOrders}
+        </button>
+      </div>
+      <div className="grid sm:grid-cols-2 xl:grid-cols-3">
+        {rows.map((row) => (
+          <button key={row.code} type="button" onClick={() => onSelect(row.code)}
+            className={cn(
+              "relative min-h-32 border-b p-5 text-left transition hover:bg-[var(--muted)]/35 sm:border-r",
+              active === row.code && "bg-[var(--muted)]/45",
+            )}>
+            <span className="absolute inset-y-4 left-0 w-1 rounded-r-full" style={{ backgroundColor: row.color }} />
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-bold">{row.name}</div>
+                <div className="mt-0.5 text-[11px] text-[var(--muted-foreground)]">{row.active} сейчас в работе</div>
+              </div>
+              <span className="text-2xl font-black tabular-nums">{row.orders}</span>
+            </div>
+            <div className="mt-5 flex items-end justify-between gap-3">
+              <span className="text-xs text-[var(--muted-foreground)]">{row.shipped} завершено</span>
+              <span className="text-sm font-bold tabular-nums">{formatMoney(row.revenue)} ₸</span>
+            </div>
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -330,11 +526,21 @@ function OrdersPageInner() {
     return `/orders/${query ? `?${query}` : ""}`;
   }, [dateFrom, dateTo, dept, status]);
   const { data: orders, loading, error, reload } = useApi<Order[]>(ordersUrl);
+  const summaryUrl = useMemo(() => {
+    const params = new URLSearchParams();
+    if (dateFrom) params.set("date_from", dateFrom);
+    if (dateTo) params.set("date_to", dateTo);
+    if (status !== "all") params.set("status_group", status);
+    const query = params.toString();
+    return `/orders/department-summary/${query ? `?${query}` : ""}`;
+  }, [dateFrom, dateTo, status]);
+  const { data: departmentSummary, reload: reloadSummary } = useApi<DepartmentSummary[]>(summaryUrl);
+  const { data: departments, reload: reloadDepartments } = useApi<Department[]>("/departments/");
   const { me } = useAuth();
   const canCreate = can(me, "orders.create");
   const canEdit = can(me, "orders.edit");
-  // Сводная картина обоих отделов — руководителю/бухгалтеру/кассиру.
-  const showDept = can(me, "dept2.view_all");
+  const canManageDepartments = can(me, "rbac.manage");
+  const showDept = (departments?.length ?? 0) > 1;
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Order | null>(null);
   const [q, setQ] = useState("");
@@ -409,21 +615,30 @@ function OrdersPageInner() {
   });
 
   return (
-    <AppShell title="Заказы" section="Работа" description="Заказы клиентов: позиции, оплаты, машина и плановая дата прибытия на отгрузку."
-      actions={canCreate ? (
-        <Button size="sm" aria-label="Новый заказ" onClick={() => setOpen(true)}>
-          <Plus className="size-4" /> <span className="hidden sm:inline">Новый заказ</span>
-        </Button>
+    <AppShell title="Заказы" section="Работа" description="Единый центр заказов: отделы, статусы, выручка и отгрузка."
+      actions={(canCreate || canManageDepartments) ? (
+        <div className="flex items-center gap-2">
+          {canManageDepartments && (
+            <DepartmentManager onChanged={() => {
+              void reloadDepartments(); void reloadSummary(); void reload();
+            }} />
+          )}
+          {canCreate && (
+            <Button size="sm" aria-label="Новый заказ" onClick={() => setOpen(true)}>
+              <Plus className="size-4" /> <span className="hidden sm:inline">Новый заказ</span>
+            </Button>
+          )}
+        </div>
       ) : undefined}>
       {view === "archive" ? (
         <ArchiveView
           showDept={showDept}
-          me={me}
           onBack={() => { reload(); reloadTrash(); setView("orders"); }}
           onRestored={() => { reload(); reloadTrash(); }}
         />
       ) : (
       <>
+      <DepartmentAnalytics rows={departmentSummary ?? []} active={dept} onSelect={setDept} />
       <section className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <StatCard label="Всего заказов" value={String(list.length)} />
         <StatCard label="В процессе" value={String(activeCount)} />
@@ -447,11 +662,13 @@ function OrdersPageInner() {
             onDateFrom={setDateFrom}
             onDateTo={setDateTo}
           />
-          {showDept && (
+          {(departments?.length ?? 0) > 0 && (
             <FilterDropdown label="Отдел" active={dept} onChange={setDept} options={[
               { key: "all", label: "Все" },
-              { key: "main", label: deptLabel(me, "main") },
-              { key: "field", label: deptLabel(me, "field") },
+              ...(departments ?? []).map((department) => ({
+                key: department.code,
+                label: department.name,
+              })),
             ]} />
           )}
           <FilterDropdown label="Статус" options={pills} active={status} onChange={setStatus} />
@@ -472,11 +689,7 @@ function OrdersPageInner() {
             <div className="flex items-start justify-between gap-2">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-semibold">#{o.id}</span>
-                {showDept && (
-                  <Badge tone={o.department === "field" ? "primary" : "muted"}>
-                    {deptLabel(me, o.department ?? "main")}
-                  </Badge>
-                )}
+                {showDept && <DepartmentBadge order={o} />}
               </div>
               <StatusBadge status={o.status} dot />
             </div>
@@ -544,13 +757,7 @@ function OrdersPageInner() {
                     <TD className="whitespace-nowrap tabular-nums text-[var(--muted-foreground)]">
                       {formatDateTime(o.created_at)}
                     </TD>
-                    {showDept && (
-                      <TD>
-                        <Badge tone={o.department === "field" ? "primary" : "muted"}>
-                          {deptLabel(me, o.department ?? "main")}
-                        </Badge>
-                      </TD>
-                    )}
+                    {showDept && <TD><DepartmentBadge order={o} /></TD>}
                     <TD>{o.client_name || `Клиент #${o.client}`}</TD>
                     <TD className="text-right tabular-nums">{formatMoney(o.total_amount)} ₸</TD>
                     <TD>
@@ -610,7 +817,7 @@ function OrdersPageInner() {
         description="Отдел, клиент, позиции и плановая дата прибытия."
         className="max-w-2xl">
         {open && <OrderForm onCancel={() => setOpen(false)}
-          onDone={() => { setOpen(false); reload(); }} />}
+          onDone={() => { setOpen(false); reload(); reloadSummary(); }} />}
       </Modal>
 
       <Modal open={!!editing} onClose={() => setEditing(null)}
@@ -620,16 +827,15 @@ function OrdersPageInner() {
         className="max-w-2xl">
         {editing && <OrderForm editing={editing}
           onCancel={() => setEditing(null)}
-          onDone={() => { setEditing(null); reload(); }} />}
+          onDone={() => { setEditing(null); reload(); reloadSummary(); }} />}
       </Modal>
     </AppShell>
   );
 }
 
 /* ── Архив: удалённые заказы с восстановлением ──────────────────────────── */
-function ArchiveView({ showDept, me, onBack, onRestored }: {
+function ArchiveView({ showDept, onBack, onRestored }: {
   showDept: boolean;
-  me: Me | null;
   onBack: () => void;
   onRestored: () => void;
 }) {
@@ -693,11 +899,7 @@ function ArchiveView({ showDept, me, onBack, onRestored }: {
                 <TR key={o.id}>
                   <TD className="font-medium">#{o.id}</TD>
                   {showDept && (
-                    <TD>
-                      <Badge tone={o.department === "field" ? "primary" : "muted"}>
-                        {deptLabel(me, o.department ?? "main")}
-                      </Badge>
-                    </TD>
+                    <TD><DepartmentBadge order={o} /></TD>
                   )}
                   <TD>{o.client_name || `Клиент #${o.client}`}</TD>
                   <TD className="text-right tabular-nums">{formatMoney(o.total_amount)} ₸</TD>

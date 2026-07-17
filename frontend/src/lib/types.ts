@@ -6,7 +6,6 @@ export interface Me {
   permissions: string[];
   role_name: string | null;
   client_id: number | null;
-  department_names?: Record<string, string>;
 }
 
 export interface Product {
@@ -27,7 +26,27 @@ export interface ClientPriceSheet {
   client: Client;
   prices: ClientPriceRow[];
 }
-export type Department = "main" | "field";
+export interface Department {
+  id: number;
+  code: string;
+  name: string;
+  color: string;
+  is_active: boolean;
+  is_default: boolean;
+  order_count: number;
+  created_at: string;
+}
+export interface DepartmentSummary {
+  id: number;
+  code: string;
+  name: string;
+  color: string;
+  is_active: boolean;
+  orders: number;
+  active: number;
+  shipped: number;
+  revenue: string;
+}
 export type PortalPaymentMethod = "invoice" | "kaspi" | "cash" | "debt";
 export type PaymentMethod = PortalPaymentMethod | "card";
 
@@ -35,7 +54,6 @@ export interface Client {
   id: number; first_name: string; last_name: string; phone: string;
   name: string; country: string;
   iin: string; bank: string; bank_account: string; user: number | null;
-  department: Department; manager: number | null; manager_name?: string | null;
   debt_total?: string; created_at?: string;
 }
 export interface Store {
@@ -54,7 +72,9 @@ export interface StatusChangeRequest {
 }
 export interface Order {
   id: number; client: number; store?: number | null; client_name?: string; client_phone?: string;
-  department?: Department;
+  department?: string;
+  department_name?: string;
+  department_color?: string;
   status: string; payment_status?: string; settlement_intent?: string;
   payment_method?: PaymentMethod; transport_type?: "truck" | "train";
   truck_number: string; truck_number_set_by?: number | null;
@@ -107,7 +127,8 @@ export interface Payment {
 }
 
 export interface PaymentQueueItem extends Payment {
-  client_name: string; department: Department; order_status: string;
+  client_name: string; department: string; department_name?: string;
+  department_color?: string; order_status: string;
   store?: number | null; store_name?: string | null;
 }
 export interface StockItem {

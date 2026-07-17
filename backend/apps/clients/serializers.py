@@ -1,57 +1,92 @@
 from rest_framework import serializers
 from decimal import Decimal
+from uuid import uuid4
+from django.db import transaction
 from apps.common.money import money_string
 from .models import Client, Department, Store
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
-    # Код фиксирован — переименовать можно только название.
     code = serializers.CharField(read_only=True)
+    order_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Department
-        fields = ["id", "code", "name"]
+        fields = ["id", "code", "name", "color", "is_active", "is_default",
+                  "order_count", "created_at"]
+        read_only_fields = ["created_at"]
+
+    def get_order_count(self, obj):
+        counts = self.context.get("department_order_counts", {})
+        return counts.get(obj.code, 0)
+
+    def validate_name(self, value):
+        name = " ".join(value.split())
+        if not name:
+            raise serializers.ValidationError("Введите название отдела")
+        duplicate = Department.objects.all()
+        if self.instance:
+            duplicate = duplicate.exclude(pk=self.instance.pk)
+        if any(row.name.strip().casefold() == name.casefold() for row in duplicate.only("name")):
+            raise serializers.ValidationError("Отдел с таким названием уже существует")
+        return name
+
+    def validate_color(self, value):
+        value = value.upper()
+        if len(value) != 7 or value[0] != "#" or any(
+                char not in "0123456789ABCDEF" for char in value[1:]):
+            raise serializers.ValidationError("Цвет должен быть в формате #315FD5")
+        return value
+
+    @transaction.atomic
+    def create(self, validated_data):
+        if not Department.objects.exists():
+            validated_data["is_default"] = True
+        department = Department.objects.create(
+            code=f"department-{uuid4().hex[:12]}", **validated_data)
+        if department.is_default:
+            Department.objects.exclude(pk=department.pk).update(is_default=False)
+        return department
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        will_be_active = validated_data.get("is_active", instance.is_active)
+        will_be_default = validated_data.get("is_default", instance.is_default)
+        removing_default = instance.is_default and not will_be_default
+        if (not will_be_active and instance.is_default) or removing_default:
+            replacement = Department.objects.filter(is_active=True).exclude(pk=instance.pk).first()
+            if replacement is None:
+                field = "is_active" if not will_be_active else "is_default"
+                raise serializers.ValidationError(
+                    {field: "Сначала создайте или назначьте другой основной отдел"})
+            replacement.is_default = True
+            replacement.save(update_fields=["is_default"])
+            validated_data["is_default"] = False
+            will_be_default = False
+        if will_be_default and not will_be_active:
+            raise serializers.ValidationError(
+                {"is_default": "Основной отдел должен быть активным"})
+        department = super().update(instance, validated_data)
+        if department.is_default:
+            Department.objects.exclude(pk=department.pk).update(is_default=False)
+        return department
 
 
 class ClientSerializer(serializers.ModelSerializer):
     name = serializers.CharField(read_only=True)
     debt_total = serializers.SerializerMethodField()
-    department = serializers.ChoiceField(choices=Client.DEPARTMENTS, default="main")
-    manager_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Client
         fields = ["id", "first_name", "last_name", "phone", "name",
                   "country", "iin", "bank", "bank_account", "user",
-                  "department", "manager", "manager_name", "debt_total",
-                  "created_at"]
+                  "debt_total", "created_at"]
         read_only_fields = ["created_at"]
 
     def get_debt_total(self, obj):
         total = sum((o.remaining_amount for o in obj.orders.all() if o.is_debt),
                     Decimal("0"))
         return money_string(total)
-
-    def get_manager_name(self, obj):
-        return obj.manager.username if obj.manager else None
-
-    def _is_dept2_only(self, user) -> bool:
-        return (not user.is_superuser
-                and not user.has_perm_code("clients.create")
-                and user.has_perm_code("dept2.create"))
-
-    def validate(self, attrs):
-        # Менеджер Отдела 2 создаёт клиентов только в своём разделе и на себя —
-        # серверное правило, не полагаемся на данные формы.
-        user = self.context["request"].user
-        if self._is_dept2_only(user):
-            attrs["department"] = "field"
-            attrs["manager"] = user
-        elif attrs.get("department") == "field" and not attrs.get("manager"):
-            instance_manager = getattr(self.instance, "manager", None)
-            attrs["manager"] = instance_manager or user
-        return attrs
-
 
 class StoreSerializer(serializers.ModelSerializer):
     class Meta:
@@ -60,8 +95,7 @@ class StoreSerializer(serializers.ModelSerializer):
                   "payment_schedule_type", "payment_days", "contract_signed_at"]
 
     def validate_client(self, client):
-        # Не позволяем привязать магазин к клиенту из невидимого отдела,
-        # даже если его id был подставлен напрямую в API-запрос.
+        # Не позволяем привязать магазин к клиенту, недоступному пользователю.
         from .querysets import visible_clients
         request = self.context.get("request")
         if request and not visible_clients(request.user).filter(pk=client.pk).exists():

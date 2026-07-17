@@ -29,8 +29,8 @@ class Order(models.Model):
     client = models.ForeignKey(
         "clients.Client", on_delete=models.PROTECT, related_name="orders"
     )
-    # Денормализовано из клиента при создании: заказы отделов не смешиваются.
-    department = models.CharField(max_length=10, default="main")
+    # Код динамического отдела продаж. Отдел выбирается непосредственно у заказа.
+    department = models.CharField(max_length=50, default="main")
     transport_type = models.CharField(max_length=10, default="truck")
     store = models.ForeignKey(
         "clients.Store", null=True, blank=True,

@@ -2,7 +2,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 from apps.common.money import money_string
 from apps.catalog.models import ClientPrice, Product
-from apps.clients.models import Store
+from apps.clients.models import Department, Store
 from apps.orders.models import Order, OrderItem
 
 
@@ -146,7 +146,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
                 client=client, product_id__in=product_ids)
         }
         order = Order.objects.create(client=client, status="pending",
-                                     department=client.department,
+                                     department=Department.default_code(),
                                      settlement_intent=intent,
                                      payment_method=method, store=store,
                                      transport_type=transport)
