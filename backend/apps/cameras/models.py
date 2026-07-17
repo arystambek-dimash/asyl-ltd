@@ -61,6 +61,29 @@ class AiCountingSession(models.Model):
         ]
 
 
+class MonoblockCameraSettings(models.Model):
+    """Admin-managed allowlist of cameras offered in the Monoblock launcher."""
+
+    singleton = models.BooleanField(default=True, unique=True, editable=False)
+    camera_sources = models.JSONField(default=list, blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="monoblock_camera_settings_updates",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def allowed_sources(cls) -> set[str]:
+        row = cls.objects.filter(singleton=True).only("camera_sources").first()
+        return {
+            source for source in (row.camera_sources if row else [])
+            if isinstance(source, str) and source
+        }
+
+
 class CameraHealthState(models.Model):
     """Last durable result of the end-to-end camera monitor.
 

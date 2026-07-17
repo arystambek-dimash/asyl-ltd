@@ -126,6 +126,10 @@ export interface AiCountingSession {
   started_by_id: number | null; started_by_name: string; can_stop: boolean;
   last_status: { total?: number; weight?: number; status?: string; per_color?: Record<string, number> };
 }
+export interface MonoblockCameraSettings {
+  camera_sources: string[];
+  updated_at: string | null;
+}
 export interface Permission { id: number; code: string; section: string; action: string; label: string; }
 export interface Role {
   id: number; name: string; description: string; is_system: boolean;

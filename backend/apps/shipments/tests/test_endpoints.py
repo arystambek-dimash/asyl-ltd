@@ -4,6 +4,7 @@ from rest_framework.test import APIClient
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
+from apps.cameras.models import MonoblockCameraSettings
 from apps.warehouse.services import receive_stock
 from apps.shipments.services import record_arrival, record_count
 
@@ -96,6 +97,7 @@ def test_loading_camera_assign_and_clear(operator):
     c = Client.objects.create(first_name="A", last_name="B", phone="1")
     o = Order.objects.create(client=c, status="arrived", truck_number="03C333")
     OrderItem.objects.create(order=o, product=prod, quantity=2)
+    MonoblockCameraSettings.objects.create(camera_sources=["cam3"])
     r = _client(operator).post(f"/api/orders/{o.id}/loading-camera/", {"camera": "3"})
     assert r.status_code == 200
     o.refresh_from_db()
@@ -104,6 +106,25 @@ def test_loading_camera_assign_and_clear(operator):
     assert r.status_code == 200
     o.refresh_from_db()
     assert o.loading_camera == ""
+
+
+def test_loading_camera_must_be_allowed_by_admin(operator):
+    prod = Product.objects.create(name="К2", color="Red", weight_kg="50", price="100.00")
+    client = Client.objects.create(first_name="A", last_name="C", phone="2")
+    order = Order.objects.create(client=client, status="arrived", truck_number="03C334")
+    OrderItem.objects.create(order=order, product=prod, quantity=2)
+    MonoblockCameraSettings.objects.create(camera_sources=["cam2"])
+
+    response = _client(operator).post(
+        f"/api/orders/{order.id}/loading-camera/",
+        {"camera": "cam3"},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "camera_not_allowed"
+    order.refresh_from_db()
+    assert order.loading_camera == ""
 
 
 def test_loading_camera_requires_shipping_load(manager):

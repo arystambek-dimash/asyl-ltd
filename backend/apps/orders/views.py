@@ -176,6 +176,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     def loading_camera(self, request, pk=None):
         """Занять/освободить камеру под погрузку этого заказа. Пустая — освободить."""
         from apps.cameras import ai
+        from apps.cameras.models import MonoblockCameraSettings
         order = self.get_object()
         camera = (request.data.get("camera") or "").strip()
         if camera:
@@ -183,6 +184,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 camera = ai.normalize(camera)  # переиспользуем валидатор имени камеры
             except ai.AiError:
                 raise ValidationError({"detail": "Неизвестная камера", "code": "bad_camera"})
+            if camera not in MonoblockCameraSettings.allowed_sources():
+                raise ValidationError({
+                    "detail": "Эта камера не разрешена администратором для Моноблока",
+                    "code": "camera_not_allowed",
+                })
         order.loading_camera = camera
         order.save(update_fields=["loading_camera"])
         return Response(OrderSerializer(order, context={"request": request}).data)

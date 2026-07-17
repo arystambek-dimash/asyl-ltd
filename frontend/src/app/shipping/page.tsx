@@ -359,43 +359,6 @@ function AiCounterPanel({ ai, accepted, onAccept }: {
   );
 }
 
-/** Выбор камеры под погрузку заказа (серверная привязка loading_camera). */
-function CameraPicker({ cameras, activeSrc, occupied, onPick, busy }: {
-  cameras: (CameraFeed & { src: string })[];
-  activeSrc: string | null;
-  occupied?: boolean;
-  onPick: (src: string) => void;
-  busy?: boolean;
-}) {
-  return (
-    <div className="rounded-xl border bg-[var(--card)] p-3">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
-          <Cctv className="size-3.5" /> Камера погрузки
-        </span>
-        {occupied && (
-          <span className="rounded-md bg-[var(--warning)]/15 px-2 py-0.5 text-[11px] font-medium text-[var(--warning)]">
-            занята другим заказом
-          </span>
-        )}
-      </div>
-      <div className="flex flex-wrap gap-1.5">
-        {cameras.map((c) => (
-          <button key={c.id} type="button" disabled={busy} onClick={() => onPick(c.src)}
-            className={cn(
-              "rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors",
-              c.src === activeSrc
-                ? "border-[var(--primary)] bg-[var(--primary)]/10 text-[var(--primary)]"
-                : "text-[var(--muted-foreground)] hover:bg-[var(--accent)]"
-            )}>
-            {c.zone}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 /** После назначения в «Моноблоке» камера фиксирована за заказом. */
 function BoundCamera({ camera, source }: { camera?: CameraFeed; source: string }) {
   return (
@@ -737,20 +700,14 @@ function ShippingPageInner() {
 
   // Пост работает только с играбельными камерами; locked — тема дашборда.
   const playable = useMemo(() => playableCameras(cameras), [cameras]);
-  const defaultLoadCam = useMemo(
-    () => playable.find((c) => c.zone.toLowerCase().includes("загруз")) ?? playable[0] ?? null,
-    [playable],
-  );
   const aiCam = useMemo(() => {
-    if (selected?.loading_camera) {
-      // Назначенная камера не должна молча подменяться другой, даже если
-      // временно пропала из живого инвентаря.
-      return playable.find((c) => c.src === selected.loading_camera) ?? null;
-    }
-    return defaultLoadCam;
-  }, [playable, selected?.loading_camera, defaultLoadCam]);
+    if (!selected?.loading_camera) return null;
+    // Назначенная камера не должна молча подменяться другой, даже если
+    // временно пропала из живого инвентаря.
+    return playable.find((c) => c.src === selected.loading_camera) ?? null;
+  }, [playable, selected?.loading_camera]);
   const orderCameras = useMemo(() => {
-    if (!selected?.loading_camera) return playable;
+    if (!selected?.loading_camera) return [];
     const bound = playable.find((camera) => camera.src === selected.loading_camera);
     return bound ? [bound] : [];
   }, [playable, selected?.loading_camera]);
@@ -773,10 +730,6 @@ function ShippingPageInner() {
     catch (e) { setError(apiError(e)); }
     finally { setBusy(false); }
   }
-
-  // Занять камеру под текущий заказ (серверная привязка, видна всем операторам).
-  const assignCamera = (camSrc: string) =>
-    act(() => api.post(`/orders/${selected!.id}/loading-camera/`, { camera: camSrc }));
 
   // Куда пишется счёт мешков: машина — /load/, поезд — train count.
   const saveBags = useCallback((order: Order) => (bags: number) =>
@@ -848,13 +801,18 @@ function ShippingPageInner() {
             </div>
 
             {/* видео + действие шага */}
-            <div className="grid gap-4 p-5 xl:grid-cols-[1.4fr_1fr]">
-              <PostCamera cameras={orderCameras}
-                zoneKeywords={!isTrain && selected.status === "confirmed" ? ["вес", "въезд"] : ["загруз"]}
-                preferId={aiCam?.id ?? null}
-                ai={aiLive && aiCam
-                  ? { camId: aiCam.id, src: ai.status?.stream ?? `${aiCam.src}ai` }
-                  : null} />
+            <div className={cn(
+              "grid gap-4 p-5",
+              selected.loading_camera && "xl:grid-cols-[1.4fr_1fr]",
+            )}>
+              {selected.loading_camera && (
+                <PostCamera cameras={orderCameras}
+                  zoneKeywords={["загруз"]}
+                  preferId={aiCam?.id ?? null}
+                  ai={aiLive && aiCam
+                    ? { camId: aiCam.id, src: ai.status?.stream ?? `${aiCam.src}ai` }
+                    : null} />
+              )}
 
               <div className="flex flex-col justify-center gap-4 rounded-2xl bg-[var(--muted)]/40 p-5">
                 {/* ── Поезд: старт → счёт → финиш (без въезда и весов) ── */}
@@ -877,11 +835,8 @@ function ShippingPageInner() {
                 {isTrain && selected.status === "loading" && (
                   canTrain ? (
                     <>
-                      {selected.loading_camera ? (
+                      {selected.loading_camera && (
                         <BoundCamera camera={boundCamera} source={selected.loading_camera} />
-                      ) : playable.length > 0 && (
-                        <CameraPicker cameras={playable} activeSrc={aiCam?.src ?? null}
-                          occupied={ai.occupied} onPick={assignCamera} busy={busy} />
                       )}
                       <BagCounter key={selected.id} order={selected} onSave={saveBags(selected)} />
                       {aiCam && (
@@ -937,11 +892,8 @@ function ShippingPageInner() {
                 {!isTrain && (selected.status === "arrived" || selected.status === "loading") && (
                   canLoad ? (
                     <>
-                      {selected.loading_camera ? (
+                      {selected.loading_camera && (
                         <BoundCamera camera={boundCamera} source={selected.loading_camera} />
-                      ) : playable.length > 0 && (
-                        <CameraPicker cameras={playable} activeSrc={aiCam?.src ?? null}
-                          occupied={ai.occupied} onPick={assignCamera} busy={busy} />
                       )}
                       <BagCounter key={selected.id} order={selected} onSave={saveBags(selected)} />
                       {aiCam && (

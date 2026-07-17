@@ -2,7 +2,7 @@ from django.core import signing
 from django.core.signing import TimestampSigner
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -12,7 +12,7 @@ from apps.orders.models import Order
 from apps.rbac.scoping import scope_by_department
 
 from . import ai, health, services, sessions
-from .models import AiCountingSession
+from .models import AiCountingSession, MonoblockCameraSettings
 
 CAM_COOKIE = "cam_token"
 CAM_TOKEN_MAX_AGE = 12 * 3600  # секунд
@@ -41,6 +41,57 @@ class CameraTokenView(APIView):
             path="/go2rtc/",
         )
         return resp
+
+
+class MonoblockCameraSettingsView(APIView):
+    """Shared allowlist for the camera dropdown in the Monoblock screen."""
+
+    def get_permissions(self):
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return [HasPerm("shipping.load", "rbac.manage")]
+        return [HasPerm("rbac.manage")]
+
+    @staticmethod
+    def _payload(settings_row=None):
+        row = settings_row or MonoblockCameraSettings.objects.filter(singleton=True).first()
+        return {
+            "camera_sources": row.camera_sources if row else [],
+            "updated_at": row.updated_at if row else None,
+        }
+
+    def get(self, request):
+        return Response(self._payload())
+
+    def put(self, request):
+        raw_sources = request.data.get("camera_sources")
+        if not isinstance(raw_sources, list):
+            raise ValidationError({
+                "camera_sources": "Передайте список камер",
+                "code": "bad_camera_sources",
+            })
+
+        normalized = []
+        for raw in raw_sources:
+            if not isinstance(raw, str):
+                raise ValidationError({
+                    "camera_sources": "Каждая камера должна быть строкой",
+                    "code": "bad_camera_source",
+                })
+            try:
+                source = ai.normalize(raw)
+            except ai.AiError:
+                raise ValidationError({
+                    "camera_sources": f"Неизвестная камера: {raw}",
+                    "code": "bad_camera_source",
+                })
+            if source not in normalized:
+                normalized.append(source)
+
+        row, _ = MonoblockCameraSettings.objects.update_or_create(
+            singleton=True,
+            defaults={"camera_sources": normalized, "updated_by": request.user},
+        )
+        return Response(self._payload(row))
 
 
 class CameraHealthView(APIView):
@@ -222,6 +273,11 @@ class CameraAiView(APIView):
                 raise ai.AiError(400, "Укажите заказ для AI-подсчёта")
             if order.status not in ("arrived", "loading"):
                 raise ai.AiError(400, "Заказ не находится на этапе погрузки")
+            if order.loading_camera != camera:
+                raise ai.AiError(
+                    400,
+                    "Камера не закреплена за заказом через Моноблок",
+                )
 
             session, created = sessions.reserve(order, camera, request.user)
 

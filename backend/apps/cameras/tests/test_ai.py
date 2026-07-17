@@ -29,13 +29,40 @@ def loader(user_with_perms):
 @pytest.fixture
 def loading_order():
     client = Client.objects.create(first_name="AI", last_name="One", phone="1")
-    return Order.objects.create(client=client, status="arrived", truck_number="01AI1")
+    return Order.objects.create(
+        client=client,
+        status="arrived",
+        truck_number="01AI1",
+        loading_camera="cam2",
+    )
 
 
 @pytest.fixture
 def second_loading_order():
     client = Client.objects.create(first_name="AI", last_name="Two", phone="2")
-    return Order.objects.create(client=client, status="arrived", truck_number="01AI2")
+    return Order.objects.create(
+        client=client,
+        status="arrived",
+        truck_number="01AI2",
+        loading_camera="cam2",
+    )
+
+
+def test_start_requires_camera_bound_by_monoblock(api_client, loader, loading_order):
+    loading_order.loading_camera = ""
+    loading_order.save(update_fields=["loading_camera"])
+    api_client.force_authenticate(loader)
+
+    with patch.object(ai, "_request") as request:
+        response = api_client.post(
+            "/api/cameras/cam2/ai/",
+            {"order_id": loading_order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    assert "Моноблок" in response.data["detail"]
+    request.assert_not_called()
 
 
 # --- клиент ---------------------------------------------------------------

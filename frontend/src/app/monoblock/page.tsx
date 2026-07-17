@@ -1,12 +1,15 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Camera,
+  Check,
   Clock3,
   LockKeyhole,
   PackageCheck,
   Radio,
+  Settings2,
+  ShieldCheck,
   Square,
   UserRound,
   VideoOff,
@@ -18,13 +21,123 @@ import { RequirePerm } from "@/components/require-perm";
 import { ShipmentLauncher } from "@/components/shipping/shipment-launcher";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/data-state";
-import { api } from "@/lib/api";
-import type { AiCountingSession, Order } from "@/lib/types";
+import { Modal } from "@/components/ui/modal";
+import { api, apiError } from "@/lib/api";
+import { can } from "@/lib/can";
+import type { AiCountingSession, MonoblockCameraSettings, Order } from "@/lib/types";
 import { useAiCounter } from "@/lib/use-ai-counter";
 import { useApi } from "@/lib/use-api";
 import { cn, formatDateTime } from "@/lib/utils";
+import { useAuth } from "@/store/auth";
 
 const SESSION_POLL_MS = 3_000;
+
+function CameraSettingsButton({
+  cameras,
+  settings,
+  reload,
+}: {
+  cameras: (CameraFeed & { src: string })[];
+  settings: MonoblockCameraSettings | null;
+  reload: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  function show() {
+    setSelected(settings?.camera_sources ?? []);
+    setError("");
+    setOpen(true);
+  }
+
+  function toggle(source: string) {
+    setSelected((current) => current.includes(source)
+      ? current.filter((item) => item !== source)
+      : [...current, source]);
+  }
+
+  async function save() {
+    setSaving(true);
+    setError("");
+    try {
+      await api.put("/cameras/monoblock-settings/", { camera_sources: selected });
+      await reload();
+      setOpen(false);
+    } catch (cause) {
+      setError(apiError(cause));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <Button variant="outline" className="h-10 rounded-xl bg-white" onClick={show}>
+        <Settings2 className="size-4" /> Камеры моноблока
+        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] tabular-nums text-slate-500">
+          {settings?.camera_sources.length ?? 0}
+        </span>
+      </Button>
+
+      <Modal open={open} onClose={() => setOpen(false)}
+        eyebrow="Настройка администратора"
+        title="Камеры моноблока"
+        description="Отметьте камеры, которые оператор сможет назначать заказам."
+        className="max-w-xl"
+        footer={(
+          <>
+            <Button variant="ghost" onClick={() => setOpen(false)}>Отмена</Button>
+            <Button disabled={saving} onClick={() => void save()}>
+              <Check className="size-4" /> {saving ? "Сохранение…" : "Сохранить список"}
+            </Button>
+          </>
+        )}>
+        <div className="mb-4 flex items-start gap-3 rounded-xl border border-blue-100 bg-blue-50/70 p-3 text-sm text-blue-900">
+          <ShieldCheck className="mt-0.5 size-5 shrink-0 text-blue-600" />
+          <p>Изменение применяется для всех устройств. Активные отгрузки продолжат работу, но новые увидят только выбранные камеры.</p>
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          {cameras.map((camera) => {
+            const checked = selected.includes(camera.src);
+            return (
+              <button key={camera.id} type="button" onClick={() => toggle(camera.src)}
+                className={cn(
+                  "flex items-center gap-3 rounded-xl border p-3 text-left transition",
+                  checked
+                    ? "border-blue-300 bg-blue-50 shadow-[0_6px_18px_rgba(59,104,210,0.10)]"
+                    : "border-slate-200 bg-white hover:border-slate-300",
+                )}>
+                <span className={cn(
+                  "flex size-9 shrink-0 items-center justify-center rounded-lg",
+                  checked ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400",
+                )}>
+                  {checked ? <Check className="size-4" /> : <Camera className="size-4" />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold text-slate-800">{camera.zone}</span>
+                  <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-400">
+                    <span className={cn("size-1.5 rounded-full", camera.online ? "bg-emerald-500" : "bg-amber-400")} />
+                    {camera.online ? "онлайн" : "нет сигнала"}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {!cameras.length && (
+          <div className="rounded-xl border border-dashed p-8 text-center text-sm text-slate-400">
+            Подключённые камеры пока не обнаружены.
+          </div>
+        )}
+        {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      </Modal>
+    </>
+  );
+}
 
 function SessionCard({
   session,
@@ -121,10 +234,18 @@ function SessionCard({
 }
 
 function MonoblockPageInner() {
+  const { me } = useAuth();
   const { data: orders, error, reload: reloadOrders } = useApi<Order[]>("/orders/");
   const { data: cameras, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
   const { data: sessions, reload: reloadSessions } = useApi<AiCountingSession[]>("/cameras/ai/sessions/");
+  const { data: cameraSettings, reload: reloadCameraSettings } = useApi<MonoblockCameraSettings>(
+    "/cameras/monoblock-settings/",
+  );
   const playable = useMemo(() => playableCameras(cameras), [cameras]);
+  const monoblockCameras = useMemo(() => {
+    const allowed = new Set(cameraSettings?.camera_sources ?? []);
+    return playable.filter((camera) => allowed.has(camera.src));
+  }, [cameraSettings?.camera_sources, playable]);
 
   useEffect(() => {
     const refresh = () => {
@@ -132,6 +253,7 @@ function MonoblockPageInner() {
       void reloadOrders();
       void reloadCameras();
       void reloadSessions();
+      void reloadCameraSettings();
     };
     const timer = setInterval(refresh, SESSION_POLL_MS);
     document.addEventListener("visibilitychange", refresh);
@@ -141,7 +263,7 @@ function MonoblockPageInner() {
       document.removeEventListener("visibilitychange", refresh);
       window.removeEventListener("online", refresh);
     };
-  }, [reloadCameras, reloadOrders, reloadSessions]);
+  }, [reloadCameraSettings, reloadCameras, reloadOrders, reloadSessions]);
 
   const sessionOrderIds = new Set((sessions ?? []).map((session) => session.order_id));
   const startable = (orders ?? []).filter((order) => {
@@ -167,9 +289,15 @@ function MonoblockPageInner() {
         <ErrorAlert message={error} onRetry={reloadOrders} />
       ) : (
         <div className="flex flex-col gap-7">
+          {can(me, "rbac.manage") && (
+            <div className="flex items-center justify-end">
+              <CameraSettingsButton cameras={playable} settings={cameraSettings}
+                reload={reloadCameraSettings} />
+            </div>
+          )}
           <ShipmentLauncher
             orders={startable}
-            cameras={playable}
+            cameras={monoblockCameras}
             busyCameras={(sessions ?? []).map((session) => session.camera)}
             activeSessionCount={sessions?.length ?? 0}
             onStart={start}

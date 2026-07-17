@@ -5,6 +5,7 @@ from django.core.cache import cache
 from django.core.signing import TimestampSigner
 
 from apps.cameras import ai, services
+from apps.cameras.models import MonoblockCameraSettings
 from apps.cameras.views import CAM_COOKIE
 
 pytestmark = pytest.mark.django_db
@@ -166,6 +167,34 @@ def test_camera_list_denied_for_portal_client(auth_client, client_user):
 def test_camera_list_denied_anonymous(api_client):
     resp = api_client.get("/api/cameras/")
     assert resp.status_code == 401
+
+
+def test_admin_configures_monoblock_camera_allowlist(auth_client, boss, operator):
+    response = auth_client(boss).put(
+        "/api/cameras/monoblock-settings/",
+        {"camera_sources": ["2", "cam3", "cam3"]},
+        format="json",
+    )
+    assert response.status_code == 200
+    assert response.data["camera_sources"] == ["cam2", "cam3"]
+    row = MonoblockCameraSettings.objects.get(singleton=True)
+    assert row.camera_sources == ["cam2", "cam3"]
+    assert row.updated_by == boss
+
+    response = auth_client(operator).get("/api/cameras/monoblock-settings/")
+    assert response.status_code == 200
+    assert response.data["camera_sources"] == ["cam2", "cam3"]
+
+
+def test_operator_cannot_change_monoblock_camera_allowlist(auth_client, operator):
+    response = auth_client(operator).put(
+        "/api/cameras/monoblock-settings/",
+        {"camera_sources": ["cam2"]},
+        format="json",
+    )
+
+    assert response.status_code == 403
+    assert not MonoblockCameraSettings.objects.exists()
 
 
 def test_token_sets_cookie(auth_client, operator):
