@@ -10,7 +10,7 @@ function Assert-True([bool]$Condition, [string]$Message) {
 $scripts = @(Get-ChildItem -LiteralPath $PackageRoot -File -Recurse | Where-Object {
     $_.Extension -in @('.ps1', '.psm1')
 })
-Assert-True ($scripts.Count -ge 8) 'Expected camera agent scripts are missing.'
+Assert-True ($scripts.Count -ge 10) 'Expected camera agent and AI service scripts are missing.'
 foreach ($script in $scripts) {
     $tokens = $null
     $parseErrors = $null
@@ -37,6 +37,15 @@ $allText = ($scripts | ForEach-Object { Get-Content -LiteralPath $_.FullName -Ra
 Assert-True ($allText -notmatch '192\.168\.7') 'Stale legacy subnet is present in the versioned agent.'
 Assert-True ($allText -match 'Global\\ASYL-Camera-MediaMTX-Mutation') 'Shared global mutation mutex is missing.'
 Assert-True ((Get-Content -LiteralPath (Join-Path $PackageRoot 'install.ps1') -Raw) -match 'New-ScheduledTaskTrigger -AtStartup') 'AtStartup trigger is missing.'
+$aiInstallerText = Get-Content -LiteralPath (Join-Path $PackageRoot 'install-ai-service.ps1') -Raw -Encoding UTF8
+$aiRunnerText = Get-Content -LiteralPath (Join-Path $PackageRoot 'run-ai-service.ps1') -Raw -Encoding UTF8
+Assert-True ($aiInstallerText -match "taskName = 'ASYL-AI-Service'") 'AI boot task is missing.'
+Assert-True ($aiInstallerText -match 'New-ScheduledTaskTrigger -AtStartup') 'AI service AtStartup trigger is missing.'
+Assert-True ($aiInstallerText -match 'AI_SERVICE_API_KEY_SHA256') 'AI service digest is not installed.'
+Assert-True ($aiInstallerText -notmatch 'AI_SERVICE_API_KEY\s*=') 'AI installer stores a plaintext API key.'
+Assert-True ($aiRunnerText -match "Plaintext AI_SERVICE_API_KEY is forbidden") 'AI runner does not reject plaintext secrets.'
+Assert-True ($aiInstallerText -match 'New-NetFirewallRule' -and $aiInstallerText -match 'RemoteAddress \$BackendTailnetIp') 'AI service firewall is not restricted to backend Tailscale IP.'
+Assert-True ($aiInstallerText -match 'run-ai-service.ps1.*-ValidateOnly') 'Model/encoder validation before task registration is missing.'
 $installerText = Get-Content -LiteralPath (Join-Path $PackageRoot 'install.ps1') -Raw -Encoding UTF8
 Assert-True ($installerText -match 'Protect-CameraAgentPath -Path \$InstallRoot') 'SYSTEM script InstallRoot ACL protection is missing.'
 Assert-True ($installerText -match 'Protect-CameraAgentPath -Path \$backupRoot') 'Backup ACL protection is missing.'

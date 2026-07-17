@@ -37,7 +37,7 @@ const POLL_LIVE_MS = 1500;
 const POLL_BUSY_MS = 2500;
 const POLL_IDLE_MS = 10_000;
 
-/** cam — путь камеры у ai_service/MediaMTX: cam2 или cam_8c26 (по MAC). */
+/** cam — NVR-путь камеры у ai_service/MediaMTX, строго cam<N>. */
 export function useAiCounter(cam: string | null, orderId: number | null, active: boolean) {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [busy, setBusy] = useState(false);

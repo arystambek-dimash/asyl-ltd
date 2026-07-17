@@ -20,9 +20,9 @@ AI_URL = (os.environ.get("CAMERA_AI_URL") or f"http://{CAMERA_HOST}:8890").rstri
 AI_KEY = os.environ.get("CAMERA_AI_KEY", "")
 TIMEOUT = 10  # сек; запуск модели асинхронный, долгих ответов у API нет
 
-# Имена камер у ai_service/MediaMTX: cam2 (канал NVR) или cam_8c26 (direct
-# по хвосту MAC). Валидация обязательна — имя попадает в URL запроса.
-CAM_RE = re.compile(r"^cam\w{1,16}$")
+# Контракт AI-сервиса допускает только NVR ID cam<N>. Строгая локальная
+# проверка не позволяет передать произвольный path в URL camera-PC.
+CAM_RE = re.compile(r"^cam[1-9][0-9]*$")
 
 
 class AiUnavailable(Exception):
@@ -75,7 +75,7 @@ def _call(method: str, path: str, body: dict | None = None,
 
 
 def normalize(cam: str) -> str:
-    """Имя камеры к виду ai_service: «2» → cam2; cam_8c26 — как есть."""
+    """Имя камеры к виду AI-сервиса: «2» → cam2; только cam<N>."""
     cam = str(cam).strip()
     if cam.isdigit():
         cam = f"cam{cam}"
@@ -108,10 +108,6 @@ def reset(cam: str) -> dict:
     return _call("POST", f"{_path(cam)}/reset")
 
 
-def stop(cam: str) -> dict | None:
-    """Выключить модель; возвращает финальный счётчик (None — не была запущена)."""
-    final = status(cam)
-    if final is None:
-        return None
-    _call("DELETE", _path(cam), none_on_404=True)  # гонка выключений — не ошибка
-    return final
+def delete(cam: str) -> dict | None:
+    """Перевести уже сохранённую сессию в IDLE, не делая предварительный GET."""
+    return _call("DELETE", _path(cam), none_on_404=True)

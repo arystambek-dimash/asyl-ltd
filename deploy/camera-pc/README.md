@@ -42,6 +42,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 `
   -TailnetPeer '<TAILSCALE-IP-PROD-СЕРВЕРА>'
 ```
 
+AI-сервис ставится отдельной защищённой boot-задачей после MediaMTX. Папки
+`deploy/camera-pc` и `cv_service` должны сохранять структуру репозитория; веса
+передаются отдельно и в git не попадают:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-ai-service.ps1 `
+  -ApiKeySha256 '<64-символьный SHA-256>' `
+  -ModelPath 'C:\Temp\best.pt' `
+  -BackendTailnetIp '<TAILSCALE-IP-PROD-СЕРВЕРА>' `
+  -ModelDevice '0' `
+  -PrewarmCameras 'cam2' `
+  -MaxActiveProcessors 2
+```
+
+Installer сохраняет только SHA-256 ключа, прогревает и валидирует модель до
+регистрации HTTP-задачи, закрывает ACL для обычных пользователей и создаёт
+Windows Firewall rule на порт `8890` только с указанного backend-IP. Состояние:
+
+```powershell
+Get-ScheduledTask -TaskName ASYL-AI-Service
+Get-ScheduledTaskInfo -TaskName ASYL-AI-Service
+Get-Content C:\mediamtx\ai-service\service.log -Tail 100
+```
+
 `TailnetPeer` — Tailscale IP production-сервера, который забирает камеры. Его
 нужно получить на сервере командой `tailscale ip -4`; пароль или auth-key здесь
 не нужен. Если параметр временно оставить пустым, агент всё равно проверит

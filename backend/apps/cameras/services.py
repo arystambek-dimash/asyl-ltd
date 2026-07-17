@@ -56,6 +56,18 @@ ZONES = {
     8: "Периметр",
 }
 
+CAMERA_PATH_RE = re.compile(r"^cam(?:[1-9][0-9]*|_[A-Za-z0-9]{4,32})$")
+
+
+def normalize_camera_path(value: str) -> str:
+    """Safe wall path; unlike AI processors this also permits direct cameras."""
+    path = str(value).strip()
+    if path.isdigit():
+        path = f"cam{path}"
+    if not CAMERA_PATH_RE.fullmatch(path):
+        raise ValueError("unknown camera path")
+    return path
+
 
 def discover_cameras() -> list[dict]:
     """Актуальный список камер с last-known-good fallback.

@@ -51,8 +51,8 @@ class CameraListView(APIView):
                 "code": "bad_camera_name",
             })
         try:
-            source = ai.normalize(raw_source)
-        except ai.AiError:
+            source = services.normalize_camera_path(raw_source)
+        except ValueError:
             raise ValidationError({
                 "detail": "Неизвестная камера",
                 "code": "bad_camera",
@@ -333,8 +333,7 @@ def _release_camera_binding(order_id: int, camera: str) -> None:
 class CameraAiView(APIView):
     """AI-подсчёт мешков: статус, включение и выключение модели на камере.
 
-    `cam` — путь камеры у ai_service/MediaMTX: cam2 (канал NVR) или
-    cam_8c26 (direct-камера, хвост MAC).
+    `cam` — NVR-путь камеры у ai_service/MediaMTX, строго cam<N>.
     """
 
     def get_permissions(self):
@@ -357,7 +356,7 @@ class CameraAiView(APIView):
                 return {"running": False, **metadata}
 
             live = ai.status(camera)
-            if live is None:
+            if live is None or not live.get("running", False):
                 # The worker disappeared/restarted: release the stale slot so
                 # this or another order can start again immediately.
                 sessions.fail(session, "AI processor stopped unexpectedly")
@@ -402,7 +401,7 @@ class CameraAiView(APIView):
                 # makes it idempotent, so the old preliminary GET only added a
                 # network round-trip (and up to a 10 second delay).
                 live = ai.start(camera) if created else ai.status(camera)
-                if live is None:
+                if live is None or not live.get("running", False):
                     live = ai.start(camera)
                 sessions.activate(session, live)
                 return {**live, **_meta(session, order.pk, camera, request.user)}
@@ -437,7 +436,12 @@ class CameraAiView(APIView):
                 raise PermissionDenied(
                     "Остановить отгрузку может только начавший её сотрудник или администратор"
                 )
-            final = ai.stop(camera)
+            # The worker owns the only live copy of the final count. Persist
+            # the GET snapshot before DELETE switches it to IDLE.
+            final = ai.status(camera)
+            sessions.commit_final(session, final)
+            if final is not None:
+                ai.delete(camera)
             sessions.finish(session, request.user, final)
             _release_camera_binding(order.pk, camera)
             return {

@@ -292,7 +292,10 @@ function MonoblockPageInner() {
   const { data: cameraSettings, reload: reloadCameraSettings } = useApi<MonoblockCameraSettings>(
     "/cameras/monoblock-settings/",
   );
-  const playable = useMemo(() => playableCameras(cameras), [cameras]);
+  const playable = useMemo(
+    () => playableCameras(cameras).filter((camera) => /^cam[1-9]\d*$/.test(camera.src)),
+    [cameras],
+  );
   const monoblockCameras = useMemo(() => {
     const allowed = new Set(cameraSettings?.camera_sources ?? []);
     return playable.filter((camera) => allowed.has(camera.src));

@@ -87,6 +87,19 @@ def update_status(session: AiCountingSession, payload: dict) -> None:
     AiCountingSession.objects.filter(pk=session.pk).update(**updates)
 
 
+def commit_final(session: AiCountingSession, payload: dict | None) -> None:
+    """Durably save the worker snapshot before its in-memory session is idled."""
+    payload = payload or {}
+    updates = {
+        "last_status": payload,
+        "final_total": payload.get("total"),
+    }
+    stream = payload.get("stream")
+    if isinstance(stream, str) and stream:
+        updates["recording_stream"] = stream[:64]
+    AiCountingSession.objects.filter(pk=session.pk).update(**updates)
+
+
 def finish(session: AiCountingSession, user, payload: dict | None = None) -> None:
     payload = payload or {}
     AiCountingSession.objects.filter(pk=session.pk).update(

@@ -180,6 +180,20 @@ def test_admin_camera_name_is_returned_everywhere(auth_client, boss, operator):
     assert row.updated_by == boss
 
 
+def test_admin_can_rename_direct_camera_without_enabling_it_for_ai(auth_client, boss):
+    response = auth_client(boss).patch(
+        "/api/cameras/",
+        {"camera": "cam_8c28", "name": "Боковой склад"},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert response.data == {"camera": "cam_8c28", "name": "Боковой склад"}
+    assert MonoblockCameraSettings.objects.get().camera_names == {
+        "cam_8c28": "Боковой склад"
+    }
+
+
 def test_operator_cannot_rename_camera(auth_client, operator):
     response = auth_client(operator).patch(
         "/api/cameras/",

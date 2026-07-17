@@ -14,6 +14,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  camera-pc-static:
+    name: Windows camera-PC package
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse and test PowerShell camera package
+        shell: powershell
+        run: .\deploy\camera-pc\tests\Invoke-StaticTests.ps1
+
+  cv-service:
+    name: Camera AI service contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: cv_service/requirements-test.txt
+      - name: Install lightweight API test dependencies
+        run: pip install -r cv_service/requirements-test.txt
+      - name: Test API, security and processor lifecycle
+        run: pytest -q cv_service/tests
+
   backend:
     name: Backend tests + audit
     runs-on: ubuntu-latest

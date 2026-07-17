@@ -113,32 +113,18 @@ def test_status_none_when_not_running():
         assert ai.status("cam2") is None
 
 
-def test_stop_returns_final_before_delete():
-    calls = []
-
-    def fake(method, path, body=None):
-        calls.append((method, path))
-        return (200, RUNNING) if method == "GET" else (200, {})
-
-    with patch.object(ai, "_request", side_effect=fake):
-        final = ai.stop("cam2")
-    assert final["total"] == 42
-    assert calls == [("GET", "/processors/cam2"), ("DELETE", "/processors/cam2")]
-
-
-def test_stop_when_not_running_skips_delete():
-    with patch.object(ai, "_request", return_value=(404, {})) as req:
-        assert ai.stop("cam2") is None
-    assert req.call_count == 1  # только GET, DELETE не дёргаем
+def test_delete_is_a_single_call_without_hidden_final_snapshot():
+    with patch.object(ai, "_request", return_value=(200, {"running": False})) as req:
+        assert ai.delete("cam2") == {"running": False}
+    req.assert_called_once_with("DELETE", "/processors/cam2", None)
 
 
 def test_normalize_accepts_known_shapes():
     assert ai.normalize("2") == "cam2"          # номер канала NVR
     assert ai.normalize("cam2") == "cam2"
-    assert ai.normalize("cam_8c26") == "cam_8c26"  # direct по хвосту MAC
 
 
-@pytest.mark.parametrize("bad", ["token", "cam/../x", "cam" + "x" * 20, ""])
+@pytest.mark.parametrize("bad", ["token", "cam/../x", "cam_8c26", "cam02", "cam0", "cam" + "x" * 20, ""])
 def test_bad_camera_name_rejected_locally(bad):
     with pytest.raises(ai.AiError):  # до сервиса не ходим
         ai.status(bad)
@@ -172,6 +158,33 @@ def test_start_attaches_to_same_order_without_reset(api_client, loader, loading_
     assert resp.status_code == 200
     assert resp.data["total"] == 42
     assert resp.data["owned_by_order"] is True
+
+
+def test_existing_session_restarts_worker_if_camera_pc_returned_idle(
+    api_client, loader, loading_order,
+):
+    api_client.force_authenticate(loader)
+    AiCountingSession.objects.create(
+        order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
+    calls = []
+
+    def fake(method, path, body=None):
+        calls.append((method, path))
+        if method == "GET":
+            return 200, {**RUNNING, "running": False, "warm": True, "total": 19}
+        return 200, {**RUNNING, "total": 0}
+
+    with patch.object(ai, "_request", side_effect=fake):
+        response = api_client.post(
+            "/api/cameras/cam2/ai/", {"order_id": loading_order.pk}, format="json"
+        )
+
+    assert response.status_code == 200
+    assert response.data["running"] is True
+    assert response.data["total"] == 0
+    assert calls == [("GET", "/processors/cam2"), ("POST", "/processors/cam2")]
 
 
 def test_start_when_idle_posts_directly_to_service(api_client, loader, loading_order):
@@ -233,6 +246,32 @@ def test_delete_returns_final_and_releases_slot(api_client, loader, loading_orde
     assert session.final_total == 42
     loading_order.refresh_from_db()
     assert loading_order.loading_camera == ""
+
+
+def test_delete_commits_final_snapshot_before_worker_is_idled(
+    api_client, loader, loading_order,
+):
+    api_client.force_authenticate(loader)
+    session = AiCountingSession.objects.create(
+        order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
+    observed = []
+
+    def fake(method, path, body=None):
+        if method == "GET":
+            return 200, RUNNING
+        session.refresh_from_db()
+        observed.append((session.final_total, session.last_status.get("total")))
+        return 200, {"running": False}
+
+    with patch.object(ai, "_request", side_effect=fake):
+        response = api_client.delete(
+            "/api/cameras/cam2/ai/", {"order_id": loading_order.pk}, format="json"
+        )
+
+    assert response.status_code == 200
+    assert observed == [(42, 42)]
 
 
 def test_only_starter_or_admin_can_stop_session(
@@ -419,6 +458,28 @@ def test_missing_worker_marks_session_failed_and_unlocks(
         resp = api_client.get(f"/api/cameras/cam2/ai/?order_id={loading_order.pk}")
     assert resp.status_code == 200
     assert resp.data["code"] == "ai_processor_stopped"
+    session.refresh_from_db()
+    assert session.status == AiCountingSession.FAILED
+    loading_order.refresh_from_db()
+    assert loading_order.loading_camera == ""
+
+
+def test_idle_worker_marks_stale_session_failed_and_unlocks(
+    api_client, loader, loading_order,
+):
+    session = AiCountingSession.objects.create(
+        order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
+    api_client.force_authenticate(loader)
+    with patch.object(ai, "_request", return_value=(200, {
+        **RUNNING, "running": False, "warm": True,
+    })):
+        response = api_client.get(
+            f"/api/cameras/cam2/ai/?order_id={loading_order.pk}"
+        )
+    assert response.status_code == 200
+    assert response.data["code"] == "ai_processor_stopped"
     session.refresh_from_db()
     assert session.status == AiCountingSession.FAILED
     loading_order.refresh_from_db()
