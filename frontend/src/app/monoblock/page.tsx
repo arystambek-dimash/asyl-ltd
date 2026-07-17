@@ -32,6 +32,68 @@ import { useAuth } from "@/store/auth";
 
 const SESSION_POLL_MS = 3_000;
 
+function CameraChoice({
+  camera,
+  checked,
+  onToggle,
+}: {
+  camera: CameraFeed & { src: string };
+  checked: boolean;
+  onToggle: () => void;
+}) {
+  const [streamOnline, setStreamOnline] = useState(false);
+
+  return (
+    <button type="button" onClick={onToggle} aria-pressed={checked}
+      className={cn(
+        "group overflow-hidden rounded-2xl border text-left transition duration-200",
+        checked
+          ? "border-blue-400 bg-blue-50 shadow-[0_10px_28px_rgba(59,104,210,0.15)] ring-2 ring-blue-500/20"
+          : "border-slate-200 bg-white hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md",
+      )}>
+      <div className="relative aspect-video overflow-hidden bg-[#151821]">
+        <CameraStream src={camera.src} onStateChange={setStreamOnline}
+          className="absolute inset-0 size-full object-cover transition duration-300 group-hover:scale-[1.02]" />
+
+        {!streamOnline && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-slate-950/75 text-white/45">
+            <VideoOff className="size-5" />
+            <span className="text-[11px]">Нет изображения</span>
+          </div>
+        )}
+
+        <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/65 to-transparent px-3 pb-8 pt-2.5">
+          <span className="flex items-center gap-1.5 rounded-full bg-black/35 px-2 py-1 text-[10px] font-semibold text-white backdrop-blur-md">
+            <span className={cn("size-1.5 rounded-full", streamOnline ? "bg-emerald-400" : "bg-amber-400")} />
+            {streamOnline ? "ОНЛАЙН" : "НЕТ СИГНАЛА"}
+          </span>
+          <span className={cn(
+            "flex size-7 items-center justify-center rounded-full border backdrop-blur-md transition",
+            checked
+              ? "border-blue-300 bg-blue-600 text-white"
+              : "border-white/35 bg-black/25 text-transparent",
+          )}>
+            <Check className="size-4" />
+          </span>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 px-3.5 py-3">
+        <span className={cn(
+          "flex size-9 shrink-0 items-center justify-center rounded-xl",
+          checked ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400",
+        )}>
+          <Camera className="size-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-bold text-slate-800">{camera.zone}</span>
+          <span className="mt-0.5 block truncate text-[11px] text-slate-400">{camera.name}</span>
+        </span>
+      </div>
+    </button>
+  );
+}
+
 function CameraSettingsButton({
   cameras,
   settings,
@@ -99,31 +161,12 @@ function CameraSettingsButton({
           <p>Изменение применяется для всех устройств. Активные отгрузки продолжат работу, но новые увидят только выбранные камеры.</p>
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-3 sm:grid-cols-2">
           {cameras.map((camera) => {
             const checked = selected.includes(camera.src);
             return (
-              <button key={camera.id} type="button" onClick={() => toggle(camera.src)}
-                className={cn(
-                  "flex items-center gap-3 rounded-xl border p-3 text-left transition",
-                  checked
-                    ? "border-blue-300 bg-blue-50 shadow-[0_6px_18px_rgba(59,104,210,0.10)]"
-                    : "border-slate-200 bg-white hover:border-slate-300",
-                )}>
-                <span className={cn(
-                  "flex size-9 shrink-0 items-center justify-center rounded-lg",
-                  checked ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400",
-                )}>
-                  {checked ? <Check className="size-4" /> : <Camera className="size-4" />}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-semibold text-slate-800">{camera.zone}</span>
-                  <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-400">
-                    <span className={cn("size-1.5 rounded-full", camera.online ? "bg-emerald-500" : "bg-amber-400")} />
-                    {camera.online ? "онлайн" : "нет сигнала"}
-                  </span>
-                </span>
-              </button>
+              <CameraChoice key={camera.id} camera={camera} checked={checked}
+                onToggle={() => toggle(camera.src)} />
             );
           })}
         </div>
