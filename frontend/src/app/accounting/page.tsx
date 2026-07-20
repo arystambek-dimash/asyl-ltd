@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
+import { Tabs, type TabDef } from "@/components/ui/tabs";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { PaymentStageBadge } from "@/components/payment-chain";
 import { can } from "@/lib/can";
@@ -75,10 +76,10 @@ function debtPaymentState(row: ClientDebt) {
   return { label: "Не оплачен", tone: "destructive" as const };
 }
 
-/* ── Очередь кассира: заявки и оплаты по всем динамическим отделам ─────── */
-function QueueSection({ filters }: { filters: CashFilters }) {
-  const router = useRouter();
+/* ── Очередь кассира: данные и действия, общие для вкладок ─────────────── */
+function useCashierQueue(enabled: boolean, filters: CashFilters) {
   const valid = filtersAreValid(filters);
+  const active = enabled && valid;
   const commonParams = {
     date_from: filters.dateFrom,
     date_to: filters.dateTo,
@@ -87,18 +88,16 @@ function QueueSection({ filters }: { filters: CashFilters }) {
   };
   // Кассе нужны заявки на подтверждение и оплаты — отбор отдела общий.
   const { data: pending, error: loadError, reload: reloadPending } =
-    useApi<Order[]>(valid ? apiUrl("/orders/", { ...commonParams, status: "pending" }) : null);
+    useApi<Order[]>(active ? apiUrl("/orders/", { ...commonParams, status: "pending" }) : null);
   const { data: queue, reload: reloadQueue } =
-    useApi<PaymentQueueItem[]>(valid
+    useApi<PaymentQueueItem[]>(active
       ? apiUrl("/orders/payments-queue/", commonParams) : null);
   const { data: cashierLog, reload: reloadCashierLog } =
-    useApi<CashierLogItem[]>(valid
+    useApi<CashierLogItem[]>(active
       ? apiUrl("/orders/cashier-log/", commonParams) : null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const pendingOrders = valid ? pending ?? [] : [];
-  const toReview = valid ? queue ?? [] : [];
   async function act(fn: () => Promise<unknown>) {
     setBusy(true); setError("");
     try { await fn(); reloadPending(); reloadQueue(); reloadCashierLog(); }
@@ -106,39 +105,55 @@ function QueueSection({ filters }: { filters: CashFilters }) {
     finally { setBusy(false); }
   }
 
-  const confirmOrder = (o: Order) =>
-    act(() => api.post(`/orders/${o.id}/confirm/`, {}));
-  const confirmPayment = (p: PaymentQueueItem) =>
-    act(() => api.post(`/orders/${p.order}/payments/${p.id}/confirm/`));
-  const receivePayment = (p: PaymentQueueItem) =>
-    act(() => api.post(`/orders/${p.order}/payments/${p.id}/receive/`));
-  const rejectPayment = (p: PaymentQueueItem) =>
-    act(() => api.post(`/orders/${p.order}/payments/${p.id}/reject/`));
-  const reopenPayment = (event: CashierLogItem) => {
-    const paymentId = event.payload.payment_id;
-    if (!paymentId) return;
-    act(() => api.post(`/orders/${event.order}/payments/${paymentId}/reopen/`));
+  return {
+    pendingOrders: pending ?? [],
+    pendingLoaded: pending !== null,
+    toReview: queue ?? [],
+    log: cashierLog ?? [],
+    busy, error, loadError, reloadPending,
+    confirmOrder: (o: Order) =>
+      act(() => api.post(`/orders/${o.id}/confirm/`, {})),
+    confirmPayment: (p: PaymentQueueItem) =>
+      act(() => api.post(`/orders/${p.order}/payments/${p.id}/confirm/`)),
+    receivePayment: (p: PaymentQueueItem) =>
+      act(() => api.post(`/orders/${p.order}/payments/${p.id}/receive/`)),
+    rejectPayment: (p: PaymentQueueItem) =>
+      act(() => api.post(`/orders/${p.order}/payments/${p.id}/reject/`)),
+    reopenPayment: (event: CashierLogItem) => {
+      const paymentId = event.payload.payment_id;
+      if (!paymentId) return;
+      act(() => api.post(`/orders/${event.order}/payments/${paymentId}/reopen/`));
+    },
   };
+}
 
+type CashierQueue = ReturnType<typeof useCashierQueue>;
+
+function ActionError({ message }: { message: string }) {
+  if (!message) return null;
+  return (
+    <p className="rounded-lg border bg-[var(--card)] p-3 text-sm text-[var(--destructive)] shadow-card">
+      {message}
+    </p>
+  );
+}
+
+/* ── Вкладка «Подтверждение»: заявки и оплаты по всем динамическим отделам ── */
+function ConfirmQueueSection({ q }: { q: CashierQueue }) {
+  const router = useRouter();
   return (
     <section className="flex flex-col gap-4">
-      <h2 className="text-lg font-semibold tracking-tight">Очередь на подтверждение</h2>
-
-      {error && (
-        <p className="rounded-lg border bg-[var(--card)] p-3 text-sm text-[var(--destructive)] shadow-card">
-          {error}
-        </p>
-      )}
-      {loadError && !pending && <ErrorAlert message={loadError} onRetry={reloadPending} />}
+      <ActionError message={q.error} />
+      {q.loadError && !q.pendingLoaded && <ErrorAlert message={q.loadError} onRetry={q.reloadPending} />}
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <Card>
           <CardHeader><CardTitle>Заявки на подтверждение</CardTitle></CardHeader>
           <CardContent className="flex flex-col gap-3">
-            {pendingOrders.length === 0 && (
+            {q.pendingOrders.length === 0 && (
               <p className="text-sm text-[var(--muted-foreground)]">Нет заявок, ожидающих подтверждения.</p>
             )}
-            {pendingOrders.map((o) => {
+            {q.pendingOrders.map((o) => {
               const priced = o.items.every((it) => it.unit_price != null);
               return (
                 <div key={o.id} className="flex flex-col gap-2 rounded-lg border p-3">
@@ -154,7 +169,7 @@ function QueueSection({ filters }: { filters: CashFilters }) {
                     <DepartmentBadge name={o.department_name} color={o.department_color} />
                   </div>
                   {priced ? (
-                    <Button size="sm" disabled={busy} onClick={() => confirmOrder(o)}>
+                    <Button size="sm" disabled={q.busy} onClick={() => q.confirmOrder(o)}>
                       Подтвердить заказ
                     </Button>
                   ) : (
@@ -172,10 +187,10 @@ function QueueSection({ filters }: { filters: CashFilters }) {
         <Card>
           <CardHeader><CardTitle>Оплаты к подтверждению</CardTitle></CardHeader>
           <CardContent className="flex flex-col gap-3">
-            {toReview.length === 0 && (
+            {q.toReview.length === 0 && (
               <p className="text-sm text-[var(--muted-foreground)]">Нет оплат, ожидающих подтверждения.</p>
             )}
-            {toReview.map((p) => (
+            {q.toReview.map((p) => (
               <div key={p.id} className="flex flex-col gap-2 rounded-lg border p-3">
                 <div className="flex items-start justify-between gap-2">
                   <div>
@@ -193,11 +208,11 @@ function QueueSection({ filters }: { filters: CashFilters }) {
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <Button size="sm" disabled={busy}
-                    onClick={() => p.status === "requested" ? receivePayment(p) : confirmPayment(p)}>
+                  <Button size="sm" disabled={q.busy}
+                    onClick={() => p.status === "requested" ? q.receivePayment(p) : q.confirmPayment(p)}>
                     {p.status === "requested" ? "Оплата поступила" : "Подтвердить получение"}
                   </Button>
-                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => rejectPayment(p)}>
+                  <Button size="sm" variant="ghost" disabled={q.busy} onClick={() => q.rejectPayment(p)}>
                     Отклонить
                   </Button>
                 </div>
@@ -206,13 +221,21 @@ function QueueSection({ filters }: { filters: CashFilters }) {
           </CardContent>
         </Card>
       </div>
+    </section>
+  );
+}
 
+/* ── Вкладка «Журнал»: действия по оплатам ─────────────────────────────── */
+function PaymentJournalSection({ q }: { q: CashierQueue }) {
+  return (
+    <section className="flex flex-col gap-4">
+      <ActionError message={q.error} />
       <Card>
         <CardHeader><CardTitle>Журнал действий по оплатам</CardTitle></CardHeader>
         <CardContent className="flex flex-col gap-2">
-          {(cashierLog ?? []).length === 0 ? (
+          {q.log.length === 0 ? (
             <p className="text-sm text-[var(--muted-foreground)]">Действий по оплатам пока нет.</p>
-          ) : (cashierLog ?? []).map((event) => (
+          ) : q.log.map((event) => (
             <div key={event.id} className="flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <div className="text-sm font-medium">{event.message}</div>
@@ -224,8 +247,8 @@ function QueueSection({ filters }: { filters: CashFilters }) {
                 </div>
               </div>
               {event.can_reopen && (
-                <Button size="sm" variant="outline" disabled={busy}
-                  onClick={() => reopenPayment(event)}>
+                <Button size="sm" variant="outline" disabled={q.busy}
+                  onClick={() => q.reopenPayment(event)}>
                   Вернуть на подтверждение
                 </Button>
               )}
@@ -233,7 +256,6 @@ function QueueSection({ filters }: { filters: CashFilters }) {
           ))}
         </CardContent>
       </Card>
-
     </section>
   );
 }
@@ -462,6 +484,8 @@ function CashFiltersPanel({ filters, stores, departments, onChange, onReset }: {
   );
 }
 
+type CashTab = "overview" | "confirm" | "journal";
+
 function CashierInner() {
   const { me } = useAuth();
   const canPayments = can(me, "payments.confirm");
@@ -475,6 +499,7 @@ function CashierInner() {
     remainingMin: "",
     remainingMax: "",
   });
+  const [tab, setTab] = useState<CashTab>(canReports ? "overview" : "confirm");
   const validFilters = filtersAreValid(filters);
   const commonParams = {
     date_from: filters.dateFrom,
@@ -497,17 +522,14 @@ function CashierInner() {
   // Кассовая аналитика — тот же серверный отчёт, что и на «Отчётах».
   const { data: summary } = useApi<ReportSummary>(
     canReports && validFilters ? reportUrl : null);
-  const { data: queue } = useApi<PaymentQueueItem[]>(
-    canPayments && validFilters
-      ? apiUrl("/orders/payments-queue/", commonParams) : null);
+  const queue = useCashierQueue(canPayments, filters);
   const { data: debts, loading: debtsLoading, error: debtsError, reload: reloadDebts } =
     useApi<ClientDebt[]>(canReports && validFilters ? debtsUrl : null);
   const { data: stores } = useApi<Store[]>(canReports ? "/stores/" : null);
   const { data: departments } = useApi<Department[]>("/departments/");
 
-  const queueRows = validFilters ? queue ?? [] : [];
-  const toReviewSum = queueRows.reduce((s, p) => s + Number(p.amount), 0);
-  const toReviewCash = queueRows.filter((p) => p.method === "cash")
+  const toReviewSum = queue.toReview.reduce((s, p) => s + Number(p.amount), 0);
+  const toReviewCash = queue.toReview.filter((p) => p.method === "cash")
     .reduce((s, p) => s + Number(p.amount), 0);
   const debtRows = validFilters ? debts ?? [] : [];
   const debtTotal = debtRows.reduce((sum, row) => sum + Number(row.debt_total), 0);
@@ -515,6 +537,14 @@ function CashierInner() {
   const today = todayLocalIsoDate();
   const isToday = filters.dateFrom === today && filters.dateTo === today;
   const hasDates = Boolean(filters.dateFrom || filters.dateTo);
+
+  const tabs: TabDef[] = [
+    ...(canReports ? [{ key: "overview", label: "Общее" }] : []),
+    ...(canPayments ? [
+      { key: "confirm", label: "Подтверждение", count: queue.pendingOrders.length + queue.toReview.length },
+      { key: "journal", label: "Журнал" },
+    ] : []),
+  ];
 
   function resetFilters() {
     setFilters({
@@ -530,42 +560,46 @@ function CashierInner() {
   return (
     <AppShell title="Касса" section="Работа"
       description="Поступления, очередь подтверждений и долги в одном месте.">
-      <div className="flex flex-col gap-8">
+      <div className="flex flex-col gap-6">
+        <Tabs tabs={tabs} active={tab} onChange={(key) => setTab(key as CashTab)} />
+
         <CashFiltersPanel filters={filters} stores={stores ?? []} departments={departments ?? []}
           onChange={(patch) => setFilters((current) => ({ ...current, ...patch }))}
           onReset={resetFilters} />
 
-        {canReports && (
-          <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            <SummaryCard title={isToday ? "Поступило сегодня" : hasDates ? "Поступило за период" : "Поступило за всё время"} tone="success"
-              value={money(summary?.income.total ?? 0)}
-              rows={[
-                { label: "Наличные", value: money(summary?.income.cash ?? 0) },
-                { label: "Безналичные", value: money(summary?.income.cashless ?? 0) },
-              ]} />
-            {canPayments && (
-              <SummaryCard title="Ожидает подтверждения" tone="primary"
-                value={money(toReviewSum)}
+        {tab === "overview" && canReports && (
+          <>
+            <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              <SummaryCard title={isToday ? "Поступило сегодня" : hasDates ? "Поступило за период" : "Поступило за всё время"} tone="success"
+                value={money(summary?.income.total ?? 0)}
                 rows={[
-                  { label: "Оплат в очереди", value: String(queueRows.length) },
-                  { label: "Из них наличными", value: money(toReviewCash) },
+                  { label: "Наличные", value: money(summary?.income.cash ?? 0) },
+                  { label: "Безналичные", value: money(summary?.income.cashless ?? 0) },
                 ]} />
-            )}
-            <SummaryCard title="Дебиторка" tone="destructive"
-              value={money(debtTotal)}
-              rows={[
-                { label: "Клиентов с долгом", value: String(debtRows.length) },
-                { label: "С просрочкой", value: String(overdueClients) },
-              ]} />
-          </section>
+              {canPayments && (
+                <SummaryCard title="Ожидает подтверждения" tone="primary"
+                  value={money(toReviewSum)}
+                  rows={[
+                    { label: "Оплат в очереди", value: String(queue.toReview.length) },
+                    { label: "Из них наличными", value: money(toReviewCash) },
+                  ]} />
+              )}
+              <SummaryCard title="Дебиторка" tone="destructive"
+                value={money(debtTotal)}
+                rows={[
+                  { label: "Клиентов с долгом", value: String(debtRows.length) },
+                  { label: "С просрочкой", value: String(overdueClients) },
+                ]} />
+            </section>
+
+            <DebtsSection rows={debtRows} loading={debtsLoading}
+              error={debtsError} reload={reloadDebts} />
+          </>
         )}
 
-        {canPayments && <QueueSection filters={filters} />}
+        {tab === "confirm" && canPayments && <ConfirmQueueSection q={queue} />}
 
-        {canReports && (
-          <DebtsSection rows={debtRows} loading={debtsLoading}
-            error={debtsError} reload={reloadDebts} />
-        )}
+        {tab === "journal" && canPayments && <PaymentJournalSection q={queue} />}
       </div>
     </AppShell>
   );
