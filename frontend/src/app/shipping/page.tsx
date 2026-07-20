@@ -26,6 +26,15 @@ import { useAiCounter, type AiCounter } from "@/lib/use-ai-counter";
 
 const POLL_MS = 10_000; // борд и счётчики обновляются сами — пост «живой»
 
+// Новый Windows AI-сервис возвращает machine-readable `online`, а старый
+// сервис возвращал локализованное `онлайн`. Во время плавного обновления
+// production принимаем оба контракта, чтобы готовый процессор не выглядел как
+// бесконечно прогревающийся и пост сразу переключался на cam<N>ai.
+function isAiOnlineStatus(status?: string): boolean {
+  const normalized = status?.trim().toLowerCase();
+  return normalized === "online" || normalized === "онлайн";
+}
+
 /* ── Этапы единого поста: заказ едет по колонкам слева направо ──────────── */
 const BOARD_STAGES = [
   { key: "waiting", label: "Ожидание въезда", color: "var(--ring)", statuses: ["confirmed"],
@@ -319,7 +328,7 @@ function AiCounterPanel({ ai, accepted, onAccept }: {
     );
   }
 
-  const warming = st.status !== "онлайн";
+  const warming = !isAiOnlineStatus(st.status);
   const total = st.total ?? 0;
   return (
     <div className="rounded-xl border border-emerald-600/25 bg-emerald-500/[0.06] p-3.5">
@@ -1034,7 +1043,7 @@ function ShippingPageInner() {
     && (isTrain ? selected.status === "loading"
       : selected.status === "arrived" || selected.status === "loading");
   const ai = useAiCounter(aiCam?.src ?? null, selected?.id ?? null, isLoadStep);
-  const aiLive = ai.running && ai.status?.status === "онлайн";
+  const aiLive = ai.running && isAiOnlineStatus(ai.status?.status);
 
   async function act(fn: () => Promise<unknown>) {
     setBusy(true); setError("");

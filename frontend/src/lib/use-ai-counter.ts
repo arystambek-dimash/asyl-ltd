@@ -25,7 +25,7 @@ export interface AiStatus {
   code?: string;
   /** Имя аннотированного потока в go2rtc/MediaMTX (cam2ai). */
   stream?: string;
-  /** "запуск..." | "онлайн" | "переподключение: ..." */
+  /** "запуск..." | "online" (legacy: "онлайн") | "переподключение: ..." */
   status?: string;
   fps?: number;
   total?: number;
