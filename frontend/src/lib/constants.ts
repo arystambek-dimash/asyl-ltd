@@ -119,6 +119,7 @@ export const CASHIER_PAYMENT_METHOD_LABELS: Record<string, string> = {
 };
 
 export const PORTAL_PAYMENT_METHOD_LABELS: Record<string, string> = {
+  pending: "Способ не выбран",
   invoice: "Счет на оплату",
   kaspi: "Каспи",
   cash: "Наличными",

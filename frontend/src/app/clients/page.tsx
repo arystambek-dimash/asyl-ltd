@@ -35,6 +35,7 @@ import type { Client } from "@/lib/types";
 const schema = z.object({
   first_name: z.string().min(2, "Введите имя (мин. 2 символа)"),
   last_name: z.string().min(2, "Введите фамилию (мин. 2 символа)"),
+  company_name: z.string().optional(),
   phone: z
     .string()
     .refine((v) => v.replace(/\D/g, "").length === 11, "Введите номер полностью"),
@@ -52,11 +53,12 @@ function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCance
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: editing ? {
-      first_name: editing.first_name, last_name: editing.last_name, phone: editing.phone,
+      first_name: editing.first_name, last_name: editing.last_name,
+      company_name: editing.company_name ?? "", phone: editing.phone,
       country: editing.country ?? "", iin: editing.iin ?? "",
       bank: editing.bank ?? "", bank_account: editing.bank_account ?? "",
     } : {
-      first_name: "", last_name: "", phone: "", country: "",
+      first_name: "", last_name: "", company_name: "", phone: "", country: "",
       iin: "", bank: "", bank_account: "",
     },
   });
@@ -88,6 +90,14 @@ function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCance
           <FormItem>
             <FormLabel>Фамилия</FormLabel>
             <FormControl><Input placeholder="Петров" {...field} /></FormControl>
+            <FormMessage />
+          </FormItem>
+        )} />
+
+        <FormField control={form.control} name="company_name" render={({ field }) => (
+          <FormItem className="sm:col-span-2">
+            <FormLabel>Название ТОО / ИП</FormLabel>
+            <FormControl><Input placeholder={'ТОО "Сайрам нан"'} {...field} /></FormControl>
             <FormMessage />
           </FormItem>
         )} />

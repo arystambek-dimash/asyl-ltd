@@ -77,6 +77,12 @@ class PortalOrderSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        # При создании заказа выбор оплаты намеренно не принимаем: цена и
+        # фактический остаток известны только после подтверждения и отгрузки.
+        if self.instance is None:
+            attrs["payment_method"] = "pending"
+            attrs["settlement_intent"] = "pending"
+            return attrs
         method = attrs.get("payment_method")
         intent = attrs.get("settlement_intent")
         if method is not None:
@@ -91,8 +97,10 @@ class PortalOrderSerializer(serializers.ModelSerializer):
             # Старые приложения присылают только settlement_intent.
             attrs["payment_method"] = "debt" if intent == "debt" else "invoice"
         else:
-            attrs["payment_method"] = "debt"
-            attrs["settlement_intent"] = "debt"
+            # Способ оплаты клиент выбирает не при оформлении, а только после
+            # завершения отгрузки. До этого заказ не должен считаться долгом.
+            attrs["payment_method"] = "pending"
+            attrs["settlement_intent"] = "pending"
         return attrs
 
     def _client(self):
@@ -139,8 +147,8 @@ class PortalOrderSerializer(serializers.ModelSerializer):
         items = validated_data.pop("items")
         # Клиент портала тоже заказывает только товар в наличии.
         ensure_products_available(item["product"] for item in items)
-        intent = validated_data.get("settlement_intent", "debt")
-        method = validated_data.get("payment_method", "debt")
+        intent = validated_data.get("settlement_intent", "pending")
+        method = validated_data.get("payment_method", "pending")
         transport = validated_data.get("transport_type", "truck")
         store = validated_data.get("store")
         client = self._client()

@@ -91,7 +91,8 @@ def add_payment(order: Order, amount, user, method="cash", stage="received",
            if stage == "received" else {}))
     log_event("payment", f"Оплата {amount} ({method}) {PAYMENT_STAGE_LABELS[stage]}",
               user=user, order=order,
-              payload={"amount": str(amount), "method": method, "payment_stage": stage})
+              payload={"payment_id": payment.id, "amount": str(amount),
+                       "method": method, "payment_stage": stage})
     return payment
 
 
@@ -100,6 +101,17 @@ def create_client_payment(order: Order, method: str, user) -> Payment:
     _validate_payment_open(order)
     if method not in ("invoice", "kaspi", "cash", "card"):
         raise ValidationError({"detail": "Недопустимый способ оплаты", "code": "bad_method"})
+    if method == "invoice":
+        missing = []
+        if not order.client.iin.strip():
+            missing.append("ИИН/БИН")
+        if not (order.client.company_name.strip() or order.client.name):
+            missing.append("название ТОО / ИП")
+        if missing:
+            raise ValidationError({
+                "detail": "Для счета заполните реквизиты клиента: " + ", ".join(missing),
+                "code": "client_requisites_missing",
+            })
     remaining = order.total_amount - order.paid_total
     if remaining <= 0:
         raise ValidationError({"detail": "Заказ уже оплачен", "code": "already_paid"})
@@ -133,7 +145,7 @@ def create_client_payment(order: Order, method: str, user) -> Payment:
     order.save(update_fields=["payment_method", "settlement_intent", "debt_requested"])
     log_event("payment", f"Клиент {'инициировал' if created else 'обновил'} оплату {remaining} ({method})",
               user=user, order=order,
-              payload={"amount": str(remaining), "method": method,
+              payload={"payment_id": payment.id, "amount": str(remaining), "method": method,
                        "payment_stage": stage})
     return payment
 
@@ -181,7 +193,48 @@ def receive_payment(payment: Payment, user) -> Payment:
 @transaction.atomic
 def accountant_confirm_payment(payment: Payment, user) -> Payment:
     """Бухгалтер (касса) сверил и подтвердил оплату — деньги учтены сразу."""
+    payment = Payment.objects.select_for_update().select_related("order").get(pk=payment.pk)
     _advance_payment(payment, "received", user)
+    _apply_payment_status(payment.order, user)
+    return payment
+
+
+@transaction.atomic
+def reopen_confirmed_payment(payment: Payment, user) -> Payment:
+    """Вернуть ошибочно подтверждённую оплату на повторное подтверждение.
+
+    Денежный итог заказа пересчитывается сразу, а исходное подтверждение и
+    отмена остаются отдельными append-only событиями в журнале.
+    """
+    payment = Payment.objects.select_for_update().select_related("order").get(pk=payment.pk)
+    if payment.status != "confirmed":
+        raise ValidationError({
+            "detail": "Вернуть можно только подтверждённую оплату",
+            "code": "invalid_payment_stage",
+        })
+    previous_confirmed_by = payment.confirmed_by_id
+    previous_confirmed_at = payment.confirmed_at
+    payment.status = "received"
+    payment.confirmed_by = None
+    payment.confirmed_at = None
+    payment.save(update_fields=["status", "confirmed_by", "confirmed_at"])
+    log_event(
+        "payment",
+        f"Оплата {payment.amount} возвращена на подтверждение",
+        user=user,
+        order=payment.order,
+        payload={
+            "payment_id": payment.id,
+            "amount": str(payment.amount),
+            "method": payment.method,
+            "payment_stage": "received",
+            "action": "reopened",
+            "previous_confirmed_by": previous_confirmed_by,
+            "previous_confirmed_at": (
+                previous_confirmed_at.isoformat() if previous_confirmed_at else None
+            ),
+        },
+    )
     _apply_payment_status(payment.order, user)
     return payment
 

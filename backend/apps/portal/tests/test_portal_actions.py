@@ -9,7 +9,10 @@ from apps.orders.models import Order, OrderItem
 @pytest.fixture
 def client_and_order(db, make_user):
     user = make_user(username="cli", client=True)
-    c = Client.objects.create(user=user, first_name="A", last_name="B", phone="1")
+    c = Client.objects.create(
+        user=user, first_name="A", last_name="B", phone="1",
+        company_name="ТОО Клиент", iin="990101300123",
+    )
     p = Product.objects.create(name="F", color="Red", weight_kg=Decimal("50"), price=Decimal("100"))
     StockItem.objects.create(product=p, bags=500)
     o = Order.objects.create(client=c, status="confirmed")

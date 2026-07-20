@@ -14,7 +14,7 @@ export default function RegisterPage() {
   const router = useRouter();
   const { loadMe } = useAuth();
   const [f, setF] = useState({ username: "", password: "", first_name: "",
-    last_name: "", phone: "", iin: "" });
+    last_name: "", company_name: "", phone: "", iin: "" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const upd = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
@@ -41,10 +41,14 @@ export default function RegisterPage() {
               <Input value={f.first_name} onChange={upd("first_name")} required /></div>
             <div className="flex flex-col gap-1.5"><Label>Фамилия</Label>
               <Input value={f.last_name} onChange={upd("last_name")} required /></div>
+            <div className="flex flex-col gap-1.5"><Label>Название ТОО / ИП</Label>
+              <Input value={f.company_name} onChange={upd("company_name")}
+                placeholder={'Например, ТОО "Сайрам нан"'} required /></div>
             <div className="flex flex-col gap-1.5"><Label>Телефон</Label>
               <Input value={f.phone} onChange={upd("phone")} required /></div>
             <div className="flex flex-col gap-1.5"><Label>ИИН/БИН</Label>
-              <Input value={f.iin} onChange={upd("iin")} /></div>
+              <Input value={f.iin} onChange={upd("iin")} inputMode="numeric"
+                pattern="[0-9]{12}" maxLength={12} placeholder="12 цифр" required /></div>
             <div className="flex flex-col gap-1.5"><Label>Логин</Label>
               <Input value={f.username} onChange={upd("username")} required /></div>
             <div className="flex flex-col gap-1.5"><Label>Пароль</Label>

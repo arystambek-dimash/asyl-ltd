@@ -20,7 +20,7 @@ import { api, apiError } from "@/lib/api";
 import { formatCurrency, formatMoney, todayLocalIsoDate } from "@/lib/utils";
 import { CASHIER_PAYMENT_METHOD_LABELS } from "@/lib/constants";
 import { ArrowUpRight, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
-import type { ClientDebt, Department, Order, PaymentQueueItem, Store } from "@/lib/types";
+import type { CashierLogItem, ClientDebt, Department, Order, PaymentQueueItem, Store } from "@/lib/types";
 
 const money = formatCurrency;
 
@@ -91,6 +91,9 @@ function QueueSection({ filters }: { filters: CashFilters }) {
   const { data: queue, reload: reloadQueue } =
     useApi<PaymentQueueItem[]>(valid
       ? apiUrl("/orders/payments-queue/", commonParams) : null);
+  const { data: cashierLog, reload: reloadCashierLog } =
+    useApi<CashierLogItem[]>(valid
+      ? apiUrl("/orders/cashier-log/", commonParams) : null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -98,7 +101,7 @@ function QueueSection({ filters }: { filters: CashFilters }) {
   const toReview = valid ? queue ?? [] : [];
   async function act(fn: () => Promise<unknown>) {
     setBusy(true); setError("");
-    try { await fn(); reloadPending(); reloadQueue(); }
+    try { await fn(); reloadPending(); reloadQueue(); reloadCashierLog(); }
     catch (e) { setError(apiError(e)); }
     finally { setBusy(false); }
   }
@@ -111,6 +114,11 @@ function QueueSection({ filters }: { filters: CashFilters }) {
     act(() => api.post(`/orders/${p.order}/payments/${p.id}/receive/`));
   const rejectPayment = (p: PaymentQueueItem) =>
     act(() => api.post(`/orders/${p.order}/payments/${p.id}/reject/`));
+  const reopenPayment = (event: CashierLogItem) => {
+    const paymentId = event.payload.payment_id;
+    if (!paymentId) return;
+    act(() => api.post(`/orders/${event.order}/payments/${paymentId}/reopen/`));
+  };
 
   return (
     <section className="flex flex-col gap-4">
@@ -198,6 +206,33 @@ function QueueSection({ filters }: { filters: CashFilters }) {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader><CardTitle>Журнал действий по оплатам</CardTitle></CardHeader>
+        <CardContent className="flex flex-col gap-2">
+          {(cashierLog ?? []).length === 0 ? (
+            <p className="text-sm text-[var(--muted-foreground)]">Действий по оплатам пока нет.</p>
+          ) : (cashierLog ?? []).map((event) => (
+            <div key={event.id} className="flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-sm font-medium">{event.message}</div>
+                <div className="text-xs text-[var(--muted-foreground)]">
+                  {new Date(event.created_at).toLocaleString("ru-RU")}
+                  {` · заказ #${event.order}`}
+                  {event.client_name ? ` · ${event.client_name}` : ""}
+                  {event.user_name ? ` · ${event.user_name}` : ""}
+                </div>
+              </div>
+              {event.can_reopen && (
+                <Button size="sm" variant="outline" disabled={busy}
+                  onClick={() => reopenPayment(event)}>
+                  Вернуть на подтверждение
+                </Button>
+              )}
+            </div>
+          ))}
+        </CardContent>
+      </Card>
 
     </section>
   );
@@ -334,9 +369,8 @@ function CashFiltersPanel({ filters, stores, departments, onChange, onReset }: {
   onChange: (patch: Partial<CashFilters>) => void;
   onReset: () => void;
 }) {
-  const today = todayLocalIsoDate();
   const activeCount = [
-    filters.dateFrom !== today || filters.dateTo !== today,
+    filters.dateFrom !== "" || filters.dateTo !== "",
     filters.department !== "all",
     filters.store !== "all",
     filters.remainingMin !== "" || filters.remainingMax !== "",
@@ -358,7 +392,7 @@ function CashFiltersPanel({ filters, stores, departments, onChange, onReset }: {
               <div>
                 <div className="text-sm font-semibold">Фильтры кассы</div>
                 <div className="text-xs text-[var(--muted-foreground)]">
-                  {activeCount ? `Применено: ${activeCount}` : "Сегодня · все отделы и магазины"}
+                  {activeCount ? `Применено: ${activeCount}` : "Без ограничений · все оплаты"}
                 </div>
               </div>
             </div>
@@ -433,10 +467,9 @@ function CashierInner() {
   const canPayments = can(me, "payments.confirm");
   const canReports = can(me, "reports.view");
 
-  const today = todayLocalIsoDate();
   const [filters, setFilters] = useState<CashFilters>({
-    dateFrom: today,
-    dateTo: today,
+    dateFrom: "",
+    dateTo: "",
     department: "all",
     store: "all",
     remainingMin: "",
@@ -479,12 +512,14 @@ function CashierInner() {
   const debtRows = validFilters ? debts ?? [] : [];
   const debtTotal = debtRows.reduce((sum, row) => sum + Number(row.debt_total), 0);
   const overdueClients = debtRows.filter((r) => r.overdue_count > 0).length;
+  const today = todayLocalIsoDate();
   const isToday = filters.dateFrom === today && filters.dateTo === today;
+  const hasDates = Boolean(filters.dateFrom || filters.dateTo);
 
   function resetFilters() {
     setFilters({
-      dateFrom: today,
-      dateTo: today,
+      dateFrom: "",
+      dateTo: "",
       department: "all",
       store: "all",
       remainingMin: "",
@@ -502,7 +537,7 @@ function CashierInner() {
 
         {canReports && (
           <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            <SummaryCard title={isToday ? "Поступило сегодня" : "Поступило за период"} tone="success"
+            <SummaryCard title={isToday ? "Поступило сегодня" : hasDates ? "Поступило за период" : "Поступило за всё время"} tone="success"
               value={money(summary?.income.total ?? 0)}
               rows={[
                 { label: "Наличные", value: money(summary?.income.cash ?? 0) },

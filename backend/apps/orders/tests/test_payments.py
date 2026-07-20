@@ -44,6 +44,75 @@ def test_full_payment_sets_settled(auth_client, accountant):
     assert o.payment_status == "settled"
 
 
+def test_confirmed_payment_can_be_reopened_with_audit_log(auth_client, accountant):
+    from apps.eventlog.models import EventLog
+    from apps.orders.models import Payment
+
+    order = _order(status="shipped")
+    payment_id = _pay_through_chain(auth_client, accountant, order, "500.00")
+
+    response = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/{payment_id}/reopen/")
+
+    assert response.status_code == 200
+    payment = Payment.objects.get(pk=payment_id)
+    order.refresh_from_db()
+    assert payment.status == "received"
+    assert payment.confirmed_by is None
+    assert payment.confirmed_at is None
+    assert order.paid_total == Decimal("0")
+    assert order.payment_status == "unpaid"
+    event = EventLog.objects.filter(
+        event_type="payment", payload__payment_id=payment_id,
+        payload__action="reopened",
+    ).get()
+    assert event.user == accountant
+
+
+def test_only_confirmed_payment_can_be_reopened(auth_client, accountant):
+    order = _order(status="shipped")
+    created = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/", {"amount": "100.00"}, format="json")
+
+    response = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/{created.data['id']}/reopen/")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "invalid_payment_stage"
+
+
+def test_cashier_log_marks_only_current_confirmation_as_reopenable(
+        auth_client, accountant):
+    order = _order(status="shipped")
+    payment_id = _pay_through_chain(auth_client, accountant, order, "500.00")
+
+    before = auth_client(accountant).get("/api/orders/cashier-log/")
+
+    assert before.status_code == 200
+    confirmation = next(
+        row for row in before.data
+        if row["payload"].get("payment_id") == payment_id
+        and row["payload"].get("payment_stage") == "confirmed"
+    )
+    assert confirmation["can_reopen"] is True
+
+    auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/{payment_id}/reopen/")
+    after = auth_client(accountant).get("/api/orders/cashier-log/")
+    same_confirmation = next(row for row in after.data if row["id"] == confirmation["id"])
+    assert same_confirmation["can_reopen"] is False
+    assert any(row["payload"].get("action") == "reopened" for row in after.data)
+
+    auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/{payment_id}/confirm/")
+    reconfirmed = auth_client(accountant).get("/api/orders/cashier-log/")
+    reopenable = [
+        row for row in reconfirmed.data
+        if row["payload"].get("payment_id") == payment_id and row["can_reopen"]
+    ]
+    assert len(reopenable) == 1
+
+
 def test_payment_not_counted_before_confirm(auth_client, accountant):
     """До подтверждения бухгалтером-кассой оплата не учтена."""
     o = _order(status="shipped")  # total 500

@@ -205,3 +205,24 @@ PORTAL_PAYMENT_INFO = {
     "account": os.environ.get("PORTAL_ACCOUNT", ""),
     "instructions": "Отсканируйте QR в приложении Kaspi и переведите сумму к оплате.",
 }
+
+# Реквизиты поставщика в PDF-счёте. В проде могут быть переопределены через env.
+INVOICE_SUPPLIER = {
+    "short_name": os.environ.get("INVOICE_SUPPLIER_SHORT_NAME", "АСЫЛ-LTD"),
+    "legal_name": os.environ.get(
+        "INVOICE_SUPPLIER_LEGAL_NAME",
+        'ТОВАРИЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ "АСЫЛ-LTD"',
+    ),
+    "bin": os.environ.get("INVOICE_SUPPLIER_BIN", "020740000305"),
+    "iban": os.environ.get("INVOICE_SUPPLIER_IBAN", "KZ6696516F0007929746"),
+    "kbe": os.environ.get("INVOICE_SUPPLIER_KBE", "17"),
+    "bank": os.environ.get("INVOICE_SUPPLIER_BANK", 'АО "ForteBank"'),
+    "bic": os.environ.get("INVOICE_SUPPLIER_BIC", "IRTYKZKA"),
+    "payment_code": os.environ.get("INVOICE_PAYMENT_CODE", "710"),
+    "address": os.environ.get(
+        "INVOICE_SUPPLIER_ADDRESS",
+        "Шымкент, Аль-Фарабийский район, улица Руставелли, д. 18",
+    ),
+    # В предоставленном образце от 06.07.2026 НДС рассчитан по ставке 16%.
+    "vat_rate": os.environ.get("INVOICE_VAT_RATE", "16"),
+}

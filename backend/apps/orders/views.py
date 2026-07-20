@@ -13,6 +13,7 @@ from apps.common.permissions import HasPerm, PermViewSetMixin
 from apps.common.money import money_string
 from apps.common.query_params import parse_iso_date, parse_store_id, validate_date_range
 from apps.clients.models import Department
+from apps.eventlog.models import EventLog
 from apps.shipments.services import (
     start_train_loading, record_count, finish_train_loading)
 from apps.shipments.serializers import LoadSerializer
@@ -24,7 +25,7 @@ from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerial
                           StatusChangeRequestSerializer)
 from .services import (add_payment, confirm_order, reject_order,
                        receive_payment, accountant_confirm_payment,
-                       reject_payment, soft_delete_order, restore_order,
+                       reopen_confirmed_payment, reject_payment, soft_delete_order, restore_order,
                        purge_order,
                        request_status_change, approve_status_change, reject_status_change)
 
@@ -69,8 +70,10 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "reject": "orders.confirm",
         "receive_payment": "payments.create",
         "confirm_payment": "payments.confirm",
+        "reopen_payment": "payments.confirm",
         "reject_payment": "payments.confirm",
         "payments_queue": "payments.confirm",
+        "cashier_log": "payments.confirm",
         "train": "train.load",
         "loading_camera": "shipping.load",
         "department_summary": "orders.view",
@@ -191,6 +194,59 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         if date_to:
             qs = qs.filter(paid_at__date__lte=date_to)
         return Response(PaymentQueueSerializer(qs, many=True).data)
+
+    @action(detail=False, methods=["get"], url_path="cashier-log")
+    def cashier_log(self, request):
+        """Неизменяемый журнал действий с оплатами для экрана кассы."""
+        qs = (EventLog.objects
+              .filter(event_type="payment", order__in=Order.objects.all())
+              .select_related("user", "order__client", "order__store"))
+        department = request.query_params.get("department")
+        if department:
+            qs = qs.filter(order__department=department)
+        store = parse_store_id(request.query_params.get("store"))
+        if store:
+            qs = qs.filter(order__store_id=store)
+        date_from = parse_iso_date(request.query_params.get("date_from"))
+        date_to = parse_iso_date(request.query_params.get("date_to"))
+        validate_date_range(date_from, date_to)
+        if date_from:
+            qs = qs.filter(created_at__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(created_at__date__lte=date_to)
+
+        events = list(qs[:200])
+        payment_ids = {
+            event.payload.get("payment_id") for event in events
+            if event.payload.get("payment_id") is not None
+        }
+        current_statuses = dict(Payment.objects.filter(pk__in=payment_ids)
+                                .values_list("pk", "status"))
+        # После цикла confirm → reopen → confirm в журнале несколько событий
+        # confirmed. Кнопка отката должна быть только у самого свежего.
+        latest_confirmation: dict[int, int] = {}
+        for event in events:
+            payment_id = event.payload.get("payment_id")
+            if (payment_id is not None
+                    and event.payload.get("payment_stage") == "confirmed"
+                    and payment_id not in latest_confirmation):
+                latest_confirmation[payment_id] = event.id
+        return Response([{
+            "id": event.id,
+            "message": event.message,
+            "user_name": event.user.username if event.user else None,
+            "order": event.order_id,
+            "client_name": event.order.client.name if event.order_id else None,
+            "store_name": (event.order.store.name
+                           if event.order_id and event.order.store_id else None),
+            "payload": event.payload,
+            "created_at": event.created_at,
+            "can_reopen": (
+                event.payload.get("payment_stage") == "confirmed"
+                and current_statuses.get(event.payload.get("payment_id")) == "confirmed"
+                and latest_confirmation.get(event.payload.get("payment_id")) == event.id
+            ),
+        } for event in events])
 
     @action(detail=True, methods=["post"], url_path="train")
     def train(self, request, pk=None):
@@ -339,6 +395,14 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         """Подтверждение бухгалтером-кассой: received → confirmed (деньги учтены)."""
         payment = get_object_or_404(Payment, pk=pid, order=self.get_object())
         accountant_confirm_payment(payment, request.user)
+        return Response(OrderSerializer(payment.order, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"],
+            url_path=r"payments/(?P<pid>\d+)/reopen")
+    def reopen_payment(self, request, pk=None, pid=None):
+        """Отмена случайного подтверждения: confirmed → received."""
+        payment = get_object_or_404(Payment, pk=pid, order=self.get_object())
+        payment = reopen_confirmed_payment(payment, request.user)
         return Response(OrderSerializer(payment.order, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path=r"payments/(?P<pid>\d+)/reject")

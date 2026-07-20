@@ -13,7 +13,7 @@ import { useApi } from "@/lib/use-api";
 import { apiError } from "@/lib/api";
 import { formatMoney, formatPortalMoney } from "@/lib/utils";
 import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
-import { clientStep, payOrder, setTruck, getPaymentInfo, type PaymentInfo } from "@/lib/portal-actions";
+import { clientStep, downloadInvoice, payOrder, setTruck, getPaymentInfo, type PaymentInfo } from "@/lib/portal-actions";
 import type { PortalOrder, PortalPaymentMethod } from "@/lib/types";
 
 export default function PortalOrderDetail({ params }: { params: Promise<{ id: string }> }) {
@@ -33,6 +33,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
     if (method === "kaspi") setInfo(await getPaymentInfo());
     else setInfo(null);
     await payOrder(Number(id), method);
+    if (method === "invoice") await downloadInvoice(Number(id));
   }
 
   if (loading || !order) return (

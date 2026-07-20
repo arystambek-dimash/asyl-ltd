@@ -6,7 +6,7 @@ export interface PaymentInfo {
 }
 export interface RegisterPayload {
   username: string; password: string; first_name: string;
-  last_name: string; phone: string; iin?: string;
+  last_name: string; company_name: string; phone: string; iin: string;
 }
 
 export const payOrder = (id: number, method: PortalPaymentMethod) =>
@@ -20,6 +20,20 @@ export const setTruck = (id: number, truck_number: string) =>
 
 export const getPaymentInfo = () =>
   api.get<PaymentInfo>("/portal/payment-info/").then((r) => r.data);
+
+export async function downloadInvoice(id: number) {
+  const response = await api.get<Blob>(`/portal/orders/${id}/invoice/`, {
+    responseType: "blob",
+  });
+  const url = URL.createObjectURL(response.data);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `schet_na_oplatu_${id}.pdf`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
 
 export const registerClient = (payload: RegisterPayload) =>
   api.post<{ access: string; refresh: string }>("/portal/register/", payload).then((r) => r.data);

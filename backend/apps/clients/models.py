@@ -27,6 +27,10 @@ class Department(models.Model):
 class Client(models.Model):
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
+    # Юридическое наименование покупателя для счетов и других документов.
+    # Оставляем отдельным от ФИО контактного лица: это разные реквизиты.
+    company_name = models.CharField(
+        "Название ТОО / ИП", max_length=200, blank=True, default="")
     phone = models.CharField(max_length=50)
     country = models.CharField(max_length=100, blank=True, default="")
     iin = models.CharField("ИИН/БИН", max_length=20, blank=True, default="")

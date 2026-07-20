@@ -1,5 +1,8 @@
 from django.conf import settings
 from django.db.models import Prefetch
+from django.http import FileResponse
+from django.utils import timezone
+from io import BytesIO
 from rest_framework import viewsets, mixins
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
@@ -9,7 +12,9 @@ from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Client, Store
 from apps.clients.serializers import StoreSerializer
 from apps.orders.models import Order
+from apps.orders.invoices import build_invoice_pdf
 from apps.orders.services import create_client_payment, request_client_debt, set_truck_number
+from apps.eventlog.services import log_event
 from .serializers import CatalogProductSerializer, PortalOrderSerializer
 
 
@@ -70,6 +75,42 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         # progress until the next request.
         order._prefetched_objects_cache.pop("payments", None)
         return Response(self.get_serializer(order).data, status=201)
+
+    @action(detail=True, methods=["get"], url_path="invoice")
+    def invoice(self, request, pk=None):
+        order = self.get_object()
+        if order.status != "shipped" or order.payment_method != "invoice":
+            raise ValidationError({
+                "detail": "Счет доступен после отгрузки и выбора способа «Счет на оплату»",
+                "code": "invoice_not_available",
+            })
+        missing = []
+        if not order.client.iin.strip():
+            missing.append("ИИН/БИН")
+        if not (order.client.company_name.strip() or order.client.name):
+            missing.append("название ТОО / ИП")
+        if missing:
+            raise ValidationError({
+                "detail": "Для счета заполните реквизиты клиента: " + ", ".join(missing),
+                "code": "client_requisites_missing",
+            })
+        payment = order.payments.filter(
+            method="invoice", status__in=("requested", "received", "confirmed")
+        ).order_by("-paid_at").first()
+        if payment is None:
+            raise ValidationError({
+                "detail": "Сначала выберите способ оплаты «Счет на оплату»",
+                "code": "invoice_payment_missing",
+            })
+        pdf = build_invoice_pdf(order)
+        log_event(
+            "payment", f"Счет на оплату №{order.id} сформирован",
+            user=request.user, order=order,
+            payload={"payment_id": payment.id, "method": "invoice", "action": "invoice_generated"},
+        )
+        filename = f"schet_na_oplatu_{order.id}_ot_{timezone.localdate():%d.%m.%Y}.pdf"
+        return FileResponse(BytesIO(pdf), content_type="application/pdf",
+                            as_attachment=True, filename=filename)
 
     @action(detail=True, methods=["post"], url_path="request-debt")
     def request_debt(self, request, pk=None):

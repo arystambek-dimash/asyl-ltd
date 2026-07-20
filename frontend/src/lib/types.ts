@@ -47,12 +47,12 @@ export interface DepartmentSummary {
   shipped: number;
   revenue: string;
 }
-export type PortalPaymentMethod = "invoice" | "kaspi" | "cash" | "debt";
+export type PortalPaymentMethod = "pending" | "invoice" | "kaspi" | "cash" | "debt";
 export type PaymentMethod = PortalPaymentMethod | "card";
 
 export interface Client {
   id: number; first_name: string; last_name: string; phone: string;
-  name: string; country: string;
+  name: string; company_name: string; country: string;
   iin: string; bank: string; bank_account: string; user: number | null;
   debt_total?: string; created_at?: string;
 }
@@ -129,6 +129,12 @@ export interface PaymentQueueItem extends Payment {
   client_name: string; department: string; department_name?: string;
   department_color?: string; order_status: string;
   store?: number | null; store_name?: string | null;
+}
+export interface CashierLogItem {
+  id: number; message: string; user_name: string | null; order: number;
+  client_name: string | null; store_name: string | null;
+  payload: { payment_id?: number; amount?: string; method?: string; payment_stage?: string; action?: string };
+  created_at: string; can_reopen: boolean;
 }
 export interface StockItem {
   id: number; product: number; product_label: string;

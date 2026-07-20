@@ -17,8 +17,9 @@ class RegisterSerializer(serializers.Serializer):
     password = serializers.CharField(min_length=8, write_only=True)
     first_name = serializers.CharField(max_length=100)
     last_name = serializers.CharField(max_length=100)
+    company_name = serializers.CharField(max_length=200)
     phone = serializers.CharField(max_length=50)
-    iin = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    iin = serializers.CharField(min_length=12, max_length=12)
 
     def validate_username(self, value):
         if User.objects.filter(username=value).exists():
@@ -34,13 +35,25 @@ class RegisterSerializer(serializers.Serializer):
             raise serializers.ValidationError(exc.messages)
         return value
 
+    def validate_iin(self, value):
+        value = value.strip()
+        if not value.isdigit():
+            raise serializers.ValidationError("ИИН/БИН должен состоять из 12 цифр")
+        return value
+
+    def validate_company_name(self, value):
+        value = " ".join(value.split())
+        if not value:
+            raise serializers.ValidationError("Введите название ТОО / ИП")
+        return value
+
     @transaction.atomic
     def create(self, data):
         user = User.objects.create_user(
             username=data["username"], password=data["password"], is_client=True)
         Client.objects.create(
             user=user, first_name=data["first_name"], last_name=data["last_name"],
-            phone=data["phone"], iin=data.get("iin", ""))
+            company_name=data["company_name"], phone=data["phone"], iin=data["iin"])
         return user
 
 

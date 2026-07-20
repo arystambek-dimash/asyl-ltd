@@ -9,8 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
-import type { PortalPaymentMethod, Store } from "@/lib/types";
-import { Banknote, FileText, HandCoins, Info, Plus, QrCode, Trash2 } from "lucide-react";
+import type { Store } from "@/lib/types";
+import { Info, Plus, Trash2 } from "lucide-react";
 
 interface PortalProduct {
   id: number; label: string; weight_kg: string; available_bags: number;
@@ -22,7 +22,6 @@ export default function PortalNewOrderPage() {
   const { data: products } = useApi<PortalProduct[]>("/portal/catalog/");
   const { data: stores } = useApi<Store[]>("/portal/stores/");
   const [rows, setRows] = useState([{ product: "", quantity: "" }]);
-  const [paymentMethod, setPaymentMethod] = useState<PortalPaymentMethod>("debt");
   const [transport, setTransport] = useState<"truck" | "train">("truck");
   const [store, setStore] = useState("");
   const [error, setError] = useState("");
@@ -41,7 +40,7 @@ export default function PortalNewOrderPage() {
         .map((r) => ({ product: Number(r.product), quantity: Number(r.quantity) }));
       if (!items.length) throw new Error("empty");
       await api.post("/portal/orders/", {
-        items, payment_method: paymentMethod, transport_type: transport,
+        items, transport_type: transport,
         store: store ? Number(store) : null,
       });
       router.push("/portal/orders");
@@ -106,45 +105,13 @@ export default function PortalNewOrderPage() {
                 ))}
               </div>
             </div>
-            <div className="border-t pt-4">
-              <Label className="mb-2 block">Способ оплаты</Label>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {([
-                  { v: "invoice", title: "Счет на оплату", desc: "Получить счет для безналичной оплаты", icon: FileText },
-                  { v: "kaspi", title: "Каспи", desc: "Оплатить через Kaspi после отгрузки", icon: QrCode },
-                  { v: "cash", title: "Наличными", desc: "Передать оплату сотруднику", icon: Banknote },
-                  { v: "debt", title: "В долг", desc: "Оформить заказ с отсрочкой оплаты", icon: HandCoins },
-                ] as const).map((opt) => (
-                  <button key={opt.v} type="button" onClick={() => setPaymentMethod(opt.v)}
-                    aria-pressed={paymentMethod === opt.v}
-                    className={
-                      "group flex items-start gap-3 rounded-xl border p-3 text-left transition-all " +
-                      (paymentMethod === opt.v
-                        ? "border-[var(--primary)] bg-[var(--primary)]/5 shadow-sm ring-1 ring-[var(--primary)]/15"
-                        : "hover:border-[var(--primary)]/35 hover:bg-[var(--muted)]/35")
-                    }>
-                    <span className={
-                      "grid size-9 shrink-0 place-items-center rounded-lg transition-colors " +
-                      (paymentMethod === opt.v
-                        ? "bg-[var(--primary)] text-white"
-                        : "bg-[var(--muted)] text-[var(--muted-foreground)] group-hover:text-[var(--primary)]")
-                    }>
-                      <opt.icon className="size-4" />
-                    </span>
-                    <span className="flex flex-col gap-0.5">
-                      <span className="text-sm font-semibold">{opt.title}</span>
-                      <span className="text-xs leading-4 text-[var(--muted-foreground)]">{opt.desc}</span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
             <div className="flex items-start gap-2 rounded-lg border bg-[var(--muted)]/30 px-3 py-2.5 text-xs text-[var(--muted-foreground)]">
               <Info className="mt-0.5 size-3.5 shrink-0" />
               <span>
                 {hasUnpricedItems
                   ? "Для товаров без закреплённой цены стоимость подтвердит менеджер."
                   : "Стоимость рассчитана по вашему личному прайс-листу."}
+                {" Способ оплаты вы выберете после завершения отгрузки."}
                 {estimatedTotal > 0 && (
                   <b className="ml-1 text-[var(--foreground)]">
                     Предварительно: {estimatedTotal.toLocaleString("ru-RU")} ₸

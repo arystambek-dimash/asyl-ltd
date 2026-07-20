@@ -30,8 +30,8 @@ def test_client_creates_own_pending_order(auth_client, client_user):
     order = Order.objects.get()
     assert order.status == "pending"
     assert order.client.user_id == client_user.id
-    assert order.settlement_intent == "debt"  # по умолчанию
-    assert order.payment_method == "debt"
+    assert order.settlement_intent == "pending"
+    assert order.payment_method == "pending"
 
 
 @pytest.mark.parametrize(
@@ -39,7 +39,7 @@ def test_client_creates_own_pending_order(auth_client, client_user):
     [("invoice", "instant"), ("kaspi", "instant"),
      ("cash", "instant"), ("debt", "debt")],
 )
-def test_client_can_choose_one_of_four_payment_methods(
+def test_payment_method_sent_during_creation_is_deferred_until_shipment(
         auth_client, client_user, method, intent):
     _client_for(client_user)
     prod = _product()
@@ -51,9 +51,9 @@ def test_client_can_choose_one_of_four_payment_methods(
     )
     assert resp.status_code == 201
     order = Order.objects.get()
-    assert order.payment_method == method
-    assert order.settlement_intent == intent
-    assert resp.data["payment_method"] == method
+    assert order.payment_method == "pending"
+    assert order.settlement_intent == "pending"
+    assert resp.data["payment_method"] == "pending"
 
 
 def test_client_can_choose_instant_intent(auth_client, client_user):
@@ -66,8 +66,8 @@ def test_client_can_choose_instant_intent(auth_client, client_user):
     )
     assert resp.status_code == 201
     order = Order.objects.get()
-    assert order.settlement_intent == "instant"
-    assert order.payment_method == "invoice"
+    assert order.settlement_intent == "pending"
+    assert order.payment_method == "pending"
 
 
 def test_client_sees_only_own_orders(auth_client, client_user, make_user):

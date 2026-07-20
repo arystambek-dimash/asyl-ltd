@@ -7,13 +7,32 @@ from apps.clients.models import Client
 def test_register_creates_client_user_and_returns_tokens(api_client):
     payload = {"username": "newcli", "password": "secret12345",
                "first_name": "Иван", "last_name": "Петров",
+               "company_name": 'ТОО "Сайрам нан"',
                "phone": "+77001112233", "iin": "990101300123"}
     r = api_client.post("/api/portal/register/", payload, format="json")
     assert r.status_code == 201
     assert "access" in r.data and "refresh" in r.data
     user = get_user_model().objects.get(username="newcli")
     assert user.is_client is True
-    assert Client.objects.filter(user=user, first_name="Иван").exists()
+    assert Client.objects.filter(
+        user=user, first_name="Иван", company_name='ТОО "Сайрам нан"',
+        iin="990101300123",
+    ).exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("field", ["company_name", "iin"])
+def test_register_requires_invoice_requisites(api_client, field):
+    payload = {"username": f"missing-{field}", "password": "secret12345",
+               "first_name": "Иван", "last_name": "Петров",
+               "company_name": "ТОО Покупатель", "phone": "+77001112233",
+               "iin": "990101300123"}
+    payload.pop(field)
+
+    response = api_client.post("/api/portal/register/", payload, format="json")
+
+    assert response.status_code == 400
+    assert field in response.data["detail"]
 
 
 @pytest.mark.django_db
