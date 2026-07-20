@@ -13,6 +13,15 @@ import { useAuth } from "@/store/auth";
 const CAMERA_REFRESH_MS = 30 * 1000;
 const RETRY_MAX_MS = 60 * 1000;
 
+export interface CameraCountingLine {
+  configured: boolean;
+  coordinate_space: "normalized";
+  line: { x1: number; y1: number; x2: number; y2: number } | null;
+  line_spec?: string | null;
+  direction: "any" | "up" | "down" | "positive" | "negative";
+  updated_at?: string | null;
+}
+
 /** Камера из живого инвентаря сети (бэкенд строит его из ai_service). */
 export interface CameraFeed {
   /** Стабильный ключ: kind + MAC (не меняется при перетасовке каналов NVR). */
@@ -26,6 +35,8 @@ export interface CameraFeed {
   online: boolean;
   /** Пояснение для locked: обнаружена, но пароль неизвестен. */
   note?: string;
+  /** Сохранённая AI-сервисом линия подсчёта, если камера её поддерживает. */
+  line_config?: CameraCountingLine | null;
 }
 
 /** Камеры, у которых есть поток для просмотра (locked не играют). */

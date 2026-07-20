@@ -38,9 +38,9 @@ GO2RTC_API = (os.environ.get("GO2RTC_API_URL") or "").rstrip("/")
 # он же — верхняя граница резервного перебора.
 MAX_CAMERAS = 32
 PROBE_TIMEOUT = 12  # сек; on-demand источник у MediaMTX поднимается 2–10 с
-CACHE_KEY = "cameras:discovered:v3"  # v3 — last-good fallback и короткий outage TTL
+CACHE_KEY = "cameras:discovered:v4"  # v4 — includes persisted AI line configs
 CACHE_TTL = 240  # сек; инвентарь на ПК обновляется раз в ~5 мин
-LAST_GOOD_CACHE_KEY = "cameras:last-good:v3"
+LAST_GOOD_CACHE_KEY = "cameras:last-good:v4"
 LAST_GOOD_TTL = 7 * 24 * 3600
 EMPTY_CACHE_TTL = 15  # полный сбой не должен приклеить пустую стену на 4 минуты
 
@@ -113,7 +113,9 @@ def _discover_by_inventory() -> list[dict] | None:
     if not ai.enabled():
         return None
     try:
-        devices = ai.inventory().get("devices") or []
+        inventory = ai.inventory()
+        devices = inventory.get("devices") or []
+        line_configs = inventory.get("line_configs") or {}
     except (ai.AiUnavailable, ai.AiError) as e:
         log.warning("Инвентарь камер недоступен (%s) — резервные RTSP-пробы", e)
         return None
@@ -133,6 +135,7 @@ def _discover_by_inventory() -> list[dict] | None:
                 "src": path,
                 "kind": kind,
                 "online": bool(d.get("online", True)),
+                "line_config": line_configs.get(path),
             })
             sync.append((path, d.get("sub") or path))
         elif kind == "direct" and path:
@@ -143,6 +146,7 @@ def _discover_by_inventory() -> list[dict] | None:
                 "src": path,
                 "kind": kind,
                 "online": bool(d.get("online", True)),
+                "line_config": line_configs.get(path),
             })
             sync.append((path, d.get("sub") or path))
         elif kind == "locked":

@@ -47,7 +47,7 @@ tracker pipeline и publisher остаются тёплыми, а последн
 только для Tailscale-IP backend и регистрирует boot-задачу `SYSTEM`.
 
 На camera-PC сохраняется только `AI_SERVICE_API_KEY_SHA256`. Plaintext ключ
-остаётся в `CAMERA_AI_KEY` production backend. Получить digest можно локально:
+остаётся в `AI_SERVICE_API_KEY` production backend. Получить digest можно локально:
 
 ```powershell
 python -c "import hashlib,os; print(hashlib.sha256(os.environ['AI_SERVICE_API_KEY'].encode()).hexdigest())"

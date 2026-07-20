@@ -242,10 +242,53 @@ def _ai_response(fn, user=None):
             status=status.HTTP_502_BAD_GATEWAY,
         )
     except ai.AiError as e:
-        http = e.status if e.status in (400, 404, 409) else status.HTTP_502_BAD_GATEWAY
+        http = (
+            e.status
+            if e.status in (400, 401, 404, 409, 503)
+            else status.HTTP_502_BAD_GATEWAY
+        )
         return Response({"detail": e.detail, "code": "ai_error"}, status=http)
     except sessions.AiSessionBusy as e:
         return _busy_response(e.session, user)
+
+
+def _ai_proxy_response(fn):
+    """Return an AI response body/status intact without exposing credentials."""
+    if not ai.enabled():
+        return Response(
+            {"detail": "AI-подсчёт не настроен на сервере", "code": "ai_disabled"},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    try:
+        upstream_status, payload = fn()
+        return Response(payload, status=upstream_status)
+    except ai.AiUnavailable:
+        return Response(
+            {"detail": "AI-сервис камер недоступен", "code": "ai_unavailable"},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+    except ai.AiError as exc:
+        return Response(
+            {"detail": exc.detail, "code": "ai_error"},
+            status=exc.status if exc.status in (400, 401, 404, 503) else 502,
+        )
+
+
+class CameraCountingLineView(APIView):
+    """Authorized backend proxy for a camera's persisted counting line."""
+
+    def get_permissions(self):
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return [IsStaff()]
+        return [HasPerm("rbac.manage")]
+
+    def get(self, request, cam: str):
+        return _ai_proxy_response(lambda: ai.counting_line(cam))
+
+    def put(self, request, cam: str):
+        # save_counting_line performs one PUT only. A 503 with saved=true is
+        # deliberately passed to the browser without an automatic retry.
+        return _ai_proxy_response(lambda: ai.save_counting_line(cam, request.data))
 
 
 def _order_id(request) -> int | None:

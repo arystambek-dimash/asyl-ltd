@@ -44,6 +44,15 @@ INVENTORY = {
          "model": "DS-2CD2043", "online": True},
         {"kind": "locked", "ip": "192.168.0.2", "note": "RTSP есть, ISAPI 401"},
     ],
+    "line_configs": {
+        "cam2": {
+            "configured": True,
+            "coordinate_space": "normalized",
+            "line": {"x1": 0.08, "y1": 0.61, "x2": 0.93, "y2": 0.58},
+            "line_spec": "0.08,0.61,0.93,0.58",
+            "direction": "negative",
+        },
+    },
 }
 
 
@@ -61,6 +70,8 @@ def test_discover_prefers_inventory(monkeypatch):
     cam1, cam2, _cam10, direct, locked = cams
     assert (cam1["zone"], cam1["online"]) == ("Въезд / весы", False)
     assert (cam2["src"], cam2["name"]) == ("cam2", "DS-2CD1643G2-LIZU")
+    assert cam2["line_config"] == INVENTORY["line_configs"]["cam2"]
+    assert cam1["line_config"] is None
     assert direct["src"] == "cam_8c28"
     assert locked["src"] is None and locked["online"] is False
     assert "нет доступа" in locked["note"].lower() or "401" in locked["note"]
@@ -151,12 +162,15 @@ def test_empty_discovery_uses_short_cache_ttl(monkeypatch):
 
 
 def test_camera_list_for_staff(auth_client, operator):
+    line_config = INVENTORY["line_configs"]["cam2"]
     payload = [{"id": "nvr:cam1", "name": "Камера 1", "zone": "Въезд / весы",
-                "src": "cam1", "kind": "nvr-channel", "online": True}]
+                "src": "cam1", "kind": "nvr-channel", "online": True,
+                "line_config": line_config}]
     with patch.object(services, "discover_cameras", return_value=payload):
         resp = auth_client(operator).get("/api/cameras/")
     assert resp.status_code == 200
     assert resp.data == payload
+    assert resp.data[0]["line_config"] == line_config
 
 
 def test_admin_camera_name_is_returned_everywhere(auth_client, boss, operator):

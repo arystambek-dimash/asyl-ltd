@@ -9,20 +9,39 @@
 вызовы идут через бэкенд, а ключ API не покидает сервер.
 """
 import json
+import math
 import os
 import re
 import urllib.error
 import urllib.request
+from collections.abc import Mapping, Sequence
+from numbers import Real
 
 from .services import CAMERA_HOST
 
-AI_URL = (os.environ.get("CAMERA_AI_URL") or f"http://{CAMERA_HOST}:8890").rstrip("/")
-AI_KEY = os.environ.get("CAMERA_AI_KEY", "")
-TIMEOUT = 10  # сек; запуск модели асинхронный, долгих ответов у API нет
+AI_URL = (
+    os.environ.get("AI_SERVICE_URL")
+    or os.environ.get("CAMERA_AI_URL")
+    or f"http://{CAMERA_HOST}:8890"
+).rstrip("/")
+AI_KEY = os.environ.get("AI_SERVICE_API_KEY") or os.environ.get("CAMERA_AI_KEY", "")
+
+
+def _timeout() -> float:
+    """Bound the server-side request timeout even when env is malformed."""
+    try:
+        value = float(os.environ.get("AI_SERVICE_TIMEOUT", "10"))
+    except (TypeError, ValueError):
+        return 10
+    return value if math.isfinite(value) and value > 0 else 10
+
+
+TIMEOUT = _timeout()  # запуск модели асинхронный, долгих ответов у API нет
 
 # Контракт AI-сервиса допускает только NVR ID cam<N>. Строгая локальная
 # проверка не позволяет передать произвольный path в URL camera-PC.
 CAM_RE = re.compile(r"^cam[1-9][0-9]*$")
+LINE_DIRECTIONS = frozenset({"any", "up", "down", "positive", "negative"})
 
 
 class AiUnavailable(Exception):
@@ -84,6 +103,54 @@ def normalize(cam: str) -> str:
     return cam
 
 
+def camera_id(cam: str) -> str:
+    """Strict public API camera id: only the literal ``cam<N>`` shape."""
+    camera = str(cam)
+    if not CAM_RE.fullmatch(camera):
+        raise AiError(400, "Неизвестная камера")
+    return camera
+
+
+def validate_counting_line(payload) -> dict:
+    """Validate a counting-line PUT body without weakening the AI contract."""
+    if not isinstance(payload, Mapping):
+        raise AiError(400, "Тело запроса должно быть объектом")
+
+    line = payload.get("line")
+    if isinstance(line, Mapping):
+        names = ("x1", "y1", "x2", "y2")
+        if any(name not in line for name in names):
+            raise AiError(400, "Укажите координаты x1, y1, x2, y2")
+        coordinates = [line[name] for name in names]
+    elif (isinstance(line, Sequence)
+          and not isinstance(line, (str, bytes, bytearray))
+          and len(line) == 4):
+        coordinates = list(line)
+    else:
+        raise AiError(400, "Линия должна содержать четыре координаты")
+
+    values: list[float] = []
+    for coordinate in coordinates:
+        if isinstance(coordinate, bool) or not isinstance(coordinate, Real):
+            raise AiError(400, "Координаты линии должны быть конечными числами от 0 до 1")
+        value = float(coordinate)
+        if not math.isfinite(value) or value < 0 or value > 1:
+            raise AiError(400, "Координаты линии должны быть конечными числами от 0 до 1")
+        values.append(value)
+    if values[:2] == values[2:]:
+        raise AiError(400, "Начальная и конечная точки линии не должны совпадать")
+
+    direction = payload.get("direction")
+    if direction not in LINE_DIRECTIONS:
+        raise AiError(
+            400,
+            "direction должен быть any, up, down, positive или negative",
+        )
+    # Send only the documented fields. The API key is injected exclusively as
+    # an HTTP header in _request and can never be forwarded from user input.
+    return {"line": line, "direction": direction}
+
+
 def _path(cam: str) -> str:
     return f"/processors/{normalize(cam)}"
 
@@ -91,6 +158,20 @@ def _path(cam: str) -> str:
 def inventory() -> dict:
     """Живой инвентарь сети цеха: devices (nvr-channel/direct/locked) + ai."""
     return _call("GET", "/cameras") or {}
+
+
+def counting_line(cam: str) -> tuple[int, dict]:
+    """Raw upstream response for the public counting-line proxy."""
+    return _request("GET", f"/cameras/{camera_id(cam)}/line")
+
+
+def save_counting_line(cam: str, payload) -> tuple[int, dict]:
+    """Validate and forward one line update exactly once."""
+    return _request(
+        "PUT",
+        f"/cameras/{camera_id(cam)}/line",
+        validate_counting_line(payload),
+    )
 
 
 def status(cam: str) -> dict | None:

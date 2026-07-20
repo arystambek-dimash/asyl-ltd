@@ -22,6 +22,15 @@ RUNNING = {
     "cam": "cam2", "running": True, "stream": "cam2ai", "status": "онлайн",
     "fps": 19.8, "total": 42, "weight": 2100, "per_color": {"Blue_50": 40},
 }
+LINE_CONFIG = {
+    "cam": "cam2",
+    "configured": True,
+    "coordinate_space": "normalized",
+    "line": {"x1": 0.08, "y1": 0.61, "x2": 0.93, "y2": 0.58},
+    "line_spec": "0.08,0.61,0.93,0.58",
+    "direction": "negative",
+    "updated_at": "2026-07-20T18:00:00.000+00:00",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -220,7 +229,7 @@ def test_start_when_idle_posts_directly_to_service(api_client, loader, loading_o
     calls = []
 
     def fake(method, path, body=None):
-        calls.append((method, path))
+        calls.append((method, path, body))
         assert (method, path) == ("POST", "/processors/cam2")
         return 200, {**RUNNING, "total": 0, "status": "запуск..."}
 
@@ -228,11 +237,204 @@ def test_start_when_idle_posts_directly_to_service(api_client, loader, loading_o
         resp = api_client.post("/api/cameras/cam2/ai/", {"order_id": loading_order.pk})
     assert resp.status_code == 200
     assert resp.data["total"] == 0
-    assert calls == [("POST", "/processors/cam2")]
+    # Empty body makes ai_service use the camera's persisted line. In
+    # particular, the removed legacy "0,0.5,1,0.5" is never sent.
+    assert calls == [("POST", "/processors/cam2", {})]
     session = AiCountingSession.objects.get()
     assert session.order == loading_order
     assert session.status == AiCountingSession.ACTIVE
     assert session.recording_stream == "cam2ai"
+
+
+# --- persisted counting line proxy ---------------------------------------
+
+def test_get_saved_counting_line_preserves_upstream_body_and_status(
+    api_client, operator,
+):
+    api_client.force_authenticate(operator)
+    with patch.object(ai, "_request", return_value=(200, LINE_CONFIG)) as request:
+        response = api_client.get("/api/cameras/cam2/counting-line")
+
+    assert response.status_code == 200
+    assert response.data == LINE_CONFIG
+    request.assert_called_once_with("GET", "/cameras/cam2/line")
+
+
+def test_admin_puts_valid_counting_line(api_client, boss):
+    body = {
+        "line": {"x1": 0.08, "y1": 0.61, "x2": 0.93, "y2": 0.58},
+        "direction": "down",
+    }
+    upstream = {
+        "ok": True, "saved": True, "applied_to_processor": True,
+        **LINE_CONFIG,
+    }
+    api_client.force_authenticate(boss)
+    with patch.object(ai, "_request", return_value=(200, upstream)) as request:
+        response = api_client.put(
+            "/api/cameras/cam2/counting-line", body, format="json"
+        )
+
+    assert response.status_code == 200
+    assert response.data == upstream
+    request.assert_called_once_with("PUT", "/cameras/cam2/line", body)
+
+
+@pytest.mark.parametrize("coordinate", [-0.01, 1.01])
+def test_counting_line_rejects_coordinate_outside_normalized_range(
+    api_client, boss, coordinate,
+):
+    api_client.force_authenticate(boss)
+    with patch.object(ai, "_request") as request:
+        response = api_client.put(
+            "/api/cameras/cam2/counting-line",
+            {"line": [coordinate, 0.2, 0.8, 0.9], "direction": "any"},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    assert "от 0 до 1" in response.data["detail"]
+    request.assert_not_called()
+
+
+@pytest.mark.parametrize("coordinate", [float("inf"), float("nan"), True, "0.2"])
+def test_counting_line_rejects_non_finite_or_non_numeric_coordinate(coordinate):
+    with pytest.raises(ai.AiError) as exc:
+        ai.validate_counting_line({
+            "line": [coordinate, 0.2, 0.8, 0.9], "direction": "any",
+        })
+    assert exc.value.status == 400
+
+
+def test_counting_line_rejects_identical_points(api_client, boss):
+    api_client.force_authenticate(boss)
+    with patch.object(ai, "_request") as request:
+        response = api_client.put(
+            "/api/cameras/cam2/counting-line",
+            {"line": [0.25, 0.75, 0.25, 0.75], "direction": "positive"},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    assert "не должны совпадать" in response.data["detail"]
+    request.assert_not_called()
+
+
+@pytest.mark.parametrize("direction", ["any", "up", "down", "positive", "negative"])
+def test_counting_line_accepts_all_documented_directions(direction):
+    body = {"line": [0.1, 0.2, 0.8, 0.9], "direction": direction}
+    assert ai.validate_counting_line(body) == body
+
+
+def test_counting_line_rejects_unknown_direction(api_client, boss):
+    api_client.force_authenticate(boss)
+    with patch.object(ai, "_request") as request:
+        response = api_client.put(
+            "/api/cameras/cam2/counting-line",
+            {"line": [0.1, 0.2, 0.8, 0.9], "direction": "sideways"},
+            format="json",
+        )
+    assert response.status_code == 400
+    assert "direction" in response.data["detail"]
+    request.assert_not_called()
+
+
+@pytest.mark.parametrize("bad_camera", ["2", "cam0", "cam02", "cam2/line"])
+def test_counting_line_rejects_noncanonical_camera_id(
+    api_client, operator, bad_camera,
+):
+    api_client.force_authenticate(operator)
+    with patch.object(ai, "_request") as request:
+        response = api_client.get(f"/api/cameras/{bad_camera}/counting-line")
+
+    assert response.status_code in (400, 404)
+    request.assert_not_called()
+
+
+def test_saved_but_not_live_503_is_returned_once_without_field_loss(
+    api_client, boss,
+):
+    body = {"line": [0.08, 0.61, 0.93, 0.58], "direction": "any"}
+    upstream = {
+        "ok": False,
+        "saved": True,
+        "applied_to_processor": False,
+        "cam": "cam2",
+        "configured": True,
+        "coordinate_space": "normalized",
+        "line": LINE_CONFIG["line"],
+        "line_spec": LINE_CONFIG["line_spec"],
+        "direction": "any",
+        "detail": "saved, live processor update pending",
+    }
+    api_client.force_authenticate(boss)
+    with patch.object(ai, "_request", return_value=(503, upstream)) as request:
+        response = api_client.put(
+            "/api/cameras/cam2/counting-line", body, format="json"
+        )
+
+    assert response.status_code == 503
+    assert response.data == upstream
+    request.assert_called_once()
+
+
+@pytest.mark.parametrize("upstream_status", [400, 401, 404])
+def test_counting_line_passes_upstream_error_status_and_body(
+    api_client, operator, upstream_status,
+):
+    upstream = {"detail": "upstream detail", "marker": upstream_status}
+    api_client.force_authenticate(operator)
+    with patch.object(ai, "_request", return_value=(upstream_status, upstream)):
+        response = api_client.get("/api/cameras/cam2/counting-line")
+    assert response.status_code == upstream_status
+    assert response.data == upstream
+
+
+def test_counting_line_unavailable_maps_to_502(api_client, operator):
+    api_client.force_authenticate(operator)
+    with patch.object(ai, "_request", side_effect=ai.AiUnavailable("network")):
+        response = api_client.get("/api/cameras/cam2/counting-line")
+    assert response.status_code == 502
+    assert response.data == {
+        "detail": "AI-сервис камер недоступен", "code": "ai_unavailable",
+    }
+
+
+def test_ai_key_is_header_only_and_never_returned(api_client, operator):
+    class Upstream:
+        status = 200
+
+        def read(self):
+            return b'{"cam":"cam2","configured":false}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    api_client.force_authenticate(operator)
+    with patch("urllib.request.urlopen", return_value=Upstream()) as urlopen:
+        response = api_client.get("/api/cameras/cam2/counting-line")
+
+    request = urlopen.call_args.args[0]
+    assert request.get_header("X-api-key") == "test-key"
+    assert "test-key" not in request.full_url
+    assert "test-key" not in response.content.decode()
+    assert urlopen.call_args.kwargs["timeout"] == ai.TIMEOUT
+
+
+def test_only_admin_can_change_counting_line(api_client, operator, client_user):
+    body = {"line": [0.1, 0.2, 0.8, 0.9], "direction": "up"}
+    assert api_client.put(
+        "/api/cameras/cam2/counting-line", body, format="json"
+    ).status_code == 401
+    api_client.force_authenticate(operator)
+    assert api_client.put(
+        "/api/cameras/cam2/counting-line", body, format="json"
+    ).status_code == 403
+    api_client.force_authenticate(client_user)
+    assert api_client.get("/api/cameras/cam2/counting-line").status_code == 403
 
 
 def test_start_accepts_order_id_from_query(api_client, loader, loading_order):
