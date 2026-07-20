@@ -11,7 +11,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.permissions import HasPerm, IsStaff
+from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
 from apps.orders.models import Order
 from apps.shipments.services import begin_camera_loading, finish_ai_loading
 
@@ -275,12 +275,9 @@ def _ai_proxy_response(fn):
 
 
 class CameraCountingLineView(APIView):
-    """Authorized backend proxy for a camera's persisted counting line."""
+    """Superuser-only proxy for a camera's persisted counting line."""
 
-    def get_permissions(self):
-        if self.request.method in ("GET", "HEAD", "OPTIONS"):
-            return [IsStaff()]
-        return [HasPerm("rbac.manage")]
+    permission_classes = [IsSuperUser]
 
     def get(self, request, cam: str):
         return _ai_proxy_response(lambda: ai.counting_line(cam))

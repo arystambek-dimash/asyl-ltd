@@ -20,6 +20,13 @@ class IsClientUser(BasePermission):
         return _auth(request) and request.user.is_client
 
 
+class IsSuperUser(BasePermission):
+    """Только системный суперпользователь, без наследования прав роли."""
+
+    def has_permission(self, request, view):
+        return _auth(request) and bool(request.user.is_superuser)
+
+
 class HasPerm(BasePermission):
     """Право доступа: один код или несколько (достаточно любого из них)."""
 

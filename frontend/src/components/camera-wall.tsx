@@ -1,9 +1,27 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
-import { Check, Grid2x2, Pencil, RectangleHorizontal, Video, VideoOff } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { AxiosError } from "axios";
+import {
+  Check,
+  Grid2x2,
+  LoaderCircle,
+  Pencil,
+  RectangleHorizontal,
+  ScanLine,
+  ShieldCheck,
+  Video,
+  VideoOff,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
+import {
+  CameraLineEditor,
+  defaultCountingLine,
+  validCountingLine,
+  type LineDirection,
+  type NormalizedLine,
+} from "@/components/camera-line-editor";
 import { CameraStream, ensureCameraStreamToken } from "@/components/camera-stream";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,10 +34,16 @@ const RETRY_MAX_MS = 60 * 1000;
 export interface CameraCountingLine {
   configured: boolean;
   coordinate_space: "normalized";
-  line: { x1: number; y1: number; x2: number; y2: number } | null;
+  line: NormalizedLine | null;
   line_spec?: string | null;
-  direction: "any" | "up" | "down" | "positive" | "negative";
+  direction: LineDirection;
   updated_at?: string | null;
+}
+
+interface CameraCountingLineSave extends CameraCountingLine {
+  saved?: boolean;
+  applied_to_processor?: boolean;
+  detail?: string;
 }
 
 /** Камера из живого инвентаря сети (бэкенд строит его из ai_service). */
@@ -50,6 +74,7 @@ function CameraTile({
   onOnline,
   onClick,
   onRename,
+  onConfigureLine,
   active = false,
 }: {
   // Только играбельные камеры (с потоком); недоступные не показываем.
@@ -58,6 +83,7 @@ function CameraTile({
   onOnline: (id: string, online: boolean) => void;
   onClick?: () => void;
   onRename?: (camera: CameraFeed & { src: string }) => void;
+  onConfigureLine?: (camera: CameraFeed & { src: string }) => void;
   active?: boolean;
 }) {
   const [online, setOnline] = useState(false);
@@ -90,15 +116,35 @@ function CameraTile({
         </div>
       )}
 
-      {onRename && (
-        <button type="button" title="Изменить название камеры"
-          onClick={(event) => {
-            event.stopPropagation();
-            onRename(cam);
-          }}
-          className="absolute right-2 top-2 z-10 flex size-8 items-center justify-center rounded-lg border border-white/15 bg-black/55 text-white/80 opacity-0 shadow-sm backdrop-blur-md transition hover:bg-white hover:text-slate-900 group-hover:opacity-100 focus-visible:opacity-100">
-          <Pencil className="size-3.5" />
-        </button>
+      {(onRename || onConfigureLine) && (
+        <div className={cn(
+          "absolute right-2 top-2 z-10 flex gap-1.5 transition focus-within:opacity-100",
+          onConfigureLine ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+        )}>
+          {onConfigureLine && (
+            <button type="button" title="Настроить линию подсчёта"
+              onClick={(event) => {
+                event.stopPropagation();
+                onConfigureLine(cam);
+              }}
+              className={cn(
+                "flex size-8 items-center justify-center rounded-lg border border-white/15 bg-black/55 text-white/85 shadow-sm backdrop-blur-md transition hover:bg-sky-500 hover:text-white",
+                cam.line_config?.configured && "border-sky-300/50 bg-sky-500/80 text-white",
+              )}>
+              <ScanLine className="size-3.5" />
+            </button>
+          )}
+          {onRename && (
+            <button type="button" title="Изменить название камеры"
+              onClick={(event) => {
+                event.stopPropagation();
+                onRename(cam);
+              }}
+              className="flex size-8 items-center justify-center rounded-lg border border-white/15 bg-black/55 text-white/80 shadow-sm backdrop-blur-md transition hover:bg-white hover:text-slate-900">
+              <Pencil className="size-3.5" />
+            </button>
+          )}
+        </div>
       )}
 
       {/* Нижний скрим с именем камеры и статусом — как в UniFi Protect */}
@@ -124,6 +170,101 @@ export function CameraWall() {
   const [savingName, setSavingName] = useState(false);
   const [renameError, setRenameError] = useState("");
   const canRename = can(me, "rbac.manage");
+  const canConfigureLine = !!me?.is_superuser;
+  const lineRequestId = useRef(0);
+  const [lineCamera, setLineCamera] = useState<(CameraFeed & { src: string }) | null>(null);
+  const [lineDraft, setLineDraft] = useState<NormalizedLine>(defaultCountingLine());
+  const [lineDirection, setLineDirection] = useState<LineDirection>("any");
+  const [loadingLine, setLoadingLine] = useState(false);
+  const [savingLine, setSavingLine] = useState(false);
+  const [lineError, setLineError] = useState("");
+  const [lineNotice, setLineNotice] = useState("");
+
+  const updateCameraLine = useCallback((src: string, config: CameraCountingLine) => {
+    setCameras((current) => current.map((camera) =>
+      camera.src === src ? { ...camera, line_config: config } : camera));
+  }, []);
+
+  async function configureLine(camera: CameraFeed & { src: string }) {
+    if (!canConfigureLine || !/^cam[1-9]\d*$/.test(camera.src)) return;
+    const requestId = ++lineRequestId.current;
+    const current = camera.line_config;
+    setLineCamera(camera);
+    setLineDraft(current?.line ? { ...current.line } : defaultCountingLine());
+    setLineDirection(current?.direction ?? "any");
+    setLineError("");
+    setLineNotice("");
+    setLoadingLine(true);
+    try {
+      const response = await api.get<CameraCountingLine>(
+        `/cameras/${encodeURIComponent(camera.src)}/counting-line`,
+        { timeout: 10_000 },
+      );
+      if (lineRequestId.current !== requestId) return;
+      const config = response.data;
+      setLineDraft(config.line ? { ...config.line } : defaultCountingLine());
+      setLineDirection(config.direction ?? "any");
+      updateCameraLine(camera.src, config);
+    } catch (cause) {
+      if (lineRequestId.current === requestId) setLineError(apiError(cause));
+    } finally {
+      if (lineRequestId.current === requestId) setLoadingLine(false);
+    }
+  }
+
+  function closeLineEditor() {
+    lineRequestId.current += 1;
+    setLineCamera(null);
+    setLineError("");
+    setLineNotice("");
+  }
+
+  function savedConfig(payload?: Partial<CameraCountingLine>): CameraCountingLine {
+    return {
+      configured: payload?.configured ?? true,
+      coordinate_space: "normalized",
+      line: payload?.line ? { ...payload.line } : { ...lineDraft },
+      line_spec: payload?.line_spec ?? null,
+      direction: payload?.direction ?? lineDirection,
+      updated_at: payload?.updated_at ?? new Date().toISOString(),
+    };
+  }
+
+  async function saveCountingLine() {
+    if (!lineCamera || !canConfigureLine || !validCountingLine(lineDraft)) return;
+    setSavingLine(true);
+    setLineError("");
+    setLineNotice("");
+    try {
+      const response = await api.put<CameraCountingLineSave>(
+        `/cameras/${encodeURIComponent(lineCamera.src)}/counting-line`,
+        { line: lineDraft, direction: lineDirection },
+        { timeout: 12_000 },
+      );
+      const config = savedConfig(response.data);
+      updateCameraLine(lineCamera.src, config);
+      setLineDraft(config.line ?? lineDraft);
+      setLineDirection(config.direction);
+      setLineNotice(
+        response.data.applied_to_processor === false
+          ? "Линия сохранена. Она применится при следующем запуске модели."
+          : "Линия сохранена и готова к подсчёту.",
+      );
+    } catch (cause) {
+      const payload = (cause as AxiosError<CameraCountingLineSave>).response?.data;
+      if (payload?.saved) {
+        const config = savedConfig(payload);
+        updateCameraLine(lineCamera.src, config);
+        setLineDraft(config.line ?? lineDraft);
+        setLineDirection(config.direction);
+        setLineNotice("Линия сохранена. Работающая модель получит её после перезапуска.");
+      } else {
+        setLineError(apiError(cause));
+      }
+    } finally {
+      setSavingLine(false);
+    }
+  }
 
   function editCamera(camera: CameraFeed & { src: string }) {
     setEditing(camera);
@@ -328,6 +469,8 @@ export function CameraWall() {
               {playable.map((c) => (
                 <CameraTile key={c.id} cam={c} ready={tokenReady} onOnline={handleOnline}
                   onRename={canRename ? editCamera : undefined}
+                  onConfigureLine={canConfigureLine && /^cam[1-9]\d*$/.test(c.src)
+                    ? configureLine : undefined}
                   onClick={playable.length > 1
                     ? () => { setActiveId(c.id); setMode("single"); } : undefined} />
               ))}
@@ -335,12 +478,16 @@ export function CameraWall() {
           ) : active ? (
             <div className="flex flex-col gap-3">
               <CameraTile key={active.id} cam={active} ready={tokenReady} onOnline={handleOnline}
-                onRename={canRename ? editCamera : undefined} />
+                onRename={canRename ? editCamera : undefined}
+                onConfigureLine={canConfigureLine && /^cam[1-9]\d*$/.test(active.src)
+                  ? configureLine : undefined} />
               <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
                 {playable.map((c) => (
                   <CameraTile key={c.id} cam={c} ready={tokenReady} onOnline={handleOnline}
                     active={c.id === active.id} onClick={() => setActiveId(c.id)}
-                    onRename={canRename ? editCamera : undefined} />
+                    onRename={canRename ? editCamera : undefined}
+                    onConfigureLine={canConfigureLine && /^cam[1-9]\d*$/.test(c.src)
+                      ? configureLine : undefined} />
                 ))}
               </div>
             </div>
@@ -378,6 +525,79 @@ export function CameraWall() {
           </p>
         )}
         {renameError && <p className="mt-3 text-sm text-red-600">{renameError}</p>}
+      </Modal>
+
+      <Modal
+        open={!!lineCamera}
+        onClose={closeLineEditor}
+        eyebrow="Только для суперпользователя"
+        title="Линия подсчёта"
+        description={lineCamera
+          ? `${lineCamera.zone} · проведите линию непосредственно на живом изображении.`
+          : undefined}
+        className="max-w-4xl"
+        footer={(
+          <>
+            <div className="mr-auto hidden items-center gap-2 text-xs text-[var(--muted-foreground)] sm:flex">
+              <ShieldCheck className="size-4 text-emerald-600" />
+              Настройка защищена правами superuser
+            </div>
+            <Button variant="ghost" onClick={closeLineEditor}>Закрыть</Button>
+            <Button
+              disabled={loadingLine || savingLine || !validCountingLine(lineDraft)}
+              onClick={() => void saveCountingLine()}
+              className="min-w-36 bg-sky-600 text-white hover:bg-sky-700"
+            >
+              {savingLine ? (
+                <><LoaderCircle className="size-4 animate-spin" /> Сохранение…</>
+              ) : (
+                <><Check className="size-4" /> Сохранить линию</>
+              )}
+            </Button>
+          </>
+        )}
+      >
+        {lineCamera && (
+          <div className="space-y-4">
+            <CameraLineEditor
+              src={lineCamera.src}
+              line={lineDraft}
+              direction={lineDirection}
+              ready={tokenReady}
+              disabled={loadingLine || savingLine}
+              onLineChange={(line) => {
+                setLineDraft(line);
+                setLineNotice("");
+                setLineError("");
+              }}
+              onDirectionChange={(direction) => {
+                setLineDirection(direction);
+                setLineNotice("");
+                setLineError("");
+              }}
+            />
+            {loadingLine && (
+              <div className="flex items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
+                <LoaderCircle className="size-4 animate-spin" /> Загружаем сохранённую линию…
+              </div>
+            )}
+            {!validCountingLine(lineDraft) && !loadingLine && (
+              <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                Линия слишком короткая. Протяните её между двумя разными точками.
+              </p>
+            )}
+            {lineNotice && (
+              <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
+                {lineNotice}
+              </p>
+            )}
+            {lineError && (
+              <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {lineError}
+              </p>
+            )}
+          </div>
+        )}
       </Modal>
     </>
   );
