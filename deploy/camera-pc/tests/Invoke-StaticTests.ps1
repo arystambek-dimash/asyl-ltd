@@ -46,6 +46,9 @@ Assert-True ($aiInstallerText -notmatch 'AI_SERVICE_API_KEY\s*=') 'AI installer 
 Assert-True ($aiRunnerText -match "Plaintext AI_SERVICE_API_KEY is forbidden") 'AI runner does not reject plaintext secrets.'
 Assert-True ($aiInstallerText -match 'New-NetFirewallRule' -and $aiInstallerText -match 'RemoteAddress \$BackendTailnetIp') 'AI service firewall is not restricted to backend Tailscale IP.'
 Assert-True ($aiInstallerText -match 'run-ai-service.ps1.*-ValidateOnly') 'Model/encoder validation before task registration is missing.'
+Assert-True ($aiInstallerText -match "State -ne 'Running'") 'AI installer must reject a completed/Ready long-running task.'
+Assert-True ($aiInstallerText -match 'Get-NetTCPConnection -State Listen -LocalPort 8890') 'AI installer does not verify the real listener.'
+Assert-True ($aiInstallerText -match 'unauthenticated health probe with 401') 'AI installer does not verify backend-only authentication.'
 $installerText = Get-Content -LiteralPath (Join-Path $PackageRoot 'install.ps1') -Raw -Encoding UTF8
 Assert-True ($installerText -match 'Protect-CameraAgentPath -Path \$InstallRoot') 'SYSTEM script InstallRoot ACL protection is missing.'
 Assert-True ($installerText -match 'Protect-CameraAgentPath -Path \$backupRoot') 'Backup ACL protection is missing.'

@@ -58,7 +58,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install-ai-service.ps1 `
 
 Installer сохраняет только SHA-256 ключа, прогревает и валидирует модель до
 регистрации HTTP-задачи, закрывает ACL для обычных пользователей и создаёт
-Windows Firewall rule на порт `8890` только с указанного backend-IP. Состояние:
+Windows Firewall rule на порт `8890` только с указанного backend-IP. Установка
+считается успешной только когда boot-задача остаётся в состоянии `Running`, порт
+`8890` действительно слушает, а запрос без ключа отклоняется с `401`. Состояние:
 
 ```powershell
 Get-ScheduledTask -TaskName ASYL-AI-Service

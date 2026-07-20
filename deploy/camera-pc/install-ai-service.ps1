@@ -164,10 +164,44 @@ Register-ScheduledTask `
     -Description 'ASYL single-model camera AI service; backend-only API and warm processors.' `
     -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
-Start-Sleep -Seconds 5
-$task = Get-ScheduledTask -TaskName $taskName
-if ([string]$task.State -notin @('Running', 'Ready')) {
-    throw "AI service task did not start: $($task.State)"
+
+# `Ready` is not a healthy state for this long-running task: it usually means
+# Python exited and Task Scheduler is only waiting for the next trigger. The
+# listener appears only after checkpoint/class/warm-up/encoder/prewarm checks,
+# so require both a live task and the real HTTP port before declaring success.
+$startupDeadline = [DateTime]::UtcNow.AddMinutes(3)
+$task = $null
+$listenerReady = $false
+do {
+    $task = Get-ScheduledTask -TaskName $taskName
+    $listenerReady = @(
+        Get-NetTCPConnection -State Listen -LocalPort 8890 -ErrorAction SilentlyContinue
+    ).Count -gt 0
+    if (([string]$task.State -eq 'Running') -and $listenerReady) { break }
+    Start-Sleep -Seconds 2
+} while ([DateTime]::UtcNow -lt $startupDeadline)
+
+if (([string]$task.State -ne 'Running') -or -not $listenerReady) {
+    $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+    $lastResult = if ($null -ne $taskInfo) { [string]$taskInfo.LastTaskResult } else { 'unknown' }
+    throw "AI service did not stay running/listen on 8890: state=$($task.State), listener=$listenerReady, lastResult=$lastResult"
+}
+
+# No plaintext key is available on this PC by design. An unauthenticated probe
+# still proves that FastAPI is answering and its backend-only guard is active.
+$unauthenticatedStatus = 0
+try {
+    $probe = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8890/health' -TimeoutSec 5
+    $unauthenticatedStatus = [int]$probe.StatusCode
+} catch {
+    if ($null -ne $_.Exception.Response) {
+        $unauthenticatedStatus = [int]$_.Exception.Response.StatusCode
+    } else {
+        throw "AI service listener opened but health probe failed: $($_.Exception.Message)"
+    }
+}
+if ($unauthenticatedStatus -ne 401) {
+    throw "AI service must reject an unauthenticated health probe with 401; got $unauthenticatedStatus"
 }
 [PSCustomObject]@{
     Install = 'OK'
@@ -177,4 +211,6 @@ if ([string]$task.State -notin @('Running', 'Ready')) {
     AllowedBackend = $BackendTailnetIp
     PrewarmCameras = $PrewarmCameras
     PlaintextKeyStored = $false
+    ListenerVerified = $listenerReady
+    AuthenticationVerified = ($unauthenticatedStatus -eq 401)
 } | ConvertTo-Json

@@ -4,6 +4,7 @@ import hashlib
 import subprocess
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,7 +13,12 @@ from fastapi.testclient import TestClient
 
 from cv_service.app import create_app
 from cv_service.contracts import Detection, ProcessorOptions
-from cv_service.processor import DroppingFrameQueue, LineTracker, ProcessorManager
+from cv_service.processor import (
+    CameraProcessor,
+    DroppingFrameQueue,
+    LineTracker,
+    ProcessorManager,
+)
 from cv_service.runtime import MediaMtxClient, select_h264_encoder, validate_classes
 from cv_service.settings import Settings, parse_camera, parse_line
 
@@ -271,6 +277,7 @@ def test_delete_freezes_result_and_next_start_clears_it(service):
     assert stopped.json()["warm"] is True
     assert stopped.json()["total"] == 42
     assert client.get("/processors/cam2", headers=auth()).json()["total"] == 42
+    assert manager.get("cam2").closed is False
     assert client.post("/processors/cam2", headers=auth(), json={}).json()["total"] == 0
 
 
@@ -327,12 +334,41 @@ def test_frame_queue_keeps_only_latest_two_per_camera():
 
     first, second = Slot(), Slot()
     frames = DroppingFrameQueue(2)
-    assert frames.put_latest((first, "old", 1.0)) is None
-    assert frames.put_latest((second, "other", 2.0)) is None
-    assert frames.put_latest((first, "middle", 3.0)) is None
-    assert frames.put_latest((first, "new", 4.0)) is first
+    assert frames.put_latest((first, "old", 1.0, 0)) is None
+    assert frames.put_latest((second, "other", 2.0, 0)) is None
+    assert frames.put_latest((first, "middle", 3.0, 0)) is None
+    assert frames.put_latest((first, "new", 4.0, 0)) is first
+    assert frames.qsize(first) == 2
+    assert frames.qsize(second) == 1
     queued = [frames.get(0.01)[1] for _ in range(3)]
     assert queued == ["other", "middle", "new"]
+
+
+def test_stale_inference_from_previous_source_is_not_applied():
+    processor = CameraProcessor.__new__(CameraProcessor)
+    processor._lock = threading.RLock()
+    processor._source_generation = 2
+    processor._last_inference_generation = -1
+    processor.inferences = 0
+    processor.inference_times = deque(maxlen=10)
+    processor.frame_latencies = deque(maxlen=10)
+    processor.latest_detections = []
+    processor.dropped_frames = 0
+    processor.running = True
+    processor.tracker = LineTracker()
+    processor.options = ProcessorOptions()
+    processor.settings = make_settings()
+    processor.total = 0
+    processor.per_color = {}
+    processor.confidence_sums = {}
+    frame = SimpleNamespace(shape=(100, 100, 3))
+    detection = Detection(40, 30, 60, 50, 0.9, "Red_50")
+
+    processor.apply_inference(frame, time.monotonic(), [detection], 1.0, 1)
+
+    assert processor.latest_detections == []
+    assert processor._last_inference_generation == -1
+    assert processor.dropped_frames == 1
 
 
 def test_line_tracker_counts_one_crossing_per_track():

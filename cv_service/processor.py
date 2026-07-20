@@ -59,6 +59,10 @@ class FfmpegPublisher:
             "-i", "pipe:0", "-an", "-c:v", self.encoder,
             *encoder_args,
             "-pix_fmt", "yuv420p", "-g", str(max(1, int(self.settings.output_fps))),
+            # Make a stalled RTSP destination terminate FFmpeg instead of
+            # blocking this camera's publisher forever. The next output frame
+            # then starts a fresh process without affecting other cameras.
+            "-rw_timeout", str(self.settings.capture_timeout_ms * 1000),
             "-f", "rtsp", "-rtsp_transport", "tcp", destination,
         ]
         self.process = subprocess.Popen(
@@ -103,7 +107,18 @@ class FfmpegPublisher:
                     self._condition.wait(0.5)
                 frame, self._latest_frame = self._latest_frame, None
             if frame is not None:
-                self._write_frame(frame)
+                try:
+                    self._write_frame(frame)
+                except Exception:
+                    # One malformed frame or subprocess race must not kill the
+                    # persistent per-camera publisher thread.
+                    self.state = "reconnecting"
+                    self._close_process()
+                    self._stop.wait(0.25)
+
+    @property
+    def alive(self) -> bool:
+        return self._thread.is_alive() and not self._stop.is_set()
 
     def _close_process(self) -> None:
         process, self.process = self.process, None
@@ -231,6 +246,8 @@ class CameraProcessor:
         self.latest_detections: list[Detection] = []
         self._last_inference_submit = 0.0
         self._source_generation = 0
+        self._last_frame_generation = -1
+        self._last_inference_generation = -1
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._decoder_thread = threading.Thread(
@@ -260,14 +277,20 @@ class CameraProcessor:
     def wait_until_warm(self) -> None:
         deadline = time.monotonic() + self.settings.prewarm_timeout
         while time.monotonic() < deadline:
+            with self._lock:
+                generation = self._source_generation
+                source_ready = (
+                    self._last_frame_generation == generation
+                    and self._last_inference_generation == generation
+                )
             try:
                 output_ready = self.manager.mediamtx.path_ready(self.stream)
             except RuntimeError:
                 output_ready = False
             if (
                 self._decoder_thread.is_alive()
-                and self.last_frame_at is not None
-                and self.inferences > 0
+                and self.publisher.alive
+                and source_ready
                 and self.publisher.state == "connected"
                 and output_ready
             ):
@@ -304,11 +327,25 @@ class CameraProcessor:
         with self._lock:
             self.dropped_frames += 1
 
-    def apply_inference(self, frame: Any, captured_at: float, detections: list[Detection], elapsed_ms: float) -> None:
+    def apply_inference(
+        self,
+        frame: Any,
+        captured_at: float,
+        detections: list[Detection],
+        elapsed_ms: float,
+        source_generation: int,
+    ) -> None:
         with self._lock:
             self.inferences += 1
             self.inference_times.append(elapsed_ms)
             self.frame_latencies.append((time.monotonic() - captured_at) * 1000)
+            if source_generation != self._source_generation:
+                # The operator switched sub/main while this frame waited in
+                # the shared inference queue. Never feed an old-source result
+                # into the new source's tracker or overlay.
+                self.dropped_frames += 1
+                return
+            self._last_inference_generation = source_generation
             self.latest_detections = detections
             if not self.running:
                 return
@@ -391,12 +428,14 @@ class CameraProcessor:
                 capture = None
                 self._stop.wait(0.5)
                 continue
-            self.last_error = ""
-            self.frames_seen += 1
-            self.last_frame_at = utc_now()
+            with self._lock:
+                self.last_error = ""
+                self.frames_seen += 1
+                self.last_frame_at = utc_now()
+                self._last_frame_generation = generation
             if captured_at - self._last_inference_submit >= 1 / self.settings.inference_fps:
                 self._last_inference_submit = captured_at
-                self.manager.submit(self, frame.copy(), captured_at)
+                self.manager.submit(self, frame.copy(), captured_at, generation)
             if captured_at - last_output >= 1 / self.settings.output_fps:
                 last_output = captured_at
                 self.publisher.write(self._annotate(frame))
@@ -406,12 +445,16 @@ class CameraProcessor:
     def status(self) -> dict:
         elapsed = max(0.001, time.monotonic() - self.started_monotonic)
         with self._lock:
-            alive = self._decoder_thread.is_alive() and self.manager._worker.is_alive()
+            alive = (
+                self._decoder_thread.is_alive()
+                and self.manager._worker.is_alive()
+                and self.publisher.alive
+            )
             warm = (
                 not self.running
                 and alive
-                and self.last_frame_at is not None
-                and self.inferences > 0
+                and self._last_frame_generation == self._source_generation
+                and self._last_inference_generation == self._source_generation
                 and self.publisher.state == "connected"
             )
             return {
@@ -435,7 +478,7 @@ class CameraProcessor:
                     "inference_p95_ms": percentile(self.inference_times, 0.95),
                     "frame_latency_p95_ms": percentile(self.frame_latencies, 0.95),
                     "dropped_frames": self.dropped_frames,
-                    "queue_depth": self.manager.queue.qsize(),
+                    "queue_depth": self.manager.queue.qsize(self),
                     "camera_reconnects": self.camera_reconnects,
                     "publisher_state": self.publisher.state,
                 },
@@ -448,11 +491,11 @@ class DroppingFrameQueue:
 
     def __init__(self, per_camera_size: int):
         self.per_camera_size = per_camera_size
-        self._items: deque[tuple[CameraProcessor, Any, float]] = deque()
+        self._items: deque[tuple[CameraProcessor, Any, float, int]] = deque()
         self._condition = threading.Condition()
 
     def put_latest(
-        self, item: tuple[CameraProcessor, Any, float]
+        self, item: tuple[CameraProcessor, Any, float, int]
     ) -> CameraProcessor | None:
         processor = item[0]
         dropped = None
@@ -468,7 +511,7 @@ class DroppingFrameQueue:
             self._condition.notify()
         return dropped
 
-    def get(self, timeout: float) -> tuple[CameraProcessor, Any, float]:
+    def get(self, timeout: float) -> tuple[CameraProcessor, Any, float, int]:
         deadline = time.monotonic() + timeout
         with self._condition:
             while not self._items:
@@ -478,9 +521,11 @@ class DroppingFrameQueue:
                 self._condition.wait(remaining)
             return self._items.popleft()
 
-    def qsize(self) -> int:
+    def qsize(self, processor: CameraProcessor | None = None) -> int:
         with self._condition:
-            return len(self._items)
+            if processor is None:
+                return len(self._items)
+            return sum(item[0] is processor for item in self._items)
 
 
 class ProcessorManager:
@@ -506,21 +551,35 @@ class ProcessorManager:
         self._worker = threading.Thread(target=self._inference_loop, name="inference", daemon=True)
         self._worker.start()
 
-    def submit(self, processor: CameraProcessor, frame: Any, captured_at: float) -> None:
-        dropped = self.queue.put_latest((processor, frame, captured_at))
+    def submit(
+        self,
+        processor: CameraProcessor,
+        frame: Any,
+        captured_at: float,
+        source_generation: int = 0,
+    ) -> None:
+        dropped = self.queue.put_latest(
+            (processor, frame, captured_at, source_generation)
+        )
         if dropped is not None:
             dropped.mark_dropped()
 
     def _inference_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                processor, frame, captured_at = self.queue.get(timeout=0.2)
+                processor, frame, captured_at, source_generation = self.queue.get(timeout=0.2)
             except TimeoutError:
                 continue
             started = time.perf_counter()
             try:
                 detections = self.model.predict(frame)
-                processor.apply_inference(frame, captured_at, detections, (time.perf_counter() - started) * 1000)
+                processor.apply_inference(
+                    frame,
+                    captured_at,
+                    detections,
+                    (time.perf_counter() - started) * 1000,
+                    source_generation,
+                )
             except Exception as exc:  # worker must survive one corrupt frame
                 processor.last_error = f"inference failed: {exc}"
 
