@@ -137,15 +137,22 @@ services:
       - edge
 
   go2rtc:
-    image: alexxit/go2rtc:1.9.9
+    # 1.9.14 contains the rewritten/fixed static UDP listener. 1.9.9 could
+    # lose WebRTC sessions when a candidate pair changed.
+    image: alexxit/go2rtc:1.9.14
     environment:
       CAMERA_HOST: ${CAMERA_HOST:-100.109.156.107}
       CAMERA_USER: ${CAMERA_USER:-viewer}
       CAMERA_PASS: ${CAMERA_PASS:?set CAMERA_PASS}
+      GO2RTC_WEBRTC_CANDIDATE: ${GO2RTC_WEBRTC_CANDIDATE:-78.40.109.240:8555}
     volumes:
       - ./deploy/go2rtc:/config:ro
     expose:
       - "1984"
+    ports:
+      # WebRTC media is SRTP-encrypted. Only UDP is published so the browser
+      # can never silently fall back to the old blocking TCP delivery path.
+      - "8555:8555/udp"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -T 3 -O /dev/null http://127.0.0.1:1984/api/streams"]
       interval: 10s

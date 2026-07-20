@@ -1,5 +1,5 @@
-# go2rtc: рестрим сабпотоков камер цеха (MediaMTX на ПК с камерами) в MSE
-# для браузера. Реквизиты берутся из окружения контейнера (.env сервера):
+# go2rtc: рестрим сабпотоков камер цеха (MediaMTX на ПК с камерами) в
+# WebRTC/SRTP UDP для браузера. Реквизиты берутся из окружения контейнера:
 #   CAMERA_HOST, CAMERA_USER, CAMERA_PASS
 #
 # Пути cam1..camN на MediaMTX динамические (по числу каналов NVR), поэтому
@@ -27,8 +27,15 @@ api:
 rtsp:
   listen: ":8554"
 
+# Сигналинг остаётся за авторизованным HTTPS/WebSocket nginx-маршрутом, а
+# зашифрованное видео идёт напрямую в браузер по UDP/8555. TCP-кандидаты
+# отключены намеренно: head-of-line blocking не должен замораживать весь кадр.
 webrtc:
-  listen: ""
+  listen: ":8555"
+  candidates:
+    - ${GO2RTC_WEBRTC_CANDIDATE}
+  filters:
+    networks: [udp4]
 
 streams:
   cam1:
