@@ -41,10 +41,8 @@ const BOARD_STAGES = [
     hint: "Подтверждённые заказы", image: null, tint: "#f3f7ff" },
   { key: "loading", label: "Загружается", color: "var(--warning)", statuses: ["arrived", "loading"],
     hint: "Идёт погрузка", image: "/shipping/loading-forklift.jpg", tint: "#fffbf0" },
-  { key: "loaded", label: "Отгружен", color: "var(--success)", statuses: ["loaded"],
-    hint: "Готов к выезду", image: "/shipping/loaded-truck.jpg", tint: "#f4fbf5" },
-  { key: "done", label: "Завершён", color: "var(--muted-foreground)", statuses: ["shipped"],
-    hint: "Завершённые отгрузки", image: "/shipping/completed-clipboard.jpg", tint: "#f7f9fc" },
+  { key: "done", label: "Завершён", color: "var(--success)", statuses: ["loaded", "shipped"],
+    hint: "Завершённые отгрузки", image: "/shipping/completed-clipboard.jpg", tint: "#f4fbf5" },
 ] as const;
 
 const ACTIVE_STATUSES = ["confirmed", "arrived", "loading", "loaded"];
@@ -482,7 +480,6 @@ function BoardCard({ order, stage, camera, session, history, onOpen, onHistory, 
         <div className="mt-0.5 text-xs tabular-nums text-[var(--muted-foreground)]">
           {stage.key === "waiting" && `${ordered} меш. к погрузке`}
           {stage.key === "loading" && `${bags} / ${ordered} меш.`}
-          {stage.key === "loaded" && `${bags} меш. · готов к выезду`}
           {stage.key === "done" && (order.shipped_at
             ? `выехал ${formatDateTime(order.shipped_at)}`
             : `${bags} меш.`)}
@@ -575,7 +572,7 @@ function LiveBoard({ orders, cameras, sessions, histories, completedDays, onOpen
         </div>
       </div>
       {error && <div className="mb-3"><ErrorAlert message={error} /></div>}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {BOARD_STAGES.map((stage, i) => {
           const rows = orders.filter((o) => (stage.statuses as readonly string[]).includes(o.status));
           const finished = stage.key === "done";
@@ -631,7 +628,6 @@ function LiveBoard({ orders, cameras, sessions, histories, completedDays, onOpen
                     <div className="text-[14px] font-semibold text-slate-600">{stage.hint}: пусто</div>
                     <p className="mt-1 max-w-[210px] text-[12px] leading-relaxed text-slate-400">
                       {stage.key === "loading" && "Здесь появятся заказы в процессе погрузки."}
-                      {stage.key === "loaded" && "Заказы, готовые к выезду со склада."}
                       {stage.key === "done" && `Нет завершённых отгрузок ${completedDays === 1 ? "за сегодня" : `за последние ${completedDays} дней`}.`}
                       {stage.key === "waiting" && "Новые подтверждённые заказы появятся здесь."}
                     </p>
@@ -949,7 +945,6 @@ function ShippingPageInner() {
   const { me } = useAuth();
   const canLoad = can(me, "shipping.load");
   const canArrive = can(me, "shipping.arrive");
-  const canShip = can(me, "shipping.ship");
   const canTrain = can(me, "train.load");
   const canEditStatus = can(me, "orders.edit");
   const canManage = can(me, "rbac.manage");
@@ -966,7 +961,7 @@ function ShippingPageInner() {
     .filter((order) => ACTIVE_STATUSES.includes(order.status) || order.status === "shipped")
     .sort((a, b) => a.id - b.id), [orders]);
   const historyOrderIds = useMemo(() => board
-    .filter((order) => order.status === "shipped")
+    .filter((order) => order.status === "loaded" || order.status === "shipped")
     .map((order) => order.id)
     .join(","), [board]);
   const historyUrl = canViewHistory && historyOrderIds
@@ -1074,18 +1069,38 @@ function ShippingPageInner() {
       if (canTrain) stages.push("done");
       return stages;
     }
-    if ((order.status === "arrived" || order.status === "loading") && canLoad) stages.push("loaded");
-    if (order.status === "loaded" && canShip) stages.push("done");
+    if ((order.status === "arrived" || order.status === "loading") && canLoad) stages.push("done");
     return stages;
-  }, [canArrive, canEditStatus, canLoad, canShip, canTrain]);
+  }, [canArrive, canEditStatus, canLoad, canTrain]);
 
-  const stopOrderAi = useCallback(async (order: Order) => {
-    const session = sessions?.find((item) => item.order_id === order.id && item.can_stop);
-    if (!session) return;
+  const stopOrderAi = useCallback(async (order: Order, completeOrder = false) => {
+    const session = sessions?.find((item) => item.order_id === order.id);
+    if (!session) return false;
     await api.delete(`/cameras/${session.camera}/ai/`, {
-      params: { order_id: order.id }, data: { order_id: order.id },
-    }).catch(() => {});
+      params: { order_id: order.id, complete_order: completeOrder ? 1 : 0 },
+      data: { order_id: order.id, complete_order: completeOrder },
+    });
+    return true;
   }, [sessions]);
+
+  const completeOrder = useCallback(async (order: Order) => {
+    // При активной AI-сессии один backend-вызов фиксирует финальный кадр/счёт,
+    // закрывает processor и сразу переводит заказ в `shipped`.
+    if (await stopOrderAi(order, true)) return;
+    if (order.transport_type === "train") {
+      await api.post(`/orders/${order.id}/train/`, { action: "finish" });
+      return;
+    }
+    if (order.status === "arrived") {
+      await api.post(`/orders/${order.id}/load/`, { bags: order.bags_loaded ?? 0 });
+    }
+    if (order.status === "arrived" || order.status === "loading") {
+      await api.post(`/orders/${order.id}/finish-loading/`, {});
+      return;
+    }
+    // Совместимость с единичными заказами, оставшимися в старом `loaded`.
+    if (order.status === "loaded") await api.post(`/orders/${order.id}/ship/`, {});
+  }, [stopOrderAi]);
 
   const executeMove = useCallback(async (order: Order, target: BoardStageKey, weight?: string) => {
     if (!allowedBoardStages(order).includes(target)) return;
@@ -1100,24 +1115,13 @@ function ShippingPageInner() {
         } else {
           await api.post(`/orders/${order.id}/arrive/`, { weigh_in_kg: weight || null });
         }
-      } else if (target === "loaded") {
-        if (order.status === "arrived") {
-          await api.post(`/orders/${order.id}/load/`, { bags: order.bags_loaded ?? 0 });
-        }
-        await api.post(`/orders/${order.id}/finish-loading/`, {});
-        await stopOrderAi(order);
       } else if (target === "done") {
-        if (order.transport_type === "train") {
-          await api.post(`/orders/${order.id}/train/`, { action: "finish" });
-          await stopOrderAi(order);
-        } else {
-          await api.post(`/orders/${order.id}/ship/`, {});
-        }
+        await completeOrder(order);
       }
       await Promise.all([reload(), reloadSessions(), reloadHistories()]);
     } catch (e) { setMoveError(apiError(e)); }
     finally { setMovingId(null); }
-  }, [allowedBoardStages, reload, reloadHistories, reloadSessions, stopOrderAi]);
+  }, [allowedBoardStages, completeOrder, reload, reloadHistories, reloadSessions, stopOrderAi]);
 
   const moveOrder = useCallback((order: Order, target: BoardStageKey) => {
     if (target === "waiting") {
@@ -1248,11 +1252,10 @@ function ShippingPageInner() {
                       )}
                       <Button className="h-14 rounded-xl text-base" disabled={busy}
                         onClick={() => act(async () => {
-                          await api.post(`/orders/${selected.id}/train/`, { action: "finish" });
-                          if (ai.running) await ai.stop().catch(() => {});
+                          await completeOrder(selected);
                           setSelectedId(null);
                         })}>
-                        <Check className="size-5" /> Завершить и отгрузить
+                        <Check className="size-5" /> Завершить отгрузку
                       </Button>
                     </>
                   ) : <p className="text-sm text-[var(--muted-foreground)]">Идёт загрузка поезда.</p>
@@ -1305,46 +1308,13 @@ function ShippingPageInner() {
                       )}
                       <Button className="h-14 rounded-xl text-base" disabled={busy}
                         onClick={() => act(async () => {
-                          if (selected.status === "arrived") {
-                            await api.post(`/orders/${selected.id}/load/`, { bags: selected.bags_loaded ?? 0 });
-                          }
-                          await api.post(`/orders/${selected.id}/finish-loading/`, {});
-                          // Погрузка закрыта — освобождаем GPU; сбой стопа не мешает выезду.
-                          if (ai.running) await ai.stop().catch(() => {});
+                          await completeOrder(selected);
+                          setSelectedId(null);
                         })}>
-                        <Check className="size-5" /> Погрузка завершена
+                        <Check className="size-5" /> Завершить отгрузку
                       </Button>
                     </>
                   ) : <p className="text-sm text-[var(--muted-foreground)]">Идёт погрузка.</p>
-                )}
-
-                {!isTrain && selected.status === "loaded" && (
-                  canShip ? (
-                    <>
-                      <div>
-                        <div className="text-base font-semibold">Готов к выезду</div>
-                        <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
-                          Проверьте машину и выпускайте.
-                        </p>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div className="rounded-xl border bg-[var(--card)] p-3">
-                          <div className="text-xs text-[var(--muted-foreground)]">Погружено</div>
-                          <div className="text-2xl font-bold tabular-nums">{selected.bags_loaded ?? 0} <span className="text-sm font-normal">меш.</span></div>
-                        </div>
-                        <div className="rounded-xl border bg-[var(--card)] p-3">
-                          <div className="text-xs text-[var(--muted-foreground)]">Вес на въезде</div>
-                          <div className="text-2xl font-bold tabular-nums">
-                            {selected.weigh_in_kg ? formatMoney(selected.weigh_in_kg) : "—"} <span className="text-sm font-normal">кг</span>
-                          </div>
-                        </div>
-                      </div>
-                      <Button className="h-14 rounded-xl text-base" disabled={busy}
-                        onClick={() => act(() => api.post(`/orders/${selected.id}/ship/`, {}))}>
-                        <LogOut className="size-5" /> Отгрузить — выезд
-                      </Button>
-                    </>
-                  ) : <p className="text-sm text-[var(--muted-foreground)]">Готов к выезду.</p>
                 )}
 
                 {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}

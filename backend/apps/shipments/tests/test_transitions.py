@@ -71,7 +71,7 @@ def test_finish_loading_requires_loading(boss, operator):
     record_count(o, 50, operator)
     finish_loading(o, operator)
     o.refresh_from_db()
-    assert o.status == "loaded"
+    assert o.status == "shipped"
 
 
 def test_shipment_requires_loaded(boss, operator):
@@ -81,7 +81,6 @@ def test_shipment_requires_loaded(boss, operator):
     with pytest.raises(ValidationError):  # still loading, not loaded
         record_shipment(o, operator)
     finish_loading(o, operator)
-    record_shipment(o, operator)
     o.refresh_from_db()
     assert o.status == "shipped"
     assert o.payment_status == "unpaid"

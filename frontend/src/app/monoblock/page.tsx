@@ -202,7 +202,9 @@ function SessionCard({
 
   async function stop() {
     try {
-      await ai.stop();
+      // Моноблок закрывает бизнес-операцию целиком: backend сначала сохраняет
+      // финальный счёт модели, затем переводит заказ в `shipped`.
+      await ai.stop(true);
     } catch {
       // ошибка уже показана через ai.error — карточку всё равно обновляем
     } finally {
@@ -270,7 +272,7 @@ function SessionCard({
               disabled={ai.busy}
               onClick={() => void stop()}
             >
-              <Square className="size-3.5 fill-current" /> Остановить отгрузку
+              <Square className="size-3.5 fill-current" /> Остановить и завершить
             </Button>
           ) : (
             <div className="flex items-center justify-center gap-2 rounded-xl bg-slate-50 px-3 py-2.5 text-[12px] text-slate-500">

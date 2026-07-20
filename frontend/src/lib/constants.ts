@@ -18,8 +18,8 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
   confirmed: "Ожидает загрузки",
   arrived: "Ожидает загрузки",
   loading: "Ожидает загрузки",
-  loaded: "Загружен",
-  shipped: "Загружен",
+  loaded: "Завершён",
+  shipped: "Завершён",
   rejected: "Отменён",
   cancelled: "Отменён",
 };

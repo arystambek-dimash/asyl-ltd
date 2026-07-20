@@ -27,7 +27,7 @@ export function useDashboardMetrics() {
 
   const list = useMemo(() => orders ?? [], [orders]);
   const queue = useMemo(
-    () => list.filter((o) => ["arrived", "loading", "loaded"].includes(o.status)),
+    () => list.filter((o) => ["arrived", "loading"].includes(o.status)),
     [list],
   );
   const totalBags = (stock ?? []).reduce((s, i) => s + i.bags, 0);

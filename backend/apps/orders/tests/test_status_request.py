@@ -70,7 +70,7 @@ def test_set_status_endpoint_operator_gets_202(auth_client, operator):
     assert r.status_code == 202
     assert r.data["applied"] is False
     assert r.data["request"]["to_status"] == "shipped"
-    assert r.data["request"]["to_status_label"] == "Загружен"
+    assert r.data["request"]["to_status_label"] == "Завершён"
 
 
 def test_set_status_endpoint_editor_applies(auth_client, manager):

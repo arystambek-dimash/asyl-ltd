@@ -42,7 +42,7 @@ def test_finish_loading_endpoint(boss):
     r = _client(boss).post(f"/api/orders/{o.id}/finish-loading/")
     assert r.status_code == 200
     o.refresh_from_db()
-    assert o.status == "loaded"
+    assert o.status == "shipped"
 
 
 def test_finish_loading_wrong_status_400(boss):

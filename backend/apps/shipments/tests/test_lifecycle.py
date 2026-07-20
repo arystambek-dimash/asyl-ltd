@@ -41,7 +41,6 @@ def test_full_flow_deducts_stock(boss, operator):
     record_arrival(o, Decimal("8000"), operator)
     record_count(o, 50, operator)
     finish_loading(o, operator)
-    record_shipment(o, operator)
     o.refresh_from_db()
     assert o.status == "shipped"
     assert o.payment_status == "unpaid"
@@ -56,6 +55,5 @@ def test_double_ship_rejected(boss, operator):
     record_arrival(o, Decimal("8000"), operator)
     record_count(o, 50, operator)
     finish_loading(o, operator)
-    record_shipment(o, operator)
     with pytest.raises(ValidationError):
         record_shipment(o, operator)

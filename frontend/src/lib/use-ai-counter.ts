@@ -104,11 +104,11 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
     [act, cam, orderId, orderParams],
   );
   const stop = useCallback(
-    () => act(() => api.delete<AiStatus>(`/cameras/${cam}/ai/`, {
-      ...orderParams(),
-      data: { order_id: orderId },
+    (completeOrder = false) => act(() => api.delete<AiStatus>(`/cameras/${cam}/ai/`, {
+      params: { order_id: orderId, complete_order: completeOrder ? 1 : 0 },
+      data: { order_id: orderId, complete_order: completeOrder },
     })),
-    [act, cam, orderId, orderParams],
+    [act, cam, orderId],
   );
   const reset = useCallback(
     () => act(() => api.post<AiStatus>(

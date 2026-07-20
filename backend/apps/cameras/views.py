@@ -13,7 +13,7 @@ from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm, IsStaff
 from apps.orders.models import Order
-from apps.shipments.services import begin_camera_loading
+from apps.shipments.services import begin_camera_loading, finish_ai_loading
 
 from . import ai, health, recordings, services, sessions
 from .models import AiCountingSession, MonoblockCameraSettings
@@ -458,6 +458,13 @@ class CameraAiView(APIView):
             # the GET snapshot before DELETE switches it to IDLE.
             final = ai.status(camera)
             sessions.commit_final(session, final)
+            raw_complete = request.data.get(
+                "complete_order", request.query_params.get("complete_order"),
+            )
+            complete_order = raw_complete is True or str(raw_complete).lower() in ("1", "true")
+            if complete_order:
+                total = final.get("total") if isinstance(final, dict) else None
+                finish_ai_loading(order, total, request.user)
             if final is not None:
                 ai.delete(camera)
             sessions.finish(session, request.user, final)
@@ -468,6 +475,8 @@ class CameraAiView(APIView):
                 "available": True,
                 "busy": False,
                 "owned_by_order": False,
+                **({"order_status": "shipped", "bags_loaded": total}
+                   if complete_order else {}),
             }
         return _ai_response(stop, request.user)
 

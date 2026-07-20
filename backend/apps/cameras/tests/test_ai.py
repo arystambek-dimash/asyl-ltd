@@ -10,8 +10,11 @@ from django.utils import timezone
 from apps.cameras import ai, recordings
 from apps.cameras.models import AiCountingSession, MonoblockCameraSettings
 from apps.cameras.views import RECORDING_TOKEN_SALT
+from apps.catalog.models import Product
 from apps.clients.models import Client
-from apps.orders.models import Order
+from apps.orders.models import Order, OrderItem
+from apps.warehouse.models import StockItem
+from apps.warehouse.services import receive_stock
 
 pytestmark = pytest.mark.django_db
 
@@ -271,6 +274,50 @@ def test_delete_returns_final_and_releases_slot(api_client, loader, loading_orde
     assert session.final_total == 42
     loading_order.refresh_from_db()
     assert loading_order.loading_camera == ""
+
+
+def test_monoblock_stop_saves_ai_total_and_completes_order(
+    api_client, loader, boss,
+):
+    product = Product.objects.create(
+        name="AI final", color="Blue", weight_kg="50", price="100.00",
+    )
+    receive_stock(product, 100, boss)
+    client = Client.objects.create(first_name="Final", last_name="Count", phone="20")
+    order = Order.objects.create(
+        client=client, status="confirmed", truck_number="01FINAL",
+    )
+    OrderItem.objects.create(order=order, product=product, quantity=50)
+    api_client.force_authenticate(loader)
+
+    with patch.object(ai, "_request", return_value=(200, RUNNING)):
+        started = api_client.post(
+            "/api/cameras/cam2/ai/", {"order_id": order.pk}, format="json",
+        )
+    assert started.status_code == 200
+
+    with patch.object(
+        ai, "_request", side_effect=[(200, RUNNING), (200, {"running": False})],
+    ):
+        completed = api_client.delete(
+            "/api/cameras/cam2/ai/?complete_order=1",
+            {"order_id": order.pk},
+            format="json",
+        )
+
+    assert completed.status_code == 200
+    assert completed.data["order_status"] == "shipped"
+    assert completed.data["bags_loaded"] == 42
+    order.refresh_from_db()
+    assert order.status == "shipped"
+    assert order.loading_camera == ""
+    assert order.payment_status == "unpaid"
+    assert order.shipment.bags_loaded == 42
+    assert order.shipment.shipped_at is not None
+    assert StockItem.objects.get(product=product).bags == 50
+    session = AiCountingSession.objects.get(order=order)
+    assert session.status == AiCountingSession.CLOSED
+    assert session.final_total == 42
 
 
 def test_delete_commits_final_snapshot_before_worker_is_idled(

@@ -298,8 +298,7 @@ function QueueBoard({ m }: { m: DashboardMetrics }) {
               className="group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-[var(--accent)]">
               <span className={cn(
                 "size-2 shrink-0 rounded-full",
-                o.status === "loading" ? "bg-[var(--warning)]" :
-                o.status === "loaded" ? "bg-[var(--success)]" : "bg-[var(--ring)]",
+                o.status === "loading" ? "bg-[var(--warning)]" : "bg-[var(--ring)]",
               )} />
               <span className="w-28 shrink-0 text-sm font-semibold tabular-nums">
                 {o.truck_number ? formatPlate(o.truck_number) : `#${o.id}`}

@@ -179,16 +179,61 @@ def record_count(order, bags, user):
 @transaction.atomic
 def finish_loading(order, user):
     order = _locked(order)
+    _require_transport(order, "truck")
     if order.status != "loading":
         raise ValidationError(
             {"detail": "Завершить можно только идущую загрузку", "code": "invalid_status"}
         )
     shipment = _require_shipment(order)
-    order.status = "loaded"
-    order.save(update_fields=["status"])
     log_event("loading_done", "Загрузка завершена", user=user, order=order,
               payload={"bags": shipment.bags_loaded})
-    return shipment
+    # Для оператора «отгружен» и «завершён» — один финальный этап. Не оставляем
+    # заказ в техническом `loaded`: сразу фиксируем отгрузку, время, долг и
+    # списание склада. `record_shipment` остаётся только для старых `loaded`.
+    return _do_ship(
+        order, shipment, user,
+        f"Машина {shipment.truck_number}: отгрузка завершена",
+    )
+
+
+@transaction.atomic
+def finish_ai_loading(order, bags: int, user):
+    """Сохранить финальный AI-счёт и завершить отгрузку одним DB-действием."""
+    if isinstance(bags, bool) or not isinstance(bags, int) or bags < 0:
+        raise ValidationError({
+            "detail": "AI-сервис вернул некорректное количество мешков",
+            "code": "invalid_ai_total",
+        })
+
+    order = _locked(order)
+    if order.status != "loading":
+        raise ValidationError({
+            "detail": "Завершить можно только идущую загрузку",
+            "code": "invalid_status",
+        })
+    shipment = _require_shipment(order)
+    shipment.bags_loaded = bags
+    shipment.save(update_fields=["bags_loaded"])
+    log_event(
+        "loading",
+        f"AI-подсчёт зафиксирован: {bags} мешков",
+        user=user,
+        order=order,
+        payload={"bags": bags, "source": "ai_final"},
+    )
+    log_event(
+        "loading_done",
+        "Отгрузка завершена по финальному AI-подсчёту",
+        user=user,
+        order=order,
+        payload={"bags": bags, "source": "ai_final"},
+    )
+    label = (
+        "Поезд: отгрузка завершена"
+        if order.transport_type == "train"
+        else f"Машина {shipment.truck_number}: отгрузка завершена"
+    )
+    return _do_ship(order, shipment, user, label)
 
 
 @transaction.atomic
@@ -245,7 +290,8 @@ def _do_ship(order, shipment, user, label):
     shipment.save()
     order.status = "shipped"
     order.payment_status = "unpaid"
-    order.save(update_fields=["status", "payment_status"])
+    order.loading_camera = ""
+    order.save(update_fields=["status", "payment_status", "loading_camera"])
     log_event("debt", f"Заказ отгружен в долг: {order.total_amount}", user=user, order=order,
               payload={"amount": str(order.total_amount), "intent": order.settlement_intent})
     bag_estimate = estimated_load_kg(order)
@@ -299,8 +345,6 @@ def finish_train_loading(order, user):
              "code": "invalid_status"}
         )
     shipment = _require_shipment(order)
-    order.status = "loaded"
-    order.save(update_fields=["status"])
     log_event("loading_done", "Поезд: загрузка завершена", user=user, order=order,
               payload={"bags": shipment.bags_loaded})
     return _do_ship(order, shipment, user, "Поезд отгружен")
