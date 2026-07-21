@@ -21,7 +21,7 @@ def test_store_debts_aggregates(boss):
     s = Store.objects.create(client=c, name="S1", payment_schedule_type="monthly", payment_days=[5])
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     o = Order.objects.create(client=c, store=s, status="shipped", payment_status="unpaid")
-    OrderItem.objects.create(order=o, product=p, quantity=3)  # 300
+    OrderItem.objects.create(order=o, product=p, quantity=3, unit_price="100.00")  # 300
 
     r = _api(boss).get("/api/stores/debts/")
     assert r.status_code == 200
@@ -36,7 +36,7 @@ def test_store_debt_detail_returns_orders(boss):
     s = Store.objects.create(client=c, name="S1", payment_schedule_type="none")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     o = Order.objects.create(client=c, store=s, status="shipped", payment_status="unpaid")
-    OrderItem.objects.create(order=o, product=p, quantity=2)  # 200
+    OrderItem.objects.create(order=o, product=p, quantity=2, unit_price="100.00")  # 200
 
     r = _api(boss).get(f"/api/stores/{s.id}/debt-detail/")
     assert r.status_code == 200

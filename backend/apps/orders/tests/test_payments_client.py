@@ -12,7 +12,8 @@ def order(db):
     c = Client.objects.create(first_name="A", last_name="B", phone="1")
     p = Product.objects.create(name="F", color="Red", weight_kg=Decimal("50"), price=Decimal("100"))
     o = Order.objects.create(client=c, status="shipped")
-    OrderItem.objects.create(order=o, product=p, quantity=2)  # total 200
+    OrderItem.objects.create(
+        order=o, product=p, quantity=2, unit_price=Decimal("100"))  # total 200
     return o
 
 

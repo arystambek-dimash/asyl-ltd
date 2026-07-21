@@ -13,7 +13,7 @@ class ProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = ["id", "name", "color", "color_label", "weight_kg",
-                  "price", "is_active", "ask_truck_weight",
+                  "is_active", "ask_truck_weight",
                   "label", "cv_class", "available_bags"]
 
     def get_available_bags(self, obj):

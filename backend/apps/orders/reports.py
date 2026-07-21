@@ -12,7 +12,7 @@
 """
 from decimal import Decimal
 
-from django.db.models import Count, DecimalField, F, Q, Sum
+from django.db.models import Count, DecimalField, F, Q, Sum, Value
 from django.db.models.functions import Coalesce, TruncDate
 
 from apps.common.money import money_string as _d
@@ -51,7 +51,8 @@ def _income_by_day(orders_qs, date_from, date_to):
 
 def _shipped_by_day(orders_qs, date_from, date_to):
     """Отгрузки по дням: сумма, мешки, заказы и сколько из этого ушло в долг."""
-    line = F("quantity") * Coalesce(F("unit_price"), F("product__price"))
+    line = F("quantity") * Coalesce(
+        F("unit_price"), Value(_ZERO), output_field=_MONEY)
     qs = (OrderItem.objects
           .filter(order__in=orders_qs.filter(status="shipped"))
           .annotate(day=TruncDate(Coalesce("order__shipment__shipped_at",

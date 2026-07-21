@@ -327,14 +327,14 @@ def _apply_prices(order: Order, prices: dict, user) -> None:
             continue
         price = _positive_money(
             raw,
-            detail=f"Укажите корректную цену для «{item.product}»",
+            detail=f"Укажите корректную цену для «{item.product_label}»",
             code="price_required",
         )
         item.unit_price = price
         item.save(update_fields=["unit_price"])
         # Цена заказа фиксируется всегда, а личный прайс меняет только сотрудник
         # с отдельным правом на закрепление цен.
-        if user.has_perm_code("clients.set_price"):
+        if user.has_perm_code("clients.set_price") and item.product_id is not None:
             ClientPrice.objects.update_or_create(
                 client=order.client, product=item.product,
                 defaults={"price": price, "updated_by": user})

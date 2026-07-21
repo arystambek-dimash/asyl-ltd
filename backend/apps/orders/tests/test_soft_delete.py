@@ -24,7 +24,8 @@ def _order(client, product, qty=2, status="shipped", payment_status="unpaid",
            paid=None, store=None):
     order = Order.objects.create(
         client=client, store=store, status=status, payment_status=payment_status)
-    OrderItem.objects.create(order=order, product=product, quantity=qty)
+    OrderItem.objects.create(
+        order=order, product=product, quantity=qty, unit_price="100.00")
     if paid is not None:
         Payment.objects.create(order=order, amount=paid, status="confirmed")
     return order

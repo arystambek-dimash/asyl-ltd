@@ -10,7 +10,11 @@ class Product(models.Model):
     name = models.CharField(max_length=100)
     color = models.CharField(max_length=10, choices=COLORS)
     weight_kg = models.DecimalField(max_digits=6, decimal_places=2, choices=WEIGHTS)
-    price = models.DecimalField(max_digits=12, decimal_places=2)
+    # Цена не является свойством товара: она закрепляется отдельно для каждого
+    # клиента в ClientPrice и фиксируется в OrderItem.unit_price при заказе.
+    # Поле временно оставлено nullable для совместимости со старыми миграциями.
+    price = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True)
     is_active = models.BooleanField(default=True)
     # Если стоит — при въезде машины с этим товаром пост спрашивает вес машины;
     # иначе вес не спрашивается (используется расчётный по мешкам).
@@ -25,7 +29,8 @@ class Product(models.Model):
         return f"{self.color}_{w}"
 
     def __str__(self):
-        return f"{self.name} · {dict(self.COLORS)[self.color]} {int(self.weight_kg)} кг"
+        color = dict(self.COLORS).get(self.color, self.color)
+        return f"{self.name} · {color} {int(self.weight_kg)} кг"
 
 
 class ClientPrice(models.Model):

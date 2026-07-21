@@ -19,5 +19,5 @@ def test_remaining_amount():
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     o = Order.objects.create(client=c)
-    OrderItem.objects.create(order=o, product=p, quantity=2)
+    OrderItem.objects.create(order=o, product=p, quantity=2, unit_price="100.00")
     assert o.remaining_amount == Decimal("200.00")

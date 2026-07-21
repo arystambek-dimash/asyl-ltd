@@ -24,7 +24,8 @@ def test_manager_creates_order_with_items(auth_client, manager):
     assert resp.status_code == 201
     order = Order.objects.get()
     assert order.status == "draft"
-    assert order.total_amount == 500
+    # До закрепления личной цены черновик не получает стоимость товара.
+    assert order.total_amount == 0
 
 
 def test_order_status_not_settable_via_create(auth_client, manager):

@@ -17,7 +17,7 @@ def _shipped_store_order():
     s = Store.objects.create(client=c, name="S",
                              payment_schedule_type="monthly", payment_days=[5])
     o = Order.objects.create(client=c, store=s, status="shipped")
-    OrderItem.objects.create(order=o, product=p, quantity=1)  # total 100
+    OrderItem.objects.create(order=o, product=p, quantity=1, unit_price="100.00")  # total 100
     return o, s
 
 

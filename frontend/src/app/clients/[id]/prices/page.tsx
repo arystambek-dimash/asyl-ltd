@@ -11,7 +11,7 @@ import { DataGate } from "@/components/ui/data-state";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
-import { formatDateTime, formatMoney } from "@/lib/utils";
+import { formatDateTime } from "@/lib/utils";
 import type { ClientPriceSheet } from "@/lib/types";
 import { ArrowLeft, CheckCircle2, Save, Search, Tags } from "lucide-react";
 
@@ -130,34 +130,19 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
         <CardContent className="p-0">
           <Table>
             <THead>
-              <TR><TH>Товар</TH><TH className="text-right">Базовая цена</TH>
-                <TH className="text-right">Личная цена клиента</TH><TH>Обновлено</TH></TR>
+              <TR><TH>Товар</TH><TH className="text-right">Цена клиента</TH><TH>Обновлено</TH></TR>
             </THead>
             <TBody>
               {filtered.map((row) => {
-                const personal = Number(values[row.product]);
-                const base = Number(row.base_price);
-                const difference = personal > 0 && base > 0
-                  ? Math.round(((personal - base) / base) * 100) : null;
                 return (
                   <TR key={row.product}>
                     <TD className="font-medium">{row.product_label}</TD>
-                    <TD className="text-right tabular-nums text-[var(--muted-foreground)]">
-                      {formatMoney(row.base_price)} ₸
-                    </TD>
                     <TD>
-                      <div className="ml-auto flex max-w-52 items-center gap-2">
+                      <div className="ml-auto max-w-52">
                         <Input type="number" min="0.01" step="0.01" inputMode="decimal"
                           className="text-right tabular-nums" placeholder="Не закреплена"
                           value={values[row.product] ?? ""}
                           onChange={(event) => setPrice(row.product, event.target.value)} />
-                        {difference !== null && (
-                          <span className={difference <= 0
-                            ? "w-14 text-right text-xs tabular-nums text-[var(--success)]"
-                            : "w-14 text-right text-xs tabular-nums text-[var(--warning)]"}>
-                            {difference > 0 ? "+" : ""}{difference}%
-                          </span>
-                        )}
                       </div>
                     </TD>
                     <TD className="text-xs text-[var(--muted-foreground)]">
@@ -168,7 +153,7 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
                 );
               })}
               {filtered.length === 0 && (
-                <TR><TD colSpan={4} className="py-12 text-center text-[var(--muted-foreground)]">
+                <TR><TD colSpan={3} className="py-12 text-center text-[var(--muted-foreground)]">
                   Товары не найдены
                 </TD></TR>
               )}

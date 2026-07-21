@@ -41,6 +41,7 @@ def test_authorized_employee_can_attach_and_remove_client_prices(
     by_product = {row["product"]: row for row in response.data["prices"]}
     assert by_product[first.id]["price"] == "875.50"
     assert by_product[second.id]["price"] == "920.00"
+    assert "base_price" not in by_product[first.id]
 
     removed = auth_client(user).put(
         f"/api/clients/{client.id}/prices/",

@@ -195,10 +195,12 @@ def build_invoice_pdf(order: Order) -> bytes:
              Paragraph("Наименование", center), Paragraph("Кол-во", center),
              Paragraph("Ед.", center), Paragraph("Цена", center), Paragraph("Сумма", center)]]
     for index, item in enumerate(order.items.all(), 1):
-        price = item.unit_price if item.unit_price is not None else item.product.price
+        # Подтверждение заказа требует договорную цену. Ноль защищает старые
+        # незавершённые записи без цены от падения генератора документа.
+        price = item.unit_price if item.unit_price is not None else Decimal("0")
         line_total = price * item.quantity
         rows.append([
-            Paragraph(str(index), center), "", Paragraph(str(item.product), small),
+            Paragraph(str(index), center), "", Paragraph(item.product_label, small),
             Paragraph(str(item.quantity), center), Paragraph("меш.", center),
             Paragraph(f"{price:,.2f}", right), Paragraph(f"{line_total:,.2f}", right),
         ])

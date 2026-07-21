@@ -35,7 +35,7 @@ def _require_transport(order, kind):
 def estimated_load_kg(order) -> Decimal:
     """Расчётный вес груза по мешкам: Σ(кол-во × вес фасовки)."""
     return sum(
-        (i.quantity * i.product.weight_kg for i in order.items.all()), Decimal("0")
+        (i.quantity * i.product_weight_kg for i in order.items.all()), Decimal("0")
     )
 
 
@@ -368,6 +368,11 @@ def rewind_loading(order, user, target_status="confirmed"):
 def _do_ship(order, shipment, user, label):
     """Списать со склада и зафиксировать отгрузку в долг. Общее для трака и поезда."""
     for item in order.items.select_related("product").all():
+        if item.product_id is None:
+            raise ValidationError({
+                "detail": f"Товар «{item.product_label}» удалён. Обновите состав заказа.",
+                "code": "product_deleted",
+            })
         deduct_stock(item.product, item.quantity, user, allow_negative=True)
     shipment.shipped_at = timezone.now()
     shipment.save()

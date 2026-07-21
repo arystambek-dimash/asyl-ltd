@@ -80,24 +80,19 @@ function pendingSum(order: Order): number {
   return (order.pending_payments ?? []).reduce((s, p) => s + Number(p.amount), 0);
 }
 
-/* ── Счёт по заказу: позиции, скидка от прайса, итог ────────────────────── */
+/* ── Счёт по заказу: зафиксированные клиентские цены ───────────────────── */
 function InvoiceTable({ order }: { order: Order }) {
   const lines = order.items.map((it) => {
-    const price = Number(it.price ?? it.base_price ?? 0);
-    const base = Number(it.base_price ?? it.price ?? 0);
+    const price = Number(it.price ?? 0);
     return {
       key: it.id ?? `${it.product}`,
       label: it.product_label ?? `Товар #${it.product}`,
       qty: it.quantity,
       price,
-      discount: Math.max(0, (base - price) * it.quantity),
       total: price * it.quantity,
-      listTotal: base * it.quantity,
     };
   });
-  const listSum = lines.reduce((s, l) => s + l.listTotal, 0);
   const toPay = Number(order.total_amount);
-  const discount = Math.max(0, listSum - toPay);
   return (
     <div>
       <Table>
@@ -106,7 +101,6 @@ function InvoiceTable({ order }: { order: Order }) {
             <TH>Товар</TH>
             <TH className="text-right">Количество</TH>
             <TH className="text-right">Цена за единицу, ₸</TH>
-            <TH className="text-right">Скидка</TH>
             <TH className="text-right">Итого</TH>
           </TR>
         </THead>
@@ -116,25 +110,12 @@ function InvoiceTable({ order }: { order: Order }) {
               <TD className="font-medium">{l.label}</TD>
               <TD className="text-right tabular-nums">{l.qty}</TD>
               <TD className="text-right tabular-nums">{money(l.price)}</TD>
-              <TD className="text-right tabular-nums">
-                {l.discount > 0 ? money(l.discount) : <span className="text-[var(--muted-foreground)]">—</span>}
-              </TD>
               <TD className="text-right tabular-nums font-medium">{money(l.total)}</TD>
             </TR>
           ))}
         </TBody>
       </Table>
       <div className="ml-auto mt-3 flex max-w-xs flex-col gap-1.5 border-t pt-3 text-sm">
-        <div className="flex justify-between">
-          <span className="text-[var(--muted-foreground)]">Сумма</span>
-          <span className="tabular-nums">{money(listSum)}</span>
-        </div>
-        {discount > 0 && (
-          <div className="flex justify-between">
-            <span className="text-[var(--muted-foreground)]">Скидка</span>
-            <span className="tabular-nums text-[var(--destructive)]">−{money(discount)}</span>
-          </div>
-        )}
         <div className="flex justify-between text-base font-semibold">
           <span>К оплате</span>
           <span className="tabular-nums">{money(toPay)}</span>

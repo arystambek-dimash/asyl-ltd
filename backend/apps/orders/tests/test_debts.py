@@ -22,7 +22,7 @@ def _shipped_order(intent="debt"):
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
     o = Order.objects.create(client=c, status="shipped", payment_status="unpaid",
                              settlement_intent=intent)
-    OrderItem.objects.create(order=o, product=p, quantity=2)  # total 200
+    OrderItem.objects.create(order=o, product=p, quantity=2, unit_price="100.00")  # total 200
     return o
 
 

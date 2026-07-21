@@ -90,10 +90,10 @@ class Order(models.Model):
 
     @property
     def total_amount(self) -> Decimal:
-        # Цена за мешок — зафиксированная договорная (unit_price); пока не задана,
-        # используем базовую цену товара (для черновиков и обратной совместимости).
+        # Единственный источник суммы — договорная цена, зафиксированная в заказе.
+        # У товара общей цены нет; неподтверждённая позиция пока стоит 0.
         return sum(
-            (i.quantity * (i.unit_price if i.unit_price is not None else i.product.price)
+            (i.quantity * (i.unit_price if i.unit_price is not None else Decimal("0"))
              for i in self.items.all()),
             Decimal("0"),
         )
@@ -121,11 +121,55 @@ class Order(models.Model):
 
 class OrderItem(models.Model):
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="items")
-    product = models.ForeignKey("catalog.Product", on_delete=models.PROTECT)
+    # История заказа живёт дольше номенклатуры. При физическом удалении товара
+    # связь обнуляется, а снимок ниже продолжает описывать отгруженную позицию.
+    product = models.ForeignKey(
+        "catalog.Product", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="order_items",
+    )
+    product_label_snapshot = models.CharField(max_length=255, blank=True, default="")
+    product_cv_class_snapshot = models.CharField(max_length=32, blank=True, default="")
+    product_weight_kg_snapshot = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True)
+    product_ask_truck_weight_snapshot = models.BooleanField(default=False)
     quantity = models.PositiveIntegerField()
     # Договорная цена за мешок, зафиксированная при подтверждении заказа.
     unit_price = models.DecimalField(
         max_digits=12, decimal_places=2, null=True, blank=True)
+
+    @property
+    def product_label(self):
+        if self.product_label_snapshot:
+            return self.product_label_snapshot
+        return str(self.product) if self.product_id else "Удалённый товар"
+
+    @property
+    def product_weight_kg(self):
+        if self.product_weight_kg_snapshot is not None:
+            return self.product_weight_kg_snapshot
+        return self.product.weight_kg if self.product_id else Decimal("0")
+
+    @property
+    def product_cv_class(self):
+        if self.product_cv_class_snapshot:
+            return self.product_cv_class_snapshot
+        return self.product.cv_class if self.product_id else ""
+
+    @property
+    def product_ask_truck_weight(self):
+        if self.product_label_snapshot:
+            return self.product_ask_truck_weight_snapshot
+        return self.product.ask_truck_weight if self.product_id else False
+
+    def save(self, *args, **kwargs):
+        # Заполняем снимок один раз: последующее переименование/удаление товара
+        # не переписывает исторический заказ.
+        if self.product_id and not self.product_label_snapshot:
+            self.product_label_snapshot = str(self.product)
+            self.product_cv_class_snapshot = self.product.cv_class
+            self.product_weight_kg_snapshot = self.product.weight_kg
+            self.product_ask_truck_weight_snapshot = self.product.ask_truck_weight
+        super().save(*args, **kwargs)
 
 
 class Payment(models.Model):

@@ -49,7 +49,6 @@ import {
   Printer,
   SlidersHorizontal,
   Store as StoreIcon,
-  TrendingUp,
   Truck,
   UserRound,
   WalletCards,
@@ -128,11 +127,6 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const hasShipment = order.weigh_in_kg != null;
   const itemsWeight = order.items.reduce((s, it) => s + Number(it.quantity) * Number(it.weight_kg ?? 0), 0);
-  const baseTotal = order.items.reduce(
-    (s, it) => s + Number(it.quantity) * Number(it.base_price ?? it.price ?? 0), 0
-  );
-  const margin = Math.max(0, total - baseTotal);
-  const marginPercent = total > 0 ? Math.round((margin / total) * 100) : 0;
 
   const isNew = order.status === "draft" || order.status === "pending";
   // Позиции и цены редактируются до начала загрузки (включая «ожидает загрузки»).
@@ -224,7 +218,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
 
       <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="flex min-w-0 flex-col gap-4">
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <Card className="flex min-h-24 items-center gap-3 p-4">
               <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[var(--success)]/10 text-[var(--success)]"><Banknote /></span>
               <div className="min-w-0"><div className="text-xs text-[var(--muted-foreground)]">Сумма заказа</div><div className="mt-1 truncate font-semibold tabular-nums">{formatMoney(order.total_amount)} ₸</div></div>
@@ -236,10 +230,6 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             <Card className="flex min-h-24 items-center gap-3 p-4">
               <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[var(--ring)]/10 text-[var(--ring)]"><CreditCard /></span>
               <div className="min-w-0"><div className="text-xs text-[var(--muted-foreground)]">Оплачено</div><div className="mt-1 truncate font-semibold tabular-nums">{formatMoney(order.paid_total)} ₸</div></div>
-            </Card>
-            <Card className="flex min-h-24 items-center gap-3 p-4">
-              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-violet-500/10 text-violet-600"><TrendingUp /></span>
-              <div className="min-w-0"><div className="text-xs text-[var(--muted-foreground)]">Маржа</div><div className="mt-1 flex items-center gap-1.5 font-semibold tabular-nums"><span className="truncate">{formatMoney(String(margin))} ₸</span>{marginPercent > 0 && <Badge tone="success">{marginPercent}%</Badge>}</div></div>
             </Card>
           </div>
 

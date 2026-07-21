@@ -19,8 +19,7 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { api, apiError } from "@/lib/api";
-import { formatMoney } from "@/lib/utils";
-import { Plus, Check, X, Pencil, Archive, ArchiveRestore } from "lucide-react";
+import { Plus, Check, Pencil, Archive, ArchiveRestore } from "lucide-react";
 import type { Product } from "@/lib/types";
 
 function ProductsPageInner() {
@@ -36,13 +35,9 @@ function ProductsPageInner() {
   const [name, setName] = useState("");
   const [color, setColor] = useState("Red");
   const [weight, setWeight] = useState("50");
-  const [price, setPrice] = useState("");
   const [askWeight, setAskWeight] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [editId, setEditId] = useState<number | null>(null);
-  const [editPrice, setEditPrice] = useState("");
-  const [priceError, setPriceError] = useState("");
   const [arcItem, setArcItem] = useState<Product | null>(null);
   const [arcError, setArcError] = useState("");
   const [arcBusy, setArcBusy] = useState(false);
@@ -50,12 +45,12 @@ function ProductsPageInner() {
   const [restoreBusyId, setRestoreBusyId] = useState<number | null>(null);
 
   function openNew() {
-    setEditing(null); setName(""); setColor("Red"); setWeight("50"); setPrice("");
+    setEditing(null); setName(""); setColor("Red"); setWeight("50");
     setAskWeight(false); setError(""); setOpen(true);
   }
   function openEdit(p: Product) {
     setEditing(p); setName(p.name); setColor(p.color);
-    setWeight(String(Number(p.weight_kg))); setPrice(p.price);
+    setWeight(String(Number(p.weight_kg)));
     setAskWeight(p.ask_truck_weight ?? false);
     setError(""); setOpen(true);
   }
@@ -63,7 +58,7 @@ function ProductsPageInner() {
   async function save(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError("");
     try {
-      const body = { name, color, weight_kg: weight, price, ask_truck_weight: askWeight };
+      const body = { name, color, weight_kg: weight, ask_truck_weight: askWeight };
       if (editing) await api.patch(`/products/${editing.id}/`, body);
       else await api.post("/products/", body);
       setOpen(false); reload();
@@ -86,13 +81,6 @@ function ProductsPageInner() {
     finally { setRestoreBusyId(null); }
   }
 
-  async function savePrice(p: Product) {
-    // Свой стейт ошибки: `error` рисуется только внутри модалки товара,
-    // которая при инлайн-правке цены закрыта.
-    try { await api.patch(`/products/${p.id}/`, { price: editPrice }); setEditId(null); setPriceError(""); reload(); }
-    catch (e) { setPriceError(apiError(e)); }
-  }
-
   const [sortKey, setSortKey] = useState("name");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const list = products ?? [];
@@ -102,14 +90,12 @@ function ProductsPageInner() {
     else { setSortKey(k); setSortDir("asc"); }
   };
   const sorted = [...list].sort((a, b) => {
-    let cmp: number;
-    if (sortKey === "price") cmp = Number(a.price) - Number(b.price);
-    else cmp = a.name.localeCompare(b.name, "ru");
+    const cmp = a.name.localeCompare(b.name, "ru");
     return sortDir === "asc" ? cmp : -cmp;
   });
 
   return (
-    <AppShell title="Товары" section="Работа" description="Товары: сорт, цвет (тип) и фасовка. Управляйте ценами и архивом."
+    <AppShell title="Товары" section="Работа" description="Номенклатура: сорт, цвет и фасовка. Цены закрепляются отдельно в прайс-листе каждого клиента."
       tabs={
         <Tabs active={tab} onChange={(k) => setTab(k as "active" | "archive")}
           tabs={[
@@ -141,7 +127,7 @@ function ProductsPageInner() {
             )}
             <Table>
               <THead><TR>
-                <TH>Название</TH><TH>Цвет</TH><TH>Фасовка</TH><TH>Цена</TH><TH></TH>
+                <TH>Название</TH><TH>Цвет</TH><TH>Фасовка</TH><TH></TH>
               </TR></THead>
               <TBody>
                 {archiveList.map((p) => (
@@ -149,7 +135,6 @@ function ProductsPageInner() {
                     <TD className="font-medium">{p.name}</TD>
                     <TD>{p.color_label}</TD>
                     <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
-                    <TD className="tabular-nums">{formatMoney(p.price)} ₸</TD>
                     <TD>
                       <div className="flex items-center justify-end gap-1">
                         <Badge tone="muted">В архиве</Badge>
@@ -165,7 +150,7 @@ function ProductsPageInner() {
                   </TR>
                 ))}
                 {archiveList.length === 0 && (
-                  <TR><TD colSpan={5} className="py-4 text-center text-[var(--muted-foreground)]">
+                  <TR><TD colSpan={4} className="py-4 text-center text-[var(--muted-foreground)]">
                     Архив пуст.</TD></TR>
                 )}
               </TBody>
@@ -175,17 +160,11 @@ function ProductsPageInner() {
       ) : (
         <Card>
           <CardContent className="pt-6">
-            {priceError && (
-              <p className="mb-3 rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
-                {priceError}
-              </p>
-            )}
             <Table>
               <THead><TR>
                 <SortableHeader label="Название" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
                 <TH>Цвет</TH>
                 <TH>Фасовка</TH>
-                <SortableHeader label="Цена" sortKey="price" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
                 <TH></TH>
               </TR></THead>
               <TBody>
@@ -194,23 +173,6 @@ function ProductsPageInner() {
                     <TD className="font-medium">{p.name}</TD>
                     <TD>{p.color_label}</TD>
                     <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
-                    <TD className="tabular-nums">
-                      {editId === p.id ? (
-                        <div className="flex items-center gap-2">
-                          <Input type="number" step="0.01" className="h-8 w-32"
-                            value={editPrice} onChange={(e) => setEditPrice(e.target.value)} />
-                          <Button size="sm" onClick={() => savePrice(p)}><Check className="size-4" /></Button>
-                          <Button size="sm" variant="ghost" onClick={() => setEditId(null)}><X className="size-4" /></Button>
-                        </div>
-                      ) : canEdit ? (
-                        <button className="hover:underline"
-                          onClick={() => { setEditId(p.id); setEditPrice(p.price); }}>
-                          {formatMoney(p.price)} ₸
-                        </button>
-                      ) : (
-                        <>{formatMoney(p.price)} ₸</>
-                      )}
-                    </TD>
                     <TD>
                       <div className="flex items-center justify-end gap-1">
                         {canEdit && (
@@ -230,7 +192,7 @@ function ProductsPageInner() {
                   </TR>
                 ))}
                 {sorted.length === 0 && (
-                  <TR><TD colSpan={5} className="py-4 text-center text-[var(--muted-foreground)]">
+                  <TR><TD colSpan={4} className="py-4 text-center text-[var(--muted-foreground)]">
                     Товаров пока нет.</TD></TR>
                 )}
               </TBody>
@@ -270,10 +232,6 @@ function ProductsPageInner() {
               </Select>
             </Field>
           </div>
-          <Field label="Цена за мешок, ₸">
-            <Input type="number" step="0.01" value={price}
-              onChange={(e) => setPrice(e.target.value)} required />
-          </Field>
           <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border p-3">
             <input type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]"
               checked={askWeight} onChange={(e) => setAskWeight(e.target.checked)} />

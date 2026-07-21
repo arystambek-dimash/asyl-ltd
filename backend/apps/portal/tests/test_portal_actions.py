@@ -16,7 +16,7 @@ def client_and_order(db, make_user):
     p = Product.objects.create(name="F", color="Red", weight_kg=Decimal("50"), price=Decimal("100"))
     StockItem.objects.create(product=p, bags=500)
     o = Order.objects.create(client=c, status="confirmed")
-    OrderItem.objects.create(order=o, product=p, quantity=1)
+    OrderItem.objects.create(order=o, product=p, quantity=1, unit_price=Decimal("100"))
     return user, o
 
 

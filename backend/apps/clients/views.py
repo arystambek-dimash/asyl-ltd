@@ -117,7 +117,6 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             {
                 "product": product.id,
                 "product_label": str(product),
-                "base_price": money_string(product.price),
                 "price": money_string(prices[product.id].price)
                 if product.id in prices else None,
                 "updated_at": prices[product.id].updated_at

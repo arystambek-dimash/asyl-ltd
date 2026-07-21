@@ -11,7 +11,7 @@ def _order(status="confirmed", price="100.00", qty=5):
     prod = Product.objects.create(name="Премиум", color="Red", weight_kg="50", price=price)
     c = Client.objects.create(first_name="L", last_name="К", phone="x")
     o = Order.objects.create(client=c, status=status)
-    OrderItem.objects.create(order=o, product=prod, quantity=qty)
+    OrderItem.objects.create(order=o, product=prod, quantity=qty, unit_price=price)
     return o
 
 

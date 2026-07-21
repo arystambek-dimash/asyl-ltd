@@ -19,7 +19,7 @@ def _fully_paid_but_stale():
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
     o = Order.objects.create(client=c, status="shipped", payment_status="unpaid")
-    OrderItem.objects.create(order=o, product=p, quantity=2)  # total 200
+    OrderItem.objects.create(order=o, product=p, quantity=2, unit_price="100.00")  # total 200
     Payment.objects.create(order=o, amount="200", method="cash", status="confirmed")
     return o
 

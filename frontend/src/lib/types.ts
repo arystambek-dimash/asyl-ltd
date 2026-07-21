@@ -10,14 +10,13 @@ export interface Me {
 
 export interface Product {
   id: number; name: string; color: "Red" | "Green" | "Blue"; color_label: string;
-  weight_kg: string; price: string; is_active: boolean; label: string; cv_class: string;
+  weight_kg: string; is_active: boolean; label: string; cv_class: string;
   available_bags?: number;
   ask_truck_weight?: boolean;
 }
 export interface ClientPriceRow {
   product: number;
   product_label: string;
-  base_price: string;
   price: string | null;
   updated_at: string | null;
   updated_by_name: string | null;
@@ -64,7 +63,7 @@ export interface Store {
 export interface Notification {
   id: number; text: string; is_read: boolean; created_at: string;
 }
-export interface OrderItem { id?: number; product: number; product_label?: string; cv_class?: string; quantity: number; price?: string; base_price?: string; unit_price?: string | null; client_price?: string | null; weight_kg?: string; ask_truck_weight?: boolean; }
+export interface OrderItem { id?: number; product: number | null; product_label?: string; cv_class?: string; quantity: number; price?: string | null; unit_price?: string | null; client_price?: string | null; weight_kg?: string | null; ask_truck_weight?: boolean; }
 export interface StatusChangeRequest {
   id: number; order: number; to_status: string; to_status_label?: string;
   status: string; requested_by?: number | null; requested_by_name?: string | null;

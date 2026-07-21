@@ -31,13 +31,16 @@ class CatalogProductSerializer(serializers.ModelSerializer):
 
 class PortalOrderItemSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(read_only=True)
-    product_label = serializers.CharField(source="product.__str__", read_only=True)
+    product_label = serializers.CharField(read_only=True)
     # PositiveIntegerField пропускает 0 — заказ из «нулевых» позиций бессмыслен.
     quantity = serializers.IntegerField(min_value=1)
 
     class Meta:
         model = OrderItem
         fields = ["id", "product", "product_label", "quantity"]
+        extra_kwargs = {
+            "product": {"required": True, "allow_null": False},
+        }
 
 
 class PortalOrderSerializer(serializers.ModelSerializer):

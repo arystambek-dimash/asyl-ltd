@@ -11,10 +11,12 @@ def _make_product(name="Премиум", color="Red", weight="50", price="100.00
 def test_manager_creates_product(auth_client, manager):
     resp = auth_client(manager).post(
         "/api/products/",
-        {"name": "Премиум", "color": "Red", "weight_kg": "50", "price": "25000"},
+        {"name": "Премиум", "color": "Red", "weight_kg": "50"},
     )
     assert resp.status_code == 201
-    assert Product.objects.filter(name="Премиум", color="Red").exists()
+    product = Product.objects.get(name="Премиум", color="Red")
+    assert product.price is None
+    assert "price" not in resp.data
 
 
 def test_operator_cannot_create_product(auth_client, operator):
@@ -39,3 +41,4 @@ def test_staff_can_list_products(auth_client, manager):
     assert prod.id in rows
     assert rows[prod.id]["color_label"] == "Красный"
     assert rows[prod.id]["cv_class"] == "Red_50"
+    assert "price" not in rows[prod.id]

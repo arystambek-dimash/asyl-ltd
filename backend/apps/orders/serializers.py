@@ -7,39 +7,47 @@ from .statuses import public_status_label
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
-    product_label = serializers.CharField(source="product.__str__", read_only=True)
-    cv_class = serializers.CharField(source="product.cv_class", read_only=True)
+    product_label = serializers.CharField(read_only=True)
+    cv_class = serializers.SerializerMethodField()
     # PositiveIntegerField пропускает 0 — заказ из «нулевых» позиций бессмыслен.
     quantity = serializers.IntegerField(min_value=1)
-    # base_price — справочная цена товара; price — фактическая (договорная при подтверждении).
-    base_price = serializers.DecimalField(source="product.price", max_digits=12,
-                                          decimal_places=2, read_only=True)
     unit_price = serializers.DecimalField(max_digits=12, decimal_places=2,
                                           read_only=True, allow_null=True)
     price = serializers.SerializerMethodField()
     client_price = serializers.SerializerMethodField()
-    weight_kg = serializers.DecimalField(source="product.weight_kg", max_digits=8,
-                                         decimal_places=2, read_only=True)
+    weight_kg = serializers.SerializerMethodField()
     # Нужно ли спрашивать вес машины на посту для этого товара.
-    ask_truck_weight = serializers.BooleanField(source="product.ask_truck_weight",
-                                                read_only=True)
+    ask_truck_weight = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
         fields = ["id", "product", "product_label", "cv_class", "quantity",
-                  "price", "base_price", "unit_price", "client_price", "weight_kg",
+                  "price", "unit_price", "client_price", "weight_kg",
                   "ask_truck_weight"]
+        extra_kwargs = {
+            "product": {"required": True, "allow_null": False},
+        }
+
+    def get_cv_class(self, obj):
+        return obj.product_cv_class
+
+    def get_weight_kg(self, obj):
+        return str(obj.product_weight_kg)
+
+    def get_ask_truck_weight(self, obj):
+        return obj.product_ask_truck_weight
 
     def get_price(self, obj):
-        # Фактическая цена за мешок: зафиксированная договорная или базовая.
-        p = obj.unit_price if obj.unit_price is not None else obj.product.price
-        return str(p)
+        # До фиксации личной цены у позиции намеренно нет стоимости.
+        return str(obj.unit_price) if obj.unit_price is not None else None
 
     def get_client_price(self, obj):
         # Подсказка для предзаполнения: текущая цена клиента на этот товар.
         # Нужна только пока цена не зафиксирована; прайс клиента грузим один раз
         # на запрос (кэш в context), а не отдельным запросом на каждую позицию.
         if obj.unit_price is not None:
+            return None
+        if obj.product_id is None:
             return None
         cache = self.context.setdefault("_client_prices", {})
         client = obj.order.client
@@ -229,13 +237,13 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         s = self._shipment(obj)
         bags = s.bags_loaded if s else 0
         first = self._first_item(obj)
-        per = first.product.weight_kg if first else Decimal("0")
+        per = first.product_weight_kg if first else Decimal("0")
         return str(bags * per)
 
     def get_bag_weight_kg(self, obj):
         from decimal import Decimal
         first = self._first_item(obj)
-        per = first.product.weight_kg if first else Decimal("0")
+        per = first.product_weight_kg if first else Decimal("0")
         return str(per)
 
     def get_debt_override_by_name(self, obj):

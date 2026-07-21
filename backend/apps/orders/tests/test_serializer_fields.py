@@ -13,7 +13,7 @@ def _order(client, qty=200, paid=None):
     prod, _ = Product.objects.get_or_create(
         name="Премиум", color="Red", weight_kg="50", defaults={"price": "100"})
     o = Order.objects.create(client=client, status="draft")
-    OrderItem.objects.create(order=o, product=prod, quantity=qty)
+    OrderItem.objects.create(order=o, product=prod, quantity=qty, unit_price="100.00")
     if paid is not None:
         # Учтённые деньги — оплата, прошедшая всю цепочку (подтверждена кассиром).
         Payment.objects.create(order=o, amount=paid, status="confirmed")
