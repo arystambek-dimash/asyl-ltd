@@ -219,6 +219,19 @@ export interface AlwaysOnCameraSettings {
   detail: string;
   updated_at: string | null;
 }
+export interface AlwaysOnDailyCameraAnalytics {
+  camera: string;
+  day: string;
+  model_total: number;
+  adjustment: number;
+  total: number;
+  updated_at: string | null;
+}
+export interface AlwaysOnDailyAnalytics {
+  day: string;
+  total: number;
+  cameras: AlwaysOnDailyCameraAnalytics[];
+}
 export interface Permission { id: number; code: string; section: string; action: string; label: string; }
 export interface Role {
   id: number; name: string; description: string; is_system: boolean;

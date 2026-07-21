@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from . import ai
+from . import ai, analytics
 from .models import MonoblockCameraSettings
 
 
@@ -11,5 +11,6 @@ def reconcile() -> dict:
     current_sources = current.get("cameras")
     current_source = current.get("source", "sub")
     if sorted(current_sources or []) != desired or current_source != "sub":
-        return ai.configure_always_on(desired, "sub")
+        current = ai.configure_always_on(desired, "sub")
+    analytics.record_snapshot(current)
     return current

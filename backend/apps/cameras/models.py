@@ -115,6 +115,38 @@ class MonoblockCameraSettings(models.Model):
         ]
 
 
+class AlwaysOnCounterCursor(models.Model):
+    """Последний сырой счётчик агента для вычисления реального прироста."""
+
+    camera = models.CharField(max_length=32, unique=True)
+    last_total = models.PositiveIntegerField(default=0)
+    last_mode = models.CharField(max_length=16, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class AlwaysOnDailyAnalytics(models.Model):
+    """Накопленный 24/7-счёт за день и аудируемая ручная поправка."""
+
+    camera = models.CharField(max_length=32)
+    day = models.DateField(db_index=True)
+    model_total = models.PositiveIntegerField(default=0)
+    adjustment = models.IntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["camera"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["camera", "day"],
+                name="cameras_one_always_on_total_per_day",
+            ),
+        ]
+
+    @property
+    def total(self) -> int:
+        return max(0, self.model_total + self.adjustment)
+
+
 class CameraHealthState(models.Model):
     """Last durable result of the end-to-end camera monitor.
 

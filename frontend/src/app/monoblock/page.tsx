@@ -3,10 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Camera,
+  CalendarDays,
   Cpu,
   Check,
   Clock3,
   LockKeyhole,
+  LoaderCircle,
+  Minus,
   PackageCheck,
   Radio,
   RefreshCw,
@@ -23,12 +26,16 @@ import { RequirePerm } from "@/components/require-perm";
 import { ShipmentLauncher } from "@/components/shipping/shipment-launcher";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/data-state";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import type {
   AiCountingSession,
   AlwaysOnCameraSettings,
+  AlwaysOnDailyAnalytics,
+  AlwaysOnDailyCameraAnalytics,
   AlwaysOnProcessorStatus,
   MonoblockCameraSettings,
   Order,
@@ -335,22 +342,35 @@ function AlwaysOnCard({
   processor,
   camera,
   detail,
+  daily,
+  onAnalyticsChanged,
 }: {
   processor: AlwaysOnProcessorStatus;
   camera?: CameraFeed & { src: string };
   detail?: string;
+  daily?: AlwaysOnDailyCameraAnalytics;
+  onAnalyticsChanged: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+  const [correctionOpen, setCorrectionOpen] = useState(false);
   const [streamOnline, setStreamOnline] = useState(false);
   const [liveProcessor, setLiveProcessor] = useState(processor);
+  const [liveDaily, setLiveDaily] = useState<AlwaysOnDailyCameraAnalytics | undefined>(daily);
   const [liveDetail, setLiveDetail] = useState(detail || "");
+  const [correctionAmount, setCorrectionAmount] = useState("");
+  const [correctionReason, setCorrectionReason] = useState("");
+  const [correctionError, setCorrectionError] = useState("");
+  const [correcting, setCorrecting] = useState(false);
   const current = open ? liveProcessor : processor;
+  const currentDaily = open ? liveDaily : daily;
+  const todayTotal = currentDaily?.total ?? 0;
   const inSession = current.mode === "session";
 
   useEffect(() => {
     setLiveProcessor(processor);
+    setLiveDaily(daily);
     setLiveDetail(detail || "");
-  }, [detail, processor]);
+  }, [daily, detail, processor]);
 
   useEffect(() => {
     if (!open) return;
@@ -358,11 +378,15 @@ function AlwaysOnCard({
     let timer: ReturnType<typeof setTimeout> | null = null;
     const refresh = async () => {
       try {
-        const response = await api.get<AlwaysOnCameraSettings>("/cameras/always-on-settings/");
+        const [settingsResponse, analyticsResponse] = await Promise.all([
+          api.get<AlwaysOnCameraSettings>("/cameras/always-on-settings/"),
+          api.get<AlwaysOnDailyAnalytics>("/cameras/always-on-analytics/"),
+        ]);
         if (disposed) return;
-        const next = response.data.processors.find((item) => item.cam === processor.cam);
+        const next = settingsResponse.data.processors.find((item) => item.cam === processor.cam);
         if (next) setLiveProcessor(next);
-        setLiveDetail(response.data.detail || "");
+        setLiveDaily(analyticsResponse.data.cameras.find((item) => item.camera === processor.cam));
+        setLiveDetail(settingsResponse.data.detail || "");
       } catch (cause) {
         if (!disposed) setLiveDetail(apiError(cause));
       } finally {
@@ -386,6 +410,31 @@ function AlwaysOnCard({
     setStreamOnline(false);
   }
 
+  function showCorrection() {
+    setCorrectionAmount("");
+    setCorrectionReason("");
+    setCorrectionError("");
+    setCorrectionOpen(true);
+  }
+
+  async function subtractCount() {
+    setCorrecting(true);
+    setCorrectionError("");
+    try {
+      const response = await api.post<AlwaysOnDailyCameraAnalytics>(
+        `/cameras/always-on-analytics/${processor.cam}/subtract/`,
+        { amount: Number(correctionAmount), reason: correctionReason.trim() },
+      );
+      setLiveDaily(response.data);
+      await onAnalyticsChanged();
+      setCorrectionOpen(false);
+    } catch (cause) {
+      setCorrectionError(apiError(cause));
+    } finally {
+      setCorrecting(false);
+    }
+  }
+
   return (
     <>
       <button type="button" onClick={showStream}
@@ -399,7 +448,10 @@ function AlwaysOnCard({
           <span className="min-w-0 flex-1">
             <span className="flex items-center justify-between gap-2">
               <span className="truncate text-sm font-bold text-slate-800">{camera?.zone || processor.cam}</span>
-              <span className="text-2xl font-black tabular-nums tracking-tight text-slate-900">{current.total ?? 0}</span>
+              <span className="text-right">
+                <span className="block text-2xl font-black tabular-nums tracking-tight text-slate-900">{todayTotal}</span>
+                <span className="block text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-400">сегодня</span>
+              </span>
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
               <span className="flex items-center gap-1.5">
@@ -438,11 +490,17 @@ function AlwaysOnCard({
 
           <aside className="flex flex-col justify-between border-t border-white/10 bg-slate-900 p-5 text-white lg:border-l lg:border-t-0">
             <div>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/45">Посчитано моделью</div>
-              <div className="mt-2 text-7xl font-black tabular-nums tracking-tight">{current.total ?? 0}</div>
-              <div className="mt-1 text-sm text-white/45">мешков в текущем цикле</div>
+              <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/45">
+                <CalendarDays className="size-3.5" /> Реальный итог за сегодня
+              </div>
+              <div className="mt-2 text-7xl font-black tabular-nums tracking-tight">{todayTotal}</div>
+              <div className="mt-1 text-sm text-white/45">мешков · накоплено CRM</div>
 
               <div className="mt-7 space-y-2.5 text-sm">
+                <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
+                  <span className="text-white/55">Текущий цикл</span>
+                  <span className="font-semibold tabular-nums">{current.total ?? 0}</span>
+                </div>
                 <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
                   <span className="text-white/55">Модель</span>
                   <span className={cn("font-semibold", current.running ? "text-emerald-400" : "text-amber-300")}>
@@ -457,14 +515,68 @@ function AlwaysOnCard({
                   <span className="text-white/55">Запись</span>
                   <span className="font-semibold">{inSession ? "включена" : "выключена"}</span>
                 </div>
+                {(currentDaily?.adjustment ?? 0) < 0 && (
+                  <div className="flex items-center justify-between rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5">
+                    <span className="text-amber-100/65">Корректировка</span>
+                    <span className="font-semibold tabular-nums text-amber-200">{currentDaily?.adjustment}</span>
+                  </div>
+                )}
               </div>
             </div>
-            {(current.error || liveDetail) && (
-              <p className="mt-5 rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5 text-xs leading-relaxed text-amber-100/80">
-                {current.error || liveDetail}
-              </p>
-            )}
+            <div className="mt-5 space-y-3">
+              {(current.error || liveDetail) && (
+                <p className="rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5 text-xs leading-relaxed text-amber-100/80">
+                  {current.error || liveDetail}
+                </p>
+              )}
+              <button type="button" disabled={todayTotal <= 0} onClick={showCorrection}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2.5 text-xs font-semibold text-white/75 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-35">
+                <Minus className="size-3.5" /> Уменьшить итог
+              </button>
+            </div>
           </aside>
+        </div>
+      </Modal>
+
+      <Modal open={correctionOpen} onClose={() => !correcting && setCorrectionOpen(false)}
+        eyebrow={`Суперадмин · ${camera?.zone || processor.cam}`}
+        title="Уменьшить итог за сегодня"
+        description="Используйте только для ложных срабатываний. Сырой результат модели не меняется, корректировка навсегда останется в журнале."
+        className="max-w-lg"
+        footer={(
+          <>
+            <Button variant="ghost" disabled={correcting} onClick={() => setCorrectionOpen(false)}>Отмена</Button>
+            <Button variant="destructive"
+              disabled={correcting || Number(correctionAmount) <= 0 || correctionReason.trim().length < 5}
+              onClick={() => void subtractCount()}>
+              {correcting ? <LoaderCircle className="size-4 animate-spin" /> : <Minus className="size-4" />}
+              Вычесть {Number(correctionAmount) > 0 ? correctionAmount : ""}
+            </Button>
+          </>
+        )}>
+        <div className="space-y-5">
+          <div className="flex items-end justify-between rounded-2xl border border-blue-100 bg-blue-50/70 p-4">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-500">Сейчас за сегодня</div>
+              <div className="mt-1 text-4xl font-black tabular-nums text-slate-900">{todayTotal}</div>
+            </div>
+            <div className="text-right text-xs text-slate-500">модель: {currentDaily?.model_total ?? 0}<br />поправка: {currentDaily?.adjustment ?? 0}</div>
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor={`correction-amount-${processor.cam}`}>Сколько вычесть</Label>
+            <Input id={`correction-amount-${processor.cam}`} type="number" inputMode="numeric"
+              min={1} max={todayTotal} autoFocus value={correctionAmount}
+              onChange={(event) => setCorrectionAmount(event.target.value)} placeholder="Например, 2" />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor={`correction-reason-${processor.cam}`}>Причина</Label>
+            <textarea id={`correction-reason-${processor.cam}`} value={correctionReason}
+              onChange={(event) => setCorrectionReason(event.target.value)} maxLength={500}
+              placeholder="Например: два ложных пересечения линии"
+              className="min-h-24 w-full resize-y rounded-xl border bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15" />
+            <span className="text-xs text-[var(--muted-foreground)]">Обязательно, минимум 5 символов.</span>
+          </div>
+          {correctionError && <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-600">{correctionError}</p>}
         </div>
       </Modal>
     </>
@@ -583,6 +695,9 @@ function MonoblockPageInner() {
   const { data: alwaysOnSettings, reload: reloadAlwaysOnSettings } = useApi<AlwaysOnCameraSettings>(
     me?.is_superuser ? "/cameras/always-on-settings/" : null,
   );
+  const { data: alwaysOnAnalytics, reload: reloadAlwaysOnAnalytics } = useApi<AlwaysOnDailyAnalytics>(
+    me?.is_superuser ? "/cameras/always-on-analytics/" : null,
+  );
   const playable = useMemo(
     () => playableCameras(cameras).filter((camera) => /^cam[1-9]\d*$/.test(camera.src)),
     [cameras],
@@ -602,7 +717,10 @@ function MonoblockPageInner() {
       void reloadOrders();
       void reloadCameras();
       void reloadCameraSettings();
-      if (me?.is_superuser) void reloadAlwaysOnSettings();
+      if (me?.is_superuser) {
+        void reloadAlwaysOnSettings();
+        void reloadAlwaysOnAnalytics();
+      }
     };
     const refreshAll = () => { refreshSessions(); refreshRest(); };
     const fast = setInterval(refreshSessions, SESSION_POLL_MS);
@@ -615,7 +733,7 @@ function MonoblockPageInner() {
       document.removeEventListener("visibilitychange", refreshAll);
       window.removeEventListener("online", refreshAll);
     };
-  }, [me?.is_superuser, reloadAlwaysOnSettings, reloadCameraSettings, reloadCameras, reloadOrders, reloadSessions]);
+  }, [me?.is_superuser, reloadAlwaysOnAnalytics, reloadAlwaysOnSettings, reloadCameraSettings, reloadCameras, reloadOrders, reloadSessions]);
 
   const sessionOrderIds = new Set((sessions ?? []).map((session) => session.order_id));
   const startable = (orders ?? []).filter((order) => {
@@ -677,12 +795,17 @@ function MonoblockPageInner() {
                   <h2 className="text-[18px] font-bold tracking-tight text-slate-800">Постоянный AI-контур</h2>
                   <p className="text-[12px] text-slate-400">Модель считает без публикации и записи фонового видео</p>
                 </div>
-                <span className={cn(
-                  "ml-auto rounded-full border bg-white px-3 py-1 text-[11px] font-semibold shadow-sm",
-                  alwaysOnSettings.sync_status === "synced" ? "text-emerald-600" : "text-amber-600",
-                )}>
-                  {alwaysOnSettings.sync_status === "synced" ? "синхронизировано" : "ожидает связь"}
-                </span>
+                <div className="ml-auto flex items-center gap-2">
+                  <span className="flex items-center gap-2 rounded-full border border-blue-100 bg-white px-3 py-1 text-[11px] font-semibold text-blue-700 shadow-sm">
+                    <CalendarDays className="size-3.5" /> Сегодня: {alwaysOnAnalytics?.total ?? 0}
+                  </span>
+                  <span className={cn(
+                    "rounded-full border bg-white px-3 py-1 text-[11px] font-semibold shadow-sm",
+                    alwaysOnSettings.sync_status === "synced" ? "text-emerald-600" : "text-amber-600",
+                  )}>
+                    {alwaysOnSettings.sync_status === "synced" ? "синхронизировано" : "ожидает связь"}
+                  </span>
+                </div>
               </div>
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {alwaysOnSettings.camera_sources.map((source) => {
@@ -695,7 +818,9 @@ function MonoblockPageInner() {
                   };
                   return <AlwaysOnCard key={source} processor={processor}
                     camera={playable.find((item) => item.src === source)}
-                    detail={alwaysOnSettings.detail} />;
+                    detail={alwaysOnSettings.detail}
+                    daily={alwaysOnAnalytics?.cameras.find((item) => item.camera === source)}
+                    onAnalyticsChanged={reloadAlwaysOnAnalytics} />;
                 })}
               </div>
             </section>

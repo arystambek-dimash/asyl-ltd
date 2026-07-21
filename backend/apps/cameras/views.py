@@ -15,7 +15,7 @@ from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
 from apps.orders.models import Order
 from apps.shipments.services import begin_camera_loading, finish_ai_loading
 
-from . import ai, continuous, health, recordings, services, sessions
+from . import ai, analytics, continuous, health, recordings, services, sessions
 from .models import AiCountingSession, MonoblockCameraSettings
 
 CAM_COOKIE = "cam_token"
@@ -245,6 +245,35 @@ class AlwaysOnCameraSettingsView(APIView):
             return Response(self._payload(
                 row, sync_status="pending", detail=str(exc),
             ), status=status.HTTP_202_ACCEPTED)
+
+
+class AlwaysOnAnalyticsView(APIView):
+    """Сегодняшний накопленный 24/7-счёт; доступен только суперпользователю."""
+
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        if ai.enabled():
+            try:
+                analytics.record_snapshot(ai.always_on_status())
+            except (ai.AiUnavailable, ai.AiError):
+                # Уже сохранённая аналитика остаётся доступной при обрыве связи.
+                pass
+        return Response(analytics.today_payload())
+
+
+class AlwaysOnAnalyticsSubtractView(APIView):
+    """Аудируемое уменьшение дневного итога суперпользователем."""
+
+    permission_classes = [IsSuperUser]
+
+    def post(self, request, cam: str):
+        return Response(analytics.subtract_today(
+            cam,
+            request.data.get("amount"),
+            request.data.get("reason") or "",
+            request.user,
+        ))
 
 
 class ShippingBoardSettingsView(APIView):

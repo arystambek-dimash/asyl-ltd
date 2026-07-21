@@ -3,6 +3,7 @@ from .views import (
     CameraAiRecordingVideoView, CameraAiRecordingView, CameraAiResetView,
     CameraAiSessionHistoryView, CameraAiSessionListView, CameraAiView,
     CameraAuthView, CameraCountingLineView, CameraHealthView, CameraListView, CameraTokenView,
+    AlwaysOnAnalyticsSubtractView, AlwaysOnAnalyticsView,
     AlwaysOnCameraSettingsView, MonoblockCameraSettingsView, ShippingBoardSettingsView,
 )
 
@@ -13,6 +14,11 @@ urlpatterns = [
     path("cameras/health/", CameraHealthView.as_view()),
     path("cameras/monoblock-settings/", MonoblockCameraSettingsView.as_view()),
     path("cameras/always-on-settings/", AlwaysOnCameraSettingsView.as_view()),
+    path("cameras/always-on-analytics/", AlwaysOnAnalyticsView.as_view()),
+    path(
+        "cameras/always-on-analytics/<str:cam>/subtract/",
+        AlwaysOnAnalyticsSubtractView.as_view(),
+    ),
     path("cameras/shipping-settings/", ShippingBoardSettingsView.as_view()),
     path("cameras/ai/sessions/", CameraAiSessionListView.as_view()),
     path("cameras/ai/history/", CameraAiSessionHistoryView.as_view()),
