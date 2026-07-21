@@ -190,14 +190,14 @@ def test_shipping_action_accepts_order_from_any_department(operator, boss):
     assert response.status_code == 200
 
 
-def test_editor_can_rewind_loading_and_reset_shipment(manager, boss):
+def test_post_operator_can_rewind_loading_and_reset_shipment(operator, boss):
     order = _order(boss, status="confirmed")
     record_arrival(order, Decimal("8000"), boss)
     record_count(order, 23, boss)
     order.loading_camera = "cam3"
     order.save(update_fields=["loading_camera"])
 
-    response = _client(manager).post(f"/api/orders/{order.id}/rewind-loading/")
+    response = _client(operator).post(f"/api/orders/{order.id}/rewind-loading/")
 
     assert response.status_code == 200
     assert response.data["status"] == "confirmed"
@@ -207,18 +207,18 @@ def test_editor_can_rewind_loading_and_reset_shipment(manager, boss):
     assert not hasattr(order, "shipment")
 
 
-def test_rewind_loading_requires_orders_edit(operator, boss):
+def test_rewind_loading_requires_shipping_load(manager, boss):
     order = _order(boss, status="confirmed")
     record_arrival(order, Decimal("8000"), boss)
 
-    response = _client(operator).post(f"/api/orders/{order.id}/rewind-loading/")
+    response = _client(manager).post(f"/api/orders/{order.id}/rewind-loading/")
 
     assert response.status_code == 403
     order.refresh_from_db()
     assert order.status == "arrived"
 
 
-def test_rewind_loading_requires_ai_session_to_be_stopped(manager, boss):
+def test_rewind_loading_requires_ai_session_to_be_stopped(operator, boss):
     order = _order(boss, status="confirmed")
     record_arrival(order, Decimal("8000"), boss)
     record_count(order, 7, boss)
@@ -226,10 +226,10 @@ def test_rewind_loading_requires_ai_session_to_be_stopped(manager, boss):
         order=order,
         camera="cam3",
         status=AiCountingSession.ACTIVE,
-        started_by=manager,
+        started_by=operator,
     )
 
-    response = _client(manager).post(f"/api/orders/{order.id}/rewind-loading/")
+    response = _client(operator).post(f"/api/orders/{order.id}/rewind-loading/")
 
     assert response.status_code == 400
     assert response.data["code"] == "ai_session_active"

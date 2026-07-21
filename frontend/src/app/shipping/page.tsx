@@ -8,6 +8,10 @@ import { Modal } from "@/components/ui/modal";
 import { PlateBadge } from "@/components/ui/license-plate-input";
 import { CameraStream } from "@/components/camera-stream";
 import { ErrorAlert } from "@/components/ui/data-state";
+import {
+  ManualOrderStatusModal,
+  type ManualOrderTarget,
+} from "@/components/manual-order-status-modal";
 import { playableCameras, type CameraFeed } from "@/components/camera-wall";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
@@ -16,7 +20,7 @@ import { can } from "@/lib/can";
 import { cn, formatDateTime, formatMoney } from "@/lib/utils";
 import {
   Activity, Archive, ArrowLeft, CalendarDays, Cctv, Check, Clock3,
-  Film, GripVertical, Layers3, LockKeyhole, LogOut, Minus, Package, Phone, Play,
+  Film, GripVertical, Layers3, LockKeyhole, LogOut, Minus, Package, Phone,
   Plus, Radio, RotateCcw, Scale, Settings2, TrainFront, Truck, User, VideoOff,
 } from "lucide-react";
 import type {
@@ -528,14 +532,6 @@ function BoardCard({ order, stage, camera, session, history, onOpen, onHistory, 
             <Button size="sm" variant="ghost" className="px-2.5" title="Вернуть в ожидание"
               onClick={() => onQuickMove("waiting")}>
               <RotateCcw className="size-4" />
-            </Button>
-          )}
-          {quickTargets.includes("loading") && (
-            <Button size="sm" variant="outline" className="flex-1"
-              onClick={() => onQuickMove("loading")}>
-              {order.transport_type === "train"
-                ? <><Play className="size-4" /> Начать загрузку</>
-                : <><Truck className="size-4" /> Принять</>}
             </Button>
           )}
           {quickTargets.includes("done") && (
@@ -1074,7 +1070,6 @@ function ActiveLoadings({ sessions, orders, cameras, onOpen }: {
 function ShippingPageInner() {
   const { me } = useAuth();
   const canLoad = can(me, "shipping.load");
-  const canArrive = can(me, "shipping.arrive");
   const canTrain = can(me, "train.load");
   const canEditStatus = can(me, "orders.edit");
   const canManage = can(me, "rbac.manage");
@@ -1103,10 +1098,9 @@ function ShippingPageInner() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [movingId, setMovingId] = useState<number | null>(null);
   const [moveError, setMoveError] = useState("");
-  const [arrivalDropOrder, setArrivalDropOrder] = useState<Order | null>(null);
   const [rewindDropOrder, setRewindDropOrder] = useState<Order | null>(null);
-  const [arrivalWeight, setArrivalWeight] = useState("");
-  const [weighIn, setWeighIn] = useState("");
+  const [manualStatusOrder, setManualStatusOrder] = useState<Order | null>(null);
+  const [manualStatusTarget, setManualStatusTarget] = useState<ManualOrderTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -1184,15 +1178,17 @@ function ShippingPageInner() {
       : api.post(`/orders/${order.id}/load/`, { bags }),
   []);
 
-  const openOrder = (id: number) => { setSelectedId(id); setWeighIn(""); setError(""); };
+  const openOrder = (id: number) => { setSelectedId(id); setError(""); };
 
   const allowedBoardStages = useCallback((order: Order): BoardStageKey[] => {
     const stages: BoardStageKey[] = [];
     if (order.status === "confirmed") {
-      if (order.transport_type === "train" ? canTrain : canArrive) stages.push("loading");
+      // Фактический старт и назначение камеры выполняет только Моноблок.
+      // Редактор заказа может закрыть/отменить ожидающий заказ вручную.
+      if (canEditStatus) stages.push("done");
       return stages;
     }
-    if ((order.status === "arrived" || order.status === "loading") && canEditStatus) {
+    if ((order.status === "arrived" || order.status === "loading") && canLoad) {
       stages.push("waiting");
     }
     if (order.transport_type === "train" && order.status === "loading") {
@@ -1201,7 +1197,7 @@ function ShippingPageInner() {
     }
     if ((order.status === "arrived" || order.status === "loading") && canLoad) stages.push("done");
     return stages;
-  }, [canArrive, canEditStatus, canLoad, canTrain]);
+  }, [canEditStatus, canLoad, canTrain]);
 
   const stopOrderAi = useCallback(async (order: Order, completeOrder = false) => {
     const session = sessions?.find((item) => item.order_id === order.id);
@@ -1232,19 +1228,13 @@ function ShippingPageInner() {
     if (order.status === "loaded") await api.post(`/orders/${order.id}/ship/`, {});
   }, [stopOrderAi]);
 
-  const executeMove = useCallback(async (order: Order, target: BoardStageKey, weight?: string) => {
+  const executeMove = useCallback(async (order: Order, target: BoardStageKey) => {
     if (!allowedBoardStages(order).includes(target)) return;
     setMovingId(order.id); setMoveError("");
     try {
       if (target === "waiting") {
         await stopOrderAi(order);
         await api.post(`/orders/${order.id}/rewind-loading/`, {});
-      } else if (target === "loading") {
-        if (order.transport_type === "train") {
-          await api.post(`/orders/${order.id}/train/`, { action: "start" });
-        } else {
-          await api.post(`/orders/${order.id}/arrive/`, { weigh_in_kg: weight || null });
-        }
       } else if (target === "done") {
         await completeOrder(order);
       }
@@ -1258,11 +1248,9 @@ function ShippingPageInner() {
       setRewindDropOrder(order);
       return;
     }
-    const needsWeight = order.transport_type !== "train" && order.status === "confirmed"
-      && order.items.some((item) => item.ask_truck_weight);
-    if (needsWeight) {
-      setArrivalDropOrder(order);
-      setArrivalWeight("");
+    if (target === "done" && order.status === "confirmed") {
+      setManualStatusOrder(order);
+      setManualStatusTarget("shipped");
       return;
     }
     void executeMove(order, target);
@@ -1354,20 +1342,12 @@ function ShippingPageInner() {
               <div className="flex flex-col justify-center gap-4 rounded-2xl bg-[var(--muted)]/40 p-5">
                 {/* ── Поезд: старт → счёт → финиш (без въезда и весов) ── */}
                 {isTrain && selected.status === "confirmed" && (
-                  canTrain ? (
-                    <>
-                      <div>
-                        <div className="text-base font-semibold">Загрузка поезда</div>
-                        <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
-                          Поезд грузится без въезда и взвешивания — начните загрузку.
-                        </p>
-                      </div>
-                      <Button className="h-14 rounded-xl text-base" disabled={busy}
-                        onClick={() => act(() => api.post(`/orders/${selected.id}/train/`, { action: "start" }))}>
-                        <Play className="size-5" /> Начать загрузку
-                      </Button>
-                    </>
-                  ) : <p className="text-sm text-[var(--muted-foreground)]">Ожидает старта загрузки.</p>
+                  <div>
+                    <div className="text-base font-semibold">Ожидает запуска в Моноблоке</div>
+                    <p className="mt-1 text-sm leading-relaxed text-[var(--muted-foreground)]">
+                      Выберите заказ и свободную камеру в «Моноблоке». Только там создаётся активная отгрузка.
+                    </p>
+                  </div>
                 )}
                 {isTrain && selected.status === "loading" && (
                   canTrain ? (
@@ -1393,36 +1373,12 @@ function ShippingPageInner() {
 
                 {/* ── Машина: приём → погрузка → выезд ── */}
                 {!isTrain && selected.status === "confirmed" && (
-                  canArrive ? (() => {
-                    // Вес спрашиваем только если в заказе есть товар с флагом.
-                    const needsWeighIn = selected.items.some((it) => it.ask_truck_weight);
-                    return (
-                      <>
-                        <div>
-                          <div className="text-base font-semibold">Приём машины</div>
-                          <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
-                            {needsWeighIn
-                              ? "Введите вес машины с весов и примите её."
-                              : "Вес рассчитается по мешкам — просто примите машину."}
-                          </p>
-                        </div>
-                        {needsWeighIn && (
-                          <div className="relative">
-                            <input type="number" inputMode="numeric" placeholder="0"
-                              value={weighIn} onChange={(e) => setWeighIn(e.target.value)}
-                              className="h-16 w-full rounded-xl border bg-[var(--card)] pl-5 pr-14 text-right text-3xl font-bold tabular-nums outline-none focus:ring-[3px] focus:ring-[var(--ring)]/40" />
-                            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-base text-[var(--muted-foreground)]">кг</span>
-                          </div>
-                        )}
-                        <Button className="h-14 rounded-xl text-base"
-                          disabled={busy || (needsWeighIn && !weighIn)}
-                          onClick={() => act(() => api.post(`/orders/${selected.id}/arrive/`,
-                            { weigh_in_kg: needsWeighIn ? weighIn : null }))}>
-                          <Scale className="size-5" /> Принять машину
-                        </Button>
-                      </>
-                    );
-                  })() : <p className="text-sm text-[var(--muted-foreground)]">Ожидает приёма машины.</p>
+                  <div>
+                    <div className="text-base font-semibold">Ожидает запуска в Моноблоке</div>
+                    <p className="mt-1 text-sm leading-relaxed text-[var(--muted-foreground)]">
+                      Приём машины, выбор камеры и запуск AI выполняются одним действием в «Моноблоке».
+                    </p>
+                  </div>
                 )}
 
                 {!isTrain && (selected.status === "arrived" || selected.status === "loading") && (
@@ -1457,26 +1413,14 @@ function ShippingPageInner() {
         onClose={() => setSettingsOpen(false)}
         onSaved={async () => { await Promise.all([reloadBoardSettings(), reload()]); }} />
       <CountingHistoryModal history={selectedHistory} onClose={() => setSelectedHistory(null)} />
-      <Modal open={!!arrivalDropOrder} onClose={() => setArrivalDropOrder(null)}
-        eyebrow={arrivalDropOrder ? `Заказ #${arrivalDropOrder.id}` : undefined}
-        title="Вес машины на въезде"
-        description="Для этого товара вес обязателен. После сохранения заказ перейдёт в «Загружается»."
-        footer={<>
-          <Button variant="ghost" onClick={() => setArrivalDropOrder(null)}>Отмена</Button>
-          <Button disabled={!arrivalWeight || movingId != null} onClick={() => {
-            if (!arrivalDropOrder) return;
-            const order = arrivalDropOrder;
-            setArrivalDropOrder(null);
-            void executeMove(order, "loading", arrivalWeight);
-          }}><Scale className="size-4" /> Принять машину</Button>
-        </>}>
-        <div className="relative">
-          <input autoFocus type="number" min="1" inputMode="numeric" value={arrivalWeight}
-            onChange={(event) => setArrivalWeight(event.target.value)} placeholder="0"
-            className="h-20 w-full rounded-2xl border bg-slate-50 px-5 pr-16 text-right text-4xl font-black tabular-nums outline-none focus:ring-2 focus:ring-blue-500" />
-          <span className="absolute right-5 top-1/2 -translate-y-1/2 font-semibold text-slate-400">кг</span>
-        </div>
-      </Modal>
+      <ManualOrderStatusModal
+        order={manualStatusOrder}
+        target={manualStatusTarget}
+        onClose={() => { setManualStatusOrder(null); setManualStatusTarget(null); }}
+        onChanged={async () => {
+          await Promise.all([reload(), reloadSessions(), reloadHistories()]);
+        }}
+      />
       <Modal open={!!rewindDropOrder} onClose={() => setRewindDropOrder(null)}
         eyebrow={rewindDropOrder ? `Заказ #${rewindDropOrder.id}` : undefined}
         title="Вернуть в ожидание въезда?"

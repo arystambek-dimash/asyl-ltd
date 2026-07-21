@@ -450,11 +450,39 @@ def _validate_manual_status(to_status: str, user) -> None:
 
 
 @transaction.atomic
-def _force_set_status(order: Order, to_status: str, user) -> Order:
+def _force_set_status(order: Order, to_status: str, user,
+                      bags_loaded: int | None = None) -> Order:
     _validate_manual_status(to_status, user)
     old = order.status
+
+    # Завершённый заказ уже списал склад и создал финансовый след. Обратный
+    # переход без отдельной операции возврата исказил бы остатки и долги.
+    if old == "shipped":
+        raise ValidationError({
+            "detail": "Завершённый заказ нельзя вернуть назад простой сменой статуса",
+            "code": "shipped_is_final",
+        })
+
+    if to_status == "shipped":
+        from apps.shipments.services import manual_complete_order
+        manual_complete_order(order, bags_loaded, user)
+        return order
+
+    # Внутренние стадии могут содержать Shipment, счёт и камеру. Сбрасываем их
+    # одной доменной операцией; голая смена status оставила бы занятый слот.
+    if old in ("arrived", "loading", "loaded") and to_status in (
+        "pending", "confirmed", "cancelled",
+    ):
+        from apps.shipments.services import rewind_loading
+        return rewind_loading(order, user, target_status=to_status)
+
     order.status = to_status
-    order.save(update_fields=["status"])
+    if to_status == "cancelled":
+        order.loading_camera = ""
+        update_fields = ["status", "loading_camera"]
+    else:
+        update_fields = ["status"]
+    order.save(update_fields=update_fields)
     log_event("status_override",
               _status_message("Статус заказа изменён вручную", old, to_status),
               user=user, order=order, payload={"from": old, "to": to_status})
@@ -462,7 +490,8 @@ def _force_set_status(order: Order, to_status: str, user) -> Order:
 
 
 @transaction.atomic
-def request_status_change(order: Order, to_status: str, user) -> dict:
+def request_status_change(order: Order, to_status: str, user,
+                          bags_loaded: int | None = None) -> dict:
     """Сотрудник с orders.edit меняет сразу; остальные создают запрос.
 
     Обычным сотрудникам доступны четыре публичных состояния, суперпользователь
@@ -472,7 +501,7 @@ def request_status_change(order: Order, to_status: str, user) -> dict:
     if to_status == order.status:
         raise ValidationError({"detail": "Статус уже такой", "code": "no_change"})
     if _can_edit_status(user):
-        _force_set_status(order, to_status, user)
+        _force_set_status(order, to_status, user, bags_loaded=bags_loaded)
         return {"applied": True, "request": None}
     req = StatusChangeRequest.objects.create(
         order=order, to_status=to_status, requested_by=user)

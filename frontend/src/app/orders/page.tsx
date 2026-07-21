@@ -20,6 +20,11 @@ import { ErrorAlert } from "@/components/ui/data-state";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ActionMenu, type ActionMenuItem } from "@/components/ui/action-menu";
 import { OrderForm } from "@/components/order-form";
+import { OrderStatusSelect } from "@/components/order-status-select";
+import {
+  ManualOrderStatusModal,
+  type ManualOrderTarget,
+} from "@/components/manual-order-status-modal";
 import {
   ORDER_PUBLIC_STATUSES,
   ORDER_STATUS_LABELS,
@@ -661,6 +666,10 @@ function OrdersPageInner() {
   const [delItem, setDelItem] = useState<Order | null>(null);
   const [delBusy, setDelBusy] = useState(false);
   const [delError, setDelError] = useState("");
+  const [statusBusyId, setStatusBusyId] = useState<number | null>(null);
+  const [statusActionError, setStatusActionError] = useState("");
+  const [manualStatusOrder, setManualStatusOrder] = useState<Order | null>(null);
+  const [manualStatusTarget, setManualStatusTarget] = useState<ManualOrderTarget | null>(null);
   // Стопка архива в углу видна всегда — держим список удалённых под рукой.
   const { data: trashed, reload: reloadTrash } = useApi<Order[]>(canEdit ? "/orders/trash/" : null);
 
@@ -671,6 +680,28 @@ function OrdersPageInner() {
       await api.delete(`/orders/${delItem.id}/`);
       setDelItem(null); reload(); reloadTrash();
     } catch (e) { setDelError(apiError(e)); } finally { setDelBusy(false); }
+  }
+
+  async function applySimpleStatus(order: Order, target: string) {
+    setStatusBusyId(order.id);
+    setStatusActionError("");
+    try {
+      await api.post(`/orders/${order.id}/set-status/`, { status: target });
+      await Promise.all([reload(), reloadSummary()]);
+    } catch (cause) {
+      setStatusActionError(apiError(cause));
+    } finally {
+      setStatusBusyId(null);
+    }
+  }
+
+  function chooseStatus(order: Order, target: string) {
+    if (target === "shipped" || target === "cancelled") {
+      setManualStatusOrder(order);
+      setManualStatusTarget(target);
+      return;
+    }
+    void applySimpleStatus(order, target);
   }
 
   // Карандаш и архив живут в одном меню «⋮» строки заказа.
@@ -785,6 +816,9 @@ function OrdersPageInner() {
       </div>
 
       {error && <div className="mb-4"><ErrorAlert message={error} onRetry={reload} /></div>}
+      {statusActionError && (
+        <div className="mb-4"><ErrorAlert message={statusActionError} /></div>
+      )}
 
       {/* Мобильные карточки: таблица на телефоне нечитаемая. */}
       <div className="flex flex-col gap-3 md:hidden">
@@ -800,7 +834,12 @@ function OrdersPageInner() {
                 <span className="text-sm font-semibold">#{o.id}</span>
                 {showDept && <DepartmentBadge order={o} />}
               </div>
-              <StatusBadge status={o.status} dot />
+              {canEdit ? (
+                <OrderStatusSelect status={o.status} disabled={statusBusyId === o.id}
+                  onChange={(target) => chooseStatus(o, target)} />
+              ) : (
+                <StatusBadge status={o.status} dot />
+              )}
             </div>
             <div className="text-sm font-medium">{o.client_name || `Клиент #${o.client}`}</div>
             <div className="text-xs text-[var(--muted-foreground)]">Создан {formatDateTime(o.created_at)}</div>
@@ -871,7 +910,12 @@ function OrdersPageInner() {
                     <TD className="text-right tabular-nums">{formatMoney(o.total_amount)} ₸</TD>
                     <TD>
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <StatusBadge status={o.status} dot />
+                        {canEdit ? (
+                          <OrderStatusSelect status={o.status} disabled={statusBusyId === o.id}
+                            onChange={(target) => chooseStatus(o, target)} />
+                        ) : (
+                          <StatusBadge status={o.status} dot />
+                        )}
                         {o.payment_status && (
                           <Badge tone={PAYMENT_STATUS_TONE[o.payment_status] ?? "muted"}>
                             {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
@@ -918,6 +962,15 @@ function OrdersPageInner() {
         busy={delBusy}
         error={delError}
         onConfirm={confirmDelete}
+      />
+
+      <ManualOrderStatusModal
+        order={manualStatusOrder}
+        target={manualStatusTarget}
+        onClose={() => { setManualStatusOrder(null); setManualStatusTarget(null); }}
+        onChanged={async () => {
+          await Promise.all([reload(), reloadSummary(), reloadTrash()]);
+        }}
       />
 
       <Modal open={open} onClose={() => setOpen(false)}

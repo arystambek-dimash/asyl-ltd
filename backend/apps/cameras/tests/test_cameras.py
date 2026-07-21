@@ -5,7 +5,7 @@ from django.core.cache import cache
 from django.core.signing import TimestampSigner
 
 from apps.cameras import ai, services
-from apps.cameras.models import MonoblockCameraSettings
+from apps.cameras.models import AiCountingSession, MonoblockCameraSettings
 from apps.cameras.views import CAM_COOKIE
 
 pytestmark = pytest.mark.django_db
@@ -337,6 +337,9 @@ def test_always_on_settings_are_superuser_only(
     row = MonoblockCameraSettings.objects.get(singleton=True)
     assert row.always_on_camera_sources == ["cam2"]
     assert row.updated_by == superuser
+    # 24/7 — фоновый режим камеры, а не отгрузка: он не создаёт владельца,
+    # сессию заказа или какую-либо camera binding в CRM.
+    assert AiCountingSession.objects.count() == 0
 
 
 def test_always_on_choice_survives_camera_pc_outage(

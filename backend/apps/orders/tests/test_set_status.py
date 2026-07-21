@@ -10,7 +10,9 @@ pytestmark = pytest.mark.django_db
 def _order():
     prod = Product.objects.create(name="Премиум", color="Red", weight_kg="50", price="100")
     c = Client.objects.create(first_name="L", last_name="К", phone="x")
-    o = Order.objects.create(client=c, status="draft")
+    # Ручное завершение доступно после подтверждения; новый заказ сначала
+    # должен пройти проверку цен и остатков.
+    o = Order.objects.create(client=c, status="confirmed")
     OrderItem.objects.create(order=o, product=prod, quantity=5)
     return o
 
@@ -34,7 +36,7 @@ def test_set_status_rejects_unknown(manager):
     r = _client(manager).post(f"/api/orders/{o.id}/set-status/", {"status": "nonsense"})
     assert r.status_code == 400
     o.refresh_from_db()
-    assert o.status == "draft"
+    assert o.status == "confirmed"
 
 
 def test_set_status_without_edit_creates_request(operator):
@@ -44,4 +46,4 @@ def test_set_status_without_edit_creates_request(operator):
     assert r.status_code == 202
     assert r.data["applied"] is False
     o.refresh_from_db()
-    assert o.status == "draft"  # статус не изменился до одобрения
+    assert o.status == "confirmed"  # статус не изменился до одобрения

@@ -415,7 +415,17 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     def set_status(self, request, pk=None):
         """Ручная смена статуса. orders.edit — сразу; иначе запрос на одобрение."""
         order = self.get_object()
-        result = request_status_change(order, request.data.get("status"), request.user)
+        bags_loaded = request.data.get("bags_loaded")
+        if bags_loaded is not None:
+            serializer = LoadSerializer(data={"bags": bags_loaded})
+            serializer.is_valid(raise_exception=True)
+            bags_loaded = serializer.validated_data["bags"]
+        result = request_status_change(
+            order,
+            request.data.get("status"),
+            request.user,
+            bags_loaded=bags_loaded,
+        )
         order.refresh_from_db()
         return Response({
             "applied": result["applied"],

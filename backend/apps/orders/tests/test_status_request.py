@@ -1,6 +1,10 @@
 import pytest
+from apps.catalog.models import Product
 from apps.clients.models import Client
-from apps.orders.models import Order, StatusChangeRequest
+from apps.orders.models import Order, OrderItem, StatusChangeRequest
+from apps.warehouse.models import StockItem
+from apps.warehouse.services import receive_stock
+from apps.cameras.models import AiCountingSession
 from apps.orders import services
 from rest_framework.exceptions import ValidationError
 
@@ -129,3 +133,79 @@ def test_superuser_can_choose_internal_status(make_user):
     assert result["applied"] is True
     o.refresh_from_db()
     assert o.status == "arrived"
+
+
+def test_manual_completed_status_runs_full_shipping_flow(auth_client, manager):
+    product = Product.objects.create(
+        name="Мука", color="Red", weight_kg="50", price="100.00")
+    receive_stock(product, 100, manager)
+    order = _order()
+    OrderItem.objects.create(
+        order=order, product=product, quantity=50, unit_price="100.00")
+
+    response = auth_client(manager).post(
+        f"/api/orders/{order.id}/set-status/",
+        {"status": "shipped", "bags_loaded": 47},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    order.refresh_from_db()
+    assert order.status == "shipped"
+    assert order.loading_camera == ""
+    assert order.shipment.bags_loaded == 47
+    assert order.shipment.shipped_at is not None
+    assert StockItem.objects.get(product=product).bags == 50
+
+
+def test_manual_completed_without_count_uses_order_quantity(auth_client, manager):
+    product = Product.objects.create(
+        name="Мука", color="Blue", weight_kg="25", price="100.00")
+    receive_stock(product, 20, manager)
+    order = _order()
+    OrderItem.objects.create(
+        order=order, product=product, quantity=12, unit_price="100.00")
+
+    response = auth_client(manager).post(
+        f"/api/orders/{order.id}/set-status/", {"status": "shipped"}, format="json")
+
+    assert response.status_code == 200
+    order.refresh_from_db()
+    assert order.shipment.bags_loaded == 12
+
+
+def test_manual_completion_never_binds_camera(auth_client, manager):
+    order = _order()
+
+    response = auth_client(manager).post(
+        f"/api/orders/{order.id}/set-status/",
+        {"status": "shipped", "bags_loaded": 0},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    order.refresh_from_db()
+    assert order.loading_camera == ""
+    assert AiCountingSession.objects.filter(order=order).count() == 0
+
+
+def test_manual_completion_rejects_open_ai_session(auth_client, manager):
+    order = _order()
+    order.status = "loading"
+    order.loading_camera = "cam3"
+    order.save(update_fields=["status", "loading_camera"])
+    AiCountingSession.objects.create(
+        order=order, camera="cam3", status=AiCountingSession.ACTIVE,
+        started_by=manager,
+    )
+
+    response = auth_client(manager).post(
+        f"/api/orders/{order.id}/set-status/",
+        {"status": "shipped", "bags_loaded": 10},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "ai_session_active"
+    order.refresh_from_db()
+    assert order.status == "loading"

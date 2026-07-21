@@ -237,7 +237,80 @@ def finish_ai_loading(order, bags: int, user):
 
 
 @transaction.atomic
-def rewind_loading(order, user):
+def manual_complete_order(order, bags: int | None, user):
+    """Завершить подтверждённый заказ без привязки к камере.
+
+    Это административный путь для борда и списка заказов. В отличие от голой
+    смены ``status`` он создаёт полноценную Shipment, фиксирует количество,
+    списывает склад и освобождает возможную старую привязку камеры. Отсутствие
+    ``bags`` означает «без ручного подсчёта»: используем количество из заказа.
+    Работающую AI-сессию намеренно не обрываем из этого endpoint — сначала её
+    должен остановить владелец или администратор на посту.
+    """
+    order = _locked(order)
+    if order.status not in ("confirmed", "arrived", "loading", "loaded"):
+        raise ValidationError({
+            "detail": "Вручную завершить можно только подтверждённый или загружаемый заказ",
+            "code": "invalid_status",
+        })
+
+    from apps.cameras.models import AiCountingSession
+    if AiCountingSession.objects.filter(
+        order=order,
+        status__in=AiCountingSession.OPEN_STATUSES,
+    ).exists():
+        raise ValidationError({
+            "detail": "Сначала остановите AI-подсчёт на посту погрузки",
+            "code": "ai_session_active",
+        })
+
+    existing_shipment = Shipment.objects.filter(order=order).first()
+    if bags is None:
+        if existing_shipment is not None and order.status in ("arrived", "loading", "loaded"):
+            bags = existing_shipment.bags_loaded
+            count_source = "current"
+        else:
+            bags = sum(item.quantity for item in order.items.all())
+            count_source = "ordered"
+    else:
+        if isinstance(bags, bool) or not isinstance(bags, int) or bags < 0:
+            raise ValidationError({
+                "detail": "Количество мешков должно быть целым числом от 0",
+                "code": "invalid_bags",
+            })
+        count_source = "manual"
+
+    now = timezone.now()
+    shipment = existing_shipment
+    if shipment is None:
+        shipment = Shipment.objects.create(
+            order=order,
+            truck_number=order.truck_number if order.transport_type == "truck" else "",
+        )
+    if order.transport_type == "truck":
+        shipment.truck_number = order.truck_number
+        shipment.weigh_in_kg = shipment.weigh_in_kg or estimated_load_kg(order)
+        shipment.arrived_at = shipment.arrived_at or now
+    shipment.loading_started_at = shipment.loading_started_at or now
+    shipment.bags_loaded = bags
+    shipment.save()
+    log_event(
+        "loading_done",
+        f"Отгрузка завершена вручную: {bags} мешков",
+        user=user,
+        order=order,
+        payload={"bags": bags, "source": "manual_override", "count_source": count_source},
+    )
+    label = (
+        "Поезд: отгрузка завершена вручную"
+        if order.transport_type == "train"
+        else f"Машина {shipment.truck_number}: отгрузка завершена вручную"
+    )
+    return _do_ship(order, shipment, user, label)
+
+
+@transaction.atomic
+def rewind_loading(order, user, target_status="confirmed"):
     """Вернуть въехавший/загружаемый заказ обратно в ожидание въезда.
 
     Это отдельная бизнес-операция, а не голая ручная смена статуса: очищаем
@@ -245,9 +318,14 @@ def rewind_loading(order, user):
     AI-сессию сначала обязан остановить её автор или администратор.
     """
     order = _locked(order)
-    if order.status not in ("arrived", "loading"):
+    if target_status not in ("pending", "confirmed", "cancelled"):
         raise ValidationError({
-            "detail": "Вернуть в ожидание можно только заказ на этапе въезда или погрузки",
+            "detail": "Недопустимый целевой статус возврата",
+            "code": "bad_status",
+        })
+    if order.status not in ("arrived", "loading", "loaded"):
+        raise ValidationError({
+            "detail": "Вернуть можно только незавершённую отгрузку",
             "code": "invalid_status",
         })
 
@@ -269,15 +347,20 @@ def rewind_loading(order, user):
     reset_bags = shipment.bags_loaded if shipment else 0
     if shipment:
         shipment.delete()
-    order.status = "confirmed"
+    order.status = target_status
     order.loading_camera = ""
     order.save(update_fields=["status", "loading_camera"])
+    target_labels = {
+        "pending": "на рассмотрение",
+        "confirmed": "в ожидание въезда",
+        "cancelled": "в отменённые",
+    }
     log_event(
         "shipping_rewind",
-        "Заказ возвращён в ожидание въезда",
+        f"Незавершённая отгрузка сброшена; заказ переведён {target_labels[target_status]}",
         user=user,
         order=order,
-        payload={"from": old, "to": "confirmed", "reset_bags": reset_bags},
+        payload={"from": old, "to": target_status, "reset_bags": reset_bags},
     )
     return order
 

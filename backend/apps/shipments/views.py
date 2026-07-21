@@ -16,7 +16,9 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         "load": "shipping.load",
         "finish_loading": "shipping.load",
         "ship": "shipping.ship",
-        "rewind_loading": "orders.edit",
+        # Право управления погрузкой даёт полный контроль живого поста:
+        # завершение и безопасный возврат в ожидание.
+        "rewind_loading": "shipping.load",
     }
 
     @action(detail=True, methods=["post"], url_path="arrive")
