@@ -69,6 +69,9 @@ class MonoblockCameraSettings(models.Model):
 
     singleton = models.BooleanField(default=True, unique=True, editable=False)
     camera_sources = models.JSONField(default=list, blank=True)
+    # Камеры, чьи модели работают 24/7 без публикации/записи видео.
+    # Настройка доступна только Django superuser.
+    always_on_camera_sources = models.JSONField(default=list, blank=True)
     camera_names = models.JSONField(default=dict, blank=True)
     # Сколько календарных дней держать завершённые заказы на живом борде.
     # 1 означает «только сегодня».
@@ -99,6 +102,17 @@ class MonoblockCameraSettings(models.Model):
             for source, name in names.items()
             if isinstance(source, str) and isinstance(name, str) and name.strip()
         }
+
+    @classmethod
+    def always_on_sources(cls) -> list[str]:
+        row = cls.objects.filter(singleton=True).only(
+            "always_on_camera_sources"
+        ).first()
+        sources = row.always_on_camera_sources if row else []
+        return [
+            source for source in sources
+            if isinstance(source, str) and source
+        ]
 
 
 class CameraHealthState(models.Model):

@@ -37,6 +37,8 @@ class FfmpegPublisher:
         self._condition = threading.Condition()
         self._latest_frame: Any | None = None
         self._stop = threading.Event()
+        self._enabled = threading.Event()
+        self._process_lock = threading.RLock()
         self._thread = threading.Thread(
             target=self._publisher_loop,
             name=f"publisher-{stream}",
@@ -76,29 +78,34 @@ class FfmpegPublisher:
 
     def write(self, frame: Any) -> bool:
         """Queue only the latest output frame; never block the camera decoder."""
+        if not self._enabled.is_set():
+            return False
         with self._condition:
             self._latest_frame = frame
             self._condition.notify()
         return True
 
     def _write_frame(self, frame: Any) -> bool:
-        height, width = frame.shape[:2]
-        if self.process is None or self.process.poll() is not None or self.size != (width, height):
-            self._close_process()
-            try:
-                self._start(width, height)
-            except OSError:
-                self.state = "error"
-                return False
-        try:
-            assert self.process and self.process.stdin
-            self.process.stdin.write(frame.tobytes())
-            self.state = "connected"
-            return True
-        except (BrokenPipeError, OSError):
-            self.state = "reconnecting"
-            self._close_process()
+        if not self._enabled.is_set():
             return False
+        with self._process_lock:
+            height, width = frame.shape[:2]
+            if self.process is None or self.process.poll() is not None or self.size != (width, height):
+                self._close_process()
+                try:
+                    self._start(width, height)
+                except OSError:
+                    self.state = "error"
+                    return False
+            try:
+                assert self.process and self.process.stdin
+                self.process.stdin.write(frame.tobytes())
+                self.state = "connected"
+                return True
+            except (BrokenPipeError, OSError):
+                self.state = "reconnecting"
+                self._close_process()
+                return False
 
     def _publisher_loop(self) -> None:
         while not self._stop.is_set():
@@ -121,22 +128,36 @@ class FfmpegPublisher:
         return self._thread.is_alive() and not self._stop.is_set()
 
     def _close_process(self) -> None:
-        process, self.process = self.process, None
-        self.size = None
-        if process is None:
-            return
-        try:
-            if process.stdin:
-                process.stdin.close()
-            process.terminate()
-            process.wait(timeout=2)
-        except (OSError, subprocess.SubprocessError):
+        with self._process_lock:
+            process, self.process = self.process, None
+            self.size = None
+            if process is None:
+                return
             try:
-                process.kill()
-            except OSError:
-                pass
+                if process.stdin:
+                    process.stdin.close()
+                process.terminate()
+                process.wait(timeout=2)
+            except (OSError, subprocess.SubprocessError):
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+
+    def resume(self) -> None:
+        self._enabled.set()
+        if self.state == "paused":
+            self.state = "waiting"
+
+    def pause(self) -> None:
+        self._enabled.clear()
+        with self._condition:
+            self._latest_frame = None
+        self._close_process()
+        self.state = "paused"
 
     def close(self) -> None:
+        self.pause()
         self._stop.set()
         with self._condition:
             self._condition.notify_all()
@@ -231,6 +252,7 @@ class CameraProcessor:
         self.publisher = manager.publisher_factory(self.settings, self.stream, manager.encoder)
         self.tracker = LineTracker()
         self.running = False
+        self.mode = "idle"
         self.total = 0
         self.per_color: dict[str, int] = defaultdict(int)
         self.confidence_sums: dict[str, float] = defaultdict(float)
@@ -265,7 +287,7 @@ class CameraProcessor:
                 self._source_generation += 1
             self.options = options
 
-    def start_counting(self, options: ProcessorOptions) -> None:
+    def start_session(self, options: ProcessorOptions) -> None:
         self.configure(options)
         with self._lock:
             self.tracker.reset()
@@ -273,6 +295,24 @@ class CameraProcessor:
             self.per_color.clear()
             self.confidence_sums.clear()
             self.running = True
+            self.mode = "session"
+            self.publisher.resume()
+
+    def start_always_on(
+        self, options: ProcessorOptions, *, force_session_handoff: bool = False
+    ) -> None:
+        self.configure(options)
+        with self._lock:
+            if self.mode == "session" and not force_session_handoff:
+                return
+            if self.mode != "always_on" or force_session_handoff:
+                self.tracker.reset()
+                self.total = 0
+                self.per_color.clear()
+                self.confidence_sums.clear()
+            self.running = True
+            self.mode = "always_on"
+            self.publisher.pause()
 
     def wait_until_warm(self) -> None:
         deadline = time.monotonic() + self.settings.prewarm_timeout
@@ -283,16 +323,10 @@ class CameraProcessor:
                     self._last_frame_generation == generation
                     and self._last_inference_generation == generation
                 )
-            try:
-                output_ready = self.manager.mediamtx.path_ready(self.stream)
-            except RuntimeError:
-                output_ready = False
             if (
                 self._decoder_thread.is_alive()
                 and self.publisher.alive
                 and source_ready
-                and self.publisher.state == "connected"
-                and output_ready
             ):
                 return
             if not self._decoder_thread.is_alive():
@@ -316,7 +350,9 @@ class CameraProcessor:
     def idle(self) -> None:
         with self._lock:
             self.running = False
+            self.mode = "idle"
             self.tracker.reset()
+            self.publisher.pause()
 
     def close(self) -> None:
         self._stop.set()
@@ -397,6 +433,7 @@ class CameraProcessor:
             with self._lock:
                 current_generation = self._source_generation
                 source_stream = self.source_stream
+                publishing = self.mode == "session"
             if capture is None or current_generation != generation:
                 if capture is not None:
                     capture.release()
@@ -436,7 +473,7 @@ class CameraProcessor:
             if captured_at - self._last_inference_submit >= 1 / self.settings.inference_fps:
                 self._last_inference_submit = captured_at
                 self.manager.submit(self, frame.copy(), captured_at, generation)
-            if captured_at - last_output >= 1 / self.settings.output_fps:
+            if publishing and captured_at - last_output >= 1 / self.settings.output_fps:
                 last_output = captured_at
                 self.publisher.write(self._annotate(frame))
         if capture is not None:
@@ -455,11 +492,12 @@ class CameraProcessor:
                 and alive
                 and self._last_frame_generation == self._source_generation
                 and self._last_inference_generation == self._source_generation
-                and self.publisher.state == "connected"
             )
             return {
                 "cam": self.camera,
                 "running": self.running,
+                "mode": self.mode,
+                "recording": self.mode == "session",
                 "processor_alive": alive,
                 "warm": warm,
                 "stream": self.stream,
@@ -537,6 +575,7 @@ class ProcessorManager:
         encoder: str,
         processor_factory: Callable[..., CameraProcessor] = CameraProcessor,
         publisher_factory: Callable[..., FfmpegPublisher] = FfmpegPublisher,
+        state_store=None,
     ):
         self.settings = settings
         self.model = model
@@ -544,7 +583,10 @@ class ProcessorManager:
         self.encoder = encoder
         self.processor_factory = processor_factory
         self.publisher_factory = publisher_factory
+        self.state_store = state_store
         self.processors: dict[str, CameraProcessor] = {}
+        self.always_on_cameras: set[str] = set()
+        self.always_on_source = "sub"
         self.queue = DroppingFrameQueue(settings.queue_size)
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -618,10 +660,10 @@ class ProcessorManager:
             existing = self.get(camera)
         except KeyError:
             existing = None
-        if existing is not None and existing.running:
+        if existing is not None and existing.running and existing.mode == "session":
             return existing.status()
         processor = self._ensure(camera, options)
-        processor.start_counting(processor.options)
+        processor.start_session(processor.options)
         return processor.status()
 
     def reset(self, camera: str) -> dict:
@@ -631,8 +673,85 @@ class ProcessorManager:
 
     def idle(self, camera: str) -> dict:
         processor = self.get(camera)
-        processor.idle()
+        if camera in self.always_on_cameras:
+            processor.start_always_on(
+                ProcessorOptions(source=self.always_on_source),
+                force_session_handoff=True,
+            )
+        else:
+            processor.idle()
         return processor.status()
+
+    def configure_always_on(
+        self,
+        cameras: list[str],
+        source: str = "sub",
+        *,
+        persist: bool = True,
+    ) -> dict:
+        normalized = list(dict.fromkeys(parse_camera(item) for item in cameras))
+        if source not in {"sub", "main"}:
+            raise ValueError("source must be sub or main")
+        for camera in normalized:
+            self.mediamtx.validate_source(
+                camera, self.settings.source_stream(camera, source)
+            )
+        with self._lock:
+            session_cameras = {
+                camera for camera, processor in self.processors.items()
+                if processor.mode == "session"
+            }
+        if len(set(normalized) | session_cameras) > self.settings.max_active_processors:
+            raise OverflowError("AI_MAX_ACTIVE_PROCESSORS limit reached")
+        if persist and self.state_store is not None:
+            self.state_store.save(normalized, source)
+
+        self.always_on_cameras = set(normalized)
+        self.always_on_source = source
+        # Idle/prewarmed processors outside the desired set must not consume
+        # capacity forever. Active order sessions are never retired here.
+        with self._lock:
+            retiring = [
+                (camera, processor)
+                for camera, processor in self.processors.items()
+                if camera not in self.always_on_cameras
+                and processor.mode != "session"
+            ]
+            for camera, _processor in retiring:
+                self.processors.pop(camera, None)
+        for _camera, processor in retiring:
+            processor.idle()
+            processor.close()
+        for camera in normalized:
+            processor = self._ensure(camera, ProcessorOptions(source=source))
+            processor.start_always_on(processor.options)
+        return self.always_on_status()
+
+    def restore_always_on(self) -> dict:
+        if self.state_store is None:
+            return self.always_on_status()
+        cameras, source = self.state_store.load()
+        return self.configure_always_on(cameras, source, persist=False)
+
+    def always_on_status(self) -> dict:
+        statuses = []
+        for camera in sorted(self.always_on_cameras):
+            try:
+                statuses.append(self.get(camera).status())
+            except KeyError:
+                statuses.append({
+                    "cam": camera,
+                    "running": False,
+                    "mode": "always_on",
+                    "recording": False,
+                    "error": "processor is not running",
+                })
+        return {
+            "cameras": sorted(self.always_on_cameras),
+            "source": self.always_on_source,
+            "capacity": self.settings.max_active_processors,
+            "processors": statuses,
+        }
 
     def get(self, camera: str) -> CameraProcessor:
         camera = parse_camera(camera)

@@ -23,6 +23,13 @@ class ProcessorOptions(BaseModel):
         return value
 
 
+class AlwaysOnOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cameras: list[str]
+    source: Literal["sub", "main"] = "sub"
+
+
 @dataclass(frozen=True)
 class Detection:
     x1: float

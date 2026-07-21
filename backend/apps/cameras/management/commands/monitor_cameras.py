@@ -4,7 +4,7 @@ import time
 
 from django.core.management.base import BaseCommand
 
-from apps.cameras import health
+from apps.cameras import ai, continuous, health
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +32,18 @@ class Command(BaseCommand):
                     f"online={state.online_count}/{state.expected_count} "
                     f"failures={state.failure_streak} recoveries={state.recovery_streak}"
                 )
+                if ai.enabled():
+                    try:
+                        always_on = continuous.reconcile()
+                        self.stdout.write(
+                            "camera-ai always-on="
+                            + ",".join(always_on.get("cameras", []))
+                        )
+                    except Exception:
+                        # Camera health and the durable desired configuration
+                        # remain valid while a restarted Windows service comes
+                        # back. Retry on the next monitor iteration.
+                        log.exception("Always-on AI reconciliation failed")
             except Exception:
                 # Let Docker restart a broken one-shot startup, while a long
                 # running monitor survives transient DB failures and retries.

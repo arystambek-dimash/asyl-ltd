@@ -192,3 +192,20 @@ def reset(cam: str) -> dict:
 def delete(cam: str) -> dict | None:
     """Перевести уже сохранённую сессию в IDLE, не делая предварительный GET."""
     return _call("DELETE", _path(cam), none_on_404=True)
+
+
+def always_on_status() -> dict:
+    """Desired 24/7 cameras and their live inference-only processors."""
+    return _call("GET", "/always-on") or {
+        "cameras": [], "source": "sub", "processors": [],
+    }
+
+
+def configure_always_on(cameras: list[str], source: str = "sub") -> dict:
+    """Atomically persist and apply the 24/7 camera set on the camera PC."""
+    normalized = list(dict.fromkeys(normalize(camera) for camera in cameras))
+    if source not in {"sub", "main"}:
+        raise AiError(400, "Неизвестный источник камеры")
+    return _call(
+        "PUT", "/always-on", {"cameras": normalized, "source": source}
+    ) or {}

@@ -196,6 +196,26 @@ export interface MonoblockCameraSettings {
   camera_sources: string[];
   updated_at: string | null;
 }
+export interface AlwaysOnProcessorStatus {
+  cam: string;
+  running: boolean;
+  mode: "always_on" | "session" | "idle";
+  recording: boolean;
+  total: number;
+  last_frame_at?: string | null;
+  error?: string | null;
+  metrics?: { inference_fps?: number; dropped_frames?: number };
+}
+export interface AlwaysOnCameraSettings {
+  camera_sources: string[];
+  source: "sub" | "main";
+  processors: AlwaysOnProcessorStatus[];
+  capacity: number | null;
+  service_available: boolean;
+  sync_status: "synced" | "pending";
+  detail: string;
+  updated_at: string | null;
+}
 export interface Permission { id: number; code: string; section: string; action: string; label: string; }
 export interface Role {
   id: number; name: string; description: string; is_system: boolean;

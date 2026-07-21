@@ -21,6 +21,7 @@ from cv_service.processor import (
 )
 from cv_service.runtime import MediaMtxClient, select_h264_encoder, validate_classes
 from cv_service.settings import Settings, parse_camera, parse_line
+from cv_service.state import AlwaysOnStateStore
 
 
 KEY = "backend-only-secret"
@@ -86,6 +87,7 @@ class FakeProcessor:
         self.options = options
         self.source_stream = manager.settings.source_stream(camera, options.source)
         self.running = False
+        self.mode = "idle"
         self.total = 0
         self.start_calls = 0
         self.closed = False
@@ -94,11 +96,21 @@ class FakeProcessor:
         self.options = options
         self.source_stream = self.manager.settings.source_stream(self.camera, options.source)
 
-    def start_counting(self, options):
+    def start_session(self, options):
         self.options = options
         self.total = 0
         self.running = True
+        self.mode = "session"
         self.start_calls += 1
+
+    def start_always_on(self, options, *, force_session_handoff=False):
+        self.options = options
+        if self.mode == "session" and not force_session_handoff:
+            return
+        if self.mode != "always_on" or force_session_handoff:
+            self.total = 0
+        self.running = True
+        self.mode = "always_on"
 
     def wait_until_warm(self):
         return None
@@ -110,6 +122,7 @@ class FakeProcessor:
 
     def idle(self):
         self.running = False
+        self.mode = "idle"
 
     def close(self):
         self.closed = True
@@ -124,6 +137,8 @@ class FakeProcessor:
         return {
             "cam": self.camera,
             "running": self.running,
+            "mode": self.mode,
+            "recording": self.mode == "session",
             "processor_alive": not self.closed,
             "warm": not self.running and not self.closed,
             "stream": f"{self.camera}ai",
@@ -177,7 +192,9 @@ def auth():
     return {"X-Api-Key": KEY}
 
 
-@pytest.mark.parametrize("path", ["/health", "/cameras", "/processors", "/processors/cam2"])
+@pytest.mark.parametrize(
+    "path", ["/health", "/cameras", "/processors", "/always-on", "/processors/cam2"]
+)
 def test_every_endpoint_requires_header_and_query_key_is_ignored(service, path):
     _manager, client = service
     assert client.get(path).status_code == 401
@@ -279,6 +296,76 @@ def test_delete_freezes_result_and_next_start_clears_it(service):
     assert client.get("/processors/cam2", headers=auth()).json()["total"] == 42
     assert manager.get("cam2").closed is False
     assert client.post("/processors/cam2", headers=auth(), json={}).json()["total"] == 0
+
+
+def test_always_on_is_persisted_inference_only_and_session_reuses_processor(tmp_path):
+    store = AlwaysOnStateStore(tmp_path / "state" / "always-on.json")
+    manager = ProcessorManager(
+        make_settings(), FakeModel(), FakeMediaMtx(), "libx264",
+        processor_factory=FakeProcessor, state_store=store,
+    )
+    with TestClient(create_app(manager)) as client:
+        configured = client.put(
+            "/always-on", headers=auth(), json={"cameras": ["cam2"]},
+        )
+        assert configured.status_code == 200
+        assert configured.json()["processors"][0]["mode"] == "always_on"
+        assert configured.json()["processors"][0]["recording"] is False
+        processor = manager.get("cam2")
+        processor.total = 31
+
+        session = client.post("/processors/cam2", headers=auth(), json={})
+        assert session.json()["mode"] == "session"
+        assert session.json()["recording"] is True
+        assert session.json()["total"] == 0
+        assert manager.get("cam2") is processor
+
+        processor.total = 9
+        stopped = client.delete("/processors/cam2", headers=auth())
+        assert stopped.json()["mode"] == "always_on"
+        assert stopped.json()["recording"] is False
+        assert stopped.json()["running"] is True
+    assert store.load() == (["cam2"], "sub")
+
+
+def test_always_on_state_restores_after_service_restart(tmp_path):
+    store = AlwaysOnStateStore(tmp_path / "always-on.json")
+    store.save(["cam3", "cam2", "cam2"], "sub")
+    manager = ProcessorManager(
+        make_settings(), FakeModel(), FakeMediaMtx(), "libx264",
+        processor_factory=FakeProcessor, state_store=store,
+    )
+    restored = manager.restore_always_on()
+    assert restored["cameras"] == ["cam2", "cam3"]
+    assert all(item["running"] for item in restored["processors"])
+    assert all(item["recording"] is False for item in restored["processors"])
+    manager.close()
+
+
+def test_only_configured_capacity_can_run_always_on(service):
+    manager = ProcessorManager(
+        make_settings(max_processors=2), FakeModel(),
+        FakeMediaMtx(cameras=("cam2", "cam3", "cam4")), "libx264",
+        processor_factory=FakeProcessor,
+    )
+    with TestClient(create_app(manager)) as client:
+        response = client.put(
+            "/always-on", headers=auth(),
+            json={"cameras": ["cam2", "cam3", "cam4"]},
+        )
+        assert response.status_code == 409
+        assert client.get("/always-on", headers=auth()).json()["cameras"] == []
+
+
+def test_always_on_rejects_unknown_fields_and_camera_ids(service):
+    _manager, client = service
+    assert client.put(
+        "/always-on", headers=auth(),
+        json={"cameras": ["cam2"], "record": True},
+    ).status_code == 422
+    assert client.put(
+        "/always-on", headers=auth(), json={"cameras": ["../cam2"]},
+    ).status_code == 400
 
 
 def test_reset_requires_counting_processor(service):

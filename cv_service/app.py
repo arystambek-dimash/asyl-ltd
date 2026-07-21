@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .contracts import ProcessorOptions
+from .contracts import AlwaysOnOptions, ProcessorOptions
 from .processor import ProcessorManager
 from .security import valid_api_key
 from .settings import parse_camera
@@ -84,6 +84,14 @@ def create_app(manager: ProcessorManager) -> FastAPI:
     @app.get("/processors")
     def processors():
         return {"processors": [with_startup(item) for item in manager.statuses()]}
+
+    @app.get("/always-on")
+    def always_on():
+        return manager.always_on_status()
+
+    @app.put("/always-on")
+    def configure_always_on(options: AlwaysOnOptions):
+        return manager.configure_always_on(options.cameras, options.source)
 
     @app.get("/processors/{camera}")
     def processor(camera: str):

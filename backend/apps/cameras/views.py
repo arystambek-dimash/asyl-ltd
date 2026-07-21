@@ -15,7 +15,7 @@ from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
 from apps.orders.models import Order
 from apps.shipments.services import begin_camera_loading, finish_ai_loading
 
-from . import ai, health, recordings, services, sessions
+from . import ai, continuous, health, recordings, services, sessions
 from .models import AiCountingSession, MonoblockCameraSettings
 
 CAM_COOKIE = "cam_token"
@@ -144,6 +144,107 @@ class MonoblockCameraSettingsView(APIView):
             defaults={"camera_sources": normalized, "updated_by": request.user},
         )
         return Response(self._payload(row))
+
+
+class AlwaysOnCameraSettingsView(APIView):
+    """Superuser-only control plane for inference-only 24/7 processors."""
+
+    permission_classes = [IsSuperUser]
+
+    @staticmethod
+    def _payload(row=None, live=None, sync_status="synced", detail=""):
+        row = row or MonoblockCameraSettings.objects.filter(singleton=True).first()
+        desired = row.always_on_camera_sources if row else []
+        return {
+            "camera_sources": desired,
+            "source": "sub",
+            "processors": (live or {}).get("processors", []),
+            "capacity": (live or {}).get("capacity"),
+            "service_available": live is not None,
+            "sync_status": sync_status,
+            "detail": detail,
+            "updated_at": row.updated_at if row else None,
+        }
+
+    def get(self, request):
+        row = MonoblockCameraSettings.objects.filter(singleton=True).first()
+        if not ai.enabled():
+            return Response(self._payload(
+                row, sync_status="pending", detail="AI-сервис не настроен",
+            ))
+        try:
+            live = ai.always_on_status()
+            desired = row.always_on_camera_sources if row else []
+            synced = sorted(live.get("cameras") or []) == sorted(desired)
+            return Response(self._payload(
+                row,
+                live,
+                "synced" if synced else "pending",
+                "" if synced else "Настройка ожидает синхронизации",
+            ))
+        except (ai.AiUnavailable, ai.AiError) as exc:
+            return Response(self._payload(
+                row, sync_status="pending", detail=str(exc),
+            ))
+
+    def put(self, request):
+        raw_sources = request.data.get("camera_sources")
+        if not isinstance(raw_sources, list):
+            raise ValidationError({
+                "camera_sources": "Передайте список камер",
+                "code": "bad_camera_sources",
+            })
+        normalized = []
+        for raw in raw_sources:
+            if not isinstance(raw, str):
+                raise ValidationError({
+                    "camera_sources": "Каждая камера должна быть строкой",
+                    "code": "bad_camera_source",
+                })
+            try:
+                source = ai.normalize(raw)
+            except ai.AiError:
+                raise ValidationError({
+                    "camera_sources": f"Неизвестная камера: {raw}",
+                    "code": "bad_camera_source",
+                })
+            if source not in normalized:
+                normalized.append(source)
+
+        row, _ = MonoblockCameraSettings.objects.get_or_create(singleton=True)
+        live_before = None
+        if ai.enabled():
+            try:
+                live_before = ai.always_on_status()
+            except (ai.AiUnavailable, ai.AiError):
+                pass
+        capacity = (live_before or {}).get("capacity")
+        if isinstance(capacity, int) and len(normalized) > capacity:
+            raise ValidationError({
+                "camera_sources": (
+                    f"ПК камер поддерживает до {capacity} активных процессоров"
+                ),
+                "code": "always_on_capacity_exceeded",
+            })
+        row.always_on_camera_sources = normalized
+        row.updated_by = request.user
+        row.save(update_fields=[
+            "always_on_camera_sources", "updated_by", "updated_at",
+        ])
+        if not ai.enabled():
+            return Response(self._payload(
+                row, sync_status="pending", detail="AI-сервис не настроен",
+            ), status=status.HTTP_202_ACCEPTED)
+        try:
+            live = ai.configure_always_on(normalized, "sub")
+            return Response(self._payload(row, live))
+        except (ai.AiUnavailable, ai.AiError) as exc:
+            # PostgreSQL remains authoritative. The camera-monitor retries,
+            # so a temporary camera-PC outage never loses the administrator's
+            # desired configuration.
+            return Response(self._payload(
+                row, sync_status="pending", detail=str(exc),
+            ), status=status.HTTP_202_ACCEPTED)
 
 
 class ShippingBoardSettingsView(APIView):
@@ -408,6 +509,11 @@ class CameraAiView(APIView):
                     "owned_by_order": False,
                     "code": "ai_processor_stopped",
                 }
+            if live.get("mode") == "always_on":
+                # The Windows service may have restarted and restored its
+                # durable 24/7 mode while PostgreSQL still owns an open order
+                # session. Re-enter session mode on the already warm model.
+                live = ai.start(camera)
             sessions.update_status(session, live)
             return {**live, **metadata}
 

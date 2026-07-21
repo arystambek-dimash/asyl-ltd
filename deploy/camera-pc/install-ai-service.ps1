@@ -40,7 +40,10 @@ if ($MaxActiveProcessors -lt 1) {
     throw 'MaxActiveProcessors must be positive.'
 }
 $source = [IO.Path]::GetFullPath($SourceRoot)
-foreach ($required in @('ai_service.py', 'app.py', 'processor.py', 'runtime.py', 'requirements.txt')) {
+foreach ($required in @(
+    'ai_service.py', 'app.py', 'contracts.py', 'processor.py', 'runtime.py',
+    'security.py', 'settings.py', 'state.py', 'requirements.txt'
+)) {
     if (-not (Test-Path -LiteralPath (Join-Path $source $required) -PathType Leaf)) {
         throw "cv_service source is incomplete: $required"
     }
@@ -119,6 +122,7 @@ $serviceEnvironment = [ordered]@{
     AI_PREWARM_CAMERAS = $PrewarmCameras
     AI_PREWARM_SOURCE = $PrewarmSource
     AI_FRAME_QUEUE_SIZE = '2'
+    AI_ALWAYS_ON_STATE_PATH = (Join-Path $InstallRoot 'state\always-on.json')
 }
 [IO.File]::WriteAllText(
     (Join-Path $InstallRoot 'service-env.json'),

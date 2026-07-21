@@ -231,6 +231,40 @@ def test_existing_session_restarts_worker_if_camera_pc_returned_idle(
     assert calls == [("GET", "/processors/cam2"), ("POST", "/processors/cam2")]
 
 
+def test_open_session_reclaims_always_on_processor_after_windows_restart(
+    api_client, loader, loading_order,
+):
+    api_client.force_authenticate(loader)
+    AiCountingSession.objects.create(
+        order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
+    calls = []
+
+    def fake(method, path, body=None):
+        calls.append((method, path, body))
+        if method == "GET":
+            return 200, {
+                **RUNNING, "mode": "always_on", "recording": False,
+            }
+        return 200, {
+            **RUNNING, "mode": "session", "recording": True, "total": 0,
+        }
+
+    with patch.object(ai, "_request", side_effect=fake):
+        response = api_client.get(
+            f"/api/cameras/cam2/ai/?order_id={loading_order.pk}"
+        )
+
+    assert response.status_code == 200
+    assert response.data["mode"] == "session"
+    assert response.data["recording"] is True
+    assert calls == [
+        ("GET", "/processors/cam2", None),
+        ("POST", "/processors/cam2", {}),
+    ]
+
+
 def test_start_when_idle_posts_directly_to_service(api_client, loader, loading_order):
     api_client.force_authenticate(loader)
     calls = []

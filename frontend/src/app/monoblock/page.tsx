@@ -3,11 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Camera,
+  Cpu,
   Check,
   Clock3,
   LockKeyhole,
   PackageCheck,
   Radio,
+  RefreshCw,
   Settings2,
   ShieldCheck,
   Square,
@@ -24,7 +26,13 @@ import { ErrorAlert } from "@/components/ui/data-state";
 import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import type { AiCountingSession, MonoblockCameraSettings, Order } from "@/lib/types";
+import type {
+  AiCountingSession,
+  AlwaysOnCameraSettings,
+  AlwaysOnProcessorStatus,
+  MonoblockCameraSettings,
+  Order,
+} from "@/lib/types";
 import { useAiCounter } from "@/lib/use-ai-counter";
 import { useApi } from "@/lib/use-api";
 import { cn, formatDateTime } from "@/lib/utils";
@@ -185,6 +193,177 @@ function CameraSettingsButton({
   );
 }
 
+function AlwaysOnSettingsButton({
+  cameras,
+  settings,
+  reload,
+}: {
+  cameras: (CameraFeed & { src: string })[];
+  settings: AlwaysOnCameraSettings | null;
+  reload: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  function show() {
+    setSelected(settings?.camera_sources ?? []);
+    setError("");
+    setOpen(true);
+  }
+
+  function toggle(source: string) {
+    setSelected((current) => {
+      if (current.includes(source)) return current.filter((item) => item !== source);
+      if (settings?.capacity && current.length >= settings.capacity) {
+        setError(`На ПК камер настроен лимит: ${settings.capacity} активных процессора.`);
+        return current;
+      }
+      setError("");
+      return [...current, source];
+    });
+  }
+
+  async function save() {
+    setSaving(true);
+    setError("");
+    try {
+      await api.put("/cameras/always-on-settings/", { camera_sources: selected });
+      await reload();
+      setOpen(false);
+    } catch (cause) {
+      setError(apiError(cause));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <Button variant="outline" className="h-10 rounded-xl border-blue-200 bg-blue-50/70 text-blue-700 hover:bg-blue-100" onClick={show}>
+        <Cpu className="size-4" /> AI 24/7
+        <span className="rounded-full bg-white px-2 py-0.5 text-[11px] tabular-nums text-blue-600 shadow-sm">
+          {settings?.camera_sources.length ?? 0}
+        </span>
+      </Button>
+
+      <Modal open={open} onClose={() => setOpen(false)}
+        eyebrow="Только системный суперпользователь"
+        title="Постоянный AI-подсчёт"
+        description="Модель остаётся прогретой и считает круглосуточно. В этом режиме видео не публикуется и не записывается."
+        className="max-w-2xl"
+        footer={(
+          <>
+            <Button variant="ghost" onClick={() => setOpen(false)}>Отмена</Button>
+            <Button disabled={saving} onClick={() => void save()}>
+              <Check className="size-4" /> {saving ? "Применение…" : "Применить режим"}
+            </Button>
+          </>
+        )}>
+        <div className="mb-4 grid gap-2.5 sm:grid-cols-3">
+          <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-3">
+            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-600">Модель</p>
+            <p className="mt-1 text-sm font-bold text-slate-800">Всегда активна</p>
+            {settings?.capacity && <p className="mt-0.5 text-[10px] text-emerald-700/70">до {settings.capacity} камер одновременно</p>}
+          </div>
+          <div className="rounded-2xl border border-sky-100 bg-sky-50/70 p-3">
+            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-sky-600">Отгрузка</p>
+            <p className="mt-1 text-sm font-bold text-slate-800">Старт без прогрева</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Диск камеры</p>
+            <p className="mt-1 text-sm font-bold text-slate-800">Без фоновой записи</p>
+          </div>
+        </div>
+
+        {settings?.sync_status === "pending" && (
+          <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            <RefreshCw className="mt-0.5 size-4 shrink-0" />
+            <p>{settings.detail || "ПК камер переподключается. Настройка применится автоматически."}</p>
+          </div>
+        )}
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          {cameras.map((camera) => {
+            const checked = selected.includes(camera.src);
+            const live = settings?.processors.find((item) => item.cam === camera.src);
+            return (
+              <button key={camera.id} type="button" onClick={() => toggle(camera.src)}
+                aria-pressed={checked}
+                className={cn(
+                  "flex items-center gap-3 rounded-2xl border p-3 text-left transition",
+                  checked
+                    ? "border-blue-400 bg-blue-50 ring-2 ring-blue-500/15"
+                    : "border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm",
+                )}>
+                <span className={cn(
+                  "flex size-11 shrink-0 items-center justify-center rounded-2xl",
+                  checked ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400",
+                )}>
+                  <Cpu className="size-5" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-bold text-slate-800">{camera.zone}</span>
+                  <span className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-400">
+                    <span className={cn("size-1.5 rounded-full", live?.running ? "bg-emerald-400" : "bg-slate-300")} />
+                    {live?.mode === "session" ? "занята отгрузкой" : live?.running ? "считает 24/7" : camera.src}
+                  </span>
+                </span>
+                <span className={cn(
+                  "flex size-7 items-center justify-center rounded-full border",
+                  checked ? "border-blue-600 bg-blue-600 text-white" : "border-slate-200 text-transparent",
+                )}>
+                  <Check className="size-4" />
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        {!cameras.length && (
+          <div className="rounded-xl border border-dashed p-8 text-center text-sm text-slate-400">
+            Подключённые AI-камеры пока не обнаружены.
+          </div>
+        )}
+        {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      </Modal>
+    </>
+  );
+}
+
+function AlwaysOnCard({
+  processor,
+  camera,
+}: {
+  processor: AlwaysOnProcessorStatus;
+  camera?: CameraFeed & { src: string };
+}) {
+  const inSession = processor.mode === "session";
+  return (
+    <article className="relative overflow-hidden rounded-[20px] border border-slate-200 bg-white p-4 shadow-[0_10px_32px_rgba(44,65,103,0.06)]">
+      <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-blue-500 to-emerald-400" />
+      <div className="flex items-start gap-3">
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
+          <Cpu className="size-5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="truncate text-sm font-bold text-slate-800">{camera?.zone || processor.cam}</h3>
+            <span className="text-2xl font-black tabular-nums tracking-tight text-slate-900">{processor.total ?? 0}</span>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+            <span className="flex items-center gap-1.5">
+              <span className={cn("size-1.5 rounded-full", processor.running ? "animate-pulse bg-emerald-400" : "bg-amber-400")} />
+              {inSession ? "режим отгрузки" : processor.running ? "фоновый подсчёт" : "переподключение"}
+            </span>
+            <span>{inSession ? "видео записывается" : "без записи видео"}</span>
+          </div>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function SessionCard({
   session,
   camera,
@@ -294,6 +473,9 @@ function MonoblockPageInner() {
   const { data: cameraSettings, reload: reloadCameraSettings } = useApi<MonoblockCameraSettings>(
     "/cameras/monoblock-settings/",
   );
+  const { data: alwaysOnSettings, reload: reloadAlwaysOnSettings } = useApi<AlwaysOnCameraSettings>(
+    me?.is_superuser ? "/cameras/always-on-settings/" : null,
+  );
   const playable = useMemo(
     () => playableCameras(cameras).filter((camera) => /^cam[1-9]\d*$/.test(camera.src)),
     [cameras],
@@ -313,6 +495,7 @@ function MonoblockPageInner() {
       void reloadOrders();
       void reloadCameras();
       void reloadCameraSettings();
+      if (me?.is_superuser) void reloadAlwaysOnSettings();
     };
     const refreshAll = () => { refreshSessions(); refreshRest(); };
     const fast = setInterval(refreshSessions, SESSION_POLL_MS);
@@ -325,7 +508,7 @@ function MonoblockPageInner() {
       document.removeEventListener("visibilitychange", refreshAll);
       window.removeEventListener("online", refreshAll);
     };
-  }, [reloadCameraSettings, reloadCameras, reloadOrders, reloadSessions]);
+  }, [me?.is_superuser, reloadAlwaysOnSettings, reloadCameraSettings, reloadCameras, reloadOrders, reloadSessions]);
 
   const sessionOrderIds = new Set((sessions ?? []).map((session) => session.order_id));
   const startable = (orders ?? []).filter((order) => {
@@ -364,11 +547,50 @@ function MonoblockPageInner() {
         <ErrorAlert message={error} onRetry={reloadOrders} />
       ) : (
         <div className="flex flex-col gap-7">
-          {can(me, "rbac.manage") && (
-            <div className="flex items-center justify-end">
+          {(can(me, "rbac.manage") || me?.is_superuser) && (
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {me?.is_superuser && (
+                <AlwaysOnSettingsButton cameras={playable} settings={alwaysOnSettings}
+                  reload={reloadAlwaysOnSettings} />
+              )}
+              {can(me, "rbac.manage") && (
               <CameraSettingsButton cameras={playable} settings={cameraSettings}
                 reload={reloadCameraSettings} />
+              )}
             </div>
+          )}
+
+          {me?.is_superuser && !!alwaysOnSettings?.camera_sources.length && (
+            <section className="rounded-[24px] border border-blue-100 bg-gradient-to-br from-blue-50/80 via-white to-emerald-50/40 p-5">
+              <div className="mb-4 flex items-center gap-3">
+                <span className="flex size-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-[0_8px_22px_rgba(37,99,235,0.25)]">
+                  <Cpu className="size-5" />
+                </span>
+                <div>
+                  <h2 className="text-[18px] font-bold tracking-tight text-slate-800">Постоянный AI-контур</h2>
+                  <p className="text-[12px] text-slate-400">Модель считает без публикации и записи фонового видео</p>
+                </div>
+                <span className={cn(
+                  "ml-auto rounded-full border bg-white px-3 py-1 text-[11px] font-semibold shadow-sm",
+                  alwaysOnSettings.sync_status === "synced" ? "text-emerald-600" : "text-amber-600",
+                )}>
+                  {alwaysOnSettings.sync_status === "synced" ? "синхронизировано" : "ожидает связь"}
+                </span>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {alwaysOnSettings.camera_sources.map((source) => {
+                  const processor = alwaysOnSettings.processors.find((item) => item.cam === source) ?? {
+                    cam: source,
+                    running: false,
+                    mode: "always_on" as const,
+                    recording: false,
+                    total: 0,
+                  };
+                  return <AlwaysOnCard key={source} processor={processor}
+                    camera={playable.find((item) => item.src === source)} />;
+                })}
+              </div>
+            </section>
           )}
           <ShipmentLauncher
             orders={startable}

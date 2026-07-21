@@ -12,13 +12,23 @@ from cv_service.contracts import ProcessorOptions
 from cv_service.processor import ProcessorManager
 from cv_service.runtime import build_runtime
 from cv_service.settings import Settings
+from cv_service.state import AlwaysOnStateStore
 
 
 def build_service(settings: Settings) -> tuple[ProcessorManager, object]:
     model, mediamtx, encoder = build_runtime(settings)
-    manager = ProcessorManager(settings, model, mediamtx, encoder)
+    manager = ProcessorManager(
+        settings,
+        model,
+        mediamtx,
+        encoder,
+        state_store=AlwaysOnStateStore(settings.always_on_state_path),
+    )
     try:
+        manager.restore_always_on()
         for camera in settings.prewarm_cameras:
+            if camera in manager.always_on_cameras:
+                continue
             manager.prewarm(camera, ProcessorOptions(source=settings.prewarm_source))
     except Exception:
         manager.close()

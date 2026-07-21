@@ -73,6 +73,7 @@ class Settings:
     default_line: str = "0,0.5,1,0.5"
     prewarm_cameras: tuple[str, ...] = ()
     prewarm_source: str = "sub"
+    always_on_state_path: Path = Path("data/always-on.json")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -114,6 +115,12 @@ class Settings:
             default_line=default_line,
             prewarm_cameras=prewarm,
             prewarm_source=source,
+            always_on_state_path=Path(
+                os.getenv(
+                    "AI_ALWAYS_ON_STATE_PATH",
+                    str(base / "data" / "always-on.json"),
+                )
+            ),
         )
 
     def source_stream(self, camera: str, source: str) -> str:

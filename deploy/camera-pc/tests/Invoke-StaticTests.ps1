@@ -42,6 +42,8 @@ $aiRunnerText = Get-Content -LiteralPath (Join-Path $PackageRoot 'run-ai-service
 Assert-True ($aiInstallerText -match "taskName = 'ASYL-AI-Service'") 'AI boot task is missing.'
 Assert-True ($aiInstallerText -match 'New-ScheduledTaskTrigger -AtStartup') 'AI service AtStartup trigger is missing.'
 Assert-True ($aiInstallerText -match 'AI_SERVICE_API_KEY_SHA256') 'AI service digest is not installed.'
+Assert-True ($aiInstallerText -match 'AI_ALWAYS_ON_STATE_PATH') 'Durable always-on AI state path is not installed.'
+Assert-True ($aiInstallerText -match "'state.py'") 'Always-on state module is not validated before install.'
 Assert-True ($aiInstallerText -notmatch 'AI_SERVICE_API_KEY\s*=') 'AI installer stores a plaintext API key.'
 Assert-True ($aiRunnerText -match "Plaintext AI_SERVICE_API_KEY is forbidden") 'AI runner does not reject plaintext secrets.'
 Assert-True ($aiInstallerText -match 'New-NetFirewallRule' -and $aiInstallerText -match 'RemoteAddress \$BackendTailnetIp') 'AI service firewall is not restricted to backend Tailscale IP.'

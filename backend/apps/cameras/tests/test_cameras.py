@@ -11,6 +11,14 @@ from apps.cameras.views import CAM_COOKIE
 pytestmark = pytest.mark.django_db
 
 
+@pytest.fixture
+def superuser(django_user_model):
+    return django_user_model.objects.create_superuser(
+        username="camera-root",
+        password="test",
+    )
+
+
 @pytest.fixture(autouse=True)
 def clear_camera_cache(monkeypatch):
     # Инвентарь ai_service в юнитах выключен — тесты проб не должны зависеть
@@ -294,6 +302,79 @@ def test_operator_cannot_change_monoblock_camera_allowlist(auth_client, operator
 
     assert response.status_code == 403
     assert not MonoblockCameraSettings.objects.exists()
+
+
+def test_always_on_settings_are_superuser_only(
+    auth_client, superuser, boss, operator, client_user, monkeypatch,
+):
+    for user in (boss, operator, client_user):
+        response = auth_client(user).get("/api/cameras/always-on-settings/")
+        assert response.status_code == 403
+
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    live = {
+        "cameras": ["cam2"],
+        "source": "sub",
+        "capacity": 2,
+        "processors": [{
+            "cam": "cam2", "running": True, "mode": "always_on",
+            "recording": False, "total": 14,
+        }],
+    }
+    with patch.object(ai, "always_on_status", return_value={
+        "cameras": [], "source": "sub", "capacity": 2, "processors": [],
+    }), patch.object(ai, "configure_always_on", return_value=live) as configure:
+        response = auth_client(superuser).put(
+            "/api/cameras/always-on-settings/",
+            {"camera_sources": ["2", "cam2"]},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    assert response.data["camera_sources"] == ["cam2"]
+    assert response.data["processors"][0]["recording"] is False
+    configure.assert_called_once_with(["cam2"], "sub")
+    row = MonoblockCameraSettings.objects.get(singleton=True)
+    assert row.always_on_camera_sources == ["cam2"]
+    assert row.updated_by == superuser
+
+
+def test_always_on_choice_survives_camera_pc_outage(
+    auth_client, superuser, monkeypatch,
+):
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    with patch.object(
+        ai, "always_on_status", side_effect=ai.AiUnavailable("offline"),
+    ), patch.object(
+        ai, "configure_always_on", side_effect=ai.AiUnavailable("offline"),
+    ):
+        response = auth_client(superuser).put(
+            "/api/cameras/always-on-settings/",
+            {"camera_sources": ["cam3"]},
+            format="json",
+        )
+
+    assert response.status_code == 202
+    assert response.data["sync_status"] == "pending"
+    assert MonoblockCameraSettings.always_on_sources() == ["cam3"]
+
+
+def test_superuser_cannot_exceed_camera_pc_processor_capacity(
+    auth_client, superuser, monkeypatch,
+):
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    with patch.object(ai, "always_on_status", return_value={
+        "cameras": [], "source": "sub", "capacity": 1, "processors": [],
+    }), patch.object(ai, "configure_always_on") as configure:
+        response = auth_client(superuser).put(
+            "/api/cameras/always-on-settings/",
+            {"camera_sources": ["cam2", "cam3"]},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    configure.assert_not_called()
+    assert MonoblockCameraSettings.always_on_sources() == []
 
 
 def test_token_sets_cookie(auth_client, operator):
