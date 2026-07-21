@@ -334,33 +334,140 @@ function AlwaysOnSettingsButton({
 function AlwaysOnCard({
   processor,
   camera,
+  detail,
 }: {
   processor: AlwaysOnProcessorStatus;
   camera?: CameraFeed & { src: string };
+  detail?: string;
 }) {
-  const inSession = processor.mode === "session";
+  const [open, setOpen] = useState(false);
+  const [streamOnline, setStreamOnline] = useState(false);
+  const [liveProcessor, setLiveProcessor] = useState(processor);
+  const [liveDetail, setLiveDetail] = useState(detail || "");
+  const current = open ? liveProcessor : processor;
+  const inSession = current.mode === "session";
+
+  useEffect(() => {
+    setLiveProcessor(processor);
+    setLiveDetail(detail || "");
+  }, [detail, processor]);
+
+  useEffect(() => {
+    if (!open) return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = async () => {
+      try {
+        const response = await api.get<AlwaysOnCameraSettings>("/cameras/always-on-settings/");
+        if (disposed) return;
+        const next = response.data.processors.find((item) => item.cam === processor.cam);
+        if (next) setLiveProcessor(next);
+        setLiveDetail(response.data.detail || "");
+      } catch (cause) {
+        if (!disposed) setLiveDetail(apiError(cause));
+      } finally {
+        if (!disposed) timer = setTimeout(() => void refresh(), SESSION_POLL_MS);
+      }
+    };
+    void refresh();
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [open, processor.cam]);
+
+  function showStream() {
+    setStreamOnline(false);
+    setOpen(true);
+  }
+
+  function closeStream() {
+    setOpen(false);
+    setStreamOnline(false);
+  }
+
   return (
-    <article className="relative overflow-hidden rounded-[20px] border border-slate-200 bg-white p-4 shadow-[0_10px_32px_rgba(44,65,103,0.06)]">
-      <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-blue-500 to-emerald-400" />
-      <div className="flex items-start gap-3">
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
-          <Cpu className="size-5" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="truncate text-sm font-bold text-slate-800">{camera?.zone || processor.cam}</h3>
-            <span className="text-2xl font-black tabular-nums tracking-tight text-slate-900">{processor.total ?? 0}</span>
-          </div>
-          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
-            <span className="flex items-center gap-1.5">
-              <span className={cn("size-1.5 rounded-full", processor.running ? "animate-pulse bg-emerald-400" : "bg-amber-400")} />
-              {inSession ? "режим отгрузки" : processor.running ? "фоновый подсчёт" : "переподключение"}
+    <>
+      <button type="button" onClick={showStream}
+        aria-label={`Открыть прямой эфир камеры ${camera?.zone || processor.cam}`}
+        className="group relative w-full overflow-hidden rounded-[20px] border border-slate-200 bg-white p-4 text-left shadow-[0_10px_32px_rgba(44,65,103,0.06)] transition duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_16px_38px_rgba(44,65,103,0.12)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40">
+        <span className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-blue-500 to-emerald-400" />
+        <span className="flex items-start gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 transition group-hover:bg-blue-600 group-hover:text-white">
+            <Cpu className="size-5" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center justify-between gap-2">
+              <span className="truncate text-sm font-bold text-slate-800">{camera?.zone || processor.cam}</span>
+              <span className="text-2xl font-black tabular-nums tracking-tight text-slate-900">{current.total ?? 0}</span>
             </span>
-            <span>{inSession ? "видео записывается" : "без записи видео"}</span>
+            <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+              <span className="flex items-center gap-1.5">
+                <span className={cn("size-1.5 rounded-full", current.running ? "animate-pulse bg-emerald-400" : "bg-amber-400")} />
+                {inSession ? "режим отгрузки" : current.running ? "фоновый подсчёт" : "переподключение"}
+              </span>
+              <span>{inSession ? "видео записывается" : "без записи видео"}</span>
+              <span className="ml-auto font-semibold text-blue-600 opacity-0 transition group-hover:opacity-100">Открыть эфир</span>
+            </span>
+          </span>
+        </span>
+      </button>
+
+      <Modal open={open} onClose={closeStream}
+        eyebrow="AI 24/7 · прямой эфир"
+        title={camera?.zone || processor.cam}
+        description="Исходный поток камеры и текущий результат фоновой модели. Видео в этом режиме не записывается."
+        className="max-w-5xl">
+        <div className="grid overflow-hidden rounded-[22px] border border-slate-200 bg-slate-950 shadow-[0_24px_70px_rgba(15,23,42,0.22)] lg:grid-cols-[minmax(0,1fr)_260px]">
+          <div className="relative aspect-video min-h-64 overflow-hidden bg-[#111827] lg:aspect-auto lg:min-h-[460px]">
+            {camera?.src ? (
+              <CameraStream src={camera.src} onStateChange={setStreamOnline}
+                className="absolute inset-0 size-full object-contain" />
+            ) : null}
+            {!streamOnline && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950 text-white/45">
+                <VideoOff className="size-8" />
+                <span className="text-sm">Подключаем прямой поток…</span>
+              </div>
+            )}
+            <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full border border-white/15 bg-black/45 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur-md">
+              <span className={cn("size-2 rounded-full", streamOnline ? "animate-pulse bg-emerald-400" : "bg-amber-400")} />
+              {streamOnline ? "ПРЯМОЙ ЭФИР" : "ПОДКЛЮЧЕНИЕ"}
+            </div>
           </div>
+
+          <aside className="flex flex-col justify-between border-t border-white/10 bg-slate-900 p-5 text-white lg:border-l lg:border-t-0">
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/45">Посчитано моделью</div>
+              <div className="mt-2 text-7xl font-black tabular-nums tracking-tight">{current.total ?? 0}</div>
+              <div className="mt-1 text-sm text-white/45">мешков в текущем цикле</div>
+
+              <div className="mt-7 space-y-2.5 text-sm">
+                <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
+                  <span className="text-white/55">Модель</span>
+                  <span className={cn("font-semibold", current.running ? "text-emerald-400" : "text-amber-300")}>
+                    {current.running ? "работает" : "ожидает связь"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
+                  <span className="text-white/55">Режим</span>
+                  <span className="font-semibold">{inSession ? "отгрузка" : "24/7"}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
+                  <span className="text-white/55">Запись</span>
+                  <span className="font-semibold">{inSession ? "включена" : "выключена"}</span>
+                </div>
+              </div>
+            </div>
+            {(current.error || liveDetail) && (
+              <p className="mt-5 rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5 text-xs leading-relaxed text-amber-100/80">
+                {current.error || liveDetail}
+              </p>
+            )}
+          </aside>
         </div>
-      </div>
-    </article>
+      </Modal>
+    </>
   );
 }
 
@@ -587,7 +694,8 @@ function MonoblockPageInner() {
                     total: 0,
                   };
                   return <AlwaysOnCard key={source} processor={processor}
-                    camera={playable.find((item) => item.src === source)} />;
+                    camera={playable.find((item) => item.src === source)}
+                    detail={alwaysOnSettings.detail} />;
                 })}
               </div>
             </section>

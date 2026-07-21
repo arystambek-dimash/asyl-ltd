@@ -7,6 +7,7 @@ from apps.shipments.models import Shipment
 from apps.warehouse.models import StockItem
 from apps.warehouse.services import receive_stock
 from apps.cameras.models import AiCountingSession
+from apps.cameras import recordings
 from apps.eventlog.models import EventLog
 from apps.orders import services
 from rest_framework.exceptions import ValidationError
@@ -112,6 +113,39 @@ def test_completed_shipment_rollback_restores_stock_deletes_video_and_audits(
     assert event.user == boss
     assert event.payload["reason"] == "Ошибочно выбран заказ"
     assert event.payload["recording_segments_deleted"] == 2
+
+
+def test_shipment_rollback_continues_when_camera_pc_is_unavailable(
+        auth_client, boss):
+    product = Product.objects.create(name="Локальная запись", color="Blue", weight_kg="50")
+    receive_stock(product, 12, boss)
+    order = _order()
+    OrderItem.objects.create(order=order, product=product, quantity=4, unit_price="10")
+    services.request_status_change(order, "shipped", boss, bags_loaded=4)
+    session = AiCountingSession.objects.create(
+        order=order, camera="cam3", status=AiCountingSession.CLOSED,
+        started_by=boss, closed_by=boss, ended_at=order.shipment.shipped_at,
+        recording_stream="cam3ai", final_total=4,
+    )
+
+    with patch(
+        "apps.cameras.recordings.delete_session_segments",
+        side_effect=recordings.RecordingUnavailable("offline"),
+    ):
+        response = auth_client(boss).post(
+            f"/api/orders/{order.id}/rollback-shipment/",
+            {"status": "confirmed", "reason": "Повторная обработка заказа"},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    order.refresh_from_db(); session.refresh_from_db()
+    assert order.status == "confirmed"
+    assert StockItem.objects.get(product=product).bags == 12
+    assert session.recording_stream == "cam3ai"
+    assert "сроку хранения" in session.error
+    event = EventLog.objects.get(event_type="shipment_rollback", order=order)
+    assert event.payload["recording_cleanup_pending_session_ids"] == [session.pk]
 
 
 def test_shipment_rollback_requires_permission_and_reason(auth_client, operator, boss):

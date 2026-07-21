@@ -34,7 +34,7 @@ import type { Client } from "@/lib/types";
 
 const schema = z.object({
   first_name: z.string().min(2, "Введите имя (мин. 2 символа)"),
-  last_name: z.string().min(2, "Введите фамилию (мин. 2 символа)"),
+  last_name: z.string().trim().max(100, "Не более 100 символов"),
   company_name: z.string().optional(),
   phone: z
     .string()
@@ -91,7 +91,7 @@ function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCance
 
         <FormField control={form.control} name="last_name" render={({ field }) => (
           <FormItem>
-            <FormLabel>Фамилия</FormLabel>
+            <FormLabel>Фамилия <span className="font-normal text-[var(--muted-foreground)]">(необязательно)</span></FormLabel>
             <FormControl><Input placeholder="Петров" {...field} /></FormControl>
             <FormMessage />
           </FormItem>
@@ -143,15 +143,34 @@ function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCance
         </div>
 
         <FormField control={form.control} name="currency" render={({ field }) => (
-          <FormItem>
-            <FormLabel>Валюта прайс-листа</FormLabel>
-            <Select value={field.value} onValueChange={field.onChange}>
-              <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
-              <SelectContent>
-                <SelectItem value="KZT">KZT · тенге (₸)</SelectItem>
-                <SelectItem value="USD">USD · доллар ($)</SelectItem>
-              </SelectContent>
-            </Select>
+          <FormItem className="sm:col-span-2 rounded-2xl border border-blue-100 bg-blue-50/55 p-4">
+            <div className="flex flex-col justify-between gap-1 sm:flex-row sm:items-start sm:gap-6">
+              <div>
+                <FormLabel>Валюта по умолчанию</FormLabel>
+                <p className="mt-1 text-xs leading-relaxed text-[var(--muted-foreground)]">
+                  Предвыбирается в новом заказе. В личном прайсе цены в ₸ и $ хранятся отдельно.
+                </p>
+              </div>
+              <FormControl>
+                <div className="grid shrink-0 grid-cols-2 gap-1 rounded-xl border border-blue-100 bg-white p-1 shadow-sm">
+                  {(["KZT", "USD"] as const).map((code) => (
+                    <button key={code} type="button" onClick={() => field.onChange(code)}
+                      aria-pressed={field.value === code}
+                      className={cn(
+                        "min-w-28 rounded-lg px-3 py-2 text-left transition",
+                        field.value === code
+                          ? "bg-slate-900 text-white shadow-sm"
+                          : "text-slate-500 hover:bg-slate-50 hover:text-slate-800",
+                      )}>
+                      <span className="block text-xs font-bold">{code}</span>
+                      <span className={cn("block text-[10px]", field.value === code ? "text-white/60" : "text-slate-400")}>
+                        {code === "KZT" ? "тенге · ₸" : "доллар · $"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </FormControl>
+            </div>
             <FormMessage />
           </FormItem>
         )} />

@@ -39,8 +39,8 @@ export default function RegisterPage() {
           <form onSubmit={submit} className="flex flex-col gap-3">
             <div className="flex flex-col gap-1.5"><Label>Имя</Label>
               <Input value={f.first_name} onChange={upd("first_name")} required /></div>
-            <div className="flex flex-col gap-1.5"><Label>Фамилия</Label>
-              <Input value={f.last_name} onChange={upd("last_name")} required /></div>
+            <div className="flex flex-col gap-1.5"><Label>Фамилия <span className="font-normal text-[var(--muted-foreground)]">(необязательно)</span></Label>
+              <Input value={f.last_name} onChange={upd("last_name")} /></div>
             <div className="flex flex-col gap-1.5"><Label>Название ТОО / ИП</Label>
               <Input value={f.company_name} onChange={upd("company_name")}
                 placeholder={'Например, ТОО "Сайрам нан"'} required /></div>

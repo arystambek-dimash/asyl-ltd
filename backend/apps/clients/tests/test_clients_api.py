@@ -24,6 +24,16 @@ def test_country_and_requisites_optional(auth_client, manager):
     assert resp.status_code == 201
 
 
+def test_last_name_is_optional(auth_client, manager):
+    resp = auth_client(manager).post(
+        "/api/clients/", {"first_name": "Айжан", "phone": "+77001112233"}
+    )
+    assert resp.status_code == 201
+    client = Client.objects.get(first_name="Айжан")
+    assert client.last_name == ""
+    assert client.name == "Айжан"
+
+
 def test_accountant_cannot_create_client(auth_client, accountant):
     resp = auth_client(accountant).post(
         "/api/clients/", {"first_name": "X", "last_name": "Y", "phone": "z"}

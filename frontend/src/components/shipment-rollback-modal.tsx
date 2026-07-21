@@ -63,7 +63,7 @@ export function ShipmentRollbackModal({ order, initialTarget = "confirmed", onCl
       <div className="space-y-4">
         <div className="grid gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 sm:grid-cols-2">
           <div className="flex gap-2"><ShieldAlert className="mt-0.5 size-4 shrink-0" /><span>Автор и причина навсегда сохранятся в журнале.</span></div>
-          <div className="flex gap-2"><VideoOff className="mt-0.5 size-4 shrink-0" /><span>Видео этой сессии удалится с компьютера камер.</span></div>
+          <div className="flex gap-2"><VideoOff className="mt-0.5 size-4 shrink-0" /><span>Видео удалится сразу; если ПК камер недоступен — по локальному сроку хранения.</span></div>
         </div>
         <div className="grid gap-1.5">
           <Label>Новый статус</Label>

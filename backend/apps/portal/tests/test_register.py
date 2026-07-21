@@ -21,6 +21,20 @@ def test_register_creates_client_user_and_returns_tokens(api_client):
 
 
 @pytest.mark.django_db
+def test_register_allows_empty_last_name(api_client):
+    payload = {
+        "username": "single-name", "password": "secret12345",
+        "first_name": "Мадина", "company_name": "ИП Мадина",
+        "phone": "+77001112233", "iin": "990101300123",
+    }
+
+    response = api_client.post("/api/portal/register/", payload, format="json")
+
+    assert response.status_code == 201
+    assert Client.objects.get(user__username="single-name").last_name == ""
+
+
+@pytest.mark.django_db
 @pytest.mark.parametrize("field", ["company_name", "iin"])
 def test_register_requires_invoice_requisites(api_client, field):
     payload = {"username": f"missing-{field}", "password": "secret12345",

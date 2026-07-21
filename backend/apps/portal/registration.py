@@ -16,7 +16,8 @@ class RegisterSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=150)
     password = serializers.CharField(min_length=8, write_only=True)
     first_name = serializers.CharField(max_length=100)
-    last_name = serializers.CharField(max_length=100)
+    last_name = serializers.CharField(
+        max_length=100, required=False, allow_blank=True, default="")
     company_name = serializers.CharField(max_length=200)
     phone = serializers.CharField(max_length=50)
     iin = serializers.CharField(min_length=12, max_length=12)
@@ -52,7 +53,7 @@ class RegisterSerializer(serializers.Serializer):
         user = User.objects.create_user(
             username=data["username"], password=data["password"], is_client=True)
         Client.objects.create(
-            user=user, first_name=data["first_name"], last_name=data["last_name"],
+            user=user, first_name=data["first_name"], last_name=data.get("last_name", ""),
             company_name=data["company_name"], phone=data["phone"], iin=data["iin"])
         return user
 

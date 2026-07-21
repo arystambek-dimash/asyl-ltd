@@ -406,13 +406,17 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
             "code": "product_deleted",
         })
 
-    # Удаляем видео до изменения учёта. Если ПК камер недоступен, склад и
-    # статус остаются нетронутыми и оператор может безопасно повторить откат.
+    # Удаление локального видео — сопутствующая очистка, а не часть складской
+    # транзакции. Недоступный ПК камер не должен блокировать контролируемый
+    # откат: запись всё равно исчезнет по локальной политике хранения, а сбой
+    # очистки сохраняется в журнале для администратора.
     from apps.cameras import recordings
     from apps.cameras.models import AiCountingSession
     sessions = list(AiCountingSession.objects.select_for_update().filter(order=order))
     shipment = Shipment.objects.select_for_update().filter(order=order).first()
     deleted_segments = 0
+    cleaned_session_ids = []
+    cleanup_pending_session_ids = []
     for session in sessions:
         if not session.recording_stream:
             continue
@@ -420,11 +424,9 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
         try:
             deleted_segments += recordings.delete_session_segments(
                 session.recording_stream, session.started_at, end)
-        except recordings.RecordingUnavailable as exc:
-            raise ValidationError({
-                "detail": "Не удалось удалить видео на компьютере камер. Откат не выполнен.",
-                "code": "recording_delete_unavailable",
-            }) from exc
+            cleaned_session_ids.append(session.pk)
+        except recordings.RecordingUnavailable:
+            cleanup_pending_session_ids.append(session.pk)
 
     from apps.warehouse.services import adjust_stock
     restored = 0
@@ -440,9 +442,15 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
     previous_bags = shipment.bags_loaded if shipment else 0
     if shipment:
         shipment.delete()
-    AiCountingSession.objects.filter(pk__in=[session.pk for session in sessions]).update(
+    AiCountingSession.objects.filter(pk__in=cleaned_session_ids).update(
         recording_stream="",
         error="Видео удалено при откате отгрузки",
+    )
+    AiCountingSession.objects.filter(pk__in=cleanup_pending_session_ids).update(
+        error=(
+            "Отгрузка отменена; видео не удалось удалить сразу. "
+            "Оно будет удалено по локальному сроку хранения"
+        ),
     )
     order.status = target_status
     order.payment_status = "unpaid"
@@ -458,6 +466,7 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
             "restored_bags": restored, "previous_bags_loaded": previous_bags,
             "recording_segments_deleted": deleted_segments,
             "recording_session_ids": [session.pk for session in sessions],
+            "recording_cleanup_pending_session_ids": cleanup_pending_session_ids,
         },
     )
     return order

@@ -27,7 +27,7 @@ class Department(models.Model):
 class Client(models.Model):
     CURRENCIES = (("KZT", "KZT (тенге)"), ("USD", "USD (доллар)"))
     first_name = models.CharField(max_length=100)
-    last_name = models.CharField(max_length=100)
+    last_name = models.CharField(max_length=100, blank=True, default="")
     # Юридическое наименование покупателя для счетов и других документов.
     # Оставляем отдельным от ФИО контактного лица: это разные реквизиты.
     company_name = models.CharField(
