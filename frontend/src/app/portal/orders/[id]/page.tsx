@@ -131,7 +131,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
               ) : (
                 <>
                   <p className="text-sm text-[var(--muted-foreground)]">
-                    Заказ отгружен. Выберите удобный способ оплаты.
+                    Заказ отгружен. Выберите способ оплаты в {order.currency === "USD" ? "USD ($)" : "KZT (₸)"}.
                   </p>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <Button disabled={busy} variant="outline" className="h-auto justify-start py-3"
@@ -163,7 +163,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                 </div>
               )}
               <p className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
-                <CheckCircle2 className="size-3.5" /> Выбранный способ зафиксируется в заказе.
+                <CheckCircle2 className="size-3.5" /> Способ и валюта оплаты фиксируются в заказе.
               </p>
             </CardContent>
           </Card>

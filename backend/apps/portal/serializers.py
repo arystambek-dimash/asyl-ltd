@@ -30,9 +30,7 @@ class CatalogProductSerializer(serializers.ModelSerializer):
         return money_string(prices[0].price) if prices else None
 
     def get_currency(self, obj):
-        request = self.context.get("request")
-        client = getattr(getattr(request, "user", None), "client_profile", None)
-        return client.currency if client else "KZT"
+        return self.context.get("currency", "KZT")
 
 
 class PortalOrderItemSerializer(serializers.ModelSerializer):
@@ -57,6 +55,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
         choices=Order.PAYMENT_METHODS, required=False)
     transport_type = serializers.ChoiceField(
         choices=Order.TRANSPORT_TYPES, required=False, default="truck")
+    currency = serializers.ChoiceField(choices=Order.CURRENCIES, required=False)
     store = serializers.PrimaryKeyRelatedField(
         queryset=Store.objects.all(), required=False, allow_null=True)
     store_name = serializers.CharField(source="store.name", read_only=True, default=None)
@@ -162,14 +161,15 @@ class PortalOrderSerializer(serializers.ModelSerializer):
         transport = validated_data.get("transport_type", "truck")
         store = validated_data.get("store")
         client = self._client()
+        currency = validated_data.pop("currency", client.currency)
         product_ids = [item["product"].id for item in items]
         client_prices = {
             row.product_id: row.price
             for row in ClientPrice.objects.filter(
-                client=client, product_id__in=product_ids)
+                client=client, product_id__in=product_ids, currency=currency)
         }
         order = Order.objects.create(client=client, status="pending",
-                                     currency=client.currency,
+                                     currency=currency,
                                      department=Department.default_code(),
                                      settlement_intent=intent,
                                      payment_method=method, store=store,

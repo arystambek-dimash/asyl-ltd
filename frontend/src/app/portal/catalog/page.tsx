@@ -1,4 +1,5 @@
 "use client";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
@@ -13,17 +14,37 @@ interface PortalProduct {
 }
 
 export default function PortalCatalogPage() {
-  const { data: products, loading } = useApi<PortalProduct[]>("/portal/catalog/");
+  const [currency, setCurrency] = useState<"KZT" | "USD" | null>(null);
+  const { data: products, loading } = useApi<PortalProduct[]>(
+    currency ? `/portal/catalog/?currency=${currency}` : "/portal/catalog/",
+  );
+  const selectedCurrency = currency ?? products?.[0]?.currency ?? "KZT";
+  useEffect(() => {
+    if (!currency && products?.[0]?.currency) setCurrency(products[0].currency);
+  }, [currency, products]);
   return (
     <AppShell title="Товары" portal>
-      <div className="mb-4 flex justify-between">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="font-medium">Ваш личный прайс-лист</p>
           <p className="text-xs text-[var(--muted-foreground)]">Цены закреплены специально для вашей компании</p>
         </div>
-        <Link href="/portal/orders/new">
-          <Button size="sm"><ShoppingCart className="size-4" /> Оформить заказ</Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <div className="inline-flex rounded-lg border bg-[var(--muted)]/30 p-1">
+            {(["KZT", "USD"] as const).map((code) => (
+              <button key={code} type="button" onClick={() => setCurrency(code)}
+                className={"rounded-md px-3 py-1.5 text-xs font-semibold transition-all " +
+                  (selectedCurrency === code
+                    ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
+                    : "text-[var(--muted-foreground)]")}>
+                {code} {code === "USD" ? "$" : "₸"}
+              </button>
+            ))}
+          </div>
+          <Link href="/portal/orders/new">
+            <Button size="sm"><ShoppingCart className="size-4" /> Оформить заказ</Button>
+          </Link>
+        </div>
       </div>
       {loading ? (
         <p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p>

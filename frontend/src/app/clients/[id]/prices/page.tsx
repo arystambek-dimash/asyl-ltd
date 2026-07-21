@@ -20,7 +20,7 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
   const { data, loading, error: loadError, reload } = useApi<ClientPriceSheet>(
     `/clients/${id}/prices/`,
   );
-  const [values, setValues] = useState<Record<number, string>>({});
+  const [values, setValues] = useState<Record<string, string>>({});
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -29,13 +29,19 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
 
   useEffect(() => {
     if (!data) return;
-    setValues(Object.fromEntries(data.prices.map((row) => [row.product, row.price ?? ""])));
+    setValues(Object.fromEntries(data.prices.map((row) => [
+      `${row.product}:${row.currency}`, row.price ?? "",
+    ])));
     setDirty(false);
   }, [data]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return (data?.prices ?? []).filter(
+    const products = new Map<number, { product: number; product_label: string }>();
+    for (const row of data?.prices ?? []) {
+      if (!products.has(row.product)) products.set(row.product, row);
+    }
+    return [...products.values()].filter(
       (row) => !needle || row.product_label.toLowerCase().includes(needle),
     );
   }, [data, query]);
@@ -49,10 +55,11 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
   }
 
   const priceRows = data.prices;
-  const assigned = priceRows.filter((row) => Number(values[row.product]) > 0).length;
+  const assigned = priceRows.filter((row) => Number(values[`${row.product}:${row.currency}`]) > 0).length;
+  const productsTotal = new Set(priceRows.map((row) => row.product)).size;
 
-  function setPrice(product: number, value: string) {
-    setValues((current) => ({ ...current, [product]: value }));
+  function setPrice(product: number, currency: "KZT" | "USD", value: string) {
+    setValues((current) => ({ ...current, [`${product}:${currency}`]: value }));
     setDirty(true);
     setSaved(false);
   }
@@ -63,7 +70,8 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
       await api.put(`/clients/${id}/prices/`, {
         prices: priceRows.map((row) => ({
           product: row.product,
-          price: values[row.product]?.trim() || null,
+          currency: row.currency,
+          price: values[`${row.product}:${row.currency}`]?.trim() || null,
         })),
       });
       await reload();
@@ -88,7 +96,7 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-xl font-semibold tracking-tight">{data.client.name}</h2>
           <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
-            Эти цены увидит клиент после входа в приложение.
+            Отдельные договорные цены в тенге и долларах — для заказов в выбранной валюте.
           </p>
         </div>
         <Button disabled={busy || !dirty} onClick={save}>
@@ -98,12 +106,12 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:max-w-lg">
         <Card className="p-4">
-          <div className="text-xs text-[var(--muted-foreground)]">Закреплено цен</div>
+          <div className="text-xs text-[var(--muted-foreground)]">Закреплено валютных цен</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums">{assigned}</div>
         </Card>
         <Card className="p-4">
           <div className="text-xs text-[var(--muted-foreground)]">Всего товаров</div>
-          <div className="mt-1 text-2xl font-semibold tabular-nums">{data.prices.length}</div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums">{productsTotal}</div>
         </Card>
       </div>
 
@@ -130,25 +138,43 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
         <CardContent className="p-0">
           <Table>
             <THead>
-              <TR><TH>Товар</TH><TH className="text-right">Цена клиента · {data.client.currency === "USD" ? "USD ($)" : "KZT (₸)"}</TH><TH>Обновлено</TH></TR>
+              <TR>
+                <TH>Товар</TH>
+                <TH className="text-right">KZT · тенге</TH>
+                <TH className="text-right">USD · доллар</TH>
+              </TR>
             </THead>
             <TBody>
               {filtered.map((row) => {
+                const byCurrency = Object.fromEntries(
+                  priceRows.filter((item) => item.product === row.product)
+                    .map((item) => [item.currency, item]),
+                ) as Record<"KZT" | "USD", (typeof priceRows)[number]>;
                 return (
                   <TR key={row.product}>
                     <TD className="font-medium">{row.product_label}</TD>
-                    <TD>
-                      <div className="ml-auto max-w-52">
-                        <Input type="number" min="0.01" step="0.01" inputMode="decimal"
-                          className="text-right tabular-nums" placeholder="Не закреплена"
-                          value={values[row.product] ?? ""}
-                          onChange={(event) => setPrice(row.product, event.target.value)} />
-                      </div>
-                    </TD>
-                    <TD className="text-xs text-[var(--muted-foreground)]">
-                      {row.updated_at ? formatDateTime(row.updated_at) : "Ещё не закреплена"}
-                      {row.updated_by_name && <span className="block">{row.updated_by_name}</span>}
-                    </TD>
+                    {(["KZT", "USD"] as const).map((currency) => {
+                      const item = byCurrency[currency];
+                      return (
+                        <TD key={currency}>
+                          <div className="ml-auto max-w-52">
+                            <div className="relative">
+                              <Input type="number" min="0.01" step="0.01" inputMode="decimal"
+                                className="pr-9 text-right tabular-nums" placeholder="Не закреплена"
+                                value={values[`${row.product}:${currency}`] ?? ""}
+                                onChange={(event) => setPrice(row.product, currency, event.target.value)} />
+                              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm font-medium text-[var(--muted-foreground)]">
+                                {currency === "USD" ? "$" : "₸"}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-right text-[10px] text-[var(--muted-foreground)]">
+                              {item?.updated_at ? formatDateTime(item.updated_at) : "Ещё не закреплена"}
+                              {item?.updated_by_name ? ` · ${item.updated_by_name}` : ""}
+                            </p>
+                          </div>
+                        </TD>
+                      );
+                    })}
                   </TR>
                 );
               })}
@@ -162,7 +188,7 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
         </CardContent>
       </Card>
       <p className="mt-3 text-xs text-[var(--muted-foreground)]">
-        Очистите поле цены и сохраните, чтобы убрать товар из личного прайс-листа.
+        Очистите конкретное поле и сохраните, чтобы убрать цену только в этой валюте.
       </p>
     </AppShell>
   );

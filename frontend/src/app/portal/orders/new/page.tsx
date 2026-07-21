@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,13 +20,20 @@ interface PortalProduct {
 
 export default function PortalNewOrderPage() {
   const router = useRouter();
-  const { data: products } = useApi<PortalProduct[]>("/portal/catalog/");
+  const [currency, setCurrency] = useState<"KZT" | "USD" | null>(null);
+  const { data: products } = useApi<PortalProduct[]>(
+    currency ? `/portal/catalog/?currency=${currency}` : "/portal/catalog/",
+  );
   const { data: stores } = useApi<Store[]>("/portal/stores/");
   const [rows, setRows] = useState([{ product: "", quantity: "" }]);
   const [transport, setTransport] = useState<"truck" | "train">("truck");
   const [store, setStore] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const selectedCurrency = currency ?? products?.[0]?.currency ?? "KZT";
+  useEffect(() => {
+    if (!currency && products?.[0]?.currency) setCurrency(products[0].currency);
+  }, [currency, products]);
   const estimatedTotal = rows.reduce((sum, row) => {
     const product = products?.find((item) => String(item.id) === row.product);
     return sum + Number(product?.price ?? 0) * Number(row.quantity || 0);
@@ -42,6 +49,7 @@ export default function PortalNewOrderPage() {
       if (!items.length) throw new Error("empty");
       await api.post("/portal/orders/", {
         items, transport_type: transport,
+        currency: selectedCurrency,
         store: store ? Number(store) : null,
       });
       router.push("/portal/orders");
@@ -57,6 +65,28 @@ export default function PortalNewOrderPage() {
         <Card>
           <CardHeader><CardTitle>Оформление заказа</CardTitle></CardHeader>
           <CardContent className="flex flex-col gap-4">
+            <div>
+              <Label className="mb-2 block">Валюта заказа и оплаты</Label>
+              <div className="grid grid-cols-2 gap-2 rounded-xl bg-[var(--muted)]/35 p-1.5">
+                {([[
+                  "KZT", "₸", "Тенге",
+                ], ["USD", "$", "Доллары"]] as const).map(([code, symbol, label]) => (
+                  <button key={code} type="button" onClick={() => setCurrency(code)}
+                    className={
+                      "flex items-center justify-between rounded-lg border px-3 py-2.5 text-left transition-all " +
+                      (selectedCurrency === code
+                        ? "border-[var(--primary)] bg-[var(--card)] shadow-sm"
+                        : "border-transparent text-[var(--muted-foreground)] hover:bg-[var(--card)]/60")
+                    }>
+                    <span><b className="mr-2">{code}</b><span className="text-xs">{label}</span></span>
+                    <span className="text-lg font-semibold">{symbol}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1.5 text-xs text-[var(--muted-foreground)]">
+                Показываем ваш личный прайс в {selectedCurrency}; оплата заказа будет в той же валюте.
+              </p>
+            </div>
             {rows.map((r, i) => (
               <div key={i} className="flex gap-2">
                 <Select className="flex-1" value={r.product}
@@ -115,7 +145,7 @@ export default function PortalNewOrderPage() {
                 {" Способ оплаты вы выберете после завершения отгрузки."}
                 {estimatedTotal > 0 && (
                   <b className="ml-1 text-[var(--foreground)]">
-                    Предварительно: {estimatedTotal.toLocaleString("ru-RU")} {products?.[0]?.currency === "USD" ? "$" : "₸"}
+                    Предварительно: {estimatedTotal.toLocaleString("ru-RU")} {selectedCurrency === "USD" ? "$" : "₸"}
                   </b>
                 )}
               </span>

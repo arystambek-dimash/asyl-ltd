@@ -30,25 +30,34 @@ def test_authorized_employee_can_attach_and_remove_client_prices(
     response = auth_client(user).put(
         f"/api/clients/{client.id}/prices/",
         {"prices": [
-            {"product": first.id, "price": "875.50"},
-            {"product": second.id, "price": "920.00"},
+            {"product": first.id, "currency": "KZT", "price": "875.50"},
+            {"product": first.id, "currency": "USD", "price": "1.95"},
+            {"product": second.id, "currency": "KZT", "price": "920.00"},
         ]}, format="json",
     )
 
     assert response.status_code == 200
-    assert ClientPrice.objects.get(client=client, product=first).price == Decimal("875.50")
-    assert ClientPrice.objects.get(client=client, product=first).updated_by == user
-    by_product = {row["product"]: row for row in response.data["prices"]}
-    assert by_product[first.id]["price"] == "875.50"
-    assert by_product[second.id]["price"] == "920.00"
-    assert "base_price" not in by_product[first.id]
+    kzt = ClientPrice.objects.get(client=client, product=first, currency="KZT")
+    usd = ClientPrice.objects.get(client=client, product=first, currency="USD")
+    assert kzt.price == Decimal("875.50")
+    assert usd.price == Decimal("1.95")
+    assert kzt.updated_by == user
+    by_key = {(row["product"], row["currency"]): row
+              for row in response.data["prices"]}
+    assert by_key[(first.id, "KZT")]["price"] == "875.50"
+    assert by_key[(first.id, "USD")]["price"] == "1.95"
+    assert by_key[(second.id, "KZT")]["price"] == "920.00"
+    assert "base_price" not in by_key[(first.id, "KZT")]
 
     removed = auth_client(user).put(
         f"/api/clients/{client.id}/prices/",
-        {"prices": [{"product": first.id, "price": None}]}, format="json",
+        {"prices": [{"product": first.id, "currency": "KZT", "price": None}]}, format="json",
     )
     assert removed.status_code == 200
-    assert not ClientPrice.objects.filter(client=client, product=first).exists()
+    assert not ClientPrice.objects.filter(
+        client=client, product=first, currency="KZT").exists()
+    assert ClientPrice.objects.filter(
+        client=client, product=first, currency="USD").exists()
     assert ClientPrice.objects.filter(client=client, product=second).exists()
 
 
@@ -99,3 +108,20 @@ def test_duplicate_product_in_price_list_is_rejected(auth_client, user_with_perm
         ]}, format="json",
     )
     assert response.status_code == 400
+
+
+def test_same_product_in_two_currencies_is_allowed(auth_client, user_with_perms):
+    user = user_with_perms("price-bilingual", codes=["clients.set_price"])
+    client = _client()
+    product = _product()
+
+    response = auth_client(user).put(
+        f"/api/clients/{client.id}/prices/",
+        {"prices": [
+            {"product": product.id, "currency": "KZT", "price": "15000"},
+            {"product": product.id, "currency": "USD", "price": "31.50"},
+        ]}, format="json",
+    )
+
+    assert response.status_code == 200
+    assert ClientPrice.objects.filter(client=client, product=product).count() == 2

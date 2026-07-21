@@ -41,6 +41,25 @@ def test_staff_create_without_prices_stays_draft(manager):
     assert Order.objects.get().status == "draft"
 
 
+def test_staff_can_create_usd_order_and_remember_usd_price(manager):
+    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    p = Product.objects.create(name="USD P", color="Red", weight_kg="50")
+    StockItem.objects.create(product=p, bags=500)
+    r = _api(manager).post("/api/orders/", {
+        "client": c.id,
+        "currency": "USD",
+        "items": [{"product": p.id, "quantity": 2}],
+        "prices": {str(p.id): "25.50"},
+    }, format="json")
+
+    assert r.status_code == 201
+    order = Order.objects.get(pk=r.data["id"])
+    assert order.currency == "USD"
+    assert order.total_amount == Decimal("51.00")
+    assert ClientPrice.objects.get(
+        client=c, product=p, currency="USD").price == Decimal("25.50")
+
+
 def test_failed_price_confirmation_leaves_no_orphan_order(manager):
     # Регресс: create() атомарен — упавшее подтверждение цен не должно
     # оставлять в базе заказ без цен.

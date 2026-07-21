@@ -51,15 +51,15 @@ class OrderItemSerializer(serializers.ModelSerializer):
             return None
         cache = self.context.setdefault("_client_prices", {})
         client = obj.order.client
-        client_id = client.id
-        if client_id not in cache:
+        cache_key = (client.id, obj.order.currency)
+        if cache_key not in cache:
             prefetched = getattr(client, "_prefetched_objects_cache", {}).get("prices")
             prices = prefetched if prefetched is not None else client.prices.all()
-            cache[client_id] = {
+            cache[cache_key] = {
                 cp.product_id: str(cp.price)
-                for cp in prices
+                for cp in prices if cp.currency == obj.order.currency
             }
-        return cache[client_id].get(obj.product_id)
+        return cache[cache_key].get(obj.product_id)
 
 
 class StatusChangeRequestSerializer(serializers.ModelSerializer):
@@ -98,10 +98,11 @@ class PaymentSerializer(serializers.ModelSerializer):
     received_by_name = serializers.SerializerMethodField()
     confirmed_by_name = serializers.SerializerMethodField()
     method_label = serializers.SerializerMethodField()
+    currency = serializers.CharField(source="order.currency", read_only=True)
 
     class Meta:
         model = Payment
-        fields = ["id", "order", "amount", "method", "method_label", "status",
+        fields = ["id", "order", "currency", "amount", "method", "method_label", "status",
                   "note", "paid_at", "recorded_by", "recorded_by_name",
                   "received_by_name", "received_at",
                   "confirmed_by", "confirmed_by_name", "confirmed_at"]
@@ -189,6 +190,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     department = serializers.CharField(required=False)
     department_name = serializers.SerializerMethodField()
     department_color = serializers.SerializerMethodField()
+    currency = serializers.ChoiceField(choices=Order.CURRENCIES, required=False)
 
     class Meta:
         model = Order
@@ -203,7 +205,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                   "weigh_in_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at",
                   "shipped_at", "loading_camera", "deleted_at", "deleted_by_name"]
-        read_only_fields = ["currency", "debt_override", "deleted_at"]
+        read_only_fields = ["debt_override", "deleted_at"]
         extra_kwargs = {
             "truck_number": {"required": False},
             "arrival_date": {"required": False, "allow_null": True},
@@ -320,7 +322,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         ensure_products_available(item["product"] for item in items)
         user = self.context["request"].user
         validated_data["created_by"] = user
-        validated_data["currency"] = validated_data["client"].currency
+        validated_data.setdefault("currency", validated_data["client"].currency)
         # Отдел — свойство заказа. Для старых API-клиентов используем основной.
         validated_data.setdefault("department", Department.default_code())
         # Оператор (orders.confirm) создаёт заказ сразу подтверждённым с ценами;
@@ -353,6 +355,11 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"detail": "Клиента изменить нельзя — создайте новый заказ",
                  "code": "client_locked"})
+        new_currency = validated_data.pop("currency", None)
+        if new_currency is not None and new_currency != instance.currency:
+            raise serializers.ValidationError(
+                {"detail": "Валюту созданного заказа изменить нельзя — создайте новый заказ",
+                 "code": "currency_locked"})
         new_truck = validated_data.pop("truck_number", None)
         if new_truck is not None and new_truck != instance.truck_number:
             set_truck_number(instance, new_truck, user)

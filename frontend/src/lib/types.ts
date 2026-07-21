@@ -17,6 +17,7 @@ export interface Product {
 export interface ClientPriceRow {
   product: number;
   product_label: string;
+  currency: "KZT" | "USD";
   price: string | null;
   updated_at: string | null;
   updated_by_name: string | null;
@@ -120,7 +121,7 @@ export interface PortalOrder {
 export type PaymentStage = "requested" | "received" | "accountant_ok" | "confirmed" | "rejected";
 
 export interface Payment {
-  id: number; order: number; amount: string; method: PaymentMethod; method_label?: string;
+  id: number; order: number; currency?: "KZT" | "USD"; amount: string; method: PaymentMethod; method_label?: string;
   note?: string;
   status: PaymentStage; paid_at: string; recorded_by: number | null; recorded_by_name?: string | null;
   received_by_name?: string | null; received_at?: string | null;

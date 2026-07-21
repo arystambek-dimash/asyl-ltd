@@ -110,22 +110,25 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     def _price_rows(self, client):
         prices = {
-            row.product_id: row
+            (row.product_id, row.currency): row
             for row in ClientPrice.objects.filter(client=client).select_related("updated_by")
         }
         return [
             {
                 "product": product.id,
                 "product_label": str(product),
-                "price": money_string(prices[product.id].price)
-                if product.id in prices else None,
-                "updated_at": prices[product.id].updated_at
-                if product.id in prices else None,
-                "updated_by_name": prices[product.id].updated_by.username
-                if product.id in prices and prices[product.id].updated_by else None,
+                "currency": currency,
+                "price": money_string(prices[(product.id, currency)].price)
+                if (product.id, currency) in prices else None,
+                "updated_at": prices[(product.id, currency)].updated_at
+                if (product.id, currency) in prices else None,
+                "updated_by_name": prices[(product.id, currency)].updated_by.username
+                if ((product.id, currency) in prices
+                    and prices[(product.id, currency)].updated_by) else None,
             }
             for product in Product.objects.filter(is_active=True).order_by(
                 "name", "color", "weight_kg")
+            for currency, _label in ClientPrice.CURRENCIES
         ]
 
     @action(detail=True, methods=["get", "put"], url_path="prices")
@@ -143,14 +146,15 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         with transaction.atomic():
             for row in serializer.validated_data["prices"]:
                 product = row["product"]
+                currency = row["currency"]
                 price = row.get("price")
                 if price is None:
                     deleted, _ = ClientPrice.objects.filter(
-                        client=client, product=product).delete()
+                        client=client, product=product, currency=currency).delete()
                     removed += deleted
                     continue
                 _, created = ClientPrice.objects.update_or_create(
-                    client=client, product=product,
+                    client=client, product=product, currency=currency,
                     defaults={"price": price, "updated_by": request.user},
                 )
                 changed += 1

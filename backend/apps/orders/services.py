@@ -62,10 +62,14 @@ def _set_payment_stage(payment: Payment, status: str, user) -> Payment:
         setattr(payment, at_field, timezone.now())
         fields += [by_field, at_field]
     payment.save(update_fields=fields)
-    log_event("payment", f"Оплата {payment.amount} {PAYMENT_STAGE_LABELS[status]}",
+    log_event(
+        "payment",
+        f"Оплата {payment.amount} {payment.order.currency} {PAYMENT_STAGE_LABELS[status]}",
               user=user, order=payment.order,
               payload={"payment_id": payment.id, "amount": str(payment.amount),
-                       "payment_stage": status})
+                       "currency": payment.order.currency,
+                       "payment_stage": status},
+    )
     return payment
 
 
@@ -89,10 +93,14 @@ def add_payment(order: Order, amount, user, method="cash", stage="received",
         recorded_by=user,
         **({"received_by": user, "received_at": timezone.now()}
            if stage == "received" else {}))
-    log_event("payment", f"Оплата {amount} ({method}) {PAYMENT_STAGE_LABELS[stage]}",
+    log_event(
+        "payment",
+        f"Оплата {amount} {order.currency} ({method}) {PAYMENT_STAGE_LABELS[stage]}",
               user=user, order=order,
               payload={"payment_id": payment.id, "amount": str(amount),
-                       "method": method, "payment_stage": stage})
+                       "currency": order.currency, "method": method,
+                       "payment_stage": stage},
+    )
     return payment
 
 
@@ -143,10 +151,13 @@ def create_client_payment(order: Order, method: str, user) -> Payment:
     order.settlement_intent = "instant"
     order.debt_requested = False
     order.save(update_fields=["payment_method", "settlement_intent", "debt_requested"])
-    log_event("payment", f"Клиент {'инициировал' if created else 'обновил'} оплату {remaining} ({method})",
+    action = "инициировал" if created else "обновил"
+    log_event(
+        "payment", f"Клиент {action} оплату {remaining} {order.currency} ({method})",
               user=user, order=order,
               payload={"payment_id": payment.id, "amount": str(remaining), "method": method,
-                       "payment_stage": stage})
+                       "currency": order.currency, "payment_stage": stage},
+    )
     return payment
 
 
@@ -220,12 +231,13 @@ def reopen_confirmed_payment(payment: Payment, user) -> Payment:
     payment.save(update_fields=["status", "confirmed_by", "confirmed_at"])
     log_event(
         "payment",
-        f"Оплата {payment.amount} возвращена на подтверждение",
+        f"Оплата {payment.amount} {payment.order.currency} возвращена на подтверждение",
         user=user,
         order=payment.order,
         payload={
             "payment_id": payment.id,
             "amount": str(payment.amount),
+            "currency": payment.order.currency,
             "method": payment.method,
             "payment_stage": "received",
             "action": "reopened",
@@ -337,6 +349,7 @@ def _apply_prices(order: Order, prices: dict, user) -> None:
         if user.has_perm_code("clients.set_price") and item.product_id is not None:
             ClientPrice.objects.update_or_create(
                 client=order.client, product=item.product,
+                currency=order.currency,
                 defaults={"price": price, "updated_by": user})
 
 

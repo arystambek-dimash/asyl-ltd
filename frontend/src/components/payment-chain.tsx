@@ -178,6 +178,9 @@ export function AddPaymentActions({ order, me, onChanged, mode = "both" }: {
             <Label>Сумма (остаток {formatCurrency(String(remaining), order.currency)})</Label>
             <Input type="number" min="1" step="0.01" value={amount} autoFocus
               onChange={(e) => setAmount(e.target.value)} required />
+            <p className="text-xs text-[var(--muted-foreground)]">
+              Валюта оплаты закреплена заказом: {order.currency === "USD" ? "USD ($)" : "KZT (₸)"}.
+            </p>
           </div>
           <div className="grid gap-2">
             <Label>Способ</Label>

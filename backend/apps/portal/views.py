@@ -36,16 +36,31 @@ class PortalCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     permission_classes = [IsClientUser]
     # Клиент видит активные товары, даже если складская карточка ещё не создана.
     # Остаток в таком случае показываем как 0, а заказ дальше обрабатывается текущим флоу.
+    def _currency(self):
+        requested = (self.request.query_params.get("currency") or "").upper()
+        if requested:
+            if requested not in dict(Order.CURRENCIES):
+                raise ValidationError({"currency": "Выберите KZT или USD."})
+            return requested
+        return (Client.objects.filter(user=self.request.user)
+                .values_list("currency", flat=True).first() or "KZT")
+
     def get_queryset(self):
         client_id = (Client.objects.filter(user=self.request.user)
                      .values_list("id", flat=True).first())
-        price_qs = ClientPrice.objects.filter(client_id=client_id)
+        price_qs = ClientPrice.objects.filter(
+            client_id=client_id, currency=self._currency())
         return (Product.objects.filter(is_active=True)
                 .select_related("stock")
                 .prefetch_related(Prefetch(
                     "client_prices", queryset=price_qs,
                     to_attr="portal_client_prices"))
                 .order_by("name", "color", "weight_kg"))
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["currency"] = self._currency()
+        return context
 
 
 class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,

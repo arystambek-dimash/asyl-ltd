@@ -33,6 +33,7 @@ export function OrderForm({ editing, onCancel, onDone }: {
   const { data: departments } = useApi<Department[]>("/departments/");
   const [dept, setDept] = useState(editing?.department ?? "");
   const [client, setClient] = useState(editing ? String(editing.client) : "");
+  const [currency, setCurrency] = useState<"KZT" | "USD">(editing?.currency ?? "KZT");
   const [store, setStore] = useState(editing?.store ? String(editing.store) : "");
   const [transport, setTransport] = useState<"truck" | "train">(editing?.transport_type ?? "truck");
   const [truck, setTruck] = useState(editing?.truck_number ?? "");
@@ -59,22 +60,22 @@ export function OrderForm({ editing, onCancel, onDone }: {
     // Быстрое переключение клиентов: медленный старый ответ не должен
     // перезаписать цены уже выбранного клиента.
     let stale = false;
-    api.get<Record<string, string>>(`/client-prices/?client=${client}`)
+    api.get<Record<string, string>>(`/client-prices/?client=${client}&currency=${currency}`)
       .then((r) => {
         if (stale) return;
         setClientPrices(r.data);
-        setRows((rs) => rs.map((row) =>
-          row.product && !row.price && r.data[row.product]
-            ? { ...row, price: r.data[row.product] } : row));
+        if (!editing) {
+          setRows((rs) => rs.map((row) => row.product
+            ? { ...row, price: r.data[row.product] ?? "" }
+            : row));
+        }
       })
       .catch(() => { if (!stale) setClientPrices({}); });
     return () => { stale = true; };
-  }, [client]);
+  }, [client, currency, editing]);
 
   const total = rows.reduce((s, r) => s + Number(r.price || 0) * Number(r.quantity || 0), 0);
-  const selectedCurrency = editing?.currency
-    ?? clients?.find((item) => String(item.id) === client)?.currency
-    ?? "KZT";
+  const selectedCurrency = currency;
   const allPriced = rows.filter((r) => r.product && Number(r.quantity) > 0)
     .every((r) => Number(r.price) > 0);
 
@@ -91,6 +92,7 @@ export function OrderForm({ editing, onCancel, onDone }: {
         transport_type: transport,
         truck_number: transport === "train" ? "" : truck,
         arrival_date: arrival || null,
+        currency,
         items,
         prices,
       };
@@ -144,7 +146,12 @@ export function OrderForm({ editing, onCancel, onDone }: {
         <div className="grid gap-2">
           <Label>Клиент</Label>
           <Select value={client} disabled={!!editing}
-            onChange={(e) => { setClient(e.target.value); setStore(""); }} required>
+            onChange={(e) => {
+              const value = e.target.value;
+              setClient(value); setStore("");
+              const selected = clients?.find((item) => String(item.id) === value);
+              if (selected) setCurrency(selected.currency);
+            }} required>
             <option value="">Выберите клиента</option>
             {(clients ?? []).map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
@@ -169,6 +176,37 @@ export function OrderForm({ editing, onCancel, onDone }: {
             </span>
           )}
         </div>
+      </div>
+
+      <div className="grid gap-2">
+        <div className="flex items-center justify-between gap-3">
+          <Label>Валюта заказа</Label>
+          <span className="text-[11px] text-[var(--muted-foreground)]">
+            Оплата будет принята в этой же валюте
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-2 rounded-xl bg-[var(--muted)]/35 p-1.5">
+          {([[
+            "KZT", "₸", "Тенге",
+          ], ["USD", "$", "Доллары"]] as const).map(([code, symbol, label]) => (
+            <button key={code} type="button" disabled={!!editing}
+              onClick={() => setCurrency(code)}
+              className={
+                "flex items-center justify-between rounded-lg border px-3 py-2.5 text-left transition-all disabled:cursor-not-allowed " +
+                (currency === code
+                  ? "border-[var(--primary)] bg-[var(--card)] text-[var(--foreground)] shadow-sm"
+                  : "border-transparent text-[var(--muted-foreground)] hover:bg-[var(--card)]/60")
+              }>
+              <span><b className="mr-2 font-semibold">{code}</b><span className="text-xs">{label}</span></span>
+              <span className="text-lg font-semibold">{symbol}</span>
+            </button>
+          ))}
+        </div>
+        {editing && (
+          <span className="text-xs text-[var(--muted-foreground)]">
+            Валюта фиксируется при создании заказа.
+          </span>
+        )}
       </div>
 
       <div className="grid gap-2">
@@ -221,7 +259,8 @@ export function OrderForm({ editing, onCancel, onDone }: {
             </Select>
             <Input type="number" min="1" placeholder="Мешков" className="w-20 sm:w-24" value={r.quantity}
               onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, quantity: e.target.value } : x))} />
-            <Input type="number" min="0" placeholder="Цена/мешок" className="w-28 sm:w-36" value={r.price}
+            <Input type="number" min="0" step="0.01"
+              placeholder={`Цена, ${currency === "USD" ? "$" : "₸"}`} className="w-28 sm:w-36" value={r.price}
               onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, price: e.target.value } : x))} />
             <Button type="button" variant="ghost" size="icon"
               onClick={() => setRows(rows.length > 1 ? rows.filter((_, j) => j !== i) : rows)}>
@@ -243,7 +282,7 @@ export function OrderForm({ editing, onCancel, onDone }: {
         <Info className="mt-0.5 size-3.5 shrink-0" />
         {editing
           ? "Позиции и цены можно менять до начала загрузки. Изменения попадут в журнал."
-          : "Цена подставляется из личного прайса клиента, а отдел закрепляется за этим заказом."}
+          : `Цена подставляется из личного прайса клиента в ${currency}. Валюта и отдел закрепятся за заказом.`}
       </div>
       {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
       <div className="flex justify-end gap-2">

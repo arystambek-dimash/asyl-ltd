@@ -35,10 +35,13 @@ class Product(models.Model):
 
 class ClientPrice(models.Model):
     """Договорная цена товара для конкретного клиента (прайс-лист клиента)."""
+    CURRENCIES = (("KZT", "KZT (тенге)"), ("USD", "USD (доллар)"))
+
     client = models.ForeignKey(
         "clients.Client", on_delete=models.CASCADE, related_name="prices")
     product = models.ForeignKey(
         Product, on_delete=models.CASCADE, related_name="client_prices")
+    currency = models.CharField(max_length=3, choices=CURRENCIES, default="KZT")
     price = models.DecimalField(max_digits=12, decimal_places=2)
     updated_at = models.DateTimeField(auto_now=True)
     updated_by = models.ForeignKey(
@@ -46,4 +49,4 @@ class ClientPrice(models.Model):
         on_delete=models.SET_NULL, related_name="set_client_prices")
 
     class Meta:
-        unique_together = ("client", "product")
+        unique_together = ("client", "product", "currency")

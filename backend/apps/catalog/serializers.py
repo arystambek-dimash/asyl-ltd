@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from rest_framework import serializers
-from .models import Product
+from .models import ClientPrice, Product
 
 
 class ProductSerializer(serializers.ModelSerializer):
@@ -29,13 +29,16 @@ class ClientPriceUpdateItemSerializer(serializers.Serializer):
         max_digits=12, decimal_places=2, min_value=Decimal("0.01"),
         required=False, allow_null=True,
     )
+    currency = serializers.ChoiceField(
+        choices=ClientPrice.CURRENCIES, required=False, default="KZT")
 
 
 class ClientPriceUpdateSerializer(serializers.Serializer):
     prices = ClientPriceUpdateItemSerializer(many=True)
 
     def validate_prices(self, rows):
-        product_ids = [row["product"].id for row in rows]
-        if len(product_ids) != len(set(product_ids)):
-            raise serializers.ValidationError("Товар в прайс-листе указан повторно.")
+        keys = [(row["product"].id, row["currency"]) for row in rows]
+        if len(keys) != len(set(keys)):
+            raise serializers.ValidationError(
+                "Товар в одной валюте указан в прайс-листе повторно.")
         return rows

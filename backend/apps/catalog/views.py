@@ -2,6 +2,7 @@ from apps.common.permissions import HasPerm, PermViewSetMixin
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 
 from apps.clients.querysets import visible_clients
@@ -55,10 +56,17 @@ class ClientPricesView(APIView):
 
     def get(self, request):
         client_id = request.query_params.get("client")
+        currency = (request.query_params.get("currency") or "").upper()
+        if currency and currency not in dict(ClientPrice.CURRENCIES):
+            raise ValidationError({"currency": "Выберите KZT или USD."})
         # Договорные цены относятся к клиентским данным: id чужого клиента
         # не должен обходить разграничение по отделам.
         qs = ClientPrice.objects.filter(
             client__in=visible_clients(request.user, "orders.create"))
         if client_id:
             qs = qs.filter(client_id=client_id)
+        if not currency:
+            currency = (qs.values_list("client__currency", flat=True).first()
+                        or "KZT")
+        qs = qs.filter(currency=currency)
         return Response({str(cp.product_id): str(cp.price) for cp in qs})

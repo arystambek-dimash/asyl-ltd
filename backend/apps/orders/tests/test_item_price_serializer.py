@@ -33,6 +33,18 @@ def test_price_reflects_unit_price_after_confirm():
     assert item["price"] == "10000.00"
 
 
+def test_item_price_hint_uses_order_currency():
+    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    p = Product.objects.create(name="Currency P", color="Blue", weight_kg="25")
+    ClientPrice.objects.create(client=c, product=p, currency="KZT", price="10000.00")
+    ClientPrice.objects.create(client=c, product=p, currency="USD", price="21.50")
+    order = Order.objects.create(client=c, status="pending", currency="USD")
+    OrderItem.objects.create(order=order, product=p, quantity=1)
+
+    item = OrderSerializer(order).data["items"][0]
+    assert item["client_price"] == "21.50"
+
+
 def test_deleted_product_keeps_historical_order_item_snapshot():
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="Исторический", color="Blue", weight_kg="25")

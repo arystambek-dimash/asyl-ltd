@@ -146,6 +146,30 @@ def test_portal_order_fixes_personal_price_at_creation(auth_client, client_user)
     assert OrderItem.objects.get(order_id=response.data["id"]).unit_price == Decimal("91.25")
 
 
+def test_portal_client_selects_usd_price_and_order_currency(auth_client, client_user):
+    client = _client_for(client_user)
+    product = _product()
+    ClientPrice.objects.create(
+        client=client, product=product, currency="KZT", price="15000.00")
+    ClientPrice.objects.create(
+        client=client, product=product, currency="USD", price="31.25")
+
+    catalog = auth_client(client_user).get(
+        "/api/portal/catalog/", {"currency": "USD"})
+    response = auth_client(client_user).post(
+        "/api/portal/orders/",
+        {"currency": "USD", "items": [{"product": product.id, "quantity": 2}]},
+        format="json",
+    )
+
+    assert catalog.status_code == 200
+    assert next(row for row in catalog.data if row["id"] == product.id)["price"] == "31.25"
+    assert response.status_code == 201
+    order = Order.objects.get(pk=response.data["id"])
+    assert order.currency == "USD"
+    assert order.items.get().unit_price == Decimal("31.25")
+
+
 def test_client_order_without_profile_returns_400(auth_client, client_user):
     product = _product()
 
