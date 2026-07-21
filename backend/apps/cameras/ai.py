@@ -194,9 +194,18 @@ def delete(cam: str) -> dict | None:
     return _call("DELETE", _path(cam), none_on_404=True)
 
 
+def _normalize_always_on(payload: dict | None) -> dict:
+    """Accept both generations of the Windows always-on API response."""
+    result = dict(payload or {})
+    if "cameras" not in result and isinstance(result.get("camera_sources"), list):
+        result["cameras"] = result["camera_sources"]
+    return result
+
+
 def always_on_status() -> dict:
     """Desired 24/7 cameras and their live inference-only processors."""
-    return _call("GET", "/always-on") or {
+    payload = _call("GET", "/always-on")
+    return _normalize_always_on(payload) if payload is not None else {
         "cameras": [], "source": "sub", "processors": [],
     }
 
@@ -206,9 +215,21 @@ def configure_always_on(cameras: list[str], source: str = "sub") -> dict:
     normalized = list(dict.fromkeys(normalize(camera) for camera in cameras))
     if source not in {"sub", "main"}:
         raise AiError(400, "Неизвестный источник камеры")
-    return _call(
-        "PUT", "/always-on", {"cameras": normalized, "source": source}
-    ) or {}
+    try:
+        # Актуальный Windows-агент использует явное имя camera_sources.
+        payload = _call(
+            "PUT", "/always-on",
+            {"camera_sources": normalized, "source": source},
+        )
+    except AiError as exc:
+        if exc.status != 422:
+            raise
+        # Совместимость с предыдущим пакетом камеры на время поэтапного
+        # обновления: его строгая Pydantic-схема принимала поле cameras.
+        payload = _call(
+            "PUT", "/always-on", {"cameras": normalized, "source": source},
+        )
+    return _normalize_always_on(payload)
 
 
 def delete_recordings(stream: str, starts: list[str]) -> dict:

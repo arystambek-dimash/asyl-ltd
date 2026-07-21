@@ -100,6 +100,37 @@ def test_monoblock_start_binds_camera_and_moves_confirmed_order_to_loading(
     request.assert_called_once()
 
 
+def test_always_on_client_uses_windows_camera_sources_contract():
+    upstream = {
+        "camera_sources": ["cam2"], "source": "sub", "processors": [],
+    }
+    with patch.object(ai, "_call", return_value=upstream) as call:
+        result = ai.configure_always_on(["2", "cam2"], "sub")
+
+    call.assert_called_once_with(
+        "PUT", "/always-on", {"camera_sources": ["cam2"], "source": "sub"},
+    )
+    assert result["cameras"] == ["cam2"]
+
+
+def test_always_on_client_normalizes_status_and_falls_back_for_old_agent():
+    with patch.object(ai, "_call", return_value={
+        "camera_sources": ["cam3"], "source": "sub", "processors": [],
+    }):
+        assert ai.always_on_status()["cameras"] == ["cam3"]
+
+    with patch.object(ai, "_call", side_effect=[
+        ai.AiError(422, "Field required: cameras"),
+        {"cameras": ["cam3"], "source": "sub", "processors": []},
+    ]) as call:
+        result = ai.configure_always_on(["cam3"])
+
+    assert call.call_args_list[-1].args == (
+        "PUT", "/always-on", {"cameras": ["cam3"], "source": "sub"},
+    )
+    assert result["cameras"] == ["cam3"]
+
+
 def test_monoblock_starts_confirmed_train_without_arrival_step(api_client, loader):
     client = Client.objects.create(first_name="AI", last_name="Train", phone="11")
     order = Order.objects.create(
