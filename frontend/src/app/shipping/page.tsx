@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 import Image from "next/image";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
@@ -15,7 +15,7 @@ import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { cn, formatDateTime, formatMoney } from "@/lib/utils";
 import {
-  Activity, Archive, ArrowLeft, CalendarDays, Cctv, Check, ChevronRight, Clock3,
+  Activity, Archive, ArrowLeft, CalendarDays, Cctv, Check, Clock3,
   Film, GripVertical, Layers3, LockKeyhole, LogOut, Minus, Package, Phone, Play,
   Plus, Radio, RotateCcw, Scale, Settings2, TrainFront, Truck, User, VideoOff,
 } from "lucide-react";
@@ -35,14 +35,20 @@ function isAiOnlineStatus(status?: string): boolean {
   return normalized === "online" || normalized === "онлайн";
 }
 
-/* ── Этапы единого поста: заказ едет по колонкам слева направо ──────────── */
+/* ── Этапы единого поста: заказ едет по остановкам слева направо ────────── */
 const BOARD_STAGES = [
   { key: "waiting", label: "Ожидание въезда", color: "var(--ring)", statuses: ["confirmed"],
-    hint: "Подтверждённые заказы", image: null, tint: "#f3f7ff" },
+    hint: "Подтверждённые заказы", image: null, tint: "#f3f7ff", icon: Clock3,
+    activeCircle: "border-blue-600 bg-blue-600 text-white shadow-[0_12px_28px_rgba(37,99,235,0.32)]",
+    activeLabel: "text-blue-700" },
   { key: "loading", label: "Загружается", color: "var(--warning)", statuses: ["arrived", "loading"],
-    hint: "Идёт погрузка", image: "/shipping/loading-forklift.jpg", tint: "#fffbf0" },
+    hint: "Идёт погрузка", image: "/shipping/loading-forklift.jpg", tint: "#fffbf0", icon: Package,
+    activeCircle: "border-amber-500 bg-amber-500 text-white shadow-[0_12px_28px_rgba(245,158,11,0.32)]",
+    activeLabel: "text-amber-600" },
   { key: "done", label: "Завершён", color: "var(--success)", statuses: ["loaded", "shipped"],
-    hint: "Завершённые отгрузки", image: "/shipping/completed-clipboard.jpg", tint: "#f4fbf5" },
+    hint: "Завершённые отгрузки", image: "/shipping/completed-clipboard.jpg", tint: "#f4fbf5", icon: Check,
+    activeCircle: "border-emerald-600 bg-emerald-600 text-white shadow-[0_12px_28px_rgba(5,150,105,0.32)]",
+    activeLabel: "text-emerald-700" },
 ] as const;
 
 const ACTIVE_STATUSES = ["confirmed", "arrived", "loading", "loaded"];
@@ -426,7 +432,7 @@ function TransportBadge({ order, size = "md" }: { order: Order; size?: "md" | "l
   return <PlateBadge value={order.truck_number} size={size === "lg" ? "lg" : "md"} />;
 }
 
-function BoardCard({ order, stage, camera, session, history, onOpen, onHistory, draggable, moving, onDragStart, onDragEnd }: {
+function BoardCard({ order, stage, camera, session, history, onOpen, onHistory, draggable, moving, onDragStart, onDragEnd, quickTargets, onQuickMove }: {
   order: Order;
   stage: (typeof BOARD_STAGES)[number];
   camera?: CameraFeed;
@@ -438,6 +444,9 @@ function BoardCard({ order, stage, camera, session, history, onOpen, onHistory, 
   moving?: boolean;
   onDragStart?: (event: DragEvent<HTMLDivElement>) => void;
   onDragEnd?: () => void;
+  /** Этапы, куда заказ можно двинуть одним нажатием (замена drag&drop на планшете). */
+  quickTargets?: BoardStageKey[];
+  onQuickMove?: (target: BoardStageKey) => void;
 }) {
   const ordered = orderedBags(order);
   const bags = order.bags_loaded ?? 0;
@@ -511,6 +520,32 @@ function BoardCard({ order, stage, camera, session, history, onOpen, onHistory, 
             style={{ width: `${pct}%`, background: pct >= 100 ? "var(--success)" : "var(--warning)" }} />
         </div>
       )}
+      {onQuickMove && !!quickTargets?.length && (
+        <div className="flex gap-1.5 pt-0.5"
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}>
+          {quickTargets.includes("waiting") && (
+            <Button size="sm" variant="ghost" className="px-2.5" title="Вернуть в ожидание"
+              onClick={() => onQuickMove("waiting")}>
+              <RotateCcw className="size-4" />
+            </Button>
+          )}
+          {quickTargets.includes("loading") && (
+            <Button size="sm" variant="outline" className="flex-1"
+              onClick={() => onQuickMove("loading")}>
+              {order.transport_type === "train"
+                ? <><Play className="size-4" /> Начать загрузку</>
+                : <><Truck className="size-4" /> Принять</>}
+            </Button>
+          )}
+          {quickTargets.includes("done") && (
+            <Button size="sm" variant="outline" className="flex-1"
+              onClick={() => onQuickMove("done")}>
+              <Check className="size-4" /> Завершить
+            </Button>
+          )}
+        </div>
+      )}
       {stage.key === "done" && history && (
         <div className="absolute inset-x-0 bottom-0 flex translate-y-[calc(100%-4px)] items-center justify-between gap-3 bg-slate-900/95 px-3 py-2.5 text-white backdrop-blur-sm transition-transform duration-200 group-hover:translate-y-0 group-focus-visible:translate-y-0">
           <span className="flex min-w-0 items-center gap-2 text-xs font-semibold">
@@ -523,6 +558,123 @@ function BoardCard({ order, stage, camera, session, history, onOpen, onHistory, 
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ── Остановки этапов: иконки с дорогой, по которой едет грузовик ───────── */
+function StageNav({ active, counts, onSelect, canDrop, overStage, onDragOverStage, onDragLeaveStage, onDropStage }: {
+  active: BoardStageKey;
+  counts: Record<BoardStageKey, number>;
+  onSelect: (key: BoardStageKey) => void;
+  /** Перетаскиваемую карточку можно бросить прямо на иконку этапа. */
+  canDrop: (key: BoardStageKey) => boolean;
+  overStage: BoardStageKey | null;
+  onDragOverStage: (key: BoardStageKey) => void;
+  onDragLeaveStage: () => void;
+  onDropStage: (key: BoardStageKey) => void;
+}) {
+  const activeIndex = BOARD_STAGES.findIndex((stage) => stage.key === active);
+  return (
+    <div className="rounded-[22px] border bg-[var(--card)] px-3 pb-3 pt-5 shadow-[0_10px_30px_rgba(45,62,94,0.04)] sm:px-6">
+      <div className="grid grid-cols-3">
+        {BOARD_STAGES.map((stage) => {
+          const Icon = stage.icon;
+          const isActive = stage.key === active;
+          const droppable = canDrop(stage.key);
+          const isOver = droppable && overStage === stage.key;
+          return (
+            <button key={stage.key} type="button" onClick={() => onSelect(stage.key)}
+              aria-pressed={isActive}
+              onDragOver={(event) => {
+                if (!droppable) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                onDragOverStage(stage.key);
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node)) onDragLeaveStage();
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                if (droppable) onDropStage(stage.key);
+              }}
+              className="group flex flex-col items-center gap-2 outline-none">
+              <span className={cn(
+                "relative flex size-14 items-center justify-center rounded-full border-2 border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)] transition-all duration-300 group-focus-visible:ring-2 group-focus-visible:ring-blue-500 group-focus-visible:ring-offset-2",
+                isActive && stage.activeCircle,
+                !isActive && "group-hover:border-slate-300 group-hover:text-slate-600",
+                droppable && !isActive && "border-dashed border-blue-400 text-blue-600",
+                isOver && "scale-110 border-solid border-blue-500 bg-blue-50",
+              )}>
+                <Icon className="size-6" />
+                <span className={cn(
+                  "absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full border-2 border-[var(--card)] px-1 text-[11px] font-bold tabular-nums",
+                  isActive ? "bg-slate-900 text-white" : "bg-[var(--muted)] text-[var(--muted-foreground)]",
+                )}>
+                  {counts[stage.key]}
+                </span>
+              </span>
+              <span className={cn(
+                "px-1 text-center text-[13px] font-semibold leading-tight",
+                isActive ? stage.activeLabel : "text-[var(--muted-foreground)]",
+              )}>
+                {stage.label}
+              </span>
+              <span className="hidden text-[11px] text-slate-400 sm:block">{stage.hint}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* дорога: грузовик подъезжает к выбранному этапу */}
+      <div className="relative mx-[16.66%] mt-2 h-9">
+        <div className="absolute inset-x-0 top-1/2 border-t-2 border-dashed border-slate-200" />
+        {BOARD_STAGES.map((stage, index) => (
+          <span key={stage.key}
+            className={cn(
+              "absolute top-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full transition-colors duration-300",
+              index === activeIndex ? "bg-slate-700" : "bg-slate-300",
+            )}
+            style={{ left: `${(index / (BOARD_STAGES.length - 1)) * 100}%` }} />
+        ))}
+        <span className="absolute top-1/2 z-10 -translate-y-1/2 transition-[left] duration-700 ease-in-out"
+          style={{ left: `${(activeIndex / (BOARD_STAGES.length - 1)) * 100}%` }}>
+          <span className="flex size-8 -translate-x-1/2 items-center justify-center rounded-full bg-slate-900 text-white shadow-[0_6px_16px_rgba(15,23,42,0.35)]">
+            <Truck className="size-4" />
+          </span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** Карусель этапов: полотно едет к выбранной остановке, высота подстраивается. */
+function StageCarousel({ active, slides }: { active: number; slides: ReactNode[] }) {
+  const panes = useRef<(HTMLDivElement | null)[]>([]);
+  const [height, setHeight] = useState<number>();
+  useEffect(() => {
+    const pane = panes.current[active];
+    if (!pane) return;
+    const update = () => setHeight(pane.offsetHeight);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(pane);
+    return () => observer.disconnect();
+  }, [active]);
+  return (
+    <div className="overflow-hidden transition-[height] duration-500 ease-in-out" style={{ height }}>
+      <div className="flex items-start transition-transform duration-500 ease-in-out"
+        style={{ transform: `translateX(-${active * 100}%)` }}>
+        {slides.map((slide, index) => (
+          <div key={BOARD_STAGES[index].key}
+            ref={(el) => { panes.current[index] = el; }}
+            aria-hidden={index !== active}
+            className={cn("w-full shrink-0 pb-1", index !== active && "pointer-events-none")}>
+            {slide}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -540,6 +692,7 @@ function LiveBoard({ orders, cameras, sessions, histories, completedDays, onOpen
   movingId: number | null;
   error?: string;
 }) {
+  const [active, setActive] = useState<BoardStageKey>("waiting");
   const [draggedId, setDraggedId] = useState<number | null>(null);
   const [overStage, setOverStage] = useState<BoardStageKey | null>(null);
   const historyByOrder = useMemo(() => {
@@ -549,9 +702,12 @@ function LiveBoard({ orders, cameras, sessions, histories, completedDays, onOpen
   }, [histories]);
   const dragged = orders.find((order) => order.id === draggedId);
   const draggedTargets = dragged ? allowedStages(dragged) : [];
-  const draggedStage = dragged
-    ? BOARD_STAGES.find((stage) => (stage.statuses as readonly string[]).includes(dragged.status))
-    : undefined;
+  const stageRows = BOARD_STAGES.map((stage) =>
+    orders.filter((order) => (stage.statuses as readonly string[]).includes(order.status)));
+  const counts = Object.fromEntries(
+    BOARD_STAGES.map((stage, index) => [stage.key, stageRows[index].length]),
+  ) as Record<BoardStageKey, number>;
+  const activeIndex = BOARD_STAGES.findIndex((stage) => stage.key === active);
 
   const completedLabel = completedDays === 1 ? "сегодня" : `за ${completedDays} дн.`;
   return (
@@ -572,98 +728,72 @@ function LiveBoard({ orders, cameras, sessions, histories, completedDays, onOpen
         </div>
       </div>
       {error && <div className="mb-3"><ErrorAlert message={error} /></div>}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {BOARD_STAGES.map((stage, i) => {
-          const rows = orders.filter((o) => (stage.statuses as readonly string[]).includes(o.status));
+
+      <div className="flex flex-col gap-4">
+        <StageNav active={active} counts={counts} onSelect={setActive}
+          canDrop={(key) => draggedTargets.includes(key)}
+          overStage={overStage}
+          onDragOverStage={setOverStage}
+          onDragLeaveStage={() => setOverStage(null)}
+          onDropStage={(key) => {
+            if (dragged) {
+              onMove(dragged, key);
+              setActive(key);
+            }
+            setDraggedId(null);
+            setOverStage(null);
+          }} />
+
+        <StageCarousel active={activeIndex} slides={BOARD_STAGES.map((stage, index) => {
+          const rows = stageRows[index];
           const finished = stage.key === "done";
           return (
             <div key={stage.key}
-              onDragOver={(event) => {
-                if (draggedTargets.includes(stage.key)) {
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "move";
-                  setOverStage(stage.key);
-                }
-              }}
-              onDragLeave={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget as Node)) setOverStage(null);
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                setOverStage(null);
-                if (dragged && draggedTargets.includes(stage.key)) onMove(dragged, stage.key);
-                setDraggedId(null);
-              }}
-              className={cn(
-                "flex min-h-[350px] flex-col overflow-hidden rounded-[22px] border shadow-[0_10px_30px_rgba(45,62,94,0.04)] transition-all",
-                overStage === stage.key && (stage.key === "waiting"
-                  ? "-translate-y-1 border-amber-400 ring-4 ring-amber-100"
-                  : "-translate-y-1 border-blue-400 ring-4 ring-blue-100"),
-              )}
+              className="min-h-[300px] rounded-[22px] border p-3 shadow-[0_10px_30px_rgba(45,62,94,0.04)] sm:p-4"
               style={{ background: stage.tint }}>
-              <div className="flex items-center gap-2.5 px-4 py-4">
-                <span className="flex size-7 items-center justify-center rounded-full bg-white/80 shadow-sm">
-                  <span className="size-2 rounded-full" style={{ background: stage.color }} />
-                </span>
-                <span className="text-[15px] font-bold text-slate-700">{stage.label}</span>
-                <span className="ml-auto rounded-full border border-white/80 bg-white/85 px-2.5 py-0.5 text-xs font-semibold tabular-nums text-slate-600 shadow-sm">
-                  {rows.length}
-                </span>
-                {i < BOARD_STAGES.length - 1 && (
-                  <ChevronRight className="hidden size-4 text-[var(--muted-foreground)]/50 xl:block" />
-                )}
-              </div>
-              <div className="flex flex-1 flex-col gap-2 px-3 pb-3">
-                {rows.length === 0 ? (
-                  <div className="flex flex-1 flex-col items-center justify-center rounded-2xl border border-white/80 bg-white/70 px-5 py-8 text-center shadow-sm">
-                    {stage.image ? (
-                      <div className="relative mb-4 size-32 overflow-hidden rounded-full">
-                        <Image src={stage.image} alt="" fill sizes="128px" className="object-cover" />
-                      </div>
-                    ) : (
-                      <span className="mb-4 flex size-20 items-center justify-center rounded-full bg-blue-50 text-blue-500">
-                        <Truck className="size-9" strokeWidth={1.6} />
-                      </span>
-                    )}
-                    <div className="text-[14px] font-semibold text-slate-600">{stage.hint}: пусто</div>
-                    <p className="mt-1 max-w-[210px] text-[12px] leading-relaxed text-slate-400">
-                      {stage.key === "loading" && "Здесь появятся заказы в процессе погрузки."}
-                      {stage.key === "done" && `Нет завершённых отгрузок ${completedDays === 1 ? "за сегодня" : `за последние ${completedDays} дней`}.`}
-                      {stage.key === "waiting" && "Новые подтверждённые заказы появятся здесь."}
-                    </p>
-                  </div>
-                ) : rows.map((o) => (
-                  <BoardCard key={o.id} order={o} stage={stage}
-                    camera={cameras.find((camera) => camera.src === o.loading_camera)}
-                    session={sessions.find((session) => session.order_id === o.id)}
-                    history={historyByOrder.get(o.id)}
-                    onOpen={finished ? undefined : onOpen}
-                    onHistory={finished ? onHistory : undefined}
-                    draggable={allowedStages(o).length > 0 && movingId == null}
-                    moving={movingId === o.id}
-                    onDragStart={(event) => {
-                      event.dataTransfer.effectAllowed = "move";
-                      event.dataTransfer.setData("text/plain", String(o.id));
-                      setDraggedId(o.id);
-                    }}
-                    onDragEnd={() => { setDraggedId(null); setOverStage(null); }} />
-                ))}
-                {dragged && draggedTargets.includes(stage.key) && rows.length > 0 && (
-                  <div className={cn(
-                    "rounded-xl border-2 border-dashed px-3 py-4 text-center text-xs font-semibold transition-colors",
-                    overStage === stage.key
-                      ? (stage.key === "waiting" ? "border-amber-500 bg-amber-50 text-amber-800" : "border-blue-500 bg-blue-50 text-blue-700")
-                      : "border-slate-300 text-slate-400",
-                  )}>
-                    {draggedStage && BOARD_STAGES.indexOf(stage) < BOARD_STAGES.indexOf(draggedStage)
-                      ? `Вернуть заказ #${dragged.id} сюда`
-                      : `Переместить заказ #${dragged.id} сюда`}
-                  </div>
-                )}
-              </div>
+              {rows.length === 0 ? (
+                <div className="flex min-h-[280px] flex-col items-center justify-center rounded-2xl border border-white/80 bg-white/70 px-5 py-8 text-center shadow-sm">
+                  {stage.image ? (
+                    <div className="relative mb-4 size-32 overflow-hidden rounded-full">
+                      <Image src={stage.image} alt="" fill sizes="128px" className="object-cover" />
+                    </div>
+                  ) : (
+                    <span className="mb-4 flex size-20 items-center justify-center rounded-full bg-blue-50 text-blue-500">
+                      <Truck className="size-9" strokeWidth={1.6} />
+                    </span>
+                  )}
+                  <div className="text-[14px] font-semibold text-slate-600">{stage.hint}: пусто</div>
+                  <p className="mt-1 max-w-[210px] text-[12px] leading-relaxed text-slate-400">
+                    {stage.key === "loading" && "Здесь появятся заказы в процессе погрузки."}
+                    {stage.key === "done" && `Нет завершённых отгрузок ${completedDays === 1 ? "за сегодня" : `за последние ${completedDays} дней`}.`}
+                    {stage.key === "waiting" && "Новые подтверждённые заказы появятся здесь."}
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                  {rows.map((o) => (
+                    <BoardCard key={o.id} order={o} stage={stage}
+                      camera={cameras.find((camera) => camera.src === o.loading_camera)}
+                      session={sessions.find((session) => session.order_id === o.id)}
+                      history={historyByOrder.get(o.id)}
+                      onOpen={finished ? undefined : onOpen}
+                      onHistory={finished ? onHistory : undefined}
+                      draggable={allowedStages(o).length > 0 && movingId == null}
+                      moving={movingId === o.id}
+                      quickTargets={allowedStages(o)}
+                      onQuickMove={movingId == null ? (target) => onMove(o, target) : undefined}
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", String(o.id));
+                        setDraggedId(o.id);
+                      }}
+                      onDragEnd={() => { setDraggedId(null); setOverStage(null); }} />
+                  ))}
+                </div>
+              )}
             </div>
           );
-        })}
+        })} />
       </div>
     </section>
   );
