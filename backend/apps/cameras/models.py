@@ -120,6 +120,7 @@ class AlwaysOnCounterCursor(models.Model):
 
     camera = models.CharField(max_length=32, unique=True)
     last_total = models.PositiveIntegerField(default=0)
+    last_per_color = models.JSONField(default=dict, blank=True)
     last_mode = models.CharField(max_length=16, blank=True, default="")
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -130,6 +131,7 @@ class AlwaysOnDailyAnalytics(models.Model):
     camera = models.CharField(max_length=32)
     day = models.DateField(db_index=True)
     model_total = models.PositiveIntegerField(default=0)
+    model_per_color = models.JSONField(default=dict, blank=True)
     adjustment = models.IntegerField(default=0)
     updated_at = models.DateTimeField(auto_now=True)
 

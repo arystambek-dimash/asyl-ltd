@@ -1,3 +1,4 @@
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
@@ -14,22 +15,26 @@ from apps.eventlog.models import EventLog
 pytestmark = pytest.mark.django_db
 
 
-def live(total, *, mode="always_on", running=True, camera="cam3"):
+def live(total, *, mode="always_on", running=True, camera="cam3", per_color=None):
     return {"processors": [{
         "cam": camera, "total": total, "mode": mode, "running": running,
+        "per_color": per_color or {},
     }]}
 
 
 def test_snapshot_accumulates_delta_without_double_counting_and_survives_reset():
-    analytics.record_snapshot(live(3))
-    analytics.record_snapshot(live(7))
-    analytics.record_snapshot(live(7))
-    analytics.record_snapshot(live(2))
+    analytics.record_snapshot(live(3, per_color={"Red_50": 2, "Blue_50": 1}))
+    analytics.record_snapshot(live(7, per_color={"Red_50": 5, "Blue_50": 2}))
+    analytics.record_snapshot(live(7, per_color={"Red_50": 5, "Blue_50": 2}))
+    analytics.record_snapshot(live(2, per_color={"Red_50": 1, "Blue_50": 1}))
 
     row = AlwaysOnDailyAnalytics.objects.get(camera="cam3", day=timezone.localdate())
     assert row.model_total == 9
+    assert row.model_per_color == {"red": 6, "blue": 3}
     assert row.total == 9
-    assert AlwaysOnCounterCursor.objects.get(camera="cam3").last_total == 2
+    cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
+    assert cursor.last_total == 2
+    assert cursor.last_per_color == {"red": 1, "blue": 1}
 
 
 def test_session_count_is_not_added_to_background_analytics():
@@ -68,18 +73,34 @@ def test_superuser_can_subtract_with_reason_and_audit(auth_client, admin_user, b
 def test_today_endpoint_returns_real_total_and_rejects_excess_subtraction(
         auth_client, admin_user, monkeypatch):
     MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3", "cam5"])
+    AlwaysOnDailyAnalytics.objects.create(
+        camera="cam3",
+        day=timezone.localdate() - timedelta(days=1),
+        model_total=10,
+        model_per_color={"red": 8, "blue": 2},
+    )
     monkeypatch.setattr(ai, "AI_KEY", "key")
     with patch.object(ai, "always_on_status", return_value={
         "processors": [
-            {"cam": "cam3", "total": 8, "mode": "always_on", "running": True},
-            {"cam": "cam5", "total": 5, "mode": "always_on", "running": True},
+            {"cam": "cam3", "total": 8, "mode": "always_on", "running": True,
+             "per_color": {"Red_50": 5, "Blue_50": 3}},
+            {"cam": "cam5", "total": 5, "mode": "always_on", "running": True,
+             "per_color": {"Blue_25": 5}},
         ],
     }):
         response = auth_client(admin_user).get("/api/cameras/always-on-analytics/")
 
     assert response.status_code == 200
     assert response.data["total"] == 13
+    assert response.data["all_time_total"] == 23
+    assert len(response.data["history"]) == 14
+    assert response.data["dominant_color"] == "red"
     assert {item["camera"] for item in response.data["cameras"]} == {"cam3", "cam5"}
+    cam3 = next(item for item in response.data["cameras"] if item["camera"] == "cam3")
+    assert cam3["all_time_total"] == 18
+    assert len(cam3["history"]) == 14
+    assert cam3["dominant_color"] == "red"
+    assert cam3["colors"][0] == {"color": "red", "total": 13, "percent": 72.2}
 
     too_much = auth_client(admin_user).post(
         "/api/cameras/always-on-analytics/cam3/subtract/",

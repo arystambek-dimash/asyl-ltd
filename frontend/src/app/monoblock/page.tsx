@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  BarChart3,
   Camera,
   CalendarDays,
   Cpu,
@@ -17,6 +18,7 @@ import {
   ShieldCheck,
   Square,
   UserRound,
+  Video,
   VideoOff,
 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
@@ -49,6 +51,26 @@ const SESSION_POLL_MS = 3_000;
 // Заказы/камеры/настройки меняются редко — не гоняем полный список заказов
 // каждые 3 секунды на экране, который висит открытым весь день.
 const SLOW_POLL_MS = 30_000;
+
+const COLOR_META: Record<string, { label: string; bar: string; dot: string }> = {
+  red: { label: "Красный", bar: "bg-[#dc604d]", dot: "bg-[#dc604d]" },
+  blue: { label: "Синий", bar: "bg-[#4169d8]", dot: "bg-[#4169d8]" },
+  green: { label: "Зелёный", bar: "bg-[#42a779]", dot: "bg-[#42a779]" },
+  white: { label: "Белый", bar: "border border-slate-300 bg-slate-100", dot: "border border-slate-300 bg-white" },
+};
+
+function colorMeta(color: string) {
+  return COLOR_META[color.toLowerCase()] ?? {
+    label: color,
+    bar: "bg-slate-500",
+    dot: "bg-slate-500",
+  };
+}
+
+function shortDay(day: string) {
+  const [, month, date] = day.split("-");
+  return `${date}.${month}`;
+}
 
 function CameraChoice({
   camera,
@@ -352,6 +374,7 @@ function AlwaysOnCard({
   onAnalyticsChanged: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+  const [modalView, setModalView] = useState<"live" | "analytics">("live");
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [streamOnline, setStreamOnline] = useState(false);
   const [liveProcessor, setLiveProcessor] = useState(processor);
@@ -364,7 +387,10 @@ function AlwaysOnCard({
   const current = open ? liveProcessor : processor;
   const currentDaily = open ? liveDaily : daily;
   const todayTotal = currentDaily?.total ?? 0;
+  const allTimeTotal = currentDaily?.all_time_total ?? todayTotal;
   const inSession = current.mode === "session";
+  const chartMax = Math.max(1, ...(currentDaily?.history ?? []).map((item) => item.total));
+  const dominant = currentDaily?.colors?.[0];
 
   useEffect(() => {
     setLiveProcessor(processor);
@@ -402,6 +428,7 @@ function AlwaysOnCard({
 
   function showStream() {
     setStreamOnline(false);
+    setModalView("live");
     setOpen(true);
   }
 
@@ -421,11 +448,12 @@ function AlwaysOnCard({
     setCorrecting(true);
     setCorrectionError("");
     try {
-      const response = await api.post<AlwaysOnDailyCameraAnalytics>(
+      await api.post<AlwaysOnDailyCameraAnalytics>(
         `/cameras/always-on-analytics/${processor.cam}/subtract/`,
         { amount: Number(correctionAmount), reason: correctionReason.trim() },
       );
-      setLiveDaily(response.data);
+      const analyticsResponse = await api.get<AlwaysOnDailyAnalytics>("/cameras/always-on-analytics/");
+      setLiveDaily(analyticsResponse.data.cameras.find((item) => item.camera === processor.cam));
       await onAnalyticsChanged();
       setCorrectionOpen(false);
     } catch (cause) {
@@ -459,83 +487,181 @@ function AlwaysOnCard({
                 {inSession ? "режим отгрузки" : current.running ? "фоновый подсчёт" : "переподключение"}
               </span>
               <span>{inSession ? "видео записывается" : "без записи видео"}</span>
-              <span className="ml-auto font-semibold text-blue-600 opacity-0 transition group-hover:opacity-100">Открыть эфир</span>
+              <span className="ml-auto font-semibold text-slate-500">Всего: {allTimeTotal}</span>
             </span>
           </span>
         </span>
       </button>
 
       <Modal open={open} onClose={closeStream}
-        eyebrow="AI 24/7 · прямой эфир"
+        eyebrow="AI 24/7 · мониторинг"
         title={camera?.zone || processor.cam}
-        description="Исходный поток камеры и текущий результат фоновой модели. Видео в этом режиме не записывается."
+        description="Прямой эфир, накопленный результат и аналитика цветов модели. Фоновое видео не записывается."
         className="max-w-5xl">
-        <div className="grid overflow-hidden rounded-[22px] border border-slate-200 bg-slate-950 shadow-[0_24px_70px_rgba(15,23,42,0.22)] lg:grid-cols-[minmax(0,1fr)_260px]">
-          <div className="relative aspect-video min-h-64 overflow-hidden bg-[#111827] lg:aspect-auto lg:min-h-[460px]">
-            {camera?.src ? (
-              <CameraStream src={camera.src} onStateChange={setStreamOnline}
-                className="absolute inset-0 size-full object-contain" />
-            ) : null}
-            {!streamOnline && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950 text-white/45">
-                <VideoOff className="size-8" />
-                <span className="text-sm">Подключаем прямой поток…</span>
+        <div className="mb-4 inline-flex rounded-xl border border-slate-200 bg-slate-100 p-1">
+          <button type="button" onClick={() => setModalView("live")}
+            className={cn("flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition", modalView === "live" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800")}>
+            <Video className="size-4" /> Прямой эфир
+          </button>
+          <button type="button" onClick={() => setModalView("analytics")}
+            className={cn("flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition", modalView === "analytics" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800")}>
+            <BarChart3 className="size-4" /> Аналитика
+          </button>
+        </div>
+
+        {modalView === "live" ? (
+          <div className="grid overflow-hidden rounded-[22px] border border-slate-200 bg-slate-950 shadow-[0_24px_70px_rgba(15,23,42,0.22)] lg:grid-cols-[minmax(0,1fr)_260px]">
+            <div className="relative aspect-video min-h-64 overflow-hidden bg-[#111827] lg:aspect-auto lg:min-h-[460px]">
+              {camera?.src ? (
+                <CameraStream src={camera.src} onStateChange={setStreamOnline}
+                  className="absolute inset-0 size-full object-contain" />
+              ) : null}
+              {!streamOnline && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950 text-white/45">
+                  <VideoOff className="size-8" />
+                  <span className="text-sm">Подключаем прямой поток…</span>
+                </div>
+              )}
+              <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full border border-white/15 bg-black/45 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur-md">
+                <span className={cn("size-2 rounded-full", streamOnline ? "animate-pulse bg-emerald-400" : "bg-amber-400")} />
+                {streamOnline ? "ПРЯМОЙ ЭФИР" : "ПОДКЛЮЧЕНИЕ"}
               </div>
-            )}
-            <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full border border-white/15 bg-black/45 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur-md">
-              <span className={cn("size-2 rounded-full", streamOnline ? "animate-pulse bg-emerald-400" : "bg-amber-400")} />
-              {streamOnline ? "ПРЯМОЙ ЭФИР" : "ПОДКЛЮЧЕНИЕ"}
+            </div>
+
+            <aside className="flex flex-col justify-between border-t border-white/10 bg-slate-900 p-5 text-white lg:border-l lg:border-t-0">
+              <div>
+                <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/45">
+                  <CalendarDays className="size-3.5" /> Реальный итог за сегодня
+                </div>
+                <div className="mt-2 text-7xl font-black tabular-nums tracking-tight">{todayTotal}</div>
+                <div className="mt-1 text-sm text-white/45">мешков · накоплено CRM</div>
+
+                <div className="mt-7 space-y-2.5 text-sm">
+                  <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
+                    <span className="text-white/55">За всё время</span>
+                    <span className="font-semibold tabular-nums">{allTimeTotal}</span>
+                  </div>
+                  <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
+                    <span className="text-white/55">Текущий цикл</span>
+                    <span className="font-semibold tabular-nums">{current.total ?? 0}</span>
+                  </div>
+                  <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
+                    <span className="text-white/55">Модель</span>
+                    <span className={cn("font-semibold", current.running ? "text-emerald-400" : "text-amber-300")}>
+                      {current.running ? "работает" : "ожидает связь"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
+                    <span className="text-white/55">Режим</span>
+                    <span className="font-semibold">{inSession ? "отгрузка" : "24/7"}</span>
+                  </div>
+                  {(currentDaily?.adjustment ?? 0) < 0 && (
+                    <div className="flex items-center justify-between rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5">
+                      <span className="text-amber-100/65">Корректировка</span>
+                      <span className="font-semibold tabular-nums text-amber-200">{currentDaily?.adjustment}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="mt-5 space-y-3">
+                {(current.error || liveDetail) && (
+                  <p className="rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5 text-xs leading-relaxed text-amber-100/80">
+                    {current.error || liveDetail}
+                  </p>
+                )}
+                <button type="button" disabled={todayTotal <= 0} onClick={showCorrection}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2.5 text-xs font-semibold text-white/75 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-35">
+                  <Minus className="size-3.5" /> Уменьшить итог
+                </button>
+              </div>
+            </aside>
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-[22px] border border-slate-200 bg-[#f8fafc] shadow-[0_20px_55px_rgba(15,23,42,0.09)]">
+            <div className="grid border-b border-slate-200 bg-white sm:grid-cols-3">
+              <div className="p-5 sm:border-r sm:border-slate-200">
+                <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Сегодня</div>
+                <div className="mt-1 text-4xl font-black tabular-nums tracking-tight text-slate-900">{todayTotal}</div>
+                <div className="mt-1 text-xs text-slate-400">мешков за текущий день</div>
+              </div>
+              <div className="border-t border-slate-200 p-5 sm:border-r sm:border-t-0">
+                <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">За всё время</div>
+                <div className="mt-1 text-4xl font-black tabular-nums tracking-tight text-blue-600">{allTimeTotal}</div>
+                <div className="mt-1 text-xs text-slate-400">накоплено CRM</div>
+              </div>
+              <div className="border-t border-slate-200 p-5 sm:border-t-0">
+                <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Чаще всего</div>
+                {dominant ? (
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className={cn("size-4 rounded-full", colorMeta(dominant.color).dot)} />
+                    <span className="text-xl font-black text-slate-900">{colorMeta(dominant.color).label}</span>
+                    <span className="ml-auto text-sm font-bold tabular-nums text-slate-500">{dominant.total}</span>
+                  </div>
+                ) : <div className="mt-2 text-xl font-bold text-slate-300">Нет данных</div>}
+                <div className="mt-1 text-xs text-slate-400">по всем распознанным цветам</div>
+              </div>
+            </div>
+
+            <div className="grid gap-5 p-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(260px,0.8fr)]">
+              <section className="rounded-2xl border border-slate-200 bg-white p-5">
+                <div className="flex items-end justify-between gap-3">
+                  <div>
+                    <h3 className="font-bold text-slate-800">Подсчёт по дням</h3>
+                    <p className="mt-0.5 text-xs text-slate-400">Последние 14 календарных дней</p>
+                  </div>
+                  <span className="text-xs font-semibold text-slate-400">макс. {chartMax}</span>
+                </div>
+                <div className="mt-5 h-64 rounded-xl border border-slate-100 bg-[linear-gradient(to_bottom,transparent_24%,#e2e8f0_25%,transparent_26%,transparent_49%,#e2e8f0_50%,transparent_51%,transparent_74%,#e2e8f0_75%,transparent_76%)] px-3 pt-4">
+                  <div className="flex h-[205px] items-end gap-1.5 sm:gap-2">
+                    {(currentDaily?.history ?? []).map((item) => (
+                      <div key={item.day} className="group flex h-full min-w-0 flex-1 flex-col justify-end">
+                        <div className="relative flex flex-1 items-end justify-center">
+                          <span className="pointer-events-none absolute -top-7 z-10 hidden whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[10px] font-semibold text-white shadow-lg group-hover:block">
+                            {item.total} меш.
+                          </span>
+                          <div className="w-full max-w-9 rounded-t-md bg-gradient-to-t from-[#cf4f3e] to-[#e8755f] transition-all duration-500 group-hover:brightness-110"
+                            style={{ height: item.total ? `${Math.max(4, item.total * 100 / chartMax)}%` : 0 }} />
+                        </div>
+                        <span className="mt-2 block truncate text-center text-[9px] font-medium text-slate-400">{shortDay(item.day)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-2xl border border-slate-200 bg-white p-5">
+                <h3 className="font-bold text-slate-800">Цвета продукции</h3>
+                <p className="mt-0.5 text-xs text-slate-400">За всё время по данным модели</p>
+                <div className="mt-5 space-y-4">
+                  {(currentDaily?.colors ?? []).map((item) => (
+                    <div key={item.color}>
+                      <div className="mb-1.5 flex items-center gap-2 text-sm">
+                        <span className={cn("size-2.5 rounded-full", colorMeta(item.color).dot)} />
+                        <span className="font-semibold text-slate-700">{colorMeta(item.color).label}</span>
+                        <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
+                        <span className="w-10 text-right text-xs tabular-nums text-slate-400">{item.percent}%</span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                        <div className={cn("h-full rounded-full transition-all duration-500", colorMeta(item.color).bar)} style={{ width: `${item.percent}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                  {!currentDaily?.colors?.length && (
+                    <div className="flex min-h-40 flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-slate-400">
+                      <BarChart3 className="mb-2 size-7 text-slate-300" />
+                      <span className="text-sm font-semibold">Цветов пока нет</span>
+                      <span className="mt-1 max-w-48 text-xs">Они появятся после первых распознаваний модели.</span>
+                    </div>
+                  )}
+                </div>
+                <button type="button" disabled={todayTotal <= 0} onClick={showCorrection}
+                  className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35">
+                  <Minus className="size-3.5" /> Уменьшить итог за сегодня
+                </button>
+              </section>
             </div>
           </div>
-
-          <aside className="flex flex-col justify-between border-t border-white/10 bg-slate-900 p-5 text-white lg:border-l lg:border-t-0">
-            <div>
-              <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/45">
-                <CalendarDays className="size-3.5" /> Реальный итог за сегодня
-              </div>
-              <div className="mt-2 text-7xl font-black tabular-nums tracking-tight">{todayTotal}</div>
-              <div className="mt-1 text-sm text-white/45">мешков · накоплено CRM</div>
-
-              <div className="mt-7 space-y-2.5 text-sm">
-                <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
-                  <span className="text-white/55">Текущий цикл</span>
-                  <span className="font-semibold tabular-nums">{current.total ?? 0}</span>
-                </div>
-                <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
-                  <span className="text-white/55">Модель</span>
-                  <span className={cn("font-semibold", current.running ? "text-emerald-400" : "text-amber-300")}>
-                    {current.running ? "работает" : "ожидает связь"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
-                  <span className="text-white/55">Режим</span>
-                  <span className="font-semibold">{inSession ? "отгрузка" : "24/7"}</span>
-                </div>
-                <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
-                  <span className="text-white/55">Запись</span>
-                  <span className="font-semibold">{inSession ? "включена" : "выключена"}</span>
-                </div>
-                {(currentDaily?.adjustment ?? 0) < 0 && (
-                  <div className="flex items-center justify-between rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5">
-                    <span className="text-amber-100/65">Корректировка</span>
-                    <span className="font-semibold tabular-nums text-amber-200">{currentDaily?.adjustment}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="mt-5 space-y-3">
-              {(current.error || liveDetail) && (
-                <p className="rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5 text-xs leading-relaxed text-amber-100/80">
-                  {current.error || liveDetail}
-                </p>
-              )}
-              <button type="button" disabled={todayTotal <= 0} onClick={showCorrection}
-                className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2.5 text-xs font-semibold text-white/75 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-35">
-                <Minus className="size-3.5" /> Уменьшить итог
-              </button>
-            </div>
-          </aside>
-        </div>
+        )}
       </Modal>
 
       <Modal open={correctionOpen} onClose={() => !correcting && setCorrectionOpen(false)}
@@ -798,6 +924,8 @@ function MonoblockPageInner() {
                 <div className="ml-auto flex items-center gap-2">
                   <span className="flex items-center gap-2 rounded-full border border-blue-100 bg-white px-3 py-1 text-[11px] font-semibold text-blue-700 shadow-sm">
                     <CalendarDays className="size-3.5" /> Сегодня: {alwaysOnAnalytics?.total ?? 0}
+                    <span className="text-slate-300">·</span>
+                    Всего: {alwaysOnAnalytics?.all_time_total ?? alwaysOnAnalytics?.total ?? 0}
                   </span>
                   <span className={cn(
                     "rounded-full border bg-white px-3 py-1 text-[11px] font-semibold shadow-sm",

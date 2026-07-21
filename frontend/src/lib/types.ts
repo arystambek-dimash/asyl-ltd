@@ -205,6 +205,7 @@ export interface AlwaysOnProcessorStatus {
   mode: "always_on" | "session" | "idle";
   recording: boolean;
   total: number;
+  per_color?: Record<string, number>;
   last_frame_at?: string | null;
   error?: string | null;
   metrics?: { inference_fps?: number; dropped_frames?: number };
@@ -219,17 +220,39 @@ export interface AlwaysOnCameraSettings {
   detail: string;
   updated_at: string | null;
 }
+export interface AlwaysOnColorAnalytics {
+  color: string;
+  total: number;
+  percent: number;
+}
+export interface AlwaysOnHistoryPoint {
+  day: string;
+  model_total: number;
+  model_per_color: Record<string, number>;
+  adjustment: number;
+  total: number;
+  updated_at: string | null;
+}
 export interface AlwaysOnDailyCameraAnalytics {
   camera: string;
   day: string;
   model_total: number;
+  model_per_color: Record<string, number>;
   adjustment: number;
   total: number;
+  all_time_total: number;
+  history: AlwaysOnHistoryPoint[];
+  colors: AlwaysOnColorAnalytics[];
+  dominant_color: string | null;
   updated_at: string | null;
 }
 export interface AlwaysOnDailyAnalytics {
   day: string;
   total: number;
+  all_time_total: number;
+  history: AlwaysOnHistoryPoint[];
+  colors: AlwaysOnColorAnalytics[];
+  dominant_color: string | null;
   cameras: AlwaysOnDailyCameraAnalytics[];
 }
 export interface Permission { id: number; code: string; section: string; action: string; label: string; }
