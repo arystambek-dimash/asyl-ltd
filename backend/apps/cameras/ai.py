@@ -209,3 +209,8 @@ def configure_always_on(cameras: list[str], source: str = "sub") -> dict:
     return _call(
         "PUT", "/always-on", {"cameras": normalized, "source": source}
     ) or {}
+
+
+def delete_recordings(stream: str, starts: list[str]) -> dict:
+    """Delete exact recording segments on the camera PC through its secured API."""
+    return _call("DELETE", "/recordings", {"stream": stream, "starts": starts}) or {}

@@ -25,6 +25,7 @@ class Department(models.Model):
 
 
 class Client(models.Model):
+    CURRENCIES = (("KZT", "KZT (тенге)"), ("USD", "USD (доллар)"))
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
     # Юридическое наименование покупателя для счетов и других документов.
@@ -36,6 +37,9 @@ class Client(models.Model):
     iin = models.CharField("ИИН/БИН", max_length=20, blank=True, default="")
     bank = models.CharField("Банк", max_length=150, blank=True, default="")
     bank_account = models.CharField("Расчётный счёт", max_length=34, blank=True, default="")
+    # Валюта личного прайс-листа. Меняется для будущих заказов; в созданном
+    # заказе код валюты фиксируется отдельным снимком.
+    currency = models.CharField(max_length=3, choices=CURRENCIES, default="KZT")
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="client_profile",

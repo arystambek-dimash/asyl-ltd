@@ -365,6 +365,104 @@ def rewind_loading(order, user, target_status="confirmed"):
     return order
 
 
+@transaction.atomic
+def rollback_shipment(order, user, *, target_status: str, reason: str):
+    """Controlled reversal of a completed shipment.
+
+    The operation is deliberately separate from generic status editing: it
+    restores stock, clears shipment state, removes local camera recordings and
+    writes an immutable audit entry with the author and required reason.
+    """
+    order = _locked(order)
+    if target_status not in ("pending", "confirmed", "cancelled"):
+        raise ValidationError({
+            "detail": "Вернуть отгруженный заказ можно на рассмотрение, в ожидание или в отменённые",
+            "code": "bad_status",
+        })
+    reason = " ".join(str(reason or "").split())
+    if len(reason) < 5:
+        raise ValidationError({
+            "detail": "Укажите причину отката (минимум 5 символов)",
+            "code": "rollback_reason_required",
+        })
+    if len(reason) > 500:
+        raise ValidationError({"detail": "Причина слишком длинная", "code": "reason_too_long"})
+    if order.status != "shipped":
+        raise ValidationError({
+            "detail": "Откат доступен только для отгруженного заказа",
+            "code": "invalid_status",
+        })
+    if order.payments.exclude(status="rejected").exists():
+        raise ValidationError({
+            "detail": "Сначала отмените или откройте все оплаты по заказу",
+            "code": "payments_exist",
+        })
+
+    items = list(order.items.select_related("product"))
+    deleted_products = [item.product_label for item in items if item.product_id is None]
+    if deleted_products:
+        raise ValidationError({
+            "detail": "Нельзя восстановить склад: удалены товары — " + ", ".join(deleted_products),
+            "code": "product_deleted",
+        })
+
+    # Удаляем видео до изменения учёта. Если ПК камер недоступен, склад и
+    # статус остаются нетронутыми и оператор может безопасно повторить откат.
+    from apps.cameras import recordings
+    from apps.cameras.models import AiCountingSession
+    sessions = list(AiCountingSession.objects.select_for_update().filter(order=order))
+    shipment = Shipment.objects.select_for_update().filter(order=order).first()
+    deleted_segments = 0
+    for session in sessions:
+        if not session.recording_stream:
+            continue
+        end = session.ended_at or (shipment.shipped_at if shipment else None) or timezone.now()
+        try:
+            deleted_segments += recordings.delete_session_segments(
+                session.recording_stream, session.started_at, end)
+        except recordings.RecordingUnavailable as exc:
+            raise ValidationError({
+                "detail": "Не удалось удалить видео на компьютере камер. Откат не выполнен.",
+                "code": "recording_delete_unavailable",
+            }) from exc
+
+    from apps.warehouse.services import adjust_stock
+    restored = 0
+    for item in items:
+        adjust_stock(
+            item.product,
+            item.quantity,
+            user,
+            note=f"Откат отгрузки заказа #{order.pk}: {reason}",
+        )
+        restored += item.quantity
+
+    previous_bags = shipment.bags_loaded if shipment else 0
+    if shipment:
+        shipment.delete()
+    AiCountingSession.objects.filter(pk__in=[session.pk for session in sessions]).update(
+        recording_stream="",
+        error="Видео удалено при откате отгрузки",
+    )
+    order.status = target_status
+    order.payment_status = "unpaid"
+    order.loading_camera = ""
+    order.save(update_fields=["status", "payment_status", "loading_camera"])
+    log_event(
+        "shipment_rollback",
+        f"Отгрузка заказа #{order.pk} отменена. Причина: {reason}",
+        user=user,
+        order=order,
+        payload={
+            "from": "shipped", "to": target_status, "reason": reason,
+            "restored_bags": restored, "previous_bags_loaded": previous_bags,
+            "recording_segments_deleted": deleted_segments,
+            "recording_session_ids": [session.pk for session in sessions],
+        },
+    )
+    return order
+
+
 def _do_ship(order, shipment, user, label):
     """Списать со склада и зафиксировать отгрузку в долг. Общее для трака и поезда."""
     for item in order.items.select_related("product").all():

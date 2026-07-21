@@ -79,6 +79,10 @@ class FakeMediaMtx:
     def path_ready(self, _stream):
         return True
 
+    def delete_recording_segments(self, stream, starts):
+        self.deleted_recordings = (stream, starts)
+        return len(starts)
+
 
 class FakeProcessor:
     def __init__(self, manager, camera, options):
@@ -212,6 +216,23 @@ def test_health_has_startup_proof_and_no_browser_cors(service):
         "encoder": "libx264",
     }
     assert "access-control-allow-origin" not in response.headers
+
+
+def test_delete_recordings_is_authenticated_and_deletes_exact_segments(service):
+    manager, client = service
+    starts = ["2026-07-21T10:00:00+06:00", "2026-07-21T10:01:00+06:00"]
+    assert client.request(
+        "DELETE", "/recordings", json={"stream": "cam2ai", "starts": starts}
+    ).status_code == 401
+
+    response = client.request(
+        "DELETE", "/recordings", headers=auth(),
+        json={"stream": "cam2ai", "starts": starts},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 2, "requested": 2}
+    assert manager.mediamtx.deleted_recordings == ("cam2ai", starts)
 
 
 def test_camera_inventory_keeps_backend_compatible_devices(service):

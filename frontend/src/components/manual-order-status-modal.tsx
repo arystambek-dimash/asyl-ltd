@@ -87,7 +87,7 @@ export function ManualOrderStatusModal({ order, target, onClose, onChanged }: {
     <Modal
       open
       onClose={onClose}
-      eyebrow={`Ручное завершение · заказ #${order.id}`}
+      eyebrow={`Ручная отгрузка · заказ #${order.id}`}
       title="Сколько мешков отгружено?"
       description="Камера к заказу не назначается. Результат сохранится как ручной, склад и история обновятся штатно."
       className="max-w-xl"

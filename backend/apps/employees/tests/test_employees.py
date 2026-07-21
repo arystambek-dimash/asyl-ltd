@@ -85,6 +85,23 @@ def test_create_without_permissions_inherits_role(admin_client):
     assert User.objects.get(username="oleg").has_perm_code("orders.view") is True
 
 
+def test_inherited_permission_can_be_denied_for_one_employee(admin_client):
+    role = Role.objects.create(name="Менеджер-гибкий")
+    role.permissions.add(_perm("catalog.view"), _perm("catalog.delete"))
+    response = admin_client.post("/api/employees/", {
+        "username": "limited", "password": "pass12345",
+        "first_name": "Лимит", "last_name": "Тест", "phone": "+7",
+        "role": role.id,
+        "denied_permission_codes": ["catalog.delete"],
+    }, format="json")
+
+    assert response.status_code == 201
+    assert response.data["denied_permissions"] == ["catalog.delete"]
+    user = User.objects.get(username="limited")
+    assert user.has_perm_code("catalog.view") is True
+    assert user.has_perm_code("catalog.delete") is False
+
+
 def test_update_permissions_and_password(admin_client):
     role = Role.objects.create(name="R2")
     resp = admin_client.post("/api/employees/", {

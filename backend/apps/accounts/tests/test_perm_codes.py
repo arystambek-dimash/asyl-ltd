@@ -39,6 +39,22 @@ def test_role_permissions_inherited_live(make_user):
     assert u.perm_codes == {"orders.view"}
 
 
+def test_personal_deny_overrides_role_but_not_personal_grant(make_user):
+    from apps.employees.models import Employee
+    u = make_user(username="deny")
+    role = Role.objects.create(name="Тест deny")
+    permission = _perm("catalog.delete")
+    role.permissions.add(permission)
+    employee = Employee.objects.create(
+        user=u, first_name="A", last_name="B", phone="x", role=role)
+    employee.denied_permissions.add(permission)
+    assert u.has_perm_code("catalog.delete") is False
+    employee.permissions.add(permission)
+    employee.__dict__.pop("effective_perm_codes", None)
+    u = type(u).objects.get(pk=u.pk)
+    assert u.has_perm_code("catalog.delete") is True
+
+
 def test_no_employee_no_codes(make_user):
     u = make_user(username="e2")
     assert u.perm_codes == set()

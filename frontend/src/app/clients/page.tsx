@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/select-ui";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
-import { cn, formatPhone, formatMoney, formatDateTime } from "@/lib/utils";
+import { cn, currencySymbol, formatPhone, formatMoney, formatDateTime } from "@/lib/utils";
 import { COUNTRIES } from "@/lib/countries";
 import {
   BarChart3, MoreVertical, Pencil, Phone, Plus, Search, Tags, Trash2,
@@ -45,6 +45,7 @@ const schema = z.object({
   ),
   bank: z.string().optional(),
   bank_account: z.string().optional(),
+  currency: z.enum(["KZT", "USD"]),
 });
 type FormValues = z.infer<typeof schema>;
 
@@ -57,9 +58,11 @@ function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCance
       company_name: editing.company_name ?? "", phone: editing.phone,
       country: editing.country ?? "", iin: editing.iin ?? "",
       bank: editing.bank ?? "", bank_account: editing.bank_account ?? "",
+      currency: editing.currency ?? "KZT",
     } : {
       first_name: "", last_name: "", company_name: "", phone: "", country: "",
       iin: "", bank: "", bank_account: "",
+      currency: "KZT",
     },
   });
 
@@ -138,6 +141,20 @@ function ClientForm({ onDone, onCancel, editing }: { onDone: () => void; onCance
         <div className="sm:col-span-2 mt-1 border-t border-[var(--border)] pt-4 text-[12px] font-medium text-[var(--muted-foreground)]">
           Реквизиты
         </div>
+
+        <FormField control={form.control} name="currency" render={({ field }) => (
+          <FormItem>
+            <FormLabel>Валюта прайс-листа</FormLabel>
+            <Select value={field.value} onValueChange={field.onChange}>
+              <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+              <SelectContent>
+                <SelectItem value="KZT">KZT · тенге (₸)</SelectItem>
+                <SelectItem value="USD">USD · доллар ($)</SelectItem>
+              </SelectContent>
+            </Select>
+            <FormMessage />
+          </FormItem>
+        )} />
 
         <FormField control={form.control} name="iin" render={({ field }) => (
           <FormItem>
@@ -271,7 +288,10 @@ function ClientsPageInner() {
   }
 
   const list = clients ?? [];
-  const totalDebt = list.reduce((sum, c) => sum + Number(c.debt_total ?? 0), 0);
+  const debtByCurrency = list.reduce<Record<string, number>>((totals, client) => {
+    totals[client.currency] = (totals[client.currency] ?? 0) + Number(client.debt_total ?? 0);
+    return totals;
+  }, {});
 
   const filtered = list.filter((c) =>
     (!q || c.name.toLowerCase().includes(q.toLowerCase()))
@@ -308,11 +328,15 @@ function ClientsPageInner() {
         </Button>
       )}>
       {/* Общая задолженность — как в кассовых системах: одна цифра, красным. */}
-      <div className="mb-5 inline-flex min-w-56 flex-col gap-1 rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-card">
-        <span className="text-[13px] font-medium text-[var(--muted-foreground)]">Общая задолженность</span>
-        <span className="text-[26px] font-bold leading-none tracking-tight tabular-nums text-[var(--destructive)]">
-          {formatMoney(totalDebt)} ₸
-        </span>
+      <div className="mb-5 flex flex-wrap gap-3">
+        {(["KZT", "USD"] as const).map((currency) => (
+          <div key={currency} className="inline-flex min-w-56 flex-col gap-1 rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-card">
+            <span className="text-[13px] font-medium text-[var(--muted-foreground)]">Общая задолженность · {currency}</span>
+            <span className="text-[26px] font-bold leading-none tracking-tight tabular-nums text-[var(--destructive)]">
+              {formatMoney(debtByCurrency[currency] ?? 0)} {currencySymbol(currency)}
+            </span>
+          </div>
+        ))}
       </div>
 
       {/* Фильтры — отдельные поля, как в референсе. */}
@@ -355,7 +379,7 @@ function ClientsPageInner() {
               <div>
                 <div className="text-[11px] text-[var(--muted-foreground)]">Задолженность</div>
                 {Number(c.debt_total ?? 0) > 0
-                  ? <div className="font-medium tabular-nums text-[var(--destructive)]">{formatMoney(c.debt_total!)} ₸</div>
+                  ? <div className="font-medium tabular-nums text-[var(--destructive)]">{formatMoney(c.debt_total!)} {currencySymbol(c.currency)}</div>
                   : <div className="text-[var(--muted-foreground)]">—</div>}
               </div>
               <div>
@@ -400,7 +424,7 @@ function ClientsPageInner() {
                     <TD className="tabular-nums">{c.phone}</TD>
                     <TD className="tabular-nums">
                       {Number(c.debt_total ?? 0) > 0
-                        ? <span className="font-medium text-[var(--destructive)]">{formatMoney(c.debt_total!)} ₸</span>
+                        ? <span className="font-medium text-[var(--destructive)]">{formatMoney(c.debt_total!)} {currencySymbol(c.currency)}</span>
                         : <span className="text-[var(--muted-foreground)]">—</span>}
                     </TD>
                     <TD className="tabular-nums text-[var(--muted-foreground)]">

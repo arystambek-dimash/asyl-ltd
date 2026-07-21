@@ -20,14 +20,20 @@ class Employee(models.Model):
     permissions = models.ManyToManyField(
         "rbac.Permission", blank=True, related_name="employees"
     )
+    # Точечные запреты поверх роли. Это позволяет, например, оставить
+    # сотруднику роль «Менеджер», но отозвать только удаление товаров.
+    denied_permissions = models.ManyToManyField(
+        "rbac.Permission", blank=True, related_name="denied_for_employees"
+    )
     is_active = models.BooleanField(default=True)
 
     @cached_property
     def effective_perm_codes(self) -> set:
-        """Права роли ∪ личные права. Кэш живёт в рамках одного запроса."""
+        """(Права роли − личные запреты) ∪ личные права."""
         codes = set(self.permissions.values_list("code", flat=True))
         if self.role_id:
-            codes |= set(self.role.permissions.values_list("code", flat=True))
+            denied = set(self.denied_permissions.values_list("code", flat=True))
+            codes |= set(self.role.permissions.values_list("code", flat=True)) - denied
         return codes
 
     @property

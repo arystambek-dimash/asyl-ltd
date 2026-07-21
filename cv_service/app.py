@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .contracts import AlwaysOnOptions, ProcessorOptions
+from .contracts import AlwaysOnOptions, ProcessorOptions, RecordingDeleteOptions
 from .processor import ProcessorManager
 from .security import valid_api_key
 from .settings import parse_camera
@@ -92,6 +92,12 @@ def create_app(manager: ProcessorManager) -> FastAPI:
     @app.put("/always-on")
     def configure_always_on(options: AlwaysOnOptions):
         return manager.configure_always_on(options.cameras, options.source)
+
+    @app.delete("/recordings")
+    def delete_recordings(options: RecordingDeleteOptions):
+        deleted = manager.mediamtx.delete_recording_segments(
+            options.stream, options.starts)
+        return {"deleted": deleted, "requested": len(options.starts)}
 
     @app.get("/processors/{camera}")
     def processor(camera: str):

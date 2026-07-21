@@ -194,6 +194,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         model = Order
         fields = ["id", "client", "store", "client_name", "client_phone",
                   "department", "department_name", "department_color", "status",
+                  "currency",
                   "payment_status", "settlement_intent", "payment_method", "transport_type",
                   "truck_number", "arrival_date", "notes", "items", "total_amount",
                   "paid_total", "remaining_amount", "is_fully_paid",
@@ -202,7 +203,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                   "weigh_in_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at",
                   "shipped_at", "loading_camera", "deleted_at", "deleted_by_name"]
-        read_only_fields = ["debt_override", "deleted_at"]
+        read_only_fields = ["currency", "debt_override", "deleted_at"]
         extra_kwargs = {
             "truck_number": {"required": False},
             "arrival_date": {"required": False, "allow_null": True},
@@ -319,6 +320,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         ensure_products_available(item["product"] for item in items)
         user = self.context["request"].user
         validated_data["created_by"] = user
+        validated_data["currency"] = validated_data["client"].currency
         # Отдел — свойство заказа. Для старых API-клиентов используем основной.
         validated_data.setdefault("department", Department.default_code())
         # Оператор (orders.confirm) создаёт заказ сразу подтверждённым с ценами;

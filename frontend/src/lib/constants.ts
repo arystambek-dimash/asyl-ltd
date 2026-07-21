@@ -18,8 +18,8 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
   confirmed: "Ожидает загрузки",
   arrived: "Ожидает загрузки",
   loading: "Ожидает загрузки",
-  loaded: "Завершён",
-  shipped: "Завершён",
+  loaded: "Отгружено",
+  shipped: "Отгружено",
   rejected: "Отменён",
   cancelled: "Отменён",
 };
@@ -44,9 +44,11 @@ export function translateOrderStatusMessage(
   if (to) {
     const fromLabel = from ? orderStatusLabel(from) : null;
     const toLabel = orderStatusLabel(to);
-    return fromLabel && fromLabel !== toLabel
+    const statusText = fromLabel && fromLabel !== toLabel
       ? `Статус заказа: ${fromLabel} → ${toLabel}`
       : `Статус заказа: ${toLabel}`;
+    const reason = typeof payload?.reason === "string" ? payload.reason.trim() : "";
+    return reason ? `${statusText}. Причина: ${reason}` : statusText;
   }
   return message.replace(
     /\b(draft|pending|confirmed|arrived|loading|loaded|shipped|rejected|cancelled)\b/g,

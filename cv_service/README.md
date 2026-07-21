@@ -24,6 +24,7 @@ CORS и интерактивная документация отключены.
 | GET | `/processors` | тёплые processors |
 | GET | `/always-on` | выбранные фоновые processors и их состояние |
 | PUT | `/always-on` | атомарно заменить постоянный список камер |
+| DELETE | `/recordings` | удалить перечисленные сегменты записи с ПК камер |
 | GET | `/processors/cam2` | состояние одной камеры |
 | POST | `/processors/cam2/prewarm` | прогреть decoder/inference в `IDLE` без записи |
 | POST | `/processors/cam2` | обнулить и перейти в `COUNTING` |

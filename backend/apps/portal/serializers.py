@@ -14,10 +14,11 @@ class CatalogProductSerializer(serializers.ModelSerializer):
     )
     available_bags = serializers.SerializerMethodField()
     price = serializers.SerializerMethodField()
+    currency = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
-        fields = ["id", "label", "weight_kg", "available_bags", "price"]
+        fields = ["id", "label", "weight_kg", "available_bags", "price", "currency"]
 
     def get_available_bags(self, obj):
         s = getattr(obj, "stock", None)
@@ -27,6 +28,11 @@ class CatalogProductSerializer(serializers.ModelSerializer):
         # Только закреплённая цена текущего клиента. Базовую цену не раскрываем.
         prices = getattr(obj, "portal_client_prices", [])
         return money_string(prices[0].price) if prices else None
+
+    def get_currency(self, obj):
+        request = self.context.get("request")
+        client = getattr(getattr(request, "user", None), "client_profile", None)
+        return client.currency if client else "KZT"
 
 
 class PortalOrderItemSerializer(serializers.ModelSerializer):
@@ -62,6 +68,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = ["id", "status", "payment_status", "settlement_intent", "payment_method",
+                  "currency",
                   "transport_type",
                   "store", "store_name",
                   "items", "total_amount", "paid_total", "remaining_amount",
@@ -162,6 +169,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
                 client=client, product_id__in=product_ids)
         }
         order = Order.objects.create(client=client, status="pending",
+                                     currency=client.currency,
                                      department=Department.default_code(),
                                      settlement_intent=intent,
                                      payment_method=method, store=store,

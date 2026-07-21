@@ -13,12 +13,16 @@ export function formatMoney(value: number | string): string {
   }).format(n);
 }
 
-export function formatCurrency(value: number | string): string {
-  return `${formatMoney(value)} ₸`;
+export function currencySymbol(currency: "KZT" | "USD" | string = "KZT"): string {
+  return currency === "USD" ? "$" : "₸";
 }
 
-export function formatPortalMoney(value: string | null | undefined): string {
-  return value == null ? "После подтверждения" : formatCurrency(value);
+export function formatCurrency(value: number | string, currency: "KZT" | "USD" | string = "KZT"): string {
+  return `${formatMoney(value)} ${currencySymbol(currency)}`;
+}
+
+export function formatPortalMoney(value: string | null | undefined, currency: "KZT" | "USD" | string = "KZT"): string {
+  return value == null ? "После подтверждения" : formatCurrency(value, currency);
 }
 
 /** Calendar date in local time; unlike toISOString(), does not shift by UTC. */

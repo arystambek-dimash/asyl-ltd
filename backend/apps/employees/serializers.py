@@ -17,9 +17,15 @@ class EmployeeSerializer(serializers.ModelSerializer):
     # Права роли наследуются «вживую»; permissions — личные доступы поверх роли.
     permissions = serializers.SerializerMethodField()
     role_permissions = serializers.SerializerMethodField()
+    denied_permissions = serializers.SerializerMethodField()
     permission_codes = serializers.SlugRelatedField(
         many=True, write_only=True, required=False,
         source="permissions", slug_field="code",
+        queryset=Permission.objects.all(),
+    )
+    denied_permission_codes = serializers.SlugRelatedField(
+        many=True, write_only=True, required=False,
+        source="denied_permissions", slug_field="code",
         queryset=Permission.objects.all(),
     )
 
@@ -27,7 +33,8 @@ class EmployeeSerializer(serializers.ModelSerializer):
         model = Employee
         fields = ["id", "username", "password", "first_name", "last_name",
                   "phone", "position", "role", "role_name", "name",
-                  "permissions", "role_permissions", "permission_codes", "is_active"]
+                  "permissions", "role_permissions", "denied_permissions",
+                  "permission_codes", "denied_permission_codes", "is_active"]
 
     def get_permissions(self, obj):
         return sorted(p.code for p in obj.permissions.all())
@@ -36,6 +43,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
         if not obj.role_id:
             return []
         return sorted(p.code for p in obj.role.permissions.all())
+
+    def get_denied_permissions(self, obj):
+        return sorted(p.code for p in obj.denied_permissions.all())
 
     def validate_password(self, value):
         # Единые правила паролей проекта (AUTH_PASSWORD_VALIDATORS) — иначе
@@ -57,6 +67,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         user_data = validated_data.pop("user")
         password = validated_data.pop("password")
         permissions = validated_data.pop("permissions", None)
+        denied_permissions = validated_data.pop("denied_permissions", None)
         username = user_data["username"]
         if User.objects.filter(username=username).exists():
             raise serializers.ValidationError(
@@ -66,6 +77,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             is_active=validated_data.get("is_active", True))
         employee = Employee.objects.create(user=user, **validated_data)
         employee.permissions.set(permissions or [])
+        employee.denied_permissions.set(denied_permissions or [])
         return employee
 
     @transaction.atomic
@@ -73,6 +85,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         user_data = validated_data.pop("user", None)
         password = validated_data.pop("password", None)
         permissions = validated_data.pop("permissions", None)
+        denied_permissions = validated_data.pop("denied_permissions", None)
         if user_data and user_data.get("username"):
             username = user_data["username"]
             if (User.objects.filter(username=username)
@@ -89,6 +102,8 @@ class EmployeeSerializer(serializers.ModelSerializer):
         instance.save()
         if permissions is not None:
             instance.permissions.set(permissions)
+        if denied_permissions is not None:
+            instance.denied_permissions.set(denied_permissions)
         # JWT-аутентификация проверяет user.is_active на каждом запросе —
         # синхронизация мгновенно отключает доступ деактивированному сотруднику.
         if instance.user.is_active != instance.is_active:

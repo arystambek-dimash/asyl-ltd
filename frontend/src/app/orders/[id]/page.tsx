@@ -18,7 +18,7 @@ import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { cn } from "@/lib/utils";
-import { formatDateTime, formatMoney } from "@/lib/utils";
+import { currencySymbol, formatDateTime, formatMoney } from "@/lib/utils";
 import {
   ORDER_PUBLIC_STATUSES,
   ORDER_STATUS_LABELS,
@@ -33,6 +33,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { PaymentChain, AddPaymentActions, paymentOpen } from "@/components/payment-chain";
 import { OrderForm } from "@/components/order-form";
 import { Modal } from "@/components/ui/modal";
+import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
 import {
   ArrowLeft,
   Banknote,
@@ -64,6 +65,7 @@ const EVENT_LABELS: Record<string, string> = {
   arrival: "Транспорт прибыл",
   loading: "Погрузка",
   shipment: "Заказ отгружен",
+  shipment_rollback: "Откат отгрузки",
   debt_override: "Долг подтверждён",
 };
 
@@ -95,8 +97,10 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const isManager = can(me, "orders.confirm");
   const canEditStatus = can(me, "orders.edit");
+  const canRollback = can(me, "shipping.rollback");
   const canViewStatus = can(me, "orders.view");
   const [newStatus, setNewStatus] = useState("");
+  const [rollbackOpen, setRollbackOpen] = useState(false);
   // Цены за мешок по позиции (для подтверждения). Предзаполняются ценой клиента.
   const [prices, setPrices] = useState<Record<number, string>>({});
 
@@ -143,8 +147,11 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const orderEvents = (events ?? []).slice(0, 5);
   // Ручной выбор ограничен четырьмя публичными статусами для всех (и суперадмина):
   // внутренние этапы ставят только бизнес-процессы, в журнале они видны как события.
-  const statusOptions = ORDER_PUBLIC_STATUSES;
+  const statusOptions = order.status === "shipped" && !canRollback
+    ? (["shipped"] as const)
+    : ORDER_PUBLIC_STATUSES;
   const currentStatusOption = orderStatusGroup(order.status);
+  const moneySymbol = currencySymbol(order.currency);
 
   return (
     <AppShell title="Заказы" section="Работа">
@@ -221,15 +228,15 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <Card className="flex min-h-24 items-center gap-3 p-4">
               <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[var(--success)]/10 text-[var(--success)]"><Banknote /></span>
-              <div className="min-w-0"><div className="text-xs text-[var(--muted-foreground)]">Сумма заказа</div><div className="mt-1 truncate font-semibold tabular-nums">{formatMoney(order.total_amount)} ₸</div></div>
+              <div className="min-w-0"><div className="text-xs text-[var(--muted-foreground)]">Сумма заказа</div><div className="mt-1 truncate font-semibold tabular-nums">{formatMoney(order.total_amount)} {moneySymbol}</div></div>
             </Card>
             <Card className="flex min-h-24 items-center gap-3 p-4">
               <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[var(--destructive)]/10 text-[var(--destructive)]"><WalletCards /></span>
-              <div className="min-w-0"><div className="text-xs text-[var(--muted-foreground)]">Долг клиента</div><div className="mt-1 truncate font-semibold tabular-nums text-[var(--destructive)]">{formatMoney(String(Math.max(0, remaining)))} ₸</div></div>
+              <div className="min-w-0"><div className="text-xs text-[var(--muted-foreground)]">Долг клиента</div><div className="mt-1 truncate font-semibold tabular-nums text-[var(--destructive)]">{formatMoney(String(Math.max(0, remaining)))} {moneySymbol}</div></div>
             </Card>
             <Card className="flex min-h-24 items-center gap-3 p-4">
               <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[var(--ring)]/10 text-[var(--ring)]"><CreditCard /></span>
-              <div className="min-w-0"><div className="text-xs text-[var(--muted-foreground)]">Оплачено</div><div className="mt-1 truncate font-semibold tabular-nums">{formatMoney(order.paid_total)} ₸</div></div>
+              <div className="min-w-0"><div className="text-xs text-[var(--muted-foreground)]">Оплачено</div><div className="mt-1 truncate font-semibold tabular-nums">{formatMoney(order.paid_total)} {moneySymbol}</div></div>
             </Card>
           </div>
 
@@ -256,8 +263,8 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                           </div>
                         </TD>
                         <TD className="text-right tabular-nums">{it.quantity}</TD>
-                        <TD className="text-right tabular-nums text-[var(--muted-foreground)]">{price ? `${formatMoney(it.price!)} ₸` : "—"}</TD>
-                        <TD className="text-right tabular-nums font-medium">{formatMoney(String(sum))} ₸</TD>
+                        <TD className="text-right tabular-nums text-[var(--muted-foreground)]">{price ? `${formatMoney(it.price!)} ${moneySymbol}` : "—"}</TD>
+                        <TD className="text-right tabular-nums font-medium">{formatMoney(String(sum))} {moneySymbol}</TD>
                       </TR>
                     );
                   })}
@@ -301,12 +308,12 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
               )}
               {pendingPayments.length === 0 && canStartPayment && (
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div><div className="text-xs text-[var(--muted-foreground)]">К оплате</div><div className="mt-1 text-lg font-semibold tabular-nums">{formatMoney(String(remaining))} ₸</div></div>
+                  <div><div className="text-xs text-[var(--muted-foreground)]">К оплате</div><div className="mt-1 text-lg font-semibold tabular-nums">{formatMoney(String(remaining))} {moneySymbol}</div></div>
                   <AddPaymentActions order={order} me={me} onChanged={reload} />
                 </div>
               )}
               {pendingPayments.length === 0 && !canStartPayment && (
-                <div className="flex items-center justify-between text-sm"><span className="text-[var(--muted-foreground)]">Подтверждено системой</span><b className="tabular-nums">{formatMoney(order.paid_total)} ₸</b></div>
+                <div className="flex items-center justify-between text-sm"><span className="text-[var(--muted-foreground)]">Подтверждено системой</span><b className="tabular-nums">{formatMoney(order.paid_total)} {moneySymbol}</b></div>
               )}
               {order.status === "shipped" && remaining > 0 && (
                 <Link href={`/accounting/debts/clients/${order.client}`} className="w-fit text-xs font-medium text-[var(--ring)] hover:underline">Открыть долг клиента →</Link>
@@ -327,7 +334,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                     <div key={itemId} className="grid gap-2 border-t pt-3 first:border-0 first:pt-0 sm:grid-cols-[1fr_180px_110px] sm:items-center">
                       <div><div className="text-sm font-medium">{it.product_label || `Товар #${it.product}`}</div><div className="text-xs text-[var(--muted-foreground)]">{qty} меш.</div></div>
                       <Input type="number" min="0" placeholder="Цена за мешок" value={prices[itemId] ?? ""} onChange={(e) => setPrices((p) => ({ ...p, [itemId]: e.target.value }))} />
-                      <span className="text-right text-sm font-medium tabular-nums">{price > 0 ? `${formatMoney(String(price * qty))} ₸` : "—"}</span>
+                      <span className="text-right text-sm font-medium tabular-nums">{price > 0 ? `${formatMoney(String(price * qty))} ${moneySymbol}` : "—"}</span>
                     </div>
                   );
                 })}
@@ -348,7 +355,13 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
               {canViewStatus && (
                 <>
                   <div className="grid gap-1.5"><Label className="text-xs">Изменить статус</Label><Select value={newStatus || currentStatusOption} onChange={(e) => setNewStatus(e.target.value)}>{statusOptions.map((s) => <option key={s} value={s}>{ORDER_STATUS_LABELS[s]}</option>)}</Select></div>
-                  <Button size="sm" disabled={busy || !newStatus || newStatus === currentStatusOption} onClick={() => act(async () => { const response = await api.post<{ applied: boolean }>(`/orders/${order.id}/set-status/`, { status: newStatus }); setNewStatus(""); if (response.data?.applied === false) setError("Запрос на смену статуса отправлен на одобрение."); })}>{canEditStatus ? "Сохранить статус" : "Запросить смену"}</Button>
+                  <Button size="sm" disabled={busy || !newStatus || newStatus === currentStatusOption} onClick={() => {
+                    if (order.status === "shipped" && newStatus !== "shipped") {
+                      setRollbackOpen(true);
+                      return;
+                    }
+                    void act(async () => { const response = await api.post<{ applied: boolean }>(`/orders/${order.id}/set-status/`, { status: newStatus }); setNewStatus(""); if (response.data?.applied === false) setError("Запрос на смену статуса отправлен на одобрение."); });
+                  }}>{canEditStatus ? "Сохранить статус" : "Запросить смену"}</Button>
                 </>
               )}
               {isManager && isNew && !confirmInPriceCard && <Button size="sm" variant="outline" disabled={busy} onClick={() => act(() => api.post(`/orders/${order.id}/confirm/`))}>Подтвердить заказ</Button>}
@@ -378,7 +391,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                 {orderEvents.length > 0 ? orderEvents.map((event, index) => (
                   <div key={event.id} className="relative flex gap-3 text-xs">
                     <span className={cn("relative z-10 mt-1 size-2.5 shrink-0 rounded-full ring-4 ring-[var(--card)]", index === 0 ? "bg-[var(--success)]" : "bg-[var(--muted-foreground)]/45")} />
-                    <div className="min-w-0 flex-1"><div className="font-medium">{EVENT_LABELS[event.event_type] ?? translateOrderStatusMessage(event.message, event.payload)}</div>{EVENT_LABELS[event.event_type] && <div className="mt-0.5 truncate text-[var(--muted-foreground)]" title={translateOrderStatusMessage(event.message, event.payload)}>{translateOrderStatusMessage(event.message, event.payload)}</div>}<div className="mt-0.5 text-[10px] text-[var(--muted-foreground)]">{formatDateTime(event.created_at)}</div></div>
+                    <div className="min-w-0 flex-1"><div className="font-medium">{EVENT_LABELS[event.event_type] ?? translateOrderStatusMessage(event.message, event.payload)}</div>{EVENT_LABELS[event.event_type] && <div className="mt-0.5 text-[var(--muted-foreground)]" title={translateOrderStatusMessage(event.message, event.payload)}>{translateOrderStatusMessage(event.message, event.payload)}</div>}<div className="mt-0.5 text-[10px] text-[var(--muted-foreground)]">{formatDateTime(event.created_at)}{event.user_name ? ` · ${event.user_name}` : ""}</div></div>
                   </div>
                 )) : (
                   <>
@@ -440,6 +453,10 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
         error={delError}
         onConfirm={confirmDelete}
       />
+      <ShipmentRollbackModal order={rollbackOpen ? order : null}
+        initialTarget={(newStatus && newStatus !== "shipped" ? newStatus : "confirmed") as "pending" | "confirmed" | "cancelled"}
+        onClose={() => setRollbackOpen(false)}
+        onChanged={async () => { setNewStatus(""); await reload(); }} />
     </AppShell>
   );
 }

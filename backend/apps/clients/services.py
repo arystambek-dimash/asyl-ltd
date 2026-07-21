@@ -66,7 +66,8 @@ def client_history(client) -> dict:
 
     return {
         "client": {"id": client.id, "name": client.name,
-                   "phone": client.phone, "country": client.country},
+                   "phone": client.phone, "country": client.country,
+                   "currency": client.currency},
         "summary": {
             "revenue": _d(sum((o.total_amount for o in financial), Decimal("0"))),
             "paid": _d(sum((o.paid_total for o in financial), Decimal("0"))),

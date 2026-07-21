@@ -25,6 +25,7 @@ import {
   ManualOrderStatusModal,
   type ManualOrderTarget,
 } from "@/components/manual-order-status-modal";
+import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
 import {
   ORDER_PUBLIC_STATUSES,
   ORDER_STATUS_LABELS,
@@ -36,7 +37,7 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { cn, formatDateTime, formatMoney } from "@/lib/utils";
+import { cn, currencySymbol, formatDateTime, formatMoney } from "@/lib/utils";
 import { useDismiss } from "@/lib/use-dismiss";
 import {
   Archive,
@@ -165,6 +166,10 @@ const STATUS_SHARE_COLORS: Record<string, string> = {
 };
 
 function StatusShareBar({ orders, total }: { orders: Order[]; total: number }) {
+  const currencies = new Set(orders.map((order) => order.currency ?? "KZT"));
+  const symbol = currencies.size === 1
+    ? currencySymbol(currencies.values().next().value ?? "KZT")
+    : "";
   const shares = ORDER_PUBLIC_STATUSES
     .filter((g) => g !== "cancelled")
     .map((g) => ({
@@ -180,7 +185,7 @@ function StatusShareBar({ orders, total }: { orders: Order[]; total: number }) {
     <div className="mt-1 flex flex-col gap-2">
       <div className="flex h-2 w-full gap-px overflow-hidden rounded-full">
         {shares.map((s) => (
-          <div key={s.key} title={`${s.label}: ${formatMoney(s.value)} ₸`}
+          <div key={s.key} title={`${s.label}: ${formatMoney(s.value)}${symbol ? ` ${symbol}` : ""}`}
             style={{ width: `${(s.value / total) * 100}%`, background: STATUS_SHARE_COLORS[s.key] }} />
         ))}
       </div>
@@ -364,6 +369,10 @@ function OrdersAnalytics({
   const [view, setView] = useState<"departments" | "overview">("departments");
   const totalOrders = rows.reduce((sum, row) => sum + row.orders, 0);
   const activeDepartment = rows.find((row) => row.code === active);
+  const currencies = new Set(orders.map((order) => order.currency ?? "KZT"));
+  const oneCurrency = currencies.size <= 1
+    ? (currencies.values().next().value ?? "KZT")
+    : null;
 
   return (
     <section className="mb-5 overflow-hidden rounded-2xl border bg-[var(--card)] shadow-card">
@@ -462,12 +471,12 @@ function OrdersAnalytics({
                   </div>
                   <div className="mt-6 grid grid-cols-2 gap-3 border-t pt-3">
                     <div>
-                      <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Завершено</div>
+                      <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Отгружено</div>
                       <div className="mt-1 text-sm font-bold tabular-nums">{row.shipped}</div>
                     </div>
                     <div className="text-right">
                       <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Выручка</div>
-                      <div className="mt-1 truncate text-sm font-bold tabular-nums">{formatMoney(row.revenue)} ₸</div>
+                      <div className="mt-1 truncate text-sm font-bold tabular-nums">{oneCurrency ? `${formatMoney(row.revenue)} ${currencySymbol(oneCurrency)}` : "По валютам"}</div>
                     </div>
                   </div>
                 </button>
@@ -485,7 +494,7 @@ function OrdersAnalytics({
           <StatCard label="В процессе" value={String(activeCount)} icon={Clock3} />
           <StatCard
             label="Сумма"
-            value={`${formatMoney(total)} ₸`}
+            value={oneCurrency ? `${formatMoney(total)} ${currencySymbol(oneCurrency)}` : "Разные валюты"}
             icon={CircleDollarSign}
             accent
             caption="Без отменённых и отклонённых"
@@ -566,7 +575,7 @@ function ArchiveDock({ trashed, onOpenArchive, onChanged }: {
                   <span className="truncate">{o.client_name || `Клиент #${o.client}`}</span>
                 </div>
                 <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">
-                  <span className="tabular-nums">{formatMoney(o.total_amount)} ₸</span>
+                  <span className="tabular-nums">{formatMoney(o.total_amount)} {currencySymbol(o.currency)}</span>
                   {o.deleted_at && <> · {formatDateTime(o.deleted_at)}</>}
                 </div>
               </div>
@@ -655,6 +664,7 @@ function OrdersPageInner() {
   const { me } = useAuth();
   const canCreate = can(me, "orders.create");
   const canEdit = can(me, "orders.edit");
+  const canRollback = can(me, "shipping.rollback");
   const canManageDepartments = can(me, "rbac.manage");
   const showDept = (departments?.length ?? 0) > 1;
   const [open, setOpen] = useState(false);
@@ -670,6 +680,8 @@ function OrdersPageInner() {
   const [statusActionError, setStatusActionError] = useState("");
   const [manualStatusOrder, setManualStatusOrder] = useState<Order | null>(null);
   const [manualStatusTarget, setManualStatusTarget] = useState<ManualOrderTarget | null>(null);
+  const [rollbackOrder, setRollbackOrder] = useState<Order | null>(null);
+  const [rollbackTarget, setRollbackTarget] = useState<"pending" | "confirmed" | "cancelled">("confirmed");
   // Стопка архива в углу видна всегда — держим список удалённых под рукой.
   const { data: trashed, reload: reloadTrash } = useApi<Order[]>(canEdit ? "/orders/trash/" : null);
 
@@ -696,6 +708,11 @@ function OrdersPageInner() {
   }
 
   function chooseStatus(order: Order, target: string) {
+    if (order.status === "shipped" && target !== "shipped") {
+      setRollbackOrder(order);
+      setRollbackTarget(target as "pending" | "confirmed" | "cancelled");
+      return;
+    }
     if (target === "shipped" || target === "cancelled") {
       setManualStatusOrder(order);
       setManualStatusTarget(target);
@@ -834,7 +851,7 @@ function OrdersPageInner() {
                 <span className="text-sm font-semibold">#{o.id}</span>
                 {showDept && <DepartmentBadge order={o} />}
               </div>
-              {canEdit ? (
+              {canEdit && (o.status !== "shipped" || canRollback) ? (
                 <OrderStatusSelect status={o.status} disabled={statusBusyId === o.id}
                   onChange={(target) => chooseStatus(o, target)} />
               ) : (
@@ -846,11 +863,11 @@ function OrdersPageInner() {
             <div className="grid grid-cols-2 gap-2 text-sm">
               <div>
                 <div className="text-[11px] text-[var(--muted-foreground)]">Сумма</div>
-                <div className="font-semibold tabular-nums">{formatMoney(o.total_amount)} ₸</div>
+                <div className="font-semibold tabular-nums">{formatMoney(o.total_amount)} {currencySymbol(o.currency)}</div>
               </div>
               <div>
                 <div className="text-[11px] text-[var(--muted-foreground)]">Оплачено</div>
-                <div className="tabular-nums">{formatMoney(o.paid_total)} ₸</div>
+                <div className="tabular-nums">{formatMoney(o.paid_total)} {currencySymbol(o.currency)}</div>
               </div>
               {o.truck_number && (
                 <div>
@@ -907,10 +924,10 @@ function OrdersPageInner() {
                     </TD>
                     {showDept && <TD><DepartmentBadge order={o} /></TD>}
                     <TD>{o.client_name || `Клиент #${o.client}`}</TD>
-                    <TD className="text-right tabular-nums">{formatMoney(o.total_amount)} ₸</TD>
+                    <TD className="text-right tabular-nums">{formatMoney(o.total_amount)} {currencySymbol(o.currency)}</TD>
                     <TD>
                       <div className="flex flex-wrap items-center gap-1.5">
-                        {canEdit ? (
+                        {canEdit && (o.status !== "shipped" || canRollback) ? (
                           <OrderStatusSelect status={o.status} disabled={statusBusyId === o.id}
                             onChange={(target) => chooseStatus(o, target)} />
                         ) : (
@@ -972,6 +989,9 @@ function OrdersPageInner() {
           await Promise.all([reload(), reloadSummary(), reloadTrash()]);
         }}
       />
+      <ShipmentRollbackModal order={rollbackOrder} initialTarget={rollbackTarget}
+        onClose={() => setRollbackOrder(null)}
+        onChanged={async () => { await Promise.all([reload(), reloadSummary(), reloadTrash()]); }} />
 
       <Modal open={open} onClose={() => setOpen(false)}
         eyebrow="Работа · Заказ"
@@ -1064,7 +1084,7 @@ function ArchiveView({ showDept, onBack, onRestored }: {
                     <TD><DepartmentBadge order={o} /></TD>
                   )}
                   <TD>{o.client_name || `Клиент #${o.client}`}</TD>
-                  <TD className="text-right tabular-nums">{formatMoney(o.total_amount)} ₸</TD>
+                  <TD className="text-right tabular-nums">{formatMoney(o.total_amount)} {currencySymbol(o.currency)}</TD>
                   <TD className="whitespace-nowrap text-[var(--muted-foreground)]">
                     <div className="text-sm">{o.deleted_at ? formatDateTime(o.deleted_at) : "—"}</div>
                     {o.deleted_by_name && <div className="text-xs">{o.deleted_by_name}</div>}

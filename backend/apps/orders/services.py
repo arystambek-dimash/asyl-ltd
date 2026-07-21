@@ -459,7 +459,7 @@ def _force_set_status(order: Order, to_status: str, user,
     # переход без отдельной операции возврата исказил бы остатки и долги.
     if old == "shipped":
         raise ValidationError({
-            "detail": "Завершённый заказ нельзя вернуть назад простой сменой статуса",
+            "detail": "Отгруженный заказ возвращается отдельной операцией с обязательной причиной",
             "code": "shipped_is_final",
         })
 

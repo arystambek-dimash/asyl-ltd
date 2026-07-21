@@ -15,6 +15,7 @@ import { Info, Plus, Trash2 } from "lucide-react";
 interface PortalProduct {
   id: number; label: string; weight_kg: string; available_bags: number;
   price: string | null;
+  currency: "KZT" | "USD";
 }
 
 export default function PortalNewOrderPage() {
@@ -65,7 +66,7 @@ export default function PortalNewOrderPage() {
                     <option key={p.id} value={p.id} disabled={p.available_bags <= 0}>
                       {p.label}
                       {p.available_bags > 0
-                        ? ` · ${p.price ? `${Number(p.price).toLocaleString("ru-RU")} ₸ · ` : ""}в наличии ${p.available_bags} меш.`
+                        ? ` · ${p.price ? `${Number(p.price).toLocaleString("ru-RU")} ${p.currency === "USD" ? "$" : "₸"} · ` : ""}в наличии ${p.available_bags} меш.`
                         : " — нет в наличии"}
                     </option>
                   ))}
@@ -114,7 +115,7 @@ export default function PortalNewOrderPage() {
                 {" Способ оплаты вы выберете после завершения отгрузки."}
                 {estimatedTotal > 0 && (
                   <b className="ml-1 text-[var(--foreground)]">
-                    Предварительно: {estimatedTotal.toLocaleString("ru-RU")} ₸
+                    Предварительно: {estimatedTotal.toLocaleString("ru-RU")} {products?.[0]?.currency === "USD" ? "$" : "₸"}
                   </b>
                 )}
               </span>

@@ -17,6 +17,7 @@ class LiveOrderManager(models.Manager):
 
 
 class Order(models.Model):
+    CURRENCIES = (("KZT", "KZT (тенге)"), ("USD", "USD (доллар)"))
     STATUSES = ["draft", "pending", "confirmed", "arrived",
                 "loading", "loaded", "shipped", "rejected", "cancelled"]
     PAYMENT_STATUSES = ["unpaid", "partial", "settled"]
@@ -27,6 +28,7 @@ class Order(models.Model):
     client = models.ForeignKey(
         "clients.Client", on_delete=models.PROTECT, related_name="orders"
     )
+    currency = models.CharField(max_length=3, choices=CURRENCIES, default="KZT")
     # Код динамического отдела продаж. Отдел выбирается непосредственно у заказа.
     department = models.CharField(max_length=50, default="main")
     transport_type = models.CharField(max_length=10, default="truck")

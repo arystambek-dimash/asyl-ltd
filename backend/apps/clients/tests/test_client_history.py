@@ -65,10 +65,11 @@ def test_history_excludes_service_debt_method():
 
 
 def test_history_endpoint(boss):
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create(first_name="A", last_name="B", phone="x", currency="USD")
     _order(c, "shipped", qty=10)
     r = _api(boss).get(f"/api/clients/{c.id}/history/")
     assert r.status_code == 200
     assert r.data["client"]["id"] == c.id
+    assert r.data["client"]["currency"] == "USD"
     assert "summary" in r.data
     assert "sales" in r.data and "payments" in r.data and "debts" in r.data

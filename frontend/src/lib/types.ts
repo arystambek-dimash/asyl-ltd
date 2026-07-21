@@ -52,6 +52,7 @@ export type PaymentMethod = PortalPaymentMethod | "card";
 export interface Client {
   id: number; first_name: string; last_name: string; phone: string;
   name: string; company_name: string; country: string;
+  currency: "KZT" | "USD";
   iin: string; bank: string; bank_account: string; user: number | null;
   debt_total?: string; created_at?: string;
 }
@@ -74,6 +75,7 @@ export interface Order {
   department?: string;
   department_name?: string;
   department_color?: string;
+  currency: "KZT" | "USD";
   status: string; payment_status?: string; settlement_intent?: string;
   payment_method?: PaymentMethod; transport_type?: "truck" | "train";
   truck_number: string; truck_number_set_by?: number | null;
@@ -101,6 +103,7 @@ export interface PortalOrder {
   payment_status?: string;
   settlement_intent: string;
   payment_method: PortalPaymentMethod;
+  currency: "KZT" | "USD";
   transport_type: "truck" | "train";
   store: number | null;
   store_name: string | null;
@@ -227,10 +230,11 @@ export interface Employee {
   /** Личные доступы поверх роли; права роли — в role_permissions. */
   permissions: string[];
   role_permissions: string[];
+  denied_permissions: string[];
   is_active: boolean;
 }
 export interface EventLog {
   id: number; event_type: string; message: string;
-  user: number | null; order: number | null; payload: Record<string, unknown>;
+  user: number | null; user_name: string | null; order: number | null; payload: Record<string, unknown>;
   created_at: string;
 }

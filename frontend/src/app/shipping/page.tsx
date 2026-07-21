@@ -12,6 +12,7 @@ import {
   ManualOrderStatusModal,
   type ManualOrderTarget,
 } from "@/components/manual-order-status-modal";
+import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
 import { playableCameras, type CameraFeed } from "@/components/camera-wall";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
@@ -49,8 +50,8 @@ const BOARD_STAGES = [
     hint: "Идёт погрузка", image: "/shipping/loading-forklift.jpg", tint: "#fffbf0", icon: Package,
     activeCircle: "border-amber-500 bg-amber-500 text-white shadow-[0_12px_28px_rgba(245,158,11,0.32)]",
     activeLabel: "text-amber-600" },
-  { key: "done", label: "Завершён", color: "var(--success)", statuses: ["loaded", "shipped"],
-    hint: "Завершённые отгрузки", image: "/shipping/completed-clipboard.jpg", tint: "#f4fbf5", icon: Check,
+  { key: "done", label: "Отгружено", color: "var(--success)", statuses: ["loaded", "shipped"],
+    hint: "Отгруженные заказы", image: "/shipping/completed-clipboard.jpg", tint: "#f4fbf5", icon: Check,
     activeCircle: "border-emerald-600 bg-emerald-600 text-white shadow-[0_12px_28px_rgba(5,150,105,0.32)]",
     activeLabel: "text-emerald-700" },
 ] as const;
@@ -720,7 +721,7 @@ function LiveBoard({ orders, cameras, sessions, histories, completedDays, onOpen
               <span className="relative size-2 rounded-full bg-emerald-500" />
             </span>
           </div>
-          <span className="text-[12px] text-slate-400">обновляется автоматически · завершённые {completedLabel}</span>
+          <span className="text-[12px] text-slate-400">обновляется автоматически · отгруженные {completedLabel}</span>
         </div>
       </div>
       {error && <div className="mb-3"><ErrorAlert message={error} /></div>}
@@ -761,7 +762,7 @@ function LiveBoard({ orders, cameras, sessions, histories, completedDays, onOpen
                   <div className="text-[14px] font-semibold text-slate-600">{stage.hint}: пусто</div>
                   <p className="mt-1 max-w-[210px] text-[12px] leading-relaxed text-slate-400">
                     {stage.key === "loading" && "Здесь появятся заказы в процессе погрузки."}
-                    {stage.key === "done" && `Нет завершённых отгрузок ${completedDays === 1 ? "за сегодня" : `за последние ${completedDays} дней`}.`}
+                    {stage.key === "done" && `Нет отгруженных заказов ${completedDays === 1 ? "за сегодня" : `за последние ${completedDays} дней`}.`}
                     {stage.key === "waiting" && "Новые подтверждённые заказы появятся здесь."}
                   </p>
                 </div>
@@ -823,8 +824,8 @@ function CompletedOrdersSettingsModal({ open, settings, onClose, onSaved }: {
 
   return (
     <Modal open={open} onClose={onClose} eyebrow="Настройка администратора"
-      title="Завершённые заказы"
-      description="Выберите, сколько дней завершённые отгрузки остаются на живом посту."
+      title="Отгруженные заказы"
+      description="Выберите, сколько дней отгруженные заказы остаются на живом посту."
       footer={<>
         <Button variant="ghost" onClick={onClose}>Отмена</Button>
         <Button disabled={busy || days < 1 || days > 90} onClick={save}>
@@ -1072,6 +1073,7 @@ function ShippingPageInner() {
   const canLoad = can(me, "shipping.load");
   const canTrain = can(me, "train.load");
   const canEditStatus = can(me, "orders.edit");
+  const canRollback = can(me, "shipping.rollback");
   const canManage = can(me, "rbac.manage");
   const canViewHistory = can(me, "shipping.view");
   const { data: orders, error: loadError, reload } = useApi<Order[]>("/orders/?post_board=1");
@@ -1101,6 +1103,7 @@ function ShippingPageInner() {
   const [rewindDropOrder, setRewindDropOrder] = useState<Order | null>(null);
   const [manualStatusOrder, setManualStatusOrder] = useState<Order | null>(null);
   const [manualStatusTarget, setManualStatusTarget] = useState<ManualOrderTarget | null>(null);
+  const [rollbackOrder, setRollbackOrder] = useState<Order | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -1182,6 +1185,10 @@ function ShippingPageInner() {
 
   const allowedBoardStages = useCallback((order: Order): BoardStageKey[] => {
     const stages: BoardStageKey[] = [];
+    if (order.status === "shipped") {
+      if (canRollback) stages.push("waiting");
+      return stages;
+    }
     if (order.status === "confirmed") {
       // Фактический старт и назначение камеры выполняет только Моноблок.
       // Редактор заказа может закрыть/отменить ожидающий заказ вручную.
@@ -1197,7 +1204,7 @@ function ShippingPageInner() {
     }
     if ((order.status === "arrived" || order.status === "loading") && canLoad) stages.push("done");
     return stages;
-  }, [canEditStatus, canLoad, canTrain]);
+  }, [canEditStatus, canLoad, canRollback, canTrain]);
 
   const stopOrderAi = useCallback(async (order: Order, completeOrder = false) => {
     const session = sessions?.find((item) => item.order_id === order.id);
@@ -1245,6 +1252,10 @@ function ShippingPageInner() {
 
   const moveOrder = useCallback((order: Order, target: BoardStageKey) => {
     if (target === "waiting") {
+      if (order.status === "shipped") {
+        setRollbackOrder(order);
+        return;
+      }
       setRewindDropOrder(order);
       return;
     }
@@ -1260,7 +1271,7 @@ function ShippingPageInner() {
     <AppShell title="Пост погрузки" section="Работа" actions={canManage ? (
       <Button variant="outline" onClick={() => setSettingsOpen(true)}>
         <Settings2 className="size-4" />
-        <span className="hidden sm:inline">Завершённые: {boardSettings?.completed_orders_days === 1 || !boardSettings ? "сегодня" : `${boardSettings.completed_orders_days} дн.`}</span>
+        <span className="hidden sm:inline">Отгруженные: {boardSettings?.completed_orders_days === 1 || !boardSettings ? "сегодня" : `${boardSettings.completed_orders_days} дн.`}</span>
       </Button>
     ) : undefined}>
       {loadError && !orders ? (
@@ -1421,6 +1432,11 @@ function ShippingPageInner() {
           await Promise.all([reload(), reloadSessions(), reloadHistories()]);
         }}
       />
+      <ShipmentRollbackModal order={rollbackOrder}
+        onClose={() => setRollbackOrder(null)}
+        onChanged={async () => {
+          await Promise.all([reload(), reloadSessions(), reloadHistories()]);
+        }} />
       <Modal open={!!rewindDropOrder} onClose={() => setRewindDropOrder(null)}
         eyebrow={rewindDropOrder ? `Заказ #${rewindDropOrder.id}` : undefined}
         title="Вернуть в ожидание въезда?"

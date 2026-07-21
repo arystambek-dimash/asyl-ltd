@@ -130,7 +130,7 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
         <CardContent className="p-0">
           <Table>
             <THead>
-              <TR><TH>Товар</TH><TH className="text-right">Цена клиента</TH><TH>Обновлено</TH></TR>
+              <TR><TH>Товар</TH><TH className="text-right">Цена клиента · {data.client.currency === "USD" ? "USD ($)" : "KZT (₸)"}</TH><TH>Обновлено</TH></TR>
             </THead>
             <TBody>
               {filtered.map((row) => {

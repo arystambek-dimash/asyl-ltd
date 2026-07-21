@@ -11,7 +11,7 @@ import { ProgressBar } from "@/components/ui/progress-bar";
 import { Banknote, CheckCircle2, Clock, FileText, HandCoins, QrCode } from "lucide-react";
 import { useApi } from "@/lib/use-api";
 import { apiError } from "@/lib/api";
-import { formatMoney, formatPortalMoney } from "@/lib/utils";
+import { currencySymbol, formatMoney, formatPortalMoney } from "@/lib/utils";
 import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { clientStep, downloadInvoice, payOrder, setTruck, getPaymentInfo, type PaymentInfo } from "@/lib/portal-actions";
 import type { PortalOrder, PortalPaymentMethod } from "@/lib/types";
@@ -74,7 +74,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
               <span className={order.total_amount == null
                 ? "font-medium text-[var(--muted-foreground)]"
                 : "font-bold tabular-nums"}>
-                {formatPortalMoney(order.total_amount)}
+                {formatPortalMoney(order.total_amount, order.currency)}
               </span>
             </div>
           </CardContent>
@@ -104,11 +104,11 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
               {/* сводка */}
               <div className="grid grid-cols-3 gap-2 text-sm">
                 <div><div className="text-xs text-[var(--muted-foreground)]">Сумма</div>
-                  <div className="tabular-nums font-medium">{formatMoney(order.total_amount ?? 0)} ₸</div></div>
+                  <div className="tabular-nums font-medium">{formatMoney(order.total_amount ?? 0)} {currencySymbol(order.currency)}</div></div>
                 <div><div className="text-xs text-[var(--muted-foreground)]">Оплачено</div>
-                  <div className="tabular-nums text-[var(--success)]">{formatMoney(order.paid_total ?? "0")} ₸</div></div>
+                  <div className="tabular-nums text-[var(--success)]">{formatMoney(order.paid_total ?? "0")} {currencySymbol(order.currency)}</div></div>
                 <div><div className="text-xs text-[var(--muted-foreground)]">Остаток</div>
-                  <div className="tabular-nums font-semibold text-[var(--destructive)]">{formatMoney(remaining)} ₸</div></div>
+                  <div className="tabular-nums font-semibold text-[var(--destructive)]">{formatMoney(remaining)} {currencySymbol(order.currency)}</div></div>
               </div>
               <div>
                 <div className="mb-1.5 flex justify-between text-xs text-[var(--muted-foreground)]">

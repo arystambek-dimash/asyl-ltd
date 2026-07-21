@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from .settings import parse_line
+from .settings import parse_camera, parse_line
 
 
 class ProcessorOptions(BaseModel):
@@ -28,6 +28,34 @@ class AlwaysOnOptions(BaseModel):
 
     cameras: list[str]
     source: Literal["sub", "main"] = "sub"
+
+
+class RecordingDeleteOptions(BaseModel):
+    """Exact MediaMTX segments approved for deletion by the CRM."""
+    model_config = ConfigDict(extra="forbid")
+
+    stream: str
+    starts: list[str]
+
+    @field_validator("stream")
+    @classmethod
+    def validate_stream(cls, value: str) -> str:
+        # Session recordings are published as cam<N>ai only.
+        stream = value.strip()
+        if not stream.endswith("ai"):
+            raise ValueError("recording stream must end with ai")
+        parse_camera(stream[:-2])
+        return stream
+
+    @field_validator("starts")
+    @classmethod
+    def validate_starts(cls, values: list[str]) -> list[str]:
+        if len(values) > 1000:
+            raise ValueError("too many recording segments")
+        cleaned = [str(value).strip() for value in values]
+        if any(not value or len(value) > 64 for value in cleaned):
+            raise ValueError("invalid recording segment start")
+        return list(dict.fromkeys(cleaned))
 
 
 @dataclass(frozen=True)

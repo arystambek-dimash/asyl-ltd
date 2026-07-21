@@ -35,13 +35,14 @@ function EmployeesPageInner() {
   const [form, setForm] = useState(empty);
   // Личные доступы поверх роли; права самой роли наследуются автоматически.
   const [codes, setCodes] = useState<Set<string>>(new Set());
+  const [deniedCodes, setDeniedCodes] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [delItem, setDelItem] = useState<Employee | null>(null);
   const [delError, setDelError] = useState("");
   const [delBusy, setDelBusy] = useState(false);
 
-  function openNew() { setEditing(null); setForm(empty); setCodes(new Set()); setError(""); setOpen(true); }
+  function openNew() { setEditing(null); setForm(empty); setCodes(new Set()); setDeniedCodes(new Set()); setError(""); setOpen(true); }
   function openEdit(e: Employee) {
     setEditing(e);
     setForm({
@@ -50,6 +51,7 @@ function EmployeesPageInner() {
     });
     const inRole = new Set(e.role_permissions ?? []);
     setCodes(new Set((e.permissions ?? []).filter((c) => !inRole.has(c))));
+    setDeniedCodes(new Set(e.denied_permissions ?? []));
     setError(""); setOpen(true);
   }
 
@@ -57,6 +59,12 @@ function EmployeesPageInner() {
     const next = new Set(codes);
     if (next.has(code)) next.delete(code); else next.add(code);
     setCodes(next);
+  }
+
+  function toggleDeniedCode(code: string) {
+    const next = new Set(deniedCodes);
+    if (next.has(code)) next.delete(code); else next.add(code);
+    setDeniedCodes(next);
   }
 
   // Права выбранной роли действуют сами — из личного набора убираем дубли.
@@ -67,6 +75,7 @@ function EmployeesPageInner() {
     const preset = (roles ?? []).find((r) => String(r.id) === roleId);
     const inRole = new Set((preset?.permissions ?? []).map((p) => p.code));
     setCodes((prev) => new Set([...prev].filter((c) => !inRole.has(c))));
+    setDeniedCodes((prev) => new Set([...prev].filter((c) => inRole.has(c))));
   }
 
   async function submit(e: React.FormEvent) {
@@ -77,6 +86,7 @@ function EmployeesPageInner() {
         username: form.username, first_name: form.first_name, last_name: form.last_name,
         phone: form.phone, position: form.position, role,
         permission_codes: Array.from(codes),
+        denied_permission_codes: Array.from(deniedCodes),
       };
       if (editing) {
         if (form.password) body.password = form.password;  // пустой = не менять
@@ -154,7 +164,7 @@ function EmployeesPageInner() {
                 <TD>
                   <div>{e.role_name || "—"}</div>
                   <div className="text-xs text-[var(--muted-foreground)]">
-                    Доступов: {new Set([...(e.role_permissions ?? []), ...(e.permissions ?? [])]).size}
+                    Доступов: {new Set([...(e.role_permissions ?? []).filter((code) => !(e.denied_permissions ?? []).includes(code)), ...(e.permissions ?? [])]).size}
                   </div>
                 </TD>
                 <TD><Badge tone={e.is_active ? "success" : "muted"}>{e.is_active ? "Активен" : "Отключён"}</Badge></TD>
@@ -228,7 +238,7 @@ function EmployeesPageInner() {
           <section className="space-y-3 border-t border-[var(--border)] pt-4">
             <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Доступы</h4>
             <Field label="Роль"
-              hint="Роль сразу даёт свои доступы. Поменяете права роли — изменится доступ у всех сотрудников с ней.">
+              hint="Роль даёт базовые доступы. Ниже любое право роли можно лично отключить для этого сотрудника.">
               <Select value={form.role} onChange={(e) => pickRole(e.target.value)}>
                 <option value="">Без роли</option>
                 {(roles ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
@@ -238,11 +248,11 @@ function EmployeesPageInner() {
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">К чему имеет доступ</span>
                 <span className="text-xs text-[var(--muted-foreground)]">
-                  {rolePerms.size > 0 ? `Из роли: ${rolePerms.size} · ` : ""}Личных: {codes.size}
+                  {rolePerms.size > 0 ? `Из роли: ${rolePerms.size - deniedCodes.size} · ` : ""}Личных: {codes.size}{deniedCodes.size > 0 ? ` · Запрещено: ${deniedCodes.size}` : ""}
                 </span>
               </div>
               <PermissionPicker perms={perms ?? []} selected={codes} onToggle={toggleCode}
-                inherited={rolePerms} />
+                inherited={rolePerms} denied={deniedCodes} onToggleDenied={toggleDeniedCode} />
             </div>
           </section>
 

@@ -69,7 +69,8 @@ def operator(user_with_perms):
 def boss(user_with_perms):
     return user_with_perms("boss", codes=[
         "shipping.view", "shipping.arrive", "shipping.load", "shipping.ship",
-        "shipping.debt_override", "orders.view", "warehouse.view", "warehouse.adjust",
+        "shipping.rollback", "shipping.debt_override", "orders.view", "orders.edit",
+        "warehouse.view", "warehouse.adjust",
         "catalog.view", "clients.view", "clients.edit", "clients.set_price",
         "employees.view", "employees.manage",
         "rbac.view", "rbac.manage", "reports.view"])

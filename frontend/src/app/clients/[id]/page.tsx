@@ -17,7 +17,7 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select-ui";
 import { useApi } from "@/lib/use-api";
-import { formatMoney, formatDateTime } from "@/lib/utils";
+import { currencySymbol, formatCurrency, formatDateTime } from "@/lib/utils";
 import {
   ORDER_STATUS_LABELS, PAYMENT_METHOD_LABELS, PAYMENT_STAGE_LABELS, PAYMENT_STAGE_TONE,
   orderStatusGroup,
@@ -48,7 +48,7 @@ interface DebtRow {
   amount: string; paid: string; remaining: string;
 }
 interface History {
-  client: { id: number; name: string; phone: string; country: string };
+  client: { id: number; name: string; phone: string; country: string; currency: "KZT" | "USD" };
   summary: { revenue: string; paid: string; debt: string; orders_count: number };
   sales: SaleRow[];
   payments: PaymentRow[];
@@ -105,9 +105,9 @@ function EmptyRow({ colSpan, filtered, onReset }: {
   );
 }
 
-function Money({ value, muted }: { value: string; muted?: boolean }) {
+function Money({ value, currency, muted }: { value: string; currency: string; muted?: boolean }) {
   if (muted && Number(value) === 0) return <span className="text-[var(--muted-foreground)]">—</span>;
-  return <>{formatMoney(value)} ₸</>;
+  return <>{formatCurrency(value, currency)}</>;
 }
 
 function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
@@ -134,6 +134,7 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
   }
 
   const { client, summary } = data;
+  const symbol = currencySymbol(client.currency);
   const hasDebt = Number(summary.debt) > 0;
   const initials = client.name.trim().split(/\s+/).slice(0, 2)
     .map((part) => part[0]).join("").toUpperCase() || "К";
@@ -247,11 +248,11 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
               <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
                 <StatCard label="Продаж" value={String(summary.orders_count)}
                   caption="всего заказов" icon={FileText} />
-                <StatCard label="Сумма продаж" value={`${formatMoney(summary.revenue)} ₸`}
+                <StatCard label="Сумма продаж" value={formatCurrency(summary.revenue, client.currency)}
                   caption="за всё время" icon={TrendingUp} accent />
-                <StatCard label="Оплачено" value={`${formatMoney(summary.paid)} ₸`}
+                <StatCard label="Оплачено" value={formatCurrency(summary.paid, client.currency)}
                   caption="получено от клиента" icon={Wallet} />
-                <StatCard label="Текущий долг" value={`${formatMoney(summary.debt)} ₸`}
+                <StatCard label="Текущий долг" value={formatCurrency(summary.debt, client.currency)}
                   caption={hasDebt ? "ожидает погашения" : "задолженности нет"} icon={AlertCircle}
                   className={hasDebt ? "border-[var(--destructive)]/25 bg-[var(--destructive)]/6" : undefined} />
               </div>
@@ -343,7 +344,7 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                   value={fDoc} onChange={(e) => setFDoc(e.target.value)} />
               </label>
               <div className="grid gap-1.5">
-                <span className="text-xs font-medium text-[var(--muted-foreground)]">Сумма, ₸</span>
+                <span className="text-xs font-medium text-[var(--muted-foreground)]">Сумма, {symbol}</span>
                 <div className="grid grid-cols-2 gap-1.5">
                   <Input placeholder="От" inputMode="numeric" value={fMin}
                     onChange={(e) => setFMin(e.target.value.replace(/\D/g, ""))} />
@@ -360,7 +361,7 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
               <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">{activeCaption}</p>
             </div>
             <span className="text-sm text-[var(--muted-foreground)]">
-              {shownCount > 0 && <><span className="tabular-nums font-semibold text-[var(--foreground)]">{formatMoney(String(shownTotal))} ₸</span> · итог по списку</>}
+              {shownCount > 0 && <><span className="tabular-nums font-semibold text-[var(--foreground)]">{formatCurrency(String(shownTotal), client.currency)}</span> · итог по списку</>}
             </span>
           </div>
 
@@ -389,8 +390,8 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                       </span>
                     </TD>
                     <TD className="text-right tabular-nums">{r.bags || "—"}</TD>
-                    <TD className="text-right tabular-nums font-medium">{formatMoney(r.amount)} ₸</TD>
-                    <TD className="text-right tabular-nums"><Money value={r.paid} muted /></TD>
+                    <TD className="text-right tabular-nums font-medium">{formatCurrency(r.amount, client.currency)}</TD>
+                    <TD className="text-right tabular-nums"><Money value={r.paid} currency={client.currency} muted /></TD>
                     <TD>{SETTLEMENT_LABELS[r.settlement_intent] ?? r.settlement_intent}</TD>
                     <TD><StatusBadge status={r.status} dot /></TD>
                   </TR>
@@ -416,7 +417,7 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                   <TR key={r.id}>
                     <TD><DocLink orderId={r.order_id}>№ {r.order_id}</DocLink></TD>
                     <TD className="tabular-nums text-[var(--muted-foreground)]">{formatDateTime(r.date)}</TD>
-                    <TD className="text-right tabular-nums font-medium">{formatMoney(r.amount)} ₸</TD>
+                    <TD className="text-right tabular-nums font-medium">{formatCurrency(r.amount, client.currency)}</TD>
                     <TD>{PAYMENT_METHOD_LABELS[r.method] ?? r.method}</TD>
                     <TD>{r.employee ?? "—"}</TD>
                     <TD>
@@ -448,10 +449,10 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                     <TD><DocLink orderId={r.id}>№ {r.id}</DocLink></TD>
                     <TD className="tabular-nums text-[var(--muted-foreground)]">{formatDateTime(r.date)}</TD>
                     <TD className="text-right tabular-nums">{r.bags || "—"}</TD>
-                    <TD className="text-right tabular-nums">{formatMoney(r.amount)} ₸</TD>
-                    <TD className="text-right tabular-nums text-[var(--success)]"><Money value={r.paid} muted /></TD>
+                    <TD className="text-right tabular-nums">{formatCurrency(r.amount, client.currency)}</TD>
+                    <TD className="text-right tabular-nums text-[var(--success)]"><Money value={r.paid} currency={client.currency} muted /></TD>
                     <TD className="text-right tabular-nums font-semibold text-[var(--destructive)]">
-                      {formatMoney(r.remaining)} ₸
+                      {formatCurrency(r.remaining, client.currency)}
                     </TD>
                   </TR>
                 ))}
@@ -463,7 +464,7 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
             <div className="flex items-center justify-between border-t bg-[var(--muted)]/20 px-4 py-3 text-[13px] sm:px-5">
               <span className="text-[var(--muted-foreground)]">Документов: {shownCount}</span>
               <span className="tabular-nums font-semibold">
-                {tab === "debts" ? "Остаток" : "Итого"}: {formatMoney(String(shownTotal))} ₸
+                {tab === "debts" ? "Остаток" : "Итого"}: {formatCurrency(String(shownTotal), client.currency)}
               </span>
             </div>
           )}

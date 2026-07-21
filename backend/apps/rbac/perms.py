@@ -6,7 +6,7 @@ _SECTIONS = {
     "warehouse": ("Склад", ["view", "adjust"]),
     "orders": ("Заказы", ["view", "create", "edit", "confirm"]),
     "payments": ("Оплаты", ["view", "create", "confirm"]),
-    "shipping": ("Пост отгрузки", ["view", "arrive", "load", "ship", "debt_override"]),
+    "shipping": ("Пост отгрузки", ["view", "arrive", "load", "ship", "rollback", "debt_override"]),
     "train": ("Поезд", ["view", "load"]),
     "events": ("Журнал", ["view"]),
     "reports": ("Отчёты", ["view"]),
@@ -19,6 +19,7 @@ _ACTION_LABELS = {
     "delete": "Удаление", "adjust": "Корректировка", "confirm": "Подтверждение",
     "arrive": "Приём машины", "load": "Загрузка", "ship": "Отгрузка",
     "debt_override": "Отгрузка в долг", "manage": "Управление",
+    "rollback": "Откат отгрузки",
     "set_price": "Закрепление прайса",
 }
 
@@ -56,7 +57,9 @@ PRESETS = {
     "Загрузчик": _codes("train.view", "train.load"),
     # Контролёр на посту погрузки (планшет): приём машины на весах,
     # погрузка с камерой и счётчиком, выезд; плюс загрузка поездов.
-    "Контролёр": _codes("shipping", "train", "orders.view", "warehouse.view"),
+    "Контролёр": _codes(
+        "shipping.view", "shipping.arrive", "shipping.load", "shipping.ship",
+        "shipping.debt_override", "train", "orders.view", "warehouse.view"),
     "Начальник": _codes("catalog", "clients", "orders", "payments", "warehouse",
                         "shipping", "train", "employees", "rbac",
                         "reports.view", "events.view"),

@@ -1,10 +1,13 @@
 import pytest
+from unittest.mock import patch
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem, StatusChangeRequest
+from apps.shipments.models import Shipment
 from apps.warehouse.models import StockItem
 from apps.warehouse.services import receive_stock
 from apps.cameras.models import AiCountingSession
+from apps.eventlog.models import EventLog
 from apps.orders import services
 from rest_framework.exceptions import ValidationError
 
@@ -74,7 +77,56 @@ def test_set_status_endpoint_operator_gets_202(auth_client, operator):
     assert r.status_code == 202
     assert r.data["applied"] is False
     assert r.data["request"]["to_status"] == "shipped"
-    assert r.data["request"]["to_status_label"] == "Завершён"
+    assert r.data["request"]["to_status_label"] == "Отгружено"
+
+
+def test_completed_shipment_rollback_restores_stock_deletes_video_and_audits(
+        auth_client, boss):
+    product = Product.objects.create(name="Архив", color="Red", weight_kg="50")
+    receive_stock(product, 20, boss)
+    order = _order()
+    OrderItem.objects.create(order=order, product=product, quantity=7, unit_price="10")
+    services.request_status_change(order, "shipped", boss, bags_loaded=6)
+    session = AiCountingSession.objects.create(
+        order=order, camera="cam2", status=AiCountingSession.CLOSED,
+        started_by=boss, closed_by=boss, ended_at=order.shipment.shipped_at,
+        recording_stream="cam2ai", final_total=6,
+    )
+    assert StockItem.objects.get(product=product).bags == 13
+
+    with patch("apps.cameras.recordings.delete_session_segments", return_value=2) as delete:
+        response = auth_client(boss).post(
+            f"/api/orders/{order.id}/rollback-shipment/",
+            {"status": "confirmed", "reason": "Ошибочно выбран заказ"},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    order.refresh_from_db(); session.refresh_from_db()
+    assert order.status == "confirmed"
+    assert StockItem.objects.get(product=product).bags == 20
+    assert not Shipment.objects.filter(order=order).exists()
+    assert session.recording_stream == ""
+    delete.assert_called_once()
+    event = EventLog.objects.get(event_type="shipment_rollback", order=order)
+    assert event.user == boss
+    assert event.payload["reason"] == "Ошибочно выбран заказ"
+    assert event.payload["recording_segments_deleted"] == 2
+
+
+def test_shipment_rollback_requires_permission_and_reason(auth_client, operator, boss):
+    order = _order()
+    services.request_status_change(order, "shipped", boss, bags_loaded=0)
+    forbidden = auth_client(operator).post(
+        f"/api/orders/{order.id}/rollback-shipment/",
+        {"status": "confirmed", "reason": "Неверный заказ"}, format="json")
+    assert forbidden.status_code == 403
+    missing_reason = auth_client(boss).post(
+        f"/api/orders/{order.id}/rollback-shipment/",
+        {"status": "confirmed", "reason": ""}, format="json")
+    assert missing_reason.status_code == 400
+    order.refresh_from_db()
+    assert order.status == "shipped"
 
 
 def test_set_status_endpoint_editor_applies(auth_client, manager):

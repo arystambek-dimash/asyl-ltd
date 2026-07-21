@@ -1,5 +1,5 @@
 "use client";
-import { Check } from "lucide-react";
+import { Check, Minus } from "lucide-react";
 import type { Permission } from "@/lib/types";
 
 // Ярлыки разделов/действий каталога прав (единые для ролей и сотрудников).
@@ -13,17 +13,19 @@ export const PERM_ACTION_LABELS: Record<string, string> = {
   view: "просмотр", create: "создание", edit: "редакт.", delete: "удаление",
   adjust: "корректировка", confirm: "подтвержд.",
   arrive: "приём", load: "загрузка",
-  ship: "отгрузка", debt_override: "в долг", manage: "управление",
+  ship: "отгрузка", rollback: "откат отгрузки", debt_override: "в долг", manage: "управление",
   set_price: "закрепление прайса",
 };
 
 /** Кнопки-переключатели прав, сгруппированные по разделам.
- * inherited — права, которые даёт роль: показаны включёнными, но не снимаются здесь. */
-export function PermissionPicker({ perms, selected, onToggle, inherited }: {
+ * inherited — права роли; denied позволяет точечно запретить их сотруднику. */
+export function PermissionPicker({ perms, selected, onToggle, inherited, denied, onToggleDenied }: {
   perms: Permission[];
   selected: Set<string>;
   onToggle: (code: string) => void;
   inherited?: Set<string>;
+  denied?: Set<string>;
+  onToggleDenied?: (code: string) => void;
 }) {
   const sections = Array.from(new Set(perms.map((p) => p.section)));
   return (
@@ -35,12 +37,19 @@ export function PermissionPicker({ perms, selected, onToggle, inherited }: {
             {perms.filter((p) => p.section === sec).map((p) => {
               const fromRole = inherited?.has(p.code) ?? false;
               if (fromRole) {
+                const blocked = denied?.has(p.code) ?? false;
                 return (
-                  <span key={p.code}
-                    title="Это право даёт роль. Изменить его можно в разделе «Роли»."
-                    className="cursor-default rounded-md border border-[var(--primary)]/40 bg-[var(--primary)]/10 px-3 py-1.5 text-xs font-medium text-[var(--primary)]/80">
-                    {PERM_ACTION_LABELS[p.action] ?? p.action} · роль
-                  </span>
+                  <button key={p.code} type="button"
+                    onClick={() => onToggleDenied?.(p.code)}
+                    title={blocked ? "Личный запрет: нажмите, чтобы вернуть право роли" : "Право роли: нажмите, чтобы запретить этому сотруднику"}
+                    className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+                      blocked
+                        ? "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                        : "border-[var(--primary)]/40 bg-[var(--primary)]/10 text-[var(--primary)] hover:bg-[var(--primary)]/15"
+                    }`}>
+                    {blocked ? <Minus className="size-3" /> : <Check className="size-3" />}
+                    {PERM_ACTION_LABELS[p.action] ?? p.action} · {blocked ? "запрещено" : "роль"}
+                  </button>
                 );
               }
               const on = selected.has(p.code);

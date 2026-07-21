@@ -28,6 +28,7 @@ from .services import (add_payment, confirm_order, reject_order,
                        reopen_confirmed_payment, reject_payment, soft_delete_order, restore_order,
                        purge_order,
                        request_status_change, approve_status_change, reject_status_change)
+from apps.shipments.services import rollback_shipment
 
 class ReportSummaryView(APIView):
     """Сводный отчёт за период: касса (нал/безнал), отгрузки, долги, кассиры."""
@@ -64,6 +65,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "purge": "orders.edit",
         "payments": "payments.create", "confirm": "orders.confirm",
         "set_status": "orders.view",
+        "rollback_shipment": "shipping.rollback",
         "status_requests": "orders.view",
         "approve_status": "orders.edit",
         "reject_status": "orders.edit",
@@ -433,6 +435,19 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             "request": (StatusChangeRequestSerializer(result["request"]).data
                         if result["request"] else None),
         }, status=200 if result["applied"] else 202)
+
+    @action(detail=True, methods=["post"], url_path="rollback-shipment")
+    def rollback_shipment(self, request, pk=None):
+        order = rollback_shipment(
+            self.get_object(),
+            request.user,
+            target_status=request.data.get("status") or "confirmed",
+            reason=request.data.get("reason") or "",
+        )
+        order.refresh_from_db()
+        return Response({
+            "order": OrderSerializer(order, context={"request": request}).data,
+        })
 
     @action(detail=True, methods=["get"], url_path="status-requests")
     def status_requests(self, request, pk=None):

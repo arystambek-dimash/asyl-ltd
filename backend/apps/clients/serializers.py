@@ -80,6 +80,7 @@ class ClientSerializer(serializers.ModelSerializer):
         model = Client
         fields = ["id", "first_name", "last_name", "company_name", "phone", "name",
                   "country", "iin", "bank", "bank_account", "user",
+                  "currency",
                   "debt_total", "created_at"]
         # user связывает клиента с аккаунтом портала (создаётся при регистрации).
         # Запись через staff-API позволила бы перепривязать чужой аккаунт.

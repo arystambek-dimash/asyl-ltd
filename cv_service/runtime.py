@@ -5,6 +5,7 @@ import re
 import subprocess
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -103,6 +104,27 @@ class MediaMtxClient:
             for item in items
             if isinstance(item, dict) and item.get("name")
         }
+
+    def delete_recording_segments(self, stream: str, starts: list[str]) -> int:
+        """Delete exact local recording files through MediaMTX Control API."""
+        deleted = 0
+        for start in starts:
+            query = urllib.parse.urlencode({"path": stream, "start": start})
+            request = urllib.request.Request(
+                f"{self.api_url}/v3/recordings/deletesegment?{query}",
+                method="DELETE",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout):
+                    deleted += 1
+            except urllib.error.HTTPError as exc:
+                # Retention or a concurrent cleanup may already have removed it.
+                if exc.code == 404:
+                    continue
+                raise RuntimeError(f"MediaMTX recording delete failed: {exc}") from exc
+            except OSError as exc:
+                raise RuntimeError(f"MediaMTX API unavailable: {exc}") from exc
+        return deleted
 
     def camera_inventory(self) -> dict[str, dict]:
         paths = self.paths()

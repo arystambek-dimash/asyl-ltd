@@ -36,12 +36,12 @@ export default function PortalOrdersPage() {
                       <Link href={`/portal/orders/${o.id}`} className="underline">#{o.id}</Link>
                     </TD>
                     <TD className={o.total_amount == null ? "text-[var(--muted-foreground)]" : "tabular-nums"}>
-                      {formatPortalMoney(o.total_amount)}
+                      {formatPortalMoney(o.total_amount, o.currency)}
                     </TD>
                     <TD className={o.paid_total == null
                       ? "text-[var(--muted-foreground)]"
                       : "tabular-nums text-[var(--muted-foreground)]"}>
-                      {formatPortalMoney(o.paid_total)}
+                      {formatPortalMoney(o.paid_total, o.currency)}
                     </TD>
                     <TD><StatusBadge status={o.status} /></TD>
                   </TR>

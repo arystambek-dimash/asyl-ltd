@@ -33,6 +33,7 @@ const EVENT_META: Record<string, EventMeta> = {
   arrival:       { label: "Прибытие", icon: Truck,           color: "var(--ring)" },
   loading:       { label: "Загрузка", icon: Forklift,        color: "var(--warning)" },
   shipment:      { label: "Отгрузка", icon: ArrowDownToLine, color: "var(--ring)" },
+  shipment_rollback: { label: "Откат отгрузки", icon: ArrowDownToLine, color: "var(--destructive)" },
   debt_override: { label: "Долг",     icon: Scale,           color: "var(--destructive)" },
   stock_adjust:  { label: "Склад",    icon: Warehouse,       color: "var(--warning)" },
 };
@@ -192,6 +193,7 @@ function EventsPageInner() {
                           <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
                             {new Date(e.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
                             {e.order ? ` · заказ #${e.order}` : ""}
+                            {e.user_name ? ` · ${e.user_name}` : ""}
                           </p>
                         </li>
                       );

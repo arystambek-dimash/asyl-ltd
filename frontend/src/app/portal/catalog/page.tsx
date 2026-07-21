@@ -4,12 +4,12 @@ import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/use-api";
-import { formatMoney } from "@/lib/utils";
+import { formatCurrency } from "@/lib/utils";
 import { Boxes, ShoppingCart, Tag } from "lucide-react";
 
 interface PortalProduct {
   id: number; label: string; weight_kg: string; available_bags: number;
-  price: string | null;
+  price: string | null; currency: "KZT" | "USD";
 }
 
 export default function PortalCatalogPage() {
@@ -52,7 +52,9 @@ export default function PortalCatalogPage() {
                 <div className="mt-4 border-t pt-4">
                   <div className="text-[11px] text-[var(--muted-foreground)]">Ваша цена за мешок</div>
                   {p.price ? (
-                    <div className="mt-1 text-xl font-semibold tabular-nums">{formatMoney(p.price)} ₸</div>
+                    <div className="mt-1 text-xl font-semibold tabular-nums">
+                      {formatCurrency(p.price, p.currency)}
+                    </div>
                   ) : (
                     <div className="mt-1 text-sm font-medium text-[var(--muted-foreground)]">Цена уточняется</div>
                   )}

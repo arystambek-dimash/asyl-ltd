@@ -69,7 +69,7 @@ def _triplet_words(value: int, feminine: bool = False) -> list[str]:
     return words
 
 
-def amount_in_words(amount: Decimal) -> str:
+def amount_in_words(amount: Decimal, currency_code: str = "KZT") -> str:
     amount = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     whole = int(amount)
     coins = int((amount - whole) * 100)
@@ -90,6 +90,10 @@ def amount_in_words(amount: Decimal) -> str:
             words.extend(_triplet_words(group, scale[3]))
             if index:
                 words.append(_plural(group, scale[0], scale[1], scale[2]))
+    if currency_code == "USD":
+        currency = _plural(whole, "доллар", "доллара", "долларов")
+        coin = _plural(coins, "цент", "цента", "центов")
+        return f"{' '.join(words)} {currency} {coins:02d} {coin}"
     currency = _plural(whole, "тенге", "тенге", "тенге")
     return f"{' '.join(words)} {currency} {coins:02d} тиын"
 
@@ -221,11 +225,12 @@ def build_invoice_pdf(order: Order) -> bytes:
         ("LEFTPADDING", (0, 0), (-1, -1), 1), ("RIGHTPADDING", (0, 0), (-1, -1), 1),
         ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
     ]))
-    words = amount_in_words(total)
+    currency_code = order.currency
+    words = amount_in_words(total, currency_code)
     ending = KeepTogether([
         totals,
         Spacer(1, 2 * mm),
-        Paragraph(f"Всего наименований {len(rows) - 1}, на сумму {total:,.2f} KZT", body),
+        Paragraph(f"Всего наименований {len(rows) - 1}, на сумму {total:,.2f} {currency_code}", body),
         Paragraph(f"<b>Всего к оплате: {words}</b>", body),
         HRFlowable(width="100%", thickness=1.8, color=colors.black,
                    spaceBefore=2 * mm, spaceAfter=5 * mm),

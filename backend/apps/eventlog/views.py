@@ -22,7 +22,7 @@ class EventLogViewSet(PermViewSetMixin, mixins.ListModelMixin, viewsets.GenericV
     def get_queryset(self):
         visible_orders = Order.objects.all()
         # Системные события и события заказов доступны в едином журнале.
-        qs = EventLog.objects.filter(
+        qs = EventLog.objects.select_related("user").filter(
             Q(order__isnull=True) | Q(order__in=visible_orders))
         p = self.request.query_params
         if p.get("order"):

@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { formatMoney } from "@/lib/utils";
+import { formatCurrency } from "@/lib/utils";
 import {
   CASHIER_PAYMENT_METHOD_LABELS, CASHIER_PAYMENT_METHODS,
   PAYMENT_STAGE_LABELS, PAYMENT_STAGE_TONE,
@@ -82,7 +82,9 @@ export function PaymentChain({ order, me, onChanged }: {
                   {p.status === "received" ? "Проверьте оплату" : "Ожидаем оплату"}
                 </div>
                 <div className="mt-0.5 text-sm text-[var(--muted-foreground)]">
-                  <span className="font-medium tabular-nums text-[var(--foreground)]">{formatMoney(p.amount)} ₸</span>
+                  <span className="font-medium tabular-nums text-[var(--foreground)]">
+                    {formatCurrency(p.amount, order.currency)}
+                  </span>
                   {" · "}{CASHIER_PAYMENT_METHOD_LABELS[p.method] || p.method_label || p.method}
                 </div>
               </div>
@@ -173,7 +175,7 @@ export function AddPaymentActions({ order, me, onChanged, mode = "both" }: {
         className="max-w-sm">
         <form onSubmit={submit} className="flex flex-col gap-4">
           <div className="grid gap-2">
-            <Label>Сумма (остаток {formatMoney(String(remaining))} ₸)</Label>
+            <Label>Сумма (остаток {formatCurrency(String(remaining), order.currency)})</Label>
             <Input type="number" min="1" step="0.01" value={amount} autoFocus
               onChange={(e) => setAmount(e.target.value)} required />
           </div>

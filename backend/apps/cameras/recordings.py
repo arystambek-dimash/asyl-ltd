@@ -1,4 +1,4 @@
-"""Read-only bridge to recordings stored by MediaMTX on the camera PC.
+"""Bridge to recordings stored by MediaMTX on the camera PC.
 
 No video bytes are persisted by Django. MediaMTX owns recording, retention and
 playback; this module only lists a session's local segments and streams one to
@@ -78,3 +78,18 @@ def open_segment(stream: str, start: str, duration: float):
         "format": "fmp4",
     })
     return _request(f"/get?{query}")
+
+
+def delete_session_segments(stream: str, start: datetime, end: datetime) -> int:
+    """Delete all local MediaMTX files intersecting one counting session."""
+    from . import ai
+
+    segments = list_segments(stream, start, end)
+    starts = [segment["start"] for segment in segments]
+    if not starts:
+        return 0
+    try:
+        payload = ai.delete_recordings(stream, starts)
+    except (ai.AiUnavailable, ai.AiError) as exc:
+        raise RecordingUnavailable(str(exc)) from exc
+    return int(payload.get("deleted", 0))
