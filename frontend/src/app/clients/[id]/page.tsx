@@ -17,6 +17,8 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select-ui";
 import { useApi } from "@/lib/use-api";
+import { useAuth } from "@/store/auth";
+import { can } from "@/lib/can";
 import { currencySymbol, formatCurrency, formatDateTime } from "@/lib/utils";
 import { StatementExportModal } from "@/components/statement-export-modal";
 import {
@@ -114,6 +116,8 @@ function Money({ value, currency, muted }: { value: string; currency: string; mu
 
 function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const { me } = useAuth();
+  const canExport = can(me, "reports.export");
   const { data, loading, error, reload } = useApi<History>(`/clients/${id}/history/`);
 
   const [tab, setTab] = useState("analytics");
@@ -232,11 +236,13 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
             )}
           </div>
         </div>
-        <Button variant="outline" className="shrink-0" onClick={() => {
-          setStatementOpen(true);
-        }}>
-          <FileSpreadsheet className="size-4 text-emerald-600" /> Excel-выписка
-        </Button>
+        {canExport && (
+          <Button variant="outline" className="shrink-0" onClick={() => {
+            setStatementOpen(true);
+          }}>
+            <FileSpreadsheet className="size-4 text-emerald-600" /> Excel-выписка
+          </Button>
+        )}
       </div>
 
       <Card className="overflow-hidden">

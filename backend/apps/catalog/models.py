@@ -5,7 +5,13 @@ from django.db import models
 
 class Product(models.Model):
     COLORS = [("Red", "Красный"), ("Green", "Зелёный"), ("Blue", "Синий")]
-    WEIGHTS = [(Decimal("25"), "25 кг"), (Decimal("50"), "50 кг")]
+    WEIGHTS = [
+        (Decimal("2"), "2 кг"),
+        (Decimal("5"), "5 кг"),
+        (Decimal("10"), "10 кг"),
+        (Decimal("25"), "25 кг"),
+        (Decimal("50"), "50 кг"),
+    ]
 
     name = models.CharField(max_length=100)
     color = models.CharField(max_length=10, choices=COLORS)
@@ -25,8 +31,7 @@ class Product(models.Model):
 
     @property
     def cv_class(self):
-        w = "50" if Decimal(self.weight_kg) == Decimal("50") else "25"
-        return f"{self.color}_{w}"
+        return f"{self.color}_{int(Decimal(self.weight_kg))}"
 
     def __str__(self):
         color = dict(self.COLORS).get(self.color, self.color)

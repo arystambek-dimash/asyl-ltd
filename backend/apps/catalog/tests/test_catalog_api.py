@@ -42,3 +42,29 @@ def test_staff_can_list_products(auth_client, manager):
     assert rows[prod.id]["color_label"] == "Красный"
     assert rows[prod.id]["cv_class"] == "Red_50"
     assert "price" not in rows[prod.id]
+
+
+def test_color_is_hidden_without_order_create_permission(
+    auth_client, user_with_perms,
+):
+    viewer = user_with_perms("catalog-no-colors", codes=["catalog.view"])
+    prod = _make_product(name="Скрытый цвет", color="Blue", weight="10")
+
+    resp = auth_client(viewer).get("/api/products/")
+
+    assert resp.status_code == 200
+    row = next(item for item in resp.data if item["id"] == prod.id)
+    assert row["label"] == "Скрытый цвет · 10 кг"
+    assert "color" not in row
+    assert "color_label" not in row
+    assert "cv_class" not in row
+
+
+def test_new_packaging_weights_are_supported(auth_client, manager):
+    for weight in ("2", "5", "10"):
+        resp = auth_client(manager).post(
+            "/api/products/",
+            {"name": f"Фасовка {weight}", "color": "Red", "weight_kg": weight},
+        )
+        assert resp.status_code == 201
+        assert resp.data["cv_class"] == f"Red_{weight}"

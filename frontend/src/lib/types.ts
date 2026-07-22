@@ -13,8 +13,8 @@ export interface Me {
 }
 
 export interface Product {
-  id: number; name: string; color: "Red" | "Green" | "Blue"; color_label: string;
-  weight_kg: string; is_active: boolean; label: string; cv_class: string;
+  id: number; name: string; color?: "Red" | "Green" | "Blue"; color_label?: string;
+  weight_kg: string; is_active: boolean; label: string; cv_class?: string;
   available_bags?: number;
   ask_truck_weight?: boolean;
 }

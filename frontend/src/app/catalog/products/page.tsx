@@ -28,6 +28,7 @@ function ProductsPageInner() {
   const { me } = useAuth();
   const canCreate = can(me, "catalog.create");
   const canEdit = can(me, "catalog.edit");
+  const canViewColor = can(me, "orders.create");
 
   const [tab, setTab] = useState<"active" | "archive">("active");
   const [open, setOpen] = useState(false);
@@ -49,7 +50,7 @@ function ProductsPageInner() {
     setAskWeight(false); setError(""); setOpen(true);
   }
   function openEdit(p: Product) {
-    setEditing(p); setName(p.name); setColor(p.color);
+    setEditing(p); setName(p.name); setColor(p.color ?? "Red");
     setWeight(String(Number(p.weight_kg)));
     setAskWeight(p.ask_truck_weight ?? false);
     setError(""); setOpen(true);
@@ -58,7 +59,12 @@ function ProductsPageInner() {
   async function save(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError("");
     try {
-      const body = { name, color, weight_kg: weight, ask_truck_weight: askWeight };
+      const body = {
+        name,
+        weight_kg: weight,
+        ask_truck_weight: askWeight,
+        ...(canViewColor ? { color } : editing ? {} : { color: "Red" }),
+      };
       if (editing) await api.patch(`/products/${editing.id}/`, body);
       else await api.post("/products/", body);
       setOpen(false); reload();
@@ -95,7 +101,9 @@ function ProductsPageInner() {
   });
 
   return (
-    <AppShell title="Товары" section="Работа" description="Номенклатура: сорт, цвет и фасовка. Цены закрепляются отдельно в прайс-листе каждого клиента."
+    <AppShell title="Товары" section="Работа" description={canViewColor
+      ? "Номенклатура: сорт, цвет и фасовка. Цены закрепляются отдельно в прайс-листе каждого клиента."
+      : "Номенклатура: сорт и фасовка. Цены закрепляются отдельно в прайс-листе каждого клиента."}
       tabs={
         <Tabs active={tab} onChange={(k) => setTab(k as "active" | "archive")}
           tabs={[
@@ -127,13 +135,13 @@ function ProductsPageInner() {
             )}
             <Table>
               <THead><TR>
-                <TH>Название</TH><TH>Цвет</TH><TH>Фасовка</TH><TH></TH>
+                <TH>Название</TH>{canViewColor && <TH>Цвет</TH>}<TH>Фасовка</TH><TH></TH>
               </TR></THead>
               <TBody>
                 {archiveList.map((p) => (
                   <TR key={p.id}>
                     <TD className="font-medium">{p.name}</TD>
-                    <TD>{p.color_label}</TD>
+                    {canViewColor && <TD>{p.color_label}</TD>}
                     <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
                     <TD>
                       <div className="flex items-center justify-end gap-1">
@@ -150,7 +158,7 @@ function ProductsPageInner() {
                   </TR>
                 ))}
                 {archiveList.length === 0 && (
-                  <TR><TD colSpan={4} className="py-4 text-center text-[var(--muted-foreground)]">
+                  <TR><TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
                     Архив пуст.</TD></TR>
                 )}
               </TBody>
@@ -163,7 +171,7 @@ function ProductsPageInner() {
             <Table>
               <THead><TR>
                 <SortableHeader label="Название" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-                <TH>Цвет</TH>
+                {canViewColor && <TH>Цвет</TH>}
                 <TH>Фасовка</TH>
                 <TH></TH>
               </TR></THead>
@@ -171,7 +179,7 @@ function ProductsPageInner() {
                 {sorted.map((p) => (
                   <TR key={p.id}>
                     <TD className="font-medium">{p.name}</TD>
-                    <TD>{p.color_label}</TD>
+                    {canViewColor && <TD>{p.color_label}</TD>}
                     <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
                     <TD>
                       <div className="flex items-center justify-end gap-1">
@@ -192,7 +200,7 @@ function ProductsPageInner() {
                   </TR>
                 ))}
                 {sorted.length === 0 && (
-                  <TR><TD colSpan={4} className="py-4 text-center text-[var(--muted-foreground)]">
+                  <TR><TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
                     Товаров пока нет.</TD></TR>
                 )}
               </TBody>
@@ -204,7 +212,7 @@ function ProductsPageInner() {
       <Modal open={open} onClose={() => setOpen(false)}
         eyebrow={editing ? "Номенклатура · Изменение" : "Номенклатура · Товар"}
         title={editing ? "Изменить товар" : "Новый товар"}
-        description="Сорт, цвет (тип) и фасовка."
+        description={canViewColor ? "Сорт, цвет (тип) и фасовка." : "Сорт и фасовка."}
         footer={
           <>
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
@@ -217,18 +225,21 @@ function ProductsPageInner() {
             <Input value={name} autoFocus placeholder="напр. Высший сорт"
               onChange={(e) => setName(e.target.value)} required />
           </Field>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field label="Цвет (тип)">
+          <div className={`grid grid-cols-1 gap-3 ${canViewColor ? "sm:grid-cols-2" : ""}`}>
+            {canViewColor && <Field label="Цвет (тип)">
               <Select value={color} onChange={(e) => setColor(e.target.value)}>
                 <option value="Red">Красный</option>
                 <option value="Green">Зелёный</option>
                 <option value="Blue">Синий</option>
               </Select>
-            </Field>
+            </Field>}
             <Field label="Фасовка">
               <Select value={weight} onChange={(e) => setWeight(e.target.value)}>
                 <option value="50">50 кг</option>
                 <option value="25">25 кг</option>
+                <option value="10">10 кг</option>
+                <option value="5">5 кг</option>
+                <option value="2">2 кг</option>
               </Select>
             </Field>
           </div>

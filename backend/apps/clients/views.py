@@ -91,8 +91,8 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "debts": "reports.view",
         "debt_detail": "reports.view",
         "history": "reports.view",
-        "statement": "reports.view",
-        "all_statement": "reports.view",
+        "statement": "reports.export",
+        "all_statement": "reports.export",
         "prices": "clients.set_price",
     }
 

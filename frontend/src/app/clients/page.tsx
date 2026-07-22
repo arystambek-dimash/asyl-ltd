@@ -287,6 +287,7 @@ function ClientsPageInner() {
   const canDelete = can(me, "clients.delete");
   const canSetPrice = can(me, "clients.set_price");
   const canMoney = can(me, "reports.view");  // финансовая аналитика — под reports.view
+  const canExport = can(me, "reports.export");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Client | null>(null);
   const [q, setQ] = useState("");
@@ -343,9 +344,9 @@ function ClientsPageInner() {
 
   return (
     <AppShell title="Клиенты" section="Работа" description="Клиентская база: контакты, реквизиты и задолженность по каждому клиенту."
-      actions={(canCreate || canMoney) && (
+      actions={(canCreate || canExport) && (
         <div className="flex items-center gap-2">
-          {canMoney && (
+          {canExport && (
             <Button size="sm" variant="outline" aria-label="Общая Excel-выписка"
               onClick={() => setStatementOpen(true)}>
               <FileSpreadsheet className="size-4 text-emerald-600" />

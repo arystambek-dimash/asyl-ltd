@@ -723,7 +723,7 @@ function OrdersPageInner() {
   const { me } = useAuth();
   const canCreate = can(me, "orders.create");
   const canEdit = can(me, "orders.edit");
-  const canMoney = can(me, "reports.view");
+  const canExport = can(me, "reports.export");
   const canRollback = can(me, "shipping.rollback");
   const canManageDepartments = can(me, "rbac.manage");
   const showDept = (departments?.length ?? 0) > 1;
@@ -854,14 +854,14 @@ function OrdersPageInner() {
 
   return (
     <AppShell title="Заказы" section="Работа" description="Единый центр заказов: отделы, статусы, выручка и отгрузка."
-      actions={(canCreate || canManageDepartments || canMoney) ? (
+      actions={(canCreate || canManageDepartments || canExport) ? (
         <div className="flex items-center gap-2">
           {canManageDepartments && (
             <DepartmentManager onChanged={() => {
               void reloadDepartments(); void reloadSummary(); void reload();
             }} />
           )}
-          {canMoney && (
+          {canExport && (
             <Button size="sm" variant="outline" aria-label="Общая Excel-выписка"
               onClick={() => setStatementOpen(true)}>
               <FileSpreadsheet className="size-4 text-emerald-600" />

@@ -9,7 +9,7 @@ _SECTIONS = {
     "shipping": ("Пост отгрузки", ["view", "arrive", "load", "ship", "rollback", "debt_override"]),
     "train": ("Вагон", ["view", "load"]),
     "events": ("Журнал", ["view"]),
-    "reports": ("Отчёты", ["view"]),
+    "reports": ("Отчёты", ["view", "export"]),
     "employees": ("Сотрудники", ["view", "manage"]),
     "rbac": ("Доступы", ["view", "manage"]),
 }
@@ -21,6 +21,7 @@ _ACTION_LABELS = {
     "debt_override": "Отгрузка в долг", "manage": "Управление",
     "rollback": "Откат отгрузки",
     "set_price": "Закрепление прайса",
+    "export": "Получение выписки",
 }
 
 # train.load переиспользует label "Загрузка" из _ACTION_LABELS.
@@ -47,11 +48,11 @@ def _codes(*sections_or_codes):
 
 PRESETS = {
     "Менеджер": _codes("catalog", "clients", "orders",
-                       "payments.view", "payments.confirm", "reports.view", "events.view"),
+                       "payments.view", "payments.confirm", "reports", "events.view"),
     # Касса: подтверждение заказов и оплат, отправка (orders.edit), долги.
     "Касса": _codes("payments.view", "payments.create", "payments.confirm",
                     "orders.view", "orders.confirm", "orders.edit",
-                    "clients.view", "reports.view", "events.view"),
+                    "clients.view", "reports", "events.view"),
     "Оператор": _codes("shipping.view", "shipping.arrive", "shipping.load",
                        "shipping.ship", "orders.view", "warehouse.view", "events.view"),
     "Загрузчик": _codes("train.view", "train.load"),
@@ -62,5 +63,5 @@ PRESETS = {
         "shipping.debt_override", "train", "orders.view", "warehouse.view"),
     "Начальник": _codes("catalog", "clients", "orders", "payments", "warehouse",
                         "shipping", "train", "employees", "rbac",
-                        "reports.view", "events.view"),
+                        "reports", "events.view"),
 }
