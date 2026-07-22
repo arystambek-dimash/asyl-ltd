@@ -57,8 +57,26 @@ fi
 echo "Pulling images..."
 docker compose -f "$COMPOSE_FILE" pull --quiet
 
+# Releases before the non-root backend transition created these persistent
+# volumes as root. Image-level chown cannot change an already-mounted volume,
+# so repair it in a disposable privileged container before Django starts.
+echo "Preparing backend volume permissions..."
+docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
+  --user root \
+  --entrypoint /bin/sh \
+  backend -c 'chown -R app:app /app/media /app/staticfiles'
+
 echo "Starting containers..."
-docker compose -f "$COMPOSE_FILE" up -d --remove-orphans --wait --wait-timeout 180
+if docker compose -f "$COMPOSE_FILE" up -d --remove-orphans --wait --wait-timeout 180; then
+  :
+else
+  status=$?
+  echo "Container startup failed. Current state:" >&2
+  docker compose -f "$COMPOSE_FILE" ps --all >&2 || true
+  echo "backend logs:" >&2
+  docker compose -f "$COMPOSE_FILE" logs --no-color --tail=200 backend >&2 || true
+  exit "$status"
+fi
 
 echo "Restarting go2rtc to pick up bind-mounted config..."
 docker compose -f "$COMPOSE_FILE" restart go2rtc

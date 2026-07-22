@@ -22,7 +22,8 @@ RUN sed -i 's/\r$//' /entrypoint.sh \
     && chown -R app:app /app/media /app/staticfiles
 
 # Application code, migrations and health checks do not require Linux root.
-# Named media/static volumes inherit ownership from these image directories.
+# The production deploy repairs ownership of pre-existing mounted volumes in a
+# disposable root container before this non-root application container starts.
 USER app
 
 EXPOSE 8000
