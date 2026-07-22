@@ -85,7 +85,7 @@ jobs:
         run: pip-audit -r requirements.txt --strict || true
 
   frontend:
-    name: Frontend typecheck + audit
+    name: Frontend checks + build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -97,10 +97,10 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         working-directory: frontend
-        run: npm ci
-      - name: Typecheck
+        run: npx --yes npm@10.9.8 ci
+      - name: Lint, typecheck and test
         working-directory: frontend
-        run: npx tsc --noEmit
+        run: npm run check
       - name: Build
         working-directory: frontend
         run: npm run build
@@ -108,5 +108,4 @@ jobs:
           NEXT_PUBLIC_API_URL: /api
       - name: Audit npm dependencies (high+)
         working-directory: frontend
-        continue-on-error: true
-        run: npm audit --audit-level=high || true
+        run: npm audit --audit-level=high

@@ -103,10 +103,8 @@ export function CameraLineEditor({
     if (!point) return;
     event.currentTarget.setPointerCapture(event.pointerId);
 
-    const distance = (x: number, y: number) => Math.hypot(
-      (point.x - x) * point.rect.width,
-      (point.y - y) * point.rect.height,
-    );
+    const distance = (x: number, y: number) =>
+      Math.hypot((point.x - x) * point.rect.width, (point.y - y) * point.rect.height);
     if (distance(line.x1, line.y1) <= 24) {
       setDragging("start");
     } else if (distance(line.x2, line.y2) <= 24) {
@@ -146,11 +144,7 @@ export function CameraLineEditor({
         )}
       >
         {ready && (
-          <CameraStream
-            src={src}
-            onStateChange={setOnline}
-            className="absolute inset-0 h-full w-full object-cover"
-          />
+          <CameraStream src={src} onStateChange={setOnline} className="absolute inset-0 h-full w-full object-cover" />
         )}
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-black/15" />
 
@@ -163,26 +157,47 @@ export function CameraLineEditor({
           <defs>
             <filter id="line-glow" x="-40%" y="-40%" width="180%" height="180%">
               <feGaussianBlur stdDeviation="6" result="blur" />
-              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
             </filter>
-            <marker id="line-arrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <marker
+              id="line-arrow"
+              viewBox="0 0 10 10"
+              refX="7"
+              refY="5"
+              markerWidth="7"
+              markerHeight="7"
+              orient="auto-start-reverse"
+            >
               <path d="M 0 0 L 10 5 L 0 10 z" fill="#f8fafc" />
             </marker>
           </defs>
           <line
-            x1={line.x1 * WIDTH} y1={line.y1 * HEIGHT}
-            x2={line.x2 * WIDTH} y2={line.y2 * HEIGHT}
-            stroke="rgba(15,23,42,.75)" strokeWidth="13" strokeLinecap="round"
+            x1={line.x1 * WIDTH}
+            y1={line.y1 * HEIGHT}
+            x2={line.x2 * WIDTH}
+            y2={line.y2 * HEIGHT}
+            stroke="rgba(15,23,42,.75)"
+            strokeWidth="13"
+            strokeLinecap="round"
           />
           <line
-            x1={line.x1 * WIDTH} y1={line.y1 * HEIGHT}
-            x2={line.x2 * WIDTH} y2={line.y2 * HEIGHT}
-            stroke="#38bdf8" strokeWidth="6" strokeLinecap="round"
+            x1={line.x1 * WIDTH}
+            y1={line.y1 * HEIGHT}
+            x2={line.x2 * WIDTH}
+            y2={line.y2 * HEIGHT}
+            stroke="#38bdf8"
+            strokeWidth="6"
+            strokeLinecap="round"
             filter="url(#line-glow)"
           />
           <line
             {...arrow}
-            stroke="#f8fafc" strokeWidth="4" strokeLinecap="round"
+            stroke="#f8fafc"
+            strokeWidth="4"
+            strokeLinecap="round"
             markerStart={direction === "any" ? "url(#line-arrow)" : undefined}
             markerEnd="url(#line-arrow)"
           />
@@ -219,7 +234,9 @@ export function CameraLineEditor({
             className="h-11 w-full rounded-lg border bg-[var(--background)] px-3.5 text-sm outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 disabled:opacity-60"
           >
             {DIRECTIONS.map((item) => (
-              <option key={item.value} value={item.value}>{item.label} — {item.hint}</option>
+              <option key={item.value} value={item.value}>
+                {item.label} — {item.hint}
+              </option>
             ))}
           </select>
         </label>

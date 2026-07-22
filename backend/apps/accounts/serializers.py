@@ -1,5 +1,41 @@
+from django.contrib.auth import get_user_model
+from django.utils.crypto import constant_time_compare
 from rest_framework import serializers
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.settings import api_settings as jwt_settings
+from rest_framework_simplejwt.utils import get_md5_hash_password
+
 from .models import User
+
+
+class RevocableTokenRefreshSerializer(TokenRefreshSerializer):
+    """Reject stale refresh tokens instead of minting unusable access tokens."""
+
+    def validate(self, attrs):
+        refresh = self.token_class(attrs["refresh"])
+        user_id = refresh.payload.get(jwt_settings.USER_ID_CLAIM)
+        user = (
+            get_user_model()
+            .objects.filter(**{jwt_settings.USER_ID_FIELD: user_id})
+            .first()
+            if user_id is not None
+            else None
+        )
+        if user is None or not jwt_settings.USER_AUTHENTICATION_RULE(user):
+            raise AuthenticationFailed(
+                self.error_messages["no_active_account"],
+                "no_active_account",
+            )
+        if jwt_settings.CHECK_REVOKE_TOKEN and not constant_time_compare(
+            str(refresh.get(jwt_settings.REVOKE_TOKEN_CLAIM, "")),
+            get_md5_hash_password(user.password),
+        ):
+            raise AuthenticationFailed(
+                "The user's password has been changed.",
+                "password_changed",
+            )
+        return super().validate(attrs)
 
 
 class MeSerializer(serializers.ModelSerializer):

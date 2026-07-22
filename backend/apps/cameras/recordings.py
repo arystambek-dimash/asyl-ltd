@@ -4,6 +4,7 @@ No video bytes are persisted by Django. MediaMTX owns recording, retention and
 playback; this module only lists a session's local segments and streams one to
 an authenticated staff browser.
 """
+import http.client
 import json
 import os
 import urllib.error
@@ -19,6 +20,8 @@ PLAYBACK_URL = (
 ).rstrip("/")
 TIMEOUT = 10
 VIDEO_RETENTION_DAYS = 14
+MAX_SEGMENT_LIST_BYTES = 512 * 1024
+MAX_SEGMENTS = 1000
 
 
 class RecordingUnavailable(Exception):
@@ -31,7 +34,15 @@ def _request(path: str):
             urllib.request.Request(f"{PLAYBACK_URL}{path}", method="GET"),
             timeout=TIMEOUT,
         )
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        raise RecordingUnavailable(str(exc)) from exc
+    except (
+        http.client.HTTPException,
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+    ) as exc:
         raise RecordingUnavailable(str(exc)) from exc
 
 
@@ -43,23 +54,32 @@ def list_segments(stream: str, start: datetime, end: datetime) -> list[dict]:
     })
     response = _request(f"/list?{query}")
     try:
-        payload = json.loads(response.read() or b"[]")
-    except (ValueError, TypeError) as exc:
+        raw = response.read(MAX_SEGMENT_LIST_BYTES + 1)
+        if not isinstance(raw, (bytes, bytearray, str)) or len(raw) > MAX_SEGMENT_LIST_BYTES:
+            raise RecordingUnavailable("Архив MediaMTX превышает допустимый размер")
+        payload = json.loads(raw or b"[]")
+    except RecordingUnavailable:
+        raise
+    except (http.client.HTTPException, OSError, RecursionError, TypeError, ValueError) as exc:
         raise RecordingUnavailable("MediaMTX вернул некорректный архив") from exc
     finally:
         response.close()
     if not isinstance(payload, list):
         raise RecordingUnavailable("MediaMTX вернул некорректный архив")
     result = []
-    for item in payload:
+    for item in payload[:MAX_SEGMENTS]:
         if not isinstance(item, dict):
             continue
         started = item.get("start")
-        duration = item.get("duration")
+        raw_duration = item.get("duration")
         if not isinstance(started, str):
             continue
+        if isinstance(raw_duration, bool) or not isinstance(
+            raw_duration, (int, float, str)
+        ):
+            continue
         try:
-            duration = float(duration)
+            duration = float(raw_duration)
             datetime.fromisoformat(started.replace("Z", "+00:00"))
         except (TypeError, ValueError):
             continue

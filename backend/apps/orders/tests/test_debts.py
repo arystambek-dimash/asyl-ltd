@@ -18,19 +18,27 @@ _counter = [0]
 
 def _shipped_order(intent="debt"):
     _counter[0] += 1
-    p = Product.objects.create(name=f"P{_counter[0]}", color="Red", weight_kg="50", price="100.00")
+    p = Product.objects.create(
+        name=f"P{_counter[0]}", color="Red", weight_kg="50", price="100.00"
+    )
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
-    o = Order.objects.create(client=c, status="shipped", payment_status="unpaid",
-                             settlement_intent=intent)
-    OrderItem.objects.create(order=o, product=p, quantity=2, unit_price="100.00")  # total 200
+    o = Order.objects.create(
+        client=c, status="shipped", payment_status="unpaid", settlement_intent=intent
+    )
+    OrderItem.objects.create(
+        order=o, product=p, quantity=2, unit_price="100.00"
+    )  # total 200
     return o
 
 
 def test_debts_endpoint_lists_unsettled_shipped(boss):
     o = _shipped_order()
     settled = _shipped_order()
-    Payment.objects.create(order=settled, amount=settled.total_amount, status="confirmed")
-    settled.payment_status = "settled"; settled.save()
+    Payment.objects.create(
+        order=settled, amount=settled.total_amount, status="confirmed"
+    )
+    settled.payment_status = "settled"
+    settled.save()
     r = _api(boss).get("/api/clients/debts/")
     assert r.status_code == 200
     client_ids = [row["client_id"] for row in r.data]
@@ -40,7 +48,9 @@ def test_debts_endpoint_lists_unsettled_shipped(boss):
 
 def test_payments_history_in_order(accountant, settle_payment):
     o = _shipped_order()
-    r = _api(accountant).post(f"/api/orders/{o.id}/payments/", {"amount": "50"}, format="json")
+    r = _api(accountant).post(
+        f"/api/orders/{o.id}/payments/", {"amount": "50"}, format="json"
+    )
     # До подтверждения кассой оплата в истории «полученных» не отображается.
     mid = _api(accountant).get(f"/api/orders/{o.id}/")
     assert mid.data["payments"] == []
@@ -55,6 +65,7 @@ def test_payments_history_in_order(accountant, settle_payment):
 
 def test_check_overdue_endpoint(boss):
     from apps.clients.models import Store
+
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
     Store.objects.create(client=c, name="S", payment_schedule_type="none")
     r = _api(boss).post("/api/stores/check-overdue/")

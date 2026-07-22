@@ -15,6 +15,7 @@ from apps.orders.models import Order
 from apps.orders.invoices import build_invoice_pdf
 from apps.orders.services import create_client_payment, request_client_debt, set_truck_number
 from apps.eventlog.services import log_event
+from config.throttles import PortalOrderCreateRateThrottle
 from .serializers import CatalogProductSerializer, PortalOrderSerializer
 
 
@@ -67,6 +68,12 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                          mixins.CreateModelMixin, viewsets.GenericViewSet):
     serializer_class = PortalOrderSerializer
     permission_classes = [IsClientUser]
+
+    def get_throttles(self):
+        throttles = super().get_throttles()
+        if self.action == "create":
+            throttles.append(PortalOrderCreateRateThrottle())
+        return throttles
 
     def get_queryset(self):
         # paid_total и has_pending_payment обходят оплаты — грузим заранее.

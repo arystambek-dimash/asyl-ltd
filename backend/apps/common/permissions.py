@@ -27,6 +27,13 @@ class IsSuperUser(BasePermission):
         return _auth(request) and bool(request.user.is_superuser)
 
 
+class DenyAll(BasePermission):
+    """Fail-closed fallback for endpoints missing an explicit permission map."""
+
+    def has_permission(self, request, view):
+        return False
+
+
 class HasPerm(BasePermission):
     """Право доступа: один код или несколько (достаточно любого из них)."""
 
@@ -40,13 +47,32 @@ class HasPerm(BasePermission):
         return any(user.has_perm_code(c) for c in self.codes)
 
 
+class HasAllPerms(HasPerm):
+    """Require every listed application permission (superusers still pass)."""
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not _auth(request) or user.is_client:
+            return False
+        return all(user.has_perm_code(code) for code in self.codes)
+
+
 class PermViewSetMixin:
     """Resolve required_perms[action] → HasPerm(code | (code, ...))."""
     required_perms: dict = {}
 
     def get_permissions(self):
-        code = self.required_perms.get(getattr(self, "action", None))
-        if code is None:
+        action = getattr(self, "action", None)
+        if action is None:
+            # Let DRF return the protocol-correct 405 for unsupported methods.
+            # A real routed action with no mapping still fails closed below.
             return [IsAuthenticated()]
+        if action == "metadata":
+            # OPTIONS exposes serializer metadata but no records. Keep browser
+            # preflight/DRF metadata usable for authenticated staff only.
+            return [IsStaff()]
+        code = self.required_perms.get(action)
+        if code is None:
+            return [DenyAll()]
         codes = code if isinstance(code, (tuple, list)) else (code,)
         return [HasPerm(*codes)]

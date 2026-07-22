@@ -105,8 +105,10 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         # debt_total и агрегаты долгов обходят заказы только по позициям и
         # оплатам — без предзагрузки список клиентов даёт N+1 на каждую строку,
         # а полный план (статусы, прайсы, отгрузки) здесь лишний.
-        return Client.objects.prefetch_related(
-            "orders__items__product", "orders__payments")
+        return Client.objects.prefetch_related(Prefetch(
+            "orders",
+            queryset=Order.objects.prefetch_related("items", "payments"),
+        ))
 
     @action(detail=True, methods=["get"], url_path="history")
     def history(self, request, pk=None):

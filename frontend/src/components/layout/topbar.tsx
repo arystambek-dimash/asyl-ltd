@@ -12,30 +12,52 @@ type Theme = "light" | "dark" | "system";
 
 function applyTheme(theme: Theme) {
   const root = document.documentElement;
-  const dark = theme === "dark" ||
-    (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const dark = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
   root.classList.toggle("dark", dark);
 }
 
 function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>("light");
   useEffect(() => {
-    const saved = (localStorage.getItem("asyl_theme") as Theme) || "light";
-    setTheme(saved); applyTheme(saved);
+    const stored = localStorage.getItem("asyl_theme");
+    const saved: Theme = stored === "dark" || stored === "system" ? stored : "light";
+    setTheme(saved);
+    applyTheme(saved);
   }, []);
+  useEffect(() => {
+    if (theme !== "system") return;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const syncSystemTheme = () => applyTheme("system");
+    media.addEventListener("change", syncSystemTheme);
+    return () => media.removeEventListener("change", syncSystemTheme);
+  }, [theme]);
   function pick(t: Theme) {
-    setTheme(t); localStorage.setItem("asyl_theme", t); applyTheme(t);
+    setTheme(t);
+    localStorage.setItem("asyl_theme", t);
+    applyTheme(t);
   }
-  const opts: { key: Theme; icon: React.ElementType }[] = [
-    { key: "light", icon: Sun }, { key: "dark", icon: Moon }, { key: "system", icon: Monitor },
+  const opts: { key: Theme; icon: React.ElementType; label: string }[] = [
+    { key: "light", icon: Sun, label: "Светлая тема" },
+    { key: "dark", icon: Moon, label: "Тёмная тема" },
+    { key: "system", icon: Monitor, label: "Системная тема" },
   ];
   return (
-    <div className="flex items-center gap-0.5 rounded-lg border p-0.5">
-      {opts.map(({ key, icon: Icon }) => (
-        <button key={key} onClick={() => pick(key)}
-          className={cn("flex size-7 items-center justify-center rounded-md transition-colors",
-            theme === key ? "bg-[var(--secondary)] text-[var(--foreground)]"
-              : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]")}>
+    <div className="flex items-center gap-0.5 rounded-lg border p-0.5" role="group" aria-label="Тема оформления">
+      {opts.map(({ key, icon: Icon, label }) => (
+        <button
+          key={key}
+          type="button"
+          onClick={() => pick(key)}
+          aria-label={label}
+          aria-pressed={theme === key}
+          title={label}
+          className={cn(
+            "flex size-7 items-center justify-center rounded-md transition-colors",
+            theme === key
+              ? "bg-[var(--secondary)] text-[var(--foreground)]"
+              : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
+          )}
+        >
           <Icon className="size-4" />
         </button>
       ))}
@@ -43,24 +65,36 @@ function ThemeToggle() {
   );
 }
 
-export function Topbar({ me, title, section, tabs, actions, onMenu }: {
-  me: Me; title: string; section?: string;
-  tabs?: ReactNode; actions?: ReactNode; onMenu?: () => void;
+export function Topbar({
+  me,
+  title,
+  section,
+  tabs,
+  actions,
+  onMenu,
+}: {
+  me: Me;
+  title: string;
+  section?: string;
+  tabs?: ReactNode;
+  actions?: ReactNode;
+  onMenu?: () => void;
 }) {
   const { logout } = useAuth();
   const router = useRouter();
   const roleText = me.is_client
     ? "Клиент"
     : me.is_monoblock
-    ? `Моноблок · ${me.monoblock_camera ?? "без камеры"}`
-    : me.is_superuser
-    ? "Администратор"
-    : me.role_name || "Сотрудник";
+      ? `Моноблок · ${me.monoblock_camera ?? "без камеры"}`
+      : me.is_superuser
+        ? "Администратор"
+        : me.role_name || "Сотрудник";
 
   return (
     <header className="flex h-16 items-center justify-between gap-2 border-b px-4 sm:px-8">
       <div className="flex min-w-0 items-center gap-2">
         <button
+          type="button"
           onClick={onMenu}
           className="-ml-1 flex size-9 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--secondary)] md:hidden"
           aria-label="Меню"
@@ -78,8 +112,10 @@ export function Topbar({ me, title, section, tabs, actions, onMenu }: {
         {/* Вкладки страницы — в самом навбаре; подчёркивание ложится на его
             нижнюю границу. На телефоне переезжают отдельной строкой ниже. */}
         {tabs && (
-          <div className="ml-4 hidden h-16 min-w-0 self-stretch overflow-x-auto sm:flex
-            [&>div]:h-full [&>div]:border-b-0 [&_button]:h-full [&_button]:whitespace-nowrap">
+          <div
+            className="ml-4 hidden h-16 min-w-0 self-stretch overflow-x-auto sm:flex
+            [&>div]:h-full [&>div]:border-b-0 [&_button]:h-full [&_button]:whitespace-nowrap"
+          >
             {tabs}
           </div>
         )}
@@ -107,7 +143,10 @@ export function Topbar({ me, title, section, tabs, actions, onMenu }: {
             <div className="text-[10px] text-[var(--muted-foreground)]">{roleText}</div>
           </div>
           <button
-            onClick={() => { logout(); router.push("/login"); }}
+            onClick={() => {
+              logout();
+              router.push("/login");
+            }}
             className="ml-1 text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
             title="Выйти"
           >

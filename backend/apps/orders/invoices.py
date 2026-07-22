@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, ROUND_HALF_UP
+from html import escape
 from io import BytesIO
 from pathlib import Path
 
@@ -39,6 +40,11 @@ SCALES = [
     ("квадриллион", "квадриллиона", "квадриллионов", False),
     ("квинтиллион", "квинтиллиона", "квинтиллионов", False),
 ]
+
+
+def _escape_paragraph_text(value: object) -> str:
+    """Render dynamic text literally inside ReportLab ``Paragraph`` markup."""
+    return escape(str(value), quote=True)
 
 
 def _plural(value: int, one: str, few: str, many: str) -> str:
@@ -145,6 +151,8 @@ def build_invoice_pdf(order: Order) -> bytes:
     center = ParagraphStyle("InvoiceCenter", parent=bold, alignment=TA_CENTER)
     right = ParagraphStyle("InvoiceRight", parent=body, alignment=TA_RIGHT)
     right_bold = ParagraphStyle("InvoiceRightBold", parent=bold, alignment=TA_RIGHT)
+    invoice_number = _escape_paragraph_text(order.id)
+    issue_date = _escape_paragraph_text(f"{issued_on:%d.%m.%Y}")
 
     story = [
         Paragraph(
@@ -159,13 +167,18 @@ def build_invoice_pdf(order: Order) -> bytes:
     ]
 
     bank_data = [
-        [Paragraph("<b>Бенефициар:</b><br/>" + supplier["legal_name"] +
-                   f"<br/><br/>БИН: {supplier['bin']}", small),
-         Paragraph("<b>ИИК</b><br/><br/>" + supplier["iban"], center),
-         Paragraph("<b>Кбе</b><br/><br/>" + supplier["kbe"], center)],
-        [Paragraph("<b>Банк бенефициара:</b><br/>" + supplier["bank"], small),
-         Paragraph("<b>БИК</b><br/>" + supplier["bic"], center),
-         Paragraph("<b>Код назначения платежа</b><br/>" + supplier["payment_code"], center)],
+        [Paragraph("<b>Бенефициар:</b><br/>" +
+                   _escape_paragraph_text(supplier["legal_name"]) +
+                   "<br/><br/>БИН: " + _escape_paragraph_text(supplier["bin"]), small),
+         Paragraph("<b>ИИК</b><br/><br/>" +
+                   _escape_paragraph_text(supplier["iban"]), center),
+         Paragraph("<b>Кбе</b><br/><br/>" +
+                   _escape_paragraph_text(supplier["kbe"]), center)],
+        [Paragraph("<b>Банк бенефициара:</b><br/>" +
+                   _escape_paragraph_text(supplier["bank"]), small),
+         Paragraph("<b>БИК</b><br/>" + _escape_paragraph_text(supplier["bic"]), center),
+         Paragraph("<b>Код назначения платежа</b><br/>" +
+                   _escape_paragraph_text(supplier["payment_code"]), center)],
     ]
     bank = Table(bank_data, colWidths=[112 * mm, 38 * mm, 28 * mm],
                  rowHeights=[26 * mm, 15 * mm])
@@ -176,16 +189,18 @@ def build_invoice_pdf(order: Order) -> bytes:
         ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
     story += [bank, Spacer(1, 8 * mm),
-              Paragraph(f"Счет на оплату №{order.id} от {issued_on:%d.%m.%Y}", title),
+              Paragraph(f"Счет на оплату №{invoice_number} от {issue_date}", title),
               HRFlowable(width="100%", thickness=1.8, color=colors.black, spaceBefore=2 * mm,
                          spaceAfter=3 * mm)]
 
     buyer = order.client.company_name.strip() or order.client.name
     details = Table([
         [Paragraph("Поставщик:", body),
-         Paragraph(f"<b>{supplier['legal_name']}</b>, {supplier['address']}", body)],
+         Paragraph(f"<b>{_escape_paragraph_text(supplier['legal_name'])}</b>, " +
+                   _escape_paragraph_text(supplier["address"]), body)],
         [Paragraph("Покупатель:", body),
-         Paragraph(f"<b>ИИН/БИН: {order.client.iin}, {buyer}</b>", body)],
+         Paragraph("<b>ИИН/БИН: " + _escape_paragraph_text(order.client.iin) +
+                   ", " + _escape_paragraph_text(buyer) + "</b>", body)],
         [Paragraph("Договор:", body), Paragraph("<b>Без договора</b>", body)],
     ], colWidths=[25 * mm, 153 * mm], rowHeights=[None, 16 * mm, 10 * mm])
     details.setStyle(TableStyle([
@@ -204,9 +219,12 @@ def build_invoice_pdf(order: Order) -> bytes:
         price = item.unit_price if item.unit_price is not None else Decimal("0")
         line_total = price * item.quantity
         rows.append([
-            Paragraph(str(index), center), "", Paragraph(item.product_label, small),
-            Paragraph(str(item.quantity), center), Paragraph("меш.", center),
-            Paragraph(f"{price:,.2f}", right), Paragraph(f"{line_total:,.2f}", right),
+            Paragraph(_escape_paragraph_text(index), center), "",
+            Paragraph(_escape_paragraph_text(item.product_label), small),
+            Paragraph(_escape_paragraph_text(item.quantity), center),
+            Paragraph("меш.", center),
+            Paragraph(_escape_paragraph_text(f"{price:,.2f}"), right),
+            Paragraph(_escape_paragraph_text(f"{line_total:,.2f}"), right),
         ])
     items_table = Table(rows, repeatRows=1,
                         colWidths=[8 * mm, 18 * mm, 70 * mm, 17 * mm, 14 * mm, 24 * mm, 27 * mm])
@@ -218,8 +236,10 @@ def build_invoice_pdf(order: Order) -> bytes:
         ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
     totals = Table([
-        [Paragraph("Итого:", right_bold), Paragraph(f"{total:,.2f}", right_bold)],
-        [Paragraph("В том числе НДС:", right_bold), Paragraph(f"{vat:,.2f}", right_bold)],
+        [Paragraph("Итого:", right_bold),
+         Paragraph(_escape_paragraph_text(f"{total:,.2f}"), right_bold)],
+        [Paragraph("В том числе НДС:", right_bold),
+         Paragraph(_escape_paragraph_text(f"{vat:,.2f}"), right_bold)],
     ], colWidths=[151 * mm, 27 * mm])
     totals.setStyle(TableStyle([
         ("LEFTPADDING", (0, 0), (-1, -1), 1), ("RIGHTPADDING", (0, 0), (-1, -1), 1),
@@ -230,8 +250,10 @@ def build_invoice_pdf(order: Order) -> bytes:
     ending = KeepTogether([
         totals,
         Spacer(1, 2 * mm),
-        Paragraph(f"Всего наименований {len(rows) - 1}, на сумму {total:,.2f} {currency_code}", body),
-        Paragraph(f"<b>Всего к оплате: {words}</b>", body),
+        Paragraph("Всего наименований " + _escape_paragraph_text(len(rows) - 1) +
+                  ", на сумму " + _escape_paragraph_text(f"{total:,.2f}") +
+                  " " + _escape_paragraph_text(currency_code), body),
+        Paragraph("<b>Всего к оплате: " + _escape_paragraph_text(words) + "</b>", body),
         HRFlowable(width="100%", thickness=1.8, color=colors.black,
                    spaceBefore=2 * mm, spaceAfter=5 * mm),
         Table([[Paragraph("<b>Исполнитель</b>", body), "", Paragraph("//", body)]],

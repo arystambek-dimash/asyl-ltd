@@ -80,7 +80,7 @@ def activate(session: AiCountingSession, payload: dict) -> AiCountingSession:
 
 
 def update_status(session: AiCountingSession, payload: dict) -> None:
-    updates = {"last_status": payload}
+    updates: dict[str, object] = {"last_status": payload}
     stream = payload.get("stream")
     if isinstance(stream, str) and stream:
         updates["recording_stream"] = stream[:64]
@@ -90,7 +90,7 @@ def update_status(session: AiCountingSession, payload: dict) -> None:
 def commit_final(session: AiCountingSession, payload: dict | None) -> None:
     """Durably save the worker snapshot before its in-memory session is idled."""
     payload = payload or {}
-    updates = {
+    updates: dict[str, object] = {
         "last_status": payload,
         "final_total": payload.get("total"),
     }

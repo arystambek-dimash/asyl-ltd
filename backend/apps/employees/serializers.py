@@ -3,6 +3,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
 from apps.rbac.models import Permission
 from .models import Employee, SALES_REQUIRED_PERMISSIONS
 
@@ -56,8 +57,18 @@ class EmployeeSerializer(serializers.ModelSerializer):
     def validate_password(self, value):
         # Единые правила паролей проекта (AUTH_PASSWORD_VALIDATORS) — иначе
         # сотруднику можно было бы завести «123456».
+        candidate = self.instance.user if self.instance is not None else User()
+        candidate.username = str(
+            self.initial_data.get("username", candidate.username or "")
+        )
+        candidate.first_name = str(
+            self.initial_data.get("first_name", candidate.first_name or "")
+        )
+        candidate.last_name = str(
+            self.initial_data.get("last_name", candidate.last_name or "")
+        )
         try:
-            validate_password(value)
+            validate_password(value, user=candidate)
         except DjangoValidationError as exc:
             raise serializers.ValidationError(exc.messages)
         return value
@@ -71,7 +82,35 @@ class EmployeeSerializer(serializers.ModelSerializer):
         if not self.instance and not attrs.get("password"):
             raise serializers.ValidationError(
                 {"detail": "Укажите пароль для новой учётной записи", "code": "password_required"})
+        request = self.context.get("request")
+        actor = getattr(request, "user", None)
+        if self.instance is not None and self._changes_account_security(attrs):
+            if actor is None or not actor.has_perm_code("rbac.manage"):
+                raise PermissionDenied(
+                    "Изменение учётной записи, роли и прав требует доступа к управлению ролями"
+                )
         return attrs
+
+    def _changes_account_security(self, attrs):
+        if "password" in attrs or "permissions" in attrs or "denied_permissions" in attrs:
+            return True
+        user_data = attrs.get("user")
+        if user_data and user_data.get("username") != self.instance.user.username:
+            return True
+        role = attrs.get("role", serializers.empty)
+        if role is not serializers.empty:
+            role_id = role.pk if role is not None else None
+            if role_id != self.instance.role_id:
+                return True
+        department = attrs.get("sales_department", serializers.empty)
+        if department is not serializers.empty:
+            department_id = department.pk if department is not None else None
+            if department_id != self.instance.sales_department_id:
+                return True
+        return (
+            "is_active" in attrs
+            and attrs["is_active"] != self.instance.is_active
+        )
 
     @transaction.atomic
     def create(self, validated_data):

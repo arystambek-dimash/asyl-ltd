@@ -22,6 +22,7 @@ THROTTLED = {
         "anon": "60/min", "user": "600/min", "burst": "30/sec",
         "login": "3/min", "register": "2/min",
     },
+    "NUM_PROXIES": 1,
 }
 
 
@@ -56,6 +57,32 @@ def test_register_is_throttled_after_limit():
         }, format="json")
         codes.append(r.status_code)
     assert 429 in codes, f"регистрация должна упираться в лимит, коды: {codes}"
+
+
+@override_settings(REST_FRAMEWORK=THROTTLED)
+def test_registration_throttle_ignores_client_supplied_xff_prefix():
+    """One trusted nginx hop means spoofing the first XFF value cannot rotate IPs."""
+    payload = {
+        "username": "xff-user",
+        "password": "password123",
+        "first_name": "A",
+        "last_name": "B",
+        "company_name": "Company",
+        "phone": "+7700",
+        "iin": "123456789012",
+    }
+    codes = []
+    for index in range(4):
+        client = APIClient(
+            REMOTE_ADDR="10.0.0.10",
+            HTTP_X_FORWARDED_FOR=f"198.51.100.{index}, 203.0.113.12",
+        )
+        payload["username"] = f"xff-user-{index}"
+        codes.append(
+            client.post("/api/portal/register/", payload, format="json").status_code
+        )
+
+    assert 429 in codes, f"spoofed XFF prefixes must share one bucket: {codes}"
 
 
 @override_settings(REST_FRAMEWORK=THROTTLED)

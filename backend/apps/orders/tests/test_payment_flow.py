@@ -1,5 +1,4 @@
 import pytest
-from decimal import Decimal
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem

@@ -22,11 +22,11 @@ def _observed_day(observed_at: datetime | None = None) -> date:
 
 def _processor_total(processor: dict) -> int | None:
     value = processor.get("total")
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return None
     try:
         value = int(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
     return value if value >= 0 else None
 

@@ -11,18 +11,24 @@ pytestmark = pytest.mark.django_db
 
 
 def _api(user):
-    c = APIClient(); c.force_authenticate(user); return c
+    c = APIClient()
+    c.force_authenticate(user)
+    return c
 
 
 def test_staff_create_with_prices_confirms_immediately(manager):
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     StockItem.objects.create(product=p, bags=500)
-    r = _api(manager).post("/api/orders/", {
-        "client": c.id,
-        "items": [{"product": p.id, "quantity": 3}],
-        "prices": {str(p.id): "15000"},   # цена по товару
-    }, format="json")
+    r = _api(manager).post(
+        "/api/orders/",
+        {
+            "client": c.id,
+            "items": [{"product": p.id, "quantity": 3}],
+            "prices": {str(p.id): "15000"},  # цена по товару
+        },
+        format="json",
+    )
     assert r.status_code == 201
     o = Order.objects.get()
     assert o.status == "confirmed"
@@ -34,10 +40,14 @@ def test_staff_create_without_prices_stays_draft(manager):
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     StockItem.objects.create(product=p, bags=500)
-    r = _api(manager).post("/api/orders/", {
-        "client": c.id,
-        "items": [{"product": p.id, "quantity": 1}],
-    }, format="json")
+    r = _api(manager).post(
+        "/api/orders/",
+        {
+            "client": c.id,
+            "items": [{"product": p.id, "quantity": 1}],
+        },
+        format="json",
+    )
     assert r.status_code == 201
     assert Order.objects.get().status == "draft"
 
@@ -48,12 +58,16 @@ def test_staff_reviews_template_then_creates_linked_order(manager):
     StockItem.objects.create(product=product, bags=500)
     source = Order.objects.create(client=client, status="shipped", created_by=manager)
 
-    response = _api(manager).post("/api/orders/", {
-        "client": client.id,
-        "template_order": source.id,
-        "items": [{"product": product.id, "quantity": 4}],
-        "prices": {str(product.id): "700"},
-    }, format="json")
+    response = _api(manager).post(
+        "/api/orders/",
+        {
+            "client": client.id,
+            "template_order": source.id,
+            "items": [{"product": product.id, "quantity": 4}],
+            "prices": {str(product.id): "700"},
+        },
+        format="json",
+    )
 
     assert response.status_code == 201
     created = Order.objects.get(pk=response.data["id"])
@@ -70,19 +84,24 @@ def test_staff_can_create_usd_order_and_remember_usd_price(manager):
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="USD P", color="Red", weight_kg="50")
     StockItem.objects.create(product=p, bags=500)
-    r = _api(manager).post("/api/orders/", {
-        "client": c.id,
-        "currency": "USD",
-        "items": [{"product": p.id, "quantity": 2}],
-        "prices": {str(p.id): "25.50"},
-    }, format="json")
+    r = _api(manager).post(
+        "/api/orders/",
+        {
+            "client": c.id,
+            "currency": "USD",
+            "items": [{"product": p.id, "quantity": 2}],
+            "prices": {str(p.id): "25.50"},
+        },
+        format="json",
+    )
 
     assert r.status_code == 201
     order = Order.objects.get(pk=r.data["id"])
     assert order.currency == "USD"
     assert order.total_amount == Decimal("51.00")
     assert ClientPrice.objects.get(
-        client=c, product=p, currency="USD").price == Decimal("25.50")
+        client=c, product=p, currency="USD"
+    ).price == Decimal("25.50")
 
 
 def test_failed_price_confirmation_leaves_no_orphan_order(manager):
@@ -91,11 +110,15 @@ def test_failed_price_confirmation_leaves_no_orphan_order(manager):
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     StockItem.objects.create(product=p, bags=500)
-    r = _api(manager).post("/api/orders/", {
-        "client": c.id,
-        "items": [{"product": p.id, "quantity": 3}],
-        "prices": {str(p.id): "0"},  # недопустимая цена → price_required
-    }, format="json")
+    r = _api(manager).post(
+        "/api/orders/",
+        {
+            "client": c.id,
+            "items": [{"product": p.id, "quantity": 3}],
+            "prices": {str(p.id): "0"},  # недопустимая цена → price_required
+        },
+        format="json",
+    )
     assert r.status_code == 400
     assert Order.objects.count() == 0
 
@@ -104,9 +127,13 @@ def test_zero_quantity_rejected(manager):
     c = Client.objects.create(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     StockItem.objects.create(product=p, bags=500)
-    r = _api(manager).post("/api/orders/", {
-        "client": c.id,
-        "items": [{"product": p.id, "quantity": 0}],
-    }, format="json")
+    r = _api(manager).post(
+        "/api/orders/",
+        {
+            "client": c.id,
+            "items": [{"product": p.id, "quantity": 0}],
+        },
+        format="json",
+    )
     assert r.status_code == 400
     assert Order.objects.count() == 0

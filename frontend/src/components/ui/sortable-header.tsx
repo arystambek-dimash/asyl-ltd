@@ -22,19 +22,26 @@ export function SortableHeader({
 }) {
   const isActive = activeKey === sortKey;
   return (
-    <TH className={cn(align === "right" && "text-right")}>
+    <TH
+      aria-sort={isActive ? (dir === "asc" ? "ascending" : "descending") : "none"}
+      className={cn(align === "right" && "text-right")}
+    >
       <button
         type="button"
         onClick={() => onClick(sortKey)}
         className={cn(
           "inline-flex items-center gap-1 transition-colors hover:text-[var(--foreground)]",
           align === "right" && "flex-row-reverse",
-          isActive && "text-[var(--foreground)] font-medium"
+          isActive && "text-[var(--foreground)] font-medium",
         )}
       >
         {label}
         {isActive ? (
-          dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
+          dir === "asc" ? (
+            <ArrowUp className="h-3 w-3" />
+          ) : (
+            <ArrowDown className="h-3 w-3" />
+          )
         ) : (
           <ArrowUpDown className="h-3 w-3 opacity-40" />
         )}

@@ -11,12 +11,13 @@
   Order.objects (LiveOrderManager).
 """
 from decimal import Decimal
+from typing import TypedDict
 
 from django.db.models import Count, DecimalField, F, Q, Sum, Value
 from django.db.models.functions import Coalesce, TruncDate
 
 from apps.common.money import money_string as _d
-from .models import Order, OrderItem, Payment
+from .models import OrderItem, Payment
 
 CASH_METHODS = ("cash",)
 CASHLESS_METHODS = ("card", "kaspi", "invoice")
@@ -24,6 +25,16 @@ MONEY_METHODS = CASH_METHODS + CASHLESS_METHODS
 
 _ZERO = Decimal("0")
 _MONEY = DecimalField(max_digits=14, decimal_places=2)
+
+
+class _ReportTotals(TypedDict):
+    revenue: Decimal
+    bags: int
+    orders: int
+    debt_amount: Decimal
+    cash: Decimal
+    cashless: Decimal
+    payments: int
 
 def _day_bounds(qs, date_from, date_to):
     if date_from:
@@ -107,13 +118,18 @@ def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
         row["cashless"] = r["cashless"]
         row["payments"] = r["payments"]
 
-    total = {
+    total: _ReportTotals = {
         "revenue": _ZERO, "bags": 0, "orders": 0, "debt_amount": _ZERO,
         "cash": _ZERO, "cashless": _ZERO, "payments": 0,
     }
     for row in days.values():
-        for key in total:
-            total[key] += row[key]
+        total["revenue"] += row["revenue"]
+        total["bags"] += row["bags"]
+        total["orders"] += row["orders"]
+        total["debt_amount"] += row["debt_amount"]
+        total["cash"] += row["cash"]
+        total["cashless"] += row["cashless"]
+        total["payments"] += row["payments"]
 
     day_list = [
         {**row,

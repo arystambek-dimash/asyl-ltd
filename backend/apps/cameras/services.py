@@ -175,7 +175,9 @@ def _natural(s: str) -> tuple:
 def _static_slot(path: str) -> bool:
     """cam1..cam32 (и их camNai) уже прописаны в go2rtc.yaml."""
     m = re.fullmatch(r"cam(\d+)", path)
-    return bool(m) and 1 <= int(m.group(1)) <= MAX_CAMERAS
+    if m is None:
+        return False
+    return 1 <= int(m.group(1)) <= MAX_CAMERAS
 
 
 def _sync_go2rtc(pairs: list[tuple[str, str]]) -> None:

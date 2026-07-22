@@ -475,15 +475,13 @@ def test_counting_line_unavailable_maps_to_502(api_client, superuser):
 def test_ai_key_is_header_only_and_never_returned(api_client, superuser):
     class Upstream:
         status = 200
+        closed = False
 
-        def read(self):
+        def read(self, _size=-1):
             return b'{"cam":"cam2","configured":false}'
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
+        def close(self):
+            self.closed = True
 
     api_client.force_authenticate(superuser)
     with patch("urllib.request.urlopen", return_value=Upstream()) as urlopen:

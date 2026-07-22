@@ -22,6 +22,11 @@ def live(total, *, mode="always_on", running=True, camera="cam3", per_color=None
     }]}
 
 
+@pytest.mark.parametrize("value", [None, {}, [], True, float("inf"), float("nan")])
+def test_processor_total_rejects_non_finite_or_malformed_values(value):
+    assert analytics._processor_total({"total": value}) is None
+
+
 def test_snapshot_accumulates_delta_without_double_counting_and_survives_reset():
     analytics.record_snapshot(live(3, per_color={"Red_50": 2, "Blue_50": 1}))
     analytics.record_snapshot(live(7, per_color={"Red_50": 5, "Blue_50": 2}))

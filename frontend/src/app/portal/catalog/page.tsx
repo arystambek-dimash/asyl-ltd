@@ -1,27 +1,32 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
+import { DataGate } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { formatCurrency } from "@/lib/utils";
 import { Boxes, ShoppingCart, Tag } from "lucide-react";
 
 interface PortalProduct {
-  id: number; label: string; weight_kg: string; available_bags: number;
-  price: string | null; currency: "KZT" | "USD";
+  id: number;
+  label: string;
+  weight_kg: string;
+  available_bags: number;
+  price: string | null;
+  currency: "KZT" | "USD";
 }
 
 export default function PortalCatalogPage() {
   const [currency, setCurrency] = useState<"KZT" | "USD" | null>(null);
-  const { data: products, loading } = useApi<PortalProduct[]>(
-    currency ? `/portal/catalog/?currency=${currency}` : "/portal/catalog/",
-  );
+  const {
+    data: products,
+    loading,
+    error,
+    reload,
+  } = useApi<PortalProduct[]>(currency ? `/portal/catalog/?currency=${currency}` : "/portal/catalog/");
   const selectedCurrency = currency ?? products?.[0]?.currency ?? "KZT";
-  useEffect(() => {
-    if (!currency && products?.[0]?.currency) setCurrency(products[0].currency);
-  }, [currency, products]);
   return (
     <AppShell title="Товары" portal>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -32,65 +37,69 @@ export default function PortalCatalogPage() {
         <div className="flex items-center gap-2">
           <div className="inline-flex rounded-lg border bg-[var(--muted)]/30 p-1">
             {(["KZT", "USD"] as const).map((code) => (
-              <button key={code} type="button" onClick={() => setCurrency(code)}
-                className={"rounded-md px-3 py-1.5 text-xs font-semibold transition-all " +
+              <button
+                key={code}
+                type="button"
+                onClick={() => setCurrency(code)}
+                className={
+                  "rounded-md px-3 py-1.5 text-xs font-semibold transition-all " +
                   (selectedCurrency === code
                     ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
-                    : "text-[var(--muted-foreground)]")}>
+                    : "text-[var(--muted-foreground)]")
+                }
+              >
                 {code} {code === "USD" ? "$" : "₸"}
               </button>
             ))}
           </div>
-          <Link href="/portal/orders/new">
-            <Button size="sm"><ShoppingCart className="size-4" /> Оформить заказ</Button>
+          <Link href="/portal/orders/new" className={buttonVariants({ size: "sm" })}>
+            <ShoppingCart className="size-4" /> Оформить заказ
           </Link>
         </div>
       </div>
-      {loading ? (
-        <p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+      {!products ? (
+        <DataGate loading={loading} error={error} onRetry={reload} />
+      ) : products.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center gap-2 py-14 text-center">
+            <Boxes className="size-8 text-[var(--muted-foreground)]" />
+            <div className="text-sm font-medium">Товаров пока нет</div>
+            <p className="max-w-sm text-xs text-[var(--muted-foreground)]">
+              Как только менеджер добавит активные товары, они появятся здесь для заказа.
+            </p>
+          </CardContent>
+        </Card>
       ) : (
-        (products ?? []).length === 0 ? (
-          <Card>
-            <CardContent className="flex flex-col items-center justify-center gap-2 py-14 text-center">
-              <Boxes className="size-8 text-[var(--muted-foreground)]" />
-              <div className="text-sm font-medium">Товаров пока нет</div>
-              <p className="max-w-sm text-xs text-[var(--muted-foreground)]">
-                Как только менеджер добавит активные товары, они появятся здесь для заказа.
-              </p>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {(products ?? []).map((p) => (
-              <Card key={p.id} className="p-6">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="font-medium">{p.label}</div>
-                  <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[var(--primary)]/8 text-[var(--primary)]">
-                    <Tag className="size-4" />
-                  </span>
-                </div>
-                <div className="mt-1 text-xs text-[var(--muted-foreground)]">{p.weight_kg} кг / мешок</div>
-                <div className="mt-4 border-t pt-4">
-                  <div className="text-[11px] text-[var(--muted-foreground)]">Ваша цена за мешок</div>
-                  {p.price ? (
-                    <div className="mt-1 text-xl font-semibold tabular-nums">
-                      {formatCurrency(p.price, p.currency)}
-                    </div>
-                  ) : (
-                    <div className="mt-1 text-sm font-medium text-[var(--muted-foreground)]">Цена уточняется</div>
-                  )}
-                </div>
-                <div className={p.available_bags > 0
-                  ? "mt-3 text-xs font-medium text-[var(--success)]"
-                  : "mt-3 text-xs font-medium text-[var(--muted-foreground)]"}>
-                  {p.available_bags > 0
-                    ? `В наличии: ${p.available_bags} меш.`
-                    : "Остаток уточнит оператор"}
-                </div>
-              </Card>
-            ))}
-          </div>
-        )
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {products.map((p) => (
+            <Card key={p.id} className="p-6">
+              <div className="flex items-start justify-between gap-3">
+                <div className="font-medium">{p.label}</div>
+                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[var(--primary)]/8 text-[var(--primary)]">
+                  <Tag className="size-4" />
+                </span>
+              </div>
+              <div className="mt-1 text-xs text-[var(--muted-foreground)]">{p.weight_kg} кг / мешок</div>
+              <div className="mt-4 border-t pt-4">
+                <div className="text-[11px] text-[var(--muted-foreground)]">Ваша цена за мешок</div>
+                {p.price ? (
+                  <div className="mt-1 text-xl font-semibold tabular-nums">{formatCurrency(p.price, p.currency)}</div>
+                ) : (
+                  <div className="mt-1 text-sm font-medium text-[var(--muted-foreground)]">Цена уточняется</div>
+                )}
+              </div>
+              <div
+                className={
+                  p.available_bags > 0
+                    ? "mt-3 text-xs font-medium text-[var(--success)]"
+                    : "mt-3 text-xs font-medium text-[var(--muted-foreground)]"
+                }
+              >
+                {p.available_bags > 0 ? `В наличии: ${p.available_bags} меш.` : "Остаток уточнит оператор"}
+              </div>
+            </Card>
+          ))}
+        </div>
       )}
     </AppShell>
   );

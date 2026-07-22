@@ -7,7 +7,9 @@ pytestmark = pytest.mark.django_db
 
 
 def _api(user):
-    c = APIClient(); c.force_authenticate(user); return c
+    c = APIClient()
+    c.force_authenticate(user)
+    return c
 
 
 def test_client_history_requires_reports_view(user_with_perms):
@@ -42,14 +44,17 @@ def test_check_overdue_requires_clients_edit(user_with_perms):
 
 
 def test_check_overdue_checks_all_clients(user_with_perms):
-    main = Client.objects.create(
-        first_name="Main", last_name="Client", phone="1")
-    field = Client.objects.create(
-        first_name="Field", last_name="Client", phone="2")
+    main = Client.objects.create(first_name="Main", last_name="Client", phone="1")
+    field = Client.objects.create(first_name="Field", last_name="Client", phone="2")
     main_store = Store.objects.create(
-        client=main, name="Main store", payment_schedule_type="weekly", payment_days=[1])
+        client=main, name="Main store", payment_schedule_type="weekly", payment_days=[1]
+    )
     Store.objects.create(
-        client=field, name="Field store", payment_schedule_type="weekly", payment_days=[1])
+        client=field,
+        name="Field store",
+        payment_schedule_type="weekly",
+        payment_days=[1],
+    )
     editor = user_with_perms("scoped-editor", codes=["clients.edit"])
 
     with patch("apps.clients.views.detect_overdue", return_value=0) as detect:

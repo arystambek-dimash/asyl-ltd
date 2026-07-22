@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { can } from "@/lib/can";
@@ -25,21 +25,24 @@ function buildSteps(me: Me): TourStep[] {
       text: "Слева — разделы системы. На телефоне меню открывается кнопкой ☰ в левом верхнем углу.",
     },
   ];
-  if (can(me, "orders.view")) steps.push({
-    target: "nav:/orders",
-    title: "Заказы",
-    text: "Все заказы клиентов: создание, редактирование до начала загрузки, статусы и оплата. Карандаш в строке — быстрое изменение.",
-  });
-  if (can(me, "payments.confirm") || can(me, "reports.view")) steps.push({
-    target: "nav:/accounting",
-    title: "Касса",
-    text: "Подтверждение заявок и оплат — деньги учитываются после ручной проверки. Вкладка «Долги»: кто и сколько должен, с окнами оплат по расписанию.",
-  });
-  if (can(me, "warehouse.view")) steps.push({
-    target: "nav:/warehouse",
-    title: "Склад",
-    text: "Остатки готовой продукции. Кнопка «Изменить остаток» — приёмка и списание с предпросмотром «сейчас → станет».",
-  });
+  if (can(me, "orders.view"))
+    steps.push({
+      target: "nav:/orders",
+      title: "Заказы",
+      text: "Все заказы клиентов: создание, редактирование до начала загрузки, статусы и оплата. Карандаш в строке — быстрое изменение.",
+    });
+  if (can(me, "payments.confirm") || can(me, "reports.view"))
+    steps.push({
+      target: "nav:/accounting",
+      title: "Касса",
+      text: "Подтверждение заявок и оплат — деньги учитываются после ручной проверки. Вкладка «Долги»: кто и сколько должен, с окнами оплат по расписанию.",
+    });
+  if (can(me, "warehouse.view"))
+    steps.push({
+      target: "nav:/warehouse",
+      title: "Склад",
+      text: "Остатки готовой продукции. Кнопка «Изменить остаток» — приёмка и списание с предпросмотром «сейчас → станет».",
+    });
   steps.push({
     target: "profile",
     title: "Профиль",
@@ -48,7 +51,12 @@ function buildSteps(me: Me): TourStep[] {
   return steps;
 }
 
-interface Rect { top: number; left: number; width: number; height: number; }
+interface Rect {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+}
 
 function targetRect(target?: string): Rect | null {
   if (!target) return null;
@@ -63,7 +71,7 @@ export function OnboardingTour({ me }: { me: Me }) {
   const [active, setActive] = useState(false);
   const [step, setStep] = useState(0);
   const [rect, setRect] = useState<Rect | null>(null);
-  const steps = buildSteps(me);
+  const steps = useMemo(() => buildSteps(me), [me]);
 
   const finish = useCallback(() => {
     setActive(false);
@@ -73,14 +81,20 @@ export function OnboardingTour({ me }: { me: Me }) {
   // Автоматически — ровно один раз (первый вход): флаг ставится сразу при
   // показе, чтобы тур не выскакивал на каждой странице. Дальше — только «?».
   useEffect(() => {
-    const start = () => { setStep(0); setActive(true); };
+    const start = () => {
+      setStep(0);
+      setActive(true);
+    };
     if (!localStorage.getItem(TOUR_DONE_KEY)) {
       const t = setTimeout(() => {
         localStorage.setItem(TOUR_DONE_KEY, "1");
         start();
       }, 900);
       window.addEventListener(TOUR_START_EVENT, start);
-      return () => { clearTimeout(t); window.removeEventListener(TOUR_START_EVENT, start); };
+      return () => {
+        clearTimeout(t);
+        window.removeEventListener(TOUR_START_EVENT, start);
+      };
     }
     window.addEventListener(TOUR_START_EVENT, start);
     return () => window.removeEventListener(TOUR_START_EVENT, start);
@@ -91,20 +105,20 @@ export function OnboardingTour({ me }: { me: Me }) {
     if (!active) return;
     const target = steps[step]?.target;
     if (target) {
-      document.querySelector(`[data-tour="${target}"]`)
-        ?.scrollIntoView({ block: "nearest" });
+      document.querySelector(`[data-tour="${target}"]`)?.scrollIntoView({ block: "nearest" });
     }
     const update = () => setRect(targetRect(target));
     update();
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") finish(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") finish();
+    };
     window.addEventListener("resize", update);
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("resize", update);
       window.removeEventListener("keydown", onKey);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, step]);
+  }, [active, finish, step, steps]);
 
   if (!active || steps.length === 0) return null;
   const current = steps[step];
@@ -123,11 +137,11 @@ export function OnboardingTour({ me }: { me: Me }) {
     let top: number;
     let left = rect.left;
     if (rect.top + rect.height + 12 + cardH < vh) {
-      top = rect.top + rect.height + 12;                    // снизу
+      top = rect.top + rect.height + 12; // снизу
     } else if (rect.top - cardH - 12 > 0) {
-      top = rect.top - cardH - 12;                          // сверху
+      top = rect.top - cardH - 12; // сверху
     } else {
-      top = rect.top + rect.height / 2 - cardH / 2;         // сбоку по центру
+      top = rect.top + rect.height / 2 - cardH / 2; // сбоку по центру
       left = rect.left + rect.width + 12;
     }
     cardStyle = {
@@ -147,16 +161,22 @@ export function OnboardingTour({ me }: { me: Me }) {
   }
 
   return (
-    <div className="fixed inset-0 z-[200]" role="dialog" aria-modal="true"
+    <div
+      className="fixed inset-0 z-[200]"
+      role="dialog"
+      aria-modal="true"
       aria-label="Обучение по системе"
-      onClick={finish}>
+      onClick={finish}
+    >
       {/* затемнение с «окном» вокруг подсвеченного элемента */}
       {rect ? (
         <div
           className="pointer-events-none fixed rounded-lg transition-all duration-300"
           style={{
-            top: rect.top - 6, left: rect.left - 6,
-            width: rect.width + 12, height: rect.height + 12,
+            top: rect.top - 6,
+            left: rect.left - 6,
+            width: rect.width + 12,
+            height: rect.height + 12,
             boxShadow: "0 0 0 9999px rgba(0,0,0,0.55)",
           }}
         />
@@ -164,12 +184,18 @@ export function OnboardingTour({ me }: { me: Me }) {
         <div className="fixed inset-0 bg-black/55" />
       )}
 
-      <div style={cardStyle} onClick={(e) => e.stopPropagation()}
-        className="animate-fade-up rounded-xl border bg-[var(--card)] p-4 shadow-2xl">
+      <div
+        style={cardStyle}
+        onClick={(e) => e.stopPropagation()}
+        className="animate-fade-up rounded-xl border bg-[var(--card)] p-4 shadow-2xl"
+      >
         <div className="flex items-start justify-between gap-3">
           <div className="text-[15px] font-semibold">{current.title}</div>
-          <button onClick={finish} aria-label="Закрыть обучение"
-            className="-mr-1 -mt-1 flex size-7 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--muted)]">
+          <button
+            onClick={finish}
+            aria-label="Закрыть обучение"
+            className="-mr-1 -mt-1 flex size-7 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
+          >
             <X className="size-4" />
           </button>
         </div>
@@ -177,15 +203,20 @@ export function OnboardingTour({ me }: { me: Me }) {
         <div className="mt-4 flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5">
             {steps.map((_, i) => (
-              <span key={i} className={cn(
-                "size-1.5 rounded-full transition-colors",
-                i === step ? "bg-[var(--primary)]" : "bg-[var(--border)]"
-              )} />
+              <span
+                key={i}
+                className={cn(
+                  "size-1.5 rounded-full transition-colors",
+                  i === step ? "bg-[var(--primary)]" : "bg-[var(--border)]",
+                )}
+              />
             ))}
           </div>
           <div className="flex gap-2">
             {step > 0 && (
-              <Button size="sm" variant="outline" onClick={() => setStep(step - 1)}>Назад</Button>
+              <Button size="sm" variant="outline" onClick={() => setStep(step - 1)}>
+                Назад
+              </Button>
             )}
             <Button size="sm" onClick={() => (last ? finish() : setStep(step + 1))}>
               {last ? "Понятно" : "Далее"}

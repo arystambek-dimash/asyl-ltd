@@ -8,6 +8,7 @@
 Планшеты поста не в Tailscale и до ai_service не достают, поэтому все
 вызовы идут через бэкенд, а ключ API не покидает сервер.
 """
+import http.client
 import json
 import math
 import os
@@ -37,6 +38,8 @@ def _timeout() -> float:
 
 
 TIMEOUT = _timeout()  # запуск модели асинхронный, долгих ответов у API нет
+MAX_JSON_RESPONSE_BYTES = 512 * 1024
+MAX_ERROR_JSON_RESPONSE_BYTES = 64 * 1024
 
 # Контракт AI-сервиса допускает только NVR ID cam<N>. Строгая локальная
 # проверка не позволяет передать произвольный path в URL camera-PC.
@@ -61,6 +64,35 @@ def enabled() -> bool:
     return bool(AI_KEY)
 
 
+def _invalid_json_response(status: int | None, detail: str):
+    if status is not None:
+        raise AiError(status, f"AI-сервис: ошибка {status}")
+    raise AiUnavailable(detail)
+
+
+def _read_json_object(response, limit: int, *, error_status: int | None = None) -> dict:
+    try:
+        raw = response.read(limit + 1)
+    except (http.client.HTTPException, TimeoutError, OSError) as exc:
+        raise AiUnavailable(str(exc)) from exc
+    if not isinstance(raw, (bytes, bytearray, str)):
+        _invalid_json_response(error_status, "AI-сервис вернул некорректный ответ")
+    if len(raw) > limit:
+        _invalid_json_response(error_status, "AI-сервис вернул слишком большой ответ")
+    try:
+        payload = json.loads(raw or b"{}")
+    except (RecursionError, TypeError, ValueError) as exc:
+        if error_status is not None:
+            raise AiError(
+                error_status,
+                f"AI-сервис: ошибка {error_status}",
+            ) from exc
+        raise AiUnavailable("AI-сервис вернул некорректный ответ") from exc
+    if not isinstance(payload, dict):
+        _invalid_json_response(error_status, "AI-сервис вернул некорректный ответ")
+    return payload
+
+
 def _request(method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
     req = urllib.request.Request(
         f"{AI_URL}{path}",
@@ -69,16 +101,30 @@ def _request(method: str, path: str, body: dict | None = None) -> tuple[int, dic
         headers={"X-Api-Key": AI_KEY, "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            return resp.status, json.loads(resp.read() or b"{}")
+        response = urllib.request.urlopen(req, timeout=TIMEOUT)
     except urllib.error.HTTPError as e:
         try:
-            payload = json.loads(e.read() or b"{}")
-        except ValueError:
-            payload = {}
-        return e.code, payload
-    except (TimeoutError, OSError) as e:  # URLError — подкласс OSError
+            return e.code, _read_json_object(
+                e,
+                MAX_ERROR_JSON_RESPONSE_BYTES,
+                error_status=e.code,
+            )
+        finally:
+            e.close()
+    except (http.client.HTTPException, TimeoutError, OSError) as e:
+        # URLError — подкласс OSError.
         raise AiUnavailable(str(e)) from e
+    try:
+        status = response.status
+        is_error = status >= 400
+        payload = _read_json_object(
+            response,
+            MAX_ERROR_JSON_RESPONSE_BYTES if is_error else MAX_JSON_RESPONSE_BYTES,
+            error_status=status if is_error else None,
+        )
+        return status, payload
+    finally:
+        response.close()
 
 
 def _call(method: str, path: str, body: dict | None = None,
@@ -87,8 +133,9 @@ def _call(method: str, path: str, body: dict | None = None,
     if status == 404 and none_on_404:
         return None
     if status >= 400:
-        detail = (payload.get("detail") or payload.get("error")
-                  or f"AI-сервис: ошибка {status}")
+        detail = payload.get("detail") or payload.get("error")
+        if not isinstance(detail, str) or not detail.strip():
+            detail = f"AI-сервис: ошибка {status}"
         raise AiError(status, detail)
     return payload
 
@@ -181,12 +228,16 @@ def status(cam: str) -> dict | None:
 
 def start(cam: str, options: dict | None = None) -> dict:
     """Включить модель. options — source/line/direction, дефолты ai_service."""
-    return _call("POST", _path(cam), body=options or {})
+    payload = _call("POST", _path(cam), body=options or {})
+    assert payload is not None  # none_on_404 is false, so errors raise above
+    return payload
 
 
 def reset(cam: str) -> dict:
     """Обнулить счётчик работающей модели (новая погрузка)."""
-    return _call("POST", f"{_path(cam)}/reset")
+    payload = _call("POST", f"{_path(cam)}/reset")
+    assert payload is not None  # none_on_404 is false, so errors raise above
+    return payload
 
 
 def delete(cam: str) -> dict | None:

@@ -21,6 +21,17 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         "rewind_loading": "shipping.load",
     }
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        device = getattr(self.request.user, "active_monoblock_device", None)
+        if device is not None:
+            # A physical post may mutate only its own live loading workflow.
+            qs = qs.filter(
+                loading_camera=device.camera_source,
+                status__in=("arrived", "loading", "loaded"),
+            )
+        return qs
+
     @action(detail=True, methods=["post"], url_path="arrive")
     def arrive(self, request, pk=None):
         serializer = ArrivalSerializer(data=request.data)

@@ -1,14 +1,22 @@
 from unittest.mock import patch
 
 import pytest
+from django.core import signing
 from django.core.cache import cache
-from django.core.signing import TimestampSigner
 
 from apps.cameras import ai, services
-from apps.cameras.models import AiCountingSession, MonoblockCameraSettings
-from apps.cameras.views import CAM_COOKIE
+from apps.cameras.models import AiCountingSession, MonoblockCameraSettings, MonoblockDevice
+from apps.cameras.views import (
+    CAM_COOKIE,
+    CAM_TOKEN_AUDIENCE,
+    CAM_TOKEN_MAX_AGE,
+    CAM_TOKEN_SALT,
+    CAM_TOKEN_VERSION,
+)
 
 pytestmark = pytest.mark.django_db
+
+STREAM_URI = "/go2rtc/api/ws?src=cam2"
 
 
 @pytest.fixture
@@ -29,6 +37,18 @@ def clear_camera_cache(monkeypatch):
     yield
     cache.delete(services.CACHE_KEY)
     cache.delete(services.LAST_GOOD_CACHE_KEY)
+
+
+def _stream_token(auth_client, user):
+    response = auth_client(user).post("/api/cameras/token/")
+    assert response.status_code == 204
+    return response.cookies[CAM_COOKIE].value
+
+
+def _authorize_stream(api_client, token, uri=STREAM_URI):
+    api_client.cookies[CAM_COOKIE] = token
+    headers = {} if uri is None else {"HTTP_X_ORIGINAL_URI": uri}
+    return api_client.get("/api/cameras/auth/", **headers)
 
 
 def fake_probe(statuses):
@@ -386,6 +406,14 @@ def test_token_sets_cookie(auth_client, operator):
     cookie = resp.cookies.get(CAM_COOKIE)
     assert cookie is not None
     assert cookie["httponly"]
+    assert cookie["max-age"] == CAM_TOKEN_MAX_AGE
+    payload = signing.loads(cookie.value, salt=CAM_TOKEN_SALT)
+    assert payload == {
+        "version": CAM_TOKEN_VERSION,
+        "audience": CAM_TOKEN_AUDIENCE,
+        "user_id": operator.pk,
+        "revocation": operator.get_session_auth_hash(),
+    }
 
 
 def test_token_denied_for_portal_client(auth_client, client_user):
@@ -393,13 +421,129 @@ def test_token_denied_for_portal_client(auth_client, client_user):
     assert resp.status_code == 403
 
 
-def test_auth_accepts_valid_cookie(api_client, operator):
-    api_client.cookies[CAM_COOKIE] = TimestampSigner(salt="cameras").sign(str(operator.pk))
-    resp = api_client.get("/api/cameras/auth/")
-    assert resp.status_code == 204
+@pytest.mark.parametrize("source", ["cam2", "cam2ai", "cam_8c28"])
+def test_auth_accepts_valid_staff_cookie(api_client, auth_client, operator, source):
+    token = _stream_token(auth_client, operator)
+    response = _authorize_stream(
+        api_client,
+        token,
+        f"/go2rtc/api/ws?src={source}",
+    )
+    assert response.status_code == 204
 
 
 def test_auth_rejects_missing_or_bad_cookie(api_client):
-    assert api_client.get("/api/cameras/auth/").status_code == 403
-    api_client.cookies[CAM_COOKIE] = "garbage"
-    assert api_client.get("/api/cameras/auth/").status_code == 403
+    assert _authorize_stream(api_client, "").status_code == 403
+    assert _authorize_stream(api_client, "garbage").status_code == 403
+
+
+def test_auth_rejects_expired_cookie(api_client, auth_client, operator):
+    with patch("django.core.signing.time.time", return_value=1):
+        token = _stream_token(auth_client, operator)
+    assert _authorize_stream(api_client, token).status_code == 403
+
+
+def test_auth_rejects_old_legacy_cookie(api_client, operator):
+    token = signing.TimestampSigner(salt="cameras").sign(str(operator.pk))
+    assert _authorize_stream(api_client, token).status_code == 403
+
+
+def test_auth_rejects_malformed_structured_cookie(api_client, operator):
+    malformed_payloads = [
+        ["not", "a", "mapping"],
+        {
+            "version": CAM_TOKEN_VERSION,
+            "audience": "some-other-service",
+            "user_id": operator.pk,
+            "revocation": operator.get_session_auth_hash(),
+        },
+    ]
+    for payload in malformed_payloads:
+        token = signing.dumps(payload, salt=CAM_TOKEN_SALT)
+        assert _authorize_stream(api_client, token).status_code == 403
+
+
+@pytest.mark.parametrize("account_change", ["inactive", "deleted", "password", "client"])
+def test_auth_reloads_and_revalidates_current_user(
+    api_client, auth_client, operator, account_change,
+):
+    token = _stream_token(auth_client, operator)
+    if account_change == "deleted":
+        operator.delete()
+    elif account_change == "password":
+        operator.set_password("a-new-password-123")
+        operator.save(update_fields=["password"])
+    else:
+        field = "is_active" if account_change == "inactive" else "is_client"
+        setattr(operator, field, account_change != "inactive")
+        operator.save(update_fields=[field])
+
+    assert _authorize_stream(api_client, token).status_code == 403
+
+
+@pytest.fixture
+def stream_device(django_user_model):
+    user = django_user_model.objects.create_user(
+        username="camera-device",
+        password="device-password-123",
+    )
+    return MonoblockDevice.objects.create(
+        user=user,
+        name="Device cam2",
+        camera_source="cam2",
+    )
+
+
+@pytest.mark.parametrize("source", ["cam2", "cam2ai"])
+def test_monoblock_stream_cookie_allows_own_base_and_ai_stream(
+    api_client, auth_client, stream_device, source,
+):
+    token = _stream_token(auth_client, stream_device.user)
+    response = _authorize_stream(
+        api_client,
+        token,
+        f"/go2rtc/api/ws?src={source}",
+    )
+    assert response.status_code == 204
+
+
+def test_monoblock_stream_cookie_rejects_cross_camera(
+    api_client, auth_client, stream_device,
+):
+    token = _stream_token(auth_client, stream_device.user)
+    response = _authorize_stream(
+        api_client,
+        token,
+        "/go2rtc/api/ws?src=cam3",
+    )
+    assert response.status_code == 403
+
+
+def test_inactive_monoblock_device_stream_cookie_is_rejected(
+    api_client, auth_client, stream_device,
+):
+    token = _stream_token(auth_client, stream_device.user)
+    stream_device.is_active = False
+    stream_device.save(update_fields=["is_active"])
+    assert _authorize_stream(api_client, token).status_code == 403
+
+
+@pytest.mark.parametrize("original_uri", [
+    None,
+    "",
+    "/go2rtc/api/ws",
+    "/go2rtc/api/ws?src=",
+    "/go2rtc/api/ws?src=cam2&src=cam2",
+    "/go2rtc/api/ws?src=cam2&extra=1",
+    "/go2rtc/api/ws?src=../cam2",
+    "/go2rtc/api/ws?src=cam2%00",
+    "/go2rtc/api/ws?src=2",
+    "/go2rtc/api/ws/?src=cam2",
+    "/go2rtc/api/ws?src=cam2#fragment",
+    "https://example.test/go2rtc/api/ws?src=cam2",
+])
+def test_auth_rejects_malformed_original_uri(
+    api_client, auth_client, operator, original_uri,
+):
+    token = _stream_token(auth_client, operator)
+    assert _authorize_stream(api_client, token, original_uri).status_code == 403

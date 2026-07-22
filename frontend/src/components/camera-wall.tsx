@@ -75,7 +75,6 @@ function CameraTile({
   onClick,
   onRename,
   onConfigureLine,
-  active = false,
 }: {
   // Только играбельные камеры (с потоком); недоступные не показываем.
   cam: CameraFeed & { src: string };
@@ -84,7 +83,6 @@ function CameraTile({
   onClick?: () => void;
   onRename?: (camera: CameraFeed & { src: string }) => void;
   onConfigureLine?: (camera: CameraFeed & { src: string }) => void;
-  active?: boolean;
 }) {
   const [online, setOnline] = useState(false);
   const handleState = useCallback(
@@ -92,21 +90,20 @@ function CameraTile({
       setOnline(v);
       onOnline(cam.id, v);
     },
-    [cam.id, onOnline]
+    [cam.id, onOnline],
   );
 
   return (
     <div
       onClick={onClick}
-      className={cn(
-        "group relative aspect-video overflow-hidden rounded-lg bg-[#1c1c1e]",
-        onClick && "cursor-pointer",
-        active && "ring-2 ring-[var(--ring)]",
-      )}
+      className={cn("group relative aspect-video overflow-hidden rounded-lg bg-[#1c1c1e]", onClick && "cursor-pointer")}
     >
       {ready && (
-        <CameraStream src={cam.src} onStateChange={handleState}
-          className="absolute inset-0 h-full w-full object-cover" />
+        <CameraStream
+          src={cam.src}
+          onStateChange={handleState}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
       )}
 
       {!online && (
@@ -117,12 +114,16 @@ function CameraTile({
       )}
 
       {(onRename || onConfigureLine) && (
-        <div className={cn(
-          "absolute right-2 top-2 z-10 flex gap-1.5 transition focus-within:opacity-100",
-          onConfigureLine ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-        )}>
+        <div
+          className={cn(
+            "absolute right-2 top-2 z-10 flex gap-1.5 transition focus-within:opacity-100",
+            onConfigureLine ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+          )}
+        >
           {onConfigureLine && (
-            <button type="button" title="Настроить линию подсчёта"
+            <button
+              type="button"
+              title="Настроить линию подсчёта"
               onClick={(event) => {
                 event.stopPropagation();
                 onConfigureLine(cam);
@@ -130,17 +131,21 @@ function CameraTile({
               className={cn(
                 "flex size-8 items-center justify-center rounded-lg border border-white/15 bg-black/55 text-white/85 shadow-sm backdrop-blur-md transition hover:bg-sky-500 hover:text-white",
                 cam.line_config?.configured && "border-sky-300/50 bg-sky-500/80 text-white",
-              )}>
+              )}
+            >
               <ScanLine className="size-3.5" />
             </button>
           )}
           {onRename && (
-            <button type="button" title="Изменить название камеры"
+            <button
+              type="button"
+              title="Изменить название камеры"
               onClick={(event) => {
                 event.stopPropagation();
                 onRename(cam);
               }}
-              className="flex size-8 items-center justify-center rounded-lg border border-white/15 bg-black/55 text-white/80 shadow-sm backdrop-blur-md transition hover:bg-white hover:text-slate-900">
+              className="flex size-8 items-center justify-center rounded-lg border border-white/15 bg-black/55 text-white/80 shadow-sm backdrop-blur-md transition hover:bg-white hover:text-slate-900"
+            >
               <Pencil className="size-3.5" />
             </button>
           )}
@@ -181,8 +186,9 @@ export function CameraWall() {
   const [lineNotice, setLineNotice] = useState("");
 
   const updateCameraLine = useCallback((src: string, config: CameraCountingLine) => {
-    setCameras((current) => current.map((camera) =>
-      camera.src === src ? { ...camera, line_config: config } : camera));
+    setCameras((current) =>
+      current.map((camera) => (camera.src === src ? { ...camera, line_config: config } : camera)),
+    );
   }, []);
 
   async function configureLine(camera: CameraFeed & { src: string }) {
@@ -196,10 +202,9 @@ export function CameraWall() {
     setLineNotice("");
     setLoadingLine(true);
     try {
-      const response = await api.get<CameraCountingLine>(
-        `/cameras/${encodeURIComponent(camera.src)}/counting-line`,
-        { timeout: 10_000 },
-      );
+      const response = await api.get<CameraCountingLine>(`/cameras/${encodeURIComponent(camera.src)}/counting-line`, {
+        timeout: 10_000,
+      });
       if (lineRequestId.current !== requestId) return;
       const config = response.data;
       setLineDraft(config.line ? { ...config.line } : defaultCountingLine());
@@ -281,10 +286,11 @@ export function CameraWall() {
         camera: editing.src,
         name: cameraName,
       });
-      setCameras((current) => current.map((camera) =>
-        camera.src === response.data.camera
-          ? { ...camera, zone: response.data.name }
-          : camera));
+      setCameras((current) =>
+        current.map((camera) =>
+          camera.src === response.data.camera ? { ...camera, zone: response.data.name } : camera,
+        ),
+      );
       setEditing(null);
     } catch (cause) {
       setRenameError(apiError(cause));
@@ -436,17 +442,25 @@ export function CameraWall() {
               <button
                 onClick={() => setMode("grid")}
                 title="Сетка"
-                className={cn("rounded-md p-1.5 transition-colors",
-                  mode === "grid" ? "bg-[var(--accent)] text-[var(--foreground)]"
-                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]")}>
+                className={cn(
+                  "rounded-md p-1.5 transition-colors",
+                  mode === "grid"
+                    ? "bg-[var(--accent)] text-[var(--foreground)]"
+                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
+                )}
+              >
                 <Grid2x2 className="size-4" />
               </button>
               <button
                 onClick={() => setMode("single")}
                 title="Одна камера"
-                className={cn("rounded-md p-1.5 transition-colors",
-                  mode === "single" ? "bg-[var(--accent)] text-[var(--foreground)]"
-                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]")}>
+                className={cn(
+                  "rounded-md p-1.5 transition-colors",
+                  mode === "single"
+                    ? "bg-[var(--accent)] text-[var(--foreground)]"
+                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
+                )}
+              >
                 <RectangleHorizontal className="size-4" />
               </button>
             </div>
@@ -461,55 +475,88 @@ export function CameraWall() {
               {!loading && <div className="text-xs">NVR не в сети или потоки ещё не настроены</div>}
             </div>
           ) : mode === "grid" || playable.length === 1 ? (
-            <div className={cn(
-              "grid gap-3",
-              playable.length === 1 ? "mx-auto max-w-2xl grid-cols-1" :
-              playable.length <= 4 ? "grid-cols-2" : "grid-cols-2 lg:grid-cols-3",
-            )}>
+            <div
+              className={cn(
+                "grid gap-3",
+                playable.length === 1
+                  ? "mx-auto max-w-2xl grid-cols-1"
+                  : playable.length <= 4
+                    ? "grid-cols-2"
+                    : "grid-cols-2 lg:grid-cols-3",
+              )}
+            >
               {playable.map((c) => (
-                <CameraTile key={c.id} cam={c} ready={tokenReady} onOnline={handleOnline}
+                <CameraTile
+                  key={c.id}
+                  cam={c}
+                  ready={tokenReady}
+                  onOnline={handleOnline}
                   onRename={canRename ? editCamera : undefined}
-                  onConfigureLine={canConfigureLine && /^cam[1-9]\d*$/.test(c.src)
-                    ? configureLine : undefined}
-                  onClick={playable.length > 1
-                    ? () => { setActiveId(c.id); setMode("single"); } : undefined} />
+                  onConfigureLine={canConfigureLine && /^cam[1-9]\d*$/.test(c.src) ? configureLine : undefined}
+                  onClick={
+                    playable.length > 1
+                      ? () => {
+                          setActiveId(c.id);
+                          setMode("single");
+                        }
+                      : undefined
+                  }
+                />
               ))}
             </div>
           ) : active ? (
             <div className="flex flex-col gap-3">
-              <CameraTile key={active.id} cam={active} ready={tokenReady} onOnline={handleOnline}
+              <CameraTile
+                key={active.id}
+                cam={active}
+                ready={tokenReady}
+                onOnline={handleOnline}
                 onRename={canRename ? editCamera : undefined}
-                onConfigureLine={canConfigureLine && /^cam[1-9]\d*$/.test(active.src)
-                  ? configureLine : undefined} />
+                onConfigureLine={canConfigureLine && /^cam[1-9]\d*$/.test(active.src) ? configureLine : undefined}
+              />
               <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
-                {playable.map((c) => (
-                  <CameraTile key={c.id} cam={c} ready={tokenReady} onOnline={handleOnline}
-                    active={c.id === active.id} onClick={() => setActiveId(c.id)}
-                    onRename={canRename ? editCamera : undefined}
-                    onConfigureLine={canConfigureLine && /^cam[1-9]\d*$/.test(c.src)
-                      ? configureLine : undefined} />
-                ))}
+                {playable
+                  .filter((c) => c.id !== active.id)
+                  .map((c) => (
+                    <CameraTile
+                      key={c.id}
+                      cam={c}
+                      ready={tokenReady}
+                      onOnline={handleOnline}
+                      onClick={() => setActiveId(c.id)}
+                      onRename={canRename ? editCamera : undefined}
+                      onConfigureLine={canConfigureLine && /^cam[1-9]\d*$/.test(c.src) ? configureLine : undefined}
+                    />
+                  ))}
               </div>
             </div>
           ) : null}
         </div>
       </section>
 
-      <Modal open={!!editing} onClose={() => setEditing(null)}
+      <Modal
+        open={!!editing}
+        onClose={() => setEditing(null)}
         eyebrow="Настройка администратора"
         title="Название камеры"
         description="Новое имя будет использоваться во всех разделах и на всех устройствах."
-        footer={(
+        footer={
           <>
-            <Button variant="ghost" onClick={() => setEditing(null)}>Отмена</Button>
+            <Button variant="ghost" onClick={() => setEditing(null)}>
+              Отмена
+            </Button>
             <Button disabled={savingName || !cameraName.trim()} onClick={() => void saveCameraName()}>
               <Check className="size-4" /> {savingName ? "Сохранение…" : "Сохранить"}
             </Button>
           </>
-        )}>
+        }
+      >
         <label className="block">
           <span className="mb-2 block text-sm font-medium text-slate-700">Имя камеры</span>
-          <Input autoFocus maxLength={80} value={cameraName}
+          <Input
+            autoFocus
+            maxLength={80}
+            value={cameraName}
             onChange={(event) => setCameraName(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && cameraName.trim() && !savingName) {
@@ -517,7 +564,8 @@ export function CameraWall() {
                 void saveCameraName();
               }
             }}
-            placeholder="Например, Главные ворота" />
+            placeholder="Например, Главные ворота"
+          />
         </label>
         {editing && (
           <p className="mt-2 text-xs text-slate-400">
@@ -532,30 +580,36 @@ export function CameraWall() {
         onClose={closeLineEditor}
         eyebrow="Только для суперпользователя"
         title="Линия подсчёта"
-        description={lineCamera
-          ? `${lineCamera.zone} · проведите линию непосредственно на живом изображении.`
-          : undefined}
+        description={
+          lineCamera ? `${lineCamera.zone} · проведите линию непосредственно на живом изображении.` : undefined
+        }
         className="max-w-4xl"
-        footer={(
+        footer={
           <>
             <div className="mr-auto hidden items-center gap-2 text-xs text-[var(--muted-foreground)] sm:flex">
               <ShieldCheck className="size-4 text-emerald-600" />
               Настройка защищена правами superuser
             </div>
-            <Button variant="ghost" onClick={closeLineEditor}>Закрыть</Button>
+            <Button variant="ghost" onClick={closeLineEditor}>
+              Закрыть
+            </Button>
             <Button
               disabled={loadingLine || savingLine || !validCountingLine(lineDraft)}
               onClick={() => void saveCountingLine()}
               className="min-w-36 bg-sky-600 text-white hover:bg-sky-700"
             >
               {savingLine ? (
-                <><LoaderCircle className="size-4 animate-spin" /> Сохранение…</>
+                <>
+                  <LoaderCircle className="size-4 animate-spin" /> Сохранение…
+                </>
               ) : (
-                <><Check className="size-4" /> Сохранить линию</>
+                <>
+                  <Check className="size-4" /> Сохранить линию
+                </>
               )}
             </Button>
           </>
-        )}
+        }
       >
         {lineCamera && (
           <div className="space-y-4">
@@ -592,9 +646,7 @@ export function CameraWall() {
               </p>
             )}
             {lineError && (
-              <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                {lineError}
-              </p>
+              <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{lineError}</p>
             )}
           </div>
         )}

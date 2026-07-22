@@ -15,7 +15,7 @@ const SelectTrigger = React.forwardRef<
     ref={ref}
     className={cn(
       "flex h-9 w-full items-center justify-between rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs outline-none transition-colors data-[placeholder]:text-[var(--muted-foreground)] focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/50 aria-[invalid=true]:border-[var(--destructive)] disabled:opacity-50",
-      className
+      className,
     )}
     {...props}
   >
@@ -38,13 +38,11 @@ const SelectContent = React.forwardRef<
       className={cn(
         "relative z-[110] max-h-72 min-w-[8rem] overflow-hidden rounded-md border bg-[var(--popover)] text-[var(--popover-foreground)] shadow-md",
         position === "popper" && "w-[var(--radix-select-trigger-width)]",
-        className
+        className,
       )}
       {...props}
     >
-      <SelectPrimitive.Viewport className="p-1">
-        {children}
-      </SelectPrimitive.Viewport>
+      <SelectPrimitive.Viewport className="p-1">{children}</SelectPrimitive.Viewport>
     </SelectPrimitive.Content>
   </SelectPrimitive.Portal>
 ));
@@ -58,7 +56,7 @@ const SelectItem = React.forwardRef<
     ref={ref}
     className={cn(
       "relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-sm outline-none data-[highlighted]:bg-[var(--accent)] data-[highlighted]:text-[var(--accent-foreground)] data-[disabled]:opacity-50",
-      className
+      className,
     )}
     {...props}
   >

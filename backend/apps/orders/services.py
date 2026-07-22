@@ -1,5 +1,6 @@
 from decimal import Decimal, InvalidOperation
 from django.db import transaction
+from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from apps.eventlog.services import log_event
@@ -10,6 +11,32 @@ from .statuses import PUBLIC_MANUAL_STATUSES, PUBLIC_STATUS_LABELS, public_statu
 
 
 MAX_MONEY = Decimal("9999999999.99")
+
+
+def _locked_payment_order(order: Order) -> Order:
+    """Serialize payment choices and derived totals through the order row."""
+    return (
+        Order.objects.select_for_update(of=("self",))
+        .select_related("client", "store")
+        .prefetch_related("items", "payments")
+        .get(pk=order.pk)
+    )
+
+
+def _locked_payment_with_order(payment: Payment) -> tuple[Payment, Order]:
+    """Use one lock order (Order -> Payment) across every payment transition."""
+    order = Order.objects.select_for_update().get(pk=payment.order_id)
+    locked_payment = Payment.objects.select_for_update().get(pk=payment.pk)
+    # Reuse the row-locked instance for totals, currency and audit logging.
+    locked_payment.order = order
+    return locked_payment, order
+
+
+def _sync_payment_instance(original: Payment, locked: Payment) -> Payment:
+    """Keep the service's existing in-memory mutation contract after locking."""
+    if original is not locked:
+        original.refresh_from_db()
+    return original
 
 
 def _positive_money(raw, *, detail: str, code: str) -> Decimal:
@@ -77,6 +104,7 @@ def _set_payment_stage(payment: Payment, status: str, user) -> Payment:
 def add_payment(order: Order, amount, user, method="cash", stage="received",
                 note="") -> Payment:
     """Начало цепочки оплаты: «запрошена» (счёт выставлен) или «принята» (деньги у менеджера)."""
+    order = _locked_payment_order(order)
     _validate_payment_open(order)
     if stage not in ("requested", "received"):
         raise ValidationError({"detail": "Недопустимый шаг оплаты", "code": "bad_stage"})
@@ -184,9 +212,10 @@ def add_mixed_payments(order: Order, parts, user, note="") -> list[Payment]:
 
 @transaction.atomic
 def create_client_payment(order: Order, method: str, user) -> Payment:
-    _validate_payment_open(order)
     if method not in ("invoice", "kaspi", "cash", "card"):
         raise ValidationError({"detail": "Недопустимый способ оплаты", "code": "bad_method"})
+    order = _locked_payment_order(order)
+    _validate_payment_open(order)
     if method == "invoice":
         missing = []
         if not order.client.iin.strip():
@@ -242,6 +271,7 @@ def create_client_payment(order: Order, method: str, user) -> Payment:
 @transaction.atomic
 def request_client_debt(order: Order, user) -> Order:
     """Зафиксировать выбор «В долг» без создания денежной оплаты."""
+    order = _locked_payment_order(order)
     if order.status != "shipped":
         raise ValidationError({"detail": "Долг фиксируется после отгрузки",
                                "code": "invalid_status"})
@@ -276,16 +306,20 @@ def _advance_payment(payment: Payment, expected_from: str, user) -> Payment:
 @transaction.atomic
 def receive_payment(payment: Payment, user) -> Payment:
     """Менеджер/оператор отметил: деньги получены от клиента."""
-    return _advance_payment(payment, "requested", user)
+    original = payment
+    payment, _order = _locked_payment_with_order(payment)
+    _advance_payment(payment, "requested", user)
+    return _sync_payment_instance(original, payment)
 
 
 @transaction.atomic
 def accountant_confirm_payment(payment: Payment, user) -> Payment:
     """Бухгалтер (касса) сверил и подтвердил оплату — деньги учтены сразу."""
-    payment = Payment.objects.select_for_update().select_related("order").get(pk=payment.pk)
+    original = payment
+    payment, order = _locked_payment_with_order(payment)
     _advance_payment(payment, "received", user)
-    _apply_payment_status(payment.order, user)
-    return payment
+    _apply_payment_status(order, user)
+    return _sync_payment_instance(original, payment)
 
 
 @transaction.atomic
@@ -295,7 +329,8 @@ def reopen_confirmed_payment(payment: Payment, user) -> Payment:
     Денежный итог заказа пересчитывается сразу, а исходное подтверждение и
     отмена остаются отдельными append-only событиями в журнале.
     """
-    payment = Payment.objects.select_for_update().select_related("order").get(pk=payment.pk)
+    original = payment
+    payment, order = _locked_payment_with_order(payment)
     if payment.status != "confirmed":
         raise ValidationError({
             "detail": "Вернуть можно только подтверждённую оплату",
@@ -325,16 +360,19 @@ def reopen_confirmed_payment(payment: Payment, user) -> Payment:
             ),
         },
     )
-    _apply_payment_status(payment.order, user)
-    return payment
+    _apply_payment_status(order, user)
+    return _sync_payment_instance(original, payment)
 
 
 @transaction.atomic
 def reject_payment(payment: Payment, user) -> Payment:
+    original = payment
+    payment, _order = _locked_payment_with_order(payment)
     if payment.status in ("confirmed", "rejected"):
         raise ValidationError(
             {"detail": "Оплата уже финализирована", "code": "invalid_payment_stage"})
-    return _set_payment_stage(payment, "rejected", user)
+    _set_payment_stage(payment, "rejected", user)
+    return _sync_payment_instance(original, payment)
 
 
 def _payment_status_for(order: Order) -> str:
@@ -705,6 +743,12 @@ def soft_delete_order(order: Order, user) -> Order:
     """Мягкое удаление: заказ уезжает в «Корзину». Из всех отчётов и списков
     исчезает (default-manager его не видит), но данные сохраняются и заказ
     можно восстановить."""
+    try:
+        order = Order.all_objects.select_for_update().get(pk=order.pk)
+    except Order.DoesNotExist as exc:
+        raise ValidationError(
+            {"detail": "Заказ не найден", "code": "not_found"}
+        ) from exc
     if order.deleted_at is not None:
         raise ValidationError({"detail": "Заказ уже в корзине", "code": "already_deleted"})
     order.deleted_at = timezone.now()
@@ -718,6 +762,12 @@ def soft_delete_order(order: Order, user) -> Order:
 @transaction.atomic
 def restore_order(order: Order, user) -> Order:
     """Восстановить заказ из корзины — снова участвует в отчётах и списках."""
+    try:
+        order = Order.all_objects.select_for_update().get(pk=order.pk)
+    except Order.DoesNotExist as exc:
+        raise ValidationError(
+            {"detail": "Заказ не найден", "code": "not_found"}
+        ) from exc
     if order.deleted_at is None:
         raise ValidationError({"detail": "Заказ не в корзине", "code": "not_deleted"})
     order.deleted_at = None
@@ -730,12 +780,39 @@ def restore_order(order: Order, user) -> Order:
 
 @transaction.atomic
 def purge_order(order: Order, user) -> None:
-    """Окончательное удаление: только из корзины, данные стираются безвозвратно.
-    Позиции, оплаты и отгрузка каскадом; события журнала остаются (order → null)."""
+    """Permanently remove only an unprocessed order already in the trash.
+
+    Financial, shipment and AI history are retained. The row lock serializes
+    purge with restore/delete so a stale view object cannot delete a live row.
+    """
+    try:
+        order = Order.all_objects.select_for_update().get(pk=order.pk)
+    except Order.DoesNotExist as exc:
+        raise ValidationError(
+            {"detail": "Заказ не найден", "code": "not_found"}
+        ) from exc
     if order.deleted_at is None:
         raise ValidationError(
             {"detail": "Сначала переместите заказ в корзину", "code": "not_deleted"})
+    if (
+        order.status == "shipped"
+        or order.payments.exists()
+        or hasattr(order, "shipment")
+        or order.ai_counting_sessions.exists()
+    ):
+        raise ValidationError({
+            "detail": "Заказ с проведёнными операциями нельзя удалить безвозвратно",
+            "code": "financial_record_protected",
+        })
     log_event("order", f"Заказ #{order.id} удалён навсегда", user=user,
               payload={"order_id": order.id, "client_id": order.client_id,
                        "total_amount": str(order.total_amount)})
-    order.delete()
+    try:
+        order.delete()
+    except ProtectedError as exc:
+        # Future audit/history relations using PROTECT must also fail with a
+        # stable public error instead of leaking an ORM exception as a 500.
+        raise ValidationError({
+            "detail": "Заказ с проведёнными операциями нельзя удалить безвозвратно",
+            "code": "financial_record_protected",
+        }) from exc

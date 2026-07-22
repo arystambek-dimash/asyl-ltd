@@ -2,6 +2,7 @@
 from collections import defaultdict
 from decimal import Decimal
 from io import BytesIO
+from typing import TypedDict
 
 from django.utils import timezone
 from openpyxl import Workbook
@@ -29,6 +30,23 @@ GREEN = "1F9D6A"
 RED = "D94C3D"
 WHITE = "FFFFFF"
 THIN = Side(style="thin", color="D9E0EA")
+FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+class _CurrencyTotals(TypedDict):
+    orders: int
+    sales: Decimal
+    payments: Decimal
+    debt: Decimal
+
+
+def _empty_currency_totals() -> _CurrencyTotals:
+    return {
+        "orders": 0,
+        "sales": Decimal("0"),
+        "payments": Decimal("0"),
+        "debt": Decimal("0"),
+    }
 
 
 def _local(value):
@@ -37,6 +55,25 @@ def _local(value):
 
 def _money(value):
     return float(value or Decimal("0"))
+
+
+def _neutralize_formula_cells(workbook) -> None:
+    """Keep exported user text literal in Excel-compatible applications.
+
+    openpyxl treats a leading ``=`` as a formula, and spreadsheet applications
+    may also execute strings beginning with ``+``, ``-`` or ``@``. Prefixing a
+    quote is Excel's standard literal-text escape and does not alter numbers or
+    dates used by report calculations and formatting.
+    """
+    for worksheet in workbook.worksheets:
+        for row in worksheet.iter_rows():
+            for cell in row:
+                value = cell.value
+                if not isinstance(value, str) or value.startswith("'"):
+                    continue
+                candidate = value.lstrip("\t\r\n")
+                if candidate.startswith(FORMULA_PREFIXES):
+                    cell.value = f"'{value}"
 
 
 def _title(ws, title, subtitle, columns):
@@ -133,17 +170,18 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
             if cell.column % 2 == 1:
                 cell.font = Font(bold=True, color="64748B")
 
-    totals = defaultdict(lambda: {
-        "orders": 0, "sales": Decimal("0"), "payments": Decimal("0"),
-        "debt": Decimal("0"),
-    })
+    totals: defaultdict[str, _CurrencyTotals] = defaultdict(
+        _empty_currency_totals
+    )
     for order in orders:
-        row = totals[order.currency]
-        row["orders"] += 1
+        currency_totals = totals[order.currency]
+        currency_totals["orders"] += 1
         if order.status == "shipped":
-            row["sales"] += order.total_amount
+            currency_totals["sales"] += order.total_amount
             if order.is_debt:
-                row["debt"] += max(Decimal("0"), order.remaining_amount)
+                currency_totals["debt"] += max(
+                    Decimal("0"), order.remaining_amount
+                )
     for payment in payments:
         if payment.status == "confirmed":
             totals[payment.order.currency]["payments"] += payment.amount
@@ -154,11 +192,11 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
         cell.font = Font(bold=True, color=WHITE)
         cell.fill = PatternFill("solid", fgColor=BLUE)
     for currency in ("KZT", "USD"):
-        row = totals[currency]
+        currency_totals = totals[currency]
         ws.append([
-            currency, row["orders"], _money(row["sales"]),
-            _money(row["payments"]), _money(row["debt"]),
-            _money(row["sales"] - row["payments"]),
+            currency, currency_totals["orders"], _money(currency_totals["sales"]),
+            _money(currency_totals["payments"]), _money(currency_totals["debt"]),
+            _money(currency_totals["sales"] - currency_totals["payments"]),
         ])
     for row in ws.iter_rows(min_row=8, max_row=9):
         for cell in row:
@@ -185,7 +223,7 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
             stamp = payment.confirmed_at or payment.paid_at
             operations.append((stamp, 1, payment.order.currency, Decimal("0"), payment.amount, payment))
     operations.sort(key=lambda item: (item[0], item[1], getattr(item[5], "id", 0)))
-    balances = defaultdict(Decimal)
+    balances: defaultdict[str, Decimal] = defaultdict(Decimal)
     for stamp, kind, currency, debit, credit, obj in operations:
         balances[currency] += debit - credit
         if kind == 0:
@@ -278,6 +316,7 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
     _finish(debt_ws, (10, 19, 22, 12, 18, 18, 18, 10, 20), (5, 6, 7), (2,))
 
     output = BytesIO()
+    _neutralize_formula_cells(wb)
     wb.save(output)
     return output.getvalue()
 
@@ -325,14 +364,12 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
         f"сформировано {timezone.localtime():%d.%m.%Y %H:%M}"
     )
 
-    totals = defaultdict(lambda: {
-        "orders": 0, "sales": Decimal("0"), "payments": Decimal("0"),
-        "debt": Decimal("0"),
-    })
-    client_totals = defaultdict(lambda: defaultdict(lambda: {
-        "orders": 0, "sales": Decimal("0"), "payments": Decimal("0"),
-        "debt": Decimal("0"),
-    }))
+    totals: defaultdict[str, _CurrencyTotals] = defaultdict(
+        _empty_currency_totals
+    )
+    client_totals: defaultdict[
+        int, defaultdict[str, _CurrencyTotals]
+    ] = defaultdict(lambda: defaultdict(_empty_currency_totals))
     for order in orders:
         for target in (totals[order.currency], client_totals[order.client_id][order.currency]):
             target["orders"] += 1
@@ -373,14 +410,17 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
         cell.font = Font(bold=True, color=WHITE)
         cell.fill = PatternFill("solid", fgColor=BLUE)
     for currency in ("KZT", "USD"):
-        row = totals[currency]
+        currency_totals = totals[currency]
         clients_with_debt = sum(
             1 for client in clients
             if client_totals[client.id][currency]["debt"] > 0
         )
         summary.append([
-            currency, row["orders"], _money(row["sales"]), _money(row["payments"]),
-            _money(row["debt"]), _money(row["sales"] - row["payments"]),
+            currency, currency_totals["orders"],
+            _money(currency_totals["sales"]),
+            _money(currency_totals["payments"]),
+            _money(currency_totals["debt"]),
+            _money(currency_totals["sales"] - currency_totals["payments"]),
             clients_with_debt,
         ])
     for row in summary.iter_rows(min_row=8, max_row=9):
@@ -429,7 +469,7 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
             stamp = payment.confirmed_at or payment.paid_at
             operations.append((stamp, 1, payment.order.client_id, payment.order.currency, Decimal("0"), payment.amount, payment))
     operations.sort(key=lambda item: (item[0], item[1], getattr(item[6], "id", 0)))
-    balances = defaultdict(Decimal)
+    balances: defaultdict[tuple[int, str], Decimal] = defaultdict(Decimal)
     for stamp, kind, client_id, currency, debit, credit, obj in operations:
         balance_key = (client_id, currency)
         balances[balance_key] += debit - credit
@@ -538,5 +578,6 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
     _finish(debt_ws, (10, 19, 30, 18, 22, 12, 18, 18, 18, 10, 20, 18), (7, 8, 9), (2,))
 
     output = BytesIO()
+    _neutralize_formula_cells(wb)
     wb.save(output)
     return output.getvalue()

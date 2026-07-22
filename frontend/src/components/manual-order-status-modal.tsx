@@ -3,23 +3,23 @@
 import { useEffect, useState } from "react";
 import { Ban, Check, LoaderCircle, PackageCheck } from "lucide-react";
 import { api, apiError } from "@/lib/api";
+import { orderedBagCount } from "@/lib/orders";
 import type { Order } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 
 export type ManualOrderTarget = "shipped" | "cancelled";
 
-function orderedBags(order: Order) {
-  return order.items.reduce((total, item) => total + Number(item.quantity), 0);
-}
-
 function suggestedBags(order: Order) {
-  return ["arrived", "loading", "loaded"].includes(order.status)
-    ? (order.bags_loaded ?? 0)
-    : orderedBags(order);
+  return ["arrived", "loading", "loaded"].includes(order.status) ? (order.bags_loaded ?? 0) : orderedBagCount(order);
 }
 
-export function ManualOrderStatusModal({ order, target, onClose, onChanged }: {
+export function ManualOrderStatusModal({
+  order,
+  target,
+  onClose,
+  onChanged,
+}: {
   order: Order | null;
   target: ManualOrderTarget | null;
   onClose: () => void;
@@ -65,15 +65,17 @@ export function ManualOrderStatusModal({ order, target, onClose, onChanged }: {
         eyebrow={`Заказ #${order.id}`}
         title="Отменить заказ?"
         description="Незавершённая погрузка, ручной счёт и привязка камеры будут очищены. Склад не списывается."
-        footer={(
+        footer={
           <>
-            <Button variant="ghost" disabled={busy} onClick={onClose}>Назад</Button>
+            <Button variant="ghost" disabled={busy} onClick={onClose}>
+              Назад
+            </Button>
             <Button variant="destructive" disabled={busy} onClick={() => void apply("cancelled")}>
               {busy ? <LoaderCircle className="size-4 animate-spin" /> : <Ban className="size-4" />}
               Отменить заказ
             </Button>
           </>
-        )}
+        }
       >
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm leading-relaxed text-red-800">
           Если камера сейчас считает этот заказ, сначала остановите отгрузку в «Моноблоке» или на посту.
@@ -91,18 +93,17 @@ export function ManualOrderStatusModal({ order, target, onClose, onChanged }: {
       title="Сколько мешков отгружено?"
       description="Камера к заказу не назначается. Результат сохранится как ручной, склад и история обновятся штатно."
       className="max-w-xl"
-      footer={(
+      footer={
         <>
-          <Button variant="ghost" disabled={busy} onClick={onClose}>Закрыть</Button>
-          <Button
-            disabled={busy || !validBags}
-            onClick={() => validBags && void apply("shipped", parsed!)}
-          >
+          <Button variant="ghost" disabled={busy} onClick={onClose}>
+            Закрыть
+          </Button>
+          <Button disabled={busy || !validBags} onClick={() => validBags && void apply("shipped", parsed!)}>
             {busy ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
             Завершить · {validBags ? parsed : "—"} меш.
           </Button>
         </>
-      )}
+      }
     >
       <div className="space-y-4">
         <label className="block">
@@ -120,7 +121,9 @@ export function ManualOrderStatusModal({ order, target, onClose, onChanged }: {
               onChange={(event) => setBags(event.target.value)}
               className="h-20 w-full rounded-2xl border bg-slate-50 px-5 pr-24 text-right text-4xl font-black tabular-nums outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10"
             />
-            <span className="absolute right-5 top-1/2 -translate-y-1/2 text-sm font-semibold text-slate-400">мешков</span>
+            <span className="absolute right-5 top-1/2 -translate-y-1/2 text-sm font-semibold text-slate-400">
+              мешков
+            </span>
           </div>
         </label>
 

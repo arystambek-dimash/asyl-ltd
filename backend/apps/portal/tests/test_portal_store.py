@@ -13,7 +13,7 @@ def _client_for(user):
 
 def test_portal_lists_own_stores(auth_client, client_user, make_user):
     c = _client_for(client_user)
-    mine = Store.objects.create(client=c, name="Мой магазин")
+    Store.objects.create(client=c, name="Мой магазин")
     other_user = make_user(username="other", client=True)
     other_c = Client.objects.create(first_name="O", last_name="O", phone="y", user=other_user)
     Store.objects.create(client=other_c, name="Чужой")

@@ -7,6 +7,30 @@ from apps.clients.models import Department, Store
 from apps.orders.models import Order, OrderItem
 
 
+MAX_PORTAL_ORDER_ITEMS = 100
+MAX_PORTAL_ITEM_QUANTITY = 1_000_000
+
+
+class PortalOrderItemListSerializer(serializers.ListSerializer):
+    """Reject abusive lists before per-item database-backed validation runs."""
+
+    def to_internal_value(self, data):
+        if isinstance(data, list):
+            if not data:
+                raise serializers.ValidationError("Добавьте хотя бы один товар.")
+            if len(data) > MAX_PORTAL_ORDER_ITEMS:
+                raise serializers.ValidationError(
+                    f"В одном заказе можно указать не более {MAX_PORTAL_ORDER_ITEMS} позиций."
+                )
+        return super().to_internal_value(data)
+
+    def validate(self, items):
+        product_ids = [item["product"].pk for item in items]
+        if len(product_ids) != len(set(product_ids)):
+            raise serializers.ValidationError("Каждый товар укажите в заказе один раз.")
+        return items
+
+
 class CatalogProductSerializer(serializers.ModelSerializer):
     label = serializers.CharField(source="__str__", read_only=True)
     weight_kg = serializers.DecimalField(
@@ -37,11 +61,15 @@ class PortalOrderItemSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(read_only=True)
     product_label = serializers.CharField(read_only=True)
     # PositiveIntegerField пропускает 0 — заказ из «нулевых» позиций бессмыслен.
-    quantity = serializers.IntegerField(min_value=1)
+    quantity = serializers.IntegerField(
+        min_value=1,
+        max_value=MAX_PORTAL_ITEM_QUANTITY,
+    )
 
     class Meta:
         model = OrderItem
         fields = ["id", "product", "product_label", "quantity"]
+        list_serializer_class = PortalOrderItemListSerializer
         extra_kwargs = {
             "product": {"required": True, "allow_null": False},
         }
@@ -174,8 +202,21 @@ class PortalOrderSerializer(serializers.ModelSerializer):
                                      settlement_intent=intent,
                                      payment_method=method, store=store,
                                      transport_type=transport)
+        # Products are already validated model instances. Populate the same
+        # immutable snapshots as OrderItem.save(), then insert the bounded list
+        # in one query instead of one INSERT per public request item.
+        order_items = []
         for item in items:
             product = item["product"]
-            OrderItem.objects.create(
-                order=order, unit_price=client_prices.get(product.id), **item)
+            order_items.append(OrderItem(
+                order=order,
+                product=product,
+                quantity=item["quantity"],
+                unit_price=client_prices.get(product.id),
+                product_label_snapshot=str(product),
+                product_cv_class_snapshot=product.cv_class,
+                product_weight_kg_snapshot=product.weight_kg,
+                product_ask_truck_weight_snapshot=product.ask_truck_weight,
+            ))
+        OrderItem.objects.bulk_create(order_items)
         return order

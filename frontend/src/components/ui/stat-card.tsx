@@ -29,14 +29,18 @@ export function StatCard({
         accent
           ? "border-[var(--ring)]/20 bg-[var(--ring)]/10"
           : "border-[var(--border)] bg-[var(--card)] hover:border-[var(--ring)]/40",
-        className
+        className,
       )}
     >
       <div className="flex items-start justify-between gap-2">
         <span className="text-[12px] font-medium text-[var(--muted-foreground)]">{label}</span>
         {Icon && (
-          <span className={cn("flex size-7 shrink-0 items-center justify-center rounded-md",
-            accent ? "bg-[var(--ring)]/15 text-[var(--ring)]" : "bg-[var(--muted)] text-[var(--muted-foreground)]")}>
+          <span
+            className={cn(
+              "flex size-7 shrink-0 items-center justify-center rounded-md",
+              accent ? "bg-[var(--ring)]/15 text-[var(--ring)]" : "bg-[var(--muted)] text-[var(--muted-foreground)]",
+            )}
+          >
             <Icon className="size-4" />
           </span>
         )}
@@ -46,7 +50,7 @@ export function StatCard({
           "text-[20px] sm:text-[30px] leading-[1.1] tracking-tight tabular-nums font-semibold",
           accent ? "text-[var(--ring)]" : "text-[var(--foreground)]",
           tone === "destructive" && "text-[var(--destructive)]",
-          tone === "success" && "text-[var(--success)]"
+          tone === "success" && "text-[var(--success)]",
         )}
       >
         {value}

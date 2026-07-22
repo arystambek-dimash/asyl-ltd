@@ -8,6 +8,7 @@ export function useApi<T>(url: string | null) {
   const [error, setError] = useState("");
   const activeController = useRef<AbortController | null>(null);
   const latestRequest = useRef(0);
+  const activeUrl = useRef<string | null>(null);
 
   const reload = useCallback(async () => {
     if (!url) {
@@ -41,12 +42,24 @@ export function useApi<T>(url: string | null) {
   }, [url]);
 
   useEffect(() => {
+    if (activeUrl.current !== url) {
+      activeUrl.current = url;
+      setData(null);
+      setError("");
+    }
     void reload();
     return () => {
       latestRequest.current += 1;
       activeController.current?.abort();
       activeController.current = null;
     };
-  }, [reload]);
-  return { data, loading, error, reload, setData };
+  }, [reload, url]);
+  const isCurrentUrl = activeUrl.current === url;
+  return {
+    data: isCurrentUrl ? data : null,
+    loading: url ? !isCurrentUrl || loading : false,
+    error: isCurrentUrl ? error : "",
+    reload,
+    setData,
+  };
 }

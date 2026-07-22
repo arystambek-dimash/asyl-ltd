@@ -66,7 +66,7 @@ def test_client_debts_filters_department_store_date_and_remaining(boss):
     other_store = Store.objects.create(client=main, name="Other store")
     field_store = Store.objects.create(client=field, name="Field store")
     old = _order(main, p, qty=9, store=other_store)
-    current = _order(main, p, qty=3, store=main_store)
+    _order(main, p, qty=3, store=main_store)
     _order(field, p, qty=7, store=field_store)
     Order.objects.filter(pk=old.pk).update(
         created_at=timezone.now() - timedelta(days=20))

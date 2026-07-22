@@ -1,11 +1,7 @@
 "use client";
 
 import { ChevronDown } from "lucide-react";
-import {
-  ORDER_PUBLIC_STATUSES,
-  ORDER_STATUS_LABELS,
-  orderStatusGroup,
-} from "@/lib/constants";
+import { ORDER_PUBLIC_STATUSES, ORDER_STATUS_LABELS, orderStatusGroup } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
 const STATUS_STYLE: Record<string, string> = {
@@ -21,7 +17,12 @@ const STATUS_DOT: Record<string, string> = {
   cancelled: "bg-red-500",
 };
 
-export function OrderStatusSelect({ status, disabled, onChange, className }: {
+export function OrderStatusSelect({
+  status,
+  disabled,
+  onChange,
+  className,
+}: {
   status: string;
   disabled?: boolean;
   onChange: (status: string) => void;
@@ -35,10 +36,12 @@ export function OrderStatusSelect({ status, disabled, onChange, className }: {
       onKeyDown={(event) => event.stopPropagation()}
     >
       <span className="sr-only">Изменить статус заказа</span>
-      <span className={cn(
-        "pointer-events-none absolute left-3 z-10 size-2 rounded-full",
-        STATUS_DOT[current] ?? STATUS_DOT.pending,
-      )} />
+      <span
+        className={cn(
+          "pointer-events-none absolute left-3 z-10 size-2 rounded-full",
+          STATUS_DOT[current] ?? STATUS_DOT.pending,
+        )}
+      />
       <select
         aria-label="Статус заказа"
         value={current}
@@ -53,7 +56,9 @@ export function OrderStatusSelect({ status, disabled, onChange, className }: {
         )}
       >
         {ORDER_PUBLIC_STATUSES.map((option) => (
-          <option key={option} value={option}>{ORDER_STATUS_LABELS[option]}</option>
+          <option key={option} value={option}>
+            {ORDER_STATUS_LABELS[option]}
+          </option>
         ))}
       </select>
       <ChevronDown className="pointer-events-none absolute right-2.5 size-3.5 opacity-60" />

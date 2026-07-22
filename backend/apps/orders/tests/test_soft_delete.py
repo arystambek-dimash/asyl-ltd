@@ -1,10 +1,19 @@
 """Soft-delete заказов: корзина, восстановление и — самое важное —
 удалённый заказ НЕ влияет ни на один отчёт/агрегат."""
+from concurrent.futures import ThreadPoolExecutor
 import pytest
 from decimal import Decimal
+from threading import Event
+from unittest.mock import patch
+
+from django.contrib.auth import get_user_model
+from django.db import close_old_connections
+from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient
+from apps.cameras.models import AiCountingSession
 from apps.catalog.models import Product
 from apps.clients.models import Client, Store
+from apps.orders import services as order_services
 from apps.orders.models import Order, OrderItem, Payment
 
 pytestmark = pytest.mark.django_db
@@ -70,6 +79,8 @@ def test_trash_lists_deleted_and_restore_brings_back(manager):
 
     r = _api(manager).post(f"/api/orders/{o.id}/restore/")
     assert r.status_code == 200
+    assert r.data["deleted_at"] is None
+    assert r.data["deleted_by_name"] is None
     o.refresh_from_db()
     assert o.deleted_at is None
     # Снова в списке, в корзине пусто.
@@ -85,10 +96,10 @@ def test_restore_of_live_order_fails(manager):
     assert r.status_code == 400  # не в корзине
 
 
-def test_purge_deletes_forever_only_from_trash(manager):
+def test_editor_purge_deletes_non_financial_draft_from_trash(manager):
     p = _product()
     c = Client.objects.create(first_name="A", last_name="B", phone="1")
-    o = _order(c, p, paid="100.00")
+    o = _order(c, p, status="draft")
 
     # Живой заказ навсегда не удалить — сначала корзина.
     assert _api(manager).delete(f"/api/orders/{o.id}/purge/").status_code == 400
@@ -96,18 +107,107 @@ def test_purge_deletes_forever_only_from_trash(manager):
     _api(manager).delete(f"/api/orders/{o.id}/")
     r = _api(manager).delete(f"/api/orders/{o.id}/purge/")
     assert r.status_code == 204
-    # Заказ исчез совсем — вместе с позициями и оплатами.
+    # Не проведённый черновик исчез совсем вместе с позициями.
     assert not Order.all_objects.filter(pk=o.id).exists()
-    assert not Payment.objects.filter(order_id=o.id).exists()
     assert _api(manager).get("/api/orders/trash/").data == []
 
 
-def test_purge_requires_edit_perm(operator):
+def test_purge_preserves_shipped_financial_records(manager):
+    product = _product()
+    client = Client.objects.create(first_name="A", last_name="B", phone="1")
+    order = _order(client, product, paid="100.00")
+    _api(manager).delete(f"/api/orders/{order.id}/")
+
+    response = _api(manager).delete(f"/api/orders/{order.id}/purge/")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "financial_record_protected"
+    assert Order.all_objects.filter(pk=order.id).exists()
+    assert Payment.objects.filter(order_id=order.id).exists()
+
+
+def test_purge_preserves_ai_history(manager):
     p = _product()
     c = Client.objects.create(first_name="A", last_name="B", phone="1")
-    o = _order(c, p)
+    o = _order(c, p, status="draft")
+    AiCountingSession.objects.create(
+        order=o,
+        camera="cam2",
+        status=AiCountingSession.CLOSED,
+    )
+    _api(manager).delete(f"/api/orders/{o.id}/")
+
+    response = _api(manager).delete(f"/api/orders/{o.id}/purge/")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "financial_record_protected"
+    assert Order.all_objects.filter(pk=o.pk).exists()
+
+
+def test_purge_requires_edit_permission(operator):
+    p = _product()
+    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    o = _order(c, p, status="draft")
     Order.all_objects.filter(pk=o.pk).update(deleted_at="2026-07-16T00:00:00Z")
     assert _api(operator).delete(f"/api/orders/{o.id}/purge/").status_code == 403
+
+
+@pytest.mark.django_db(transaction=True)
+def test_purge_rechecks_order_after_concurrent_restore(manager):
+    product = _product()
+    client = Client.objects.create(first_name="A", last_name="B", phone="race")
+    order = _order(client, product, status="draft")
+    order_services.soft_delete_order(order, manager)
+    stale_for_purge = Order.all_objects.get(pk=order.pk)
+
+    restore_holds_lock = Event()
+    release_restore = Event()
+    purge_started = Event()
+    original_log_event = order_services.log_event
+
+    def coordinated_log_event(event_type, message, **kwargs):
+        if message == "Заказ восстановлен из корзины":
+            restore_holds_lock.set()
+            assert release_restore.wait(timeout=5)
+        return original_log_event(event_type, message, **kwargs)
+
+    def restore():
+        close_old_connections()
+        try:
+            local_order = Order.all_objects.get(pk=order.pk)
+            local_user = get_user_model().objects.get(pk=manager.pk)
+            order_services.restore_order(local_order, local_user)
+        finally:
+            close_old_connections()
+
+    def purge():
+        close_old_connections()
+        try:
+            local_user = get_user_model().objects.get(pk=manager.pk)
+            purge_started.set()
+            try:
+                order_services.purge_order(stale_for_purge, local_user)
+            except ValidationError as exc:
+                return str(exc.detail["code"])
+            return "purged"
+        finally:
+            close_old_connections()
+
+    with patch.object(
+        order_services, "log_event", side_effect=coordinated_log_event,
+    ), ThreadPoolExecutor(max_workers=2) as executor:
+        restore_future = executor.submit(restore)
+        try:
+            assert restore_holds_lock.wait(timeout=5)
+            purge_future = executor.submit(purge)
+            assert purge_started.wait(timeout=5)
+        finally:
+            release_restore.set()
+        restore_future.result(timeout=5)
+        assert purge_future.result(timeout=5) == "not_deleted"
+
+    order.refresh_from_db()
+    assert order.deleted_at is None
 
 
 # ── Удалённый заказ НЕ влияет на отчёты (главное) ─────────────────────────

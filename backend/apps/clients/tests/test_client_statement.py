@@ -79,3 +79,40 @@ def test_all_clients_statement_requires_export_permission(auth_client, user_with
     viewer = user_with_perms(
         "all-statements-no", codes=["clients.view", "reports.view"])
     assert auth_client(viewer).get("/api/clients/statement/").status_code == 403
+
+
+def test_all_clients_statement_neutralizes_spreadsheet_formulas(
+    auth_client, user_with_perms,
+):
+    reporter = user_with_perms(
+        "formula-export", codes=["clients.view", "reports.export"])
+    client = Client.objects.create(
+        first_name='=HYPERLINK("https://example.invalid","open")',
+        last_name="",
+        phone="@SUM(1+1)",
+    )
+    product = Product.objects.create(
+        name='=WEBSERVICE("http://127.0.0.1/internal")',
+        color="Red",
+        weight_kg="50",
+    )
+    order = Order.objects.create(
+        client=client,
+        status="shipped",
+        notes="+cmd|' /C calc'!A0",
+    )
+    OrderItem.objects.create(
+        order=order, product=product, quantity=1, unit_price="10")
+
+    response = auth_client(reporter).get("/api/clients/statement/")
+
+    assert response.status_code == 200
+    workbook = load_workbook(BytesIO(response.content), data_only=False)
+    cells = [
+        workbook["Клиенты"]["B4"],
+        workbook["Клиенты"]["D4"],
+        workbook["Позиции"]["E4"],
+        workbook["Заказы"]["Q4"],
+    ]
+    assert all(cell.data_type == "s" for cell in cells)
+    assert [cell.value[0] for cell in cells] == ["'", "'", "'", "'"]

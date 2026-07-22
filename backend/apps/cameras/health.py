@@ -131,7 +131,7 @@ def _inventory_component(now: datetime) -> dict:
         inventory = ai.inventory()
         devices = inventory.get("devices") or []
         relevant = [d for d in devices if d.get("kind") in ("nvr-channel", "direct")]
-        result = {
+        result: dict[str, object] = {
             "configured": True,
             "reachable": True,
             "devices": len(relevant),
@@ -264,16 +264,18 @@ def probe_once(now: datetime | None = None) -> Observation:
 
     if go2rtc.get("reachable") and selected_frames:
         with ThreadPoolExecutor(max_workers=min(2, len(selected_frames))) as pool:
-            futures = {
+            frame_futures = {
                 pool.submit(_go2rtc_frame, stream): stream for stream in selected_frames
             }
-            for future in as_completed(futures):
-                stream = futures[future]
+            for frame_future in as_completed(frame_futures):
+                frame_stream = frame_futures[frame_future]
                 try:
-                    frame_results[stream] = future.result()
+                    frame_results[frame_stream] = frame_future.result()
                 except Exception as exc:
-                    log.exception("Unexpected go2rtc frame probe error for %s", stream)
-                    frame_results[stream] = (False, type(exc).__name__)
+                    log.exception(
+                        "Unexpected go2rtc frame probe error for %s", frame_stream
+                    )
+                    frame_results[frame_stream] = (False, type(exc).__name__)
 
     frame_health: dict[str, dict] = {}
     for stream in frame_candidates:
@@ -299,7 +301,10 @@ def probe_once(now: datetime | None = None) -> Observation:
                     "error": str(prior.get("error") or "")[:120],
                 }
         except (TypeError, ValueError):
-            pass
+            log.warning(
+                "Ignoring malformed cached frame-health timestamp for %s",
+                stream,
+            )
 
     frame_failures = [
         stream for stream in frame_candidates if frame_health.get(stream, {}).get("ok") is False

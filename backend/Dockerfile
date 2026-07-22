@@ -6,16 +6,24 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-dejavu-core libpq5 postgresql-client \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && addgroup --system app \
+    && adduser --system --ingroup app --home /app app
 
-COPY requirements.txt .
-# gunicorn пиним: без версии содержимое прод-образа зависело бы от даты сборки.
-RUN pip install --no-cache-dir -r requirements.txt "gunicorn>=23,<24"
+COPY requirements-prod.txt .
+RUN pip install --no-cache-dir -r requirements-prod.txt
 
-COPY . .
+COPY --chown=app:app . .
 
 COPY entrypoint.sh /entrypoint.sh
-RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh \
+    && chmod +x /entrypoint.sh \
+    && mkdir -p /app/media /app/staticfiles \
+    && chown -R app:app /app/media /app/staticfiles
+
+# Application code, migrations and health checks do not require Linux root.
+# Named media/static volumes inherit ownership from these image directories.
+USER app
 
 EXPOSE 8000
 ENTRYPOINT ["/entrypoint.sh"]

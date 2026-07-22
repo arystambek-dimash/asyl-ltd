@@ -4,7 +4,11 @@ from rest_framework.test import APIClient
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
-from apps.cameras.models import AiCountingSession, MonoblockCameraSettings
+from apps.cameras.models import (
+    AiCountingSession,
+    MonoblockCameraSettings,
+    MonoblockDevice,
+)
 from apps.warehouse.services import receive_stock
 from apps.shipments.services import record_arrival, record_count
 
@@ -127,6 +131,31 @@ def test_loading_camera_must_be_allowed_by_admin(operator):
     assert order.loading_camera == ""
 
 
+def test_monoblock_cannot_assign_a_different_allowed_camera(django_user_model):
+    device_user = django_user_model.objects.create_user(
+        username="loading-device", password="pass12345",
+    )
+    MonoblockDevice.objects.create(
+        user=device_user,
+        name="Моноблок 2",
+        camera_source="cam2",
+    )
+    MonoblockCameraSettings.objects.create(camera_sources=["cam2", "cam3"])
+    client = Client.objects.create(first_name="A", last_name="Device", phone="5")
+    order = Order.objects.create(client=client, status="confirmed")
+
+    response = _client(device_user).post(
+        f"/api/orders/{order.id}/loading-camera/",
+        {"camera": "cam3"},
+        format="json",
+    )
+
+    assert response.status_code == 403
+    order.refresh_from_db()
+    assert order.status == "confirmed"
+    assert order.loading_camera == ""
+
+
 def test_loading_camera_cannot_be_bound_to_two_active_orders(operator):
     prod = Product.objects.create(name="К3", color="Blue", weight_kg="50", price="100.00")
     client = Client.objects.create(first_name="A", last_name="D", phone="3")
@@ -144,8 +173,13 @@ def test_loading_camera_cannot_be_bound_to_two_active_orders(operator):
     )
 
     assert response.status_code == 400
+    assert str(response.data["detail"]) == (
+        f"Камера уже закреплена за заказом #{first.id}"
+    )
     assert response.data["code"] == "camera_busy"
+    assert set(response.data) == {"detail", "code"}
     second.refresh_from_db()
+    assert second.status == "arrived"
     assert second.loading_camera == ""
 
 

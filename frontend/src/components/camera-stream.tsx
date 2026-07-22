@@ -1,44 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { api } from "@/lib/api";
+import { ensureCameraStreamToken } from "@/lib/camera-stream-auth";
 
-// Cookie lives for 12 hours. Renew it ahead of time so a long-running camera
-// screen doesn't discover an expired token only during a reconnect.
-const TOKEN_RENEW_AFTER_MS = 10 * 60 * 60 * 1000;
+// Backwards-compatible export for existing camera-wall consumers. The cache
+// itself lives in lib so authentication teardown can invalidate it.
+export { ensureCameraStreamToken } from "@/lib/camera-stream-auth";
+
 const TOKEN_CHECK_INTERVAL_MS = 10 * 60 * 1000;
-const AUTH_RENEW_COOLDOWN_MS = 60 * 1000;
 const STARTUP_TIMEOUT_MS = 15 * 1000;
 const DISCONNECTED_GRACE_MS = 4 * 1000;
 const NO_MEDIA_TIMEOUT_MS = 20 * 1000;
 const WATCHDOG_INTERVAL_MS = 5 * 1000;
-
-let tokenIssuedAt = 0;
-let tokenRequest: Promise<void> | null = null;
-let lastForcedTokenRenewal = 0;
-
-/** One shared token request for every camera tile on the page. */
-export function ensureCameraStreamToken(force = false): Promise<void> {
-  const now = Date.now();
-  if (tokenRequest) return tokenRequest;
-  if (!force && tokenIssuedAt && now - tokenIssuedAt < TOKEN_RENEW_AFTER_MS) {
-    return Promise.resolve();
-  }
-  if (force && lastForcedTokenRenewal && now - lastForcedTokenRenewal < AUTH_RENEW_COOLDOWN_MS) {
-    return Promise.resolve();
-  }
-  if (force) lastForcedTokenRenewal = now;
-
-  tokenRequest = api
-    .post("/cameras/token/", undefined, { timeout: 10_000 })
-    .then(() => {
-      tokenIssuedAt = Date.now();
-    })
-    .finally(() => {
-      tokenRequest = null;
-    });
-  return tokenRequest;
-}
 
 type Go2RtcMessage = {
   type?: string;
@@ -88,8 +61,8 @@ export function CameraStream({
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let startupTimer: ReturnType<typeof setTimeout> | null = null;
     let disconnectedTimer: ReturnType<typeof setTimeout> | null = null;
-    let watchdogTimer: ReturnType<typeof setInterval> | null = null;
-    let tokenTimer: ReturnType<typeof setInterval> | null = null;
+    let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+    let tokenTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
     let generation = 0;
     let hadMedia = false;
@@ -104,7 +77,7 @@ export function CameraStream({
     const clearConnectionTimers = () => {
       if (startupTimer) clearTimeout(startupTimer);
       if (disconnectedTimer) clearTimeout(disconnectedTimer);
-      if (watchdogTimer) clearInterval(watchdogTimer);
+      if (watchdogTimer) clearTimeout(watchdogTimer);
       startupTimer = null;
       disconnectedTimer = null;
       watchdogTimer = null;
@@ -175,17 +148,12 @@ export function CameraStream({
         if (disposed || thisGeneration !== generation) return;
 
         const proto = location.protocol === "https:" ? "wss" : "ws";
-        const thisWs = new WebSocket(
-          `${proto}://${location.host}/go2rtc/api/ws?src=${encodeURIComponent(src)}`,
-        );
+        const thisWs = new WebSocket(`${proto}://${location.host}/go2rtc/api/ws?src=${encodeURIComponent(src)}`);
         ws = thisWs;
 
         const thisPc = new RTCPeerConnection({
           bundlePolicy: "max-bundle",
-          iceServers: [
-            { urls: "stun:stun.cloudflare.com:3478" },
-            { urls: "stun:stun.l.google.com:19302" },
-          ],
+          iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }, { urls: "stun:stun.l.google.com:19302" }],
         });
         pc = thisPc;
         remoteStream = new MediaStream();
@@ -195,10 +163,12 @@ export function CameraStream({
         thisPc.onicecandidate = (event) => {
           if (thisGeneration !== generation || thisWs.readyState !== WebSocket.OPEN) return;
           if (!isUdpCandidate(event.candidate)) return;
-          thisWs.send(JSON.stringify({
-            type: "webrtc/candidate",
-            value: event.candidate?.candidate ?? "",
-          }));
+          thisWs.send(
+            JSON.stringify({
+              type: "webrtc/candidate",
+              value: event.candidate?.candidate ?? "",
+            }),
+          );
         };
 
         thisPc.ontrack = (event) => {
@@ -246,13 +216,11 @@ export function CameraStream({
               // The server is configured UDP-only. Keep this client-side guard
               // too, so a future config regression cannot silently return TCP.
               if (message.value.toLowerCase().includes(" tcp ")) return;
-              void thisPc.addIceCandidate(
-                message.value ? { candidate: message.value, sdpMid: "0" } : null,
-              ).catch(() => {});
+              void thisPc
+                .addIceCandidate(message.value ? { candidate: message.value, sdpMid: "0" } : null)
+                .catch(() => {});
             } else if (message.type === "webrtc/answer" && message.value) {
-              void thisPc.setRemoteDescription({ type: "answer", sdp: message.value }).catch(
-                scheduleReconnect,
-              );
+              void thisPc.setRemoteDescription({ type: "answer", sdp: message.value }).catch(scheduleReconnect);
             } else if (message.type === "error" && message.value?.includes("webrtc/offer")) {
               scheduleReconnect();
             }
@@ -274,26 +242,36 @@ export function CameraStream({
           if (!hadMedia) scheduleReconnect();
         }, STARTUP_TIMEOUT_MS);
 
-        watchdogTimer = setInterval(async () => {
-          if (document.visibilityState !== "visible" || thisGeneration !== generation) return;
-          if (thisPc.connectionState !== "connected") return;
-          try {
-            const stats = await thisPc.getStats();
-            let bytesReceived = 0;
-            stats.forEach((report) => {
-              if (report.type === "inbound-rtp" && report.kind === "video") {
-                bytesReceived += Number(report.bytesReceived ?? 0);
+        const runWatchdog = async () => {
+          watchdogTimer = null;
+          if (disposed || thisGeneration !== generation) return;
+          if (document.visibilityState === "visible" && thisPc.connectionState === "connected") {
+            try {
+              const stats = await thisPc.getStats();
+              let bytesReceived = 0;
+              stats.forEach((report) => {
+                if (report.type === "inbound-rtp" && report.kind === "video") {
+                  bytesReceived += Number(report.bytesReceived ?? 0);
+                }
+              });
+              if (bytesReceived > lastBytesReceived) {
+                lastBytesReceived = bytesReceived;
+                lastMediaAt = Date.now();
               }
-            });
-            if (bytesReceived > lastBytesReceived) {
-              lastBytesReceived = bytesReceived;
-              lastMediaAt = Date.now();
+              if (Date.now() - lastMediaAt > NO_MEDIA_TIMEOUT_MS) {
+                scheduleReconnect();
+                return;
+              }
+            } catch {
+              scheduleReconnect();
+              return;
             }
-            if (Date.now() - lastMediaAt > NO_MEDIA_TIMEOUT_MS) scheduleReconnect();
-          } catch {
-            scheduleReconnect();
           }
-        }, WATCHDOG_INTERVAL_MS);
+          if (!disposed && thisGeneration === generation) {
+            watchdogTimer = setTimeout(() => void runWatchdog(), WATCHDOG_INTERVAL_MS);
+          }
+        };
+        watchdogTimer = setTimeout(() => void runWatchdog(), WATCHDOG_INTERVAL_MS);
       } catch {
         scheduleReconnect();
       }
@@ -314,14 +292,21 @@ export function CameraStream({
     document.addEventListener("visibilitychange", onVisible);
 
     void connect();
-    tokenTimer = setInterval(() => {
-      void ensureCameraStreamToken().catch(() => {});
-    }, TOKEN_CHECK_INTERVAL_MS);
+    const renewCameraToken = async () => {
+      tokenTimer = null;
+      try {
+        await ensureCameraStreamToken();
+      } catch {
+        // A reconnect will force a renewal if the cached cookie is unusable.
+      }
+      if (!disposed) tokenTimer = setTimeout(() => void renewCameraToken(), TOKEN_CHECK_INTERVAL_MS);
+    };
+    tokenTimer = setTimeout(() => void renewCameraToken(), TOKEN_CHECK_INTERVAL_MS);
 
     return () => {
       disposed = true;
       if (retryTimer) clearTimeout(retryTimer);
-      if (tokenTimer) clearInterval(tokenTimer);
+      if (tokenTimer) clearTimeout(tokenTimer);
       document.removeEventListener("visibilitychange", onVisible);
       video.removeEventListener("loadeddata", markMediaPlaying);
       video.removeEventListener("playing", markMediaPlaying);
@@ -329,7 +314,9 @@ export function CameraStream({
       try {
         video.removeAttribute("src");
         video.load();
-      } catch { /* noop */ }
+      } catch {
+        /* noop */
+      }
     };
   }, [src, onStateChange]);
 

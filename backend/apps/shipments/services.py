@@ -1,10 +1,13 @@
 from decimal import Decimal
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from apps.eventlog.services import log_event
 from apps.warehouse.services import deduct_stock
 from .models import Shipment
+
+
+LOADING_CAMERA_CONSTRAINT = "orders_one_active_order_per_loading_camera"
 
 
 def _locked(order):
@@ -12,6 +15,75 @@ def _locked(order):
     read-check-write: без блокировки двойной клик или две вкладки провели бы
     один шаг дважды (у отгрузки — двойное списание склада и двойной долг)."""
     return type(order).objects.select_for_update().get(pk=order.pk)
+
+
+def _device_for(user):
+    return getattr(user, "active_monoblock_device", None)
+
+
+def _assert_device_order_camera(order, user) -> None:
+    """Keep physical monoblocks inside the workflow for their own camera."""
+    device = _device_for(user)
+    if device is not None and order.loading_camera != device.camera_source:
+        raise PermissionDenied("Эта отгрузка закреплена за другим моноблоком")
+
+
+def _assert_device_camera_change(order, camera: str, user) -> None:
+    """A device may bind/release only its camera and never another binding."""
+    device = _device_for(user)
+    if device is None:
+        return
+    if order.loading_camera and order.loading_camera != device.camera_source:
+        raise PermissionDenied("Эта отгрузка закреплена за другим моноблоком")
+    if camera and camera != device.camera_source:
+        raise PermissionDenied("Эта камера закреплена за другим моноблоком")
+
+
+def _validate_loading_camera_available(order, camera: str) -> None:
+    if not camera:
+        return
+    conflict = (
+        type(order).objects.select_for_update()
+        .filter(
+            loading_camera=camera,
+            status__in=("confirmed", "arrived", "loading"),
+            deleted_at__isnull=True,
+        )
+        .exclude(pk=order.pk)
+        .only("id")
+        .first()
+    )
+    if conflict:
+        raise ValidationError({
+            "detail": f"Камера уже закреплена за заказом #{conflict.pk}",
+            "code": "camera_busy",
+            "order_id": conflict.pk,
+        })
+
+
+@transaction.atomic
+def _set_loading_camera_locked(order, camera: str, user=None):
+    order = _locked(order)
+    _assert_device_camera_change(order, camera, user)
+    _validate_loading_camera_available(order, camera)
+    order.loading_camera = camera
+    order.save(update_fields=["loading_camera"])
+    return order
+
+
+def set_loading_camera(order, camera: str, user=None):
+    """Assign or release an order camera while serializing changes to the order."""
+    try:
+        return _set_loading_camera_locked(order, camera, user)
+    except IntegrityError as exc:
+        cause = exc.__cause__
+        diagnostic = getattr(cause, "diag", None)
+        if getattr(diagnostic, "constraint_name", None) != LOADING_CAMERA_CONSTRAINT:
+            raise
+        raise ValidationError({
+            "detail": "Камера уже закреплена за другим активным заказом",
+            "code": "camera_busy",
+        }) from exc
 
 
 def _require_shipment(order):
@@ -62,23 +134,7 @@ def begin_camera_loading(order, camera: str, user):
             "code": "invalid_status",
         })
 
-    conflict = (
-        type(order).objects.select_for_update()
-        .filter(
-            loading_camera=camera,
-            status__in=("confirmed", "arrived", "loading"),
-            deleted_at__isnull=True,
-        )
-        .exclude(pk=order.pk)
-        .only("id")
-        .first()
-    )
-    if conflict:
-        raise ValidationError({
-            "detail": f"Камера уже закреплена за заказом #{conflict.pk}",
-            "code": "camera_busy",
-            "order_id": conflict.pk,
-        })
+    _validate_loading_camera_available(order, camera)
 
     now = timezone.now()
     old_status = order.status
@@ -157,6 +213,7 @@ def record_arrival(order, weigh_in_kg, user):
 @transaction.atomic
 def record_count(order, bags, user):
     order = _locked(order)
+    _assert_device_order_camera(order, user)
     if order.status in ("arrived", "loading"):
         shipment = _require_shipment(order)
     else:
@@ -179,6 +236,7 @@ def record_count(order, bags, user):
 @transaction.atomic
 def finish_loading(order, user):
     order = _locked(order)
+    _assert_device_order_camera(order, user)
     _require_transport(order, "truck")
     if order.status != "loading":
         raise ValidationError(
@@ -206,6 +264,7 @@ def finish_ai_loading(order, bags: int, user):
         })
 
     order = _locked(order)
+    _assert_device_order_camera(order, user)
     if order.status != "loading":
         raise ValidationError({
             "detail": "Завершить можно только идущую загрузку",
@@ -318,6 +377,7 @@ def rewind_loading(order, user, target_status="confirmed"):
     AI-сессию сначала обязан остановить её автор или администратор.
     """
     order = _locked(order)
+    _assert_device_order_camera(order, user)
     if target_status not in ("pending", "confirmed", "cancelled"):
         raise ValidationError({
             "detail": "Недопустимый целевой статус возврата",

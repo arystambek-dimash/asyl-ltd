@@ -1,12 +1,11 @@
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from datetime import timedelta
 from decimal import Decimal
-from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 from apps.common.permissions import HasPerm, PermViewSetMixin
@@ -15,7 +14,7 @@ from apps.common.query_params import parse_iso_date, parse_store_id, validate_da
 from apps.clients.models import Department
 from apps.eventlog.models import EventLog
 from apps.shipments.services import (
-    start_train_loading, record_count, finish_train_loading)
+    finish_train_loading, record_count, set_loading_camera, start_train_loading)
 from apps.shipments.serializers import LoadSerializer
 from .models import Order, Payment, StatusChangeRequest
 from .querysets import with_order_api_relations
@@ -315,34 +314,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                     "detail": "Предварительное назначение камеры недоступно: начните заказ через Моноблок",
                     "code": "invalid_status",
                 })
-        try:
-            with transaction.atomic():
-                order = Order.objects.select_for_update().get(pk=order.pk)
-                if camera:
-                    conflict = (
-                        Order.objects.select_for_update()
-                        .filter(
-                            loading_camera=camera,
-                            status__in=("confirmed", "arrived", "loading"),
-                            deleted_at__isnull=True,
-                        )
-                        .exclude(pk=order.pk)
-                        .only("id")
-                        .first()
-                    )
-                    if conflict:
-                        raise ValidationError({
-                            "detail": f"Камера уже закреплена за заказом #{conflict.pk}",
-                            "code": "camera_busy",
-                            "order_id": conflict.pk,
-                        })
-                order.loading_camera = camera
-                order.save(update_fields=["loading_camera"])
-        except IntegrityError:
-            raise ValidationError({
-                "detail": "Камера уже закреплена за другим активным заказом",
-                "code": "camera_busy",
-            })
+        order = set_loading_camera(order, camera, request.user)
         return Response(OrderSerializer(order, context={"request": request}).data)
 
     def destroy(self, request, *args, **kwargs):
@@ -371,7 +343,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         order = self._deleted_scoped().filter(pk=pk).first()
         if order is None:
             raise ValidationError({"detail": "Заказ не найден в корзине", "code": "not_found"})
-        restore_order(order, request.user)
+        order = restore_order(order, request.user)
         return Response(OrderSerializer(order, context={"request": request}).data)
 
     @action(detail=True, methods=["delete"], url_path="purge")

@@ -3,6 +3,7 @@ from django.contrib.auth import get_user_model
 from apps.rbac.models import Role
 from apps.employees.models import Employee
 from apps.clients.models import Department
+from apps.eventlog.models import EventLog
 
 pytestmark = pytest.mark.django_db
 User = get_user_model()
@@ -10,17 +11,28 @@ User = get_user_model()
 
 @pytest.fixture
 def admin_client(auth_client, make_user):
-    u = make_user(username="root"); u.is_superuser = True; u.is_staff = True; u.save()
+    u = make_user(username="root")
+    u.is_superuser = True
+    u.is_staff = True
+    u.save()
     return auth_client(u)
 
 
 def test_admin_creates_employee_with_account(admin_client):
     role = Role.objects.create(name="Тест-роль")
-    resp = admin_client.post("/api/employees/", {
-        "username": "ivan", "password": "pass12345",
-        "first_name": "Иван", "last_name": "Петров", "phone": "+7700",
-        "position": "Кладовщик", "role": role.id,
-    }, format="json")
+    resp = admin_client.post(
+        "/api/employees/",
+        {
+            "username": "ivan",
+            "password": "pass12345",
+            "first_name": "Иван",
+            "last_name": "Петров",
+            "phone": "+7700",
+            "position": "Кладовщик",
+            "role": role.id,
+        },
+        format="json",
+    )
     assert resp.status_code == 201
     u = User.objects.get(username="ivan")
     assert u.check_password("pass12345")
@@ -30,28 +42,49 @@ def test_admin_creates_employee_with_account(admin_client):
 
 def test_password_required_on_create(admin_client):
     role = Role.objects.create(name="R")
-    resp = admin_client.post("/api/employees/", {
-        "username": "x", "first_name": "A", "last_name": "B",
-        "phone": "y", "role": role.id,
-    }, format="json")
+    resp = admin_client.post(
+        "/api/employees/",
+        {
+            "username": "x",
+            "first_name": "A",
+            "last_name": "B",
+            "phone": "y",
+            "role": role.id,
+        },
+        format="json",
+    )
     assert resp.status_code == 400
 
 
 def test_non_admin_without_perm_denied(auth_client, make_user):
     u = make_user(username="plain")
     role = Role.objects.create(name="R")
-    resp = auth_client(u).post("/api/employees/", {
-        "username": "z", "password": "pass12345", "first_name": "A",
-        "last_name": "B", "phone": "y", "role": role.id,
-    }, format="json")
+    resp = auth_client(u).post(
+        "/api/employees/",
+        {
+            "username": "z",
+            "password": "pass12345",
+            "first_name": "A",
+            "last_name": "B",
+            "phone": "y",
+            "role": role.id,
+        },
+        format="json",
+    )
     assert resp.status_code == 403
 
 
 def _perm(code):
     from apps.rbac.models import Permission
+
     p, _ = Permission.objects.get_or_create(
-        code=code, defaults={"section": code.split(".")[0],
-                             "action": code.split(".")[1], "label": code})
+        code=code,
+        defaults={
+            "section": code.split(".")[0],
+            "action": code.split(".")[1],
+            "label": code,
+        },
+    )
     return p
 
 
@@ -59,12 +92,19 @@ def test_create_with_explicit_permissions(admin_client):
     """Личные доступы добавляются поверх прав роли."""
     role = Role.objects.create(name="Кладовщик")
     role.permissions.add(_perm("orders.view"))
-    resp = admin_client.post("/api/employees/", {
-        "username": "anna", "password": "pass12345",
-        "first_name": "Анна", "last_name": "С", "phone": "+7",
-        "role": role.id,
-        "permission_codes": ["warehouse.view", "warehouse.adjust"],
-    }, format="json")
+    resp = admin_client.post(
+        "/api/employees/",
+        {
+            "username": "anna",
+            "password": "pass12345",
+            "first_name": "Анна",
+            "last_name": "С",
+            "phone": "+7",
+            "role": role.id,
+            "permission_codes": ["warehouse.view", "warehouse.adjust"],
+        },
+        format="json",
+    )
     assert resp.status_code == 201
     assert resp.data["permissions"] == ["warehouse.adjust", "warehouse.view"]
     assert resp.data["role_permissions"] == ["orders.view"]
@@ -77,10 +117,18 @@ def test_create_without_permissions_inherits_role(admin_client):
     """Права роли действуют без копирования: личный список пуст."""
     role = Role.objects.create(name="Оператор-2")
     role.permissions.add(_perm("orders.view"))
-    resp = admin_client.post("/api/employees/", {
-        "username": "oleg", "password": "pass12345",
-        "first_name": "Олег", "last_name": "К", "phone": "+7", "role": role.id,
-    }, format="json")
+    resp = admin_client.post(
+        "/api/employees/",
+        {
+            "username": "oleg",
+            "password": "pass12345",
+            "first_name": "Олег",
+            "last_name": "К",
+            "phone": "+7",
+            "role": role.id,
+        },
+        format="json",
+    )
     assert resp.status_code == 201
     assert resp.data["permissions"] == []
     assert User.objects.get(username="oleg").has_perm_code("orders.view") is True
@@ -89,12 +137,19 @@ def test_create_without_permissions_inherits_role(admin_client):
 def test_inherited_permission_can_be_denied_for_one_employee(admin_client):
     role = Role.objects.create(name="Менеджер-гибкий")
     role.permissions.add(_perm("catalog.view"), _perm("catalog.delete"))
-    response = admin_client.post("/api/employees/", {
-        "username": "limited", "password": "pass12345",
-        "first_name": "Лимит", "last_name": "Тест", "phone": "+7",
-        "role": role.id,
-        "denied_permission_codes": ["catalog.delete"],
-    }, format="json")
+    response = admin_client.post(
+        "/api/employees/",
+        {
+            "username": "limited",
+            "password": "pass12345",
+            "first_name": "Лимит",
+            "last_name": "Тест",
+            "phone": "+7",
+            "role": role.id,
+            "denied_permission_codes": ["catalog.delete"],
+        },
+        format="json",
+    )
 
     assert response.status_code == 201
     assert response.data["denied_permissions"] == ["catalog.delete"]
@@ -105,19 +160,99 @@ def test_inherited_permission_can_be_denied_for_one_employee(admin_client):
 
 def test_update_permissions_and_password(admin_client):
     role = Role.objects.create(name="R2")
-    resp = admin_client.post("/api/employees/", {
-        "username": "petr", "password": "pass12345",
-        "first_name": "Пётр", "last_name": "В", "phone": "+7", "role": role.id,
-    }, format="json")
+    resp = admin_client.post(
+        "/api/employees/",
+        {
+            "username": "petr",
+            "password": "pass12345",
+            "first_name": "Пётр",
+            "last_name": "В",
+            "phone": "+7",
+            "role": role.id,
+        },
+        format="json",
+    )
     emp_id = resp.data["id"]
-    resp = admin_client.patch(f"/api/employees/{emp_id}/", {
-        "username": "petr", "permission_codes": ["clients.view"],
-        "password": "newpass123",
-    }, format="json")
+    resp = admin_client.patch(
+        f"/api/employees/{emp_id}/",
+        {
+            "username": "petr",
+            "permission_codes": ["clients.view"],
+            "password": "newpass123",
+        },
+        format="json",
+    )
     assert resp.status_code == 200
     u = User.objects.get(username="petr")
     assert u.check_password("newpass123")
     assert u.has_perm_code("clients.view") is True
+    event = EventLog.objects.filter(event_type="employee_security").latest("id")
+    assert event.payload["password_changed"] is True
+    assert "newpass123" not in str(event.payload)
+
+
+def test_employee_manager_cannot_escalate_accounts_without_rbac_manage(
+    auth_client,
+    user_with_perms,
+    make_user,
+):
+    manager = user_with_perms(
+        "employee-manager", codes=["employees.view", "employees.manage"]
+    )
+    target_user = make_user(username="managed-user", password="original-pass-123")
+    target_role = Role.objects.create(name="Protected role")
+    target = Employee.objects.create(
+        user=target_user,
+        first_name="До",
+        last_name="Проверки",
+        phone="+7",
+        role=target_role,
+    )
+    client = auth_client(manager)
+
+    profile_update = client.patch(
+        f"/api/employees/{target.pk}/", {"first_name": "После"}, format="json"
+    )
+    grant_attempt = client.patch(
+        f"/api/employees/{target.pk}/",
+        {"permission_codes": ["rbac.manage"]},
+        format="json",
+    )
+    password_attempt = client.patch(
+        f"/api/employees/{target.pk}/",
+        {"password": "new-secure-pass-123"},
+        format="json",
+    )
+    role_clear_attempt = client.patch(
+        f"/api/employees/{target.pk}/",
+        {"role": None},
+        format="json",
+    )
+    create_attempt = client.post(
+        "/api/employees/",
+        {
+            "username": "escalated-user",
+            "password": "secure-pass-123",
+            "first_name": "Новый",
+            "last_name": "Админ",
+            "phone": "+7",
+        },
+        format="json",
+    )
+    delete_attempt = client.delete(f"/api/employees/{target.pk}/")
+
+    assert profile_update.status_code == 200
+    assert grant_attempt.status_code == 403
+    assert password_attempt.status_code == 403
+    assert role_clear_attempt.status_code == 403
+    assert create_attempt.status_code == 403
+    assert delete_attempt.status_code == 403
+    target.refresh_from_db()
+    target.user.refresh_from_db()
+    assert target.first_name == "После"
+    assert target.role_id == target_role.pk
+    assert not target.permissions.filter(code="rbac.manage").exists()
+    assert target.user.check_password("original-pass-123")
 
 
 def test_role_change_switches_inherited_permissions(admin_client):
@@ -126,34 +261,50 @@ def test_role_change_switches_inherited_permissions(admin_client):
     r1.permissions.add(_perm("orders.view"))
     r2 = Role.objects.create(name="Р2")
     r2.permissions.add(_perm("clients.view"))
-    resp = admin_client.post("/api/employees/", {
-        "username": "vera", "password": "pass12345",
-        "first_name": "Вера", "last_name": "Д", "phone": "+7", "role": r1.id,
-        "permission_codes": ["warehouse.view"],
-    }, format="json")
+    resp = admin_client.post(
+        "/api/employees/",
+        {
+            "username": "vera",
+            "password": "pass12345",
+            "first_name": "Вера",
+            "last_name": "Д",
+            "phone": "+7",
+            "role": r1.id,
+            "permission_codes": ["warehouse.view"],
+        },
+        format="json",
+    )
     emp_id = resp.data["id"]
-    resp = admin_client.patch(f"/api/employees/{emp_id}/",
-                              {"username": "vera", "role": r2.id}, format="json")
+    resp = admin_client.patch(
+        f"/api/employees/{emp_id}/", {"username": "vera", "role": r2.id}, format="json"
+    )
     assert resp.status_code == 200
     u = User.objects.get(username="vera")
-    assert u.has_perm_code("orders.view") is False   # права старой роли ушли
-    assert u.has_perm_code("clients.view") is True   # права новой роли действуют
+    assert u.has_perm_code("orders.view") is False  # права старой роли ушли
+    assert u.has_perm_code("clients.view") is True  # права новой роли действуют
     assert u.has_perm_code("warehouse.view") is True  # личное право осталось
 
 
 def test_sales_department_grants_and_protects_required_order_permissions(admin_client):
     department = Department.objects.create(
-        code="sales-north", name="Север", color="#315FD5", is_default=True)
+        code="sales-north", name="Север", color="#315FD5", is_default=True
+    )
     role = Role.objects.create(name="Без доступа к заказам")
     role.permissions.add(_perm("orders.create"))
 
-    response = admin_client.post("/api/employees/", {
-        "username": "sales", "password": "pass12345",
-        "first_name": "Сауле", "last_name": "Менеджер",
-        "sales_department": department.id,
-        "role": role.id,
-        "denied_permission_codes": ["orders.create"],
-    }, format="json")
+    response = admin_client.post(
+        "/api/employees/",
+        {
+            "username": "sales",
+            "password": "pass12345",
+            "first_name": "Сауле",
+            "last_name": "Менеджер",
+            "sales_department": department.id,
+            "role": role.id,
+            "denied_permission_codes": ["orders.create"],
+        },
+        format="json",
+    )
 
     assert response.status_code == 201
     assert response.data["sales_department"] == department.id
@@ -168,24 +319,38 @@ def test_sales_department_grants_and_protects_required_order_permissions(admin_c
 
 def test_inactive_sales_department_cannot_be_assigned(admin_client):
     department = Department.objects.create(
-        code="closed-sales", name="Закрытый", is_active=False)
-    response = admin_client.post("/api/employees/", {
-        "username": "closed", "password": "pass12345",
-        "first_name": "Закрыт", "last_name": "Отдел",
-        "sales_department": department.id,
-    }, format="json")
+        code="closed-sales", name="Закрытый", is_active=False
+    )
+    response = admin_client.post(
+        "/api/employees/",
+        {
+            "username": "closed",
+            "password": "pass12345",
+            "first_name": "Закрыт",
+            "last_name": "Отдел",
+            "sales_department": department.id,
+        },
+        format="json",
+    )
     assert response.status_code == 400
     assert "sales_department" in response.data["detail"]
 
 
 def test_sales_department_can_be_cleared_and_stops_forcing_permissions(admin_client):
     department = Department.objects.create(
-        code="sales-temp", name="Временный отдел", color="#315FD5")
-    response = admin_client.post("/api/employees/", {
-        "username": "sales-temp", "password": "pass12345",
-        "first_name": "Временный", "last_name": "Менеджер",
-        "sales_department": department.id,
-    }, format="json")
+        code="sales-temp", name="Временный отдел", color="#315FD5"
+    )
+    response = admin_client.post(
+        "/api/employees/",
+        {
+            "username": "sales-temp",
+            "password": "pass12345",
+            "first_name": "Временный",
+            "last_name": "Менеджер",
+            "sales_department": department.id,
+        },
+        format="json",
+    )
     assert response.status_code == 201
     employee_id = response.data["id"]
     user = User.objects.get(username="sales-temp")

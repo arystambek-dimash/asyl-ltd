@@ -2,26 +2,14 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
-import {
-  Camera,
-  Check,
-  ChevronDown,
-  ClipboardList,
-  LoaderCircle,
-  Play,
-  Radio,
-  LockKeyhole,
-} from "lucide-react";
+import { Camera, Check, ChevronDown, ClipboardList, LoaderCircle, Play, Radio, LockKeyhole } from "lucide-react";
 import type { CameraFeed } from "@/components/camera-wall";
 import { apiError } from "@/lib/api";
+import { orderedBagCount } from "@/lib/orders";
 import type { Order } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type PlayableCamera = CameraFeed & { src: string };
-
-function bagCount(order: Order) {
-  return order.items.reduce((sum, item) => sum + Number(item.quantity), 0);
-}
 
 function SelectCard({
   kind,
@@ -48,10 +36,12 @@ function SelectCard({
       </span>
       <span className="min-w-0 flex-1">
         <span className="block text-[12px] font-medium text-slate-400">{label}</span>
-        <span className={cn(
-          "mt-1 block truncate text-[15px] font-semibold",
-          value ? "text-slate-800" : "font-medium text-slate-400",
-        )}>
+        <span
+          className={cn(
+            "mt-1 block truncate text-[15px] font-semibold",
+            value ? "text-slate-800" : "font-medium text-slate-400",
+          )}
+        >
           {displayValue || placeholder}
         </span>
       </span>
@@ -69,10 +59,7 @@ function SelectCard({
   );
 }
 
-function AssignedCameraCard({ camera, available }: {
-  camera: PlayableCamera | null;
-  available: boolean;
-}) {
+function AssignedCameraCard({ camera, available }: { camera: PlayableCamera | null; available: boolean }) {
   return (
     <div className="flex min-h-[86px] w-full items-center gap-3 rounded-[20px] border border-blue-200 bg-white/95 px-4 py-3 shadow-[0_14px_42px_rgba(41,72,126,0.10)] backdrop-blur-xl lg:max-w-[338px]">
       <span className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
@@ -117,11 +104,12 @@ export function ShipmentLauncher({
 
   const order = orders.find((item) => String(item.id) === orderId) ?? null;
   const availableCameras = useMemo(
-    () => cameras.filter((camera) => {
-      const ownerId = cameraOwners[camera.src];
-      if (ownerId != null) return ownerId === order?.id;
-      return !busyCameras.includes(camera.src);
-    }),
+    () =>
+      cameras.filter((camera) => {
+        const ownerId = cameraOwners[camera.src];
+        if (ownerId != null) return ownerId === order?.id;
+        return !busyCameras.includes(camera.src);
+      }),
     [busyCameras, cameraOwners, cameras, order?.id],
   );
   const camera = availableCameras.find((item) => item.src === cameraSrc) ?? null;
@@ -155,10 +143,12 @@ export function ShipmentLauncher({
   }
 
   return (
-    <section className={cn(
-      "shipping-console relative isolate min-h-[390px] overflow-hidden rounded-[28px] border border-[#d8e3f4] bg-[#f8fbff] shadow-[0_18px_54px_rgba(45,79,137,0.11)]",
-      className,
-    )}>
+    <section
+      className={cn(
+        "shipping-console relative isolate min-h-[390px] overflow-hidden rounded-[28px] border border-[#d8e3f4] bg-[#f8fbff] shadow-[0_18px_54px_rgba(45,79,137,0.11)]",
+        className,
+      )}
+    >
       <Image
         src="/shipping/dock-hero.jpg"
         alt="Складской пост отгрузки"
@@ -172,7 +162,9 @@ export function ShipmentLauncher({
 
       <div className="absolute right-5 top-5 flex items-center gap-3 rounded-2xl border border-[#dce5f2] bg-white/90 px-4 py-3 text-[13px] shadow-[0_8px_28px_rgba(47,75,123,0.08)] backdrop-blur-lg sm:right-7 sm:top-6">
         <span className="relative flex size-2.5">
-          {equipmentOnline && <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-40" />}
+          {equipmentOnline && (
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-40" />
+          )}
           <span className={cn("relative size-2.5 rounded-full", equipmentOnline ? "bg-emerald-500" : "bg-amber-400")} />
         </span>
         <span className="font-semibold text-slate-700">Оборудование</span>
@@ -186,18 +178,22 @@ export function ShipmentLauncher({
           <div className="order-2 flex justify-center lg:order-1 lg:justify-end">
             {cameraLocked ? (
               <AssignedCameraCard camera={cameras[0] ?? null} available={!!camera} />
-            ) : <SelectCard
-              kind="camera"
-              label="Камера"
-              value={cameraSrc}
-              displayValue={camera?.zone}
-              placeholder={availableCameras.length ? "Выберите камеру" : "Нет свободных камер"}
-              onChange={setCameraSrc}
-            >
-              {availableCameras.map((item) => (
-                <option key={item.id} value={item.src}>{item.zone}</option>
-              ))}
-            </SelectCard>}
+            ) : (
+              <SelectCard
+                kind="camera"
+                label="Камера"
+                value={cameraSrc}
+                displayValue={camera?.zone}
+                placeholder={availableCameras.length ? "Выберите камеру" : "Нет свободных камер"}
+                onChange={setCameraSrc}
+              >
+                {availableCameras.map((item) => (
+                  <option key={item.id} value={item.src}>
+                    {item.zone}
+                  </option>
+                ))}
+              </SelectCard>
+            )}
           </div>
 
           <div className="order-1 flex flex-col items-center lg:order-2">
@@ -213,7 +209,9 @@ export function ShipmentLauncher({
                 <Play className="mb-3 size-12 fill-none transition-transform group-hover:scale-110" strokeWidth={1.8} />
               )}
               <span className="text-center text-[20px] font-semibold leading-tight sm:text-[22px]">
-                Начать<br />отгрузку
+                Начать
+                <br />
+                отгрузку
               </span>
               {activeSessionCount > 0 && (
                 <span className="mt-2 flex items-center gap-1.5 text-[11px] text-blue-100">
@@ -234,7 +232,7 @@ export function ShipmentLauncher({
             >
               {orders.map((item) => (
                 <option key={item.id} value={item.id}>
-                  #{item.id} · {item.client_name || "Без клиента"} · {bagCount(item)} меш.
+                  #{item.id} · {item.client_name || "Без клиента"} · {orderedBagCount(item)} меш.
                 </option>
               ))}
             </SelectCard>

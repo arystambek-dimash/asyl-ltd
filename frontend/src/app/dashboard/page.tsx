@@ -1,12 +1,8 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import {
-  ArrowDownRight, ArrowUpRight, BarChart3, ChevronRight, Truck, Video,
-} from "lucide-react";
-import {
-  Area, AreaChart, Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis,
-} from "recharts";
+import { ArrowDownRight, ArrowUpRight, BarChart3, ChevronRight, Truck, Video } from "lucide-react";
+import { Area, AreaChart, Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { AppShell } from "@/components/layout/app-shell";
 import { CameraWall } from "@/components/camera-wall";
 import { ErrorAlert } from "@/components/ui/data-state";
@@ -27,18 +23,34 @@ const TOOLTIP_STYLE = {
 } as const;
 
 const DONUT_COLORS = [
-  "var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)", "var(--muted-foreground)",
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+  "var(--muted-foreground)",
 ];
 
-function CardHeader({ title, sub, href, hrefLabel }: {
-  title: string; sub?: string; href?: string; hrefLabel?: string;
+function CardHeader({
+  title,
+  sub,
+  href,
+  hrefLabel,
+}: {
+  title: string;
+  sub?: string;
+  href?: string;
+  hrefLabel?: string;
 }) {
   return (
     <div className="flex items-center gap-2.5 border-b px-4 py-3">
       <span className="text-sm font-semibold">{title}</span>
       {sub && <span className="text-xs text-[var(--muted-foreground)]">{sub}</span>}
       {href && (
-        <Link href={href} className="ml-auto flex items-center gap-1 text-xs font-medium text-[var(--ring)] hover:underline">
+        <Link
+          href={href}
+          className="ml-auto flex items-center gap-1 text-xs font-medium text-[var(--ring)] hover:underline"
+        >
           {hrefLabel} <ArrowUpRight className="size-3" />
         </Link>
       )}
@@ -53,11 +65,25 @@ function MetricStrip({ m }: { m: DashboardMetrics }) {
   const cells = [
     { label: "На складе", value: formatMoney(m.totalBags), unit: "меш.", hint: "текущий остаток" },
     {
-      label: "Ушло сегодня", value: formatMoney(m.shippedToday), unit: "меш.",
-      hint: `${m.shippedTodayOrders} отгрузок`, delta,
+      label: "Ушло сегодня",
+      value: formatMoney(m.shippedToday),
+      unit: "меш.",
+      hint: `${m.shippedTodayOrders} отгрузок`,
+      delta,
     },
-    { label: "Выручка · 14 дней", value: formatMoney(String(m.periodRevenue)), unit: "₸", hint: `поступило ${formatMoney(String(m.periodReceived))} ₸` },
-    { label: "Долг клиентов", value: formatMoney(String(m.debtTotal)), unit: "₸", hint: `${m.topDebtors.length > 0 ? "по подтверждённым заказам" : "долгов нет"}`, alert: m.debtTotal > 0 },
+    {
+      label: "Выручка · 14 дней",
+      value: formatMoney(String(m.periodRevenue)),
+      unit: "₸",
+      hint: `поступило ${formatMoney(String(m.periodReceived))} ₸`,
+    },
+    {
+      label: "Долг клиентов",
+      value: formatMoney(String(m.debtTotal)),
+      unit: "₸",
+      hint: `${m.topDebtors.length > 0 ? "по подтверждённым заказам" : "долгов нет"}`,
+      alert: m.debtTotal > 0,
+    },
   ] as const;
   return (
     <section className="grid grid-cols-2 divide-y rounded-xl border bg-[var(--card)] shadow-sm sm:divide-x sm:divide-y-0 xl:grid-cols-4 max-sm:divide-x-0">
@@ -65,18 +91,24 @@ function MetricStrip({ m }: { m: DashboardMetrics }) {
         <div key={c.label} className="px-5 py-4">
           <div className="text-[13px] text-[var(--muted-foreground)]">{c.label}</div>
           <div className="mt-1.5 flex items-baseline gap-1.5">
-            <span className={cn(
-              "text-2xl font-semibold tabular-nums tracking-tight",
-              "alert" in c && c.alert && "text-[var(--destructive)]",
-            )}>
+            <span
+              className={cn(
+                "text-2xl font-semibold tabular-nums tracking-tight",
+                "alert" in c && c.alert && "text-[var(--destructive)]",
+              )}
+            >
               {c.value}
             </span>
             {c.unit && <span className="text-sm text-[var(--muted-foreground)]">{c.unit}</span>}
             {"delta" in c && c.delta !== 0 && (
-              <span className={cn(
-                "flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] font-medium tabular-nums",
-                c.delta > 0 ? "bg-[var(--success)]/10 text-[var(--success)]" : "bg-[var(--destructive)]/10 text-[var(--destructive)]",
-              )}>
+              <span
+                className={cn(
+                  "flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] font-medium tabular-nums",
+                  c.delta > 0
+                    ? "bg-[var(--success)]/10 text-[var(--success)]"
+                    : "bg-[var(--destructive)]/10 text-[var(--destructive)]",
+                )}
+              >
                 {c.delta > 0 ? <ArrowUpRight className="size-3" /> : <ArrowDownRight className="size-3" />}
                 {formatMoney(Math.abs(c.delta))}
               </span>
@@ -99,8 +131,13 @@ function ShipmentsCard({ m }: { m: DashboardMetrics }) {
         <div className="h-[180px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={m.shippedByDay} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
-              <XAxis dataKey="label" tickLine={false} axisLine={false}
-                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} interval={1} />
+              <XAxis
+                dataKey="label"
+                tickLine={false}
+                axisLine={false}
+                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                interval={1}
+              />
               <Tooltip
                 cursor={{ fill: "var(--muted)" }}
                 contentStyle={TOOLTIP_STYLE}
@@ -146,8 +183,13 @@ function FinanceCard({ m }: { m: DashboardMetrics }) {
                   <stop offset="100%" stopColor="var(--ring)" stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <XAxis dataKey="label" tickLine={false} axisLine={false}
-                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} interval={1} />
+              <XAxis
+                dataKey="label"
+                tickLine={false}
+                axisLine={false}
+                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                interval={1}
+              />
               <Tooltip
                 contentStyle={TOOLTIP_STYLE}
                 formatter={(v: number, name: string) => [
@@ -162,8 +204,12 @@ function FinanceCard({ m }: { m: DashboardMetrics }) {
           </ResponsiveContainer>
         </div>
         <div className="mt-2 flex items-center gap-4 text-xs text-[var(--muted-foreground)]">
-          <span className="flex items-center gap-1.5"><span className="h-0.5 w-3 rounded bg-[var(--ring)]" /> выручка</span>
-          <span className="flex items-center gap-1.5"><span className="h-0.5 w-3 rounded bg-[var(--success)]" /> поступления</span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-0.5 w-3 rounded bg-[var(--ring)]" /> выручка
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-0.5 w-3 rounded bg-[var(--success)]" /> поступления
+          </span>
         </div>
       </div>
     </section>
@@ -185,8 +231,15 @@ function StockCard({ m }: { m: DashboardMetrics }) {
             <div className="relative h-[132px] w-[132px] shrink-0">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie data={m.stockByProduct} dataKey="bags" nameKey="name"
-                    innerRadius={44} outerRadius={62} paddingAngle={2} strokeWidth={0}>
+                  <Pie
+                    data={m.stockByProduct}
+                    dataKey="bags"
+                    nameKey="name"
+                    innerRadius={44}
+                    outerRadius={62}
+                    paddingAngle={2}
+                    strokeWidth={0}
+                  >
                     {m.stockByProduct.map((_, i) => (
                       <Cell key={i} fill={DONUT_COLORS[i % DONUT_COLORS.length]} />
                     ))}
@@ -202,7 +255,10 @@ function StockCard({ m }: { m: DashboardMetrics }) {
             <div className="flex min-w-0 flex-1 flex-col gap-1.5">
               {m.stockByProduct.map((p, i) => (
                 <div key={p.name} className="flex items-center gap-2 text-xs">
-                  <span className="size-2 shrink-0 rounded-[3px]" style={{ background: DONUT_COLORS[i % DONUT_COLORS.length] }} />
+                  <span
+                    className="size-2 shrink-0 rounded-[3px]"
+                    style={{ background: DONUT_COLORS[i % DONUT_COLORS.length] }}
+                  />
                   <span className="truncate">{p.name}</span>
                   <span className="ml-auto font-medium tabular-nums">{formatMoney(p.bags)}</span>
                 </div>
@@ -230,8 +286,10 @@ function PipelineCard({ m }: { m: DashboardMetrics }) {
               {ORDER_STATUS_LABELS[row.status] ?? row.status}
             </span>
             <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--muted)]">
-              <div className="h-full rounded-full bg-[var(--ring)] transition-all"
-                style={{ width: `${(row.count / max) * 100}%`, opacity: row.count === 0 ? 0 : 1 }} />
+              <div
+                className="h-full rounded-full bg-[var(--ring)] transition-all"
+                style={{ width: `${(row.count / max) * 100}%`, opacity: row.count === 0 ? 0 : 1 }}
+              />
             </div>
             <span className="w-6 shrink-0 text-right text-sm font-semibold tabular-nums">{row.count}</span>
           </div>
@@ -256,7 +314,8 @@ function DebtorsCard({ m }: { m: DashboardMetrics }) {
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm">{d.client_name}</div>
                 <div className="text-[11px] text-[var(--muted-foreground)]">
-                  {d.orders_count} зак.{d.overdue_count > 0 && (
+                  {d.orders_count} зак.
+                  {d.overdue_count > 0 && (
                     <span className="text-[var(--destructive)]"> · {d.overdue_count} просрочено</span>
                   )}
                 </div>
@@ -282,7 +341,10 @@ function QueueBoard({ m }: { m: DashboardMetrics }) {
         <Truck className="size-4 text-[var(--muted-foreground)]" />
         <span className="text-sm font-semibold">Очередь отгрузки</span>
         <span className="text-xs text-[var(--muted-foreground)]">{queue.length} в работе</span>
-        <Link href="/shipping" className="ml-auto flex items-center gap-1 text-xs font-medium text-[var(--ring)] hover:underline">
+        <Link
+          href="/shipping"
+          className="ml-auto flex items-center gap-1 text-xs font-medium text-[var(--ring)] hover:underline"
+        >
           Пост отгрузки <ArrowUpRight className="size-3" />
         </Link>
       </div>
@@ -294,12 +356,17 @@ function QueueBoard({ m }: { m: DashboardMetrics }) {
       ) : (
         <div className="divide-y">
           {queue.map((o) => (
-            <Link key={o.id} href={`/orders/${o.id}`}
-              className="group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-[var(--accent)]">
-              <span className={cn(
-                "size-2 shrink-0 rounded-full",
-                o.status === "loading" ? "bg-[var(--warning)]" : "bg-[var(--ring)]",
-              )} />
+            <Link
+              key={o.id}
+              href={`/orders/${o.id}`}
+              className="group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-[var(--accent)]"
+            >
+              <span
+                className={cn(
+                  "size-2 shrink-0 rounded-full",
+                  o.status === "loading" ? "bg-[var(--warning)]" : "bg-[var(--ring)]",
+                )}
+              />
               <span className="w-28 shrink-0 text-sm font-semibold tabular-nums">
                 {o.truck_number ? formatPlate(o.truck_number) : `#${o.id}`}
               </span>
@@ -328,9 +395,7 @@ const VIEW_STORAGE_KEY = "dashboard:view";
 
 function ViewSwitch({ view, onChange }: { view: DashboardView; onChange: (v: DashboardView) => void }) {
   const tabs = DASHBOARD_VIEWS.map((v) => ({ key: v.key, label: v.label, icon: v.icon }));
-  return (
-    <Tabs tabs={tabs} active={view} onChange={(k) => onChange(k as DashboardView)} />
-  );
+  return <Tabs tabs={tabs} active={view} onChange={(k) => onChange(k as DashboardView)} />;
 }
 
 function AnalyticsView() {
@@ -368,8 +433,7 @@ export default function DashboardPage() {
   };
 
   return (
-    <AppShell title="Главная"
-      tabs={view && <ViewSwitch view={view} onChange={changeView} />}>
+    <AppShell title="Главная" tabs={view && <ViewSwitch view={view} onChange={changeView} />}>
       {view && (view === "analytics" ? <AnalyticsView /> : <CameraWall />)}
     </AppShell>
   );

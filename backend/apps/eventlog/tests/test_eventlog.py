@@ -1,5 +1,4 @@
 import pytest
-from apps.eventlog.models import EventLog
 from apps.eventlog.services import log_event
 
 pytestmark = pytest.mark.django_db

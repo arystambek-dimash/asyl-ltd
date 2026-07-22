@@ -12,7 +12,12 @@ import { ShieldOff } from "lucide-react";
  * perm — строка или массив (нужно ЛЮБОЕ из прав).
  * superuserOnly — раздел доступен только суперадмину (perm игнорируется).
  */
-export function RequirePerm({ perm, superuserOnly = false, title = "Раздел", children }: {
+export function RequirePerm({
+  perm,
+  superuserOnly = false,
+  title = "Раздел",
+  children,
+}: {
   perm: string | string[];
   superuserOnly?: boolean;
   title?: string;
@@ -20,12 +25,14 @@ export function RequirePerm({ perm, superuserOnly = false, title = "Раздел
 }) {
   const { me, loading } = useAuth();
   const codes = Array.isArray(perm) ? perm : [perm];
-  const allowed = superuserOnly
-    ? !!me?.is_superuser
-    : !!me && codes.some((c) => can(me, c));
+  const allowed = superuserOnly ? !!me?.is_superuser : !!me && codes.some((c) => can(me, c));
 
   if (loading) {
-    return <AppShell title={title}><p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p></AppShell>;
+    return (
+      <AppShell title={title}>
+        <p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+      </AppShell>
+    );
   }
   if (!allowed) {
     return (

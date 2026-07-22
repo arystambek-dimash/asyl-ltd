@@ -1,9 +1,7 @@
 import pytest
-from decimal import Decimal
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem, Payment
-from rest_framework.test import APIClient
 
 pytestmark = pytest.mark.django_db
 
@@ -45,8 +43,6 @@ def test_fully_paid_is_not_debt():
 
 
 def test_client_debt_total_excludes_pending_and_instant():
-    api = APIClient()
-    from apps.accounts.models import User
     # use a staff user with clients.view via fixture-like setup
     # simpler: hit the serializer directly
     from apps.clients.serializers import ClientSerializer

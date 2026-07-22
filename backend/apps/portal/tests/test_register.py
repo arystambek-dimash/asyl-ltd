@@ -68,3 +68,23 @@ def test_register_duplicate_username_rejected(api_client, make_user):
                          "first_name": "A", "last_name": "B", "phone": "1"},
                         format="json")
     assert r.status_code == 400
+
+
+@pytest.mark.django_db
+def test_register_rejects_password_similar_to_username(api_client):
+    response = api_client.post(
+        "/api/portal/register/",
+        {
+            "username": "matching-password",
+            "password": "matching-password",
+            "first_name": "Иван",
+            "last_name": "Петров",
+            "company_name": "ТОО Покупатель",
+            "phone": "+77001112233",
+            "iin": "990101300123",
+        },
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert not get_user_model().objects.filter(username="matching-password").exists()

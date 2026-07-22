@@ -13,12 +13,7 @@ export const PasswordInput = React.forwardRef<
   React.useImperativeHandle(ref, () => localRef.current as HTMLInputElement);
   return (
     <div className="relative">
-      <Input
-        type={visible ? "text" : "password"}
-        ref={localRef}
-        className={cn("pr-12", className)}
-        {...props}
-      />
+      <Input type={visible ? "text" : "password"} ref={localRef} className={cn("pr-12", className)} {...props} />
       <button
         type="button"
         onPointerDown={(event) => event.preventDefault()}

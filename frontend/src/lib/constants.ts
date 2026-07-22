@@ -35,24 +35,19 @@ export function orderStatusLabel(status: string): string {
 }
 
 /** Переводит внутренние коды в сообщениях журнала и сворачивает скрытые этапы. */
-export function translateOrderStatusMessage(
-  message: string,
-  payload?: Record<string, unknown>,
-): string {
+export function translateOrderStatusMessage(message: string, payload?: Record<string, unknown>): string {
   const from = typeof payload?.from === "string" ? payload.from : null;
   const to = typeof payload?.to === "string" ? payload.to : null;
   if (to) {
     const fromLabel = from ? orderStatusLabel(from) : null;
     const toLabel = orderStatusLabel(to);
-    const statusText = fromLabel && fromLabel !== toLabel
-      ? `Статус заказа: ${fromLabel} → ${toLabel}`
-      : `Статус заказа: ${toLabel}`;
+    const statusText =
+      fromLabel && fromLabel !== toLabel ? `Статус заказа: ${fromLabel} → ${toLabel}` : `Статус заказа: ${toLabel}`;
     const reason = typeof payload?.reason === "string" ? payload.reason.trim() : "";
     return reason ? `${statusText}. Причина: ${reason}` : statusText;
   }
-  return message.replace(
-    /\b(draft|pending|confirmed|arrived|loading|loaded|shipped|rejected|cancelled)\b/g,
-    (status) => orderStatusLabel(status),
+  return message.replace(/\b(draft|pending|confirmed|arrived|loading|loaded|shipped|rejected|cancelled)\b/g, (status) =>
+    orderStatusLabel(status),
   );
 }
 

@@ -5,6 +5,7 @@ from apps.catalog.models import ClientPrice, Product
 from apps.warehouse.models import StockItem
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
+from apps.portal.serializers import MAX_PORTAL_ORDER_ITEMS, MAX_PORTAL_ITEM_QUANTITY
 
 pytestmark = pytest.mark.django_db
 
@@ -32,6 +33,38 @@ def test_client_creates_own_pending_order(auth_client, client_user):
     assert order.client.user_id == client_user.id
     assert order.settlement_intent == "pending"
     assert order.payment_method == "pending"
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        [],
+        lambda product_id: [
+            {"product": product_id, "quantity": 1},
+            {"product": product_id, "quantity": 2},
+        ],
+        lambda product_id: [
+            {"product": product_id, "quantity": 1}
+            for _ in range(MAX_PORTAL_ORDER_ITEMS + 1)
+        ],
+        lambda product_id: [
+            {"product": product_id, "quantity": MAX_PORTAL_ITEM_QUANTITY + 1}
+        ],
+    ],
+)
+def test_portal_order_rejects_abusive_item_lists(
+    auth_client, client_user, items
+):
+    _client_for(client_user)
+    product = _product()
+    payload_items = items(product.pk) if callable(items) else items
+
+    response = auth_client(client_user).post(
+        "/api/portal/orders/", {"items": payload_items}, format="json"
+    )
+
+    assert response.status_code == 400
+    assert not Order.objects.exists()
 
 
 @pytest.mark.parametrize(

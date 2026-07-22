@@ -1,9 +1,12 @@
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
+from reportlab.platypus import Paragraph as ReportLabParagraph
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
+from apps.orders.invoices import build_invoice_pdf
 from apps.orders.models import Order, OrderItem
 
 pytestmark = pytest.mark.django_db
@@ -51,3 +54,48 @@ def test_invoice_unavailable_before_selecting_method(auth_client, client_user):
 
     assert response.status_code == 400
     assert response.data["code"] == "invoice_not_available"
+
+
+def test_invoice_renders_dynamic_markup_as_text_without_loading_images(
+    client_user, settings,
+):
+    order = _invoice_order(client_user)
+    injected = (
+        'ТОО <Хлеб & Партнёры> "№1" '
+        '<img src="http://127.0.0.1:65535/ssrf.png"/>'
+    )
+    order.client.company_name = injected
+    order.client.iin = "12<34&56>"
+    order.client.save(update_fields=["company_name", "iin"])
+    item = order.items.get()
+    item.product_label_snapshot = injected
+    item.save(update_fields=["product_label_snapshot"])
+    settings.INVOICE_SUPPLIER = {
+        **settings.INVOICE_SUPPLIER,
+        "legal_name": injected,
+        "bank": "Банк <Основной & партнёры>",
+    }
+
+    paragraphs = []
+
+    def capture_paragraph(text, *args, **kwargs):
+        paragraph = ReportLabParagraph(text, *args, **kwargs)
+        paragraphs.append(paragraph)
+        return paragraph
+
+    with (
+        patch("apps.orders.invoices.Paragraph", side_effect=capture_paragraph),
+        patch(
+            "reportlab.platypus.paraparser.ImageReader",
+            side_effect=AssertionError("dynamic invoice text attempted to load an image"),
+        ) as image_reader,
+    ):
+        payload = build_invoice_pdf(order)
+
+    image_reader.assert_not_called()
+    assert payload.startswith(b"%PDF")
+    assert len(payload) > 10_000
+    rendered_text = "\n".join(paragraph.getPlainText() for paragraph in paragraphs)
+    assert injected in rendered_text
+    assert "12<34&56>" in rendered_text
+    assert "Банк <Основной & партнёры>" in rendered_text

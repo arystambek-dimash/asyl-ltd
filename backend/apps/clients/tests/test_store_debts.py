@@ -1,7 +1,4 @@
 import pytest
-from decimal import Decimal
-from datetime import date
-from unittest.mock import patch
 from rest_framework.test import APIClient
 from apps.catalog.models import Product
 from apps.clients.models import Client, Store

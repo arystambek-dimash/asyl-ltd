@@ -1,7 +1,7 @@
 import pytest
 from apps.catalog.models import Product
 from apps.warehouse.models import StockItem, StockMovement
-from apps.warehouse.services import adjust_stock, receive_stock, deduct_stock
+from apps.warehouse.services import adjust_stock, deduct_stock
 from rest_framework.exceptions import ValidationError
 
 pytestmark = pytest.mark.django_db

@@ -1,6 +1,9 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
-from decimal import Decimal
-from rest_framework.test import APIClient
+from django.contrib.auth import get_user_model
+from django.db import close_old_connections
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem, Payment
@@ -59,3 +62,30 @@ def test_client_pay_does_not_duplicate_pending(make_user):
     create_client_payment(o, "card", user)
     # Несколько кликов «оплатил» не плодят дубли — одна заявка на оплату.
     assert o.payments.filter(status="received").count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_client_payments_share_one_pending_request(make_user):
+    user = make_user(username="parallel-client", client=True)
+    client = Client.objects.create(
+        first_name="Параллельный", last_name="Клиент", phone="x", user=user)
+    order = _shipped_order(client)
+    barrier = Barrier(2)
+
+    def create(method):
+        close_old_connections()
+        try:
+            local_order = Order.objects.get(pk=order.pk)
+            local_user = get_user_model().objects.get(pk=user.pk)
+            barrier.wait(timeout=5)
+            return create_client_payment(local_order, method, local_user).pk
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        payment_ids = list(executor.map(create, ("card", "kaspi")))
+
+    assert payment_ids[0] == payment_ids[1]
+    assert Payment.objects.filter(
+        order=order, status__in=Payment.IN_PROGRESS_STATUSES
+    ).count() == 1

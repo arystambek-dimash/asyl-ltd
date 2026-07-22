@@ -2,7 +2,12 @@
 import { cn } from "@/lib/utils";
 
 /** Карточка-сводка в стиле кассовых отчётов: крупное значение + расшифровка. */
-export function SummaryCard({ title, value, tone = "plain", rows }: {
+export function SummaryCard({
+  title,
+  value,
+  tone = "plain",
+  rows,
+}: {
   title: string;
   value: string;
   tone?: "success" | "destructive" | "primary" | "plain";

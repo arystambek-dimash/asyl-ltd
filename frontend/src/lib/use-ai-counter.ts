@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, apiError } from "@/lib/api";
+import { api, apiError, isCanceledRequest } from "@/lib/api";
 
 /**
  * AI-подсчёт мешков на камере (ai_service через бэкенд-прокси).
@@ -37,56 +37,118 @@ const POLL_LIVE_MS = 1500;
 const POLL_BUSY_MS = 2500;
 const POLL_IDLE_MS = 10_000;
 
+function pollDelay(status: AiStatus | null): number {
+  return status?.running ? POLL_LIVE_MS : status?.busy ? POLL_BUSY_MS : POLL_IDLE_MS;
+}
+
 /** cam — NVR-путь камеры у ai_service/MediaMTX, строго cam<N>. */
 export function useAiCounter(cam: string | null, orderId: number | null, active: boolean) {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const latestPoll = useRef(0);
+  const scopeGeneration = useRef(0);
+  const statusRef = useRef<AiStatus | null>(null);
+  const reschedulePolling = useRef<() => void>(() => {});
 
-  const refresh = useCallback(async () => {
-    if (!cam || !orderId) return;
-    // Ответы поллинга могут приходить не по порядку — устаревший тик не должен
-    // откатывать счётчик назад.
-    const requestId = ++latestPoll.current;
-    try {
-      const res = await api.get<AiStatus>(`/cameras/${cam}/ai/?order_id=${orderId}`);
-      if (requestId === latestPoll.current) setStatus(res.data);
-    } catch {
-      // тик статуса не должен ронять пост — не настроен/недоступен ≈ выключен
-      if (requestId === latestPoll.current) setStatus(null);
-    }
-  }, [cam, orderId]);
-
-  // Смена камеры или уход с шага — прежний статус больше не про эту камеру.
+  // Polls are serialized and scheduled only after the previous request has
+  // settled. Scope changes abort and invalidate any response from the old
+  // camera/order instead of letting it restore stale status.
   useEffect(() => {
+    const scope = ++scopeGeneration.current;
+    latestPoll.current += 1;
+    statusRef.current = null;
     setStatus(null);
     setError("");
-  }, [cam, orderId, active]);
+    setBusy(false);
+    if (!active || !cam || !orderId) return;
+
+    let disposed = false;
+    let polling = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let controller: AbortController | null = null;
+
+    const schedule = (delay: number) => {
+      if (disposed) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        void poll();
+      }, delay);
+    };
+
+    const poll = async () => {
+      if (disposed || polling) return;
+      if (document.hidden) {
+        schedule(pollDelay(statusRef.current));
+        return;
+      }
+      polling = true;
+      controller = new AbortController();
+      const requestId = ++latestPoll.current;
+      try {
+        const response = await api.get<AiStatus>(`/cameras/${cam}/ai/?order_id=${orderId}`, {
+          signal: controller.signal,
+        });
+        if (disposed || scope !== scopeGeneration.current || requestId !== latestPoll.current) return;
+        statusRef.current = response.data;
+        setStatus(response.data);
+      } catch (cause) {
+        if (disposed || isCanceledRequest(cause)) return;
+        if (scope === scopeGeneration.current && requestId === latestPoll.current) {
+          // A status tick must not take down the loading post.
+          statusRef.current = null;
+          setStatus(null);
+        }
+      } finally {
+        polling = false;
+        controller = null;
+        schedule(pollDelay(statusRef.current));
+      }
+    };
+
+    const pollNow = () => {
+      if (document.hidden || disposed) return;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      void poll();
+    };
+    reschedulePolling.current = () => schedule(pollDelay(statusRef.current));
+    document.addEventListener("visibilitychange", pollNow);
+    window.addEventListener("online", pollNow);
+    void poll();
+
+    return () => {
+      disposed = true;
+      scopeGeneration.current += 1;
+      latestPoll.current += 1;
+      reschedulePolling.current = () => {};
+      if (timer) clearTimeout(timer);
+      controller?.abort();
+      document.removeEventListener("visibilitychange", pollNow);
+      window.removeEventListener("online", pollNow);
+    };
+  }, [active, cam, orderId]);
 
   const running = !!status?.running;
   const occupied = !!status?.busy;
-  useEffect(() => {
-    if (!active || !cam || !orderId) return;
-    refresh();
-    const t = setInterval(() => {
-      if (!document.hidden) refresh();
-    }, running ? POLL_LIVE_MS : occupied ? POLL_BUSY_MS : POLL_IDLE_MS);
-    return () => clearInterval(t);
-  }, [active, cam, orderId, occupied, refresh, running]);
 
   const act = useCallback(async (fn: () => Promise<{ data: AiStatus }>) => {
+    const scope = scopeGeneration.current;
     setBusy(true);
     setError("");
     try {
       const res = await fn();
+      if (scope !== scopeGeneration.current) return;
       latestPoll.current += 1; // ответ действия свежее любого выпущенного тика
+      statusRef.current = res.data;
       setStatus(res.data);
+      reschedulePolling.current();
     } catch (e) {
-      setError(apiError(e));
+      if (scope === scopeGeneration.current) setError(apiError(e));
       throw e; // вызывающий решает, важна ли ошибка (стоп при завершении — нет)
     } finally {
-      setBusy(false);
+      if (scope === scopeGeneration.current) setBusy(false);
     }
   }, []);
 
@@ -96,26 +158,21 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
   const orderParams = useCallback(() => ({ params: { order_id: orderId } }), [orderId]);
 
   const start = useCallback(
-    () => act(() => api.post<AiStatus>(
-      `/cameras/${cam}/ai/`,
-      { order_id: orderId },
-      orderParams(),
-    )),
+    () => act(() => api.post<AiStatus>(`/cameras/${cam}/ai/`, { order_id: orderId }, orderParams())),
     [act, cam, orderId, orderParams],
   );
   const stop = useCallback(
-    (completeOrder = false) => act(() => api.delete<AiStatus>(`/cameras/${cam}/ai/`, {
-      params: { order_id: orderId, complete_order: completeOrder ? 1 : 0 },
-      data: { order_id: orderId, complete_order: completeOrder },
-    })),
+    (completeOrder = false) =>
+      act(() =>
+        api.delete<AiStatus>(`/cameras/${cam}/ai/`, {
+          params: { order_id: orderId, complete_order: completeOrder ? 1 : 0 },
+          data: { order_id: orderId, complete_order: completeOrder },
+        }),
+      ),
     [act, cam, orderId],
   );
   const reset = useCallback(
-    () => act(() => api.post<AiStatus>(
-      `/cameras/${cam}/ai/reset/`,
-      { order_id: orderId },
-      orderParams(),
-    )),
+    () => act(() => api.post<AiStatus>(`/cameras/${cam}/ai/reset/`, { order_id: orderId }, orderParams())),
     [act, cam, orderId, orderParams],
   );
 

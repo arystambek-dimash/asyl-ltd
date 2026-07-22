@@ -17,9 +17,7 @@ import { ArrowLeft, CheckCircle2, Save, Search, Tags } from "lucide-react";
 
 function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { data, loading, error: loadError, reload } = useApi<ClientPriceSheet>(
-    `/clients/${id}/prices/`,
-  );
+  const { data, loading, error: loadError, reload } = useApi<ClientPriceSheet>(`/clients/${id}/prices/`);
   const [values, setValues] = useState<Record<string, string>>({});
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -29,9 +27,7 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
 
   useEffect(() => {
     if (!data) return;
-    setValues(Object.fromEntries(data.prices.map((row) => [
-      `${row.product}:${row.currency}`, row.price ?? "",
-    ])));
+    setValues(Object.fromEntries(data.prices.map((row) => [`${row.product}:${row.currency}`, row.price ?? ""])));
     setDirty(false);
   }, [data]);
 
@@ -41,9 +37,7 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
     for (const row of data?.prices ?? []) {
       if (!products.has(row.product)) products.set(row.product, row);
     }
-    return [...products.values()].filter(
-      (row) => !needle || row.product_label.toLowerCase().includes(needle),
-    );
+    return [...products.values()].filter((row) => !needle || row.product_label.toLowerCase().includes(needle));
   }, [data, query]);
 
   if (!data) {
@@ -65,7 +59,9 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
   }
 
   async function save() {
-    setBusy(true); setError(""); setSaved(false);
+    setBusy(true);
+    setError("");
+    setSaved(false);
     try {
       await api.put(`/clients/${id}/prices/`, {
         prices: priceRows.map((row) => ({
@@ -75,7 +71,8 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
         })),
       });
       await reload();
-      setDirty(false); setSaved(true);
+      setDirty(false);
+      setSaved(true);
     } catch (e) {
       setError(apiError(e));
     } finally {
@@ -86,8 +83,11 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
   return (
     <AppShell title="Прайс-лист клиента" section="Работа">
       <div className="mb-5 flex flex-wrap items-center gap-3 border-b pb-4">
-        <Link href="/clients" aria-label="К клиентам"
-          className="grid size-9 place-items-center rounded-lg border bg-[var(--card)] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)]/60 hover:text-[var(--foreground)]">
+        <Link
+          href="/clients"
+          aria-label="К клиентам"
+          className="grid size-9 place-items-center rounded-lg border bg-[var(--card)] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)]/60 hover:text-[var(--foreground)]"
+        >
           <ArrowLeft className="size-4" />
         </Link>
         <div className="grid size-10 place-items-center rounded-xl bg-[var(--primary)]/10 text-[var(--primary)]">
@@ -118,8 +118,12 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative w-full sm:w-80">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-          <Input className="pl-9" placeholder="Найти товар" value={query}
-            onChange={(event) => setQuery(event.target.value)} />
+          <Input
+            className="pl-9"
+            placeholder="Найти товар"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
         </div>
         {saved && (
           <span className="flex items-center gap-1.5 text-sm text-[var(--success)]">
@@ -147,8 +151,7 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
             <TBody>
               {filtered.map((row) => {
                 const byCurrency = Object.fromEntries(
-                  priceRows.filter((item) => item.product === row.product)
-                    .map((item) => [item.currency, item]),
+                  priceRows.filter((item) => item.product === row.product).map((item) => [item.currency, item]),
                 ) as Record<"KZT" | "USD", (typeof priceRows)[number]>;
                 return (
                   <TR key={row.product}>
@@ -159,10 +162,16 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
                         <TD key={currency}>
                           <div className="ml-auto max-w-52">
                             <div className="relative">
-                              <Input type="number" min="0.01" step="0.01" inputMode="decimal"
-                                className="pr-9 text-right tabular-nums" placeholder="Не закреплена"
+                              <Input
+                                type="number"
+                                min="0.01"
+                                step="0.01"
+                                inputMode="decimal"
+                                className="pr-9 text-right tabular-nums"
+                                placeholder="Не закреплена"
                                 value={values[`${row.product}:${currency}`] ?? ""}
-                                onChange={(event) => setPrice(row.product, currency, event.target.value)} />
+                                onChange={(event) => setPrice(row.product, currency, event.target.value)}
+                              />
                               <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm font-medium text-[var(--muted-foreground)]">
                                 {currency === "USD" ? "$" : "₸"}
                               </span>
@@ -179,9 +188,11 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
                 );
               })}
               {filtered.length === 0 && (
-                <TR><TD colSpan={3} className="py-12 text-center text-[var(--muted-foreground)]">
-                  Товары не найдены
-                </TD></TR>
+                <TR>
+                  <TD colSpan={3} className="py-12 text-center text-[var(--muted-foreground)]">
+                    Товары не найдены
+                  </TD>
+                </TR>
               )}
             </TBody>
           </Table>

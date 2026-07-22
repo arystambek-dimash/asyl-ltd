@@ -46,18 +46,28 @@ function ProductsPageInner() {
   const [restoreBusyId, setRestoreBusyId] = useState<number | null>(null);
 
   function openNew() {
-    setEditing(null); setName(""); setColor("Red"); setWeight("50");
-    setAskWeight(false); setError(""); setOpen(true);
+    setEditing(null);
+    setName("");
+    setColor("Red");
+    setWeight("50");
+    setAskWeight(false);
+    setError("");
+    setOpen(true);
   }
   function openEdit(p: Product) {
-    setEditing(p); setName(p.name); setColor(p.color ?? "Red");
+    setEditing(p);
+    setName(p.name);
+    setColor(p.color ?? "Red");
     setWeight(String(Number(p.weight_kg)));
     setAskWeight(p.ask_truck_weight ?? false);
-    setError(""); setOpen(true);
+    setError("");
+    setOpen(true);
   }
 
   async function save(e: React.FormEvent) {
-    e.preventDefault(); setBusy(true); setError("");
+    e.preventDefault();
+    setBusy(true);
+    setError("");
     try {
       const body = {
         name,
@@ -67,24 +77,43 @@ function ProductsPageInner() {
       };
       if (editing) await api.patch(`/products/${editing.id}/`, body);
       else await api.post("/products/", body);
-      setOpen(false); reload();
-    } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
+      setOpen(false);
+      reload();
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function confirmArchive() {
     if (!arcItem) return;
-    setArcBusy(true); setArcError("");
+    setArcBusy(true);
+    setArcError("");
     try {
       await api.post(`/products/${arcItem.id}/archive/`);
-      setArcItem(null); reload(); reloadArchived();
-    } catch (e) { setArcError(apiError(e)); } finally { setArcBusy(false); }
+      setArcItem(null);
+      reload();
+      reloadArchived();
+    } catch (e) {
+      setArcError(apiError(e));
+    } finally {
+      setArcBusy(false);
+    }
   }
 
   async function restore(p: Product) {
-    setRestoreBusyId(p.id); setRestoreError("");
-    try { await api.post(`/products/${p.id}/restore/`); reload(); reloadArchived(); }
-    catch (e) { setRestoreError(apiError(e)); }
-    finally { setRestoreBusyId(null); }
+    setRestoreBusyId(p.id);
+    setRestoreError("");
+    try {
+      await api.post(`/products/${p.id}/restore/`);
+      reload();
+      reloadArchived();
+    } catch (e) {
+      setRestoreError(apiError(e));
+    } finally {
+      setRestoreBusyId(null);
+    }
   }
 
   const [sortKey, setSortKey] = useState("name");
@@ -93,7 +122,10 @@ function ProductsPageInner() {
   const archiveList = archived ?? [];
   const toggleSort = (k: string) => {
     if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
-    else { setSortKey(k); setSortDir("asc"); }
+    else {
+      setSortKey(k);
+      setSortDir("asc");
+    }
   };
   const sorted = [...list].sort((a, b) => {
     const cmp = a.name.localeCompare(b.name, "ru");
@@ -101,21 +133,32 @@ function ProductsPageInner() {
   });
 
   return (
-    <AppShell title="Товары" section="Работа" description={canViewColor
-      ? "Номенклатура: сорт, цвет и фасовка. Цены закрепляются отдельно в прайс-листе каждого клиента."
-      : "Номенклатура: сорт и фасовка. Цены закрепляются отдельно в прайс-листе каждого клиента."}
+    <AppShell
+      title="Товары"
+      section="Работа"
+      description={
+        canViewColor
+          ? "Номенклатура: сорт, цвет и фасовка. Цены закрепляются отдельно в прайс-листе каждого клиента."
+          : "Номенклатура: сорт и фасовка. Цены закрепляются отдельно в прайс-листе каждого клиента."
+      }
       tabs={
-        <Tabs active={tab} onChange={(k) => setTab(k as "active" | "archive")}
+        <Tabs
+          active={tab}
+          onChange={(k) => setTab(k as "active" | "archive")}
           tabs={[
             { key: "active", label: "Товары", icon: Check },
             { key: "archive", label: "Архив", icon: Archive },
-          ]} />
+          ]}
+        />
       }
-      actions={canCreate && (
-        <Button size="sm" onClick={openNew} aria-label="Создать товар">
-          <Plus className="size-4" /> <span className="hidden sm:inline">Создать товар</span>
-        </Button>
-      )}>
+      actions={
+        canCreate && (
+          <Button size="sm" onClick={openNew} aria-label="Создать товар">
+            <Plus className="size-4" /> <span className="hidden sm:inline">Создать товар</span>
+          </Button>
+        )
+      }
+    >
       <div className="mb-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <StatCard label="Активных товаров" value={String(list.length)} accent />
@@ -123,7 +166,11 @@ function ProductsPageInner() {
         </div>
       </div>
 
-      {loadError && !products && <div className="mb-4"><ErrorAlert message={loadError} onRetry={reload} /></div>}
+      {loadError && !products && (
+        <div className="mb-4">
+          <ErrorAlert message={loadError} onRetry={reload} />
+        </div>
+      )}
 
       {tab === "archive" ? (
         <Card>
@@ -134,9 +181,14 @@ function ProductsPageInner() {
               </p>
             )}
             <Table>
-              <THead><TR>
-                <TH>Название</TH>{canViewColor && <TH>Цвет</TH>}<TH>Фасовка</TH><TH></TH>
-              </TR></THead>
+              <THead>
+                <TR>
+                  <TH>Название</TH>
+                  {canViewColor && <TH>Цвет</TH>}
+                  <TH>Фасовка</TH>
+                  <TH></TH>
+                </TR>
+              </THead>
               <TBody>
                 {archiveList.map((p) => (
                   <TR key={p.id}>
@@ -147,9 +199,12 @@ function ProductsPageInner() {
                       <div className="flex items-center justify-end gap-1">
                         <Badge tone="muted">В архиве</Badge>
                         {canEdit && (
-                          <Button size="sm" variant="outline"
+                          <Button
+                            size="sm"
+                            variant="outline"
                             disabled={restoreBusyId === p.id}
-                            onClick={() => restore(p)}>
+                            onClick={() => restore(p)}
+                          >
                             <ArchiveRestore className="size-4" /> Восстановить
                           </Button>
                         )}
@@ -158,8 +213,11 @@ function ProductsPageInner() {
                   </TR>
                 ))}
                 {archiveList.length === 0 && (
-                  <TR><TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
-                    Архив пуст.</TD></TR>
+                  <TR>
+                    <TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
+                      Архив пуст.
+                    </TD>
+                  </TR>
                 )}
               </TBody>
             </Table>
@@ -169,12 +227,20 @@ function ProductsPageInner() {
         <Card>
           <CardContent className="pt-6">
             <Table>
-              <THead><TR>
-                <SortableHeader label="Название" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-                {canViewColor && <TH>Цвет</TH>}
-                <TH>Фасовка</TH>
-                <TH></TH>
-              </TR></THead>
+              <THead>
+                <TR>
+                  <SortableHeader
+                    label="Название"
+                    sortKey="name"
+                    activeKey={sortKey}
+                    dir={sortDir}
+                    onClick={toggleSort}
+                  />
+                  {canViewColor && <TH>Цвет</TH>}
+                  <TH>Фасовка</TH>
+                  <TH></TH>
+                </TR>
+              </THead>
               <TBody>
                 {sorted.map((p) => (
                   <TR key={p.id}>
@@ -189,9 +255,16 @@ function ProductsPageInner() {
                           </Button>
                         )}
                         {canEdit && (
-                          <Button size="sm" variant="ghost"
+                          <Button
+                            size="sm"
+                            variant="ghost"
                             className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                            onClick={() => { setArcError(""); setArcItem(p); }} title="В архив">
+                            onClick={() => {
+                              setArcError("");
+                              setArcItem(p);
+                            }}
+                            title="В архив"
+                          >
                             <Archive className="size-4" />
                           </Button>
                         )}
@@ -200,8 +273,11 @@ function ProductsPageInner() {
                   </TR>
                 ))}
                 {sorted.length === 0 && (
-                  <TR><TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
-                    Товаров пока нет.</TD></TR>
+                  <TR>
+                    <TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
+                      Товаров пока нет.
+                    </TD>
+                  </TR>
                 )}
               </TBody>
             </Table>
@@ -209,32 +285,46 @@ function ProductsPageInner() {
         </Card>
       )}
 
-      <Modal open={open} onClose={() => setOpen(false)}
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
         eyebrow={editing ? "Номенклатура · Изменение" : "Номенклатура · Товар"}
         title={editing ? "Изменить товар" : "Новый товар"}
         description={canViewColor ? "Сорт, цвет (тип) и фасовка." : "Сорт и фасовка."}
         footer={
           <>
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+              Отмена
+            </Button>
             <Button type="submit" form="product-form" disabled={busy}>
-              {busy ? "Сохранение…" : editing ? "Сохранить" : "Создать"}</Button>
+              {busy ? "Сохранение…" : editing ? "Сохранить" : "Создать"}
+            </Button>
           </>
-        }>
+        }
+      >
         <form id="product-form" onSubmit={save} className="flex flex-col gap-4">
-          <Field label="Название">
-            <Input value={name} autoFocus placeholder="напр. Высший сорт"
-              onChange={(e) => setName(e.target.value)} required />
+          <Field label="Название" htmlFor="product-name">
+            <Input
+              id="product-name"
+              value={name}
+              autoFocus
+              placeholder="напр. Высший сорт"
+              onChange={(e) => setName(e.target.value)}
+              required
+            />
           </Field>
           <div className={`grid grid-cols-1 gap-3 ${canViewColor ? "sm:grid-cols-2" : ""}`}>
-            {canViewColor && <Field label="Цвет (тип)">
-              <Select value={color} onChange={(e) => setColor(e.target.value)}>
-                <option value="Red">Красный</option>
-                <option value="Green">Зелёный</option>
-                <option value="Blue">Синий</option>
-              </Select>
-            </Field>}
-            <Field label="Фасовка">
-              <Select value={weight} onChange={(e) => setWeight(e.target.value)}>
+            {canViewColor && (
+              <Field label="Цвет (тип)" htmlFor="product-color">
+                <Select id="product-color" value={color} onChange={(e) => setColor(e.target.value)}>
+                  <option value="Red">Красный</option>
+                  <option value="Green">Зелёный</option>
+                  <option value="Blue">Синий</option>
+                </Select>
+              </Field>
+            )}
+            <Field label="Фасовка" htmlFor="product-weight">
+              <Select id="product-weight" value={weight} onChange={(e) => setWeight(e.target.value)}>
                 <option value="50">50 кг</option>
                 <option value="25">25 кг</option>
                 <option value="10">10 кг</option>
@@ -244,8 +334,12 @@ function ProductsPageInner() {
             </Field>
           </div>
           <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border p-3">
-            <input type="checkbox" className="mt-0.5 size-4 accent-[var(--primary)]"
-              checked={askWeight} onChange={(e) => setAskWeight(e.target.checked)} />
+            <input
+              type="checkbox"
+              className="mt-0.5 size-4 accent-[var(--primary)]"
+              checked={askWeight}
+              onChange={(e) => setAskWeight(e.target.checked)}
+            />
             <span className="text-sm">
               <span className="font-medium">Спрашивать вес машины при въезде</span>
               <span className="block text-xs text-[var(--muted-foreground)]">
@@ -265,7 +359,11 @@ function ProductsPageInner() {
         open={!!arcItem}
         onClose={() => setArcItem(null)}
         title="Отправить товар в архив?"
-        description={arcItem ? `«${arcItem.label}» уйдёт в архив: пропадёт из выбора новых заказов. Старые заказы и отчёты не изменятся. Можно восстановить.` : ""}
+        description={
+          arcItem
+            ? `«${arcItem.label}» уйдёт в архив: пропадёт из выбора новых заказов. Старые заказы и отчёты не изменятся. Можно восстановить.`
+            : ""
+        }
         busy={arcBusy}
         error={arcError}
         onConfirm={confirmArchive}
@@ -275,5 +373,9 @@ function ProductsPageInner() {
 }
 
 export default function ProductsPage() {
-  return <RequirePerm perm="catalog.view" title="Товары"><ProductsPageInner /></RequirePerm>;
+  return (
+    <RequirePerm perm="catalog.view" title="Товары">
+      <ProductsPageInner />
+    </RequirePerm>
+  );
 }

@@ -1,12 +1,24 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import {
-  LayoutDashboard, Boxes, ClipboardList, Users, Truck,
-  ScrollText, BarChart3, Package, ChevronDown, ChevronRight, Settings, X, Store,
-  HandCoins, ScanLine,
+  LayoutDashboard,
+  Boxes,
+  ClipboardList,
+  Users,
+  Truck,
+  ScrollText,
+  BarChart3,
+  Package,
+  ChevronDown,
+  ChevronRight,
+  Settings,
+  X,
+  Store,
+  HandCoins,
+  ScanLine,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { can } from "@/lib/can";
@@ -14,7 +26,12 @@ import type { Me } from "@/lib/types";
 
 // perm — строка или массив (нужно ЛЮБОЕ из прав), как в RequirePerm.
 type Perm = string | string[];
-interface NavChild { href: string; label: string; perm?: Perm; superuser?: boolean; }
+interface NavChild {
+  href: string;
+  label: string;
+  perm?: Perm;
+  superuser?: boolean;
+}
 interface NavItem {
   href?: string;
   label: string;
@@ -22,7 +39,10 @@ interface NavItem {
   perm?: Perm;
   children?: NavChild[];
 }
-interface NavSection { title: string; items: NavItem[]; }
+interface NavSection {
+  title: string;
+  items: NavItem[];
+}
 
 // Пункт виден, если у пользователя есть ЛЮБОЕ из перечисленных прав.
 function hasNavPerm(me: Me, perm?: Perm): boolean {
@@ -59,7 +79,8 @@ function staffSections(): NavSection[] {
       items: [
         { href: "/events", label: "Журнал", icon: ScrollText, perm: "events.view" },
         {
-          label: "Доступы", icon: Settings,
+          label: "Доступы",
+          icon: Settings,
           children: [
             { href: "/management/employees", label: "Сотрудники", perm: "employees.view" },
             { href: "/management/roles", label: "Роли", perm: "rbac.view" },
@@ -92,7 +113,7 @@ function NavLeaf({ href, label, icon: Icon }: { href: string; label: string; ico
         "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
         active
           ? "bg-[var(--sidebar-accent)] font-medium text-[var(--sidebar-accent-foreground)]"
-          : "text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)]/60 hover:text-[var(--sidebar-foreground)]"
+          : "text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)]/60 hover:text-[var(--sidebar-foreground)]",
       )}
     >
       <Icon className="size-[18px] shrink-0" />
@@ -104,9 +125,7 @@ function NavLeaf({ href, label, icon: Icon }: { href: string; label: string; ico
 function NavGroup({ item }: { item: NavItem }) {
   const pathname = usePathname();
   const Icon = item.icon;
-  const childActive = item.children!.some(
-    (c) => pathname === c.href || pathname.startsWith(c.href + "/")
-  );
+  const childActive = item.children!.some((c) => pathname === c.href || pathname.startsWith(c.href + "/"));
   const [open, setOpen] = useState(childActive);
 
   return (
@@ -117,7 +136,7 @@ function NavGroup({ item }: { item: NavItem }) {
           "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
           childActive
             ? "font-medium text-[var(--sidebar-foreground)]"
-            : "text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)]/60 hover:text-[var(--sidebar-foreground)]"
+            : "text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)]/60 hover:text-[var(--sidebar-foreground)]",
         )}
       >
         <Icon className="size-[18px] shrink-0" />
@@ -136,7 +155,7 @@ function NavGroup({ item }: { item: NavItem }) {
                   "rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
                   active
                     ? "bg-[var(--sidebar-accent)] font-medium text-[var(--sidebar-accent-foreground)]"
-                    : "text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)]/60 hover:text-[var(--sidebar-foreground)]"
+                    : "text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)]/60 hover:text-[var(--sidebar-foreground)]",
                 )}
               >
                 {c.label}
@@ -159,11 +178,12 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
     .map((s) => ({
       ...s,
       items: s.items
-        .map((i) => i.children
-          ? { ...i, children: i.children.filter((c) =>
-              hasNavPerm(me, c.perm) && (!c.superuser || me.is_superuser)) }
-          : i)
-        .filter((i) => hasNavPerm(me, i.perm) && (!i.children || i.children.length > 0))
+        .map((i) =>
+          i.children
+            ? { ...i, children: i.children.filter((c) => hasNavPerm(me, c.perm) && (!c.superuser || me.is_superuser)) }
+            : i,
+        )
+        .filter((i) => hasNavPerm(me, i.perm) && (!i.children || i.children.length > 0)),
     }))
     .filter((s) => s.items.length > 0);
 
@@ -173,8 +193,14 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
     <>
       {/* профиль вверху */}
       <div className="flex items-center gap-2.5 px-3 py-3">
-        <Image src="/logo-mark.png" alt="ASYL-LTD" width={28} height={28}
-          className="size-7 shrink-0 rounded-md object-contain" priority />
+        <Image
+          src="/logo-mark.png"
+          alt="ASYL-LTD"
+          width={28}
+          height={28}
+          className="size-7 shrink-0 rounded-md object-contain"
+          priority
+        />
         <div className="min-w-0 leading-tight">
           <div className="truncate text-[13px] font-semibold">ASYL-LTD</div>
           <div className="truncate text-[11px] text-[var(--muted-foreground)]">
@@ -191,9 +217,11 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
               {section.title}
             </div>
             {section.items.map((item) =>
-              item.children
-                ? <NavGroup key={item.label} item={item} />
-                : <NavLeaf key={item.href} href={item.href!} label={item.label} icon={item.icon} />
+              item.children ? (
+                <NavGroup key={item.label} item={item} />
+              ) : (
+                <NavLeaf key={item.href} href={item.href!} label={item.label} icon={item.icon} />
+              ),
             )}
           </div>
         ))}
@@ -210,19 +238,62 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
   );
 }
 
-export function Sidebar({
-  me, mobileOpen = false, onClose,
-}: { me: Me; mobileOpen?: boolean; onClose?: () => void }) {
+export function Sidebar({ me, mobileOpen = false, onClose }: { me: Me; mobileOpen?: boolean; onClose?: () => void }) {
   const pathname = usePathname();
+  const mobilePanelRef = useRef<HTMLElement>(null);
+  const mobileCloseRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
 
   // Закрываем мобильную панель при смене маршрута.
-  useEffect(() => { onClose?.(); }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    onClose?.();
+  }, [onClose, pathname]);
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusFrame = requestAnimationFrame(() => mobileCloseRef.current?.focus());
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose?.();
+        return;
+      }
+      if (event.key !== "Tab" || !mobilePanelRef.current) return;
+      const focusable = Array.from(
+        mobilePanelRef.current.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => !element.closest("[inert]"));
+      const first = focusable[0] ?? mobilePanelRef.current;
+      const last = focusable.at(-1) ?? mobilePanelRef.current;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", onKeyDown);
+      const restoreTarget = restoreFocusRef.current;
+      restoreFocusRef.current = null;
+      if (restoreTarget?.isConnected && !restoreTarget.matches(":disabled")) {
+        restoreTarget.focus();
+      }
+    };
+  }, [mobileOpen, onClose]);
 
   return (
     <>
       {/* десктоп: постоянный сайдбар */}
-      <aside data-tour="nav"
-        className="hidden w-[248px] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)] md:flex">
+      <aside
+        data-tour="nav"
+        className="hidden w-[248px] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)] md:flex"
+      >
         <SidebarContent me={me} />
       </aside>
 
@@ -230,19 +301,26 @@ export function Sidebar({
       <div
         className={cn("fixed inset-0 z-50 md:hidden", mobileOpen ? "" : "pointer-events-none")}
         aria-hidden={!mobileOpen}
+        inert={!mobileOpen}
       >
         <div
-          className={cn("absolute inset-0 bg-black/50 transition-opacity",
-            mobileOpen ? "opacity-100" : "opacity-0")}
+          className={cn("absolute inset-0 bg-black/50 transition-opacity", mobileOpen ? "opacity-100" : "opacity-0")}
           onClick={onClose}
         />
         <aside
+          ref={mobilePanelRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Меню навигации"
+          tabIndex={-1}
           className={cn(
             "absolute inset-y-0 left-0 flex w-[248px] max-w-[80vw] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)] shadow-xl transition-transform",
-            mobileOpen ? "translate-x-0" : "-translate-x-full"
+            mobileOpen ? "translate-x-0" : "-translate-x-full",
           )}
         >
           <button
+            ref={mobileCloseRef}
+            type="button"
             onClick={onClose}
             className="absolute right-2 top-2 flex size-8 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)]/60"
             aria-label="Закрыть меню"

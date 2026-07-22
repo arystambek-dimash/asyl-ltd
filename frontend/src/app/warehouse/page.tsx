@@ -75,22 +75,27 @@ function WarehousePageInner() {
   const availableProducts = (products ?? []).filter((item) => !stockedProductIds.has(item.id));
   const grades = useMemo(() => Array.from(new Set(items.map((s) => s.grade))).filter(Boolean), [items]);
   const packagings = useMemo(() => Array.from(new Set(items.map((s) => s.packaging))).filter(Boolean), [items]);
-  const bagsByProduct = useMemo(
-    () => new Map(items.map((s) => [String(s.product), s.bags])), [items]);
+  const bagsByProduct = useMemo(() => new Map(items.map((s) => [String(s.product), s.bags])), [items]);
 
   const normalizedSearch = search.trim().toLowerCase();
-  const filtered = items.filter((s) =>
-    (!normalizedSearch || [s.product_label, s.grade, s.color_label, s.packaging]
-      .some((value) => value.toLowerCase().includes(normalizedSearch))) &&
-    (!grade || s.grade === grade) &&
-    (!packaging || s.packaging === packaging)
+  const filtered = items.filter(
+    (s) =>
+      (!normalizedSearch ||
+        [s.product_label, s.grade, s.color_label, s.packaging].some((value) =>
+          value.toLowerCase().includes(normalizedSearch),
+        )) &&
+      (!grade || s.grade === grade) &&
+      (!packaging || s.packaging === packaging),
   );
 
   const [sortKey, setSortKey] = useState("product_label");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const toggleSort = (k: string) => {
     if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
-    else { setSortKey(k); setSortDir("asc"); }
+    else {
+      setSortKey(k);
+      setSortDir("asc");
+    }
   };
   const sorted = [...filtered].sort((a, b) => {
     let cmp: number;
@@ -106,28 +111,32 @@ function WarehousePageInner() {
   function openAdd() {
     setDialogIntent("add");
     setProduct("");
-    setMode("add"); setAmount(""); setError("");
+    setMode("add");
+    setAmount("");
+    setError("");
     setOpen(true);
   }
 
   function openAdjust(productId: number) {
     setDialogIntent("adjust");
     setProduct(String(productId));
-    setMode("add"); setAmount(""); setError("");
+    setMode("add");
+    setAmount("");
+    setError("");
     setOpen(true);
   }
 
   // Текущий остаток выбранного товара и каким он станет после операции.
   const currentBags = product ? (bagsByProduct.get(product) ?? 0) : null;
   const delta = Number(amount) || 0;
-  const nextBags = currentBags === null ? null
-    : mode === "add" ? currentBags + delta : currentBags - delta;
+  const nextBags = currentBags === null ? null : mode === "add" ? currentBags + delta : currentBags - delta;
   const insufficient = mode === "remove" && nextBags !== null && nextBags < 0;
 
   async function submitAdjust(e: React.FormEvent) {
     e.preventDefault();
     if (!product || delta <= 0 || insufficient) return;
-    setBusy(true); setError("");
+    setBusy(true);
+    setError("");
     try {
       await api.post("/stock/adjust/", {
         product: Number(product),
@@ -135,17 +144,26 @@ function WarehousePageInner() {
       });
       setOpen(false);
       reload();
-    } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function confirmDelete() {
     if (!deleteItem) return;
-    setDeleteBusy(true); setDeleteError("");
+    setDeleteBusy(true);
+    setDeleteError("");
     try {
       await api.delete(`/stock/${deleteItem.id}/`);
       setDeleteItem(null);
       reload();
-    } catch (e) { setDeleteError(apiError(e)); } finally { setDeleteBusy(false); }
+    } catch (e) {
+      setDeleteError(apiError(e));
+    } finally {
+      setDeleteBusy(false);
+    }
   }
 
   const hasFilters = Boolean(search || grade || packaging);
@@ -157,9 +175,13 @@ function WarehousePageInner() {
   }
 
   const addButton = canAdjust ? (
-    <Button size="sm" aria-label="Добавить товар на склад" onClick={openAdd}
+    <Button
+      size="sm"
+      aria-label="Добавить товар на склад"
+      onClick={openAdd}
       disabled={products !== null && availableProducts.length === 0}
-      title={products !== null && availableProducts.length === 0 ? "Все товары уже добавлены на склад" : undefined}>
+      title={products !== null && availableProducts.length === 0 ? "Все товары уже добавлены на склад" : undefined}
+    >
       <Plus className="size-4" /> <span className="hidden sm:inline">Добавить товар</span>
     </Button>
   ) : undefined;
@@ -178,8 +200,12 @@ function WarehousePageInner() {
   }
 
   return (
-    <AppShell title="Остатки склада" section="Работа" description="Актуальное количество готовой продукции и быстрые операции приёмки и списания."
-      actions={addButton}>
+    <AppShell
+      title="Остатки склада"
+      section="Работа"
+      description="Актуальное количество готовой продукции и быстрые операции приёмки и списания."
+      actions={addButton}
+    >
       {/* Сводка всегда следует текущему набору фильтров. */}
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <StatCard
@@ -257,14 +283,22 @@ function WarehousePageInner() {
                 <span className="text-xs font-medium text-[var(--muted-foreground)]">Сорт</span>
                 <Select value={grade} onChange={(e) => setGrade(e.target.value)}>
                   <option value="">Все сорта</option>
-                  {grades.map((g) => <option key={g} value={g}>{g}</option>)}
+                  {grades.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
                 </Select>
               </label>
               <label className="grid gap-1.5">
                 <span className="text-xs font-medium text-[var(--muted-foreground)]">Фасовка</span>
                 <Select value={packaging} onChange={(e) => setPackaging(e.target.value)}>
                   <option value="">Все фасовки</option>
-                  {packagings.map((p) => <option key={p} value={p}>{p}</option>)}
+                  {packagings.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
                 </Select>
               </label>
             </div>
@@ -285,11 +319,16 @@ function WarehousePageInner() {
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5">
-                      <Badge tone={st.tone} dot>{st.label}</Badge>
+                      <Badge tone={st.tone} dot>
+                        {st.label}
+                      </Badge>
                       {canAdjust && (
                         <StockActionMenu
                           onEdit={() => openAdjust(s.product)}
-                          onDelete={() => { setDeleteError(""); setDeleteItem(s); }}
+                          onDelete={() => {
+                            setDeleteError("");
+                            setDeleteItem(s);
+                          }}
                         />
                       )}
                     </div>
@@ -308,8 +347,7 @@ function WarehousePageInner() {
               );
             })}
             {filtered.length === 0 && (
-              <EmptyStockState hasFilters={hasFilters} canAdjust={canAdjust}
-                onReset={resetFilters} onAdd={openAdd} />
+              <EmptyStockState hasFilters={hasFilters} canAdjust={canAdjust} onReset={resetFilters} onAdd={openAdd} />
             )}
           </div>
 
@@ -317,9 +355,22 @@ function WarehousePageInner() {
           <Table className="hidden md:table">
             <THead>
               <TR>
-                <SortableHeader label="Товар" sortKey="product_label" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                <SortableHeader
+                  label="Товар"
+                  sortKey="product_label"
+                  activeKey={sortKey}
+                  dir={sortDir}
+                  onClick={toggleSort}
+                />
                 <TH>Фасовка</TH>
-                <SortableHeader label="Остаток" sortKey="bags" activeKey={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
+                <SortableHeader
+                  label="Остаток"
+                  sortKey="bags"
+                  activeKey={sortKey}
+                  dir={sortDir}
+                  onClick={toggleSort}
+                  align="right"
+                />
                 <TH className="text-right">Расчётный вес</TH>
                 <TH>Статус</TH>
                 {canAdjust && <TH className="text-right">Действие</TH>}
@@ -336,14 +387,23 @@ function WarehousePageInner() {
                       <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">{s.color_label}</div>
                     </TD>
                     <TD>{s.packaging}</TD>
-                    <TD className="text-right tabular-nums font-semibold">{formatMoney(s.bags)} <span className="font-normal text-[var(--muted-foreground)]">меш.</span></TD>
+                    <TD className="text-right tabular-nums font-semibold">
+                      {formatMoney(s.bags)} <span className="font-normal text-[var(--muted-foreground)]">меш.</span>
+                    </TD>
                     <TD className="text-right tabular-nums text-[var(--muted-foreground)]">{tons.toFixed(2)} т</TD>
-                    <TD><Badge tone={st.tone} dot>{st.label}</Badge></TD>
+                    <TD>
+                      <Badge tone={st.tone} dot>
+                        {st.label}
+                      </Badge>
+                    </TD>
                     {canAdjust && (
                       <TD className="text-right">
                         <StockActionMenu
                           onEdit={() => openAdjust(s.product)}
-                          onDelete={() => { setDeleteError(""); setDeleteItem(s); }}
+                          onDelete={() => {
+                            setDeleteError("");
+                            setDeleteItem(s);
+                          }}
                         />
                       </TD>
                     )}
@@ -351,10 +411,16 @@ function WarehousePageInner() {
                 );
               })}
               {filtered.length === 0 && (
-                <TR><TD colSpan={canAdjust ? 6 : 5} className="p-0">
-                  <EmptyStockState hasFilters={hasFilters} canAdjust={canAdjust}
-                    onReset={resetFilters} onAdd={openAdd} />
-                </TD></TR>
+                <TR>
+                  <TD colSpan={canAdjust ? 6 : 5} className="p-0">
+                    <EmptyStockState
+                      hasFilters={hasFilters}
+                      canAdjust={canAdjust}
+                      onReset={resetFilters}
+                      onAdd={openAdd}
+                    />
+                  </TD>
+                </TR>
               )}
             </TBody>
           </Table>
@@ -362,74 +428,110 @@ function WarehousePageInner() {
       </Card>
 
       {/* модалка корректировки */}
-      <Modal open={open} onClose={() => setOpen(false)}
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
         eyebrow="Операция со складом"
         title={dialogIntent === "add" ? "Добавить товар" : "Изменить остаток"}
-        description={dialogIntent === "add"
-          ? "Выберите товар и укажите количество мешков для добавления на склад."
-          : "Добавьте поступление или спишите выбранный товар."}>
+        description={
+          dialogIntent === "add"
+            ? "Выберите товар и укажите количество мешков для добавления на склад."
+            : "Добавьте поступление или спишите выбранный товар."
+        }
+      >
         <form onSubmit={submitAdjust} className="flex flex-col gap-4">
-          <Field label="Товар">
+          <Field label="Товар" htmlFor={dialogIntent === "add" ? "stock-product" : undefined}>
             {dialogIntent === "adjust" ? (
               <div className="flex min-h-10 items-center rounded-md border bg-[var(--muted)]/45 px-3.5 py-2 text-sm font-medium">
                 {items.find((item) => String(item.product) === product)?.product_label}
               </div>
             ) : (
-              <Select value={product} autoFocus
-                onChange={(e) => setProduct(e.target.value)} required>
+              <Select
+                id="stock-product"
+                value={product}
+                autoFocus
+                onChange={(e) => setProduct(e.target.value)}
+                required
+              >
                 <option value="">
-                  {availableProducts.length === 0 && products !== null
-                    ? "Все товары уже добавлены"
-                    : "Выберите товар"}
+                  {availableProducts.length === 0 && products !== null ? "Все товары уже добавлены" : "Выберите товар"}
                 </option>
-                {availableProducts.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                {availableProducts.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
               </Select>
             )}
           </Field>
 
-          {dialogIntent === "adjust" && <div className="grid gap-1.5">
-            <span className="text-sm font-medium">Тип операции</span>
-            <div className="grid grid-cols-2 gap-2">
-              {([["add", "Приёмка", "Добавить на склад", ArrowUp], ["remove", "Списание", "Убрать со склада", ArrowDown]] as const).map(([m, label, hint, Icon]) => (
-                <button key={m} type="button" onClick={() => setMode(m)}
-                  aria-pressed={mode === m}
-                  className={cn(
-                    "flex items-center gap-3 rounded-lg border p-3 text-left outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/40",
-                    mode === m && m === "add" && "border-[var(--success)]/50 bg-[var(--success)]/8",
-                    mode === m && m === "remove" && "border-[var(--destructive)]/40 bg-[var(--destructive)]/7",
-                    mode !== m && "hover:bg-[var(--muted)]/40"
-                  )}>
-                  <span className={cn(
-                    "flex size-8 shrink-0 items-center justify-center rounded-md bg-[var(--muted)] text-[var(--muted-foreground)]",
-                    mode === m && m === "add" && "bg-[var(--success)]/12 text-[var(--success)]",
-                    mode === m && m === "remove" && "bg-[var(--destructive)]/12 text-[var(--destructive)]"
-                  )}>
-                    <Icon className="size-4" />
-                  </span>
-                  <span>
-                    <span className="block text-sm font-medium">{label}</span>
-                    <span className="block text-xs text-[var(--muted-foreground)]">{hint}</span>
-                  </span>
-                </button>
-              ))}
+          {dialogIntent === "adjust" && (
+            <div className="grid gap-1.5">
+              <span className="text-sm font-medium">Тип операции</span>
+              <div className="grid grid-cols-2 gap-2">
+                {(
+                  [
+                    ["add", "Приёмка", "Добавить на склад", ArrowUp],
+                    ["remove", "Списание", "Убрать со склада", ArrowDown],
+                  ] as const
+                ).map(([m, label, hint, Icon]) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMode(m)}
+                    aria-pressed={mode === m}
+                    className={cn(
+                      "flex items-center gap-3 rounded-lg border p-3 text-left outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/40",
+                      mode === m && m === "add" && "border-[var(--success)]/50 bg-[var(--success)]/8",
+                      mode === m && m === "remove" && "border-[var(--destructive)]/40 bg-[var(--destructive)]/7",
+                      mode !== m && "hover:bg-[var(--muted)]/40",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "flex size-8 shrink-0 items-center justify-center rounded-md bg-[var(--muted)] text-[var(--muted-foreground)]",
+                        mode === m && m === "add" && "bg-[var(--success)]/12 text-[var(--success)]",
+                        mode === m && m === "remove" && "bg-[var(--destructive)]/12 text-[var(--destructive)]",
+                      )}
+                    >
+                      <Icon className="size-4" />
+                    </span>
+                    <span>
+                      <span className="block text-sm font-medium">{label}</span>
+                      <span className="block text-xs text-[var(--muted-foreground)]">{hint}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>}
+          )}
 
-          <Field label="Количество мешков">
-            <Input type="number" min="1" value={amount}
-              onChange={(e) => setAmount(e.target.value)} placeholder="Например, 50" required />
+          <Field label="Количество мешков" htmlFor="stock-amount">
+            <Input
+              id="stock-amount"
+              type="number"
+              min="1"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="Например, 50"
+              required
+            />
           </Field>
           <div className="flex flex-wrap gap-2">
             {QUICK_AMOUNTS.map((n) => (
-              <button key={n} type="button"
+              <button
+                key={n}
+                type="button"
                 onClick={() => setAmount(String(n))}
                 className={cn(
                   "rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
                   amount === String(n)
                     ? "border-[var(--primary)] bg-[var(--primary)]/10 text-[var(--primary)]"
-                    : "text-[var(--muted-foreground)] hover:bg-[var(--accent)]"
-                )}>
-                {mode === "add" ? "+" : "−"}{n}
+                    : "text-[var(--muted-foreground)] hover:bg-[var(--accent)]",
+                )}
+              >
+                {mode === "add" ? "+" : "−"}
+                {n}
               </button>
             ))}
           </div>
@@ -444,19 +546,14 @@ function WarehousePageInner() {
               <ArrowRight className="size-4 text-[var(--muted-foreground)]" />
               <div className="text-right">
                 <div className="text-xs text-[var(--muted-foreground)]">После операции</div>
-                <div className={cn(
-                  "mt-0.5 font-semibold tabular-nums",
-                  insufficient && "text-[var(--destructive)]"
-                )}>
+                <div className={cn("mt-0.5 font-semibold tabular-nums", insufficient && "text-[var(--destructive)]")}>
                   {delta > 0 ? `${formatMoney(nextBags!)} меш.` : "—"}
                 </div>
               </div>
             </div>
           )}
           {insufficient && (
-            <p className="text-sm text-[var(--destructive)]">
-              Нельзя списать больше, чем есть на складе.
-            </p>
+            <p className="text-sm text-[var(--destructive)]">Нельзя списать больше, чем есть на складе.</p>
           )}
           {error && (
             <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
@@ -465,10 +562,16 @@ function WarehousePageInner() {
           )}
 
           <div className="flex justify-end gap-2 border-t pt-4">
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
-            <Button type="submit" variant={mode === "remove" ? "destructive" : "default"}
-              disabled={busy || !product || delta <= 0 || insufficient}>
-              {busy ? "Сохранение…"
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+              Отмена
+            </Button>
+            <Button
+              type="submit"
+              variant={mode === "remove" ? "destructive" : "default"}
+              disabled={busy || !product || delta <= 0 || insufficient}
+            >
+              {busy
+                ? "Сохранение…"
                 : mode === "add"
                   ? `${dialogIntent === "add" ? "Добавить" : "Принять"}${delta > 0 ? ` ${formatMoney(delta)} меш.` : ""}`
                   : `Списать${delta > 0 ? ` ${formatMoney(delta)} меш.` : ""}`}
@@ -479,11 +582,15 @@ function WarehousePageInner() {
 
       <ConfirmDialog
         open={!!deleteItem}
-        onClose={() => { if (!deleteBusy) setDeleteItem(null); }}
+        onClose={() => {
+          if (!deleteBusy) setDeleteItem(null);
+        }}
         title="Удалить товар со склада?"
-        description={deleteItem
-          ? `${deleteItem.product_label}: позиция и текущий остаток ${formatMoney(deleteItem.bags)} меш. будут удалены со склада. Товар останется в каталоге, и его можно будет добавить снова.`
-          : ""}
+        description={
+          deleteItem
+            ? `${deleteItem.product_label}: позиция и текущий остаток ${formatMoney(deleteItem.bags)} меш. будут удалены со склада. Товар останется в каталоге, и его можно будет добавить снова.`
+            : ""
+        }
         confirmLabel="Удалить"
         busy={deleteBusy}
         error={deleteError}
@@ -529,9 +636,7 @@ function StockActionMenu({ onEdit, onDelete }: { onEdit: () => void; onDelete: (
       const menuWidth = 176;
       const menuHeight = 82;
       const left = Math.max(8, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8));
-      const top = window.innerHeight - rect.bottom < menuHeight + 8
-        ? rect.top - menuHeight - 4
-        : rect.bottom + 4;
+      const top = window.innerHeight - rect.bottom < menuHeight + 8 ? rect.top - menuHeight - 4 : rect.bottom + 4;
       setPosition({ top, left });
     }
     setOpen((value) => !value);
@@ -539,27 +644,50 @@ function StockActionMenu({ onEdit, onDelete }: { onEdit: () => void; onDelete: (
 
   return (
     <>
-      <button ref={buttonRef} type="button" onClick={toggleMenu}
-        aria-label="Действия с товаром" aria-haspopup="menu" aria-expanded={open}
-        className="inline-flex size-8 items-center justify-center rounded-md text-[var(--muted-foreground)] outline-none transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/50">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={toggleMenu}
+        aria-label="Действия с товаром"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="inline-flex size-8 items-center justify-center rounded-md text-[var(--muted-foreground)] outline-none transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/50"
+      >
         <MoreHorizontal className="size-4" />
       </button>
-      {open && createPortal(
-        <div ref={menuRef} role="menu" style={{ top: position.top, left: position.left }}
-          className="fixed z-[120] w-44 rounded-lg border bg-[var(--card)] p-1 shadow-lg">
-          <button type="button" role="menuitem"
-            onClick={() => { setOpen(false); onEdit(); }}
-            className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[var(--muted)]">
-            <Pencil className="size-4" /> Изменить
-          </button>
-          <button type="button" role="menuitem"
-            onClick={() => { setOpen(false); onDelete(); }}
-            className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-[var(--destructive)] hover:bg-[var(--destructive)]/10">
-            <Trash2 className="size-4" /> Удалить
-          </button>
-        </div>,
-        document.body
-      )}
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="menu"
+            style={{ top: position.top, left: position.left }}
+            className="fixed z-[120] w-44 rounded-lg border bg-[var(--card)] p-1 shadow-lg"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onEdit();
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[var(--muted)]"
+            >
+              <Pencil className="size-4" /> Изменить
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onDelete();
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-[var(--destructive)] hover:bg-[var(--destructive)]/10"
+            >
+              <Trash2 className="size-4" /> Удалить
+            </button>
+          </div>,
+          document.body,
+        )}
     </>
   );
 }
@@ -602,5 +730,9 @@ function EmptyStockState({
 }
 
 export default function WarehousePage() {
-  return <RequirePerm perm="warehouse.view" title="Склад"><WarehousePageInner /></RequirePerm>;
+  return (
+    <RequirePerm perm="warehouse.view" title="Склад">
+      <WarehousePageInner />
+    </RequirePerm>
+  );
 }

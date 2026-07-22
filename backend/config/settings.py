@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+from typing import cast
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -8,18 +9,27 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # и упирались бы в лимиты. Прицельные тесты троттла включают его локально.
 TESTING = "pytest" in sys.modules or os.environ.get("PYTEST_RUNNING") == "1"
 
-SECRET_KEY = os.environ.get(
-    "SECRET_KEY",
-    "django-insecure-n^--vbbev=3i(v4ztl5w(nm4ym3uw4ow9ozx=))e+7b165k(8$",
-)
+# Preserve the documented zero-config local workflow. Supported production
+# deployment explicitly supplies DEBUG=0 and is validated fail-closed below.
 DEBUG = os.environ.get("DEBUG", "1") == "1"
+SECRET_KEY = os.environ.get("SECRET_KEY", "").strip()
+if not SECRET_KEY and (DEBUG or TESTING):
+    # Local/test-only key. Production fails closed below instead of silently
+    # signing sessions and JWTs with a value published in the repository.
+    SECRET_KEY = "django-insecure-local-development-only"
 
-# Fail closed: прод (DEBUG=0) не должен молча подписывать JWT публичным
-# fallback-ключом из репозитория.
-if not DEBUG and SECRET_KEY.startswith("django-insecure-"):
+# Fail closed: production must not start with an absent or known development
+# key. Environment variable names remain unchanged.
+if not DEBUG and (
+    len(SECRET_KEY) < 50
+    or len(set(SECRET_KEY)) < 5
+    or SECRET_KEY.startswith("django-insecure-")
+):
     from django.core.exceptions import ImproperlyConfigured
 
-    raise ImproperlyConfigured("SECRET_KEY must be set when DEBUG is off")
+    raise ImproperlyConfigured(
+        "SECRET_KEY must be a strong, non-development value when DEBUG is off"
+    )
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -64,14 +74,31 @@ REST_FRAMEWORK = {
         "user": os.environ.get("THROTTLE_USER", "600/min"),
         "login": os.environ.get("THROTTLE_LOGIN", "10/min"),
         "register": os.environ.get("THROTTLE_REGISTER", "5/min"),
+        "portal_order_create": os.environ.get(
+            "THROTTLE_PORTAL_ORDER_CREATE", "10/min"
+        ),
     },
+    # nginx is the single trusted proxy in the supported deployment. Taking
+    # the last forwarded address prevents a client-supplied first XFF value
+    # from rotating the login/registration throttle identity.
+    "NUM_PROXIES": int(os.environ.get("THROTTLE_NUM_PROXIES", "1")),
+}
+
+# Access and refresh tokens issued before a password reset must stop working.
+# SimpleJWT embeds a one-way password-derived claim and checks it on every
+# authenticated request; the refresh endpoint performs the same check below.
+SIMPLE_JWT = {
+    "CHECK_REVOKE_TOKEN": True,
 }
 
 if TESTING:
     # Пустые классы/ставки — троттлинг не мешает общим прогонам.
     REST_FRAMEWORK["DEFAULT_THROTTLE_CLASSES"] = ()
+    throttle_rates = cast(
+        dict[str, object], REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]
+    )
     REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
-        k: None for k in REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]
+        key: None for key in throttle_rates
     }
 
 MIDDLEWARE = [
@@ -104,12 +131,20 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
+_database_password = os.environ.get("DB_PASSWORD")
+if _database_password is None:
+    if not DEBUG:
+        from django.core.exceptions import ImproperlyConfigured
+
+        raise ImproperlyConfigured("DB_PASSWORD must be set when DEBUG is off")
+    _database_password = "asyl"
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": os.environ.get("DB_NAME", "asyl"),
         "USER": os.environ.get("DB_USER", "asyl"),
-        "PASSWORD": os.environ.get("DB_PASSWORD", "asyl"),
+        "PASSWORD": _database_password,
         "HOST": os.environ.get("DB_HOST", "localhost"),
         "PORT": os.environ.get("DB_PORT", "5432"),
     }
@@ -148,22 +183,29 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# CORS — allow the Next.js frontend (separate origin) to call the API.
-CORS_ALLOWED_ORIGINS = os.environ.get(
-    "CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
-).split(",")
+def _csv_setting(name: str, default: str = "") -> list[str]:
+    return [value.strip() for value in os.environ.get(name, default).split(",") if value.strip()]
+
+
+# CORS — allow the Next.js frontend (separate origin) to call the API. Local
+# origins are defaults only in debug mode; production must opt in explicitly.
+CORS_ALLOWED_ORIGINS = _csv_setting(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000" if DEBUG else "",
+)
 CORS_ALLOW_CREDENTIALS = True
 
-CSRF_TRUSTED_ORIGINS = [
-    origin
-    for origin in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",")
-    if origin
-]
+CSRF_TRUSTED_ORIGINS = _csv_setting("CSRF_TRUSTED_ORIGINS")
 
-# Allowed hosts. On an on-prem shop LAN the server is reached by its local IP,
-# so the default allows any host. Override ALLOWED_HOSTS in production behind a
-# domain.
-ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
+# Local development remains convenient, while production rejects an omitted or
+# wildcard Host allowlist. The supported production compose supplies domains
+# and the public server address explicitly.
+_local_hosts = "localhost,127.0.0.1,[::1],testserver" if (DEBUG or TESTING) else ""
+ALLOWED_HOSTS = _csv_setting("ALLOWED_HOSTS", _local_hosts)
+if not DEBUG and (not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS):
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured("ALLOWED_HOSTS must be explicit when DEBUG is off")
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 

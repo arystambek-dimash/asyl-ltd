@@ -10,10 +10,20 @@ import { Select } from "@/components/ui/select";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { useDebounced } from "@/lib/use-debounced";
+import { useLocalDay } from "@/lib/use-local-day";
 import { translateOrderStatusMessage } from "@/lib/constants";
 import {
-  Search, X, CircleDot, Wallet, PackageCheck, Truck,
-  Forklift, Warehouse, ArrowDownToLine, Scale, Activity,
+  Search,
+  X,
+  CircleDot,
+  Wallet,
+  PackageCheck,
+  Truck,
+  Forklift,
+  Warehouse,
+  ArrowDownToLine,
+  Scale,
+  Activity,
 } from "lucide-react";
 import type { EventLog } from "@/lib/types";
 
@@ -25,17 +35,17 @@ type EventMeta = {
 };
 
 const EVENT_META: Record<string, EventMeta> = {
-  status:        { label: "Статус",   icon: CircleDot,       color: "var(--ring)" },
-  status_override: { label: "Статус", icon: CircleDot,       color: "var(--ring)" },
+  status: { label: "Статус", icon: CircleDot, color: "var(--ring)" },
+  status_override: { label: "Статус", icon: CircleDot, color: "var(--ring)" },
   status_request: { label: "Запрос статуса", icon: CircleDot, color: "var(--warning)" },
-  payment:       { label: "Оплата",   icon: Wallet,          color: "var(--success)" },
-  receipt:       { label: "Приёмка",  icon: PackageCheck,    color: "var(--ring)" },
-  arrival:       { label: "Прибытие", icon: Truck,           color: "var(--ring)" },
-  loading:       { label: "Загрузка", icon: Forklift,        color: "var(--warning)" },
-  shipment:      { label: "Отгрузка", icon: ArrowDownToLine, color: "var(--ring)" },
+  payment: { label: "Оплата", icon: Wallet, color: "var(--success)" },
+  receipt: { label: "Приёмка", icon: PackageCheck, color: "var(--ring)" },
+  arrival: { label: "Прибытие", icon: Truck, color: "var(--ring)" },
+  loading: { label: "Загрузка", icon: Forklift, color: "var(--warning)" },
+  shipment: { label: "Отгрузка", icon: ArrowDownToLine, color: "var(--ring)" },
   shipment_rollback: { label: "Откат отгрузки", icon: ArrowDownToLine, color: "var(--destructive)" },
-  debt_override: { label: "Долг",     icon: Scale,           color: "var(--destructive)" },
-  stock_adjust:  { label: "Склад",    icon: Warehouse,       color: "var(--warning)" },
+  debt_override: { label: "Долг", icon: Scale, color: "var(--destructive)" },
+  stock_adjust: { label: "Склад", icon: Warehouse, color: "var(--warning)" },
 };
 
 const FALLBACK_META: EventMeta = { label: "Событие", icon: Activity, color: "var(--muted-foreground)" };
@@ -44,8 +54,8 @@ function metaFor(eventType: string): EventMeta {
   return EVENT_META[eventType] ?? { ...FALLBACK_META, label: eventType };
 }
 
-function dateGroupLabel(d: Date): string {
-  const today = new Date();
+function dateGroupLabel(d: Date, currentDay: string): string {
+  const today = new Date(`${currentDay}T12:00:00`);
   const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const diffDays = Math.round((startOf(today) - startOf(d)) / 86_400_000);
   if (diffDays === 0) return "Сегодня";
@@ -54,6 +64,7 @@ function dateGroupLabel(d: Date): string {
 }
 
 function EventsPageInner() {
+  const currentDay = useLocalDay();
   const [type, setType] = useState("");
   const [order, setOrder] = useState("");
   const [search, setSearch] = useState("");
@@ -84,52 +95,72 @@ function EventsPageInner() {
       const key = d.toDateString();
       let g = out[out.length - 1];
       if (!g || g.key !== key) {
-        g = { key, label: dateGroupLabel(d), items: [] };
+        g = { key, label: dateGroupLabel(d, currentDay), items: [] };
         out.push(g);
       }
       g.items.push(e);
     }
     return out;
-  }, [events]);
+  }, [currentDay, events]);
 
   const hasFilters = type || order || search || dateFrom || dateTo;
   function reset() {
-    setType(""); setOrder(""); setSearch(""); setDateFrom(""); setDateTo("");
+    setType("");
+    setOrder("");
+    setSearch("");
+    setDateFrom("");
+    setDateTo("");
   }
 
   return (
-    <AppShell title="Журнал событий" section="Управление" description="Неизменяемая лента событий системы: оплаты, отгрузки, движения склада и статусы заказов.">
+    <AppShell
+      title="Журнал событий"
+      section="Управление"
+      description="Неизменяемая лента событий системы: оплаты, отгрузки, движения склада и статусы заказов."
+    >
       <Card className="mb-4">
         <CardContent className="pt-6">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <div className="flex flex-col gap-1.5">
-              <Label>Тип события</Label>
-              <Select value={type} onChange={(e) => setType(e.target.value)}>
+              <Label htmlFor="event-type">Тип события</Label>
+              <Select id="event-type" value={type} onChange={(e) => setType(e.target.value)}>
                 <option value="">Все типы</option>
                 {Object.entries(EVENT_META).map(([k, v]) => (
-                  <option key={k} value={k}>{v.label}</option>
+                  <option key={k} value={k}>
+                    {v.label}
+                  </option>
                 ))}
               </Select>
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label>№ заказа</Label>
-              <Input type="number" placeholder="напр. 12" value={order}
-                onChange={(e) => setOrder(e.target.value)} />
+              <Label htmlFor="event-order">№ заказа</Label>
+              <Input
+                id="event-order"
+                type="number"
+                placeholder="напр. 12"
+                value={order}
+                onChange={(e) => setOrder(e.target.value)}
+              />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label>Дата с</Label>
-              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+              <Label htmlFor="event-date-from">Дата с</Label>
+              <Input id="event-date-from" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label>Дата по</Label>
-              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+              <Label htmlFor="event-date-to">Дата по</Label>
+              <Input id="event-date-to" type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label>Поиск</Label>
+              <Label htmlFor="event-search">Поиск</Label>
               <div className="relative">
                 <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-                <Input className="pl-8" placeholder="по сообщению" value={search}
-                  onChange={(e) => setSearch(e.target.value)} />
+                <Input
+                  id="event-search"
+                  className="pl-8"
+                  placeholder="по сообщению"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
               </div>
             </div>
           </div>
@@ -162,9 +193,7 @@ function EventsPageInner() {
                       {g.label}
                     </span>
                     <span className="h-px flex-1 bg-[var(--border)]" />
-                    <span className="text-xs text-[var(--muted-foreground)]">
-                      {g.items.length} соб.
-                    </span>
+                    <span className="text-xs text-[var(--muted-foreground)]">{g.items.length} соб.</span>
                   </div>
                   <ol className="relative ml-3 border-l border-[var(--border)]">
                     {g.items.map((e) => {
@@ -210,5 +239,9 @@ function EventsPageInner() {
 }
 
 export default function EventsPage() {
-  return <RequirePerm perm="events.view" title="Журнал"><EventsPageInner /></RequirePerm>;
+  return (
+    <RequirePerm perm="events.view" title="Журнал">
+      <EventsPageInner />
+    </RequirePerm>
+  );
 }

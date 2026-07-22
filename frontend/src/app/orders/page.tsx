@@ -21,10 +21,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ActionMenu, type ActionMenuItem } from "@/components/ui/action-menu";
 import { OrderForm } from "@/components/order-form";
 import { OrderStatusSelect } from "@/components/order-status-select";
-import {
-  ManualOrderStatusModal,
-  type ManualOrderTarget,
-} from "@/components/manual-order-status-modal";
+import { ManualOrderStatusModal, type ManualOrderTarget } from "@/components/manual-order-status-modal";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
 import { StatementExportModal } from "@/components/statement-export-modal";
 import {
@@ -73,7 +70,12 @@ function shortDate(value: string) {
   return `${day}.${month}.${year}`;
 }
 
-function DateRangeFilter({ dateFrom, dateTo, onDateFrom, onDateTo }: {
+function DateRangeFilter({
+  dateFrom,
+  dateTo,
+  onDateFrom,
+  onDateTo,
+}: {
   dateFrom: string;
   dateTo: string;
   onDateFrom: (value: string) => void;
@@ -82,13 +84,14 @@ function DateRangeFilter({ dateFrom, dateTo, onDateFrom, onDateTo }: {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const active = Boolean(dateFrom || dateTo);
-  const value = dateFrom && dateTo
-    ? `${shortDate(dateFrom)} — ${shortDate(dateTo)}`
-    : dateFrom
-      ? `с ${shortDate(dateFrom)}`
-      : dateTo
-        ? `по ${shortDate(dateTo)}`
-        : "Все";
+  const value =
+    dateFrom && dateTo
+      ? `${shortDate(dateFrom)} — ${shortDate(dateTo)}`
+      : dateFrom
+        ? `с ${shortDate(dateFrom)}`
+        : dateTo
+          ? `по ${shortDate(dateTo)}`
+          : "Все";
 
   useDismiss(ref, () => setOpen(false), open);
 
@@ -148,12 +151,17 @@ function DateRangeFilter({ dateFrom, dateTo, onDateFrom, onDateTo }: {
             <button
               type="button"
               disabled={!active}
-              onClick={() => { onDateFrom(""); onDateTo(""); }}
+              onClick={() => {
+                onDateFrom("");
+                onDateTo("");
+              }}
               className="text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)] disabled:opacity-40"
             >
               Сбросить
             </button>
-            <Button type="button" size="sm" onClick={() => setOpen(false)}>Готово</Button>
+            <Button type="button" size="sm" onClick={() => setOpen(false)}>
+              Готово
+            </Button>
           </div>
         </div>
       )}
@@ -170,11 +178,8 @@ const STATUS_SHARE_COLORS: Record<string, string> = {
 
 function StatusShareBar({ orders, total }: { orders: Order[]; total: number }) {
   const currencies = new Set(orders.map((order) => order.currency ?? "KZT"));
-  const symbol = currencies.size === 1
-    ? currencySymbol(currencies.values().next().value ?? "KZT")
-    : "";
-  const shares = ORDER_PUBLIC_STATUSES
-    .filter((g) => g !== "cancelled")
+  const symbol = currencies.size === 1 ? currencySymbol(currencies.values().next().value ?? "KZT") : "";
+  const shares = ORDER_PUBLIC_STATUSES.filter((g) => g !== "cancelled")
     .map((g) => ({
       key: g,
       label: ORDER_STATUS_LABELS[g],
@@ -188,8 +193,11 @@ function StatusShareBar({ orders, total }: { orders: Order[]; total: number }) {
     <div className="mt-1 flex flex-col gap-2">
       <div className="flex h-2 w-full gap-px overflow-hidden rounded-full">
         {shares.map((s) => (
-          <div key={s.key} title={`${s.label}: ${formatMoney(s.value)}${symbol ? ` ${symbol}` : ""}`}
-            style={{ width: `${(s.value / total) * 100}%`, background: STATUS_SHARE_COLORS[s.key] }} />
+          <div
+            key={s.key}
+            title={`${s.label}: ${formatMoney(s.value)}${symbol ? ` ${symbol}` : ""}`}
+            style={{ width: `${(s.value / total) * 100}%`, background: STATUS_SHARE_COLORS[s.key] }}
+          />
         ))}
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--muted-foreground)]">
@@ -210,16 +218,13 @@ function StatusShareBar({ orders, total }: { orders: Order[]; total: number }) {
 function DepartmentBadge({ order }: { order: Order }) {
   return (
     <span className="inline-flex max-w-44 items-center gap-1.5 rounded-full border bg-[var(--card)] px-2.5 py-1 text-[11px] font-semibold">
-      <span className="size-2 shrink-0 rounded-full"
-        style={{ backgroundColor: order.department_color ?? "#64748B" }} />
+      <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: order.department_color ?? "#64748B" }} />
       <span className="truncate">{order.department_name ?? order.department ?? "Без отдела"}</span>
     </span>
   );
 }
 
-const DEPARTMENT_COLORS = [
-  "#315FD5", "#D68B2C", "#238C6E", "#B84A5A", "#7654B3", "#3B7F91", "#6B7280",
-];
+const DEPARTMENT_COLORS = ["#315FD5", "#D68B2C", "#238C6E", "#B84A5A", "#7654B3", "#3B7F91", "#6B7280"];
 
 function DepartmentManager({ onChanged }: { onChanged: () => void }) {
   const { data, reload } = useApi<Department[]>("/departments/?all=1");
@@ -238,66 +243,96 @@ function DepartmentManager({ onChanged }: { onChanged: () => void }) {
   }
 
   async function save() {
-    setSaving(true); setError("");
+    setSaving(true);
+    setError("");
     try {
       if (editing) await api.patch(`/departments/${editing.id}/`, { name, color });
       else await api.post("/departments/", { name, color });
       begin();
       await reload();
       onChanged();
-    } catch (cause) { setError(apiError(cause)); }
-    finally { setSaving(false); }
+    } catch (cause) {
+      setError(apiError(cause));
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function update(department: Department, payload: Partial<Department>) {
-    setSaving(true); setError("");
+    setSaving(true);
+    setError("");
     try {
       await api.patch(`/departments/${department.id}/`, payload);
       await reload();
       onChanged();
-    } catch (cause) { setError(apiError(cause)); }
-    finally { setSaving(false); }
+    } catch (cause) {
+      setError(apiError(cause));
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <>
-      <Button size="sm" variant="outline" onClick={() => { setOpen(true); begin(); }}>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => {
+          setOpen(true);
+          begin();
+        }}
+      >
         <Settings2 className="size-4" /> Отделы
       </Button>
-      <Modal open={open} onClose={() => setOpen(false)}
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
         eyebrow="Заказы · Настройка"
         title="Отделы продаж"
         description="Добавляйте отделы здесь — они сразу появятся в новом заказе, фильтрах и аналитике."
-        className="max-w-2xl">
+        className="max-w-2xl"
+      >
         <div className="grid gap-5 md:grid-cols-[1.15fr_.85fr]">
           <div className="flex flex-col gap-2">
             {(data ?? []).map((department) => (
-              <div key={department.id}
+              <div
+                key={department.id}
                 className={cn(
                   "group flex items-center gap-3 rounded-xl border p-3 transition",
                   department.is_active ? "bg-[var(--card)]" : "bg-[var(--muted)]/35 opacity-65",
-                )}>
-                <span className="size-3 shrink-0 rounded-full ring-4 ring-current/10"
-                  style={{ backgroundColor: department.color, color: department.color }} />
+                )}
+              >
+                <span
+                  className="size-3 shrink-0 rounded-full ring-4 ring-current/10"
+                  style={{ backgroundColor: department.color, color: department.color }}
+                />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="truncate text-sm font-semibold">{department.name}</span>
                     {department.is_default && (
-                      <span className="rounded-full bg-[var(--muted)] px-2 py-0.5 text-[10px] font-medium text-[var(--muted-foreground)]">основной</span>
+                      <span className="rounded-full bg-[var(--muted)] px-2 py-0.5 text-[10px] font-medium text-[var(--muted-foreground)]">
+                        основной
+                      </span>
                     )}
                   </div>
                   <div className="text-[11px] text-[var(--muted-foreground)]">
                     {department.order_count} заказов · {department.is_active ? "доступен" : "отключён"}
                   </div>
                 </div>
-                <button type="button" onClick={() => begin(department)}
+                <button
+                  type="button"
+                  onClick={() => begin(department)}
                   className="rounded-lg p-2 text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
-                  title="Изменить отдел">
+                  title="Изменить отдел"
+                >
                   <Pencil className="size-3.5" />
                 </button>
-                <button type="button" disabled={saving || (department.is_default && department.is_active)}
+                <button
+                  type="button"
+                  disabled={saving || (department.is_default && department.is_active)}
                   onClick={() => void update(department, { is_active: !department.is_active })}
-                  className="min-w-20 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium disabled:opacity-40">
+                  className="min-w-20 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium disabled:opacity-40"
+                >
                   {department.is_active ? "Отключить" : "Включить"}
                 </button>
               </div>
@@ -316,34 +351,50 @@ function DepartmentManager({ onChanged }: { onChanged: () => void }) {
                 <div className="text-[11px] text-[var(--muted-foreground)]">Название и цвет метки</div>
               </div>
               {editing && (
-                <button type="button" onClick={() => begin()}
-                  className="text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
+                <button
+                  type="button"
+                  onClick={() => begin()}
+                  className="text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                >
                   Сбросить
                 </button>
               )}
             </div>
-            <Input autoFocus value={name} onChange={(event) => setName(event.target.value)}
-              maxLength={100} placeholder="Например, Оптовые продажи" />
+            <Input
+              autoFocus
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              maxLength={100}
+              placeholder="Например, Оптовые продажи"
+            />
             <div className="mt-3 flex flex-wrap gap-2">
               {DEPARTMENT_COLORS.map((item) => (
-                <button key={item} type="button" onClick={() => setColor(item)}
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => setColor(item)}
                   aria-label={`Цвет ${item}`}
-                  className={cn("flex size-8 items-center justify-center rounded-full transition-transform hover:scale-110",
-                    color === item && "ring-2 ring-[var(--foreground)] ring-offset-2 ring-offset-[var(--card)]")}
-                  style={{ backgroundColor: item }}>
+                  className={cn(
+                    "flex size-8 items-center justify-center rounded-full transition-transform hover:scale-110",
+                    color === item && "ring-2 ring-[var(--foreground)] ring-offset-2 ring-offset-[var(--card)]",
+                  )}
+                  style={{ backgroundColor: item }}
+                >
                   {color === item && <Check className="size-4 text-white" />}
                 </button>
               ))}
             </div>
             {error && <p className="mt-3 text-sm text-[var(--destructive)]">{error}</p>}
-            <Button className="mt-4 w-full" disabled={saving || !name.trim()}
-              onClick={() => void save()}>
+            <Button className="mt-4 w-full" disabled={saving || !name.trim()} onClick={() => void save()}>
               {saving ? "Сохранение…" : editing ? "Сохранить изменения" : "Добавить отдел"}
             </Button>
             {editing && !editing.is_default && (
-              <button type="button" disabled={saving}
+              <button
+                type="button"
+                disabled={saving}
                 onClick={() => void update(editing, { is_default: true, is_active: true })}
-                className="mt-3 w-full text-center text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
+                className="mt-3 w-full text-center text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+              >
                 Сделать основным
               </button>
             )}
@@ -373,9 +424,7 @@ function OrdersAnalytics({
   const totalOrders = rows.reduce((sum, row) => sum + row.orders, 0);
   const activeDepartment = rows.find((row) => row.code === active);
   const currencies = new Set(orders.map((order) => order.currency ?? "KZT"));
-  const oneCurrency = currencies.size <= 1
-    ? (currencies.values().next().value ?? "KZT")
-    : null;
+  const oneCurrency = currencies.size <= 1 ? (currencies.values().next().value ?? "KZT") : null;
 
   return (
     <section className="mb-5 overflow-hidden rounded-2xl border bg-[var(--card)] shadow-card">
@@ -432,9 +481,15 @@ function OrdersAnalytics({
         <div id="orders-department-analytics" role="tabpanel" className="p-3 sm:p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1">
             <p className="text-xs text-[var(--muted-foreground)]">
-              {activeDepartment
-                ? <>Показаны заказы отдела <strong className="text-[var(--foreground)]">{activeDepartment.name}</strong></>
-                : <>Все отделы · <strong className="text-[var(--foreground)] tabular-nums">{totalOrders}</strong> заказов</>}
+              {activeDepartment ? (
+                <>
+                  Показаны заказы отдела <strong className="text-[var(--foreground)]">{activeDepartment.name}</strong>
+                </>
+              ) : (
+                <>
+                  Все отделы · <strong className="text-[var(--foreground)] tabular-nums">{totalOrders}</strong> заказов
+                </>
+              )}
             </p>
             {active !== "all" && (
               <button
@@ -474,12 +529,16 @@ function OrdersAnalytics({
                   </div>
                   <div className="mt-6 grid grid-cols-2 gap-3 border-t pt-3">
                     <div>
-                      <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Отгружено</div>
+                      <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">
+                        Отгружено
+                      </div>
                       <div className="mt-1 text-sm font-bold tabular-nums">{row.shipped}</div>
                     </div>
                     <div className="text-right">
                       <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Выручка</div>
-                      <div className="mt-1 truncate text-sm font-bold tabular-nums">{oneCurrency ? `${formatMoney(row.revenue)} ${currencySymbol(oneCurrency)}` : "По валютам"}</div>
+                      <div className="mt-1 truncate text-sm font-bold tabular-nums">
+                        {oneCurrency ? `${formatMoney(row.revenue)} ${currencySymbol(oneCurrency)}` : "По валютам"}
+                      </div>
                     </div>
                   </div>
                 </button>
@@ -492,7 +551,11 @@ function OrdersAnalytics({
           )}
         </div>
       ) : (
-        <div id="orders-overview-analytics" role="tabpanel" className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 sm:p-4">
+        <div
+          id="orders-overview-analytics"
+          role="tabpanel"
+          className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 sm:p-4"
+        >
           <StatCard label="Всего заказов" value={String(orders.length)} icon={ListChecks} />
           <StatCard label="В процессе" value={String(activeCount)} icon={Clock3} />
           <StatCard
@@ -512,7 +575,11 @@ function OrdersAnalytics({
 }
 
 /* ── Док архива в углу: клик раскрывает стопку удалённых, как Stacks в macOS ── */
-function ArchiveDock({ trashed, onOpenArchive, onChanged }: {
+function ArchiveDock({
+  trashed,
+  onOpenArchive,
+  onChanged,
+}: {
   trashed: Order[];
   onOpenArchive: () => void;
   onChanged: () => void;
@@ -526,21 +593,27 @@ function ArchiveDock({ trashed, onOpenArchive, onChanged }: {
   useDismiss(ref, () => setOpen(false), open && !purgeItem);
 
   // Веер стопки: ближе к кнопке — удалённые последними.
-  const recent = [...trashed]
-    .sort((a, b) => (b.deleted_at ?? "").localeCompare(a.deleted_at ?? ""))
-    .slice(0, 4);
+  const recent = [...trashed].sort((a, b) => (b.deleted_at ?? "").localeCompare(a.deleted_at ?? "")).slice(0, 4);
   const fan = [...recent].reverse();
 
   async function act(o: Order, fn: () => Promise<unknown>) {
-    setBusyId(o.id); setError("");
-    try { await fn(); onChanged(); }
-    catch (e) { setError(apiError(e)); throw e; }
-    finally { setBusyId(null); }
+    setBusyId(o.id);
+    setError("");
+    try {
+      await fn();
+      onChanged();
+    } catch (e) {
+      setError(apiError(e));
+      throw e;
+    } finally {
+      setBusyId(null);
+    }
   }
   const restore = (o: Order) => act(o, () => api.post(`/orders/${o.id}/restore/`)).catch(() => {});
   const purge = (o: Order) =>
     act(o, () => api.delete(`/orders/${o.id}/purge/`))
-      .then(() => setPurgeItem(null)).catch(() => setPurgeItem(null));
+      .then(() => setPurgeItem(null))
+      .catch(() => setPurgeItem(null));
 
   // Задержки анимации: карточки «выезжают» из кнопки снизу вверх.
   const delay = (indexFromBottom: number) => ({ animationDelay: `${indexFromBottom * 45}ms` });
@@ -554,47 +627,73 @@ function ArchiveDock({ trashed, onOpenArchive, onChanged }: {
           <button
             type="button"
             style={delay(fan.length + 1)}
-            onClick={() => { setOpen(false); onOpenArchive(); }}
+            onClick={() => {
+              setOpen(false);
+              onOpenArchive();
+            }}
             className="animate-fade-up flex items-center justify-center gap-1.5 self-center rounded-full border bg-[var(--popover)] px-4 py-1.5 text-xs font-medium shadow-lg transition-colors hover:bg-[var(--accent)]"
           >
             Открыть архив{trashed.length > 0 ? ` (${trashed.length})` : ""}
             <ChevronDown className="size-3.5 -rotate-90" />
           </button>
           {error && (
-            <p style={delay(fan.length)} className="animate-fade-up rounded-lg border bg-[var(--popover)] px-3 py-2 text-xs text-[var(--destructive)] shadow-lg">
+            <p
+              style={delay(fan.length)}
+              className="animate-fade-up rounded-lg border bg-[var(--popover)] px-3 py-2 text-xs text-[var(--destructive)] shadow-lg"
+            >
               {error}
             </p>
           )}
           {fan.length === 0 ? (
-            <div style={delay(0)} className="animate-fade-up rounded-xl border bg-[var(--popover)] px-4 py-5 text-center text-sm text-[var(--muted-foreground)] shadow-lg">
+            <div
+              style={delay(0)}
+              className="animate-fade-up rounded-xl border bg-[var(--popover)] px-4 py-5 text-center text-sm text-[var(--muted-foreground)] shadow-lg"
+            >
               Архив пуст.
             </div>
-          ) : fan.map((o, i) => (
-            <div key={o.id} style={delay(fan.length - 1 - i)}
-              className="animate-fade-up flex items-center justify-between gap-2 rounded-xl border bg-[var(--popover)] p-3 shadow-[0_10px_35px_rgba(0,0,0,0.16)]">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="font-semibold">#{o.id}</span>
-                  <span className="truncate">{o.client_name || `Клиент #${o.client}`}</span>
+          ) : (
+            fan.map((o, i) => (
+              <div
+                key={o.id}
+                style={delay(fan.length - 1 - i)}
+                className="animate-fade-up flex items-center justify-between gap-2 rounded-xl border bg-[var(--popover)] p-3 shadow-[0_10px_35px_rgba(0,0,0,0.16)]"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="font-semibold">#{o.id}</span>
+                    <span className="truncate">{o.client_name || `Клиент #${o.client}`}</span>
+                  </div>
+                  <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">
+                    <span className="tabular-nums">
+                      {formatMoney(o.total_amount)} {currencySymbol(o.currency)}
+                    </span>
+                    {o.deleted_at && <> · {formatDateTime(o.deleted_at)}</>}
+                  </div>
                 </div>
-                <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">
-                  <span className="tabular-nums">{formatMoney(o.total_amount)} {currencySymbol(o.currency)}</span>
-                  {o.deleted_at && <> · {formatDateTime(o.deleted_at)}</>}
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busyId === o.id}
+                    title="Восстановить заказ"
+                    onClick={() => restore(o)}
+                  >
+                    <RotateCcw className="size-3.5" /> Вернуть
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busyId === o.id}
+                    className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                    title="Удалить навсегда"
+                    onClick={() => setPurgeItem(o)}
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
                 </div>
               </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <Button size="sm" variant="outline" disabled={busyId === o.id}
-                  title="Восстановить заказ" onClick={() => restore(o)}>
-                  <RotateCcw className="size-3.5" /> Вернуть
-                </Button>
-                <Button size="sm" variant="ghost" disabled={busyId === o.id}
-                  className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                  title="Удалить навсегда" onClick={() => setPurgeItem(o)}>
-                  <Trash2 className="size-4" />
-                </Button>
-              </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       )}
 
@@ -602,9 +701,11 @@ function ArchiveDock({ trashed, onOpenArchive, onChanged }: {
         open={!!purgeItem}
         onClose={() => setPurgeItem(null)}
         title="Удалить заказ навсегда?"
-        description={purgeItem
-          ? `Заказ #${purgeItem.id} (${purgeItem.client_name ?? "клиент"}) будет удалён безвозвратно вместе с позициями и оплатами. Восстановить его будет нельзя.`
-          : ""}
+        description={
+          purgeItem
+            ? `Заказ #${purgeItem.id} (${purgeItem.client_name ?? "клиент"}) будет удалён безвозвратно вместе с позициями и оплатами. Восстановить его будет нельзя.`
+            : ""
+        }
         confirmLabel="Удалить навсегда"
         busy={purgeItem ? busyId === purgeItem.id : false}
         error={error}
@@ -637,14 +738,20 @@ function ArchiveDock({ trashed, onOpenArchive, onChanged }: {
   );
 }
 
-function OrderTemplatePicker({ orders, selected, onSelect }: {
+function OrderTemplatePicker({
+  orders,
+  selected,
+  onSelect,
+}: {
   orders: Order[];
   selected: Order | null;
   onSelect: (order: Order | null) => void;
 }) {
   const sorted = [...orders].sort((a, b) => b.id - a.id);
-  const itemsSummary = selected?.items.slice(0, 2)
-    .map((item) => `${item.product_label ?? "Товар"} × ${item.quantity}`).join(", ");
+  const itemsSummary = selected?.items
+    .slice(0, 2)
+    .map((item) => `${item.product_label ?? "Товар"} × ${item.quantity}`)
+    .join(", ");
 
   return (
     <section className="rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-50/90 via-white to-emerald-50/60 p-3.5 sm:p-4">
@@ -681,7 +788,8 @@ function OrderTemplatePicker({ orders, selected, onSelect }: {
         <div className="mt-3 grid gap-2 border-t border-blue-100 pt-3 text-xs sm:grid-cols-[auto_1fr_auto] sm:items-center">
           <span className="w-fit rounded-lg bg-blue-600 px-2.5 py-1 font-black text-white">Шаблон #{selected.id}</span>
           <span className="truncate font-medium text-slate-700">
-            {selected.client_name} · {itemsSummary || "Без позиций"}{selected.items.length > 2 ? ` и ещё ${selected.items.length - 2}` : ""}
+            {selected.client_name} · {itemsSummary || "Без позиций"}
+            {selected.items.length > 2 ? ` и ещё ${selected.items.length - 2}` : ""}
           </span>
           <span className="font-bold tabular-nums text-slate-900">
             {formatMoney(selected.total_amount)} {currencySymbol(selected.currency)}
@@ -766,11 +874,18 @@ function OrdersPageInner() {
 
   async function confirmDelete() {
     if (!delItem) return;
-    setDelBusy(true); setDelError("");
+    setDelBusy(true);
+    setDelError("");
     try {
       await api.delete(`/orders/${delItem.id}/`);
-      setDelItem(null); reload(); reloadTrash();
-    } catch (e) { setDelError(apiError(e)); } finally { setDelBusy(false); }
+      setDelItem(null);
+      reload();
+      reloadTrash();
+    } catch (e) {
+      setDelError(apiError(e));
+    } finally {
+      setDelBusy(false);
+    }
   }
 
   async function applySimpleStatus(order: Order, target: string) {
@@ -802,11 +917,24 @@ function OrdersPageInner() {
 
   // Карандаш и архив живут в одном меню «⋮» строки заказа.
   const rowActions = (o: Order): ActionMenuItem[] => [
-    { key: "edit", label: "Изменить", icon: Pencil, disabled: !isEditable(o),
+    {
+      key: "edit",
+      label: "Изменить",
+      icon: Pencil,
+      disabled: !isEditable(o),
       hint: isEditable(o) ? undefined : "Заказ в этом статусе не редактируется",
-      onSelect: () => setEditing(o) },
-    { key: "archive", label: "В архив", icon: Archive, tone: "destructive" as const,
-      onSelect: () => { setDelError(""); setDelItem(o); } },
+      onSelect: () => setEditing(o),
+    },
+    {
+      key: "archive",
+      label: "В архив",
+      icon: Archive,
+      tone: "destructive" as const,
+      onSelect: () => {
+        setDelError("");
+        setDelItem(o);
+      },
+    },
   ];
 
   const list = orders ?? [];
@@ -832,7 +960,10 @@ function OrdersPageInner() {
 
   const toggleSort = (k: string) => {
     if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
-    else { setSortKey(k); setSortDir("asc"); }
+    else {
+      setSortKey(k);
+      setSortDir("asc");
+    }
   };
 
   // Загруженные всегда падают вниз списка — сверху активная работа.
@@ -841,218 +972,325 @@ function OrdersPageInner() {
     const rank = doneRank(a) - doneRank(b);
     if (rank !== 0) return rank;
     let av: number | string, bv: number | string;
-    if (sortKey === "amount") { av = Number(a.total_amount || 0); bv = Number(b.total_amount || 0); }
-    else if (sortKey === "client") { av = a.client_name ?? ""; bv = b.client_name ?? ""; }
-    else if (sortKey === "status") { av = a.status; bv = b.status; }
-    else if (sortKey === "created") { av = a.created_at; bv = b.created_at; }
-    else { av = a.id; bv = b.id; }
-    const cmp = typeof av === "number" && typeof bv === "number"
-      ? av - bv
-      : String(av).localeCompare(String(bv), "ru");
+    if (sortKey === "amount") {
+      av = Number(a.total_amount || 0);
+      bv = Number(b.total_amount || 0);
+    } else if (sortKey === "client") {
+      av = a.client_name ?? "";
+      bv = b.client_name ?? "";
+    } else if (sortKey === "status") {
+      av = a.status;
+      bv = b.status;
+    } else if (sortKey === "created") {
+      av = a.created_at;
+      bv = b.created_at;
+    } else {
+      av = a.id;
+      bv = b.id;
+    }
+    const cmp = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv), "ru");
     return sortDir === "asc" ? cmp : -cmp;
   });
 
   return (
-    <AppShell title="Заказы" section="Работа" description="Единый центр заказов: отделы, статусы, выручка и отгрузка."
-      actions={(canCreate || canManageDepartments || canExport) ? (
-        <div className="flex items-center gap-2">
-          {canManageDepartments && (
-            <DepartmentManager onChanged={() => {
-              void reloadDepartments(); void reloadSummary(); void reload();
-            }} />
-          )}
-          {canExport && (
-            <Button size="sm" variant="outline" aria-label="Общая Excel-выписка"
-              onClick={() => setStatementOpen(true)}>
-              <FileSpreadsheet className="size-4 text-emerald-600" />
-              <span className="hidden lg:inline">Excel-выписка</span>
-            </Button>
-          )}
-          {canCreate && (
-            <Button size="sm" aria-label="Новый заказ" onClick={() => {
-              setTemplateOrder(null); setOpen(true);
-            }}>
-              <Plus className="size-4" /> <span className="hidden sm:inline">Новый заказ</span>
-            </Button>
-          )}
-        </div>
-      ) : undefined}>
+    <AppShell
+      title="Заказы"
+      section="Работа"
+      description="Единый центр заказов: отделы, статусы, выручка и отгрузка."
+      actions={
+        canCreate || canManageDepartments || canExport ? (
+          <div className="flex items-center gap-2">
+            {canManageDepartments && (
+              <DepartmentManager
+                onChanged={() => {
+                  void reloadDepartments();
+                  void reloadSummary();
+                  void reload();
+                }}
+              />
+            )}
+            {canExport && (
+              <Button
+                size="sm"
+                variant="outline"
+                aria-label="Общая Excel-выписка"
+                onClick={() => setStatementOpen(true)}
+              >
+                <FileSpreadsheet className="size-4 text-emerald-600" />
+                <span className="hidden lg:inline">Excel-выписка</span>
+              </Button>
+            )}
+            {canCreate && (
+              <Button
+                size="sm"
+                aria-label="Новый заказ"
+                onClick={() => {
+                  setTemplateOrder(null);
+                  setOpen(true);
+                }}
+              >
+                <Plus className="size-4" /> <span className="hidden sm:inline">Новый заказ</span>
+              </Button>
+            )}
+          </div>
+        ) : undefined
+      }
+    >
       {view === "archive" ? (
         <ArchiveView
           showDept={showDept}
-          onBack={() => { reload(); reloadTrash(); setView("orders"); }}
-          onRestored={() => { reload(); reloadTrash(); }}
+          onBack={() => {
+            reload();
+            reloadTrash();
+            setView("orders");
+          }}
+          onRestored={() => {
+            reload();
+            reloadTrash();
+          }}
         />
       ) : (
-      <>
-      <OrdersAnalytics
-        rows={departmentSummary ?? []}
-        active={dept}
-        onSelect={setDept}
-        orders={countable}
-        activeCount={activeCount}
-        total={totalSum}
-      />
-
-      <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="relative max-w-md flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-          <Input className="pl-9" placeholder="Поиск по клиенту, номеру или #ID"
-            value={q} onChange={(e) => setQ(e.target.value)} />
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <DateRangeFilter
-            dateFrom={dateFrom}
-            dateTo={dateTo}
-            onDateFrom={setDateFrom}
-            onDateTo={setDateTo}
+        <>
+          <OrdersAnalytics
+            rows={departmentSummary ?? []}
+            active={dept}
+            onSelect={setDept}
+            orders={countable}
+            activeCount={activeCount}
+            total={totalSum}
           />
-          {(departments?.length ?? 0) > 0 && (
-            <FilterDropdown label="Отдел" active={dept} onChange={setDept} options={[
-              { key: "all", label: "Все" },
-              ...(departments ?? []).map((department) => ({
-                key: department.code,
-                label: department.name,
-              })),
-            ]} />
-          )}
-          <FilterDropdown label="Статус" options={pills} active={status} onChange={setStatus} />
-        </div>
-      </div>
 
-      {error && <div className="mb-4"><ErrorAlert message={error} onRetry={reload} /></div>}
-      {statusActionError && (
-        <div className="mb-4"><ErrorAlert message={statusActionError} /></div>
-      )}
-
-      {/* Мобильные карточки: таблица на телефоне нечитаемая. */}
-      <div className="flex flex-col gap-3 md:hidden">
-        {loading ? (
-          <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
-        ) : sorted.length === 0 ? (
-          <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Заказов пока нет.</p>
-        ) : sorted.map((o) => (
-          <div key={o.id} onClick={() => router.push(`/orders/${o.id}`)}
-            className="flex cursor-pointer flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card">
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-semibold">#{o.id}</span>
-                {showDept && <DepartmentBadge order={o} />}
-              </div>
-              {canEdit && (o.status !== "shipped" || canRollback) ? (
-                <OrderStatusSelect status={o.status} disabled={statusBusyId === o.id}
-                  onChange={(target) => chooseStatus(o, target)} />
-              ) : (
-                <StatusBadge status={o.status} dot />
-              )}
+          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="relative max-w-md flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+              <Input
+                className="pl-9"
+                placeholder="Поиск по клиенту, номеру или #ID"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
             </div>
-            <div className="text-sm font-medium">{o.client_name || `Клиент #${o.client}`}</div>
-            <div className="text-xs text-[var(--muted-foreground)]">Создан {formatDateTime(o.created_at)}</div>
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              <div>
-                <div className="text-[11px] text-[var(--muted-foreground)]">Сумма</div>
-                <div className="font-semibold tabular-nums">{formatMoney(o.total_amount)} {currencySymbol(o.currency)}</div>
-              </div>
-              <div>
-                <div className="text-[11px] text-[var(--muted-foreground)]">Оплачено</div>
-                <div className="tabular-nums">{formatMoney(o.paid_total)} {currencySymbol(o.currency)}</div>
-              </div>
-              {o.truck_number && (
-                <div>
-                  <div className="text-[11px] text-[var(--muted-foreground)]">Машина</div>
-                  <div className="tabular-nums">{formatPlate(o.truck_number)}</div>
-                </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <DateRangeFilter dateFrom={dateFrom} dateTo={dateTo} onDateFrom={setDateFrom} onDateTo={setDateTo} />
+              {(departments?.length ?? 0) > 0 && (
+                <FilterDropdown
+                  label="Отдел"
+                  active={dept}
+                  onChange={setDept}
+                  options={[
+                    { key: "all", label: "Все" },
+                    ...(departments ?? []).map((department) => ({
+                      key: department.code,
+                      label: department.name,
+                    })),
+                  ]}
+                />
               )}
-              {o.arrival_date && (
-                <div>
-                  <div className="text-[11px] text-[var(--muted-foreground)]">Прибытие</div>
-                  <div>{new Date(o.arrival_date).toLocaleDateString("ru-RU")}</div>
-                </div>
-              )}
-            </div>
-            <div className="flex items-center justify-between border-t pt-2">
-              {o.status === "shipped" && o.payment_status ? (
-                <Badge tone={PAYMENT_STATUS_TONE[o.payment_status] ?? "muted"}>
-                  {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
-                </Badge>
-              ) : <span />}
-              {canEdit && <ActionMenu items={rowActions(o)} />}
+              <FilterDropdown label="Статус" options={pills} active={status} onChange={setStatus} />
             </div>
           </div>
-        ))}
-      </div>
 
-      <Card className="hidden md:block">
-        <CardContent className="pt-6">
-          {loading ? (
-            <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
-          ) : (
-            <Table>
-              <THead>
-                <TR>
-                  <SortableHeader label="№" sortKey="id" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-                  <SortableHeader label="Создан" sortKey="created" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-                  {showDept && <TH>Отдел</TH>}
-                  <SortableHeader label="Клиент" sortKey="client" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-                  <SortableHeader label="Сумма" sortKey="amount" activeKey={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
-                  <SortableHeader label="Статус" sortKey="status" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-                  {canEdit && <TH></TH>}
-                </TR>
-              </THead>
-              <TBody>
-                {sorted.map((o) => (
-                  <TR key={o.id} className="cursor-pointer"
-                    onClick={() => router.push(`/orders/${o.id}`)}>
-                    <TD className="font-medium">
-                      <Link href={`/orders/${o.id}`} className="hover:underline"
-                        onClick={(e) => e.stopPropagation()}>#{o.id}</Link>
-                    </TD>
-                    <TD className="whitespace-nowrap tabular-nums text-[var(--muted-foreground)]">
-                      {formatDateTime(o.created_at)}
-                    </TD>
-                    {showDept && <TD><DepartmentBadge order={o} /></TD>}
-                    <TD>{o.client_name || `Клиент #${o.client}`}</TD>
-                    <TD className="text-right tabular-nums">{formatMoney(o.total_amount)} {currencySymbol(o.currency)}</TD>
-                    <TD>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {canEdit && (o.status !== "shipped" || canRollback) ? (
-                          <OrderStatusSelect status={o.status} disabled={statusBusyId === o.id}
-                            onChange={(target) => chooseStatus(o, target)} />
-                        ) : (
-                          <StatusBadge status={o.status} dot />
-                        )}
-                        {o.payment_status && (
-                          <Badge tone={PAYMENT_STATUS_TONE[o.payment_status] ?? "muted"}>
-                            {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
-                          </Badge>
-                        )}
-                      </div>
-                    </TD>
-                    {canEdit && (
-                      <TD onClick={(e) => e.stopPropagation()}>
-                        <div className="flex justify-end">
-                          <ActionMenu items={rowActions(o)} />
-                        </div>
-                      </TD>
-                    )}
-                  </TR>
-                ))}
-                {sorted.length === 0 && (
-                  <TR><TD colSpan={(showDept ? 6 : 5) + (canEdit ? 1 : 0)} className="py-4 text-center text-[var(--muted-foreground)]">
-                    Заказов пока нет.</TD></TR>)}
-              </TBody>
-            </Table>
+          {error && (
+            <div className="mb-4">
+              <ErrorAlert message={error} onRetry={reload} />
+            </div>
           )}
-        </CardContent>
-      </Card>
-      </>
+          {statusActionError && (
+            <div className="mb-4">
+              <ErrorAlert message={statusActionError} />
+            </div>
+          )}
+
+          {/* Мобильные карточки: таблица на телефоне нечитаемая. */}
+          <div className="flex flex-col gap-3 md:hidden">
+            {loading ? (
+              <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+            ) : sorted.length === 0 ? (
+              <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Заказов пока нет.</p>
+            ) : (
+              sorted.map((o) => (
+                <div
+                  key={o.id}
+                  onClick={() => router.push(`/orders/${o.id}`)}
+                  className="flex cursor-pointer flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">#{o.id}</span>
+                      {showDept && <DepartmentBadge order={o} />}
+                    </div>
+                    {canEdit && (o.status !== "shipped" || canRollback) ? (
+                      <OrderStatusSelect
+                        status={o.status}
+                        disabled={statusBusyId === o.id}
+                        onChange={(target) => chooseStatus(o, target)}
+                      />
+                    ) : (
+                      <StatusBadge status={o.status} dot />
+                    )}
+                  </div>
+                  <div className="text-sm font-medium">{o.client_name || `Клиент #${o.client}`}</div>
+                  <div className="text-xs text-[var(--muted-foreground)]">Создан {formatDateTime(o.created_at)}</div>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div>
+                      <div className="text-[11px] text-[var(--muted-foreground)]">Сумма</div>
+                      <div className="font-semibold tabular-nums">
+                        {formatMoney(o.total_amount)} {currencySymbol(o.currency)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] text-[var(--muted-foreground)]">Оплачено</div>
+                      <div className="tabular-nums">
+                        {formatMoney(o.paid_total)} {currencySymbol(o.currency)}
+                      </div>
+                    </div>
+                    {o.truck_number && (
+                      <div>
+                        <div className="text-[11px] text-[var(--muted-foreground)]">Машина</div>
+                        <div className="tabular-nums">{formatPlate(o.truck_number)}</div>
+                      </div>
+                    )}
+                    {o.arrival_date && (
+                      <div>
+                        <div className="text-[11px] text-[var(--muted-foreground)]">Прибытие</div>
+                        <div>{new Date(o.arrival_date).toLocaleDateString("ru-RU")}</div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between border-t pt-2">
+                    {o.status === "shipped" && o.payment_status ? (
+                      <Badge tone={PAYMENT_STATUS_TONE[o.payment_status] ?? "muted"}>
+                        {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
+                      </Badge>
+                    ) : (
+                      <span />
+                    )}
+                    {canEdit && <ActionMenu items={rowActions(o)} />}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <Card className="hidden md:block">
+            <CardContent className="pt-6">
+              {loading ? (
+                <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+              ) : (
+                <Table>
+                  <THead>
+                    <TR>
+                      <SortableHeader label="№" sortKey="id" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                      <SortableHeader
+                        label="Создан"
+                        sortKey="created"
+                        activeKey={sortKey}
+                        dir={sortDir}
+                        onClick={toggleSort}
+                      />
+                      {showDept && <TH>Отдел</TH>}
+                      <SortableHeader
+                        label="Клиент"
+                        sortKey="client"
+                        activeKey={sortKey}
+                        dir={sortDir}
+                        onClick={toggleSort}
+                      />
+                      <SortableHeader
+                        label="Сумма"
+                        sortKey="amount"
+                        activeKey={sortKey}
+                        dir={sortDir}
+                        onClick={toggleSort}
+                        align="right"
+                      />
+                      <SortableHeader
+                        label="Статус"
+                        sortKey="status"
+                        activeKey={sortKey}
+                        dir={sortDir}
+                        onClick={toggleSort}
+                      />
+                      {canEdit && <TH></TH>}
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {sorted.map((o) => (
+                      <TR key={o.id} className="cursor-pointer" onClick={() => router.push(`/orders/${o.id}`)}>
+                        <TD className="font-medium">
+                          <Link
+                            href={`/orders/${o.id}`}
+                            className="hover:underline"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            #{o.id}
+                          </Link>
+                        </TD>
+                        <TD className="whitespace-nowrap tabular-nums text-[var(--muted-foreground)]">
+                          {formatDateTime(o.created_at)}
+                        </TD>
+                        {showDept && (
+                          <TD>
+                            <DepartmentBadge order={o} />
+                          </TD>
+                        )}
+                        <TD>{o.client_name || `Клиент #${o.client}`}</TD>
+                        <TD className="text-right tabular-nums">
+                          {formatMoney(o.total_amount)} {currencySymbol(o.currency)}
+                        </TD>
+                        <TD>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {canEdit && (o.status !== "shipped" || canRollback) ? (
+                              <OrderStatusSelect
+                                status={o.status}
+                                disabled={statusBusyId === o.id}
+                                onChange={(target) => chooseStatus(o, target)}
+                              />
+                            ) : (
+                              <StatusBadge status={o.status} dot />
+                            )}
+                            {o.payment_status && (
+                              <Badge tone={PAYMENT_STATUS_TONE[o.payment_status] ?? "muted"}>
+                                {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
+                              </Badge>
+                            )}
+                          </div>
+                        </TD>
+                        {canEdit && (
+                          <TD onClick={(e) => e.stopPropagation()}>
+                            <div className="flex justify-end">
+                              <ActionMenu items={rowActions(o)} />
+                            </div>
+                          </TD>
+                        )}
+                      </TR>
+                    ))}
+                    {sorted.length === 0 && (
+                      <TR>
+                        <TD
+                          colSpan={(showDept ? 6 : 5) + (canEdit ? 1 : 0)}
+                          className="py-4 text-center text-[var(--muted-foreground)]"
+                        >
+                          Заказов пока нет.
+                        </TD>
+                      </TR>
+                    )}
+                  </TBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+        </>
       )}
 
       {canEdit && view === "orders" && (
         <ArchiveDock
           trashed={trashed ?? []}
           onOpenArchive={() => setView("archive")}
-          onChanged={() => { reload(); reloadTrash(); }}
+          onChanged={() => {
+            reload();
+            reloadTrash();
+          }}
         />
       )}
 
@@ -1060,9 +1298,11 @@ function OrdersPageInner() {
         open={!!delItem}
         onClose={() => setDelItem(null)}
         title="Переместить заказ в архив?"
-        description={delItem
-          ? `Заказ #${delItem.id} (${delItem.client_name ?? "клиент"}) исчезнет из рабочих списков и отчётов. Его можно будет восстановить из архива.`
-          : ""}
+        description={
+          delItem
+            ? `Заказ #${delItem.id} (${delItem.client_name ?? "клиент"}) исчезнет из рабочих списков и отчётов. Его можно будет восстановить из архива.`
+            : ""
+        }
         confirmLabel="В архив"
         busy={delBusy}
         error={delError}
@@ -1072,42 +1312,69 @@ function OrdersPageInner() {
       <ManualOrderStatusModal
         order={manualStatusOrder}
         target={manualStatusTarget}
-        onClose={() => { setManualStatusOrder(null); setManualStatusTarget(null); }}
+        onClose={() => {
+          setManualStatusOrder(null);
+          setManualStatusTarget(null);
+        }}
         onChanged={async () => {
           await Promise.all([reload(), reloadSummary(), reloadTrash()]);
         }}
       />
-      <ShipmentRollbackModal order={rollbackOrder} initialTarget={rollbackTarget}
+      <ShipmentRollbackModal
+        order={rollbackOrder}
+        initialTarget={rollbackTarget}
         onClose={() => setRollbackOrder(null)}
-        onChanged={async () => { await Promise.all([reload(), reloadSummary(), reloadTrash()]); }} />
+        onChanged={async () => {
+          await Promise.all([reload(), reloadSummary(), reloadTrash()]);
+        }}
+      />
 
-      <Modal open={open} onClose={closeNewOrder}
+      <Modal
+        open={open}
+        onClose={closeNewOrder}
         eyebrow="Работа · Заказ"
         title={templateOrder ? `Новый заказ по шаблону #${templateOrder.id}` : "Новый заказ"}
         description="Создайте с нуля или подставьте старый заказ, проверьте данные и только потом сохраните."
-        className="max-w-4xl" mobileFullscreen>
+        className="max-w-4xl"
+        mobileFullscreen
+      >
         {open && (
           <div className="space-y-4">
-            <OrderTemplatePicker
-              orders={templateOrders ?? []}
-              selected={templateOrder}
-              onSelect={setTemplateOrder}
-            />
-            <OrderForm key={templateOrder?.id ?? "blank"} template={templateOrder}
+            <OrderTemplatePicker orders={templateOrders ?? []} selected={templateOrder} onSelect={setTemplateOrder} />
+            <OrderForm
+              key={templateOrder?.id ?? "blank"}
+              template={templateOrder}
               onCancel={closeNewOrder}
-              onDone={() => { closeNewOrder(); reload(); reloadSummary(); }} />
+              onDone={() => {
+                closeNewOrder();
+                reload();
+                reloadSummary();
+              }}
+            />
           </div>
         )}
       </Modal>
 
-      <Modal open={!!editing} onClose={() => setEditing(null)}
+      <Modal
+        open={!!editing}
+        onClose={() => setEditing(null)}
         eyebrow={editing ? `Работа · Заказ #${editing.id}` : "Работа · Заказ"}
         title="Изменить заказ"
         description="Позиции, цены, машина и дата прибытия. Изменения фиксируются в журнале."
-        className="max-w-4xl" mobileFullscreen>
-        {editing && <OrderForm editing={editing}
-          onCancel={() => setEditing(null)}
-          onDone={() => { setEditing(null); reload(); reloadSummary(); }} />}
+        className="max-w-4xl"
+        mobileFullscreen
+      >
+        {editing && (
+          <OrderForm
+            editing={editing}
+            onCancel={() => setEditing(null)}
+            onDone={() => {
+              setEditing(null);
+              reload();
+              reloadSummary();
+            }}
+          />
+        )}
       </Modal>
       <StatementExportModal
         open={statementOpen}
@@ -1126,7 +1393,11 @@ function OrdersPageInner() {
 }
 
 /* ── Архив: удалённые заказы с восстановлением ──────────────────────────── */
-function ArchiveView({ showDept, onBack, onRestored }: {
+function ArchiveView({
+  showDept,
+  onBack,
+  onRestored,
+}: {
   showDept: boolean;
   onBack: () => void;
   onRestored: () => void;
@@ -1137,10 +1408,17 @@ function ArchiveView({ showDept, onBack, onRestored }: {
   const [purgeItem, setPurgeItem] = useState<Order | null>(null);
 
   async function act(o: Order, fn: () => Promise<unknown>) {
-    setBusyId(o.id); setActErr("");
-    try { await fn(); reload(); onRestored(); }
-    catch (e) { setActErr(apiError(e)); }
-    finally { setBusyId(null); }
+    setBusyId(o.id);
+    setActErr("");
+    try {
+      await fn();
+      reload();
+      onRestored();
+    } catch (e) {
+      setActErr(apiError(e));
+    } finally {
+      setBusyId(null);
+    }
   }
   const restore = (o: Order) => act(o, () => api.post(`/orders/${o.id}/restore/`));
   const purge = async (o: Order) => {
@@ -1167,8 +1445,16 @@ function ArchiveView({ showDept, onBack, onRestored }: {
           <ChevronLeft className="size-4" /> К заказам
         </Button>
       </div>
-      {actErr && <div className="mb-4"><ErrorAlert message={actErr} /></div>}
-      {error && !trashed && <div className="mb-4"><ErrorAlert message={error} onRetry={reload} /></div>}
+      {actErr && (
+        <div className="mb-4">
+          <ErrorAlert message={actErr} />
+        </div>
+      )}
+      {error && !trashed && (
+        <div className="mb-4">
+          <ErrorAlert message={error} onRetry={reload} />
+        </div>
+      )}
       <Card>
         <CardContent className="pt-6">
           <Table>
@@ -1184,36 +1470,54 @@ function ArchiveView({ showDept, onBack, onRestored }: {
             </THead>
             <TBody>
               {loading ? (
-                <TR><TD colSpan={showDept ? 6 : 5} className="py-8 text-center text-[var(--muted-foreground)]">Загрузка…</TD></TR>
-              ) : list.length === 0 ? (
-                <TR><TD colSpan={showDept ? 6 : 5} className="py-8 text-center text-[var(--muted-foreground)]">В архиве пока нет заказов.</TD></TR>
-              ) : list.map((o) => (
-                <TR key={o.id}>
-                  <TD className="font-medium">#{o.id}</TD>
-                  {showDept && (
-                    <TD><DepartmentBadge order={o} /></TD>
-                  )}
-                  <TD>{o.client_name || `Клиент #${o.client}`}</TD>
-                  <TD className="text-right tabular-nums">{formatMoney(o.total_amount)} {currencySymbol(o.currency)}</TD>
-                  <TD className="whitespace-nowrap text-[var(--muted-foreground)]">
-                    <div className="text-sm">{o.deleted_at ? formatDateTime(o.deleted_at) : "—"}</div>
-                    {o.deleted_by_name && <div className="text-xs">{o.deleted_by_name}</div>}
-                  </TD>
-                  <TD>
-                    <div className="flex items-center justify-end gap-1.5">
-                      <Button size="sm" variant="outline" disabled={busyId === o.id}
-                        onClick={() => restore(o)}>
-                        <RotateCcw className="size-3.5" /> Восстановить
-                      </Button>
-                      <Button size="sm" variant="ghost" disabled={busyId === o.id}
-                        className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                        title="Удалить навсегда" onClick={() => setPurgeItem(o)}>
-                        <Trash2 className="size-4" />
-                      </Button>
-                    </div>
+                <TR>
+                  <TD colSpan={showDept ? 6 : 5} className="py-8 text-center text-[var(--muted-foreground)]">
+                    Загрузка…
                   </TD>
                 </TR>
-              ))}
+              ) : list.length === 0 ? (
+                <TR>
+                  <TD colSpan={showDept ? 6 : 5} className="py-8 text-center text-[var(--muted-foreground)]">
+                    В архиве пока нет заказов.
+                  </TD>
+                </TR>
+              ) : (
+                list.map((o) => (
+                  <TR key={o.id}>
+                    <TD className="font-medium">#{o.id}</TD>
+                    {showDept && (
+                      <TD>
+                        <DepartmentBadge order={o} />
+                      </TD>
+                    )}
+                    <TD>{o.client_name || `Клиент #${o.client}`}</TD>
+                    <TD className="text-right tabular-nums">
+                      {formatMoney(o.total_amount)} {currencySymbol(o.currency)}
+                    </TD>
+                    <TD className="whitespace-nowrap text-[var(--muted-foreground)]">
+                      <div className="text-sm">{o.deleted_at ? formatDateTime(o.deleted_at) : "—"}</div>
+                      {o.deleted_by_name && <div className="text-xs">{o.deleted_by_name}</div>}
+                    </TD>
+                    <TD>
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Button size="sm" variant="outline" disabled={busyId === o.id} onClick={() => restore(o)}>
+                          <RotateCcw className="size-3.5" /> Восстановить
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busyId === o.id}
+                          className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                          title="Удалить навсегда"
+                          onClick={() => setPurgeItem(o)}
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </div>
+                    </TD>
+                  </TR>
+                ))
+              )}
             </TBody>
           </Table>
         </CardContent>
@@ -1223,9 +1527,11 @@ function ArchiveView({ showDept, onBack, onRestored }: {
         open={!!purgeItem}
         onClose={() => setPurgeItem(null)}
         title="Удалить заказ навсегда?"
-        description={purgeItem
-          ? `Заказ #${purgeItem.id} (${purgeItem.client_name ?? "клиент"}) будет удалён безвозвратно вместе с позициями и оплатами. Восстановить его будет нельзя.`
-          : ""}
+        description={
+          purgeItem
+            ? `Заказ #${purgeItem.id} (${purgeItem.client_name ?? "клиент"}) будет удалён безвозвратно вместе с позициями и оплатами. Восстановить его будет нельзя.`
+            : ""
+        }
         confirmLabel="Удалить навсегда"
         busy={purgeItem ? busyId === purgeItem.id : false}
         error={actErr}
@@ -1236,5 +1542,9 @@ function ArchiveView({ showDept, onBack, onRestored }: {
 }
 
 export default function OrdersPage() {
-  return <RequirePerm perm="orders.view" title="Заказы"><OrdersPageInner /></RequirePerm>;
+  return (
+    <RequirePerm perm="orders.view" title="Заказы">
+      <OrdersPageInner />
+    </RequirePerm>
+  );
 }

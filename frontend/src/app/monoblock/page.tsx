@@ -50,6 +50,7 @@ import type {
 } from "@/lib/types";
 import { useAiCounter } from "@/lib/use-ai-counter";
 import { useApi } from "@/lib/use-api";
+import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { cn, formatDateTime } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 
@@ -66,11 +67,13 @@ const COLOR_META: Record<string, { label: string; bar: string; dot: string }> = 
 };
 
 function colorMeta(color: string) {
-  return COLOR_META[color.toLowerCase()] ?? {
-    label: color,
-    bar: "bg-slate-500",
-    dot: "bg-slate-500",
-  };
+  return (
+    COLOR_META[color.toLowerCase()] ?? {
+      label: color,
+      bar: "bg-slate-500",
+      dot: "bg-slate-500",
+    }
+  );
 }
 
 function shortDay(day: string) {
@@ -90,16 +93,23 @@ function CameraChoice({
   const [streamOnline, setStreamOnline] = useState(false);
 
   return (
-    <button type="button" onClick={onToggle} aria-pressed={checked}
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={checked}
       className={cn(
         "group overflow-hidden rounded-2xl border text-left transition duration-200",
         checked
           ? "border-blue-400 bg-blue-50 shadow-[0_10px_28px_rgba(59,104,210,0.15)] ring-2 ring-blue-500/20"
           : "border-slate-200 bg-white hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md",
-      )}>
+      )}
+    >
       <div className="relative aspect-video overflow-hidden bg-[#151821]">
-        <CameraStream src={camera.src} onStateChange={setStreamOnline}
-          className="absolute inset-0 size-full object-cover transition duration-300 group-hover:scale-[1.02]" />
+        <CameraStream
+          src={camera.src}
+          onStateChange={setStreamOnline}
+          className="absolute inset-0 size-full object-cover transition duration-300 group-hover:scale-[1.02]"
+        />
 
         {!streamOnline && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-slate-950/75 text-white/45">
@@ -113,22 +123,24 @@ function CameraChoice({
             <span className={cn("size-1.5 rounded-full", streamOnline ? "bg-emerald-400" : "bg-amber-400")} />
             {streamOnline ? "ОНЛАЙН" : "НЕТ СИГНАЛА"}
           </span>
-          <span className={cn(
-            "flex size-7 items-center justify-center rounded-full border backdrop-blur-md transition",
-            checked
-              ? "border-blue-300 bg-blue-600 text-white"
-              : "border-white/35 bg-black/25 text-transparent",
-          )}>
+          <span
+            className={cn(
+              "flex size-7 items-center justify-center rounded-full border backdrop-blur-md transition",
+              checked ? "border-blue-300 bg-blue-600 text-white" : "border-white/35 bg-black/25 text-transparent",
+            )}
+          >
             <Check className="size-4" />
           </span>
         </div>
       </div>
 
       <div className="flex items-center gap-3 px-3.5 py-3">
-        <span className={cn(
-          "flex size-9 shrink-0 items-center justify-center rounded-xl",
-          checked ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400",
-        )}>
+        <span
+          className={cn(
+            "flex size-9 shrink-0 items-center justify-center rounded-xl",
+            checked ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400",
+          )}
+        >
           <Camera className="size-4" />
         </span>
         <span className="min-w-0 flex-1">
@@ -161,9 +173,9 @@ function CameraSettingsButton({
   }
 
   function toggle(source: string) {
-    setSelected((current) => current.includes(source)
-      ? current.filter((item) => item !== source)
-      : [...current, source]);
+    setSelected((current) =>
+      current.includes(source) ? current.filter((item) => item !== source) : [...current, source],
+    );
   }
 
   async function save() {
@@ -189,30 +201,37 @@ function CameraSettingsButton({
         </span>
       </Button>
 
-      <Modal open={open} onClose={() => setOpen(false)}
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
         eyebrow="Настройка администратора"
         title="Камеры моноблока"
         description="Отметьте камеры, которые оператор сможет назначать заказам."
         className="max-w-xl"
-        footer={(
+        footer={
           <>
-            <Button variant="ghost" onClick={() => setOpen(false)}>Отмена</Button>
+            <Button variant="ghost" onClick={() => setOpen(false)}>
+              Отмена
+            </Button>
             <Button disabled={saving} onClick={() => void save()}>
               <Check className="size-4" /> {saving ? "Сохранение…" : "Сохранить список"}
             </Button>
           </>
-        )}>
+        }
+      >
         <div className="mb-4 flex items-start gap-3 rounded-xl border border-blue-100 bg-blue-50/70 p-3 text-sm text-blue-900">
           <ShieldCheck className="mt-0.5 size-5 shrink-0 text-blue-600" />
-          <p>Изменение применяется для всех устройств. Активные отгрузки продолжат работу, но новые увидят только выбранные камеры.</p>
+          <p>
+            Изменение применяется для всех устройств. Активные отгрузки продолжат работу, но новые увидят только
+            выбранные камеры.
+          </p>
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2">
           {cameras.map((camera) => {
             const checked = selected.includes(camera.src);
             return (
-              <CameraChoice key={camera.id} camera={camera} checked={checked}
-                onToggle={() => toggle(camera.src)} />
+              <CameraChoice key={camera.id} camera={camera} checked={checked} onToggle={() => toggle(camera.src)} />
             );
           })}
         </div>
@@ -260,10 +279,14 @@ function MonoblockDevicesButton({
   }
 
   async function save() {
-    setSaving(true); setError("");
+    setSaving(true);
+    setError("");
     try {
       const body = {
-        name, username, camera_source: cameraSource, is_active: active,
+        name,
+        username,
+        camera_source: cameraSource,
+        is_active: active,
         ...(password ? { password } : {}),
       };
       if (editing) await api.patch(`/cameras/monoblock-devices/${editing.id}/`, body);
@@ -292,25 +315,42 @@ function MonoblockDevicesButton({
 
   return (
     <>
-      <Button variant="outline" className="h-10 rounded-xl bg-white" onClick={() => { setError(""); setOpen(true); }}>
+      <Button
+        variant="outline"
+        className="h-10 rounded-xl bg-white"
+        onClick={() => {
+          setError("");
+          setOpen(true);
+        }}
+      >
         <MonitorSmartphone className="size-4" /> Моноблоки
-        <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] tabular-nums text-blue-600">{devices.length}</span>
+        <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] tabular-nums text-blue-600">
+          {devices.length}
+        </span>
       </Button>
-      <Modal open={open} onClose={() => setOpen(false)}
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
         eyebrow="Устройства и доступ"
         title="Учётные записи моноблоков"
         description="У каждого физического моноблока свой логин и ровно одна закреплённая камера."
-        className="max-w-2xl">
+        className="max-w-2xl"
+      >
         <div className="mb-4 flex items-center justify-between gap-3">
           <p className="text-sm text-slate-500">Оператор входит под этим логином — камера выбирается автоматически.</p>
-          <Button onClick={() => showForm()}><Plus className="size-4" /> Добавить</Button>
+          <Button onClick={() => showForm()}>
+            <Plus className="size-4" /> Добавить
+          </Button>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           {devices.map((device) => (
-            <div key={device.id} className={cn(
-              "rounded-2xl border p-4",
-              device.is_active ? "border-slate-200 bg-white" : "border-slate-200 bg-slate-50 opacity-70",
-            )}>
+            <div
+              key={device.id}
+              className={cn(
+                "rounded-2xl border p-4",
+                device.is_active ? "border-slate-200 bg-white" : "border-slate-200 bg-slate-50 opacity-70",
+              )}
+            >
               <div className="flex items-start gap-3">
                 <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
                   <MonitorSmartphone className="size-5" />
@@ -343,46 +383,83 @@ function MonoblockDevicesButton({
         {error && !formOpen && <p className="mt-3 text-sm text-red-600">{error}</p>}
       </Modal>
 
-      <Modal open={formOpen} onClose={() => setFormOpen(false)}
+      <Modal
+        open={formOpen}
+        onClose={() => setFormOpen(false)}
         eyebrow={editing ? "Изменение устройства" : "Новое устройство"}
         title={editing ? "Настроить моноблок" : "Зарегистрировать моноблок"}
         description="Эти данные используются только на физическом устройстве у камеры."
         className="max-w-lg"
-        footer={(
+        footer={
           <>
-            <Button variant="ghost" onClick={() => setFormOpen(false)} disabled={saving}>Отмена</Button>
-            <Button onClick={() => void save()} disabled={saving || !name || !username || !cameraSource || (!editing && !password)}>
+            <Button variant="ghost" onClick={() => setFormOpen(false)} disabled={saving}>
+              Отмена
+            </Button>
+            <Button
+              onClick={() => void save()}
+              disabled={saving || !name || !username || !cameraSource || (!editing && !password)}
+            >
               <Check className="size-4" /> {saving ? "Сохранение…" : "Сохранить"}
             </Button>
           </>
-        )}>
+        }
+      >
         <div className="space-y-4">
-          <label className="grid gap-1.5"><Label>Название устройства</Label>
+          <label className="grid gap-1.5">
+            <Label>Название устройства</Label>
             <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Моноблок у конвейера" />
           </label>
-          <label className="grid gap-1.5"><Label>Логин</Label>
-            <Input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="monoblock-conveyor" autoComplete="off" />
+          <label className="grid gap-1.5">
+            <Label>Логин</Label>
+            <Input
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              placeholder="monoblock-conveyor"
+              autoComplete="off"
+            />
           </label>
-          <label className="grid gap-1.5"><Label>{editing ? "Новый пароль (необязательно)" : "Пароль"}</Label>
+          <label className="grid gap-1.5">
+            <Label>{editing ? "Новый пароль (необязательно)" : "Пароль"}</Label>
             <div className="relative">
               <KeyRound className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-              <Input type="password" className="pl-9" value={password} onChange={(event) => setPassword(event.target.value)}
-                placeholder={editing ? "Оставьте пустым, чтобы не менять" : "Надёжный пароль"} autoComplete="new-password" />
+              <Input
+                type="password"
+                className="pl-9"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder={editing ? "Оставьте пустым, чтобы не менять" : "Надёжный пароль"}
+                autoComplete="new-password"
+              />
             </div>
           </label>
-          <label className="grid gap-1.5"><Label>Закреплённая камера</Label>
-            <select value={cameraSource} onChange={(event) => setCameraSource(event.target.value)}
-              className="h-10 rounded-lg border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20">
+          <label className="grid gap-1.5">
+            <Label>Закреплённая камера</Label>
+            <select
+              value={cameraSource}
+              onChange={(event) => setCameraSource(event.target.value)}
+              className="h-10 rounded-lg border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20"
+            >
               <option value="">Выберите камеру</option>
-              {cameras.filter((camera) => !occupied.has(camera.src)).map((camera) => (
-                <option key={camera.src} value={camera.src}>{camera.zone} · {camera.src}</option>
-              ))}
+              {cameras
+                .filter((camera) => !occupied.has(camera.src))
+                .map((camera) => (
+                  <option key={camera.src} value={camera.src}>
+                    {camera.zone} · {camera.src}
+                  </option>
+                ))}
             </select>
           </label>
           <label className="flex items-center justify-between rounded-xl border p-3">
-            <span><span className="block text-sm font-semibold">Устройство активно</span>
-              <span className="text-xs text-slate-400">Отключённый логин не сможет войти</span></span>
-            <input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} className="size-4 accent-blue-600" />
+            <span>
+              <span className="block text-sm font-semibold">Устройство активно</span>
+              <span className="text-xs text-slate-400">Отключённый логин не сможет войти</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={active}
+              onChange={(event) => setActive(event.target.checked)}
+              className="size-4 accent-blue-600"
+            />
           </label>
           {error && <p className="text-sm text-red-600">{error}</p>}
         </div>
@@ -439,31 +516,42 @@ function AlwaysOnSettingsButton({
 
   return (
     <>
-      <Button variant="outline" className="h-10 rounded-xl border-blue-200 bg-blue-50/70 text-blue-700 hover:bg-blue-100" onClick={show}>
+      <Button
+        variant="outline"
+        className="h-10 rounded-xl border-blue-200 bg-blue-50/70 text-blue-700 hover:bg-blue-100"
+        onClick={show}
+      >
         <Settings2 className="size-4" /> Настроить
         <span className="rounded-full bg-white px-2 py-0.5 text-[11px] tabular-nums text-blue-600 shadow-sm">
           {settings?.camera_sources.length ?? 0}
         </span>
       </Button>
 
-      <Modal open={open} onClose={() => setOpen(false)}
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
         eyebrow="Только системный суперпользователь"
         title="Постоянный AI-подсчёт"
         description="Модель остаётся прогретой и считает круглосуточно. В этом режиме видео не публикуется и не записывается."
         className="max-w-2xl"
-        footer={(
+        footer={
           <>
-            <Button variant="ghost" onClick={() => setOpen(false)}>Отмена</Button>
+            <Button variant="ghost" onClick={() => setOpen(false)}>
+              Отмена
+            </Button>
             <Button disabled={saving} onClick={() => void save()}>
               <Check className="size-4" /> {saving ? "Применение…" : "Применить режим"}
             </Button>
           </>
-        )}>
+        }
+      >
         <div className="mb-4 grid gap-2.5 sm:grid-cols-3">
           <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-3">
             <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-600">Модель</p>
             <p className="mt-1 text-sm font-bold text-slate-800">Всегда активна</p>
-            {settings?.capacity && <p className="mt-0.5 text-[10px] text-emerald-700/70">до {settings.capacity} камер одновременно</p>}
+            {settings?.capacity && (
+              <p className="mt-0.5 text-[10px] text-emerald-700/70">до {settings.capacity} камер одновременно</p>
+            )}
           </div>
           <div className="rounded-2xl border border-sky-100 bg-sky-50/70 p-3">
             <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-sky-600">Отгрузка</p>
@@ -487,18 +575,24 @@ function AlwaysOnSettingsButton({
             const checked = selected.includes(camera.src);
             const live = settings?.processors.find((item) => item.cam === camera.src);
             return (
-              <button key={camera.id} type="button" onClick={() => toggle(camera.src)}
+              <button
+                key={camera.id}
+                type="button"
+                onClick={() => toggle(camera.src)}
                 aria-pressed={checked}
                 className={cn(
                   "flex items-center gap-3 rounded-2xl border p-3 text-left transition",
                   checked
                     ? "border-blue-400 bg-blue-50 ring-2 ring-blue-500/15"
                     : "border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm",
-                )}>
-                <span className={cn(
-                  "flex size-11 shrink-0 items-center justify-center rounded-2xl",
-                  checked ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400",
-                )}>
+                )}
+              >
+                <span
+                  className={cn(
+                    "flex size-11 shrink-0 items-center justify-center rounded-2xl",
+                    checked ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400",
+                  )}
+                >
                   <Cpu className="size-5" />
                 </span>
                 <span className="min-w-0 flex-1">
@@ -508,10 +602,12 @@ function AlwaysOnSettingsButton({
                     {live?.mode === "session" ? "занята отгрузкой" : live?.running ? "считает 24/7" : camera.src}
                   </span>
                 </span>
-                <span className={cn(
-                  "flex size-7 items-center justify-center rounded-full border",
-                  checked ? "border-blue-600 bg-blue-600 text-white" : "border-slate-200 text-transparent",
-                )}>
+                <span
+                  className={cn(
+                    "flex size-7 items-center justify-center rounded-full border",
+                    checked ? "border-blue-600 bg-blue-600 text-white" : "border-slate-200 text-transparent",
+                  )}
+                >
                   <Check className="size-4" />
                 </span>
               </button>
@@ -617,10 +713,10 @@ function AlwaysOnCard({
     setCorrecting(true);
     setCorrectionError("");
     try {
-      await api.post<AlwaysOnDailyCameraAnalytics>(
-        `/cameras/always-on-analytics/${processor.cam}/subtract/`,
-        { amount: Number(correctionAmount), reason: correctionReason.trim() },
-      );
+      await api.post<AlwaysOnDailyCameraAnalytics>(`/cameras/always-on-analytics/${processor.cam}/subtract/`, {
+        amount: Number(correctionAmount),
+        reason: correctionReason.trim(),
+      });
       const analyticsResponse = await api.get<AlwaysOnDailyAnalytics>("/cameras/always-on-analytics/");
       setLiveDaily(analyticsResponse.data.cameras.find((item) => item.camera === processor.cam));
       await onAnalyticsChanged();
@@ -634,9 +730,12 @@ function AlwaysOnCard({
 
   return (
     <>
-      <button type="button" onClick={showStream}
+      <button
+        type="button"
+        onClick={showStream}
         aria-label={`Открыть прямой эфир камеры ${camera?.zone || processor.cam}`}
-        className="group relative w-full overflow-hidden rounded-[20px] border border-slate-200 bg-white p-4 text-left shadow-[0_10px_32px_rgba(44,65,103,0.06)] transition duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_16px_38px_rgba(44,65,103,0.12)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40">
+        className="group relative w-full overflow-hidden rounded-[20px] border border-slate-200 bg-white p-4 text-left shadow-[0_10px_32px_rgba(44,65,103,0.06)] transition duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_16px_38px_rgba(44,65,103,0.12)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+      >
         <span className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-blue-500 to-emerald-400" />
         <span className="flex items-start gap-3">
           <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 transition group-hover:bg-blue-600 group-hover:text-white">
@@ -646,13 +745,22 @@ function AlwaysOnCard({
             <span className="flex items-center justify-between gap-2">
               <span className="truncate text-sm font-bold text-slate-800">{camera?.zone || processor.cam}</span>
               <span className="text-right">
-                <span className="block text-2xl font-black tabular-nums tracking-tight text-slate-900">{todayTotal}</span>
-                <span className="block text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-400">сегодня</span>
+                <span className="block text-2xl font-black tabular-nums tracking-tight text-slate-900">
+                  {todayTotal}
+                </span>
+                <span className="block text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                  сегодня
+                </span>
               </span>
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
               <span className="flex items-center gap-1.5">
-                <span className={cn("size-1.5 rounded-full", current.running ? "animate-pulse bg-emerald-400" : "bg-amber-400")} />
+                <span
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    current.running ? "animate-pulse bg-emerald-400" : "bg-amber-400",
+                  )}
+                />
                 {inSession ? "режим отгрузки" : current.running ? "фоновый подсчёт" : "переподключение"}
               </span>
               <span>{inSession ? "видео записывается" : "без записи видео"}</span>
@@ -662,18 +770,34 @@ function AlwaysOnCard({
         </span>
       </button>
 
-      <Modal open={open} onClose={closeStream}
+      <Modal
+        open={open}
+        onClose={closeStream}
         eyebrow="AI 24/7 · мониторинг"
         title={camera?.zone || processor.cam}
         description="Прямой эфир, накопленный результат и аналитика цветов модели. Фоновое видео не записывается."
-        className="max-w-5xl" mobileFullscreen>
+        className="max-w-5xl"
+        mobileFullscreen
+      >
         <div className="mb-4 flex w-full rounded-xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex">
-          <button type="button" onClick={() => setModalView("live")}
-            className={cn("flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4", modalView === "live" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800")}>
+          <button
+            type="button"
+            onClick={() => setModalView("live")}
+            className={cn(
+              "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
+              modalView === "live" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
+            )}
+          >
             <Video className="size-4" /> Прямой эфир
           </button>
-          <button type="button" onClick={() => setModalView("analytics")}
-            className={cn("flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4", modalView === "analytics" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800")}>
+          <button
+            type="button"
+            onClick={() => setModalView("analytics")}
+            className={cn(
+              "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
+              modalView === "analytics" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
+            )}
+          >
             <BarChart3 className="size-4" /> Аналитика
           </button>
         </div>
@@ -682,8 +806,11 @@ function AlwaysOnCard({
           <div className="grid overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 shadow-[0_24px_70px_rgba(15,23,42,0.22)] sm:rounded-[22px] lg:grid-cols-[minmax(0,1fr)_260px]">
             <div className="relative aspect-video min-h-0 overflow-hidden bg-[#111827] lg:aspect-auto lg:min-h-[460px]">
               {camera?.src ? (
-                <CameraStream src={camera.src} onStateChange={setStreamOnline}
-                  className="absolute inset-0 size-full object-contain" />
+                <CameraStream
+                  src={camera.src}
+                  onStateChange={setStreamOnline}
+                  className="absolute inset-0 size-full object-contain"
+                />
               ) : null}
               {!streamOnline && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950 text-white/45">
@@ -692,7 +819,9 @@ function AlwaysOnCard({
                 </div>
               )}
               <div className="absolute left-2.5 top-2.5 flex items-center gap-2 rounded-full border border-white/15 bg-black/45 px-2.5 py-1 text-[10px] font-semibold text-white backdrop-blur-md sm:left-4 sm:top-4 sm:px-3 sm:py-1.5 sm:text-xs">
-                <span className={cn("size-2 rounded-full", streamOnline ? "animate-pulse bg-emerald-400" : "bg-amber-400")} />
+                <span
+                  className={cn("size-2 rounded-full", streamOnline ? "animate-pulse bg-emerald-400" : "bg-amber-400")}
+                />
                 {streamOnline ? "ПРЯМОЙ ЭФИР" : "ПОДКЛЮЧЕНИЕ"}
               </div>
             </div>
@@ -702,7 +831,9 @@ function AlwaysOnCard({
                 <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/45">
                   <CalendarDays className="size-3.5" /> Реальный итог за сегодня
                 </div>
-                <div className="mt-1 text-5xl font-black tabular-nums tracking-tight sm:mt-2 sm:text-7xl">{todayTotal}</div>
+                <div className="mt-1 text-5xl font-black tabular-nums tracking-tight sm:mt-2 sm:text-7xl">
+                  {todayTotal}
+                </div>
                 <div className="mt-1 text-sm text-white/45">мешков · накоплено CRM</div>
 
                 <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:mt-7 sm:block sm:space-y-2.5 sm:text-sm">
@@ -738,8 +869,12 @@ function AlwaysOnCard({
                     {current.error || liveDetail}
                   </p>
                 )}
-                <button type="button" disabled={todayTotal <= 0} onClick={showCorrection}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2.5 text-xs font-semibold text-white/75 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-35">
+                <button
+                  type="button"
+                  disabled={todayTotal <= 0}
+                  onClick={showCorrection}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2.5 text-xs font-semibold text-white/75 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-35"
+                >
                   <Minus className="size-3.5" /> Уменьшить итог
                 </button>
               </div>
@@ -750,12 +885,16 @@ function AlwaysOnCard({
             <div className="grid grid-cols-2 border-b border-slate-200 bg-white sm:grid-cols-3">
               <div className="border-r border-slate-200 p-3 sm:p-5">
                 <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Сегодня</div>
-                <div className="mt-1 text-3xl font-black tabular-nums tracking-tight text-slate-900 sm:text-4xl">{todayTotal}</div>
+                <div className="mt-1 text-3xl font-black tabular-nums tracking-tight text-slate-900 sm:text-4xl">
+                  {todayTotal}
+                </div>
                 <div className="mt-1 text-xs text-slate-400">мешков за текущий день</div>
               </div>
               <div className="p-3 sm:border-r sm:p-5">
                 <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">За всё время</div>
-                <div className="mt-1 text-3xl font-black tabular-nums tracking-tight text-blue-600 sm:text-4xl">{allTimeTotal}</div>
+                <div className="mt-1 text-3xl font-black tabular-nums tracking-tight text-blue-600 sm:text-4xl">
+                  {allTimeTotal}
+                </div>
                 <div className="mt-1 text-xs text-slate-400">накоплено CRM</div>
               </div>
               <div className="col-span-2 border-t border-slate-200 p-3 sm:col-span-1 sm:border-t-0 sm:p-5">
@@ -766,7 +905,9 @@ function AlwaysOnCard({
                     <span className="text-xl font-black text-slate-900">{colorMeta(dominant.color).label}</span>
                     <span className="ml-auto text-sm font-bold tabular-nums text-slate-500">{dominant.total}</span>
                   </div>
-                ) : <div className="mt-2 text-xl font-bold text-slate-300">Нет данных</div>}
+                ) : (
+                  <div className="mt-2 text-xl font-bold text-slate-300">Нет данных</div>
+                )}
                 <div className="mt-1 text-xs text-slate-400">по всем распознанным цветам</div>
               </div>
             </div>
@@ -781,22 +922,26 @@ function AlwaysOnCard({
                   <span className="text-xs font-semibold text-slate-400">макс. {chartMax}</span>
                 </div>
                 <div className="mt-4 overflow-x-auto pb-1 sm:mt-5">
-                <div className="h-56 min-w-[560px] rounded-xl border border-slate-100 bg-[linear-gradient(to_bottom,transparent_24%,#e2e8f0_25%,transparent_26%,transparent_49%,#e2e8f0_50%,transparent_51%,transparent_74%,#e2e8f0_75%,transparent_76%)] px-3 pt-4 sm:h-64">
-                  <div className="flex h-[173px] items-end gap-2 sm:h-[205px]">
-                    {(currentDaily?.history ?? []).map((item) => (
-                      <div key={item.day} className="group flex h-full min-w-0 flex-1 flex-col justify-end">
-                        <div className="relative flex flex-1 items-end justify-center">
-                          <span className="pointer-events-none absolute -top-7 z-10 hidden whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[10px] font-semibold text-white shadow-lg group-hover:block">
-                            {item.total} меш.
+                  <div className="h-56 min-w-[560px] rounded-xl border border-slate-100 bg-[linear-gradient(to_bottom,transparent_24%,#e2e8f0_25%,transparent_26%,transparent_49%,#e2e8f0_50%,transparent_51%,transparent_74%,#e2e8f0_75%,transparent_76%)] px-3 pt-4 sm:h-64">
+                    <div className="flex h-[173px] items-end gap-2 sm:h-[205px]">
+                      {(currentDaily?.history ?? []).map((item) => (
+                        <div key={item.day} className="group flex h-full min-w-0 flex-1 flex-col justify-end">
+                          <div className="relative flex flex-1 items-end justify-center">
+                            <span className="pointer-events-none absolute -top-7 z-10 hidden whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[10px] font-semibold text-white shadow-lg group-hover:block">
+                              {item.total} меш.
+                            </span>
+                            <div
+                              className="w-full max-w-9 rounded-t-md bg-gradient-to-t from-[#cf4f3e] to-[#e8755f] transition-all duration-500 group-hover:brightness-110"
+                              style={{ height: item.total ? `${Math.max(4, (item.total * 100) / chartMax)}%` : 0 }}
+                            />
+                          </div>
+                          <span className="mt-2 block truncate text-center text-[9px] font-medium text-slate-400">
+                            {shortDay(item.day)}
                           </span>
-                          <div className="w-full max-w-9 rounded-t-md bg-gradient-to-t from-[#cf4f3e] to-[#e8755f] transition-all duration-500 group-hover:brightness-110"
-                            style={{ height: item.total ? `${Math.max(4, item.total * 100 / chartMax)}%` : 0 }} />
                         </div>
-                        <span className="mt-2 block truncate text-center text-[9px] font-medium text-slate-400">{shortDay(item.day)}</span>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
-                </div>
                 </div>
               </section>
 
@@ -813,7 +958,10 @@ function AlwaysOnCard({
                         <span className="w-10 text-right text-xs tabular-nums text-slate-400">{item.percent}%</span>
                       </div>
                       <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                        <div className={cn("h-full rounded-full transition-all duration-500", colorMeta(item.color).bar)} style={{ width: `${item.percent}%` }} />
+                        <div
+                          className={cn("h-full rounded-full transition-all duration-500", colorMeta(item.color).bar)}
+                          style={{ width: `${item.percent}%` }}
+                        />
                       </div>
                     </div>
                   ))}
@@ -825,8 +973,12 @@ function AlwaysOnCard({
                     </div>
                   )}
                 </div>
-                <button type="button" disabled={todayTotal <= 0} onClick={showCorrection}
-                  className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35">
+                <button
+                  type="button"
+                  disabled={todayTotal <= 0}
+                  onClick={showCorrection}
+                  className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
+                >
                   <Minus className="size-3.5" /> Уменьшить итог за сегодня
                 </button>
               </section>
@@ -835,45 +987,72 @@ function AlwaysOnCard({
         )}
       </Modal>
 
-      <Modal open={correctionOpen} onClose={() => !correcting && setCorrectionOpen(false)}
+      <Modal
+        open={correctionOpen}
+        onClose={() => !correcting && setCorrectionOpen(false)}
         eyebrow={`Суперадмин · ${camera?.zone || processor.cam}`}
         title="Уменьшить итог за сегодня"
         description="Используйте только для ложных срабатываний. Сырой результат модели не меняется, корректировка навсегда останется в журнале."
         className="max-w-lg"
-        footer={(
+        footer={
           <>
-            <Button variant="ghost" disabled={correcting} onClick={() => setCorrectionOpen(false)}>Отмена</Button>
-            <Button variant="destructive"
+            <Button variant="ghost" disabled={correcting} onClick={() => setCorrectionOpen(false)}>
+              Отмена
+            </Button>
+            <Button
+              variant="destructive"
               disabled={correcting || Number(correctionAmount) <= 0 || correctionReason.trim().length < 5}
-              onClick={() => void subtractCount()}>
+              onClick={() => void subtractCount()}
+            >
               {correcting ? <LoaderCircle className="size-4 animate-spin" /> : <Minus className="size-4" />}
               Вычесть {Number(correctionAmount) > 0 ? correctionAmount : ""}
             </Button>
           </>
-        )}>
+        }
+      >
         <div className="space-y-5">
           <div className="flex items-end justify-between rounded-2xl border border-blue-100 bg-blue-50/70 p-4">
             <div>
               <div className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-500">Сейчас за сегодня</div>
               <div className="mt-1 text-4xl font-black tabular-nums text-slate-900">{todayTotal}</div>
             </div>
-            <div className="text-right text-xs text-slate-500">модель: {currentDaily?.model_total ?? 0}<br />поправка: {currentDaily?.adjustment ?? 0}</div>
+            <div className="text-right text-xs text-slate-500">
+              модель: {currentDaily?.model_total ?? 0}
+              <br />
+              поправка: {currentDaily?.adjustment ?? 0}
+            </div>
           </div>
           <div className="grid gap-1.5">
             <Label htmlFor={`correction-amount-${processor.cam}`}>Сколько вычесть</Label>
-            <Input id={`correction-amount-${processor.cam}`} type="number" inputMode="numeric"
-              min={1} max={todayTotal} autoFocus value={correctionAmount}
-              onChange={(event) => setCorrectionAmount(event.target.value)} placeholder="Например, 2" />
+            <Input
+              id={`correction-amount-${processor.cam}`}
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={todayTotal}
+              autoFocus
+              value={correctionAmount}
+              onChange={(event) => setCorrectionAmount(event.target.value)}
+              placeholder="Например, 2"
+            />
           </div>
           <div className="grid gap-1.5">
             <Label htmlFor={`correction-reason-${processor.cam}`}>Причина</Label>
-            <textarea id={`correction-reason-${processor.cam}`} value={correctionReason}
-              onChange={(event) => setCorrectionReason(event.target.value)} maxLength={500}
+            <textarea
+              id={`correction-reason-${processor.cam}`}
+              value={correctionReason}
+              onChange={(event) => setCorrectionReason(event.target.value)}
+              maxLength={500}
               placeholder="Например: два ложных пересечения линии"
-              className="min-h-24 w-full resize-y rounded-xl border bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15" />
+              className="min-h-24 w-full resize-y rounded-xl border bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15"
+            />
             <span className="text-xs text-[var(--muted-foreground)]">Обязательно, минимум 5 символов.</span>
           </div>
-          {correctionError && <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-600">{correctionError}</p>}
+          {correctionError && (
+            <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-600">
+              {correctionError}
+            </p>
+          )}
         </div>
       </Modal>
     </>
@@ -911,10 +1090,7 @@ function SessionCard({
     <article className="group overflow-hidden rounded-[22px] border border-slate-200/80 bg-white shadow-[0_12px_38px_rgba(44,65,103,0.07)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_48px_rgba(44,65,103,0.11)]">
       <div className="relative aspect-[16/8] overflow-hidden bg-[#172033]">
         {stream ? (
-          <CameraStream
-            src={stream}
-            className="absolute inset-0 size-full object-cover"
-          />
+          <CameraStream src={stream} className="absolute inset-0 size-full object-cover" />
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/35">
             <VideoOff className="size-6" />
@@ -986,9 +1162,8 @@ function MonoblockPageInner() {
   const { data: orders, error, reload: reloadOrders } = useApi<Order[]>("/orders/");
   const { data: cameras, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
   const { data: sessions, reload: reloadSessions } = useApi<AiCountingSession[]>("/cameras/ai/sessions/");
-  const { data: cameraSettings, reload: reloadCameraSettings } = useApi<MonoblockCameraSettings>(
-    "/cameras/monoblock-settings/",
-  );
+  const { data: cameraSettings, reload: reloadCameraSettings } =
+    useApi<MonoblockCameraSettings>("/cameras/monoblock-settings/");
   const { data: monoblockDevices, reload: reloadMonoblockDevices } = useApi<MonoblockDevice[]>(
     me?.is_superuser ? "/cameras/monoblock-devices/" : null,
   );
@@ -1013,33 +1188,17 @@ function MonoblockPageInner() {
     return playable.filter((camera) => allowed.has(camera.src));
   }, [cameraSettings?.camera_sources, playable]);
 
-  useEffect(() => {
-    const refreshSessions = () => {
-      if (document.hidden) return;
-      void reloadSessions();
-    };
-    const refreshRest = () => {
-      if (document.hidden) return;
-      void reloadOrders();
-      void reloadCameras();
-      void reloadCameraSettings();
-      if (me?.is_superuser) {
-        void reloadAlwaysOnSettings();
-        void reloadAlwaysOnAnalytics();
-      }
-    };
-    const refreshAll = () => { refreshSessions(); refreshRest(); };
-    const fast = setInterval(refreshSessions, SESSION_POLL_MS);
-    const slow = setInterval(refreshRest, SLOW_POLL_MS);
-    document.addEventListener("visibilitychange", refreshAll);
-    window.addEventListener("online", refreshAll);
-    return () => {
-      clearInterval(fast);
-      clearInterval(slow);
-      document.removeEventListener("visibilitychange", refreshAll);
-      window.removeEventListener("online", refreshAll);
-    };
-  }, [me?.is_superuser, reloadAlwaysOnAnalytics, reloadAlwaysOnSettings, reloadCameraSettings, reloadCameras, reloadOrders, reloadSessions]);
+  useVisiblePolling(reloadSessions, SESSION_POLL_MS);
+  useVisiblePolling(
+    () =>
+      Promise.all([
+        reloadOrders(),
+        reloadCameras(),
+        reloadCameraSettings(),
+        ...(me?.is_superuser ? [reloadAlwaysOnSettings(), reloadAlwaysOnAnalytics()] : []),
+      ]),
+    SLOW_POLL_MS,
+  );
 
   const sessionOrderIds = new Set((sessions ?? []).map((session) => session.order_id));
   const startable = (orders ?? []).filter((order) => {
@@ -1062,9 +1221,13 @@ function MonoblockPageInner() {
 
   async function start(order: Order, camera: CameraFeed & { src: string }) {
     try {
-      await api.post(`/cameras/${camera.src}/ai/`, { order_id: order.id }, {
-        params: { order_id: order.id },
-      });
+      await api.post(
+        `/cameras/${camera.src}/ai/`,
+        { order_id: order.id },
+        {
+          params: { order_id: order.id },
+        },
+      );
     } finally {
       // Даже если ПК камеры не ответил, сервер мог уже безопасно закрепить
       // слот и перевести заказ в загрузку — сразу показываем реальное состояние.
@@ -1082,29 +1245,43 @@ function MonoblockPageInner() {
             <div className="flex flex-wrap items-center gap-3">
               {isSuper && (
                 <div className="flex w-full rounded-2xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex">
-                  <button type="button" onClick={() => setTab("shipments")}
+                  <button
+                    type="button"
+                    onClick={() => setTab("shipments")}
                     className={cn(
                       "flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition sm:flex-none",
-                      activeTab === "shipments" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
-                    )}>
+                      activeTab === "shipments"
+                        ? "bg-white text-slate-900 shadow-sm"
+                        : "text-slate-500 hover:text-slate-800",
+                    )}
+                  >
                     <Radio className="size-4" /> Отгрузки
-                    <span className={cn(
-                      "rounded-full px-2 py-0.5 text-[11px] tabular-nums",
-                      activeTab === "shipments" ? "bg-blue-50 text-blue-600" : "bg-white/70 text-slate-500",
-                    )}>
+                    <span
+                      className={cn(
+                        "rounded-full px-2 py-0.5 text-[11px] tabular-nums",
+                        activeTab === "shipments" ? "bg-blue-50 text-blue-600" : "bg-white/70 text-slate-500",
+                      )}
+                    >
                       {sessions?.length ?? 0}
                     </span>
                   </button>
-                  <button type="button" onClick={() => setTab("monoblock")}
+                  <button
+                    type="button"
+                    onClick={() => setTab("monoblock")}
                     className={cn(
                       "flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition sm:flex-none",
-                      activeTab === "monoblock" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
-                    )}>
+                      activeTab === "monoblock"
+                        ? "bg-white text-slate-900 shadow-sm"
+                        : "text-slate-500 hover:text-slate-800",
+                    )}
+                  >
                     <Cpu className="size-4" /> AI 24/7
-                    <span className={cn(
-                      "rounded-full px-2 py-0.5 text-[11px] tabular-nums",
-                      activeTab === "monoblock" ? "bg-blue-50 text-blue-600" : "bg-white/70 text-slate-500",
-                    )}>
+                    <span
+                      className={cn(
+                        "rounded-full px-2 py-0.5 text-[11px] tabular-nums",
+                        activeTab === "monoblock" ? "bg-blue-50 text-blue-600" : "bg-white/70 text-slate-500",
+                      )}
+                    >
                       {alwaysOnSettings?.camera_sources.length ?? 0}
                     </span>
                   </button>
@@ -1112,16 +1289,21 @@ function MonoblockPageInner() {
               )}
               <div className="ml-auto flex items-center gap-2">
                 {isSuper && activeTab === "monoblock" ? (
-                  <AlwaysOnSettingsButton cameras={playable} settings={alwaysOnSettings}
-                    reload={reloadAlwaysOnSettings} />
+                  <AlwaysOnSettingsButton
+                    cameras={playable}
+                    settings={alwaysOnSettings}
+                    reload={reloadAlwaysOnSettings}
+                  />
                 ) : can(me, "rbac.manage") ? (
                   <>
                     {isSuper && (
-                      <MonoblockDevicesButton cameras={playable} devices={monoblockDevices ?? []}
-                        reload={reloadMonoblockDevices} />
+                      <MonoblockDevicesButton
+                        cameras={playable}
+                        devices={monoblockDevices ?? []}
+                        reload={reloadMonoblockDevices}
+                      />
                     )}
-                    <CameraSettingsButton cameras={playable} settings={cameraSettings}
-                      reload={reloadCameraSettings} />
+                    <CameraSettingsButton cameras={playable} settings={cameraSettings} reload={reloadCameraSettings} />
                   </>
                 ) : null}
               </div>
@@ -1136,50 +1318,60 @@ function MonoblockPageInner() {
                 </span>
                 <p className="mt-3 text-sm font-semibold text-slate-600">Бесконечный цикл пока не запущен</p>
                 <p className="mt-1 max-w-sm text-xs text-slate-400">
-                  Выберите камеры в настройке «AI 24/7» — модель начнёт считать круглосуточно, без публикации и записи видео.
+                  Выберите камеры в настройке «AI 24/7» — модель начнёт считать круглосуточно, без публикации и записи
+                  видео.
                 </p>
               </div>
             ) : (
-            <section className="rounded-[24px] border border-blue-100 bg-gradient-to-br from-blue-50/80 via-white to-emerald-50/40 p-5">
-              <div className="mb-4 flex items-center gap-3">
-                <span className="flex size-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-[0_8px_22px_rgba(37,99,235,0.25)]">
-                  <Cpu className="size-5" />
-                </span>
-                <div>
-                  <h2 className="text-[18px] font-bold tracking-tight text-slate-800">Постоянный AI-контур</h2>
-                  <p className="text-[12px] text-slate-400">Бесконечный цикл: модель считает круглосуточно, без публикации и записи фонового видео</p>
-                </div>
-                <div className="ml-auto flex items-center gap-2">
-                  <span className="flex items-center gap-2 rounded-full border border-blue-100 bg-white px-3 py-1 text-[11px] font-semibold text-blue-700 shadow-sm">
-                    <CalendarDays className="size-3.5" /> Сегодня: {alwaysOnAnalytics?.total ?? 0}
-                    <span className="text-slate-300">·</span>
-                    Всего: {alwaysOnAnalytics?.all_time_total ?? alwaysOnAnalytics?.total ?? 0}
+              <section className="rounded-[24px] border border-blue-100 bg-gradient-to-br from-blue-50/80 via-white to-emerald-50/40 p-5">
+                <div className="mb-4 flex items-center gap-3">
+                  <span className="flex size-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-[0_8px_22px_rgba(37,99,235,0.25)]">
+                    <Cpu className="size-5" />
                   </span>
-                  <span className={cn(
-                    "rounded-full border bg-white px-3 py-1 text-[11px] font-semibold shadow-sm",
-                    alwaysOnSettings.sync_status === "synced" ? "text-emerald-600" : "text-amber-600",
-                  )}>
-                    {alwaysOnSettings.sync_status === "synced" ? "синхронизировано" : "ожидает связь"}
-                  </span>
+                  <div>
+                    <h2 className="text-[18px] font-bold tracking-tight text-slate-800">Постоянный AI-контур</h2>
+                    <p className="text-[12px] text-slate-400">
+                      Бесконечный цикл: модель считает круглосуточно, без публикации и записи фонового видео
+                    </p>
+                  </div>
+                  <div className="ml-auto flex items-center gap-2">
+                    <span className="flex items-center gap-2 rounded-full border border-blue-100 bg-white px-3 py-1 text-[11px] font-semibold text-blue-700 shadow-sm">
+                      <CalendarDays className="size-3.5" /> Сегодня: {alwaysOnAnalytics?.total ?? 0}
+                      <span className="text-slate-300">·</span>
+                      Всего: {alwaysOnAnalytics?.all_time_total ?? alwaysOnAnalytics?.total ?? 0}
+                    </span>
+                    <span
+                      className={cn(
+                        "rounded-full border bg-white px-3 py-1 text-[11px] font-semibold shadow-sm",
+                        alwaysOnSettings.sync_status === "synced" ? "text-emerald-600" : "text-amber-600",
+                      )}
+                    >
+                      {alwaysOnSettings.sync_status === "synced" ? "синхронизировано" : "ожидает связь"}
+                    </span>
+                  </div>
                 </div>
-              </div>
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {alwaysOnSettings.camera_sources.map((source) => {
-                  const processor = alwaysOnSettings.processors.find((item) => item.cam === source) ?? {
-                    cam: source,
-                    running: false,
-                    mode: "always_on" as const,
-                    recording: false,
-                    total: 0,
-                  };
-                  return <AlwaysOnCard key={source} processor={processor}
-                    camera={playable.find((item) => item.src === source)}
-                    detail={alwaysOnSettings.detail}
-                    daily={alwaysOnAnalytics?.cameras.find((item) => item.camera === source)}
-                    onAnalyticsChanged={reloadAlwaysOnAnalytics} />;
-                })}
-              </div>
-            </section>
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {alwaysOnSettings.camera_sources.map((source) => {
+                    const processor = alwaysOnSettings.processors.find((item) => item.cam === source) ?? {
+                      cam: source,
+                      running: false,
+                      mode: "always_on" as const,
+                      recording: false,
+                      total: 0,
+                    };
+                    return (
+                      <AlwaysOnCard
+                        key={source}
+                        processor={processor}
+                        camera={playable.find((item) => item.src === source)}
+                        detail={alwaysOnSettings.detail}
+                        daily={alwaysOnAnalytics?.cameras.find((item) => item.camera === source)}
+                        onAnalyticsChanged={reloadAlwaysOnAnalytics}
+                      />
+                    );
+                  })}
+                </div>
+              </section>
             )
           ) : (
             <>
@@ -1222,7 +1414,9 @@ function MonoblockPageInner() {
                         key={session.id}
                         session={session}
                         camera={playable.find((camera) => camera.src === session.camera)}
-                        onStopped={() => { void Promise.all([reloadOrders(), reloadSessions()]); }}
+                        onStopped={() => {
+                          void Promise.all([reloadOrders(), reloadSessions()]);
+                        }}
                       />
                     ))}
                   </div>

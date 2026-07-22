@@ -19,20 +19,25 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { loadMe(); }, [loadMe]);
+  useEffect(() => {
+    loadMe();
+  }, [loadMe]);
   useEffect(() => {
     if (me) router.replace(homeFor(me));
   }, [me, router]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setBusy(true); setError("");
+    setBusy(true);
+    setError("");
     try {
       const m = await login(username, password);
       router.replace(homeFor(m));
     } catch (err) {
       setError(apiError(err));
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -48,22 +53,18 @@ export default function LoginPage() {
             priority
           />
           <div className="text-center">
-            <div className="text-xs uppercase tracking-widest text-[var(--muted-foreground)]">
-              Система учёта цеха
-            </div>
+            <div className="text-xs uppercase tracking-widest text-[var(--muted-foreground)]">Система учёта цеха</div>
           </div>
         </div>
         <div className="rounded-xl border bg-[var(--card)] p-6 shadow-sm">
           <form onSubmit={submit} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="u">Логин</Label>
-              <Input id="u" value={username} autoFocus
-                onChange={(e) => setUsername(e.target.value)} required />
+              <Input id="u" value={username} autoFocus onChange={(e) => setUsername(e.target.value)} required />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="p">Пароль</Label>
-              <PasswordInput id="p" value={password}
-                onChange={(e) => setPassword(e.target.value)} required />
+              <PasswordInput id="p" value={password} onChange={(e) => setPassword(e.target.value)} required />
             </div>
             {error && (
               <p className="rounded-md bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">

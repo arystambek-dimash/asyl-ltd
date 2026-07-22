@@ -33,3 +33,20 @@ class LoginRateThrottle(_FixedScopeThrottle):
 
 class RegisterRateThrottle(_FixedScopeThrottle):
     scope = "register"
+
+
+class PortalOrderCreateRateThrottle(_FixedScopeThrottle):
+    """Per-account limit for the portal's write-heavy order creation path."""
+
+    scope = "portal_order_create"
+
+    def get_cache_key(self, request, view):
+        if self.rate is None:
+            return None
+        user = getattr(request, "user", None)
+        ident = (
+            f"user-{user.pk}"
+            if user is not None and user.is_authenticated
+            else self.get_ident(request)
+        )
+        return self.cache_format % {"scope": self.scope, "ident": ident}

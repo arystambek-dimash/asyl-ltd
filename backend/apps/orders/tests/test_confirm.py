@@ -1,7 +1,6 @@
 import pytest
 from apps.clients.models import Client
 from apps.orders.models import Order
-from django.contrib.auth.models import Group
 
 pytestmark = pytest.mark.django_db
 

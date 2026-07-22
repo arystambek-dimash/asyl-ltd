@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { CalendarRange, Download, FileSpreadsheet } from "lucide-react";
 import { api, apiError } from "@/lib/api";
+import { downloadBlob } from "@/lib/download";
+import { monthStartLocalIsoDate, todayLocalIsoDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -20,13 +22,17 @@ type Props = {
   initialTo?: string;
 };
 
-function today() {
-  return new Date().toLocaleDateString("en-CA");
-}
-
 export function StatementExportModal({
-  open, onClose, endpoint, filename, title, description, scopeLabel, sheetsLabel,
-  initialFrom = "", initialTo = "",
+  open,
+  onClose,
+  endpoint,
+  filename,
+  title,
+  description,
+  scopeLabel,
+  sheetsLabel,
+  initialFrom = "",
+  initialTo = "",
 }: Props) {
   const [dateFrom, setDateFrom] = useState(initialFrom);
   const [dateTo, setDateTo] = useState(initialTo);
@@ -51,14 +57,7 @@ export function StatementExportModal({
         },
         responseType: "blob",
       });
-      const url = URL.createObjectURL(response.data);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
+      downloadBlob(response.data, filename);
       onClose();
     } catch (cause) {
       setError(apiError(cause));
@@ -75,14 +74,16 @@ export function StatementExportModal({
       title={title}
       description={description}
       className="max-w-lg"
-      footer={(
+      footer={
         <>
-          <Button variant="ghost" onClick={onClose} disabled={busy}>Отмена</Button>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Отмена
+          </Button>
           <Button onClick={() => void download()} disabled={busy}>
             <Download className="size-4" /> {busy ? "Формирование…" : "Скачать .xlsx"}
           </Button>
         </>
-      )}
+      }
     >
       <div className="space-y-4">
         <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-4">
@@ -98,17 +99,35 @@ export function StatementExportModal({
         </div>
 
         <div className="grid grid-cols-3 gap-2">
-          <Button type="button" variant="outline" onClick={() => { setDateFrom(""); setDateTo(""); }}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setDateFrom("");
+              setDateTo("");
+            }}
+          >
             Всё время
           </Button>
-          <Button type="button" variant="outline" onClick={() => {
-            const now = new Date();
-            setDateFrom(new Date(now.getFullYear(), now.getMonth(), 1).toLocaleDateString("en-CA"));
-            setDateTo(today());
-          }}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setDateFrom(monthStartLocalIsoDate());
+              setDateTo(todayLocalIsoDate());
+            }}
+          >
             Этот месяц
           </Button>
-          <Button type="button" variant="outline" onClick={() => { const value = today(); setDateFrom(value); setDateTo(value); }}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              const value = todayLocalIsoDate();
+              setDateFrom(value);
+              setDateTo(value);
+            }}
+          >
             Сегодня
           </Button>
         </div>
@@ -120,13 +139,21 @@ export function StatementExportModal({
           <div className="grid grid-cols-2 gap-3">
             <label className="grid gap-1.5 text-sm font-medium">
               С даты
-              <Input type="date" value={dateFrom} max={dateTo || undefined}
-                onChange={(event) => setDateFrom(event.target.value)} />
+              <Input
+                type="date"
+                value={dateFrom}
+                max={dateTo || undefined}
+                onChange={(event) => setDateFrom(event.target.value)}
+              />
             </label>
             <label className="grid gap-1.5 text-sm font-medium">
               По дату
-              <Input type="date" value={dateTo} min={dateFrom || undefined}
-                onChange={(event) => setDateTo(event.target.value)} />
+              <Input
+                type="date"
+                value={dateTo}
+                min={dateFrom || undefined}
+                onChange={(event) => setDateTo(event.target.value)}
+              />
             </label>
           </div>
         </div>

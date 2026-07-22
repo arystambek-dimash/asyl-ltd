@@ -33,16 +33,11 @@ export function Badge({
       className={cn(
         "inline-flex items-center gap-1 px-2 h-[22px] text-[12px] rounded-md font-medium leading-none whitespace-nowrap",
         toneClasses[tone],
-        className
+        className,
       )}
       {...props}
     >
-      {dot && (
-        <span
-          className="h-1.5 w-1.5 rounded-full"
-          style={{ background: dotColor[tone] }}
-        />
-      )}
+      {dot && <span className="h-1.5 w-1.5 rounded-full" style={{ background: dotColor[tone] }} />}
       {children}
     </span>
   );

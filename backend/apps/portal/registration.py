@@ -30,8 +30,13 @@ class RegisterSerializer(serializers.Serializer):
     def validate_password(self, value):
         # Публичная регистрация — применяем настроенные правила паролей,
         # а не только минимальную длину.
+        candidate = User(
+            username=str(self.initial_data.get("username", "")),
+            first_name=str(self.initial_data.get("first_name", "")),
+            last_name=str(self.initial_data.get("last_name", "")),
+        )
         try:
-            validate_password(value)
+            validate_password(value, user=candidate)
         except DjangoValidationError as exc:
             raise serializers.ValidationError(exc.messages)
         return value

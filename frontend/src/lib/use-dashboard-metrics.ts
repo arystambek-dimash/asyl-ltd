@@ -1,12 +1,12 @@
 "use client";
 import { useMemo } from "react";
 import { useApi } from "@/lib/use-api";
+import { useLocalDay } from "@/lib/use-local-day";
 import { isFinancialOrderStatus, orderStatusGroup } from "@/lib/constants";
 import type { ClientDebt, EventLog, Order, Payment, StockItem } from "@/lib/types";
 
 function confirmedPayments(orders: Order[]): Payment[] {
-  return orders.flatMap((order) => order.payments ?? [])
-    .filter((payment) => payment.status === "confirmed");
+  return orders.flatMap((order) => order.payments ?? []).filter((payment) => payment.status === "confirmed");
 }
 
 function dayKey(d: Date): string {
@@ -15,21 +15,28 @@ function dayKey(d: Date): string {
 
 /** Все данные «Командного центра». Вызывать один раз на странице. */
 export function useDashboardMetrics() {
+  const currentDay = useLocalDay();
   const { data: orders, error: ordersErr, reload: reloadOrders } = useApi<Order[]>("/orders/");
   const { data: stock, error: stockErr, reload: reloadStock } = useApi<StockItem[]>("/stock/");
   const { data: events, error: eventsErr, reload: reloadEvents } = useApi<EventLog[]>("/events/");
   const { data: debts, error: debtsErr, reload: reloadDebts } = useApi<ClientDebt[]>("/clients/debts/");
 
   // Ошибка видна, только пока соответствующих данных нет совсем — частичный дашборд не глушим.
-  const loadError = (orders == null && ordersErr) || (stock == null && stockErr)
-    || (events == null && eventsErr) || (debts == null && debtsErr) || "";
-  const reload = () => { reloadOrders(); reloadStock(); reloadEvents(); reloadDebts(); };
+  const loadError =
+    (orders == null && ordersErr) ||
+    (stock == null && stockErr) ||
+    (events == null && eventsErr) ||
+    (debts == null && debtsErr) ||
+    "";
+  const reload = () => {
+    reloadOrders();
+    reloadStock();
+    reloadEvents();
+    reloadDebts();
+  };
 
   const list = useMemo(() => orders ?? [], [orders]);
-  const queue = useMemo(
-    () => list.filter((o) => ["arrived", "loading"].includes(o.status)),
-    [list],
-  );
+  const queue = useMemo(() => list.filter((o) => ["arrived", "loading"].includes(o.status)), [list]);
   const totalBags = (stock ?? []).reduce((s, i) => s + i.bags, 0);
 
   // Отгрузки по дням за 14 дней (мешки) + «сегодня/вчера» для дельты.
@@ -38,10 +45,12 @@ export function useDashboardMetrics() {
     // instead of scanning the full order list for every shipment event.
     const bagsByOrder = new Map(list.map((order) => [order.id, order.bags_loaded ?? 0]));
     const days = 14;
-    const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - (days - 1));
+    const start = new Date(`${currentDay}T00:00:00`);
+    start.setDate(start.getDate() - (days - 1));
     const slots: Record<string, { label: string; bags: number; orders: number }> = {};
     for (let i = 0; i < days; i++) {
-      const d = new Date(start); d.setDate(start.getDate() + i);
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
       slots[dayKey(d)] = { label: String(d.getDate()).padStart(2, "0"), bags: 0, orders: 0 };
     }
     (events ?? []).forEach((e) => {
@@ -61,26 +70,35 @@ export function useDashboardMetrics() {
       shippedYesterday: yesterday?.bags ?? 0,
       shippedTodayOrders: today?.orders ?? 0,
     };
-  }, [list, events]);
+  }, [currentDay, list, events]);
 
   // Финансы за 14 дней: выручка по заказам + подтверждённые поступления.
   const { spark, periodRevenue, periodReceived } = useMemo(() => {
     const days = 14;
-    const today = new Date(); today.setHours(23, 59, 59, 999);
-    const start = new Date(today); start.setDate(today.getDate() - (days - 1)); start.setHours(0, 0, 0, 0);
+    const today = new Date(`${currentDay}T23:59:59.999`);
+    const start = new Date(today);
+    start.setDate(today.getDate() - (days - 1));
+    start.setHours(0, 0, 0, 0);
     const slots: Record<string, { label: string; revenue: number; received: number }> = {};
     for (let i = 0; i < days; i++) {
-      const d = new Date(start); d.setDate(start.getDate() + i);
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
       slots[dayKey(d)] = { label: String(d.getDate()).padStart(2, "0"), revenue: 0, received: 0 };
     }
     list.forEach((o) => {
       if (!isFinancialOrderStatus(o.status)) return;
       const d = new Date(o.created_at);
-      if (d >= start && d <= today) { const k = dayKey(d); if (slots[k]) slots[k].revenue += Number(o.total_amount); }
+      if (d >= start && d <= today) {
+        const k = dayKey(d);
+        if (slots[k]) slots[k].revenue += Number(o.total_amount);
+      }
     });
     confirmedPayments(list).forEach((payment) => {
       const d = new Date(payment.paid_at);
-      if (d >= start && d <= today) { const k = dayKey(d); if (slots[k]) slots[k].received += Number(payment.amount); }
+      if (d >= start && d <= today) {
+        const k = dayKey(d);
+        if (slots[k]) slots[k].received += Number(payment.amount);
+      }
     });
     const arr = Object.values(slots);
     return {
@@ -88,7 +106,7 @@ export function useDashboardMetrics() {
       periodRevenue: arr.reduce((s, x) => s + x.revenue, 0),
       periodReceived: arr.reduce((s, x) => s + x.received, 0),
     };
-  }, [list]);
+  }, [currentDay, list]);
 
   // Единая пользовательская воронка: четыре статуса вместо внутренних этапов.
   const pipeline = useMemo(() => {
@@ -124,11 +142,21 @@ export function useDashboardMetrics() {
   }, [debts]);
 
   return {
-    queue, totalBags,
-    shippedByDay, shippedToday, shippedYesterday, shippedTodayOrders,
-    spark, periodRevenue, periodReceived,
-    pipeline, stockByProduct, debtTotal, topDebtors,
-    loadError, reload,
+    queue,
+    totalBags,
+    shippedByDay,
+    shippedToday,
+    shippedYesterday,
+    shippedTodayOrders,
+    spark,
+    periodRevenue,
+    periodReceived,
+    pipeline,
+    stockByProduct,
+    debtTotal,
+    topDebtors,
+    loadError,
+    reload,
   };
 }
 
