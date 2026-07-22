@@ -20,7 +20,8 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { BriefcaseBusiness, Check, Plus, Search, Pencil, ShieldCheck, Trash2 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { ArrowLeft, ArrowRight, BriefcaseBusiness, Check, KeyRound, Plus, Search, Pencil, ShieldCheck, Trash2, UserRound } from "lucide-react";
 import type { Department, Employee, Permission, Role } from "@/lib/types";
 
 const SALES_REQUIRED = new Set(["orders.view", "orders.create", "clients.view", "catalog.view"]);
@@ -54,11 +55,12 @@ function EmployeesPageInner() {
   const [deniedCodes, setDeniedCodes] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [employeeStep, setEmployeeStep] = useState<1 | 2 | 3>(1);
   const [delItem, setDelItem] = useState<Employee | null>(null);
   const [delError, setDelError] = useState("");
   const [delBusy, setDelBusy] = useState(false);
 
-  function openNew() { setEditing(null); setForm(empty); setSalesEmployee(false); setCodes(new Set()); setDeniedCodes(new Set()); setError(""); setOpen(true); }
+  function openNew() { setEditing(null); setForm(empty); setSalesEmployee(false); setCodes(new Set()); setDeniedCodes(new Set()); setEmployeeStep(1); setError(""); setOpen(true); }
   function openEdit(e: Employee) {
     setEditing(e);
     setForm({
@@ -70,7 +72,7 @@ function EmployeesPageInner() {
     const inRole = new Set(e.role_permissions ?? []);
     setCodes(new Set((e.permissions ?? []).filter((c) => !inRole.has(c))));
     setDeniedCodes(new Set(e.denied_permissions ?? []));
-    setError(""); setOpen(true);
+    setEmployeeStep(1); setError(""); setOpen(true);
   }
 
   function toggleCode(code: string) {
@@ -98,7 +100,28 @@ function EmployeesPageInner() {
   }
 
   async function submit(e: React.FormEvent) {
-    e.preventDefault(); setBusy(true); setError("");
+    e.preventDefault(); setError("");
+    if (employeeStep === 1) {
+      if (!form.first_name.trim() || !form.last_name.trim() || !form.username.trim()) {
+        setError("Заполните имя, фамилию и логин сотрудника.");
+        return;
+      }
+      if (!editing && form.password.length < 6) {
+        setError("Пароль должен содержать минимум 6 символов.");
+        return;
+      }
+      setEmployeeStep(2);
+      return;
+    }
+    if (employeeStep === 2) {
+      if (salesEmployee && !form.sales_department) {
+        setError("Выберите отдел продаж для сотрудника.");
+        return;
+      }
+      setEmployeeStep(3);
+      return;
+    }
+    setBusy(true);
     try {
       const role = form.role ? Number(form.role) : null;
       const body: Record<string, unknown> = {
@@ -228,16 +251,50 @@ function EmployeesPageInner() {
       <Modal open={open} onClose={() => setOpen(false)}
         eyebrow={editing ? "Команда · Изменение" : "Команда · Сотрудник"}
         title={editing ? "Изменить сотрудника" : "Новый сотрудник"}
-        description="Создайте аккаунт коллеге и выберите, к чему он имеет доступ."
-        className="max-w-2xl"
+        description="Данные сотрудника, его роль и точные доступы — по шагам."
+        className="max-w-2xl" mobileFullscreen
         footer={
           <>
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
-            <Button type="submit" form="employee-form" disabled={busy || (salesEmployee && !form.sales_department)}>
-              {busy ? "Сохранение…" : editing ? "Сохранить" : "Создать"}</Button>
+            {employeeStep === 1 ? (
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
+            ) : (
+              <Button type="button" variant="outline" onClick={() => setEmployeeStep((employeeStep - 1) as 1 | 2)}>
+                <ArrowLeft className="size-4" /> Назад
+              </Button>
+            )}
+            <Button type="submit" form="employee-form" disabled={busy}>
+              {busy ? "Сохранение…" : employeeStep < 3 ? <>
+                Далее <ArrowRight className="size-4" />
+              </> : editing ? "Сохранить" : "Создать"}
+            </Button>
           </>
         }>
         <form id="employee-form" onSubmit={submit} className="flex flex-col gap-5">
+          <div className="relative grid grid-cols-3 gap-2 rounded-2xl border bg-[var(--muted)]/45 p-2">
+            {[
+              { n: 1, label: "Сотрудник", icon: UserRound },
+              { n: 2, label: "Роль и отдел", icon: BriefcaseBusiness },
+              { n: 3, label: "Доступы", icon: KeyRound },
+            ].map((item) => {
+              const Icon = item.icon;
+              const active = employeeStep === item.n;
+              const done = employeeStep > item.n;
+              return <button key={item.n} type="button"
+                onClick={() => done && setEmployeeStep(item.n as 1 | 2 | 3)}
+                className={cn("relative flex min-w-0 items-center justify-center gap-2 rounded-xl px-2 py-2 text-xs font-semibold transition sm:justify-start",
+                  active && "bg-[var(--card)] shadow-sm ring-1 ring-[var(--border)]",
+                  done && "text-[var(--success)]")}>
+                <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-full border bg-[var(--card)]",
+                  active && "border-[var(--foreground)] bg-[var(--foreground)] text-[var(--background)]",
+                  done && "border-[var(--success)] bg-[var(--success)] text-white")}>
+                  {done ? <Check className="size-4" /> : <Icon className="size-4" />}
+                </span>
+                <span className="hidden truncate sm:block">{item.label}</span>
+              </button>;
+            })}
+          </div>
+
+          {employeeStep === 1 && <>
           <section className="space-y-3">
             <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Человек</h4>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -269,7 +326,9 @@ function EmployeesPageInner() {
               </Field>
             </div>
           </section>
+          </>}
 
+          {employeeStep === 2 && <>
           <section className="space-y-3 border-t border-[var(--border)] pt-4">
             <label className="group flex cursor-pointer items-start gap-3 rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-50/80 to-white p-4 transition hover:border-blue-200">
               <input type="checkbox" checked={salesEmployee}
@@ -333,14 +392,25 @@ function EmployeesPageInner() {
           </section>
 
           <section className="space-y-3 border-t border-[var(--border)] pt-4">
-            <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Доступы</h4>
+            <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Базовая роль</h4>
             <Field label="Роль"
-              hint="Роль даёт базовые доступы. Ниже любое право роли можно лично отключить для этого сотрудника.">
+              hint="На следующем шаге любое право роли можно лично отключить или добавить сотруднику.">
               <Select value={form.role} onChange={(e) => pickRole(e.target.value)}>
                 <option value="">Без роли</option>
                 {(roles ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
               </Select>
             </Field>
+          </section>
+          </>}
+
+          {employeeStep === 3 && (
+          <section className="space-y-3 border-t border-[var(--border)] pt-4">
+            <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Доступы</h4>
+            <div className="rounded-xl border bg-[var(--muted)]/35 px-3 py-2 text-xs text-[var(--muted-foreground)]">
+              Базовая роль: <span className="font-semibold text-[var(--foreground)]">
+                {(roles ?? []).find((role) => String(role.id) === form.role)?.name ?? "Без роли"}
+              </span>. Серые доступы наследуются из роли, перечёркнутые отключены лично.
+            </div>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">К чему имеет доступ</span>
@@ -353,6 +423,7 @@ function EmployeesPageInner() {
                 forced={salesEmployee ? SALES_REQUIRED : undefined} />
             </div>
           </section>
+          )}
 
           {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
         </form>

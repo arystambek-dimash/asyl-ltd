@@ -23,7 +23,7 @@ from .reports import summary_report
 from .statuses import PUBLIC_STATUS_LABELS, statuses_in_group
 from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerializer,
                           StatusChangeRequestSerializer)
-from .services import (add_payment, confirm_order, reject_order,
+from .services import (add_payment, add_mixed_payments, confirm_order, reject_order,
                        receive_payment, accountant_confirm_payment,
                        reopen_confirmed_payment, reject_payment, soft_delete_order, restore_order,
                        purge_order,
@@ -365,6 +365,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     def payments(self, request, pk=None):
         """Начало цепочки: stage=requested (счёт выставлен) или received (деньги приняты)."""
         order = self.get_object()
+        parts = request.data.get("parts")
+        if parts is not None:
+            payments = add_mixed_payments(
+                order, parts, request.user, note=request.data.get("note") or "")
+            return Response(PaymentSerializer(payments, many=True).data, status=201)
         payment = add_payment(
             order, request.data.get("amount"), request.user,
             method=request.data.get("method") or "cash",

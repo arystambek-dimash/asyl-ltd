@@ -138,6 +138,61 @@ def test_payment_note_saved_and_returned(auth_client, accountant):
     assert resp.data["method"] == "kaspi"
 
 
+def test_mixed_payment_is_created_atomically(auth_client, accountant):
+    order = _order(status="shipped")
+
+    response = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/",
+        {"parts": [
+            {"method": "cash", "amount": "125.00"},
+            {"method": "kaspi", "amount": "200.00"},
+            {"method": "invoice", "amount": "175.00"},
+        ], "note": "смешанная оплата"},
+        format="json",
+    )
+
+    assert response.status_code == 201
+    assert {row["method"] for row in response.data} == {"cash", "kaspi", "invoice"}
+    assert all(row["status"] == "received" for row in response.data)
+    assert order.payments.count() == 3
+    assert {payment.note for payment in order.payments.all()} == {"смешанная оплата"}
+
+
+def test_mixed_payment_cannot_exceed_unreserved_balance(auth_client, accountant):
+    order = _order(status="shipped")
+    first = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/",
+        {"amount": "100.00", "method": "cash"}, format="json")
+    assert first.status_code == 201
+
+    response = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/",
+        {"parts": [
+            {"method": "kaspi", "amount": "250.00"},
+            {"method": "invoice", "amount": "151.00"},
+        ]}, format="json")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "payment_exceeds_remaining"
+    assert order.payments.count() == 1
+
+
+def test_mixed_payment_rejects_duplicate_method_without_partial_write(
+        auth_client, accountant):
+    order = _order(status="shipped")
+
+    response = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/",
+        {"parts": [
+            {"method": "cash", "amount": "100.00"},
+            {"method": "cash", "amount": "100.00"},
+        ]}, format="json")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "duplicate_payment_method"
+    assert not order.payments.exists()
+
+
 @pytest.mark.parametrize("method", ["cash", "kaspi", "invoice"])
 def test_cashier_methods_are_counted_only_after_manual_confirmation(
         auth_client, accountant, method):

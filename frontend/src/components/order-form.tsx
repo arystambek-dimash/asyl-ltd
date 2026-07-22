@@ -425,13 +425,13 @@ export function OrderForm({ editing, onCancel, onDone }: {
 
       {step === 3 && (
         <div className="space-y-5">
-          <section className="grid gap-2 sm:grid-cols-3">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5">
+          <section className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:p-3.5">
               <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">Клиент</div>
               <div className="mt-1 truncate text-sm font-bold text-slate-900">{selectedClient?.name || "—"}</div>
               <div className="mt-0.5 truncate text-[11px] text-slate-500">{selectedStore?.name || "Без магазина"}</div>
             </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:p-3.5">
               <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">Отдел</div>
               <div className="mt-1 flex items-center gap-2 text-sm font-bold text-slate-900">
                 <span className="size-2 rounded-full" style={{ backgroundColor: assignedDepartment?.color || selectedDepartment?.color || "#64748B" }} />
@@ -439,7 +439,7 @@ export function OrderForm({ editing, onCancel, onDone }: {
               </div>
               <div className="mt-0.5 text-[11px] text-slate-500">{transport === "truck" ? "Трак" : "Поезд"}{arrival ? ` · ${arrival}` : ""}</div>
             </div>
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3.5">
+            <div className="col-span-2 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3 sm:col-span-1 sm:p-3.5">
               <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-600">Текущий итог</div>
               <div className="mt-1 text-lg font-black tabular-nums text-slate-900">{formatCurrency(String(total), currency)}</div>
               <div className="mt-0.5 text-[11px] text-emerald-700">{selectedBags} мешков · {currency}</div>
@@ -453,8 +453,8 @@ export function OrderForm({ editing, onCancel, onDone }: {
             </div>
             <div className="space-y-2">
               {rows.map((row, index) => (
-                <div key={index} className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-3 sm:grid-cols-[minmax(0,1fr)_100px_140px_36px]">
-                  <Select value={row.product} className="h-10 rounded-xl"
+                <div key={index} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_40px] gap-2 rounded-2xl border border-slate-200 bg-white p-3 sm:grid-cols-[minmax(0,1fr)_100px_140px_36px]">
+                  <Select value={row.product} className="col-span-3 h-10 rounded-xl sm:col-span-1"
                     onChange={(event) => {
                       const product = event.target.value;
                       setRows(rows.map((item, itemIndex) => itemIndex === index
@@ -470,9 +470,9 @@ export function OrderForm({ editing, onCancel, onDone }: {
                       );
                     })}
                   </Select>
-                  <Input type="number" min="1" placeholder="Мешков" className="rounded-xl" value={row.quantity}
+                  <Input type="number" min="1" inputMode="numeric" placeholder="Мешков" className="rounded-xl" value={row.quantity}
                     onChange={(event) => setRows(rows.map((item, itemIndex) => itemIndex === index ? { ...item, quantity: event.target.value } : item))} />
-                  <Input type="number" min="0" step="0.01" className="rounded-xl"
+                  <Input type="number" min="0" step="0.01" inputMode="decimal" className="rounded-xl"
                     placeholder={`Цена, ${currency === "USD" ? "$" : "₸"}`} value={row.price}
                     onChange={(event) => setRows(rows.map((item, itemIndex) => itemIndex === index ? { ...item, price: event.target.value } : item))} />
                   <Button type="button" variant="ghost" size="icon" title="Удалить позицию"

@@ -105,6 +105,84 @@ def add_payment(order: Order, amount, user, method="cash", stage="received",
 
 
 @transaction.atomic
+def add_mixed_payments(order: Order, parts, user, note="") -> list[Payment]:
+    """Record a split payment as one all-or-nothing cashier operation.
+
+    A client may settle one order with several cashier methods (for example,
+    part cash and part Kaspi).  Existing unconfirmed payments reserve their
+    amount as well, so a second cashier cannot allocate more than the actual
+    outstanding balance.
+    """
+    locked = (Order.objects.select_for_update()
+              .prefetch_related("items", "payments")
+              .get(pk=order.pk))
+    _validate_payment_open(locked)
+    if not isinstance(parts, list) or not parts:
+        raise ValidationError({"detail": "Добавьте хотя бы один способ оплаты",
+                               "code": "empty_payment_parts"})
+    if len(parts) > len(Payment.CASHIER_METHODS):
+        raise ValidationError({"detail": "Слишком много способов оплаты",
+                               "code": "too_many_payment_parts"})
+
+    normalized: list[tuple[str, Decimal]] = []
+    seen: set[str] = set()
+    for part in parts:
+        if not isinstance(part, dict):
+            raise ValidationError({"detail": "Некорректная часть оплаты",
+                                   "code": "bad_payment_part"})
+        method = part.get("method") or ""
+        if method not in Payment.CASHIER_METHODS:
+            raise ValidationError({"detail": "Недопустимый способ оплаты",
+                                   "code": "bad_method"})
+        if method in seen:
+            raise ValidationError({"detail": "Каждый способ оплаты укажите один раз",
+                                   "code": "duplicate_payment_method"})
+        seen.add(method)
+        amount = _positive_money(
+            part.get("amount"),
+            detail="Сумма каждой части должна быть положительным денежным значением",
+            code="invalid_amount",
+        )
+        normalized.append((method, amount))
+
+    confirmed = sum(
+        (payment.amount for payment in locked.payments.all()
+         if payment.status == "confirmed"), Decimal("0"))
+    reserved = sum(
+        (payment.amount for payment in locked.payments.all()
+         if payment.status in Payment.IN_PROGRESS_STATUSES), Decimal("0"))
+    available = max(Decimal("0"), locked.total_amount - confirmed - reserved)
+    requested = sum((amount for _, amount in normalized), Decimal("0"))
+    if requested > available:
+        raise ValidationError({
+            "detail": f"Доступно к распределению: {available} {locked.currency}",
+            "code": "payment_exceeds_remaining",
+        })
+
+    created = [
+        add_payment(locked, amount, user, method=method, stage="received", note=note)
+        for method, amount in normalized
+    ]
+    log_event(
+        "payment",
+        f"Смешанная оплата {requested} {locked.currency}: {len(created)} частей",
+        user=user,
+        order=locked,
+        payload={
+            "action": "mixed_payment_created",
+            "payment_ids": [payment.id for payment in created],
+            "amount": str(requested),
+            "currency": locked.currency,
+            "parts": [
+                {"method": payment.method, "amount": str(payment.amount)}
+                for payment in created
+            ],
+        },
+    )
+    return created
+
+
+@transaction.atomic
 def create_client_payment(order: Order, method: str, user) -> Payment:
     _validate_payment_open(order)
     if method not in ("invoice", "kaspi", "cash", "card"):

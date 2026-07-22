@@ -497,21 +497,21 @@ function AlwaysOnCard({
         eyebrow="AI 24/7 · мониторинг"
         title={camera?.zone || processor.cam}
         description="Прямой эфир, накопленный результат и аналитика цветов модели. Фоновое видео не записывается."
-        className="max-w-5xl">
-        <div className="mb-4 inline-flex rounded-xl border border-slate-200 bg-slate-100 p-1">
+        className="max-w-5xl" mobileFullscreen>
+        <div className="mb-4 flex w-full rounded-xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex">
           <button type="button" onClick={() => setModalView("live")}
-            className={cn("flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition", modalView === "live" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800")}>
+            className={cn("flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4", modalView === "live" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800")}>
             <Video className="size-4" /> Прямой эфир
           </button>
           <button type="button" onClick={() => setModalView("analytics")}
-            className={cn("flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition", modalView === "analytics" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800")}>
+            className={cn("flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4", modalView === "analytics" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800")}>
             <BarChart3 className="size-4" /> Аналитика
           </button>
         </div>
 
         {modalView === "live" ? (
-          <div className="grid overflow-hidden rounded-[22px] border border-slate-200 bg-slate-950 shadow-[0_24px_70px_rgba(15,23,42,0.22)] lg:grid-cols-[minmax(0,1fr)_260px]">
-            <div className="relative aspect-video min-h-64 overflow-hidden bg-[#111827] lg:aspect-auto lg:min-h-[460px]">
+          <div className="grid overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 shadow-[0_24px_70px_rgba(15,23,42,0.22)] sm:rounded-[22px] lg:grid-cols-[minmax(0,1fr)_260px]">
+            <div className="relative aspect-video min-h-0 overflow-hidden bg-[#111827] lg:aspect-auto lg:min-h-[460px]">
               {camera?.src ? (
                 <CameraStream src={camera.src} onStateChange={setStreamOnline}
                   className="absolute inset-0 size-full object-contain" />
@@ -522,21 +522,21 @@ function AlwaysOnCard({
                   <span className="text-sm">Подключаем прямой поток…</span>
                 </div>
               )}
-              <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full border border-white/15 bg-black/45 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur-md">
+              <div className="absolute left-2.5 top-2.5 flex items-center gap-2 rounded-full border border-white/15 bg-black/45 px-2.5 py-1 text-[10px] font-semibold text-white backdrop-blur-md sm:left-4 sm:top-4 sm:px-3 sm:py-1.5 sm:text-xs">
                 <span className={cn("size-2 rounded-full", streamOnline ? "animate-pulse bg-emerald-400" : "bg-amber-400")} />
                 {streamOnline ? "ПРЯМОЙ ЭФИР" : "ПОДКЛЮЧЕНИЕ"}
               </div>
             </div>
 
-            <aside className="flex flex-col justify-between border-t border-white/10 bg-slate-900 p-5 text-white lg:border-l lg:border-t-0">
+            <aside className="flex flex-col justify-between border-t border-white/10 bg-slate-900 p-4 text-white sm:p-5 lg:border-l lg:border-t-0">
               <div>
                 <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/45">
                   <CalendarDays className="size-3.5" /> Реальный итог за сегодня
                 </div>
-                <div className="mt-2 text-7xl font-black tabular-nums tracking-tight">{todayTotal}</div>
+                <div className="mt-1 text-5xl font-black tabular-nums tracking-tight sm:mt-2 sm:text-7xl">{todayTotal}</div>
                 <div className="mt-1 text-sm text-white/45">мешков · накоплено CRM</div>
 
-                <div className="mt-7 space-y-2.5 text-sm">
+                <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:mt-7 sm:block sm:space-y-2.5 sm:text-sm">
                   <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
                     <span className="text-white/55">За всё время</span>
                     <span className="font-semibold tabular-nums">{allTimeTotal}</span>
@@ -556,7 +556,7 @@ function AlwaysOnCard({
                     <span className="font-semibold">{inSession ? "отгрузка" : "24/7"}</span>
                   </div>
                   {(currentDaily?.adjustment ?? 0) < 0 && (
-                    <div className="flex items-center justify-between rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5">
+                    <div className="col-span-2 flex items-center justify-between rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5">
                       <span className="text-amber-100/65">Корректировка</span>
                       <span className="font-semibold tabular-nums text-amber-200">{currentDaily?.adjustment}</span>
                     </div>
@@ -578,18 +578,18 @@ function AlwaysOnCard({
           </div>
         ) : (
           <div className="overflow-hidden rounded-[22px] border border-slate-200 bg-[#f8fafc] shadow-[0_20px_55px_rgba(15,23,42,0.09)]">
-            <div className="grid border-b border-slate-200 bg-white sm:grid-cols-3">
-              <div className="p-5 sm:border-r sm:border-slate-200">
+            <div className="grid grid-cols-2 border-b border-slate-200 bg-white sm:grid-cols-3">
+              <div className="border-r border-slate-200 p-3 sm:p-5">
                 <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Сегодня</div>
-                <div className="mt-1 text-4xl font-black tabular-nums tracking-tight text-slate-900">{todayTotal}</div>
+                <div className="mt-1 text-3xl font-black tabular-nums tracking-tight text-slate-900 sm:text-4xl">{todayTotal}</div>
                 <div className="mt-1 text-xs text-slate-400">мешков за текущий день</div>
               </div>
-              <div className="border-t border-slate-200 p-5 sm:border-r sm:border-t-0">
+              <div className="p-3 sm:border-r sm:p-5">
                 <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">За всё время</div>
-                <div className="mt-1 text-4xl font-black tabular-nums tracking-tight text-blue-600">{allTimeTotal}</div>
+                <div className="mt-1 text-3xl font-black tabular-nums tracking-tight text-blue-600 sm:text-4xl">{allTimeTotal}</div>
                 <div className="mt-1 text-xs text-slate-400">накоплено CRM</div>
               </div>
-              <div className="border-t border-slate-200 p-5 sm:border-t-0">
+              <div className="col-span-2 border-t border-slate-200 p-3 sm:col-span-1 sm:border-t-0 sm:p-5">
                 <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Чаще всего</div>
                 {dominant ? (
                   <div className="mt-2 flex items-center gap-2">
@@ -602,8 +602,8 @@ function AlwaysOnCard({
               </div>
             </div>
 
-            <div className="grid gap-5 p-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(260px,0.8fr)]">
-              <section className="rounded-2xl border border-slate-200 bg-white p-5">
+            <div className="grid gap-3 p-3 sm:gap-5 sm:p-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(260px,0.8fr)]">
+              <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">
                 <div className="flex items-end justify-between gap-3">
                   <div>
                     <h3 className="font-bold text-slate-800">Подсчёт по дням</h3>
@@ -611,8 +611,9 @@ function AlwaysOnCard({
                   </div>
                   <span className="text-xs font-semibold text-slate-400">макс. {chartMax}</span>
                 </div>
-                <div className="mt-5 h-64 rounded-xl border border-slate-100 bg-[linear-gradient(to_bottom,transparent_24%,#e2e8f0_25%,transparent_26%,transparent_49%,#e2e8f0_50%,transparent_51%,transparent_74%,#e2e8f0_75%,transparent_76%)] px-3 pt-4">
-                  <div className="flex h-[205px] items-end gap-1.5 sm:gap-2">
+                <div className="mt-4 overflow-x-auto pb-1 sm:mt-5">
+                <div className="h-56 min-w-[560px] rounded-xl border border-slate-100 bg-[linear-gradient(to_bottom,transparent_24%,#e2e8f0_25%,transparent_26%,transparent_49%,#e2e8f0_50%,transparent_51%,transparent_74%,#e2e8f0_75%,transparent_76%)] px-3 pt-4 sm:h-64">
+                  <div className="flex h-[173px] items-end gap-2 sm:h-[205px]">
                     {(currentDaily?.history ?? []).map((item) => (
                       <div key={item.day} className="group flex h-full min-w-0 flex-1 flex-col justify-end">
                         <div className="relative flex flex-1 items-end justify-center">
@@ -627,9 +628,10 @@ function AlwaysOnCard({
                     ))}
                   </div>
                 </div>
+                </div>
               </section>
 
-              <section className="rounded-2xl border border-slate-200 bg-white p-5">
+              <section className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">
                 <h3 className="font-bold text-slate-800">Цвета продукции</h3>
                 <p className="mt-0.5 text-xs text-slate-400">За всё время по данным модели</p>
                 <div className="mt-5 space-y-4">

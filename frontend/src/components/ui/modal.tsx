@@ -13,6 +13,7 @@ export function Modal({
   footer,
   children,
   className,
+  mobileFullscreen = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -22,6 +23,7 @@ export function Modal({
   footer?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
+  mobileFullscreen?: boolean;
 }) {
   const [mounted, setMounted] = useState(false);
   const titleId = useId();
@@ -48,7 +50,10 @@ export function Modal({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4"
+      className={cn(
+        "fixed inset-0 z-[100] flex items-center justify-center p-4",
+        mobileFullscreen && "max-sm:p-0",
+      )}
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
@@ -60,10 +65,11 @@ export function Modal({
       <div
         className={cn(
           "relative z-10 flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-xl border bg-[var(--card)] shadow-2xl animate-modal-content",
+          mobileFullscreen && "max-sm:h-[100dvh] max-sm:max-h-[100dvh] max-sm:rounded-none max-sm:border-0",
           className
         )}
       >
-        <div className="relative border-b px-6 pb-4 pt-6">
+        <div className="relative border-b px-4 pb-4 pt-5 sm:px-6 sm:pt-6">
           {eyebrow && (
             <div className="text-[12px] text-[var(--muted-foreground)]">{eyebrow}</div>
           )}
@@ -80,9 +86,9 @@ export function Modal({
             <X className="size-4" />
           </button>
         </div>
-        <div className="overflow-y-auto p-6">{children}</div>
+        <div className="overflow-y-auto p-4 sm:p-6">{children}</div>
         {footer && (
-          <div className="flex items-center justify-end gap-2 border-t bg-[var(--muted)]/40 px-6 py-3">
+          <div className="flex items-center justify-end gap-2 border-t bg-[var(--muted)]/40 px-4 py-3 sm:px-6">
             {footer}
           </div>
         )}

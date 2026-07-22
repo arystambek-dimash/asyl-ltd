@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/ui/stat-card";
+import { Modal } from "@/components/ui/modal";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { Tabs } from "@/components/ui/tabs";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
@@ -26,12 +27,19 @@ import {
   PAYMENT_STAGE_LABELS, PAYMENT_STAGE_TONE, PAYMENT_METHOD_LABELS,
 } from "@/lib/constants";
 import {
-  ArrowLeft, Building2, Calendar, Clock, ExternalLink, FileText,
-  Info, ShieldCheck, Truck, Wallet,
+  ArrowLeft, Building2, Calendar, ChevronDown, Clock, ExternalLink, FileText,
+  Info, Plus, ShieldCheck, Trash2, Truck, Wallet,
 } from "lucide-react";
 import type { Client, Order } from "@/lib/types";
 
 const money = formatCurrency;
+
+function compactMoney(value: number | string) {
+  const amount = Number(value);
+  return `${new Intl.NumberFormat("ru-RU", {
+    notation: "compact", maximumFractionDigits: 1,
+  }).format(Number.isFinite(amount) ? amount : 0)} ₸`;
+}
 
 interface DebtStore {
   id: number;
@@ -160,23 +168,19 @@ function WriteOffList({ order }: { order: Order }) {
 }
 
 /* ── Карточка заказа в долге ────────────────────────────────────────────── */
-function OrderDebtCard({ order, selectable, selected, onSelect }: {
+function OrderDebtCard({ order, canPay, onPay }: {
   order: Order;
-  selectable: boolean;
-  selected: boolean;
-  onSelect: () => void;
+  canPay: boolean;
+  onPay: () => void;
 }) {
   const [tab, setTab] = useState("invoice");
+  const [expanded, setExpanded] = useState(false);
   const status = order.payment_status ?? "unpaid";
   const pct = Math.min(100, Math.round((Number(order.paid_total) / Math.max(1, Number(order.total_amount))) * 100));
   const pending = pendingSum(order);
   return (
-    <Card
-      onClick={selectable ? onSelect : undefined}
-      className={cn(selectable && "cursor-pointer transition-shadow",
-        selectable && selected && "ring-2 ring-[var(--foreground)]")}
-    >
-      <CardContent className="flex flex-col gap-4 pt-5">
+    <Card>
+      <CardContent className="flex flex-col gap-4 p-4 sm:pt-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-[var(--destructive)]/10 text-[var(--destructive)]">
@@ -207,25 +211,34 @@ function OrderDebtCard({ order, selectable, selected, onSelect }: {
               </div>
             </div>
           </div>
-          <Link href={`/orders/${order.id}`} onClick={(e) => e.stopPropagation()}>
-            <Button size="sm" variant="outline">
-              Открыть заказ <ExternalLink className="size-3.5" />
-            </Button>
-          </Link>
+          <div className="flex shrink-0 items-center gap-2">
+            <div className="text-right">
+              <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Остаток</div>
+              <div className="tabular-nums text-base font-bold text-[var(--destructive)]">
+                {money(remainingOf(order), order.currency)}
+              </div>
+            </div>
+            <button type="button" onClick={() => setExpanded((value) => !value)}
+              aria-expanded={expanded} aria-label={expanded ? "Свернуть заказ" : "Развернуть заказ"}
+              className="flex size-10 items-center justify-center rounded-xl border text-[var(--muted-foreground)] transition hover:bg-[var(--accent)]">
+              <ChevronDown className={cn("size-4 transition-transform", expanded && "rotate-180")} />
+            </button>
+          </div>
         </div>
 
+        {expanded && <>
         <div className="grid grid-cols-2 gap-4 border-t pt-4 sm:grid-cols-4 sm:divide-x sm:[&>div+div]:pl-4">
           <div>
             <div className="text-xs text-[var(--muted-foreground)]">Сумма заказа</div>
-            <div className="mt-0.5 tabular-nums font-semibold">{money(order.total_amount)}</div>
+            <div className="mt-0.5 tabular-nums font-semibold">{money(order.total_amount, order.currency)}</div>
           </div>
           <div>
             <div className="text-xs text-[var(--muted-foreground)]">Оплачено</div>
-            <div className="mt-0.5 tabular-nums font-semibold text-[var(--success)]">{money(order.paid_total)}</div>
+            <div className="mt-0.5 tabular-nums font-semibold text-[var(--success)]">{money(order.paid_total, order.currency)}</div>
           </div>
           <div>
             <div className="text-xs text-[var(--muted-foreground)]">Остаток долга</div>
-            <div className="mt-0.5 tabular-nums font-semibold text-[var(--destructive)]">{money(remainingOf(order))}</div>
+            <div className="mt-0.5 tabular-nums font-semibold text-[var(--destructive)]">{money(remainingOf(order), order.currency)}</div>
           </div>
           <div>
             <div className="flex items-center justify-between text-xs text-[var(--muted-foreground)]">
@@ -242,7 +255,7 @@ function OrderDebtCard({ order, selectable, selected, onSelect }: {
               <Info className="size-4" />
               Ожидает подтверждения оплаты бухгалтером (бухгалтер → касса)
             </span>
-            <span className="tabular-nums font-semibold text-[var(--warning)]">{money(pending)}</span>
+            <span className="tabular-nums font-semibold text-[var(--warning)]">{money(pending, order.currency)}</span>
           </div>
         )}
 
@@ -255,6 +268,20 @@ function OrderDebtCard({ order, selectable, selected, onSelect }: {
           <div className="pt-3">
             {tab === "invoice" ? <InvoiceTable order={order} /> : <WriteOffList order={order} />}
           </div>
+        </div>
+        </>}
+
+        <div className="flex flex-col gap-2 border-t pt-3 sm:flex-row sm:justify-end">
+          <Link href={`/orders/${order.id}`}>
+            <Button size="sm" variant="outline" className="w-full sm:w-auto">
+              Открыть заказ <ExternalLink className="size-3.5" />
+            </Button>
+          </Link>
+          {canPay && remainingOf(order) > 0 && (
+            <Button size="sm" onClick={onPay} className="w-full sm:w-auto">
+              <Wallet className="size-4" /> Внести оплату
+            </Button>
+          )}
         </div>
       </CardContent>
     </Card>
@@ -321,7 +348,11 @@ const QUICK_FRACTIONS = [
   { label: "Весь долг", f: 1 },
 ];
 
-function PayPanel({ orders, selectedId, onSelect, blockedFor, onPaid, onError }: {
+type PaymentPart = { id: number; method: string; amount: string };
+
+function PaymentModal({ open, onClose, orders, selectedId, onSelect, blockedFor, onPaid, onError }: {
+  open: boolean;
+  onClose: () => void;
   orders: Order[];
   selectedId: number | null;
   onSelect: (id: number) => void;
@@ -330,36 +361,60 @@ function PayPanel({ orders, selectedId, onSelect, blockedFor, onPaid, onError }:
   onError: (msg: string) => void;
 }) {
   const order = orders.find((o) => o.id === selectedId) ?? orders[0];
-  const [amount, setAmount] = useState("");
-  const [method, setMethod] = useState("cash");
+  const [parts, setParts] = useState<PaymentPart[]>([{ id: 1, method: "cash", amount: "" }]);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Смена заказа — сумма и примечание относятся к прошлому заказу, сбрасываем.
-  useEffect(() => { setAmount(""); setNote(""); }, [order?.id]);
+  useEffect(() => {
+    if (!open) return;
+    setParts([{ id: Date.now(), method: "cash", amount: "" }]);
+    setNote("");
+  }, [order?.id, open]);
 
   if (!order) return null;
   const remaining = remainingOf(order);
+  const reserved = pendingSum(order);
+  const available = Math.max(0, remaining - reserved);
+  const allocated = parts.reduce((sum, part) => sum + Number(part.amount || 0), 0);
   const blockingStore = blockedFor(order);
-  const quickValue = (f: number) => Math.round(remaining * f * 100) / 100;
+  const quickValue = (f: number) => Math.round(available * f * 100) / 100;
+
+  function updatePart(id: number, patch: Partial<PaymentPart>) {
+    setParts((current) => current.map((part) => part.id === id ? { ...part, ...patch } : part));
+  }
+
+  function addPart() {
+    const used = new Set(parts.map((part) => part.method));
+    const method = CASHIER_PAYMENT_METHODS.find((item) => !used.has(item));
+    if (!method) return;
+    setParts((current) => [...current, { id: Date.now(), method, amount: "" }]);
+  }
 
   async function pay() {
     setBusy(true); onError("");
     try {
-      await api.post(`/orders/${order.id}/payments/`, { amount, method, note });
-      setAmount(""); setNote("");
-      await onPaid(`Оплата по заказу #${order.id} добавлена в очередь. Подтвердите получение в кассе.`);
+      const payload = parts
+        .filter((part) => Number(part.amount) > 0)
+        .map(({ method, amount }) => ({ method, amount }));
+      await api.post(`/orders/${order.id}/payments/`, { parts: payload, note });
+      await onPaid(`Оплата по заказу #${order.id} распределена по ${payload.length} способам. Подтвердите получение в кассе.`);
+      onClose();
     } catch (e) { onError(apiError(e)); } finally { setBusy(false); }
   }
 
   return (
-    <Card className="xl:sticky xl:top-20">
-      <CardContent className="flex flex-col gap-4 pt-5">
-        <div className="flex items-center gap-2">
-          <Wallet className="size-4" />
-          <span className="text-lg font-bold tracking-tight">Внести оплату</span>
-        </div>
-
+    <Modal open={open} onClose={() => !busy && onClose()}
+      eyebrow="Касса · Смешанная оплата" title="Внести оплату"
+      description="Разделите сумму между наличными, QR и счётом — кассир подтвердит каждую часть."
+      className="max-w-xl" mobileFullscreen
+      footer={<>
+        <Button variant="outline" disabled={busy} onClick={onClose}>Отмена</Button>
+        <Button disabled={busy || !!blockingStore || allocated <= 0 || allocated > available}
+          onClick={() => void pay()}>
+          {busy ? "Сохранение…" : `В очередь · ${money(allocated, order.currency)}`}
+        </Button>
+      </>}>
+      <div className="flex flex-col gap-5">
         {orders.length > 1 && (
           <div className="flex flex-col gap-1.5">
             <span className="text-sm text-[var(--muted-foreground)]">Заказ</span>
@@ -368,7 +423,7 @@ function PayPanel({ orders, selectedId, onSelect, blockedFor, onPaid, onError }:
               <SelectContent>
                 {orders.map((o) => (
                   <SelectItem key={o.id} value={String(o.id)}>
-                    Заказ #{o.id} — остаток {money(remainingOf(o))}
+                    Заказ #{o.id} — остаток {money(remainingOf(o), o.currency)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -379,8 +434,11 @@ function PayPanel({ orders, selectedId, onSelect, blockedFor, onPaid, onError }:
         <div>
           <div className="text-sm text-[var(--muted-foreground)]">Остаток к оплате</div>
           <div className="mt-1 text-[28px] font-bold leading-none tracking-tight tabular-nums text-[var(--destructive)]">
-            {money(remaining)}
+            {money(available, order.currency)}
           </div>
+          {reserved > 0 && <div className="mt-1 text-xs text-[var(--muted-foreground)]">
+            Ещё {money(reserved, order.currency)} уже ожидает подтверждения
+          </div>}
         </div>
 
         {blockingStore ? (
@@ -393,18 +451,13 @@ function PayPanel({ orders, selectedId, onSelect, blockedFor, onPaid, onError }:
           </div>
         ) : (
           <>
-            <div className="flex flex-col gap-1.5">
-              <span className="text-sm text-[var(--muted-foreground)]">Сумма платежа</span>
-              <Input type="number" placeholder="0" value={amount}
-                onChange={(e) => setAmount(e.target.value)} />
-            </div>
-
             <div className="grid grid-cols-4 gap-2">
               {QUICK_FRACTIONS.map(({ label, f }) => {
                 const v = quickValue(f);
-                const active = amount !== "" && Number(amount) === v;
+                const active = parts.length === 1 && Number(parts[0]?.amount) === v;
                 return (
-                  <button key={label} type="button" onClick={() => setAmount(String(v))}
+                  <button key={label} type="button"
+                    onClick={() => setParts([{ id: Date.now(), method: parts[0]?.method ?? "cash", amount: String(v) }])}
                     className={cn(
                       "flex flex-col items-center gap-0.5 rounded-lg border px-1 py-2 transition-colors",
                       active
@@ -413,23 +466,49 @@ function PayPanel({ orders, selectedId, onSelect, blockedFor, onPaid, onError }:
                     )}>
                     <span className="text-sm font-semibold">{label}</span>
                     <span className="text-[11px] tabular-nums text-[var(--muted-foreground)]">
-                      {formatMoney(v)} ₸
+                      {formatMoney(v)} {order.currency === "USD" ? "$" : "₸"}
                     </span>
                   </button>
                 );
               })}
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <span className="text-sm text-[var(--muted-foreground)]">Способ оплаты</span>
-              <Select value={method} onValueChange={setMethod}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {CASHIER_PAYMENT_METHODS.map((m) => (
-                    <SelectItem key={m} value={m}>{CASHIER_PAYMENT_METHOD_LABELS[m]}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">Распределение</span>
+                <span className={cn("text-xs tabular-nums",
+                  allocated > available ? "text-[var(--destructive)]" : "text-[var(--muted-foreground)]")}>
+                  {money(allocated, order.currency)} из {money(available, order.currency)}
+                </span>
+              </div>
+              {parts.map((part, index) => (
+                <div key={part.id} className="grid grid-cols-[minmax(0,1fr)_minmax(100px,.75fr)_40px] gap-2">
+                  <Select value={part.method} onValueChange={(method) => updatePart(part.id, { method })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {CASHIER_PAYMENT_METHODS.filter((method) => method === part.method || !parts.some((item) => item.method === method))
+                        .map((method) => <SelectItem key={method} value={method}>{CASHIER_PAYMENT_METHOD_LABELS[method]}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Input type="number" min="0" step="0.01" inputMode="decimal"
+                    aria-label={`Сумма части ${index + 1}`} placeholder="0"
+                    value={part.amount} onChange={(event) => updatePart(part.id, { amount: event.target.value })} />
+                  <button type="button" disabled={parts.length === 1}
+                    onClick={() => setParts((current) => current.filter((item) => item.id !== part.id))}
+                    className="flex size-10 items-center justify-center rounded-md border text-[var(--muted-foreground)] hover:text-[var(--destructive)] disabled:opacity-30"
+                    aria-label="Удалить способ оплаты">
+                    <Trash2 className="size-4" />
+                  </button>
+                </div>
+              ))}
+              {parts.length < CASHIER_PAYMENT_METHODS.length && (
+                <Button type="button" variant="outline" className="w-full" onClick={addPart}>
+                  <Plus className="size-4" /> Добавить способ оплаты
+                </Button>
+              )}
+              {allocated > available && (
+                <p className="text-xs text-[var(--destructive)]">Распределение превышает доступный остаток.</p>
+              )}
             </div>
 
             <div className="flex flex-col gap-1.5">
@@ -438,10 +517,6 @@ function PayPanel({ orders, selectedId, onSelect, blockedFor, onPaid, onError }:
                 onChange={(e) => setNote(e.target.value)} />
             </div>
 
-            <Button className="w-full" disabled={busy || !amount || Number(amount) <= 0}
-              onClick={pay}>
-              Добавить в очередь
-            </Button>
           </>
         )}
 
@@ -449,8 +524,8 @@ function PayPanel({ orders, selectedId, onSelect, blockedFor, onPaid, onError }:
           <ShieldCheck className="mt-0.5 size-4 shrink-0" />
           Платёж уменьшит долг только после ручного подтверждения получения кассиром.
         </p>
-      </CardContent>
-    </Card>
+      </div>
+    </Modal>
   );
 }
 
@@ -463,6 +538,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { data: history, reload: reloadHistory } = useApi<ClientHistory>(`/clients/${id}/history/`);
   const [tab, setTab] = useState("orders");
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [paymentOpen, setPaymentOpen] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -495,23 +571,28 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   return (
     <AppShell title={`Долг · ${data.client.name}`} section="Касса"
       description={data.client.phone ? `Телефон: ${data.client.phone}` : undefined}
-      actions={
+      actions={<div className="flex items-center gap-2">
+        {isAccountant && data.orders.length > 0 && (
+          <Button size="sm" onClick={() => setPaymentOpen(true)}>
+            <Wallet className="size-4" /> <span className="hidden sm:inline">Внести оплату</span>
+          </Button>
+        )}
         <Link href="/accounting">
           <Button size="sm" variant="outline">
             <ArrowLeft className="size-4" />
             К долгам
           </Button>
         </Link>
-      }>
-      <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      </div>}>
+      <section className="mb-5 grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
         <StatCard label="Текущий долг" tone="destructive" caption="к погашению"
-          value={money(data.debt_total)} />
+          value={<span title={money(data.debt_total)}>{compactMoney(data.debt_total)}</span>} />
         <StatCard label="Общая задолженность" caption="всего за всё время"
-          value={money(data.lifetime_total)} />
+          value={<span title={money(data.lifetime_total)}>{compactMoney(data.lifetime_total)}</span>} />
         <StatCard label="Оплачено" tone="success" caption="всего оплачено"
-          value={money(data.lifetime_paid)} />
+          value={<span title={money(data.lifetime_paid)}>{compactMoney(data.lifetime_paid)}</span>} />
         <StatCard label="Просрочено" tone="destructive" caption="просроченные суммы"
-          value={money(data.overdue_total)} />
+          value={<span title={money(data.overdue_total)}>{compactMoney(data.overdue_total)}</span>} />
       </section>
 
       {error && <p className="mb-4 text-sm text-[var(--destructive)]">{error}</p>}
@@ -521,8 +602,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
         </p>
       )}
 
-      <div className={cn("grid grid-cols-1 items-start gap-5",
-        isAccountant && "xl:grid-cols-[minmax(0,1fr)_360px]")}>
+      <div className="grid grid-cols-1 items-start gap-5">
         <div className="flex flex-col gap-4">
           <Tabs active={tab} onChange={setTab}
             tabs={[
@@ -540,9 +620,8 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
               </Card>
             ) : data.orders.map((order) => (
               <OrderDebtCard key={order.id} order={order}
-                selectable={isAccountant && data.orders.length > 1}
-                selected={(selectedId ?? data.orders[0]?.id) === order.id}
-                onSelect={() => setSelectedId(order.id)} />
+                canPay={isAccountant}
+                onPay={() => { setSelectedId(order.id); setPaymentOpen(true); }} />
             ))
           )}
           {tab === "history" && (
@@ -553,15 +632,13 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
           )}
         </div>
 
-        {isAccountant && data.orders.length > 0 && (
-          <PayPanel orders={data.orders}
-            selectedId={selectedId ?? data.orders[0]?.id ?? null}
-            onSelect={setSelectedId}
-            blockedFor={blockedFor}
-            onPaid={onPaid}
-            onError={setError} />
-        )}
       </div>
+      {isAccountant && data.orders.length > 0 && (
+        <PaymentModal open={paymentOpen} onClose={() => setPaymentOpen(false)}
+          orders={data.orders} selectedId={selectedId ?? data.orders[0]?.id ?? null}
+          onSelect={setSelectedId} blockedFor={blockedFor}
+          onPaid={onPaid} onError={setError} />
+      )}
     </AppShell>
   );
 }
