@@ -7,7 +7,7 @@ _SECTIONS = {
     "orders": ("Заказы", ["view", "create", "edit", "confirm"]),
     "payments": ("Оплаты", ["view", "create", "confirm"]),
     "shipping": ("Пост отгрузки", ["view", "arrive", "load", "ship", "rollback", "debt_override"]),
-    "train": ("Поезд", ["view", "load"]),
+    "train": ("Вагон", ["view", "load"]),
     "events": ("Журнал", ["view"]),
     "reports": ("Отчёты", ["view"]),
     "employees": ("Сотрудники", ["view", "manage"]),
@@ -56,7 +56,7 @@ PRESETS = {
                        "shipping.ship", "orders.view", "warehouse.view", "events.view"),
     "Загрузчик": _codes("train.view", "train.load"),
     # Контролёр на посту погрузки (планшет): приём машины на весах,
-    # погрузка с камерой и счётчиком, выезд; плюс загрузка поездов.
+    # погрузка с камерой и счётчиком, выезд; плюс загрузка вагонов.
     "Контролёр": _codes(
         "shipping.view", "shipping.arrive", "shipping.load", "shipping.ship",
         "shipping.debt_override", "train", "orders.view", "warehouse.view"),

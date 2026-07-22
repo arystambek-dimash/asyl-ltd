@@ -83,7 +83,7 @@ backend/
     clients/         # Client, Store, Department; долги, аналитика
     catalog/         # Product (+архив), ClientPrice
     orders/          # Order, OrderItem, Payment, StatusChangeRequest
-    shipments/       # Shipment: приезд → погрузка → выезд, поезд
+    shipments/       # Shipment: приезд → погрузка → выезд, вагон
     warehouse/       # StockItem, StockReceipt, StockMovement
     portal/          # клиентский портал: каталог, заказы, регистрация
     notifications/   # уведомления клиентам
@@ -166,7 +166,7 @@ department_names.
 | Заказы | `orders.view / create / edit / confirm` |
 | Оплаты | `payments.view / create / confirm` |
 | Пост отгрузки | `shipping.view / arrive / load / ship / debt_override` |
-| Поезд | `train.view / load` |
+| Вагон | `train.view / load` |
 | Отдел 2 «Сити» | `dept2.view` (только свои), `dept2.view_all`, `dept2.create` |
 | Журнал / Отчёты | `events.view`, `reports.view` |
 | Сотрудники / Доступы | `employees.view / manage`, `rbac.view / manage` |
@@ -212,7 +212,7 @@ draft → pending → confirmed → arrived → loading → loaded → shipped
 |---|---|
 | `draft` | черновик, свободно редактируется |
 | `pending` | заявка ждёт подтверждения (цены — у бухгалтера/кассы) |
-| `confirmed` | подтверждён, цены зафиксированы, ждёт машину/поезд |
+| `confirmed` | подтверждён, цены зафиксированы, ждёт машину/вагон |
 | `arrived` | машина въехала (пост взвешивания) |
 | `loading` | идёт погрузка (счёт мешков) |
 | `loaded` | погрузка завершена |
@@ -284,7 +284,7 @@ CRUD + действия: `confirm`, `reject`, `payments` (+ `receive/confirm/rej
 автоматически переводит в loading) → `finish_loading` (→loaded) →
 `record_shipment` (→shipped).
 
-Поток **поезд**: `start_train_loading` (confirmed→loading) →
+Поток **вагон**: `start_train_loading` (confirmed→loading) →
 `record_count` → `finish_train_loading` (→loaded→shipped одним шагом).
 
 Общий финал `_do_ship`: списывает каждую позицию со склада
@@ -461,7 +461,7 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 | `/catalog/products` | вкладки «Товары» / «Архив»; архивирование вместо удаления; флаг «спрашивать вес грузовика» |
 | `/warehouse` | остатки; корректировка/приёмка с быстрыми кнопками и превью «сейчас → станет» |
 | `/shipping` | пост погрузки: очередь машин; рабочая зона выбранной машины — госномер, прогресс этапов, live-видео выбранной камеры (камера закрепляется за заказом), счётчик мешков (+1/+5/−1, дебаунс-сохранение), AI-подсчёт с аннотированным потоком, действия «Принять машину» (вес на въезде) / «Погрузка завершена» / «Отгрузить — выезд». Несколько машин грузятся параллельно на разных камерах |
-| `/train` | очередь поездов: старт погрузки, счёт мешков, завершение |
+| `/train` | очередь вагонов: старт погрузки, счёт мешков, завершение |
 | `/reports` | выручка vs поступления, период/группировка, фильтр по клиенту |
 | `/management/employees`, `…/roles`, `…/departments` | сотрудники (роль + личные права через `PermissionPicker`), роли, переименование отделов |
 | `/events` | журнал событий с фильтрами, группировка по дням |

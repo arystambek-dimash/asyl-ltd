@@ -229,7 +229,7 @@ def finish_ai_loading(order, bags: int, user):
         payload={"bags": bags, "source": "ai_final"},
     )
     label = (
-        "Поезд: отгрузка завершена"
+        "Вагон: отгрузка завершена"
         if order.transport_type == "train"
         else f"Машина {shipment.truck_number}: отгрузка завершена"
     )
@@ -302,7 +302,7 @@ def manual_complete_order(order, bags: int | None, user):
         payload={"bags": bags, "source": "manual_override", "count_source": count_source},
     )
     label = (
-        "Поезд: отгрузка завершена вручную"
+        "Вагон: отгрузка завершена вручную"
         if order.transport_type == "train"
         else f"Машина {shipment.truck_number}: отгрузка завершена вручную"
     )
@@ -473,7 +473,7 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
 
 
 def _do_ship(order, shipment, user, label):
-    """Списать со склада и зафиксировать отгрузку в долг. Общее для трака и поезда."""
+    """Списать со склада и зафиксировать отгрузку в долг. Общее для трака и вагона."""
     for item in order.items.select_related("product").all():
         if item.product_id is None:
             raise ValidationError({
@@ -512,12 +512,12 @@ def record_shipment(order, user):
 
 @transaction.atomic
 def start_train_loading(order, user):
-    """Поезд: старт сессии загрузки (без въезда и взвешивания)."""
+    """Вагон: старт сессии загрузки (без въезда и взвешивания)."""
     order = _locked(order)
     _require_transport(order, "train")
     if order.status != "confirmed":
         raise ValidationError(
-            {"detail": "Загрузку поезда можно начать только для подтверждённого заказа",
+            {"detail": "Загрузку вагона можно начать только для подтверждённого заказа",
              "code": "invalid_status"}
         )
     shipment, _ = Shipment.objects.get_or_create(order=order)
@@ -525,21 +525,21 @@ def start_train_loading(order, user):
     shipment.save()
     order.status = "loading"
     order.save(update_fields=["status"])
-    log_event("loading_start", "Поезд: начата загрузка", user=user, order=order)
+    log_event("loading_start", "Вагон: начата загрузка", user=user, order=order)
     return shipment
 
 
 @transaction.atomic
 def finish_train_loading(order, user):
-    """Поезд: завершить загрузку и сразу отгрузить (авто)."""
+    """Вагон: завершить загрузку и сразу отгрузить (авто)."""
     order = _locked(order)
     _require_transport(order, "train")
     if order.status != "loading":
         raise ValidationError(
-            {"detail": "Завершить можно только идущую загрузку поезда",
+            {"detail": "Завершить можно только идущую загрузку вагона",
              "code": "invalid_status"}
         )
     shipment = _require_shipment(order)
-    log_event("loading_done", "Поезд: загрузка завершена", user=user, order=order,
+    log_event("loading_done", "Вагон: загрузка завершена", user=user, order=order,
               payload={"bags": shipment.bags_loaded})
-    return _do_ship(order, shipment, user, "Поезд отгружен")
+    return _do_ship(order, shipment, user, "Вагон отгружен")

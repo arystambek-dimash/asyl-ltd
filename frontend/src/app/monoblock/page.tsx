@@ -271,7 +271,7 @@ function AlwaysOnSettingsButton({
   return (
     <>
       <Button variant="outline" className="h-10 rounded-xl border-blue-200 bg-blue-50/70 text-blue-700 hover:bg-blue-100" onClick={show}>
-        <Cpu className="size-4" /> AI 24/7
+        <Settings2 className="size-4" /> Настроить
         <span className="rounded-full bg-white px-2 py-0.5 text-[11px] tabular-nums text-blue-600 shadow-sm">
           {settings?.camera_sources.length ?? 0}
         </span>
@@ -826,6 +826,12 @@ function MonoblockPageInner() {
   const { data: alwaysOnAnalytics, reload: reloadAlwaysOnAnalytics } = useApi<AlwaysOnDailyAnalytics>(
     me?.is_superuser ? "/cameras/always-on-analytics/" : null,
   );
+  const isSuper = !!me?.is_superuser;
+  // Страница разделена на вкладки: «AI 24/7» — сам моноблок с бесконечным
+  // циклом подсчёта, «Отгрузки» — запуск сессий и активные отгрузки.
+  // Вкладка AI видна только суперпользователю, остальным — сразу отгрузки.
+  const [tab, setTab] = useState<"monoblock" | "shipments">("monoblock");
+  const activeTab = isSuper && tab === "monoblock" ? "monoblock" : "shipments";
   const playable = useMemo(
     () => playableCameras(cameras).filter((camera) => /^cam[1-9]\d*$/.test(camera.src)),
     [cameras],
@@ -900,20 +906,62 @@ function MonoblockPageInner() {
         <ErrorAlert message={error} onRetry={reloadOrders} />
       ) : (
         <div className="flex flex-col gap-7">
-          {(can(me, "rbac.manage") || me?.is_superuser) && (
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              {me?.is_superuser && (
-                <AlwaysOnSettingsButton cameras={playable} settings={alwaysOnSettings}
-                  reload={reloadAlwaysOnSettings} />
+          {(isSuper || can(me, "rbac.manage")) && (
+            <div className="flex flex-wrap items-center gap-3">
+              {isSuper && (
+                <div className="flex w-full rounded-2xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex">
+                  <button type="button" onClick={() => setTab("monoblock")}
+                    className={cn(
+                      "flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition sm:flex-none",
+                      activeTab === "monoblock" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
+                    )}>
+                    <Cpu className="size-4" /> AI 24/7
+                    <span className={cn(
+                      "rounded-full px-2 py-0.5 text-[11px] tabular-nums",
+                      activeTab === "monoblock" ? "bg-blue-50 text-blue-600" : "bg-white/70 text-slate-500",
+                    )}>
+                      {alwaysOnSettings?.camera_sources.length ?? 0}
+                    </span>
+                  </button>
+                  <button type="button" onClick={() => setTab("shipments")}
+                    className={cn(
+                      "flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition sm:flex-none",
+                      activeTab === "shipments" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
+                    )}>
+                    <Radio className="size-4" /> Отгрузки
+                    <span className={cn(
+                      "rounded-full px-2 py-0.5 text-[11px] tabular-nums",
+                      activeTab === "shipments" ? "bg-blue-50 text-blue-600" : "bg-white/70 text-slate-500",
+                    )}>
+                      {sessions?.length ?? 0}
+                    </span>
+                  </button>
+                </div>
               )}
-              {can(me, "rbac.manage") && (
-              <CameraSettingsButton cameras={playable} settings={cameraSettings}
-                reload={reloadCameraSettings} />
-              )}
+              <div className="ml-auto flex items-center gap-2">
+                {isSuper && activeTab === "monoblock" ? (
+                  <AlwaysOnSettingsButton cameras={playable} settings={alwaysOnSettings}
+                    reload={reloadAlwaysOnSettings} />
+                ) : can(me, "rbac.manage") ? (
+                  <CameraSettingsButton cameras={playable} settings={cameraSettings}
+                    reload={reloadCameraSettings} />
+                ) : null}
+              </div>
             </div>
           )}
 
-          {me?.is_superuser && !!alwaysOnSettings?.camera_sources.length && (
+          {activeTab === "monoblock" ? (
+            !alwaysOnSettings?.camera_sources.length ? (
+              <div className="flex min-h-56 flex-col items-center justify-center rounded-[24px] border border-dashed border-slate-200 bg-slate-50/70 p-8 text-center">
+                <span className="flex size-14 items-center justify-center rounded-full bg-white text-slate-300 shadow-sm">
+                  <Cpu className="size-6" />
+                </span>
+                <p className="mt-3 text-sm font-semibold text-slate-600">Бесконечный цикл пока не запущен</p>
+                <p className="mt-1 max-w-sm text-xs text-slate-400">
+                  Выберите камеры в настройке «AI 24/7» — модель начнёт считать круглосуточно, без публикации и записи видео.
+                </p>
+              </div>
+            ) : (
             <section className="rounded-[24px] border border-blue-100 bg-gradient-to-br from-blue-50/80 via-white to-emerald-50/40 p-5">
               <div className="mb-4 flex items-center gap-3">
                 <span className="flex size-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-[0_8px_22px_rgba(37,99,235,0.25)]">
@@ -921,7 +969,7 @@ function MonoblockPageInner() {
                 </span>
                 <div>
                   <h2 className="text-[18px] font-bold tracking-tight text-slate-800">Постоянный AI-контур</h2>
-                  <p className="text-[12px] text-slate-400">Модель считает без публикации и записи фонового видео</p>
+                  <p className="text-[12px] text-slate-400">Бесконечный цикл: модель считает круглосуточно, без публикации и записи фонового видео</p>
                 </div>
                 <div className="ml-auto flex items-center gap-2">
                   <span className="flex items-center gap-2 rounded-full border border-blue-100 bg-white px-3 py-1 text-[11px] font-semibold text-blue-700 shadow-sm">
@@ -954,51 +1002,55 @@ function MonoblockPageInner() {
                 })}
               </div>
             </section>
+            )
+          ) : (
+            <>
+              <ShipmentLauncher
+                orders={startable}
+                cameras={monoblockCameras}
+                busyCameras={(sessions ?? []).map((session) => session.camera)}
+                cameraOwners={cameraOwners}
+                activeSessionCount={sessions?.length ?? 0}
+                onStart={start}
+              />
+
+              <section>
+                <div className="mb-4 flex items-center gap-3">
+                  <span className="flex size-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                    <Radio className="size-5" />
+                  </span>
+                  <div>
+                    <h2 className="text-[20px] font-bold tracking-tight text-slate-800">Активные отгрузки</h2>
+                    <p className="text-[12px] text-slate-400">Каждая сессия закреплена за отдельной камерой</p>
+                  </div>
+                  <span className="ml-auto rounded-full border bg-white px-3 py-1 text-[12px] font-semibold text-slate-600 shadow-sm">
+                    {sessions?.length ?? 0} активн.
+                  </span>
+                </div>
+
+                {!sessions?.length ? (
+                  <div className="flex min-h-48 flex-col items-center justify-center rounded-[22px] border border-dashed border-slate-200 bg-slate-50/70 text-center">
+                    <span className="flex size-14 items-center justify-center rounded-full bg-white text-slate-300 shadow-sm">
+                      <Radio className="size-6" />
+                    </span>
+                    <p className="mt-3 text-sm font-semibold text-slate-600">Активных сессий пока нет</p>
+                    <p className="mt-1 text-xs text-slate-400">Выберите заказ и камеру выше, чтобы начать.</p>
+                  </div>
+                ) : (
+                  <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+                    {sessions.map((session) => (
+                      <SessionCard
+                        key={session.id}
+                        session={session}
+                        camera={playable.find((camera) => camera.src === session.camera)}
+                        onStopped={() => { void Promise.all([reloadOrders(), reloadSessions()]); }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </section>
+            </>
           )}
-          <ShipmentLauncher
-            orders={startable}
-            cameras={monoblockCameras}
-            busyCameras={(sessions ?? []).map((session) => session.camera)}
-            cameraOwners={cameraOwners}
-            activeSessionCount={sessions?.length ?? 0}
-            onStart={start}
-          />
-
-          <section>
-            <div className="mb-4 flex items-center gap-3">
-              <span className="flex size-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-                <Radio className="size-5" />
-              </span>
-              <div>
-                <h2 className="text-[20px] font-bold tracking-tight text-slate-800">Активные отгрузки</h2>
-                <p className="text-[12px] text-slate-400">Каждая сессия закреплена за отдельной камерой</p>
-              </div>
-              <span className="ml-auto rounded-full border bg-white px-3 py-1 text-[12px] font-semibold text-slate-600 shadow-sm">
-                {sessions?.length ?? 0} активн.
-              </span>
-            </div>
-
-            {!sessions?.length ? (
-              <div className="flex min-h-48 flex-col items-center justify-center rounded-[22px] border border-dashed border-slate-200 bg-slate-50/70 text-center">
-                <span className="flex size-14 items-center justify-center rounded-full bg-white text-slate-300 shadow-sm">
-                  <Radio className="size-6" />
-                </span>
-                <p className="mt-3 text-sm font-semibold text-slate-600">Активных сессий пока нет</p>
-                <p className="mt-1 text-xs text-slate-400">Выберите заказ и камеру выше, чтобы начать.</p>
-              </div>
-            ) : (
-              <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
-                {sessions.map((session) => (
-                  <SessionCard
-                    key={session.id}
-                    session={session}
-                    camera={playable.find((camera) => camera.src === session.camera)}
-                    onStopped={() => { void Promise.all([reloadOrders(), reloadSessions()]); }}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
         </div>
       )}
     </AppShell>

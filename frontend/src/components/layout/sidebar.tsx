@@ -45,7 +45,7 @@ function staffSections(): NavSection[] {
         { href: "/orders", label: "Заказы", icon: ClipboardList, perm: "orders.view" },
         // Касса (бывш. Табло бухгалтера): подтверждение оплат + вкладка «Долги».
         { href: "/accounting", label: "Касса", icon: HandCoins, perm: ["payments.confirm", "reports.view"] },
-        // Единый пост: машины и поезда вместе — лайв-этапы и моноблок отгрузки.
+        // Единый пост: машины и вагоны вместе — лайв-этапы и моноблок отгрузки.
         { href: "/shipping", label: "Пост погрузки", icon: Truck, perm: ["shipping.view", "train.view"] },
         { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "shipping.load" },
         { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },

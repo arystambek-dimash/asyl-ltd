@@ -176,7 +176,7 @@ function PostCamera({ cameras, zoneKeywords, preferId, ai }: {
 }
 
 /** Крупный счётчик мешков под палец: −/+1/+5, автосохранение с дебаунсом.
- * Куда писать счёт (машина: /load/, поезд: train count) решает onSave. */
+ * Куда писать счёт (машина: /load/, вагон: train count) решает onSave. */
 function BagCounter({ order, onSave }: {
   order: Order;
   onSave: (bags: number) => Promise<unknown>;
@@ -430,7 +430,7 @@ function TransportBadge({ order, size = "md" }: { order: Order; size?: "md" | "l
       <span className={cn(
         "flex items-center gap-1.5 rounded-md border bg-[var(--muted)] font-semibold",
         size === "lg" ? "px-3 py-1.5 text-sm" : "px-2 py-1 text-xs")}>
-        <TrainFront className={size === "lg" ? "size-4" : "size-3.5"} /> Поезд
+        <TrainFront className={size === "lg" ? "size-4" : "size-3.5"} /> Вагон
       </span>
     );
   }
@@ -1174,7 +1174,7 @@ function ShippingPageInner() {
     finally { setBusy(false); }
   }
 
-  // Куда пишется счёт мешков: машина — /load/, поезд — train count.
+  // Куда пишется счёт мешков: машина — /load/, вагон — train count.
   const saveBags = useCallback((order: Order) => (bags: number) =>
     order.transport_type === "train"
       ? api.post(`/orders/${order.id}/train/`, { action: "count", bags })
@@ -1299,7 +1299,7 @@ function ShippingPageInner() {
 
           {/* Рабочая зона выбранного заказа */}
           <div className="overflow-hidden rounded-2xl border bg-[var(--card)] shadow-card">
-            {/* шапка: номер как госзнак (или поезд) + этапы */}
+            {/* шапка: номер как госзнак (или вагон) + этапы */}
             <div className="flex flex-wrap items-center justify-between gap-4 border-b px-5 py-4">
               <div className="flex flex-wrap items-center gap-4">
                 <TransportBadge order={selected} size="lg" />
@@ -1351,7 +1351,7 @@ function ShippingPageInner() {
               )}
 
               <div className="flex flex-col justify-center gap-4 rounded-2xl bg-[var(--muted)]/40 p-5">
-                {/* ── Поезд: старт → счёт → финиш (без въезда и весов) ── */}
+                {/* ── Вагон: старт → счёт → финиш (без въезда и весов) ── */}
                 {isTrain && selected.status === "confirmed" && (
                   <div>
                     <div className="text-base font-semibold">Ожидает запуска в Моноблоке</div>
@@ -1379,7 +1379,7 @@ function ShippingPageInner() {
                         <Check className="size-5" /> Завершить отгрузку
                       </Button>
                     </>
-                  ) : <p className="text-sm text-[var(--muted-foreground)]">Идёт загрузка поезда.</p>
+                  ) : <p className="text-sm text-[var(--muted-foreground)]">Идёт загрузка вагона.</p>
                 )}
 
                 {/* ── Машина: приём → погрузка → выезд ── */}

@@ -179,7 +179,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
               </span>
               <span className="flex items-center gap-1.5">
                 <Truck className="size-3.5" />
-                {order.transport_type === "train" ? "Поезд" : order.truck_number || "Машина не указана"}
+                {order.transport_type === "train" ? "Вагон" : order.truck_number || "Машина не указана"}
               </span>
               {order.department_name && <span>{order.department_name}</span>}
             </div>
@@ -277,7 +277,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             <CardHeader className="p-4 pb-2"><CardTitle className="flex items-center gap-2"><Truck className="size-4 text-[var(--muted-foreground)]" /> Доставка</CardTitle></CardHeader>
             <CardContent className="grid grid-cols-2 gap-4 p-4 pt-2 text-sm md:grid-cols-4">
               <div><div className="text-xs text-[var(--muted-foreground)]">Дата прибытия</div><div className="mt-1 flex items-center gap-1.5 font-medium"><CalendarDays className="size-3.5" /> {order.arrival_date ? new Date(`${order.arrival_date}T00:00:00`).toLocaleDateString("ru-RU") : "Не указана"}</div></div>
-              <div><div className="text-xs text-[var(--muted-foreground)]">Способ</div><div className="mt-1 flex items-center gap-1.5 font-medium"><Truck className="size-3.5" /> {order.transport_type === "train" ? "Поезд" : order.truck_number || "Машина"}</div></div>
+              <div><div className="text-xs text-[var(--muted-foreground)]">Способ</div><div className="mt-1 flex items-center gap-1.5 font-medium"><Truck className="size-3.5" /> {order.transport_type === "train" ? "Вагон" : order.truck_number || "Машина"}</div></div>
               <div><div className="text-xs text-[var(--muted-foreground)]">Отдел</div><div className="mt-1 flex items-center gap-1.5 font-medium"><Building2 className="size-3.5" /> {order.department_name ?? order.department}</div></div>
               <div><div className="text-xs text-[var(--muted-foreground)]">Склад</div><div className="mt-1 flex items-center gap-1.5 font-medium"><StoreIcon className="size-3.5" /> {store?.name || (order.store ? `Склад #${order.store}` : "Основной")}</div></div>
               {hasShipment && <div className="col-span-2 border-t pt-3 md:col-span-4"><span className="text-[var(--muted-foreground)]">Вес машины: </span><b>{formatMoney(order.weigh_in_kg!)} кг</b><span className="mx-2 text-[var(--border)]">·</span><span className="text-[var(--muted-foreground)]">Вес груза: </span><b>{formatMoney(String(Number(order.bag_estimate_kg ?? itemsWeight)))} кг</b></div>}

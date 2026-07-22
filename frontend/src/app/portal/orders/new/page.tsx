@@ -125,7 +125,7 @@ export default function PortalNewOrderPage() {
             <div className="border-t pt-4">
               <Label className="mb-2 block">Вид транспорта</Label>
               <div className="grid grid-cols-2 gap-2">
-                {([["truck", "🚚 Трак"], ["train", "🚂 Поезд"]] as const).map(([v, label]) => (
+                {([["truck", "🚚 Трак"], ["train", "🚃 Вагон"]] as const).map(([v, label]) => (
                   <button key={v} type="button" onClick={() => setTransport(v)}
                     className={
                       "rounded-lg border px-3 py-2 text-sm font-medium transition-colors " +

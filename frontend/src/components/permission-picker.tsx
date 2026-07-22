@@ -5,7 +5,7 @@ import type { Permission } from "@/lib/types";
 // Ярлыки разделов/действий каталога прав (единые для ролей и сотрудников).
 export const PERM_SECTION_LABELS: Record<string, string> = {
   catalog: "Товары", clients: "Клиенты", warehouse: "Склад", orders: "Заказы",
-  payments: "Оплаты", shipping: "Пост отгрузки", train: "Поезд",
+  payments: "Оплаты", shipping: "Пост отгрузки", train: "Вагон",
   events: "Журнал",
   reports: "Отчёты", employees: "Сотрудники", rbac: "Доступы",
 };

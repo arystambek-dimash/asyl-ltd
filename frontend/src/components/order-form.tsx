@@ -393,7 +393,7 @@ export function OrderForm({ editing, onCancel, onDone }: {
             <div className="grid grid-cols-2 gap-2">
               {([[
                 "truck", "🚚", "Трак", "Автомобиль",
-              ], ["train", "🚂", "Поезд", "Железная дорога"]] as const).map(([value, emoji, label, caption]) => (
+              ], ["train", "🚃", "Вагон", "Железная дорога"]] as const).map(([value, emoji, label, caption]) => (
                 <button key={value} type="button" onClick={() => setTransport(value)}
                   className={cn(
                     "flex min-h-16 items-center gap-3 rounded-2xl border px-4 py-3 text-left transition",
@@ -437,7 +437,7 @@ export function OrderForm({ editing, onCancel, onDone }: {
                 <span className="size-2 rounded-full" style={{ backgroundColor: assignedDepartment?.color || selectedDepartment?.color || "#64748B" }} />
                 {assignedDepartment?.name || selectedDepartment?.name || dept}
               </div>
-              <div className="mt-0.5 text-[11px] text-slate-500">{transport === "truck" ? "Трак" : "Поезд"}{arrival ? ` · ${arrival}` : ""}</div>
+              <div className="mt-0.5 text-[11px] text-slate-500">{transport === "truck" ? "Трак" : "Вагон"}{arrival ? ` · ${arrival}` : ""}</div>
             </div>
             <div className="col-span-2 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3 sm:col-span-1 sm:p-3.5">
               <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-600">Текущий итог</div>

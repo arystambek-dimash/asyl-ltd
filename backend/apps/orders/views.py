@@ -252,7 +252,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="train")
     def train(self, request, pk=None):
-        """Единый эндпоинт загрузки поезда: action = start | count | finish."""
+        """Единый эндпоинт загрузки вагона: action = start | count | finish."""
         order = self.get_object()
         what = request.data.get("action")
         if what == "start":
