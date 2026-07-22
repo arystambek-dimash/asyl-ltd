@@ -17,8 +17,8 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select-ui";
 import { useApi } from "@/lib/use-api";
-import { api, apiError } from "@/lib/api";
 import { currencySymbol, formatCurrency, formatDateTime } from "@/lib/utils";
+import { StatementExportModal } from "@/components/statement-export-modal";
 import {
   ORDER_STATUS_LABELS, PAYMENT_METHOD_LABELS, PAYMENT_STAGE_LABELS, PAYMENT_STAGE_TONE,
   orderStatusGroup,
@@ -34,9 +34,7 @@ import {
   Wallet,
   X,
   FileSpreadsheet,
-  Download,
 } from "lucide-react";
-import { Modal } from "@/components/ui/modal";
 
 interface SaleRow {
   id: number; date: string; status: string; payment_status: string;
@@ -133,36 +131,6 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
   const [sortKey, setSortKey] = useState("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [statementOpen, setStatementOpen] = useState(false);
-  const [statementFrom, setStatementFrom] = useState("");
-  const [statementTo, setStatementTo] = useState("");
-  const [statementBusy, setStatementBusy] = useState(false);
-  const [statementError, setStatementError] = useState("");
-
-  async function downloadStatement() {
-    setStatementBusy(true); setStatementError("");
-    try {
-      const response = await api.get(`/clients/${id}/statement/`, {
-        params: {
-          ...(statementFrom ? { date_from: statementFrom } : {}),
-          ...(statementTo ? { date_to: statementTo } : {}),
-        },
-        responseType: "blob",
-      });
-      const url = URL.createObjectURL(response.data);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `client-${id}-statement.xlsx`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-      setStatementOpen(false);
-    } catch (cause) {
-      setStatementError(apiError(cause));
-    } finally {
-      setStatementBusy(false);
-    }
-  }
 
   if (!data) {
     return <AppShell title="Клиент"><DataGate loading={loading} error={error} onRetry={reload} /></AppShell>;
@@ -265,7 +233,7 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
           </div>
         </div>
         <Button variant="outline" className="shrink-0" onClick={() => {
-          setStatementError(""); setStatementOpen(true);
+          setStatementOpen(true);
         }}>
           <FileSpreadsheet className="size-4 text-emerald-600" /> Excel-выписка
         </Button>
@@ -512,54 +480,16 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
         </CardContent>
       </Card>
 
-      <Modal open={statementOpen} onClose={() => setStatementOpen(false)}
-        eyebrow="Финансы клиента"
-        title="Скачать Excel-выписку"
-        description="Заказы, позиции, продажи, оплаты, текущие долги и хронологический баланс по KZT и USD."
-        className="max-w-lg"
-        footer={(
-          <>
-            <Button variant="ghost" onClick={() => setStatementOpen(false)} disabled={statementBusy}>Отмена</Button>
-            <Button onClick={() => void downloadStatement()} disabled={statementBusy}>
-              <Download className="size-4" /> {statementBusy ? "Формирование…" : "Скачать .xlsx"}
-            </Button>
-          </>
-        )}>
-        <div className="space-y-4">
-          <div className="grid grid-cols-3 gap-2">
-            <Button type="button" variant="outline" onClick={() => { setStatementFrom(""); setStatementTo(""); }}>
-              Всё время
-            </Button>
-            <Button type="button" variant="outline" onClick={() => {
-              const now = new Date();
-              const from = new Date(now.getFullYear(), now.getMonth(), 1).toLocaleDateString("en-CA");
-              setStatementFrom(from); setStatementTo(new Date().toLocaleDateString("en-CA"));
-            }}>
-              Этот месяц
-            </Button>
-            <Button type="button" variant="outline" onClick={() => {
-              const today = new Date().toLocaleDateString("en-CA");
-              setStatementFrom(today); setStatementTo(today);
-            }}>
-              Сегодня
-            </Button>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <label className="grid gap-1.5 text-sm font-medium">
-              С даты
-              <Input type="date" value={statementFrom} onChange={(e) => setStatementFrom(e.target.value)} />
-            </label>
-            <label className="grid gap-1.5 text-sm font-medium">
-              По дату
-              <Input type="date" value={statementTo} onChange={(e) => setStatementTo(e.target.value)} />
-            </label>
-          </div>
-          <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3 text-sm text-emerald-900">
-            Выписка содержит 6 листов: сводка, операции, заказы, позиции, платежи и долги.
-          </div>
-          {statementError && <p className="text-sm text-red-600">{statementError}</p>}
-        </div>
-      </Modal>
+      <StatementExportModal
+        open={statementOpen}
+        onClose={() => setStatementOpen(false)}
+        endpoint={`/clients/${id}/statement/`}
+        filename={`client-${id}-statement.xlsx`}
+        title="Выписка клиента"
+        description="Полная финансовая история выбранного клиента по отдельным листам Excel."
+        scopeLabel={`${client.name}: все заказы и движения`}
+        sheetsLabel="6 листов: сводка, операции, заказы, позиции, платежи и текущие долги."
+      />
     </AppShell>
   );
 }

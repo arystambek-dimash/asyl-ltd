@@ -71,8 +71,9 @@ function Stepper({ step, onSelect }: { step: Step; onSelect: (step: Step) => voi
   );
 }
 
-export function OrderForm({ editing, onCancel, onDone }: {
+export function OrderForm({ editing, template, onCancel, onDone }: {
   editing?: Order | null;
+  template?: Order | null;
   onCancel: () => void;
   onDone: () => void;
 }) {
@@ -82,18 +83,19 @@ export function OrderForm({ editing, onCancel, onDone }: {
   const { data: products } = useApi<Product[]>("/products/");
   const { data: stores } = useApi<Store[]>("/stores/");
   const { data: departments } = useApi<Department[]>("/departments/");
+  const source = editing ?? template;
   const [step, setStep] = useState<Step>(1);
   const [clientSearch, setClientSearch] = useState("");
-  const [clientPickerOpen, setClientPickerOpen] = useState(!editing);
-  const [dept, setDept] = useState(editing?.department ?? "");
-  const [client, setClient] = useState(editing ? String(editing.client) : "");
-  const [currency, setCurrency] = useState<"KZT" | "USD">(editing?.currency ?? "KZT");
-  const [store, setStore] = useState(editing?.store ? String(editing.store) : "");
-  const [transport, setTransport] = useState<"truck" | "train">(editing?.transport_type ?? "truck");
-  const [truck, setTruck] = useState(editing?.truck_number ?? "");
-  const [arrival, setArrival] = useState(editing?.arrival_date ?? "");
-  const [rows, setRows] = useState<Row[]>(editing
-    ? editing.items.map((item) => ({
+  const [clientPickerOpen, setClientPickerOpen] = useState(!source);
+  const [dept, setDept] = useState(source?.department ?? "");
+  const [client, setClient] = useState(source ? String(source.client) : "");
+  const [currency, setCurrency] = useState<"KZT" | "USD">(source?.currency ?? "KZT");
+  const [store, setStore] = useState(source?.store ? String(source.store) : "");
+  const [transport, setTransport] = useState<"truck" | "train">(source?.transport_type ?? "truck");
+  const [truck, setTruck] = useState(source?.truck_number ?? "");
+  const [arrival, setArrival] = useState(editing?.arrival_date ?? (template ? new Date().toLocaleDateString("en-CA") : ""));
+  const [rows, setRows] = useState<Row[]>(source
+    ? source.items.map((item) => ({
         product: String(item.product ?? ""),
         quantity: String(item.quantity),
         price: item.unit_price ?? item.price ?? "",
@@ -193,6 +195,7 @@ export function OrderForm({ editing, onCancel, onDone }: {
         currency,
         items,
         prices,
+        ...(!editing && template ? { template_order: template.id } : {}),
       };
       if (editing) {
         await api.patch(`/orders/${editing.id}/`, body);
@@ -492,7 +495,9 @@ export function OrderForm({ editing, onCancel, onDone }: {
             <Info className="mt-0.5 size-3.5 shrink-0" />
             {editing
               ? "Позиции и цены можно менять до начала загрузки. Изменения попадут в журнал."
-              : "После создания клиент, валюта и отдел закрепятся за заказом. Перед сохранением проверьте итог."}
+              : template
+                ? `Данные взяты из заказа #${template.id}, а цены обновлены из текущего прайса клиента. Проверьте всё перед созданием.`
+                : "После создания клиент, валюта и отдел закрепятся за заказом. Перед сохранением проверьте итог."}
           </div>
         </div>
       )}

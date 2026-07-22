@@ -25,11 +25,12 @@ import { api, apiError } from "@/lib/api";
 import { cn, currencySymbol, formatPhone, formatMoney, formatDateTime } from "@/lib/utils";
 import { COUNTRIES } from "@/lib/countries";
 import {
-  BarChart3, MoreVertical, Pencil, Phone, Plus, Search, Tags, Trash2,
+  BarChart3, FileSpreadsheet, MoreVertical, Pencil, Phone, Plus, Search, Tags, Trash2,
 } from "lucide-react";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { StatementExportModal } from "@/components/statement-export-modal";
 import type { Client } from "@/lib/types";
 
 const schema = z.object({
@@ -296,6 +297,7 @@ function ClientsPageInner() {
   const [delItem, setDelItem] = useState<Client | null>(null);
   const [delError, setDelError] = useState("");
   const [delBusy, setDelBusy] = useState(false);
+  const [statementOpen, setStatementOpen] = useState(false);
 
   async function confirmDelete() {
     if (!delItem) return;
@@ -341,10 +343,21 @@ function ClientsPageInner() {
 
   return (
     <AppShell title="Клиенты" section="Работа" description="Клиентская база: контакты, реквизиты и задолженность по каждому клиенту."
-      actions={canCreate && (
-        <Button size="sm" aria-label="Добавить клиента" onClick={() => { setEditing(null); setOpen(true); }}>
-          <Plus className="size-4" /> <span className="hidden sm:inline">Добавить клиента</span>
-        </Button>
+      actions={(canCreate || canMoney) && (
+        <div className="flex items-center gap-2">
+          {canMoney && (
+            <Button size="sm" variant="outline" aria-label="Общая Excel-выписка"
+              onClick={() => setStatementOpen(true)}>
+              <FileSpreadsheet className="size-4 text-emerald-600" />
+              <span className="hidden sm:inline">Общая выписка</span>
+            </Button>
+          )}
+          {canCreate && (
+            <Button size="sm" aria-label="Добавить клиента" onClick={() => { setEditing(null); setOpen(true); }}>
+              <Plus className="size-4" /> <span className="hidden sm:inline">Добавить клиента</span>
+            </Button>
+          )}
+        </div>
       )}>
       {/* Общая задолженность — как в кассовых системах: одна цифра, красным. */}
       <div className="mb-5 flex flex-wrap gap-3">
@@ -488,6 +501,16 @@ function ClientsPageInner() {
         busy={delBusy}
         error={delError}
         onConfirm={confirmDelete}
+      />
+      <StatementExportModal
+        open={statementOpen}
+        onClose={() => setStatementOpen(false)}
+        endpoint="/clients/statement/"
+        filename="clients-full-statement.xlsx"
+        title="Общая выписка по клиентам"
+        description="Единый Excel-файл по всей клиентской базе, заказам, продажам, оплатам и задолженности."
+        scopeLabel="Все клиенты и все финансовые движения"
+        sheetsLabel="7 листов: сводка, клиенты, операции, заказы, позиции, платежи и текущие долги."
       />
     </AppShell>
   );

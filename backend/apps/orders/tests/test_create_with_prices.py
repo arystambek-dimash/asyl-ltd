@@ -5,6 +5,7 @@ from apps.catalog.models import Product, ClientPrice
 from apps.warehouse.models import StockItem
 from apps.clients.models import Client
 from apps.orders.models import Order
+from apps.eventlog.models import EventLog
 
 pytestmark = pytest.mark.django_db
 
@@ -39,6 +40,30 @@ def test_staff_create_without_prices_stays_draft(manager):
     }, format="json")
     assert r.status_code == 201
     assert Order.objects.get().status == "draft"
+
+
+def test_staff_reviews_template_then_creates_linked_order(manager):
+    client = Client.objects.create(first_name="Нью", last_name="Сити", phone="x")
+    product = Product.objects.create(name="Template P", color="Blue", weight_kg="50")
+    StockItem.objects.create(product=product, bags=500)
+    source = Order.objects.create(client=client, status="shipped", created_by=manager)
+
+    response = _api(manager).post("/api/orders/", {
+        "client": client.id,
+        "template_order": source.id,
+        "items": [{"product": product.id, "quantity": 4}],
+        "prices": {str(product.id): "700"},
+    }, format="json")
+
+    assert response.status_code == 201
+    created = Order.objects.get(pk=response.data["id"])
+    assert created.repeated_from == source
+    event = EventLog.objects.get(event_type="order_repeat", order=created)
+    assert event.payload == {
+        "source_order_id": source.id,
+        "new_order_id": created.id,
+        "mode": "reviewed_template",
+    }
 
 
 def test_staff_can_create_usd_order_and_remember_usd_price(manager):

@@ -1,8 +1,8 @@
 "use client";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
@@ -26,6 +26,7 @@ import {
   type ManualOrderTarget,
 } from "@/components/manual-order-status-modal";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
+import { StatementExportModal } from "@/components/statement-export-modal";
 import {
   ORDER_PUBLIC_STATUSES,
   ORDER_STATUS_LABELS,
@@ -49,6 +50,8 @@ import {
   ChevronLeft,
   CircleDollarSign,
   Clock3,
+  CopyPlus,
+  FileSpreadsheet,
   ListChecks,
   Pencil,
   Plus,
@@ -634,8 +637,64 @@ function ArchiveDock({ trashed, onOpenArchive, onChanged }: {
   );
 }
 
+function OrderTemplatePicker({ orders, selected, onSelect }: {
+  orders: Order[];
+  selected: Order | null;
+  onSelect: (order: Order | null) => void;
+}) {
+  const sorted = [...orders].sort((a, b) => b.id - a.id);
+  const itemsSummary = selected?.items.slice(0, 2)
+    .map((item) => `${item.product_label ?? "Товар"} × ${item.quantity}`).join(", ");
+
+  return (
+    <section className="rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-50/90 via-white to-emerald-50/60 p-3.5 sm:p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm">
+            <CopyPlus className="size-5" />
+          </span>
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">Повторить старый заказ</h3>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Выберите шаблон — данные заполнятся, но заказ сохранится только после вашей проверки.
+            </p>
+          </div>
+        </div>
+        <select
+          aria-label="Шаблон заказа"
+          value={selected ? String(selected.id) : ""}
+          onChange={(event) => {
+            const value = Number(event.target.value);
+            onSelect(sorted.find((order) => order.id === value) ?? null);
+          }}
+          className="h-10 min-w-56 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+        >
+          <option value="">Новый заказ с нуля</option>
+          {sorted.map((order) => (
+            <option key={order.id} value={order.id}>
+              #{order.id} · {order.client_name ?? `Клиент ${order.client}`} · {formatDateTime(order.created_at)}
+            </option>
+          ))}
+        </select>
+      </div>
+      {selected && (
+        <div className="mt-3 grid gap-2 border-t border-blue-100 pt-3 text-xs sm:grid-cols-[auto_1fr_auto] sm:items-center">
+          <span className="w-fit rounded-lg bg-blue-600 px-2.5 py-1 font-black text-white">Шаблон #{selected.id}</span>
+          <span className="truncate font-medium text-slate-700">
+            {selected.client_name} · {itemsSummary || "Без позиций"}{selected.items.length > 2 ? ` и ещё ${selected.items.length - 2}` : ""}
+          </span>
+          <span className="font-bold tabular-nums text-slate-900">
+            {formatMoney(selected.total_amount)} {currencySymbol(selected.currency)}
+          </span>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function OrdersPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [status, setStatus] = useState("all");
@@ -664,10 +723,13 @@ function OrdersPageInner() {
   const { me } = useAuth();
   const canCreate = can(me, "orders.create");
   const canEdit = can(me, "orders.edit");
+  const canMoney = can(me, "reports.view");
   const canRollback = can(me, "shipping.rollback");
   const canManageDepartments = can(me, "rbac.manage");
   const showDept = (departments?.length ?? 0) > 1;
   const [open, setOpen] = useState(false);
+  const [templateOrder, setTemplateOrder] = useState<Order | null>(null);
+  const [statementOpen, setStatementOpen] = useState(false);
   const [editing, setEditing] = useState<Order | null>(null);
   const [q, setQ] = useState("");
   const [sortKey, setSortKey] = useState("id");
@@ -684,6 +746,23 @@ function OrdersPageInner() {
   const [rollbackTarget, setRollbackTarget] = useState<"pending" | "confirmed" | "cancelled">("confirmed");
   // Стопка архива в углу видна всегда — держим список удалённых под рукой.
   const { data: trashed, reload: reloadTrash } = useApi<Order[]>(canEdit ? "/orders/trash/" : null);
+  const { data: templateOrders } = useApi<Order[]>(open ? "/orders/" : null);
+
+  const requestedTemplateId = Number(searchParams.get("template") || 0);
+  useEffect(() => {
+    if (requestedTemplateId > 0 && canCreate) setOpen(true);
+  }, [requestedTemplateId, canCreate]);
+  useEffect(() => {
+    if (!requestedTemplateId || !templateOrders) return;
+    const requested = templateOrders.find((order) => order.id === requestedTemplateId);
+    if (requested) setTemplateOrder(requested);
+  }, [requestedTemplateId, templateOrders]);
+
+  function closeNewOrder() {
+    setOpen(false);
+    setTemplateOrder(null);
+    if (requestedTemplateId) router.replace("/orders");
+  }
 
   async function confirmDelete() {
     if (!delItem) return;
@@ -775,15 +854,24 @@ function OrdersPageInner() {
 
   return (
     <AppShell title="Заказы" section="Работа" description="Единый центр заказов: отделы, статусы, выручка и отгрузка."
-      actions={(canCreate || canManageDepartments) ? (
+      actions={(canCreate || canManageDepartments || canMoney) ? (
         <div className="flex items-center gap-2">
           {canManageDepartments && (
             <DepartmentManager onChanged={() => {
               void reloadDepartments(); void reloadSummary(); void reload();
             }} />
           )}
+          {canMoney && (
+            <Button size="sm" variant="outline" aria-label="Общая Excel-выписка"
+              onClick={() => setStatementOpen(true)}>
+              <FileSpreadsheet className="size-4 text-emerald-600" />
+              <span className="hidden lg:inline">Excel-выписка</span>
+            </Button>
+          )}
           {canCreate && (
-            <Button size="sm" aria-label="Новый заказ" onClick={() => setOpen(true)}>
+            <Button size="sm" aria-label="Новый заказ" onClick={() => {
+              setTemplateOrder(null); setOpen(true);
+            }}>
               <Plus className="size-4" /> <span className="hidden sm:inline">Новый заказ</span>
             </Button>
           )}
@@ -993,13 +1081,23 @@ function OrdersPageInner() {
         onClose={() => setRollbackOrder(null)}
         onChanged={async () => { await Promise.all([reload(), reloadSummary(), reloadTrash()]); }} />
 
-      <Modal open={open} onClose={() => setOpen(false)}
+      <Modal open={open} onClose={closeNewOrder}
         eyebrow="Работа · Заказ"
-        title="Новый заказ"
-        description="Три коротких шага: клиент, доставка и состав заказа."
+        title={templateOrder ? `Новый заказ по шаблону #${templateOrder.id}` : "Новый заказ"}
+        description="Создайте с нуля или подставьте старый заказ, проверьте данные и только потом сохраните."
         className="max-w-4xl" mobileFullscreen>
-        {open && <OrderForm onCancel={() => setOpen(false)}
-          onDone={() => { setOpen(false); reload(); reloadSummary(); }} />}
+        {open && (
+          <div className="space-y-4">
+            <OrderTemplatePicker
+              orders={templateOrders ?? []}
+              selected={templateOrder}
+              onSelect={setTemplateOrder}
+            />
+            <OrderForm key={templateOrder?.id ?? "blank"} template={templateOrder}
+              onCancel={closeNewOrder}
+              onDone={() => { closeNewOrder(); reload(); reloadSummary(); }} />
+          </div>
+        )}
       </Modal>
 
       <Modal open={!!editing} onClose={() => setEditing(null)}
@@ -1011,6 +1109,18 @@ function OrdersPageInner() {
           onCancel={() => setEditing(null)}
           onDone={() => { setEditing(null); reload(); reloadSummary(); }} />}
       </Modal>
+      <StatementExportModal
+        open={statementOpen}
+        onClose={() => setStatementOpen(false)}
+        endpoint="/clients/statement/"
+        filename="orders-clients-full-statement.xlsx"
+        title="Общая выписка по заказам"
+        description="Подробный Excel по всем клиентам, заказам, позициям, продажам, платежам и задолженности."
+        scopeLabel="Все клиенты и все заказы"
+        sheetsLabel="7 листов: сводка, клиенты, операции, заказы, позиции, платежи и текущие долги."
+        initialFrom={dateFrom}
+        initialTo={dateTo}
+      />
     </AppShell>
   );
 }

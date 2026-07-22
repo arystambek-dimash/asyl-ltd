@@ -20,7 +20,7 @@ from apps.eventlog.services import log_event
 from .models import Client, Department, Store
 from .serializers import ClientSerializer, DepartmentSerializer, StoreSerializer
 from .services import detect_overdue, is_payment_window_open, client_history
-from .statements import build_client_statement
+from .statements import build_all_clients_statement, build_client_statement
 
 def _money_param(raw, name):
     if raw in (None, ""):
@@ -92,6 +92,7 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "debt_detail": "reports.view",
         "history": "reports.view",
         "statement": "reports.view",
+        "all_statement": "reports.view",
         "prices": "clients.set_price",
     }
 
@@ -131,6 +132,29 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             payload={"client_id": client.pk,
                      "date_from": str(date_from) if date_from else None,
                      "date_to": str(date_to) if date_to else None},
+        )
+        return response
+
+    @action(detail=False, methods=["get"], url_path="statement")
+    def all_statement(self, request):
+        date_from = parse_iso_date(request.query_params.get("date_from"))
+        date_to = parse_iso_date(request.query_params.get("date_to"))
+        validate_date_range(date_from, date_to)
+        content = build_all_clients_statement(date_from, date_to)
+        response = HttpResponse(
+            content,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = (
+            'attachment; filename="clients-full-statement.xlsx"'
+        )
+        log_event(
+            "clients_statement", "Сформирована общая Excel-выписка по клиентам",
+            user=request.user,
+            payload={
+                "date_from": str(date_from) if date_from else None,
+                "date_to": str(date_to) if date_to else None,
+            },
         )
         return response
 

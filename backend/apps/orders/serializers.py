@@ -191,6 +191,11 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     department_name = serializers.SerializerMethodField()
     department_color = serializers.SerializerMethodField()
     currency = serializers.ChoiceField(choices=Order.CURRENCIES, required=False)
+    # Источник шаблона передаётся только при создании. Сам заказ всё равно
+    # создаётся обычной формой после ручной проверки менеджером.
+    template_order = serializers.PrimaryKeyRelatedField(
+        queryset=Order.objects.all(), write_only=True, required=False,
+    )
 
     class Meta:
         model = Order
@@ -205,6 +210,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                   "weigh_in_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at",
                   "shipped_at", "loading_camera", "repeated_from",
+                  "template_order",
                   "deleted_at", "deleted_by_name"]
         read_only_fields = ["debt_override", "repeated_from", "deleted_at"]
         extra_kwargs = {
@@ -309,6 +315,11 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         return code
 
     def validate(self, attrs):
+        if self.instance is not None and attrs.get("template_order") is not None:
+            raise serializers.ValidationError({
+                "detail": "Шаблон указывается только при создании заказа",
+                "code": "template_on_update",
+            })
         store = attrs.get("store")
         client = attrs.get("client") or getattr(self.instance, "client", None)
         if store and client and store.client_id != client.id:
@@ -327,6 +338,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         from .services import confirm_order, apply_item_prices
         from apps.warehouse.services import ensure_products_available
         items = validated_data.pop("items")
+        template_order = validated_data.pop("template_order", None)
         # Заказ только на товар в наличии — «нет на складе» отклоняем сразу.
         ensure_products_available(item["product"] for item in items)
         user = self.context["request"].user
@@ -345,6 +357,8 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         else:
             # Для старых API-клиентов используем основной отдел.
             validated_data.setdefault("department", Department.default_code())
+        if template_order is not None:
+            validated_data["repeated_from"] = template_order
         # Оператор (orders.confirm) создаёт заказ сразу подтверждённым с ценами;
         # заявка менеджера Отдела 2 остаётся pending до подтверждения бухгалтером.
         # prices приходит по товару: {product_id: цена} (у позиций ещё нет id).
@@ -364,6 +378,19 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
             else:
                 apply_item_prices(order, prices_by_item, user)
             order.refresh_from_db()
+        if template_order is not None:
+            from apps.eventlog.services import log_event
+            log_event(
+                "order_repeat",
+                f"Создан заказ #{order.pk} по шаблону заказа #{template_order.pk}",
+                user=user,
+                order=order,
+                payload={
+                    "source_order_id": template_order.pk,
+                    "new_order_id": order.pk,
+                    "mode": "reviewed_template",
+                },
+            )
         return order
 
     def update(self, instance, validated_data):
