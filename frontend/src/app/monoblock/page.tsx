@@ -20,6 +20,11 @@ import {
   UserRound,
   Video,
   VideoOff,
+  MonitorSmartphone,
+  Plus,
+  Pencil,
+  Trash2,
+  KeyRound,
 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { playableCameras, type CameraFeed } from "@/components/camera-wall";
@@ -40,6 +45,7 @@ import type {
   AlwaysOnDailyCameraAnalytics,
   AlwaysOnProcessorStatus,
   MonoblockCameraSettings,
+  MonoblockDevice,
   Order,
 } from "@/lib/types";
 import { useAiCounter } from "@/lib/use-ai-counter";
@@ -217,6 +223,169 @@ function CameraSettingsButton({
           </div>
         )}
         {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      </Modal>
+    </>
+  );
+}
+
+function MonoblockDevicesButton({
+  cameras,
+  devices,
+  reload,
+}: {
+  cameras: (CameraFeed & { src: string })[];
+  devices: MonoblockDevice[];
+  reload: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<MonoblockDevice | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [cameraSource, setCameraSource] = useState("");
+  const [active, setActive] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  function showForm(device?: MonoblockDevice) {
+    setEditing(device ?? null);
+    setName(device?.name ?? "");
+    setUsername(device?.username ?? "");
+    setPassword("");
+    setCameraSource(device?.camera_source ?? "");
+    setActive(device?.is_active ?? true);
+    setError("");
+    setFormOpen(true);
+  }
+
+  async function save() {
+    setSaving(true); setError("");
+    try {
+      const body = {
+        name, username, camera_source: cameraSource, is_active: active,
+        ...(password ? { password } : {}),
+      };
+      if (editing) await api.patch(`/cameras/monoblock-devices/${editing.id}/`, body);
+      else await api.post("/cameras/monoblock-devices/", body);
+      await reload();
+      setFormOpen(false);
+    } catch (cause) {
+      setError(apiError(cause));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(device: MonoblockDevice) {
+    if (!window.confirm(`Удалить моноблок «${device.name}» и его учётную запись?`)) return;
+    setError("");
+    try {
+      await api.delete(`/cameras/monoblock-devices/${device.id}/`);
+      await reload();
+    } catch (cause) {
+      setError(apiError(cause));
+    }
+  }
+
+  const occupied = new Set(devices.filter((item) => item.id !== editing?.id).map((item) => item.camera_source));
+
+  return (
+    <>
+      <Button variant="outline" className="h-10 rounded-xl bg-white" onClick={() => { setError(""); setOpen(true); }}>
+        <MonitorSmartphone className="size-4" /> Моноблоки
+        <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] tabular-nums text-blue-600">{devices.length}</span>
+      </Button>
+      <Modal open={open} onClose={() => setOpen(false)}
+        eyebrow="Устройства и доступ"
+        title="Учётные записи моноблоков"
+        description="У каждого физического моноблока свой логин и ровно одна закреплённая камера."
+        className="max-w-2xl">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <p className="text-sm text-slate-500">Оператор входит под этим логином — камера выбирается автоматически.</p>
+          <Button onClick={() => showForm()}><Plus className="size-4" /> Добавить</Button>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {devices.map((device) => (
+            <div key={device.id} className={cn(
+              "rounded-2xl border p-4",
+              device.is_active ? "border-slate-200 bg-white" : "border-slate-200 bg-slate-50 opacity-70",
+            )}>
+              <div className="flex items-start gap-3">
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                  <MonitorSmartphone className="size-5" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-bold text-slate-800">{device.name}</div>
+                  <div className="mt-0.5 truncate text-xs text-slate-400">Логин: {device.username}</div>
+                </div>
+                <span className={cn("size-2.5 rounded-full", device.is_active ? "bg-emerald-500" : "bg-slate-300")} />
+              </div>
+              <div className="mt-3 flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700">
+                <Camera className="size-4 text-blue-600" /> {device.camera_name}
+              </div>
+              <div className="mt-3 flex justify-end gap-1">
+                <Button size="icon" variant="ghost" aria-label="Изменить моноблок" onClick={() => showForm(device)}>
+                  <Pencil className="size-4" />
+                </Button>
+                <Button size="icon" variant="ghost" aria-label="Удалить моноблок" onClick={() => void remove(device)}>
+                  <Trash2 className="size-4 text-red-500" />
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+        {!devices.length && (
+          <div className="rounded-2xl border border-dashed p-10 text-center text-sm text-slate-400">
+            Моноблоки ещё не зарегистрированы.
+          </div>
+        )}
+        {error && !formOpen && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      </Modal>
+
+      <Modal open={formOpen} onClose={() => setFormOpen(false)}
+        eyebrow={editing ? "Изменение устройства" : "Новое устройство"}
+        title={editing ? "Настроить моноблок" : "Зарегистрировать моноблок"}
+        description="Эти данные используются только на физическом устройстве у камеры."
+        className="max-w-lg"
+        footer={(
+          <>
+            <Button variant="ghost" onClick={() => setFormOpen(false)} disabled={saving}>Отмена</Button>
+            <Button onClick={() => void save()} disabled={saving || !name || !username || !cameraSource || (!editing && !password)}>
+              <Check className="size-4" /> {saving ? "Сохранение…" : "Сохранить"}
+            </Button>
+          </>
+        )}>
+        <div className="space-y-4">
+          <label className="grid gap-1.5"><Label>Название устройства</Label>
+            <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Моноблок у конвейера" />
+          </label>
+          <label className="grid gap-1.5"><Label>Логин</Label>
+            <Input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="monoblock-conveyor" autoComplete="off" />
+          </label>
+          <label className="grid gap-1.5"><Label>{editing ? "Новый пароль (необязательно)" : "Пароль"}</Label>
+            <div className="relative">
+              <KeyRound className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+              <Input type="password" className="pl-9" value={password} onChange={(event) => setPassword(event.target.value)}
+                placeholder={editing ? "Оставьте пустым, чтобы не менять" : "Надёжный пароль"} autoComplete="new-password" />
+            </div>
+          </label>
+          <label className="grid gap-1.5"><Label>Закреплённая камера</Label>
+            <select value={cameraSource} onChange={(event) => setCameraSource(event.target.value)}
+              className="h-10 rounded-lg border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20">
+              <option value="">Выберите камеру</option>
+              {cameras.filter((camera) => !occupied.has(camera.src)).map((camera) => (
+                <option key={camera.src} value={camera.src}>{camera.zone} · {camera.src}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center justify-between rounded-xl border p-3">
+            <span><span className="block text-sm font-semibold">Устройство активно</span>
+              <span className="text-xs text-slate-400">Отключённый логин не сможет войти</span></span>
+            <input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} className="size-4 accent-blue-600" />
+          </label>
+          {error && <p className="text-sm text-red-600">{error}</p>}
+        </div>
       </Modal>
     </>
   );
@@ -820,6 +989,9 @@ function MonoblockPageInner() {
   const { data: cameraSettings, reload: reloadCameraSettings } = useApi<MonoblockCameraSettings>(
     "/cameras/monoblock-settings/",
   );
+  const { data: monoblockDevices, reload: reloadMonoblockDevices } = useApi<MonoblockDevice[]>(
+    me?.is_superuser ? "/cameras/monoblock-devices/" : null,
+  );
   const { data: alwaysOnSettings, reload: reloadAlwaysOnSettings } = useApi<AlwaysOnCameraSettings>(
     me?.is_superuser ? "/cameras/always-on-settings/" : null,
   );
@@ -827,10 +999,10 @@ function MonoblockPageInner() {
     me?.is_superuser ? "/cameras/always-on-analytics/" : null,
   );
   const isSuper = !!me?.is_superuser;
-  // Страница разделена на вкладки: «AI 24/7» — сам моноблок с бесконечным
-  // циклом подсчёта, «Отгрузки» — запуск сессий и активные отгрузки.
+  // Страница разделена на вкладки: «Отгрузки» (по умолчанию) — запуск сессий
+  // и активные отгрузки, «AI 24/7» — сам моноблок с бесконечным циклом подсчёта.
   // Вкладка AI видна только суперпользователю, остальным — сразу отгрузки.
-  const [tab, setTab] = useState<"monoblock" | "shipments">("monoblock");
+  const [tab, setTab] = useState<"monoblock" | "shipments">("shipments");
   const activeTab = isSuper && tab === "monoblock" ? "monoblock" : "shipments";
   const playable = useMemo(
     () => playableCameras(cameras).filter((camera) => /^cam[1-9]\d*$/.test(camera.src)),
@@ -910,19 +1082,6 @@ function MonoblockPageInner() {
             <div className="flex flex-wrap items-center gap-3">
               {isSuper && (
                 <div className="flex w-full rounded-2xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex">
-                  <button type="button" onClick={() => setTab("monoblock")}
-                    className={cn(
-                      "flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition sm:flex-none",
-                      activeTab === "monoblock" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
-                    )}>
-                    <Cpu className="size-4" /> AI 24/7
-                    <span className={cn(
-                      "rounded-full px-2 py-0.5 text-[11px] tabular-nums",
-                      activeTab === "monoblock" ? "bg-blue-50 text-blue-600" : "bg-white/70 text-slate-500",
-                    )}>
-                      {alwaysOnSettings?.camera_sources.length ?? 0}
-                    </span>
-                  </button>
                   <button type="button" onClick={() => setTab("shipments")}
                     className={cn(
                       "flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition sm:flex-none",
@@ -936,6 +1095,19 @@ function MonoblockPageInner() {
                       {sessions?.length ?? 0}
                     </span>
                   </button>
+                  <button type="button" onClick={() => setTab("monoblock")}
+                    className={cn(
+                      "flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition sm:flex-none",
+                      activeTab === "monoblock" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
+                    )}>
+                    <Cpu className="size-4" /> AI 24/7
+                    <span className={cn(
+                      "rounded-full px-2 py-0.5 text-[11px] tabular-nums",
+                      activeTab === "monoblock" ? "bg-blue-50 text-blue-600" : "bg-white/70 text-slate-500",
+                    )}>
+                      {alwaysOnSettings?.camera_sources.length ?? 0}
+                    </span>
+                  </button>
                 </div>
               )}
               <div className="ml-auto flex items-center gap-2">
@@ -943,8 +1115,14 @@ function MonoblockPageInner() {
                   <AlwaysOnSettingsButton cameras={playable} settings={alwaysOnSettings}
                     reload={reloadAlwaysOnSettings} />
                 ) : can(me, "rbac.manage") ? (
-                  <CameraSettingsButton cameras={playable} settings={cameraSettings}
-                    reload={reloadCameraSettings} />
+                  <>
+                    {isSuper && (
+                      <MonoblockDevicesButton cameras={playable} devices={monoblockDevices ?? []}
+                        reload={reloadMonoblockDevices} />
+                    )}
+                    <CameraSettingsButton cameras={playable} settings={cameraSettings}
+                      reload={reloadCameraSettings} />
+                  </>
                 ) : null}
               </div>
             </div>
@@ -1011,6 +1189,7 @@ function MonoblockPageInner() {
                 busyCameras={(sessions ?? []).map((session) => session.camera)}
                 cameraOwners={cameraOwners}
                 activeSessionCount={sessions?.length ?? 0}
+                cameraLocked={!!cameraSettings?.locked || !!me?.is_monoblock}
                 onStart={start}
               />
 

@@ -47,6 +47,7 @@ import {
   Ellipsis,
   Package,
   Pencil,
+  CopyPlus,
   Printer,
   SlidersHorizontal,
   Store as StoreIcon,
@@ -66,6 +67,7 @@ const EVENT_LABELS: Record<string, string> = {
   loading: "Погрузка",
   shipment: "Заказ отгружен",
   shipment_rollback: "Откат отгрузки",
+  order_repeat: "Повтор заказа",
   debt_override: "Долг подтверждён",
 };
 
@@ -86,6 +88,9 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [delOpen, setDelOpen] = useState(false);
   const [delBusy, setDelBusy] = useState(false);
   const [delError, setDelError] = useState("");
+  const [repeatOpen, setRepeatOpen] = useState(false);
+  const [repeatBusy, setRepeatBusy] = useState(false);
+  const [repeatError, setRepeatError] = useState("");
 
   async function confirmDelete() {
     setDelBusy(true); setDelError("");
@@ -93,6 +98,17 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
       await api.delete(`/orders/${id}/`);
       router.push("/orders");
     } catch (e) { setDelError(apiError(e)); setDelBusy(false); }
+  }
+
+  async function confirmRepeat() {
+    setRepeatBusy(true); setRepeatError("");
+    try {
+      const { data } = await api.post<Order>(`/orders/${id}/repeat/`);
+      router.push(`/orders/${data.id}`);
+    } catch (e) {
+      setRepeatError(apiError(e));
+      setRepeatBusy(false);
+    }
   }
 
   const isManager = can(me, "orders.confirm");
@@ -194,6 +210,12 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                   className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[var(--accent)]">
                   <CircleHelp className="size-4" /> Как работать
                 </button>
+                {can(me, "orders.create") && (
+                  <button type="button" onClick={() => { setRepeatError(""); setRepeatOpen(true); }}
+                    className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[var(--accent)]">
+                    <CopyPlus className="size-4" /> Повторить заказ
+                  </button>
+                )}
                 {canEditOrder && (
                   <button type="button" onClick={() => setEditOpen(true)}
                     className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[var(--accent)]">
@@ -443,6 +465,17 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
         </div>
       </Modal>
 
+      <ConfirmDialog
+        open={repeatOpen}
+        onClose={() => setRepeatOpen(false)}
+        title="Создать новый заказ по этому шаблону?"
+        description={`Состав, цены, клиент, валюта и транспорт заказа #${order.id} будут скопированы. Дата станет сегодняшней; оплаты, отгрузка и камера не переносятся.`}
+        confirmLabel="Создать повтор"
+        confirmVariant="default"
+        busy={repeatBusy}
+        error={repeatError}
+        onConfirm={confirmRepeat}
+      />
       <ConfirmDialog
         open={delOpen}
         onClose={() => setDelOpen(false)}

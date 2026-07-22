@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/store/auth";
 import { homeFor } from "@/lib/can";
 import { OnboardingTour } from "@/components/onboarding-tour";
@@ -26,6 +26,7 @@ export function AppShell({
 }) {
   const { me, loading, loadMe, refreshMe } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
   const [navOpen, setNavOpen] = useState(false);
 
   useEffect(() => {
@@ -50,8 +51,9 @@ export function AppShell({
     if (!loading && me) {
       if (portal && !me.is_client) router.replace(homeFor(me));
       if (!portal && me.is_client) router.replace("/portal/catalog");
+      if (me.is_monoblock && pathname !== "/monoblock") router.replace("/monoblock");
     }
-  }, [loading, me, portal, router]);
+  }, [loading, me, pathname, portal, router]);
 
   if (loading || !me)
     return (
@@ -63,7 +65,7 @@ export function AppShell({
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Обучение по системе: первый вход + повторно по кнопке «?» */}
-      {!me.is_client && <OnboardingTour me={me} />}
+      {!me.is_client && !me.is_monoblock && <OnboardingTour me={me} />}
       <Sidebar me={me} mobileOpen={navOpen} onClose={() => setNavOpen(false)} />
       <div className="flex flex-1 flex-col overflow-hidden">
         <Topbar me={me} title={title} section={section} tabs={tabs} actions={actions}

@@ -61,6 +61,13 @@ class Order(models.Model):
         on_delete=models.SET_NULL, related_name="created_orders",
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    # Повторный заказ хранит ссылку на исходный документ. Это не связывает
+    # их жизненные циклы: новый заказ получает собственные статусы, оплаты и
+    # отгрузку, а удаление исходника только убирает ссылку.
+    repeated_from = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="repeated_orders",
+    )
     # Камера, которую оператор занял под погрузку этого заказа (пост погрузки).
     # Пустая строка = камера не выбрана. Несколько заказов грузятся параллельно
     # на разных камерах.

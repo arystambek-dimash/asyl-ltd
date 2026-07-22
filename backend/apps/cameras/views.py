@@ -2,6 +2,10 @@ from datetime import timedelta
 
 from django.core import signing
 from django.core.signing import TimestampSigner
+from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -16,13 +20,23 @@ from apps.orders.models import Order
 from apps.shipments.services import begin_camera_loading, finish_ai_loading
 
 from . import ai, analytics, continuous, health, recordings, services, sessions
-from .models import AiCountingSession, MonoblockCameraSettings
+from .models import AiCountingSession, MonoblockCameraSettings, MonoblockDevice
 
 CAM_COOKIE = "cam_token"
 CAM_TOKEN_MAX_AGE = 12 * 3600  # секунд
 _signer = TimestampSigner(salt="cameras")
 RECORDING_TOKEN_MAX_AGE = 10 * 60
 RECORDING_TOKEN_SALT = "camera-recording"
+
+
+def _device_for(user):
+    return getattr(user, "active_monoblock_device", None)
+
+
+def _assert_device_camera(user, camera: str) -> None:
+    device = _device_for(user)
+    if device is not None and device.camera_source != camera:
+        raise PermissionDenied("Эта камера закреплена за другим моноблоком")
 
 
 class CameraListView(APIView):
@@ -40,6 +54,9 @@ class CameraListView(APIView):
             }
             for camera in services.discover_cameras()
         ]
+        device = _device_for(request.user)
+        if device is not None:
+            cameras = [camera for camera in cameras if camera.get("src") == device.camera_source]
         return Response(cameras)
 
     def patch(self, request):
@@ -104,15 +121,26 @@ class MonoblockCameraSettingsView(APIView):
         return [HasPerm("rbac.manage")]
 
     @staticmethod
-    def _payload(settings_row=None):
+    def _payload(settings_row=None, device=None):
         row = settings_row or MonoblockCameraSettings.objects.filter(singleton=True).first()
+        if device is not None:
+            return {
+                "camera_sources": [device.camera_source],
+                "locked": True,
+                "device_id": device.pk,
+                "device_name": device.name,
+                "updated_at": device.updated_at,
+            }
         return {
             "camera_sources": row.camera_sources if row else [],
+            "locked": False,
+            "device_id": None,
+            "device_name": None,
             "updated_at": row.updated_at if row else None,
         }
 
     def get(self, request):
-        return Response(self._payload())
+        return Response(self._payload(device=_device_for(request.user)))
 
     def put(self, request):
         raw_sources = request.data.get("camera_sources")
@@ -144,6 +172,151 @@ class MonoblockCameraSettingsView(APIView):
             defaults={"camera_sources": normalized, "updated_by": request.user},
         )
         return Response(self._payload(row))
+
+
+def _device_payload(device):
+    names = MonoblockCameraSettings.display_names()
+    return {
+        "id": device.pk,
+        "name": device.name,
+        "username": device.user.username,
+        "camera_source": device.camera_source,
+        "camera_name": names.get(device.camera_source, device.camera_source),
+        "is_active": device.is_active,
+        "created_at": device.created_at,
+        "updated_at": device.updated_at,
+    }
+
+
+def _clean_device_data(data, *, instance=None):
+    name = " ".join(str(data.get("name", getattr(instance, "name", ""))).split())
+    username = " ".join(str(data.get(
+        "username", getattr(getattr(instance, "user", None), "username", "")
+    )).split())
+    raw_camera = data.get("camera_source", getattr(instance, "camera_source", ""))
+    try:
+        camera = ai.normalize(raw_camera)
+    except (ai.AiError, TypeError):
+        raise ValidationError({"detail": "Выберите корректную камеру", "code": "bad_camera"})
+    if not name or len(name) > 80:
+        raise ValidationError({"detail": "Название обязательно, максимум 80 символов", "code": "bad_name"})
+    if not username or len(username) > 150:
+        raise ValidationError({"detail": "Логин обязателен, максимум 150 символов", "code": "bad_username"})
+    users = get_user_model().objects.filter(username__iexact=username)
+    if instance is not None:
+        users = users.exclude(pk=instance.user_id)
+    if users.exists():
+        raise ValidationError({"detail": "Такой логин уже используется", "code": "username_busy"})
+    devices = MonoblockDevice.objects.filter(camera_source=camera)
+    if instance is not None:
+        devices = devices.exclude(pk=instance.pk)
+    if devices.exists():
+        raise ValidationError({"detail": "Камера уже закреплена за другим моноблоком", "code": "camera_busy"})
+    return name, username, camera
+
+
+class MonoblockDeviceListView(APIView):
+    """Суперпользователь создаёт отдельные аккаунты физических устройств."""
+
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        devices = MonoblockDevice.objects.select_related("user").all()
+        return Response([_device_payload(device) for device in devices])
+
+    def post(self, request):
+        name, username, camera = _clean_device_data(request.data)
+        password = request.data.get("password") or ""
+        try:
+            validate_password(password)
+        except DjangoValidationError as exc:
+            raise ValidationError({"detail": "; ".join(exc.messages), "code": "weak_password"})
+        User = get_user_model()
+        with transaction.atomic():
+            user = User.objects.create_user(
+                username=username, password=password, is_client=False,
+            )
+            device = MonoblockDevice.objects.create(
+                user=user, name=name, camera_source=camera,
+                is_active=request.data.get("is_active", True) is not False,
+                created_by=request.user,
+            )
+        from apps.eventlog.services import log_event
+        log_event(
+            "monoblock_device", f"Создан моноблок «{name}»",
+            user=request.user,
+            payload={"device_id": device.pk, "username": username, "camera": camera},
+        )
+        return Response(_device_payload(device), status=status.HTTP_201_CREATED)
+
+
+class MonoblockDeviceDetailView(APIView):
+    permission_classes = [IsSuperUser]
+
+    def _get(self, pk):
+        return get_object_or_404(MonoblockDevice.objects.select_related("user"), pk=pk)
+
+    def patch(self, request, pk):
+        device = self._get(pk)
+        name, username, camera = _clean_device_data(request.data, instance=device)
+        password = request.data.get("password")
+        if password:
+            try:
+                validate_password(password, user=device.user)
+            except DjangoValidationError as exc:
+                raise ValidationError({"detail": "; ".join(exc.messages), "code": "weak_password"})
+        before = {
+            "name": device.name, "username": device.user.username,
+            "camera": device.camera_source, "is_active": device.is_active,
+        }
+        with transaction.atomic():
+            device.name = name
+            device.camera_source = camera
+            if "is_active" in request.data:
+                device.is_active = bool(request.data.get("is_active"))
+            device.save(update_fields=["name", "camera_source", "is_active", "updated_at"])
+            device.user.username = username
+            device.user.is_active = device.is_active
+            if password:
+                device.user.set_password(password)
+            device.user.save(update_fields=["username", "is_active", "password"])
+        from apps.eventlog.services import log_event
+        log_event(
+            "monoblock_device", f"Изменён моноблок «{name}»",
+            user=request.user,
+            payload={"device_id": device.pk, "before": before,
+                     "after": {"name": name, "username": username,
+                               "camera": camera, "is_active": device.is_active}},
+        )
+        return Response(_device_payload(device))
+
+    put = patch
+
+    def delete(self, request, pk):
+        device = self._get(pk)
+        if AiCountingSession.objects.filter(
+            camera=device.camera_source,
+            status__in=AiCountingSession.OPEN_STATUSES,
+        ).exists():
+            raise ValidationError({
+                "detail": "Сначала завершите активную отгрузку этого моноблока",
+                "code": "monoblock_busy",
+            })
+        snapshot = _device_payload(device)
+        name = device.name
+        with transaction.atomic():
+            device.user.delete()
+        from apps.eventlog.services import log_event
+        log_event(
+            "monoblock_device", f"Удалён моноблок «{name}»",
+            user=request.user,
+            payload={
+                "device_id": snapshot["id"], "name": snapshot["name"],
+                "username": snapshot["username"],
+                "camera": snapshot["camera_source"],
+            },
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class AlwaysOnCameraSettingsView(APIView):
@@ -514,6 +687,7 @@ class CameraAiView(APIView):
     def get(self, request, cam: str):
         def get_status():
             camera = ai.normalize(cam)
+            _assert_device_camera(request.user, camera)
             order_id = _order_id(request)
             session = sessions.current_for_camera(camera)
             metadata = _meta(session, order_id, camera, request.user)
@@ -551,6 +725,7 @@ class CameraAiView(APIView):
     def post(self, request, cam: str):
         def start():
             camera = ai.normalize(cam)
+            _assert_device_camera(request.user, camera)
             order = _loading_order(request)
             if order is None:
                 raise ai.AiError(400, "Укажите заказ для AI-подсчёта")
@@ -617,6 +792,7 @@ class CameraAiView(APIView):
     def delete(self, request, cam: str):
         def stop():
             camera = ai.normalize(cam)
+            _assert_device_camera(request.user, camera)
             order = _loading_order(request)
             if order is None:
                 raise ai.AiError(400, "Укажите заказ для завершения AI-сессии")
@@ -665,6 +841,7 @@ class CameraAiResetView(APIView):
     def post(self, request, cam: str):
         def reset():
             camera = ai.normalize(cam)
+            _assert_device_camera(request.user, camera)
             order = _loading_order(request)
             if order is None:
                 raise ai.AiError(400, "Укажите заказ для сброса AI-счётчика")
@@ -700,6 +877,9 @@ class CameraAiSessionListView(APIView):
             .select_related("order__client", "started_by__employee")
             .order_by("started_at")
         )
+        device = _device_for(request.user)
+        if device is not None:
+            open_sessions = open_sessions.filter(camera=device.camera_source)
         return Response([
             {
                 "id": session.pk,

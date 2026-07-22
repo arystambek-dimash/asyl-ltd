@@ -204,8 +204,9 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                   "payments", "pending_payments",
                   "weigh_in_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at",
-                  "shipped_at", "loading_camera", "deleted_at", "deleted_by_name"]
-        read_only_fields = ["debt_override", "deleted_at"]
+                  "shipped_at", "loading_camera", "repeated_from",
+                  "deleted_at", "deleted_by_name"]
+        read_only_fields = ["debt_override", "repeated_from", "deleted_at"]
         extra_kwargs = {
             "truck_number": {"required": False},
             "arrival_date": {"required": False, "allow_null": True},

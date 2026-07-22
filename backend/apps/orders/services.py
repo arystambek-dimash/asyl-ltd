@@ -5,7 +5,7 @@ from rest_framework.exceptions import ValidationError
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
 from apps.clients.services import is_payment_window_open
-from .models import Order, Payment, StatusChangeRequest
+from .models import Order, OrderItem, Payment, StatusChangeRequest
 from .statuses import PUBLIC_MANUAL_STATUSES, PUBLIC_STATUS_LABELS, public_status_label
 
 
@@ -400,6 +400,76 @@ def confirm_order(order: Order, user, prices: dict | None = None) -> Order:
             {"detail": "Подтвердить можно только новый заказ", "code": "invalid_status"})
     _apply_prices(order, prices or {}, user)
     return transition(order, "confirmed", user, "Заказ подтверждён")
+
+
+@transaction.atomic
+def repeat_order(source: Order, user) -> Order:
+    """Создать независимый заказ из старого документа с сегодняшней датой."""
+    from apps.warehouse.services import ensure_products_available
+
+    source = (
+        Order.objects.select_for_update(of=("self",))
+        .select_related("client", "store")
+        .prefetch_related("items__product")
+        .get(pk=source.pk)
+    )
+    items = list(source.items.all())
+    if not items:
+        raise ValidationError({
+            "detail": "В исходном заказе нет позиций",
+            "code": "repeat_empty_order",
+        })
+    unavailable = [item.product_label for item in items
+                   if item.product_id is None or not item.product.is_active]
+    if unavailable:
+        raise ValidationError({
+            "detail": "Нельзя повторить заказ: товар удалён или находится в архиве — "
+                      + ", ".join(unavailable),
+            "code": "repeat_product_unavailable",
+        })
+    ensure_products_available(item.product for item in items)
+
+    has_complete_prices = all(
+        item.unit_price is not None and item.unit_price > 0 for item in items
+    )
+    repeated = Order.objects.create(
+        client=source.client,
+        currency=source.currency,
+        department=source.department,
+        transport_type=source.transport_type,
+        store=source.store,
+        settlement_intent=source.settlement_intent,
+        payment_method=source.payment_method,
+        truck_number=source.truck_number,
+        truck_number_set_by=user if source.truck_number else None,
+        arrival_date=timezone.localdate(),
+        notes=source.notes,
+        status="pending" if has_complete_prices else "draft",
+        created_by=user,
+        repeated_from=source,
+    )
+    copies = [
+        OrderItem.objects.create(
+            order=repeated,
+            product=item.product,
+            quantity=item.quantity,
+            unit_price=item.unit_price,
+        )
+        for item in items
+    ]
+    # Цены — исторический снимок шаблона. Если сотрудник может подтверждать,
+    # новый заказ сразу попадает в «Ожидание въезда», иначе остаётся заявкой.
+    if has_complete_prices and user.has_perm_code("orders.confirm"):
+        prices = {item.pk: item.unit_price for item in copies}
+        confirm_order(repeated, user, prices=prices)
+    log_event(
+        "order_repeat",
+        f"Создан повтор заказа #{source.pk} → #{repeated.pk}",
+        user=user,
+        order=repeated,
+        payload={"source_order_id": source.pk, "new_order_id": repeated.pk},
+    )
+    return repeated
 
 
 def _apply_prices(order: Order, prices: dict, user) -> None:

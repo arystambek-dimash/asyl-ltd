@@ -3,6 +3,9 @@ export interface Me {
   username: string;
   is_client: boolean;
   is_superuser: boolean;
+  is_monoblock: boolean;
+  monoblock_name: string | null;
+  monoblock_camera: string | null;
   permissions: string[];
   role_name: string | null;
   client_id: number | null;
@@ -95,6 +98,7 @@ export interface Order {
   created_at: string;
   shipped_at?: string | null;
   loading_camera?: string;
+  repeated_from?: number | null;
   deleted_at?: string | null; deleted_by_name?: string | null;
 }
 
@@ -198,7 +202,20 @@ export interface ShippingBoardSettings {
 }
 export interface MonoblockCameraSettings {
   camera_sources: string[];
+  locked: boolean;
+  device_id: number | null;
+  device_name: string | null;
   updated_at: string | null;
+}
+export interface MonoblockDevice {
+  id: number;
+  name: string;
+  username: string;
+  camera_source: string;
+  camera_name: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
 }
 export interface AlwaysOnProcessorStatus {
   cam: string;

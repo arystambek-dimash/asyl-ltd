@@ -10,6 +10,7 @@ import {
   LoaderCircle,
   Play,
   Radio,
+  LockKeyhole,
 } from "lucide-react";
 import type { CameraFeed } from "@/components/camera-wall";
 import { apiError } from "@/lib/api";
@@ -68,12 +69,35 @@ function SelectCard({
   );
 }
 
+function AssignedCameraCard({ camera, available }: {
+  camera: PlayableCamera | null;
+  available: boolean;
+}) {
+  return (
+    <div className="flex min-h-[86px] w-full items-center gap-3 rounded-[20px] border border-blue-200 bg-white/95 px-4 py-3 shadow-[0_14px_42px_rgba(41,72,126,0.10)] backdrop-blur-xl lg:max-w-[338px]">
+      <span className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
+        <Camera className="size-5" strokeWidth={1.9} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5 text-[12px] font-medium text-slate-400">
+          Камера моноблока <LockKeyhole className="size-3" />
+        </span>
+        <span className="mt-1 block truncate text-[15px] font-semibold text-slate-800">
+          {camera?.zone ?? "Камера не зарегистрирована"}
+        </span>
+      </span>
+      <span className={cn("size-2.5 shrink-0 rounded-full", available ? "bg-emerald-500" : "bg-amber-400")} />
+    </div>
+  );
+}
+
 export function ShipmentLauncher({
   orders,
   cameras,
   busyCameras = [],
   cameraOwners = {},
   activeSessionCount = 0,
+  cameraLocked = false,
   onStart,
   className,
 }: {
@@ -82,6 +106,7 @@ export function ShipmentLauncher({
   busyCameras?: string[];
   cameraOwners?: Record<string, number>;
   activeSessionCount?: number;
+  cameraLocked?: boolean;
   onStart: (order: Order, camera: PlayableCamera) => Promise<void>;
   className?: string;
 }) {
@@ -108,6 +133,12 @@ export function ShipmentLauncher({
     }
   }, [availableCameras, cameraSrc]);
 
+  useEffect(() => {
+    if (!cameraLocked) return;
+    const assigned = availableCameras[0];
+    setCameraSrc(assigned?.src ?? "");
+  }, [availableCameras, cameraLocked]);
+
   async function start() {
     if (!order || !camera) return;
     setBusy(true);
@@ -115,7 +146,7 @@ export function ShipmentLauncher({
     try {
       await onStart(order, camera);
       setOrderId("");
-      setCameraSrc("");
+      setCameraSrc(cameraLocked ? camera.src : "");
     } catch (cause) {
       setError(apiError(cause));
     } finally {
@@ -153,7 +184,9 @@ export function ShipmentLauncher({
       <div className="relative z-10 flex min-h-[390px] flex-col items-center justify-center px-5 pb-7 pt-24 sm:px-8 lg:px-10 lg:pb-6 lg:pt-12">
         <div className="grid w-full max-w-[1180px] items-center gap-5 lg:grid-cols-[minmax(230px,1fr)_260px_minmax(230px,1fr)] lg:gap-10">
           <div className="order-2 flex justify-center lg:order-1 lg:justify-end">
-            <SelectCard
+            {cameraLocked ? (
+              <AssignedCameraCard camera={cameras[0] ?? null} available={!!camera} />
+            ) : <SelectCard
               kind="camera"
               label="Камера"
               value={cameraSrc}
@@ -164,7 +197,7 @@ export function ShipmentLauncher({
               {availableCameras.map((item) => (
                 <option key={item.id} value={item.src}>{item.zone}</option>
               ))}
-            </SelectCard>
+            </SelectCard>}
           </div>
 
           <div className="order-1 flex flex-col items-center lg:order-2">
@@ -209,8 +242,9 @@ export function ShipmentLauncher({
         </div>
 
         <p className="mt-5 max-w-[570px] text-center text-[14px] font-medium leading-relaxed text-[#415174] sm:text-[15px]">
-          Выберите ожидающий въезда заказ и свободную камеру — заказ перейдёт
-          в «Загружается», и начнётся живое считывание мешков.
+          {cameraLocked
+            ? "Выберите ожидающий въезда заказ — закреплённая камера моноблока включится автоматически, и начнётся живое считывание мешков."
+            : "Выберите ожидающий въезда заказ и свободную камеру — заказ перейдёт в «Загружается», и начнётся живое считывание мешков."}
         </p>
         {error && <p className="mt-2 text-center text-sm font-medium text-red-600">{error}</p>}
 

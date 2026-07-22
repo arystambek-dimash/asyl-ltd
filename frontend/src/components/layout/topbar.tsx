@@ -51,6 +51,8 @@ export function Topbar({ me, title, section, tabs, actions, onMenu }: {
   const router = useRouter();
   const roleText = me.is_client
     ? "Клиент"
+    : me.is_monoblock
+    ? `Моноблок · ${me.monoblock_camera ?? "без камеры"}`
     : me.is_superuser
     ? "Администратор"
     : me.role_name || "Сотрудник";
@@ -84,7 +86,7 @@ export function Topbar({ me, title, section, tabs, actions, onMenu }: {
       </div>
       <div className="flex items-center gap-2 sm:gap-3">
         {actions}
-        {!me.is_client && (
+        {!me.is_client && !me.is_monoblock && (
           <button
             onClick={() => window.dispatchEvent(new Event(TOUR_START_EVENT))}
             className="hidden size-8 items-center justify-center rounded-lg border text-[var(--muted-foreground)] hover:text-[var(--foreground)] sm:flex"

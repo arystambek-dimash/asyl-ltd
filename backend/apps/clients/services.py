@@ -36,7 +36,7 @@ def client_history(client) -> dict:
             "status": o.status,
             "payment_status": o.payment_status,
             "settlement_intent": o.settlement_intent,
-            "items": [{"label": str(i.product), "qty": i.quantity} for i in items],
+            "items": [{"label": i.product_label, "qty": i.quantity} for i in items],
             "bags": sum(i.quantity for i in items),
             "amount": _d(o.total_amount),
             "paid": _d(o.paid_total),

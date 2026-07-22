@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models import Count
 from django.db.models.deletion import ProtectedError
 from django.db.models import Prefetch
+from django.http import HttpResponse
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -19,6 +20,7 @@ from apps.eventlog.services import log_event
 from .models import Client, Department, Store
 from .serializers import ClientSerializer, DepartmentSerializer, StoreSerializer
 from .services import detect_overdue, is_payment_window_open, client_history
+from .statements import build_client_statement
 
 def _money_param(raw, name):
     if raw in (None, ""):
@@ -89,6 +91,7 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "debts": "reports.view",
         "debt_detail": "reports.view",
         "history": "reports.view",
+        "statement": "reports.view",
         "prices": "clients.set_price",
     }
 
@@ -107,6 +110,29 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="history")
     def history(self, request, pk=None):
         return Response(client_history(self.get_object()))
+
+    @action(detail=True, methods=["get"], url_path="statement")
+    def statement(self, request, pk=None):
+        date_from = parse_iso_date(request.query_params.get("date_from"))
+        date_to = parse_iso_date(request.query_params.get("date_to"))
+        validate_date_range(date_from, date_to)
+        client = self.get_object()
+        content = build_client_statement(client, date_from, date_to)
+        response = HttpResponse(
+            content,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = (
+            f'attachment; filename="client-{client.pk}-statement.xlsx"'
+        )
+        log_event(
+            "client_statement", f"Сформирована Excel-выписка клиента «{client.name}»",
+            user=request.user,
+            payload={"client_id": client.pk,
+                     "date_from": str(date_from) if date_from else None,
+                     "date_to": str(date_to) if date_to else None},
+        )
+        return response
 
     def _price_rows(self, client):
         prices = {

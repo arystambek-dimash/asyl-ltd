@@ -27,6 +27,7 @@ from .services import (add_payment, add_mixed_payments, confirm_order, reject_or
                        receive_payment, accountant_confirm_payment,
                        reopen_confirmed_payment, reject_payment, soft_delete_order, restore_order,
                        purge_order,
+                       repeat_order,
                        request_status_change, approve_status_change, reject_status_change)
 from apps.shipments.services import rollback_shipment
 
@@ -79,10 +80,20 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "train": "train.load",
         "loading_camera": "shipping.load",
         "department_summary": "orders.view",
+        "repeat": "orders.create",
     }
 
     def get_queryset(self):
         qs = super().get_queryset()
+        device = getattr(self.request.user, "active_monoblock_device", None)
+        if device is not None:
+            # Устройство видит только очередь старта и собственную текущую
+            # погрузку; остальная CRM-история ему не раскрывается.
+            qs = qs.filter(
+                Q(status="confirmed")
+                | Q(loading_camera=device.camera_source,
+                    status__in=("arrived", "loading", "loaded"))
+            )
         if self.action == "list":
             params = self.request.query_params
             if params.get("post_board") == "1":
@@ -123,6 +134,15 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             if store:
                 qs = qs.filter(store_id=store)
         return qs
+
+    @action(detail=True, methods=["post"], url_path="repeat")
+    def repeat(self, request, pk=None):
+        order = repeat_order(self.get_object(), request.user)
+        order = with_order_api_relations(Order.objects.all()).get(pk=order.pk)
+        return Response(
+            OrderSerializer(order, context={"request": request}).data,
+            status=201,
+        )
 
     @action(detail=False, methods=["get"], url_path="department-summary")
     def department_summary(self, request):
@@ -282,6 +302,9 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 camera = ai.normalize(camera)  # переиспользуем валидатор имени камеры
             except ai.AiError:
                 raise ValidationError({"detail": "Неизвестная камера", "code": "bad_camera"})
+            device = getattr(request.user, "active_monoblock_device", None)
+            if device is not None and device.camera_source != camera:
+                raise PermissionDenied("Эта камера закреплена за другим моноблоком")
             if camera not in MonoblockCameraSettings.allowed_sources():
                 raise ValidationError({
                     "detail": "Эта камера не разрешена администратором для Моноблока",

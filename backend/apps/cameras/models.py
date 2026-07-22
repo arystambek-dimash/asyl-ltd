@@ -88,10 +88,18 @@ class MonoblockCameraSettings(models.Model):
     @classmethod
     def allowed_sources(cls) -> set[str]:
         row = cls.objects.filter(singleton=True).only("camera_sources").first()
-        return {
+        configured = {
             source for source in (row.camera_sources if row else [])
             if isinstance(source, str) and source
         }
+        # Камера, закреплённая за физическим моноблоком, всегда разрешена для
+        # его рабочего процесса, даже если администратор убрал её из старого
+        # общего списка операторов.
+        configured.update(
+            MonoblockDevice.objects.filter(is_active=True)
+            .values_list("camera_source", flat=True)
+        )
+        return configured
 
     @classmethod
     def display_names(cls) -> dict[str, str]:
@@ -113,6 +121,30 @@ class MonoblockCameraSettings(models.Model):
             source for source in sources
             if isinstance(source, str) and source
         ]
+
+
+class MonoblockDevice(models.Model):
+    """Отдельная учётная запись физического моноблока и одна его камера."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name="monoblock_device",
+    )
+    name = models.CharField(max_length=80)
+    camera_source = models.CharField(max_length=32, unique=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="created_monoblock_devices",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+
+    def __str__(self):
+        return self.name
 
 
 class AlwaysOnCounterCursor(models.Model):
