@@ -4,7 +4,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
 from apps.rbac.models import Permission
-from .models import Employee
+from .models import Employee, SALES_REQUIRED_PERMISSIONS
 
 User = get_user_model()
 
@@ -13,6 +13,10 @@ class EmployeeSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username")
     password = serializers.CharField(write_only=True, required=False)
     role_name = serializers.CharField(source="role.name", read_only=True)
+    sales_department_name = serializers.CharField(
+        source="sales_department.name", read_only=True, allow_null=True)
+    sales_department_color = serializers.CharField(
+        source="sales_department.color", read_only=True, allow_null=True)
     name = serializers.CharField(read_only=True)
     # Права роли наследуются «вживую»; permissions — личные доступы поверх роли.
     permissions = serializers.SerializerMethodField()
@@ -32,7 +36,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Employee
         fields = ["id", "username", "password", "first_name", "last_name",
-                  "phone", "position", "role", "role_name", "name",
+                  "phone", "position", "sales_department",
+                  "sales_department_name", "sales_department_color",
+                  "role", "role_name", "name",
                   "permissions", "role_permissions", "denied_permissions",
                   "permission_codes", "denied_permission_codes", "is_active"]
 
@@ -54,6 +60,11 @@ class EmployeeSerializer(serializers.ModelSerializer):
             validate_password(value)
         except DjangoValidationError as exc:
             raise serializers.ValidationError(exc.messages)
+        return value
+
+    def validate_sales_department(self, value):
+        if value is not None and not value.is_active:
+            raise serializers.ValidationError("Выберите действующий отдел продаж")
         return value
 
     def validate(self, attrs):
@@ -78,6 +89,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         employee = Employee.objects.create(user=user, **validated_data)
         employee.permissions.set(permissions or [])
         employee.denied_permissions.set(denied_permissions or [])
+        self._remove_required_sales_denials(employee)
         return employee
 
     @transaction.atomic
@@ -104,9 +116,18 @@ class EmployeeSerializer(serializers.ModelSerializer):
             instance.permissions.set(permissions)
         if denied_permissions is not None:
             instance.denied_permissions.set(denied_permissions)
+        self._remove_required_sales_denials(instance)
         # JWT-аутентификация проверяет user.is_active на каждом запросе —
         # синхронизация мгновенно отключает доступ деактивированному сотруднику.
         if instance.user.is_active != instance.is_active:
             instance.user.is_active = instance.is_active
             instance.user.save(update_fields=["is_active"])
         return instance
+
+    @staticmethod
+    def _remove_required_sales_denials(employee):
+        if not employee.sales_department_id:
+            return
+        employee.denied_permissions.remove(
+            *employee.denied_permissions.filter(code__in=SALES_REQUIRED_PERMISSIONS)
+        )

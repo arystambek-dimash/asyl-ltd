@@ -996,8 +996,8 @@ function OrdersPageInner() {
       <Modal open={open} onClose={() => setOpen(false)}
         eyebrow="Работа · Заказ"
         title="Новый заказ"
-        description="Отдел, клиент, позиции и плановая дата прибытия."
-        className="max-w-2xl">
+        description="Три коротких шага: клиент, доставка и состав заказа."
+        className="max-w-4xl">
         {open && <OrderForm onCancel={() => setOpen(false)}
           onDone={() => { setOpen(false); reload(); reloadSummary(); }} />}
       </Modal>
@@ -1006,7 +1006,7 @@ function OrdersPageInner() {
         eyebrow={editing ? `Работа · Заказ #${editing.id}` : "Работа · Заказ"}
         title="Изменить заказ"
         description="Позиции, цены, машина и дата прибытия. Изменения фиксируются в журнале."
-        className="max-w-2xl">
+        className="max-w-4xl">
         {editing && <OrderForm editing={editing}
           onCancel={() => setEditing(null)}
           onDone={() => { setEditing(null); reload(); reloadSummary(); }} />}

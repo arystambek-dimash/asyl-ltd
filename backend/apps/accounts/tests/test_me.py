@@ -31,3 +31,25 @@ def test_me_for_client_includes_client_id(auth_client, client_user):
 def test_me_requires_auth(api_client):
     resp = api_client.get("/api/auth/me/")
     assert resp.status_code == 401
+
+
+def test_me_exposes_employee_sales_department(auth_client, make_user):
+    from apps.clients.models import Department
+    from apps.employees.models import Employee
+
+    department = Department.objects.create(
+        code="sales-west", name="Запад", color="#D68B2C", is_default=True)
+    user = make_user(username="sales-west-user")
+    Employee.objects.create(
+        user=user, first_name="А", last_name="Б", sales_department=department)
+
+    response = auth_client(user).get("/api/auth/me/")
+
+    assert response.status_code == 200
+    assert response.data["sales_department"] == {
+        "id": department.id,
+        "code": "sales-west",
+        "name": "Запад",
+        "color": "#D68B2C",
+    }
+    assert "orders.create" in response.data["permissions"]

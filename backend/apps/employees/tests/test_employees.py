@@ -2,6 +2,7 @@ import pytest
 from django.contrib.auth import get_user_model
 from apps.rbac.models import Role
 from apps.employees.models import Employee
+from apps.clients.models import Department
 
 pytestmark = pytest.mark.django_db
 User = get_user_model()
@@ -138,3 +139,65 @@ def test_role_change_switches_inherited_permissions(admin_client):
     assert u.has_perm_code("orders.view") is False   # права старой роли ушли
     assert u.has_perm_code("clients.view") is True   # права новой роли действуют
     assert u.has_perm_code("warehouse.view") is True  # личное право осталось
+
+
+def test_sales_department_grants_and_protects_required_order_permissions(admin_client):
+    department = Department.objects.create(
+        code="sales-north", name="Север", color="#315FD5", is_default=True)
+    role = Role.objects.create(name="Без доступа к заказам")
+    role.permissions.add(_perm("orders.create"))
+
+    response = admin_client.post("/api/employees/", {
+        "username": "sales", "password": "pass12345",
+        "first_name": "Сауле", "last_name": "Менеджер",
+        "sales_department": department.id,
+        "role": role.id,
+        "denied_permission_codes": ["orders.create"],
+    }, format="json")
+
+    assert response.status_code == 201
+    assert response.data["sales_department"] == department.id
+    assert response.data["sales_department_name"] == "Север"
+    assert "orders.create" not in response.data["denied_permissions"]
+    user = User.objects.get(username="sales")
+    assert user.has_perm_code("orders.create") is True
+    assert user.has_perm_code("orders.view") is True
+    assert user.has_perm_code("clients.view") is True
+    assert user.has_perm_code("catalog.view") is True
+
+
+def test_inactive_sales_department_cannot_be_assigned(admin_client):
+    department = Department.objects.create(
+        code="closed-sales", name="Закрытый", is_active=False)
+    response = admin_client.post("/api/employees/", {
+        "username": "closed", "password": "pass12345",
+        "first_name": "Закрыт", "last_name": "Отдел",
+        "sales_department": department.id,
+    }, format="json")
+    assert response.status_code == 400
+    assert "sales_department" in response.data["detail"]
+
+
+def test_sales_department_can_be_cleared_and_stops_forcing_permissions(admin_client):
+    department = Department.objects.create(
+        code="sales-temp", name="Временный отдел", color="#315FD5")
+    response = admin_client.post("/api/employees/", {
+        "username": "sales-temp", "password": "pass12345",
+        "first_name": "Временный", "last_name": "Менеджер",
+        "sales_department": department.id,
+    }, format="json")
+    assert response.status_code == 201
+    employee_id = response.data["id"]
+    user = User.objects.get(username="sales-temp")
+    assert user.has_perm_code("orders.create") is True
+
+    response = admin_client.patch(
+        f"/api/employees/{employee_id}/",
+        {"username": "sales-temp", "sales_department": None},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert response.data["sales_department"] is None
+    user = User.objects.get(pk=user.pk)  # новый запрос не использует кэш прав
+    assert user.has_perm_code("orders.create") is False

@@ -20,19 +20,35 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { Plus, Search, Pencil, Trash2 } from "lucide-react";
-import type { Employee, Permission, Role } from "@/lib/types";
+import { BriefcaseBusiness, Check, Plus, Search, Pencil, ShieldCheck, Trash2 } from "lucide-react";
+import type { Department, Employee, Permission, Role } from "@/lib/types";
+
+const SALES_REQUIRED = new Set(["orders.view", "orders.create", "clients.view", "catalog.view"]);
+
+function effectiveAccessCount(employee: Employee) {
+  const denied = new Set(employee.denied_permissions ?? []);
+  const effective = new Set([
+    ...(employee.role_permissions ?? []).filter((code) => !denied.has(code)),
+    ...(employee.permissions ?? []),
+  ]);
+  if (employee.sales_department) {
+    SALES_REQUIRED.forEach((code) => effective.add(code));
+  }
+  return effective.size;
+}
 
 function EmployeesPageInner() {
   const { data: employees, error: loadError, reload } = useApi<Employee[]>("/employees/");
   const { data: roles } = useApi<Role[]>("/roles/");
   const { data: perms } = useApi<Permission[]>("/permissions/");
+  const { data: departments } = useApi<Department[]>("/departments/?all=1");
   const { me, refreshMe } = useAuth();
   const canManage = can(me, "employees.manage");
-  const empty = { username: "", password: "", first_name: "", last_name: "", phone: "", position: "", role: "" };
+  const empty = { username: "", password: "", first_name: "", last_name: "", phone: "", position: "", role: "", sales_department: "" };
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Employee | null>(null);
   const [form, setForm] = useState(empty);
+  const [salesEmployee, setSalesEmployee] = useState(false);
   // Личные доступы поверх роли; права самой роли наследуются автоматически.
   const [codes, setCodes] = useState<Set<string>>(new Set());
   const [deniedCodes, setDeniedCodes] = useState<Set<string>>(new Set());
@@ -42,13 +58,15 @@ function EmployeesPageInner() {
   const [delError, setDelError] = useState("");
   const [delBusy, setDelBusy] = useState(false);
 
-  function openNew() { setEditing(null); setForm(empty); setCodes(new Set()); setDeniedCodes(new Set()); setError(""); setOpen(true); }
+  function openNew() { setEditing(null); setForm(empty); setSalesEmployee(false); setCodes(new Set()); setDeniedCodes(new Set()); setError(""); setOpen(true); }
   function openEdit(e: Employee) {
     setEditing(e);
     setForm({
       username: e.username, password: "", first_name: e.first_name, last_name: e.last_name,
       phone: e.phone, position: e.position, role: e.role ? String(e.role) : "",
+      sales_department: e.sales_department ? String(e.sales_department) : "",
     });
+    setSalesEmployee(!!e.sales_department);
     const inRole = new Set(e.role_permissions ?? []);
     setCodes(new Set((e.permissions ?? []).filter((c) => !inRole.has(c))));
     setDeniedCodes(new Set(e.denied_permissions ?? []));
@@ -62,6 +80,7 @@ function EmployeesPageInner() {
   }
 
   function toggleDeniedCode(code: string) {
+    if (salesEmployee && SALES_REQUIRED.has(code)) return;
     const next = new Set(deniedCodes);
     if (next.has(code)) next.delete(code); else next.add(code);
     setDeniedCodes(next);
@@ -85,9 +104,13 @@ function EmployeesPageInner() {
       const body: Record<string, unknown> = {
         username: form.username, first_name: form.first_name, last_name: form.last_name,
         phone: form.phone, position: form.position, role,
+        sales_department: salesEmployee ? Number(form.sales_department) : null,
         permission_codes: Array.from(codes),
         denied_permission_codes: Array.from(deniedCodes),
       };
+      if (salesEmployee && !form.sales_department) {
+        throw new Error("sales_department_required");
+      }
       if (editing) {
         if (form.password) body.password = form.password;  // пустой = не менять
         await api.patch(`/employees/${editing.id}/`, body);
@@ -96,7 +119,11 @@ function EmployeesPageInner() {
       }
       setForm(empty); setOpen(false); reload();
       refreshMe(true); // если админ менял свои же доступы — применить сразу
-    } catch (e) { setError(apiError(e)); } finally { setBusy(false); }
+    } catch (e) {
+      setError(e instanceof Error && e.message === "sales_department_required"
+        ? "Выберите отдел продаж для сотрудника."
+        : apiError(e));
+    } finally { setBusy(false); }
   }
 
   async function confirmDelete() {
@@ -160,11 +187,19 @@ function EmployeesPageInner() {
               <TR key={e.id}>
                 <TD className="font-medium">{e.name}</TD>
                 <TD>{e.username}</TD>
-                <TD>{e.position || "—"}</TD>
+                <TD>
+                  <div>{e.position || "—"}</div>
+                  {e.sales_department && (
+                    <div className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+                      <span className="size-1.5 rounded-full" style={{ backgroundColor: e.sales_department_color || "#315FD5" }} />
+                      {e.sales_department_name}
+                    </div>
+                  )}
+                </TD>
                 <TD>
                   <div>{e.role_name || "—"}</div>
                   <div className="text-xs text-[var(--muted-foreground)]">
-                    Доступов: {new Set([...(e.role_permissions ?? []).filter((code) => !(e.denied_permissions ?? []).includes(code)), ...(e.permissions ?? [])]).size}
+                    Доступов: {effectiveAccessCount(e)}
                   </div>
                 </TD>
                 <TD><Badge tone={e.is_active ? "success" : "muted"}>{e.is_active ? "Активен" : "Отключён"}</Badge></TD>
@@ -198,7 +233,7 @@ function EmployeesPageInner() {
         footer={
           <>
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
-            <Button type="submit" form="employee-form" disabled={busy}>
+            <Button type="submit" form="employee-form" disabled={busy || (salesEmployee && !form.sales_department)}>
               {busy ? "Сохранение…" : editing ? "Сохранить" : "Создать"}</Button>
           </>
         }>
@@ -236,6 +271,68 @@ function EmployeesPageInner() {
           </section>
 
           <section className="space-y-3 border-t border-[var(--border)] pt-4">
+            <label className="group flex cursor-pointer items-start gap-3 rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-50/80 to-white p-4 transition hover:border-blue-200">
+              <input type="checkbox" checked={salesEmployee}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  setSalesEmployee(checked);
+                  if (checked && !form.sales_department) {
+                    const first = (departments ?? []).find((department) => department.is_active);
+                    setForm((current) => ({ ...current, sales_department: first ? String(first.id) : "" }));
+                  }
+                  if (!checked) setForm((current) => ({ ...current, sales_department: "" }));
+                  if (checked) {
+                    setDeniedCodes((current) => new Set([...current].filter((code) => !SALES_REQUIRED.has(code))));
+                  }
+                }}
+                className="peer sr-only" />
+              <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-white text-transparent shadow-sm transition peer-checked:border-blue-600 peer-checked:bg-blue-600 peer-checked:text-white">
+                <Check className="size-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2 text-sm font-bold text-slate-800">
+                  <BriefcaseBusiness className="size-4 text-blue-600" /> Сотрудник отдела продаж
+                </span>
+                <span className="mt-1 block text-xs leading-relaxed text-slate-500">
+                  Его отдел будет автоматически закрепляться за новыми заказами. Просмотр клиентов, товаров и создание заказов включаются обязательно.
+                </span>
+              </span>
+            </label>
+
+            {salesEmployee && (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-slate-800">Закреплённый отдел</div>
+                    <div className="mt-0.5 text-xs text-slate-500">Все новые заказы сотрудника попадут сюда.</div>
+                  </div>
+                  <ShieldCheck className="size-5 text-emerald-500" />
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {(departments ?? []).map((department) => {
+                    const selected = form.sales_department === String(department.id);
+                    return (
+                      <button key={department.id} type="button" disabled={!department.is_active}
+                        onClick={() => setForm((current) => ({ ...current, sales_department: String(department.id) }))}
+                        className={`flex min-h-12 items-center gap-2.5 rounded-xl border px-3 py-2 text-left text-sm font-semibold transition ${selected
+                          ? "border-slate-800 bg-slate-900 text-white shadow-md"
+                          : "border-slate-200 bg-white text-slate-700 hover:-translate-y-0.5 hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-45"}`}>
+                        <span className="size-2.5 shrink-0 rounded-full ring-4 ring-current/10"
+                          style={{ backgroundColor: department.color, color: department.color }} />
+                        <span className="truncate">{department.name}</span>
+                        {!department.is_active && <span className="ml-auto text-[10px] font-normal">отключён</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+                {!departments?.some((department) => department.is_active) && (
+                  <p className="mt-3 text-xs font-medium text-red-600">Нет действующих отделов. Сначала создайте отдел на странице заказов.</p>
+                )}
+              </div>
+            )}
+          </section>
+
+          <section className="space-y-3 border-t border-[var(--border)] pt-4">
             <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Доступы</h4>
             <Field label="Роль"
               hint="Роль даёт базовые доступы. Ниже любое право роли можно лично отключить для этого сотрудника.">
@@ -252,7 +349,8 @@ function EmployeesPageInner() {
                 </span>
               </div>
               <PermissionPicker perms={perms ?? []} selected={codes} onToggle={toggleCode}
-                inherited={rolePerms} denied={deniedCodes} onToggleDenied={toggleDeniedCode} />
+                inherited={rolePerms} denied={deniedCodes} onToggleDenied={toggleDeniedCode}
+                forced={salesEmployee ? SALES_REQUIRED : undefined} />
             </div>
           </section>
 

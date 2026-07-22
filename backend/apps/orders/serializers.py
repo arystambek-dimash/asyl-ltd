@@ -291,6 +291,14 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         return client
 
     def validate_department(self, code):
+        request = self.context.get("request")
+        employee = getattr(getattr(request, "user", None), "employee", None)
+        assigned = getattr(employee, "sales_department", None)
+        if self.instance is None and assigned is not None:
+            if not assigned.is_active:
+                raise serializers.ValidationError(
+                    "Закреплённый отдел продаж отключён — обратитесь к администратору")
+            return assigned.code
         qs = Department.objects.filter(code=code)
         if self.instance and self.instance.department == code:
             if qs.exists():
@@ -323,8 +331,19 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         user = self.context["request"].user
         validated_data["created_by"] = user
         validated_data.setdefault("currency", validated_data["client"].currency)
-        # Отдел — свойство заказа. Для старых API-клиентов используем основной.
-        validated_data.setdefault("department", Department.default_code())
+        # Для сотрудника отдела продаж отдел нельзя подменить на клиенте:
+        # сервер всегда закрепляет его назначение. Остальным оставляем выбор.
+        employee = getattr(user, "employee", None)
+        assigned = getattr(employee, "sales_department", None)
+        if assigned is not None:
+            if not assigned.is_active:
+                raise serializers.ValidationError({
+                    "department": "Закреплённый отдел продаж отключён — обратитесь к администратору"
+                })
+            validated_data["department"] = assigned.code
+        else:
+            # Для старых API-клиентов используем основной отдел.
+            validated_data.setdefault("department", Department.default_code())
         # Оператор (orders.confirm) создаёт заказ сразу подтверждённым с ценами;
         # заявка менеджера Отдела 2 остаётся pending до подтверждения бухгалтером.
         # prices приходит по товару: {product_id: цена} (у позиций ещё нет id).

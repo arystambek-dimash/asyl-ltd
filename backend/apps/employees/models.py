@@ -4,6 +4,13 @@ from django.conf import settings
 from django.db import models
 
 
+# Сотрудник отдела продаж должен иметь достаточно прав, чтобы открыть форму
+# заказа и реально пройти её до конца. Эти права нельзя снять ролью/запретом.
+SALES_REQUIRED_PERMISSIONS = {
+    "orders.view", "orders.create", "clients.view", "catalog.view",
+}
+
+
 class Employee(models.Model):
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="employee"
@@ -12,6 +19,13 @@ class Employee(models.Model):
     last_name = models.CharField(max_length=100)
     phone = models.CharField(max_length=50, blank=True, default="")
     position = models.CharField(max_length=100, blank=True, default="")
+    sales_department = models.ForeignKey(
+        "clients.Department",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="sales_employees",
+    )
     # Роль даёт права «вживую»: правка роли сразу действует на всех её сотрудников.
     role = models.ForeignKey(
         "rbac.Role", null=True, blank=True, on_delete=models.PROTECT, related_name="employees"
@@ -34,6 +48,8 @@ class Employee(models.Model):
         if self.role_id:
             denied = set(self.denied_permissions.values_list("code", flat=True))
             codes |= set(self.role.permissions.values_list("code", flat=True)) - denied
+        if self.sales_department_id:
+            codes |= SALES_REQUIRED_PERMISSIONS
         return codes
 
     @property

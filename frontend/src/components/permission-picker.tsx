@@ -1,5 +1,5 @@
 "use client";
-import { Check, Minus } from "lucide-react";
+import { Check, LockKeyhole, Minus } from "lucide-react";
 import type { Permission } from "@/lib/types";
 
 // Ярлыки разделов/действий каталога прав (единые для ролей и сотрудников).
@@ -19,13 +19,14 @@ export const PERM_ACTION_LABELS: Record<string, string> = {
 
 /** Кнопки-переключатели прав, сгруппированные по разделам.
  * inherited — права роли; denied позволяет точечно запретить их сотруднику. */
-export function PermissionPicker({ perms, selected, onToggle, inherited, denied, onToggleDenied }: {
+export function PermissionPicker({ perms, selected, onToggle, inherited, denied, onToggleDenied, forced }: {
   perms: Permission[];
   selected: Set<string>;
   onToggle: (code: string) => void;
   inherited?: Set<string>;
   denied?: Set<string>;
   onToggleDenied?: (code: string) => void;
+  forced?: Set<string>;
 }) {
   const sections = Array.from(new Set(perms.map((p) => p.section)));
   return (
@@ -35,6 +36,16 @@ export function PermissionPicker({ perms, selected, onToggle, inherited, denied,
           <div className="mb-2 text-sm font-semibold">{PERM_SECTION_LABELS[sec] ?? sec}</div>
           <div className="flex flex-wrap gap-2">
             {perms.filter((p) => p.section === sec).map((p) => {
+              if (forced?.has(p.code)) {
+                return (
+                  <span key={p.code}
+                    title="Обязательное право сотрудника отдела продаж"
+                    className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700">
+                    <LockKeyhole className="size-3" />
+                    {PERM_ACTION_LABELS[p.action] ?? p.action} · обязательно
+                  </span>
+                );
+              }
               const fromRole = inherited?.has(p.code) ?? false;
               if (fromRole) {
                 const blocked = denied?.has(p.code) ?? false;

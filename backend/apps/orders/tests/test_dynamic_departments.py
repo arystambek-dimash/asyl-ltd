@@ -4,6 +4,7 @@ from rest_framework.test import APIClient
 from apps.catalog.models import Product
 from apps.clients.models import Client, Department
 from apps.orders.models import Order, OrderItem
+from apps.employees.models import Employee
 from apps.warehouse.models import StockItem
 
 pytestmark = pytest.mark.django_db
@@ -54,6 +55,31 @@ def test_inactive_department_cannot_be_used_for_new_order(manager):
     }, format="json")
 
     assert response.status_code == 400
+
+
+def test_sales_employee_order_is_forced_to_assigned_department(make_user):
+    assigned = Department.objects.create(
+        code="assigned-sales", name="Назначенный", color="#315FD5", is_default=True)
+    other = Department.objects.create(
+        code="other-sales", name="Другой", color="#D68B2C")
+    user = make_user(username="assigned-manager")
+    Employee.objects.create(
+        user=user, first_name="Менеджер", last_name="Отдела",
+        sales_department=assigned,
+    )
+    client = Client.objects.create(first_name="Алия", last_name="С", phone="1")
+    product = _product()
+
+    response = _api(user).post("/api/orders/", {
+        "client": client.id,
+        "department": other.code,
+        "items": [{"product": product.id, "quantity": 2}],
+        "prices": {str(product.id): "120.00"},
+    }, format="json")
+
+    assert response.status_code == 201
+    assert response.data["department"] == assigned.code
+    assert Order.objects.get(pk=response.data["id"]).department == assigned.code
 
 
 def test_department_summary_groups_orders(manager):

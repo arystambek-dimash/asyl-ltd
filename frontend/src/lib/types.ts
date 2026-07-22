@@ -6,6 +6,7 @@ export interface Me {
   permissions: string[];
   role_name: string | null;
   client_id: number | null;
+  sales_department: Pick<Department, "id" | "code" | "name" | "color"> | null;
 }
 
 export interface Product {
@@ -263,6 +264,9 @@ export interface Role {
 export interface Employee {
   id: number; username: string; first_name: string; last_name: string;
   phone: string; position: string; role: number | null; role_name: string | null;
+  sales_department: number | null;
+  sales_department_name: string | null;
+  sales_department_color: string | null;
   name: string;
   /** Личные доступы поверх роли; права роли — в role_permissions. */
   permissions: string[];
