@@ -33,7 +33,7 @@ def test_repeat_creates_independent_order_for_today(auth_client, manager):
     repeated = Order.objects.get(pk=response.data["id"])
     assert repeated.pk != source.pk
     assert repeated.repeated_from == source
-    assert repeated.created_at.date() == timezone.localdate()
+    assert timezone.localtime(repeated.created_at).date() == timezone.localdate()
     assert repeated.arrival_date == timezone.localdate()
     assert repeated.status == "confirmed"
     assert repeated.currency == "USD"

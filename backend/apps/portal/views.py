@@ -118,7 +118,7 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                 )
             except ApiPayConfigurationError as exc:
                 raise PaymentProviderError({
-                    "detail": "Онлайн-оплата ApiPay временно не настроена.",
+                    "detail": "Счёт на оплату временно недоступен.",
                     "code": "apipay_not_configured",
                 }) from exc
             except ApiPayAPIError as exc:

@@ -59,9 +59,9 @@ const STATUS_HELP: Record<string, { meaning: string; money: string; next: string
     next: "Если клиент платит заново, создайте новую операцию.",
   },
   refund_pending: {
-    meaning: "Запрос возврата отправлен в ApiPay и ожидает результата.",
+    meaning: "Запрос возврата по счёту отправлен и ожидает результата.",
     money: "До подтверждения провайдера оплата ещё учитывается.",
-    next: "Дождитесь webhook ApiPay — статус обновится автоматически.",
+    next: "Дождитесь подтверждения платёжного сервиса — статус обновится автоматически.",
   },
   partially_refunded: {
     meaning: "Клиенту возвращена часть оплаты.",
@@ -314,9 +314,7 @@ export default function TransactionsPage() {
                                   size="sm"
                                   variant="ghost"
                                   title={
-                                    row.provider?.channel === "phone"
-                                      ? "Вернуть через ApiPay"
-                                      : "Вернуть деньги из кассы"
+                                    row.provider?.channel === "phone" ? "Вернуть по счёту" : "Вернуть деньги из кассы"
                                   }
                                   onClick={() => {
                                     setError("");
@@ -387,11 +385,11 @@ export default function TransactionsPage() {
       <Modal
         open={!!refundFor}
         onClose={() => !busy && setRefundFor(null)}
-        eyebrow={refundFor?.provider?.channel === "phone" ? "ApiPay · Возврат" : "Касса · Возврат"}
+        eyebrow={refundFor?.provider?.channel === "phone" ? "Счёт на оплату · Возврат" : "Касса · Возврат"}
         title="Вернуть оплату"
         description={
           refundFor?.provider?.channel === "phone"
-            ? "Возврат будет отправлен в ApiPay. Деньги учтутся после подтверждения провайдера."
+            ? "Возврат будет отправлен по счёту. Деньги учтутся после подтверждения платёжного сервиса."
             : "Возврат будет сразу проведён как выдача денег из кассы и уменьшит оплаченную сумму заказа."
         }
         footer={
@@ -461,7 +459,7 @@ export default function TransactionsPage() {
                         </span>
                       </div>
                       <div className="mt-1 text-xs text-[var(--muted-foreground)]">
-                        {refund.method === "apipay" ? "Через ApiPay" : "Из кассы"} · {refund.reason}
+                        {refund.method === "apipay" ? "По счёту" : "Из кассы"} · {refund.reason}
                       </div>
                     </div>
                   ))}
@@ -477,7 +475,7 @@ export default function TransactionsPage() {
         onClose={() => !busy && setRejectFor(null)}
         eyebrow="Касса · Контроль операции"
         title={`Отклонить PAY-${String(rejectFor?.id ?? "").padStart(6, "0")}?`}
-        description="Платёж не будет учтён. Для телефонного счёта Kaspi сначала будет запрошена отмена в ApiPay."
+        description="Платёж не будет учтён. Для телефонного счёта сначала будет запрошена отмена счёта на оплату."
         footer={
           <>
             <Button variant="outline" disabled={busy} onClick={() => setRejectFor(null)}>

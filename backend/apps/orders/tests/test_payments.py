@@ -113,6 +113,83 @@ def test_cashier_log_marks_only_current_confirmation_as_reopenable(
     assert len(reopenable) == 1
 
 
+def test_rejected_payment_can_be_restored_from_cashier_log(
+        auth_client, accountant):
+    from apps.eventlog.models import EventLog
+    from apps.orders.models import Payment
+
+    order = _order(status="shipped")
+    created = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/",
+        {"amount": "100.00", "method": "cash"},
+        format="json",
+    )
+    payment_id = created.data["id"]
+    rejected = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/{payment_id}/reject/")
+    assert rejected.status_code == 200
+
+    journal = auth_client(accountant).get("/api/orders/cashier-log/")
+    rejection = next(
+        row for row in journal.data
+        if row["payload"].get("payment_id") == payment_id
+        and row["payload"].get("payment_stage") == "rejected"
+    )
+    assert rejection["can_restore"] is True
+
+    restored = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/{payment_id}/restore/")
+
+    assert restored.status_code == 200
+    payment = Payment.objects.get(pk=payment_id)
+    assert payment.status == "received"
+    assert EventLog.objects.filter(
+        event_type="payment",
+        payload__payment_id=payment_id,
+        payload__action="restored",
+    ).exists()
+    journal_after = auth_client(accountant).get("/api/orders/cashier-log/")
+    same_rejection = next(
+        row for row in journal_after.data if row["id"] == rejection["id"]
+    )
+    assert same_rejection["can_restore"] is False
+
+
+def test_only_rejected_payment_can_be_restored(auth_client, accountant):
+    order = _order(status="shipped")
+    created = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/",
+        {"amount": "100.00"},
+        format="json",
+    )
+
+    response = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/{created.data['id']}/restore/")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "invalid_payment_stage"
+
+
+def test_cashier_log_hides_provider_name_in_historical_messages(
+        auth_client, accountant):
+    from apps.eventlog.models import EventLog
+
+    order = _order(status="shipped")
+    event = EventLog.objects.create(
+        event_type="payment",
+        message="Счёт ApiPay №84 создан; клиент инициировал оплату (invoice)",
+        user=accountant,
+        order=order,
+    )
+
+    response = auth_client(accountant).get("/api/orders/cashier-log/")
+
+    row = next(item for item in response.data if item["id"] == event.id)
+    assert "ApiPay" not in row["message"]
+    assert "Счёт на оплату" in row["message"]
+    assert "(счёт на оплату)" in row["message"]
+
+
 def test_payment_not_counted_before_confirm(auth_client, accountant):
     """До подтверждения бухгалтером-кассой оплата не учтена."""
     o = _order(status="shipped")  # total 500

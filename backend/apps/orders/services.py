@@ -426,7 +426,61 @@ def reject_payment(payment: Payment, user) -> Payment:
     if payment.status in ("confirmed", "rejected"):
         raise ValidationError(
             {"detail": "Оплата уже финализирована", "code": "invalid_payment_stage"})
-    _set_payment_stage(payment, "rejected", user)
+    previous_stage = payment.status
+    payment.status = "rejected"
+    payment.save(update_fields=["status"])
+    log_event(
+        "payment",
+        f"Оплата {payment.amount} {payment.order.currency} отклонена",
+        user=user,
+        order=payment.order,
+        payload={
+            "payment_id": payment.id,
+            "amount": str(payment.amount),
+            "currency": payment.order.currency,
+            "method": payment.method,
+            "payment_stage": "rejected",
+            "previous_payment_stage": previous_stage,
+            "action": "rejected",
+        },
+    )
+    return _sync_payment_instance(original, payment)
+
+
+@transaction.atomic
+def restore_rejected_payment(payment: Payment, user) -> Payment:
+    """Вернуть ошибочно отклонённую кассовую оплату в рабочую очередь."""
+    original = payment
+    payment, order = _locked_payment_with_order(payment)
+    if payment.status != "rejected":
+        raise ValidationError({
+            "detail": "Восстановить можно только отклонённую оплату",
+            "code": "invalid_payment_stage",
+        })
+    invoice = getattr(payment, "apipay_invoice", None)
+    if invoice and invoice.status in ("cancelled", "expired", "error", "superseded"):
+        raise ValidationError({
+            "detail": "Отменённый счёт восстановить нельзя — создайте новый счёт на оплату.",
+            "code": "provider_invoice_closed",
+        })
+    restored_stage = "received" if payment.received_at else "requested"
+    payment.status = restored_stage
+    payment.save(update_fields=["status"])
+    log_event(
+        "payment",
+        f"Оплата {payment.amount} {order.currency} восстановлена",
+        user=user,
+        order=order,
+        payload={
+            "payment_id": payment.id,
+            "amount": str(payment.amount),
+            "currency": order.currency,
+            "method": payment.method,
+            "payment_stage": restored_stage,
+            "previous_payment_stage": "rejected",
+            "action": "restored",
+        },
+    )
     return _sync_payment_instance(original, payment)
 
 

@@ -99,12 +99,12 @@ def api_request(
         message = str(
             error_payload.get("message")
             or error_payload.get("detail")
-            or f"ApiPay вернул HTTP {exc.code}"
+            or f"Платёжный сервис вернул HTTP {exc.code}"
         )
         raise ApiPayAPIError(exc.code, code, message, error_payload) from exc
     except (OSError, TimeoutError, urllib.error.URLError) as exc:
         raise ApiPayAPIError(
-            503, "apipay_unavailable", "ApiPay временно недоступен", {}
+            503, "apipay_unavailable", "Счёт на оплату временно недоступен", {}
         ) from exc
 
     if not raw:
@@ -113,11 +113,11 @@ def api_request(
         result = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ApiPayAPIError(
-            502, "invalid_apipay_response", "ApiPay вернул некорректный ответ", {}
+            502, "invalid_apipay_response", "Платёжный сервис вернул некорректный ответ", {}
         ) from exc
     if not isinstance(result, dict):
         raise ApiPayAPIError(
-            502, "invalid_apipay_response", "ApiPay вернул некорректный ответ", {}
+            502, "invalid_apipay_response", "Платёжный сервис вернул некорректный ответ", {}
         )
     return result
 
@@ -136,7 +136,7 @@ def create_invoice(
     order = payment.order
     if order.currency != "KZT":
         raise ValidationError({
-            "detail": "ApiPay принимает оплату только в тенге.",
+            "detail": "Счёт на оплату доступен только в тенге.",
             "code": "apipay_kzt_only",
         })
     phone = normalize_phone(phone_number or order.client.phone) if channel == "phone" else ""
@@ -173,7 +173,7 @@ def create_invoice(
     except (KeyError, TypeError, ValueError) as exc:
         raise ApiPayAPIError(
             502, "invalid_apipay_response",
-            "ApiPay не вернул идентификатор счёта", response,
+            "Платёжный сервис не вернул идентификатор счёта", response,
         ) from exc
     record.invoice_id = invoice_id
     record.status = str(response.get("status") or "processing")
@@ -192,7 +192,7 @@ def create_invoice(
     ])
     log_event(
         "payment",
-        f"Счёт ApiPay №{invoice_id} создан для заказа №{order.pk}",
+        f"Счёт на оплату №{invoice_id} создан для заказа №{order.pk}",
         user=payment.recorded_by,
         order=order,
         payload={
@@ -212,7 +212,7 @@ def start_order_payment(
     """Validate, create the internal payment, then issue the ApiPay invoice."""
     if order.currency != "KZT":
         raise ValidationError({
-            "detail": "ApiPay принимает оплату только в тенге.",
+            "detail": "Счёт на оплату доступен только в тенге.",
             "code": "apipay_kzt_only",
         })
     if channel not in ("phone", "qr"):
@@ -220,7 +220,7 @@ def start_order_payment(
     if channel == "phone":
         normalize_phone(phone_number or order.client.phone)
     if payment_method not in ("kaspi", "invoice"):
-        raise ValidationError({"detail": "Недопустимый способ оплаты ApiPay."})
+        raise ValidationError({"detail": "Недопустимый способ оплаты по счёту."})
     payment = create_client_payment(order, payment_method, user, amount=amount)
     try:
         return create_invoice(payment, channel=channel, phone_number=phone_number)
@@ -252,7 +252,7 @@ def cancel_invoice(record: ApiPayInvoice) -> ApiPayInvoice:
         })
     if record.invoice_id is None:
         raise ValidationError({
-            "detail": "Счёт ApiPay ещё не создан.",
+            "detail": "Счёт на оплату ещё не создан.",
             "code": "invoice_not_created",
         })
     response = api_request("POST", f"/invoices/{record.invoice_id}/cancel", {})
@@ -347,7 +347,7 @@ def create_refund(
 ) -> ApiPayRefund:
     if record.channel == "qr":
         raise ValidationError({
-            "detail": "ApiPay не поддерживает возвраты QR-счетов.",
+            "detail": "Возврат по QR-счёту не поддерживается.",
             "code": "qr_refund_unsupported",
         })
     payment = (
@@ -395,7 +395,7 @@ def create_refund(
     _sync_refund_totals(payment)
     log_event(
         "payment",
-        f"Возврат ApiPay {value} {payment.order.currency}: {status}",
+        f"Возврат по счёту {value} {payment.order.currency}: {status}",
         user=user,
         order=payment.order,
         payload={
@@ -454,7 +454,7 @@ def apply_refund_status(record: ApiPayInvoice, payload: dict[str, Any]) -> None:
     record.save(update_fields=["total_refunded", "updated_at"])
     log_event(
         "payment",
-        f"Статус возврата ApiPay: {generic_refund.status}",
+        f"Статус возврата по счёту: {generic_refund.status}",
         user=None,
         order=payment.order,
         payload={
@@ -555,7 +555,7 @@ def apply_invoice_status(
     if changed:
         log_event(
             "payment",
-            f"ApiPay: счёт №{record.invoice_id} получил статус {status}",
+            f"Счёт на оплату №{record.invoice_id} получил статус {status}",
             order=order,
             payload={
                 "action": "apipay_status_changed",

@@ -13,6 +13,7 @@ import { SummaryCard } from "@/components/ui/summary-card";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { Tabs, type TabDef } from "@/components/ui/tabs";
 import { ErrorAlert } from "@/components/ui/data-state";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { PaymentStageBadge } from "@/components/payment-chain";
 import { can } from "@/lib/can";
 import { useAuth } from "@/store/auth";
@@ -134,6 +135,11 @@ function useCashierQueue(enabled: boolean, filters: CashFilters) {
       if (!paymentId) return;
       act(() => api.post(`/orders/${event.order}/payments/${paymentId}/reopen/`));
     },
+    restorePayment: (event: CashierLogItem) => {
+      const paymentId = event.payload.payment_id;
+      if (!paymentId) return;
+      return act(() => api.post(`/orders/${event.order}/payments/${paymentId}/restore/`));
+    },
   };
 }
 
@@ -244,6 +250,7 @@ function ConfirmQueueSection({ q }: { q: CashierQueue }) {
 
 /* ── Вкладка «Журнал»: действия по оплатам ─────────────────────────────── */
 function PaymentJournalSection({ q }: { q: CashierQueue }) {
+  const [restoreEvent, setRestoreEvent] = useState<CashierLogItem | null>(null);
   return (
     <section className="flex flex-col gap-4">
       <ActionError message={q.error} />
@@ -274,11 +281,35 @@ function PaymentJournalSection({ q }: { q: CashierQueue }) {
                     Вернуть на подтверждение
                   </Button>
                 )}
+                {event.can_restore && (
+                  <Button size="sm" variant="outline" disabled={q.busy} onClick={() => setRestoreEvent(event)}>
+                    <RefreshCw className="size-3.5" /> Восстановить
+                  </Button>
+                )}
               </div>
             ))
           )}
         </CardContent>
       </Card>
+      <ConfirmDialog
+        open={!!restoreEvent}
+        onClose={() => setRestoreEvent(null)}
+        title="Восстановить отклонённую оплату?"
+        description={
+          restoreEvent
+            ? `Оплата по заказу #${restoreEvent.order} вернётся в очередь кассы. Само событие отмены останется в журнале.`
+            : ""
+        }
+        confirmLabel="Восстановить"
+        confirmVariant="default"
+        busy={q.busy}
+        error={q.error}
+        onConfirm={async () => {
+          if (!restoreEvent) return;
+          await q.restorePayment(restoreEvent);
+          setRestoreEvent(null);
+        }}
+      />
     </section>
   );
 }

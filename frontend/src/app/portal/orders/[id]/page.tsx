@@ -187,7 +187,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                                   {part.method === "kaspi"
                                     ? "Kaspi QR"
                                     : part.method === "invoice"
-                                      ? "Счёт ApiPay"
+                                      ? "Счёт на оплату"
                                       : "Наличными"}
                                   {" · "}
                                   {formatMoney(part.amount)} {currencySymbol(order.currency)}
@@ -260,7 +260,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                                 className="h-auto justify-start py-3"
                                 onClick={() => setPaymentMode("invoice")}
                               >
-                                <FileText className="size-4" /> Счёт через ApiPay
+                                <FileText className="size-4" /> Счёт на оплату
                               </Button>
                               <Button
                                 variant="outline"
@@ -292,7 +292,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                             <div className="rounded-xl border border-[var(--primary)]/25 bg-[var(--primary)]/5 p-4">
                               <div className="mb-3 flex items-center justify-between">
                                 <div className="font-medium">
-                                  {paymentMode === "qr" ? "Kaspi Pay — QR" : "Счёт на оплату через ApiPay"}
+                                  {paymentMode === "qr" ? "Kaspi Pay — QR" : "Счёт на оплату"}
                                 </div>
                                 <Button size="sm" variant="ghost" onClick={() => setPaymentMode(null)}>
                                   <ArrowLeft className="size-4" /> Назад
@@ -331,7 +331,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                                   })
                                 }
                               >
-                                {paymentMode === "qr" ? "Создать QR" : "Отправить счёт через ApiPay"}
+                                {paymentMode === "qr" ? "Создать QR" : "Отправить счёт на оплату"}
                               </Button>
                             </div>
                           )}

@@ -283,6 +283,7 @@ export interface CashierLogItem {
   payload: { payment_id?: number; amount?: string; method?: string; payment_stage?: string; action?: string };
   created_at: string;
   can_reopen: boolean;
+  can_restore: boolean;
 }
 export interface StockItem {
   id: number;

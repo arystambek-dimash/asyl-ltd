@@ -31,7 +31,8 @@ from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerial
                           StatusChangeRequestSerializer)
 from .services import (add_payment, add_mixed_payments, confirm_order, reject_order,
                        receive_payment, accountant_confirm_payment,
-                       reopen_confirmed_payment, reject_payment, soft_delete_order, restore_order,
+                       reopen_confirmed_payment, reject_payment,
+                       restore_rejected_payment, soft_delete_order, restore_order,
                        purge_order,
                        repeat_order,
                        request_status_change, approve_status_change, reject_status_change)
@@ -164,7 +165,7 @@ class PaymentRefundView(APIView):
         mode = str(request.data.get("mode") or "auto")
         if mode not in ("auto", "apipay", "cash"):
             raise ValidationError({
-                "detail": "Выберите возврат через ApiPay или из кассы.",
+                "detail": "Выберите возврат по счёту или из кассы.",
                 "code": "invalid_refund_mode",
             })
         try:
@@ -293,6 +294,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "receive_payment": "payments.create",
         "confirm_payment": "payments.confirm",
         "reopen_payment": "payments.confirm",
+        "restore_payment": "payments.confirm",
         "reject_payment": "payments.confirm",
         "payments_queue": "payments.confirm",
         "cashier_log": "payments.confirm",
@@ -440,6 +442,19 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="cashier-log")
     def cashier_log(self, request):
         """Неизменяемый журнал действий с оплатами для экрана кассы."""
+        def public_message(message: str) -> str:
+            """Скрыть технические названия провайдера и коды способов оплаты."""
+            replacements = (
+                ("ApiPay: счёт", "Счёт на оплату"),
+                ("Счёт ApiPay", "Счёт на оплату"),
+                ("Возврат ApiPay", "Возврат по счёту"),
+                ("Статус возврата ApiPay", "Статус возврата по счёту"),
+                ("(invoice)", "(счёт на оплату)"),
+            )
+            for source, target in replacements:
+                message = message.replace(source, target)
+            return message
+
         qs = (EventLog.objects
               .filter(event_type="payment", order__in=Order.objects.all())
               .select_related("user", "order__client", "order__store"))
@@ -464,18 +479,29 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         }
         current_statuses = dict(Payment.objects.filter(pk__in=payment_ids)
                                 .values_list("pk", "status"))
+        closed_provider_payments = set(
+            ApiPayInvoice.objects.filter(
+                payment_id__in=payment_ids,
+                status__in=("cancelled", "expired", "error", "superseded"),
+            ).values_list("payment_id", flat=True)
+        )
         # После цикла confirm → reopen → confirm в журнале несколько событий
         # confirmed. Кнопка отката должна быть только у самого свежего.
         latest_confirmation: dict[int, int] = {}
+        latest_rejection: dict[int, int] = {}
         for event in events:
             payment_id = event.payload.get("payment_id")
             if (payment_id is not None
                     and event.payload.get("payment_stage") == "confirmed"
                     and payment_id not in latest_confirmation):
                 latest_confirmation[payment_id] = event.id
+            if (payment_id is not None
+                    and event.payload.get("payment_stage") == "rejected"
+                    and payment_id not in latest_rejection):
+                latest_rejection[payment_id] = event.id
         return Response([{
             "id": event.id,
-            "message": event.message,
+            "message": public_message(event.message),
             "user_name": event.user.username if event.user else None,
             "order": event.order_id,
             "client_name": event.order.client.name if event.order_id else None,
@@ -487,6 +513,12 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 event.payload.get("payment_stage") == "confirmed"
                 and current_statuses.get(event.payload.get("payment_id")) == "confirmed"
                 and latest_confirmation.get(event.payload.get("payment_id")) == event.id
+            ),
+            "can_restore": (
+                event.payload.get("payment_stage") == "rejected"
+                and current_statuses.get(event.payload.get("payment_id")) == "rejected"
+                and latest_rejection.get(event.payload.get("payment_id")) == event.id
+                and event.payload.get("payment_id") not in closed_provider_payments
             ),
         } for event in events])
 
@@ -626,6 +658,14 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         """Отмена случайного подтверждения: confirmed → received."""
         payment = get_object_or_404(Payment, pk=pid, order=self.get_object())
         payment = reopen_confirmed_payment(payment, request.user)
+        return Response(OrderSerializer(payment.order, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"],
+            url_path=r"payments/(?P<pid>\d+)/restore")
+    def restore_payment(self, request, pk=None, pid=None):
+        """Восстановление случайно отклонённой оплаты: rejected → очередь."""
+        payment = get_object_or_404(Payment, pk=pid, order=self.get_object())
+        payment = restore_rejected_payment(payment, request.user)
         return Response(OrderSerializer(payment.order, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path=r"payments/(?P<pid>\d+)/reject")
