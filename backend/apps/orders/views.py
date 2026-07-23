@@ -8,7 +8,7 @@ from django.http import FileResponse
 from io import BytesIO
 from datetime import timedelta
 from decimal import Decimal
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.utils import timezone
 from apps.common.permissions import HasPerm, PermViewSetMixin
 from apps.common.money import money_string
@@ -75,14 +75,54 @@ class PaymentTransactionListView(APIView):
         if method:
             qs = qs.filter(method=method)
         if search:
-            qs = qs.filter(
+            search_query = (
                 Q(order__client__first_name__icontains=search)
                 | Q(order__client__last_name__icontains=search)
                 | Q(order__client__company_name__icontains=search)
                 | Q(order__client__phone__icontains=search)
-                | Q(order_id__icontains=search)
             )
-        return Response(PaymentSerializer(qs[:500], many=True).data)
+            if search.isdigit():
+                search_query |= Q(order_id=int(search)) | Q(id=int(search))
+            qs = qs.filter(search_query)
+        try:
+            page = max(1, int(request.query_params.get("page") or 1))
+            page_size = min(
+                100, max(10, int(request.query_params.get("page_size") or 50))
+            )
+        except ValueError as exc:
+            raise ValidationError({
+                "detail": "Некорректный номер страницы.",
+                "code": "invalid_page",
+            }) from exc
+        count = qs.count()
+        pages = max(1, (count + page_size - 1) // page_size)
+        if page > pages:
+            page = pages
+        start = (page - 1) * page_size
+        rows = qs[start:start + page_size]
+        paid_by_currency = {
+            currency: money_string(
+                qs.filter(status="confirmed", order__currency=currency)
+                .aggregate(total=Sum("amount"))["total"] or Decimal("0")
+            )
+            for currency in ("KZT", "USD")
+        }
+        refunded_kzt = (
+            ApiPayInvoice.objects.filter(
+                payment__in=qs, total_refunded__gt=0
+            ).aggregate(total=Sum("total_refunded"))["total"]
+            or Decimal("0")
+        )
+        return Response({
+            "results": PaymentSerializer(rows, many=True).data,
+            "count": count,
+            "page": page,
+            "pages": pages,
+            "summary": {
+                "paid_by_currency": paid_by_currency,
+                "refunded_kzt": money_string(refunded_kzt),
+            },
+        })
 
 
 class PaymentReceiptView(APIView):

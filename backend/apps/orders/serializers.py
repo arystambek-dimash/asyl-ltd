@@ -3,6 +3,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from rest_framework import serializers
 from apps.clients.models import Department
+from apps.common.money import money_string
 from .models import Order, OrderItem, Payment, StatusChangeRequest
 from .services import set_truck_number
 from .statuses import public_status_label
