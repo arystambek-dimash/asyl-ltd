@@ -12,8 +12,8 @@ from .models import Order, Payment, StatusChangeRequest
 
 def with_order_api_relations(queryset: QuerySet[Order]) -> QuerySet[Order]:
     payments = Payment.objects.select_related(
-        "recorded_by", "received_by", "confirmed_by"
-    )
+        "recorded_by", "received_by", "confirmed_by", "apipay_invoice"
+    ).prefetch_related("apipay_invoice__refunds")
     status_requests = StatusChangeRequest.objects.select_related(
         "requested_by", "decided_by"
     )

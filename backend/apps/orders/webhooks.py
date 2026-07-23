@@ -12,7 +12,7 @@ from django.http import HttpRequest, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .apipay import apply_invoice_status
+from .apipay import apply_invoice_status, apply_refund_status
 from .models import ApiPayInvoice, ApiPayWebhookEvent
 
 
@@ -59,7 +59,7 @@ def apipay_webhook(request: HttpRequest) -> JsonResponse:
 
     invoice_record = None
     invoice_payload = payload.get("invoice")
-    if event_name == "invoice.status_changed":
+    if event_name in ("invoice.status_changed", "invoice.qr_scanned", "invoice.refunded"):
         if not isinstance(invoice_payload, dict):
             return JsonResponse({"error": "invoice_required"}, status=400)
         try:
@@ -74,12 +74,22 @@ def apipay_webhook(request: HttpRequest) -> JsonResponse:
 
     try:
         with transaction.atomic():
-            if event_name == "invoice.status_changed":
+            if event_name in ("invoice.status_changed", "invoice.qr_scanned"):
                 try:
                     apply_invoice_status(invoice_record, invoice_payload)
                 except ValueError as exc:
                     return JsonResponse(
                         {"error": "invalid_invoice", "detail": str(exc)}, status=400
+                    )
+            elif event_name == "invoice.refunded":
+                refund_payload = payload.get("refund")
+                if not isinstance(refund_payload, dict):
+                    return JsonResponse({"error": "refund_required"}, status=400)
+                try:
+                    apply_refund_status(invoice_record, refund_payload)
+                except (KeyError, TypeError, ValueError) as exc:
+                    return JsonResponse(
+                        {"error": "invalid_refund", "detail": str(exc)}, status=400
                     )
             ApiPayWebhookEvent.objects.create(
                 body_sha256=body_sha256,

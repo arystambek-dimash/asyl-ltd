@@ -181,7 +181,14 @@ export interface PortalOrder {
     status: string;
     error_code: string | null;
     paid_at: string | null;
+    channel: "phone" | "qr";
+    phone_number: string | null;
+    qr_token_url: string | null;
+    qr_image_url: string | null;
+    qr_expires_at: string | null;
+    total_refunded: string;
   } | null;
+  client_phone: string;
   truck_number: string;
   debt_requested: boolean;
   debt_override: boolean;
@@ -205,6 +212,25 @@ export interface Payment {
   received_at?: string | null;
   confirmed_by_name?: string | null;
   confirmed_at?: string | null;
+  client_name?: string;
+  provider?: {
+    invoice_id: number | null;
+    channel: "phone" | "qr";
+    status: string;
+    phone_number: string | null;
+    qr_token_url: string | null;
+    qr_image_url: string | null;
+    total_refunded: string;
+    available_for_refund: string;
+    refunds: {
+      id: number;
+      amount: string;
+      status: string;
+      reason: string;
+      error_code: string | null;
+      created_at: string;
+    }[];
+  } | null;
 }
 
 export interface PaymentQueueItem extends Payment {

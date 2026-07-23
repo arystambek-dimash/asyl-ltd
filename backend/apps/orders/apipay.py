@@ -19,7 +19,7 @@ from rest_framework.exceptions import ValidationError
 
 from apps.eventlog.services import log_event
 
-from .models import ApiPayInvoice, Order, Payment
+from .models import ApiPayInvoice, ApiPayRefund, Order, Payment
 from .services import create_client_payment, reject_payment, sync_payment_status
 
 
@@ -119,7 +119,9 @@ def api_request(
     return result
 
 
-def create_invoice(payment: Payment) -> ApiPayInvoice:
+def create_invoice(
+    payment: Payment, *, channel: str = "phone", phone_number: str | None = None
+) -> ApiPayInvoice:
     """Create or recover an idempotent ApiPay invoice for a payment."""
     record, _ = ApiPayInvoice.objects.get_or_create(
         payment=payment,
@@ -134,15 +136,18 @@ def create_invoice(payment: Payment) -> ApiPayInvoice:
             "detail": "ApiPay принимает оплату только в тенге.",
             "code": "apipay_kzt_only",
         })
+    phone = normalize_phone(phone_number or order.client.phone) if channel == "phone" else ""
     request_payload = {
-        "phone_number": normalize_phone(order.client.phone),
         "amount": float(Decimal(payment.amount).quantize(Decimal("0.01"))),
         "description": f"Заказ №{order.pk}",
         "external_order_id": f"order_{order.pk}",
         "external_order_id_idempotency": record.idempotency_key,
     }
+    if channel == "phone":
+        request_payload["phone_number"] = phone
+    path = "/invoices/qr" if channel == "qr" else "/invoices"
     try:
-        response = api_request("POST", "/invoices", request_payload)
+        response = api_request("POST", path, request_payload)
     except ApiPayAPIError as exc:
         if exc.status_code == 409 and exc.error_code == "duplicate_idempotency_key":
             response = {
@@ -169,11 +174,17 @@ def create_invoice(payment: Payment) -> ApiPayInvoice:
         ) from exc
     record.invoice_id = invoice_id
     record.status = str(response.get("status") or "processing")
+    record.channel = channel
+    record.phone_number = phone
+    record.qr_token_url = str(response.get("qr_token_url") or "")
+    record.qr_image_url = str(response.get("qr_image_url") or "")
+    record.qr_expires_at = _parsed_datetime(response.get("qr_expires_at"))
     record.error_code = ""
     record.error_message = ""
     record.response_payload = response
     record.save(update_fields=[
-        "invoice_id", "status", "error_code", "error_message",
+        "invoice_id", "status", "channel", "phone_number", "qr_token_url",
+        "qr_image_url", "qr_expires_at", "error_code", "error_message",
         "response_payload", "updated_at",
     ])
     log_event(
@@ -191,17 +202,22 @@ def create_invoice(payment: Payment) -> ApiPayInvoice:
     return record
 
 
-def start_order_payment(order: Order, user) -> ApiPayInvoice:
+def start_order_payment(
+    order: Order, user, *, channel: str = "phone", phone_number: str | None = None
+) -> ApiPayInvoice:
     """Validate, create the internal payment, then issue the ApiPay invoice."""
     if order.currency != "KZT":
         raise ValidationError({
             "detail": "ApiPay принимает оплату только в тенге.",
             "code": "apipay_kzt_only",
         })
-    normalize_phone(order.client.phone)
+    if channel not in ("phone", "qr"):
+        raise ValidationError({"detail": "Выберите QR или оплату по номеру."})
+    if channel == "phone":
+        normalize_phone(phone_number or order.client.phone)
     payment = create_client_payment(order, "kaspi", user)
     try:
-        return create_invoice(payment)
+        return create_invoice(payment, channel=channel, phone_number=phone_number)
     except (ApiPayAPIError, ApiPayConfigurationError, ValidationError):
         payment.refresh_from_db()
         if payment.status in Payment.IN_PROGRESS_STATUSES:
@@ -217,6 +233,67 @@ def check_invoice_statuses(invoice_ids: list[int]) -> dict[str, Any]:
     return api_request(
         "POST", "/invoices/status/check", {"invoice_ids": invoice_ids}
     )
+
+
+def create_refund(
+    record: ApiPayInvoice, user, *, amount: object = None, reason: str = ""
+) -> ApiPayRefund:
+    if record.channel == "qr":
+        raise ValidationError({
+            "detail": "ApiPay не поддерживает возвраты QR-счетов.",
+            "code": "qr_refund_unsupported",
+        })
+    payload: dict[str, Any] = {}
+    if amount not in (None, ""):
+        try:
+            value = Decimal(str(amount)).quantize(Decimal("0.01"))
+        except InvalidOperation as exc:
+            raise ValidationError({"detail": "Некорректная сумма возврата."}) from exc
+        if value <= 0:
+            raise ValidationError({"detail": "Сумма возврата должна быть больше нуля."})
+        payload["amount"] = float(value)
+    if reason:
+        payload["reason"] = reason[:500]
+    response = api_request("POST", f"/invoices/{record.invoice_id}/refund", payload)
+    refund_payload = response.get("refund") or {}
+    refund_id = int(refund_payload["id"])
+    return ApiPayRefund.objects.update_or_create(
+        refund_id=refund_id,
+        defaults={
+            "invoice": record,
+            "amount": Decimal(str(refund_payload.get("amount") or amount or record.payment.amount)),
+            "status": str(refund_payload.get("status") or "pending"),
+            "reason": reason[:500],
+            "kaspi_refund_id": str(refund_payload.get("kaspi_refund_id") or ""),
+            "response_payload": response,
+            "requested_by": user,
+        },
+    )[0]
+
+
+@transaction.atomic
+def apply_refund_status(record: ApiPayInvoice, payload: dict[str, Any]) -> None:
+    refund_id = int(payload["id"])
+    refund, _ = ApiPayRefund.objects.update_or_create(
+        refund_id=refund_id,
+        defaults={
+            "invoice": record,
+            "amount": Decimal(str(payload["amount"])),
+            "status": str(payload.get("status") or "pending"),
+            "reason": str(payload.get("reason") or ""),
+            "kaspi_refund_id": str(payload.get("kaspi_refund_id") or ""),
+            "error_code": str(payload.get("error_code") or ""),
+            "error_message": str(payload.get("error_message") or ""),
+            "response_payload": payload,
+        },
+    )
+    if refund.status == "completed":
+        total = sum(
+            (row.amount for row in record.refunds.filter(status="completed")),
+            Decimal("0"),
+        )
+        record.total_refunded = total
+        record.save(update_fields=["total_refunded", "updated_at"])
 
 
 def _parsed_datetime(value: object) -> datetime | None:

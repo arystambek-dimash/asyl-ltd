@@ -18,8 +18,14 @@ export interface RegisterPayload {
   iin: string;
 }
 
-export const payOrder = (id: number, method: PortalPaymentMethod) =>
-  api.post<PortalOrder>(`/portal/orders/${id}/pay/`, { method }).then((r) => r.data);
+export const payOrder = (
+  id: number,
+  method: PortalPaymentMethod,
+  options?: { channel?: "qr" | "phone"; phone_number?: string },
+) =>
+  api
+    .post<PortalOrder & { payment_redirect_url?: string }>(`/portal/orders/${id}/pay/`, { method, ...options })
+    .then((r) => r.data);
 
 export const setTruck = (id: number, truck_number: string) =>
   api.patch<PortalOrder>(`/portal/orders/${id}/truck/`, { truck_number }).then((r) => r.data);

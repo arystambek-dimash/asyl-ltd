@@ -221,10 +221,40 @@ class ApiPayInvoice(models.Model):
     invoice_id = models.BigIntegerField(unique=True, null=True, blank=True)
     idempotency_key = models.CharField(max_length=191, unique=True)
     status = models.CharField(max_length=32, default="creating")
+    channel = models.CharField(max_length=16, default="phone")
+    phone_number = models.CharField(max_length=20, blank=True, default="")
+    qr_token_url = models.URLField(max_length=1000, blank=True, default="")
+    qr_image_url = models.URLField(max_length=1000, blank=True, default="")
+    qr_expires_at = models.DateTimeField(null=True, blank=True)
+    total_refunded = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0
+    )
     error_code = models.CharField(max_length=100, blank=True, default="")
     error_message = models.TextField(blank=True, default="")
     response_payload = models.JSONField(default=dict, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class ApiPayRefund(models.Model):
+    """Полный или частичный возврат по телефонному счёту ApiPay."""
+
+    invoice = models.ForeignKey(
+        ApiPayInvoice, on_delete=models.CASCADE, related_name="refunds"
+    )
+    refund_id = models.BigIntegerField(unique=True)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    status = models.CharField(max_length=20, default="pending")
+    reason = models.CharField(max_length=500, blank=True, default="")
+    kaspi_refund_id = models.CharField(max_length=100, blank=True, default="")
+    error_code = models.CharField(max_length=100, blank=True, default="")
+    error_message = models.TextField(blank=True, default="")
+    response_payload = models.JSONField(default=dict, blank=True)
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="requested_apipay_refunds",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

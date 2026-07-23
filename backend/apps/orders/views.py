@@ -4,6 +4,8 @@ from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
+from django.http import FileResponse
+from io import BytesIO
 from datetime import timedelta
 from decimal import Decimal
 from django.db.models import Q
@@ -16,7 +18,9 @@ from apps.eventlog.models import EventLog
 from apps.shipments.services import (
     finish_train_loading, record_count, set_loading_camera, start_train_loading)
 from apps.shipments.serializers import LoadSerializer
-from .models import Order, Payment, StatusChangeRequest
+from .models import ApiPayInvoice, Order, Payment, StatusChangeRequest
+from .apipay import ApiPayAPIError, create_invoice, create_refund
+from .invoices import build_payment_receipt_pdf
 from .querysets import with_order_api_relations
 from .reports import summary_report
 from .statuses import PUBLIC_STATUS_LABELS, statuses_in_group
@@ -48,6 +52,92 @@ class ReportSummaryView(APIView):
         if store:
             qs = qs.filter(store_id=store)
         return Response(summary_report(qs, date_from, date_to))
+
+
+class PaymentTransactionListView(APIView):
+    def get_permissions(self):
+        return [HasPerm("payments.view")]
+
+    def get(self, request):
+        qs = (
+            Payment.objects.select_related(
+                "order__client", "recorded_by", "received_by", "confirmed_by",
+                "apipay_invoice",
+            )
+            .prefetch_related("apipay_invoice__refunds")
+            .order_by("-paid_at")
+        )
+        status = request.query_params.get("status")
+        method = request.query_params.get("method")
+        search = request.query_params.get("search")
+        if status:
+            qs = qs.filter(status=status)
+        if method:
+            qs = qs.filter(method=method)
+        if search:
+            qs = qs.filter(
+                Q(order__client__first_name__icontains=search)
+                | Q(order__client__last_name__icontains=search)
+                | Q(order__client__company_name__icontains=search)
+                | Q(order__client__phone__icontains=search)
+                | Q(order_id__icontains=search)
+            )
+        return Response(PaymentSerializer(qs[:500], many=True).data)
+
+
+class PaymentReceiptView(APIView):
+    def get_permissions(self):
+        return [HasPerm("payments.view")]
+
+    def get(self, request, payment_id):
+        payment = get_object_or_404(Payment, pk=payment_id)
+        pdf = build_payment_receipt_pdf(payment)
+        return FileResponse(
+            BytesIO(pdf), content_type="application/pdf", as_attachment=True,
+            filename=f"receipt_{payment.id}.pdf",
+        )
+
+
+class PaymentRefundView(APIView):
+    def get_permissions(self):
+        return [HasPerm("payments.confirm")]
+
+    def post(self, request, payment_id):
+        invoice = get_object_or_404(
+            ApiPayInvoice.objects.select_related("payment"), payment_id=payment_id
+        )
+        try:
+            refund = create_refund(
+                invoice, request.user, amount=request.data.get("amount"),
+                reason=request.data.get("reason") or "",
+            )
+        except ApiPayAPIError as exc:
+            raise ValidationError({
+                "detail": exc.message, "code": exc.error_code
+            }) from exc
+        return Response({
+            "id": refund.refund_id,
+            "amount": money_string(refund.amount),
+            "status": refund.status,
+        }, status=201)
+
+
+class PaymentKaspiQrView(APIView):
+    def get_permissions(self):
+        return [HasPerm("payments.create")]
+
+    def post(self, request, payment_id):
+        payment = get_object_or_404(
+            Payment.objects.select_related("order__client"), pk=payment_id,
+            method="kaspi",
+        )
+        try:
+            invoice = create_invoice(payment, channel="qr")
+        except ApiPayAPIError as exc:
+            raise ValidationError({
+                "detail": exc.message, "code": exc.error_code
+            }) from exc
+        return Response(PaymentSerializer(payment).data, status=201)
 
 
 class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):

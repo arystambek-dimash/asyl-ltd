@@ -1,5 +1,6 @@
 "use client";
 import { use, useState } from "react";
+import Image from "next/image";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { DataGate } from "@/components/ui/data-state";
-import { Banknote, CheckCircle2, Clock, FileText, HandCoins, Smartphone } from "lucide-react";
+import { Banknote, CheckCircle2, Clock, FileText, HandCoins, QrCode, Smartphone } from "lucide-react";
 import { useApi } from "@/lib/use-api";
 import { apiError } from "@/lib/api";
 import { currencySymbol, formatMoney, formatPortalMoney } from "@/lib/utils";
@@ -23,6 +24,8 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [truck, setTruckVal] = useState("");
+  const [kaspiMode, setKaspiMode] = useState<"qr" | "phone" | null>(null);
+  const [kaspiPhone, setKaspiPhone] = useState("");
 
   async function run(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -38,8 +41,9 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
   }
 
   async function selectPayment(method: PortalPaymentMethod) {
-    await payOrder(Number(id), method);
+    const result = await payOrder(Number(id), method);
     if (method === "invoice") await downloadInvoice(Number(id));
+    if (result.payment_redirect_url) window.location.assign(result.payment_redirect_url);
   }
 
   if (!order)
@@ -51,6 +55,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
 
   const step = clientStep(order.status, order.payment_status);
   const remaining = order.remaining_amount == null ? 0 : Number(order.remaining_amount);
+  const phone = kaspiPhone || order.client_phone || "";
 
   return (
     <AppShell title={`Заказ #${order.id}`} portal>
@@ -161,14 +166,38 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                     </div>
                   ) : order.apipay_invoice &&
                     ["creating", "processing", "pending"].includes(order.apipay_invoice.status) ? (
-                    <div className="flex items-start gap-2 rounded-lg border border-[var(--primary)]/25 bg-[var(--primary)]/5 p-3 text-sm">
-                      <Smartphone className="mt-0.5 size-4 shrink-0 text-[var(--primary)]" />
-                      <div>
-                        <div className="font-medium">Счёт отправлен в приложение Kaspi</div>
-                        <div className="mt-0.5 text-[var(--muted-foreground)]">
-                          Откройте Kaspi и подтвердите оплату. Статус обновится автоматически.
+                    <div className="rounded-xl border border-[var(--primary)]/25 bg-[var(--primary)]/5 p-4 text-sm">
+                      <div className="flex items-start gap-2">
+                        <Smartphone className="mt-0.5 size-4 shrink-0 text-[var(--primary)]" />
+                        <div>
+                          <div className="font-medium">
+                            {order.apipay_invoice.channel === "qr"
+                              ? "Kaspi QR готов к оплате"
+                              : "Счёт отправлен в Kaspi"}
+                          </div>
+                          <div className="mt-0.5 text-[var(--muted-foreground)]">
+                            Статус оплаты обновится автоматически.
+                          </div>
                         </div>
                       </div>
+                      {order.apipay_invoice.qr_image_url && (
+                        <Image
+                          src={order.apipay_invoice.qr_image_url}
+                          alt="Kaspi QR для оплаты"
+                          width={224}
+                          height={224}
+                          unoptimized
+                          className="mx-auto mt-4 size-56 rounded-2xl bg-white p-2 shadow-sm"
+                        />
+                      )}
+                      {order.apipay_invoice.qr_token_url && (
+                        <Button
+                          className="mt-4 w-full"
+                          onClick={() => window.location.assign(order.apipay_invoice!.qr_token_url!)}
+                        >
+                          <Smartphone className="size-4" /> Открыть Kaspi
+                        </Button>
+                      )}
                     </div>
                   ) : order.has_pending_payment ? (
                     <div className="flex items-start gap-2 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 p-3 text-sm text-[var(--warning)]">
@@ -193,7 +222,10 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                           disabled={busy}
                           variant="outline"
                           className="h-auto justify-start py-3"
-                          onClick={() => run(() => selectPayment("kaspi"))}
+                          onClick={() => {
+                            setKaspiPhone(order.client_phone || "");
+                            setKaspiMode("qr");
+                          }}
                         >
                           <Smartphone className="size-4" /> Kaspi Pay
                         </Button>
@@ -214,6 +246,56 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                           <HandCoins className="size-4" /> В долг
                         </Button>
                       </div>
+                      {kaspiMode && (
+                        <div className="rounded-xl border border-[var(--border)] bg-[var(--muted)]/35 p-4">
+                          <div className="mb-3 flex gap-2">
+                            <Button
+                              size="sm"
+                              variant={kaspiMode === "qr" ? "default" : "outline"}
+                              onClick={() => setKaspiMode("qr")}
+                            >
+                              <QrCode className="size-4" /> QR / открыть Kaspi
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant={kaspiMode === "phone" ? "default" : "outline"}
+                              onClick={() => setKaspiMode("phone")}
+                            >
+                              <Smartphone className="size-4" /> На номер
+                            </Button>
+                          </div>
+                          {kaspiMode === "phone" && (
+                            <div className="mb-3">
+                              <label className="mb-1.5 block text-xs text-[var(--muted-foreground)]">
+                                Номер Kaspi — можно изменить, если платит другой человек
+                              </label>
+                              <Input
+                                inputMode="tel"
+                                value={phone}
+                                onChange={(event) => setKaspiPhone(event.target.value)}
+                                placeholder="8 700 000 00 00"
+                              />
+                            </div>
+                          )}
+                          <Button
+                            className="w-full"
+                            disabled={busy || (kaspiMode === "phone" && !phone)}
+                            onClick={() =>
+                              run(async () => {
+                                const result = await payOrder(Number(id), "kaspi", {
+                                  channel: kaspiMode,
+                                  phone_number: kaspiMode === "phone" ? phone : undefined,
+                                });
+                                if (result.payment_redirect_url) {
+                                  window.location.assign(result.payment_redirect_url);
+                                }
+                              })
+                            }
+                          >
+                            {kaspiMode === "qr" ? "Перейти к оплате" : "Отправить счёт в Kaspi"}
+                          </Button>
+                        </div>
+                      )}
                     </>
                   )}
 

@@ -1,3 +1,5 @@
+from decimal import Decimal
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from rest_framework import serializers
 from apps.clients.models import Department
@@ -99,13 +101,16 @@ class PaymentSerializer(serializers.ModelSerializer):
     confirmed_by_name = serializers.SerializerMethodField()
     method_label = serializers.SerializerMethodField()
     currency = serializers.CharField(source="order.currency", read_only=True)
+    provider = serializers.SerializerMethodField()
+    client_name = serializers.CharField(source="order.client.name", read_only=True)
 
     class Meta:
         model = Payment
         fields = ["id", "order", "currency", "amount", "method", "method_label", "status",
                   "note", "paid_at", "recorded_by", "recorded_by_name",
                   "received_by_name", "received_at",
-                  "confirmed_by", "confirmed_by_name", "confirmed_at"]
+                  "confirmed_by", "confirmed_by_name", "confirmed_at",
+                  "client_name", "provider"]
         read_only_fields = ["order", "paid_at", "recorded_by", "confirmed_by"]
 
     def get_recorded_by_name(self, obj):
@@ -119,6 +124,35 @@ class PaymentSerializer(serializers.ModelSerializer):
 
     def get_method_label(self, obj):
         return PAYMENT_METHOD_LABELS.get(obj.method, obj.method)
+
+    def get_provider(self, obj):
+        try:
+            invoice = obj.apipay_invoice
+        except ObjectDoesNotExist:
+            return None
+        return {
+            "invoice_id": invoice.invoice_id,
+            "channel": invoice.channel,
+            "status": invoice.status,
+            "phone_number": invoice.phone_number or None,
+            "qr_token_url": invoice.qr_token_url or None,
+            "qr_image_url": invoice.qr_image_url or None,
+            "total_refunded": money_string(invoice.total_refunded),
+            "available_for_refund": money_string(max(
+                Decimal("0"), obj.amount - invoice.total_refunded
+            )),
+            "refunds": [
+                {
+                    "id": row.refund_id,
+                    "amount": money_string(row.amount),
+                    "status": row.status,
+                    "reason": row.reason,
+                    "error_code": row.error_code or None,
+                    "created_at": row.created_at,
+                }
+                for row in invoice.refunds.all()
+            ],
+        }
 
 
 class DepartmentLabelMixin:

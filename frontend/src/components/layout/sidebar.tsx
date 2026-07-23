@@ -18,6 +18,7 @@ import {
   X,
   Store,
   HandCoins,
+  CreditCard,
   ScanLine,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -65,6 +66,7 @@ function staffSections(): NavSection[] {
         { href: "/orders", label: "Заказы", icon: ClipboardList, perm: "orders.view" },
         // Касса (бывш. Табло бухгалтера): подтверждение оплат + вкладка «Долги».
         { href: "/accounting", label: "Касса", icon: HandCoins, perm: ["payments.confirm", "reports.view"] },
+        { href: "/accounting/transactions", label: "Транзакции", icon: CreditCard, perm: "payments.view" },
         // Единый пост: машины и вагоны вместе — лайв-этапы и моноблок отгрузки.
         { href: "/shipping", label: "Пост погрузки", icon: Truck, perm: ["shipping.view", "train.view"] },
         { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "shipping.load" },

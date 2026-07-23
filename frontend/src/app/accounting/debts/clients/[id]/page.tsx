@@ -1,5 +1,6 @@
 "use client";
 import { use, useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
@@ -43,7 +44,7 @@ import {
   Truck,
   Wallet,
 } from "lucide-react";
-import type { Client, Order } from "@/lib/types";
+import type { Client, Order, Payment } from "@/lib/types";
 
 const money = formatCurrency;
 
@@ -411,11 +412,13 @@ function PaymentModal({
   const [parts, setParts] = useState<PaymentPart[]>([{ id: 1, method: "cash", amount: "" }]);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [kaspiQr, setKaspiQr] = useState<Payment["provider"] | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setParts([{ id: Date.now(), method: "cash", amount: "" }]);
     setNote("");
+    setKaspiQr(null);
   }, [order?.id, open]);
 
   if (!order) return null;
@@ -442,11 +445,18 @@ function PaymentModal({
     onError("");
     try {
       const payload = parts.filter((part) => Number(part.amount) > 0).map(({ method, amount }) => ({ method, amount }));
-      await api.post(`/orders/${order.id}/payments/`, { parts: payload, note });
+      const created = await api.post<Payment[]>(`/orders/${order.id}/payments/`, { parts: payload, note });
+      const kaspi = created.data.find((payment) => payment.method === "kaspi");
+      if (kaspi) {
+        const qr = await api.post<Payment>(`/payment-transactions/${kaspi.id}/kaspi-qr/`);
+        setKaspiQr(qr.data.provider ?? null);
+      }
       await onPaid(
-        `Оплата по заказу #${order.id} распределена по ${payload.length} способам. Подтвердите получение в кассе.`,
+        kaspi
+          ? `Kaspi QR по заказу #${order.id} создан. Остальные части добавлены в кассу.`
+          : `Оплата по заказу #${order.id} распределена по ${payload.length} способам. Подтвердите получение в кассе.`,
       );
-      onClose();
+      if (!kaspi) onClose();
     } catch (e) {
       onError(apiError(e));
     } finally {
@@ -464,161 +474,189 @@ function PaymentModal({
       className="max-w-xl"
       mobileFullscreen
       footer={
-        <>
-          <Button variant="outline" disabled={busy} onClick={onClose}>
-            Отмена
-          </Button>
-          <Button
-            disabled={busy || !!blockingStore || allocated <= 0 || allocated > available}
-            onClick={() => void pay()}
-          >
-            {busy ? "Сохранение…" : `В очередь · ${money(allocated, order.currency)}`}
-          </Button>
-        </>
+        kaspiQr ? (
+          <Button onClick={onClose}>Готово</Button>
+        ) : (
+          <>
+            <Button variant="outline" disabled={busy} onClick={onClose}>
+              Отмена
+            </Button>
+            <Button
+              disabled={busy || !!blockingStore || allocated <= 0 || allocated > available}
+              onClick={() => void pay()}
+            >
+              {busy ? "Сохранение…" : `В очередь · ${money(allocated, order.currency)}`}
+            </Button>
+          </>
+        )
       }
     >
       <div className="flex flex-col gap-5">
-        {orders.length > 1 && (
-          <div className="flex flex-col gap-1.5">
-            <span className="text-sm text-[var(--muted-foreground)]">Заказ</span>
-            <Select value={String(order.id)} onValueChange={(v) => onSelect(Number(v))}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {orders.map((o) => (
-                  <SelectItem key={o.id} value={String(o.id)}>
-                    Заказ #{o.id} — остаток {money(remainingOf(o), o.currency)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        )}
-
-        <div>
-          <div className="text-sm text-[var(--muted-foreground)]">Остаток к оплате</div>
-          <div className="mt-1 text-[28px] font-bold leading-none tracking-tight tabular-nums text-[var(--destructive)]">
-            {money(available, order.currency)}
-          </div>
-          {reserved > 0 && (
-            <div className="mt-1 text-xs text-[var(--muted-foreground)]">
-              Ещё {money(reserved, order.currency)} уже ожидает подтверждения
-            </div>
-          )}
-        </div>
-
-        {blockingStore ? (
-          <div className="flex items-start gap-2 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2.5 text-sm text-[var(--warning)]">
-            <Clock className="mt-0.5 size-4 shrink-0" />
-            <span>
-              Оплата заблокирована: магазин «{blockingStore.name}» платит только по расписанию (
-              {scheduleLabel(blockingStore)}).
-            </span>
+        {kaspiQr?.qr_image_url ? (
+          <div className="text-center">
+            <div className="text-lg font-semibold">Kaspi QR готов</div>
+            <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+              Покажите QR клиенту или откройте оплату на его устройстве.
+            </p>
+            <Image
+              src={kaspiQr.qr_image_url}
+              alt="Kaspi QR"
+              width={256}
+              height={256}
+              unoptimized
+              className="mx-auto mt-4 size-64 rounded-2xl bg-white p-2 shadow-sm"
+            />
+            {kaspiQr.qr_token_url && (
+              <Button className="mt-4 w-full" onClick={() => window.open(kaspiQr.qr_token_url!, "_blank", "noopener")}>
+                Открыть Kaspi
+              </Button>
+            )}
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-4 gap-2">
-              {QUICK_FRACTIONS.map(({ label, f }) => {
-                const v = quickValue(f);
-                const active = parts.length === 1 && Number(parts[0]?.amount) === v;
-                return (
-                  <button
-                    key={label}
-                    type="button"
-                    onClick={() =>
-                      setParts([{ id: Date.now(), method: parts[0]?.method ?? "cash", amount: String(v) }])
-                    }
-                    className={cn(
-                      "flex flex-col items-center gap-0.5 rounded-lg border px-1 py-2 transition-colors",
-                      active
-                        ? "border-[var(--foreground)] bg-[var(--muted)]"
-                        : "border-[var(--border)] hover:border-[var(--foreground)]/40",
-                    )}
-                  >
-                    <span className="text-sm font-semibold">{label}</span>
-                    <span className="text-[11px] tabular-nums text-[var(--muted-foreground)]">
-                      {formatMoney(v)} {order.currency === "USD" ? "$" : "₸"}
-                    </span>
-                  </button>
-                );
-              })}
+            {orders.length > 1 && (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm text-[var(--muted-foreground)]">Заказ</span>
+                <Select value={String(order.id)} onValueChange={(v) => onSelect(Number(v))}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {orders.map((o) => (
+                      <SelectItem key={o.id} value={String(o.id)}>
+                        Заказ #{o.id} — остаток {money(remainingOf(o), o.currency)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            <div>
+              <div className="text-sm text-[var(--muted-foreground)]">Остаток к оплате</div>
+              <div className="mt-1 text-[28px] font-bold leading-none tracking-tight tabular-nums text-[var(--destructive)]">
+                {money(available, order.currency)}
+              </div>
+              {reserved > 0 && (
+                <div className="mt-1 text-xs text-[var(--muted-foreground)]">
+                  Ещё {money(reserved, order.currency)} уже ожидает подтверждения
+                </div>
+              )}
             </div>
 
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">Распределение</span>
-                <span
-                  className={cn(
-                    "text-xs tabular-nums",
-                    allocated > available ? "text-[var(--destructive)]" : "text-[var(--muted-foreground)]",
-                  )}
-                >
-                  {money(allocated, order.currency)} из {money(available, order.currency)}
+            {blockingStore ? (
+              <div className="flex items-start gap-2 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2.5 text-sm text-[var(--warning)]">
+                <Clock className="mt-0.5 size-4 shrink-0" />
+                <span>
+                  Оплата заблокирована: магазин «{blockingStore.name}» платит только по расписанию (
+                  {scheduleLabel(blockingStore)}).
                 </span>
               </div>
-              {parts.map((part, index) => (
-                <div key={part.id} className="grid grid-cols-[minmax(0,1fr)_minmax(100px,.75fr)_40px] gap-2">
-                  <Select value={part.method} onValueChange={(method) => updatePart(part.id, { method })}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {CASHIER_PAYMENT_METHODS.filter(
-                        (method) => method === part.method || !parts.some((item) => item.method === method),
-                      ).map((method) => (
-                        <SelectItem key={method} value={method}>
-                          {CASHIER_PAYMENT_METHOD_LABELS[method]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    inputMode="decimal"
-                    aria-label={`Сумма части ${index + 1}`}
-                    placeholder="0"
-                    value={part.amount}
-                    onChange={(event) => updatePart(part.id, { amount: event.target.value })}
-                  />
-                  <button
-                    type="button"
-                    disabled={parts.length === 1}
-                    onClick={() => setParts((current) => current.filter((item) => item.id !== part.id))}
-                    className="flex size-10 items-center justify-center rounded-md border text-[var(--muted-foreground)] hover:text-[var(--destructive)] disabled:opacity-30"
-                    aria-label="Удалить способ оплаты"
-                  >
-                    <Trash2 className="size-4" />
-                  </button>
+            ) : (
+              <>
+                <div className="grid grid-cols-4 gap-2">
+                  {QUICK_FRACTIONS.map(({ label, f }) => {
+                    const v = quickValue(f);
+                    const active = parts.length === 1 && Number(parts[0]?.amount) === v;
+                    return (
+                      <button
+                        key={label}
+                        type="button"
+                        onClick={() =>
+                          setParts([{ id: Date.now(), method: parts[0]?.method ?? "cash", amount: String(v) }])
+                        }
+                        className={cn(
+                          "flex flex-col items-center gap-0.5 rounded-lg border px-1 py-2 transition-colors",
+                          active
+                            ? "border-[var(--foreground)] bg-[var(--muted)]"
+                            : "border-[var(--border)] hover:border-[var(--foreground)]/40",
+                        )}
+                      >
+                        <span className="text-sm font-semibold">{label}</span>
+                        <span className="text-[11px] tabular-nums text-[var(--muted-foreground)]">
+                          {formatMoney(v)} {order.currency === "USD" ? "$" : "₸"}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
-              ))}
-              {parts.length < CASHIER_PAYMENT_METHODS.length && (
-                <Button type="button" variant="outline" className="w-full" onClick={addPart}>
-                  <Plus className="size-4" /> Добавить способ оплаты
-                </Button>
-              )}
-              {allocated > available && (
-                <p className="text-xs text-[var(--destructive)]">Распределение превышает доступный остаток.</p>
-              )}
-            </div>
 
-            <div className="flex flex-col gap-1.5">
-              <span className="text-sm text-[var(--muted-foreground)]">Примечание</span>
-              <Input
-                placeholder="Введите примечание (необязательно)"
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-              />
-            </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">Распределение</span>
+                    <span
+                      className={cn(
+                        "text-xs tabular-nums",
+                        allocated > available ? "text-[var(--destructive)]" : "text-[var(--muted-foreground)]",
+                      )}
+                    >
+                      {money(allocated, order.currency)} из {money(available, order.currency)}
+                    </span>
+                  </div>
+                  {parts.map((part, index) => (
+                    <div key={part.id} className="grid grid-cols-[minmax(0,1fr)_minmax(100px,.75fr)_40px] gap-2">
+                      <Select value={part.method} onValueChange={(method) => updatePart(part.id, { method })}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {CASHIER_PAYMENT_METHODS.filter(
+                            (method) => method === part.method || !parts.some((item) => item.method === method),
+                          ).map((method) => (
+                            <SelectItem key={method} value={method}>
+                              {CASHIER_PAYMENT_METHOD_LABELS[method]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        inputMode="decimal"
+                        aria-label={`Сумма части ${index + 1}`}
+                        placeholder="0"
+                        value={part.amount}
+                        onChange={(event) => updatePart(part.id, { amount: event.target.value })}
+                      />
+                      <button
+                        type="button"
+                        disabled={parts.length === 1}
+                        onClick={() => setParts((current) => current.filter((item) => item.id !== part.id))}
+                        className="flex size-10 items-center justify-center rounded-md border text-[var(--muted-foreground)] hover:text-[var(--destructive)] disabled:opacity-30"
+                        aria-label="Удалить способ оплаты"
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </div>
+                  ))}
+                  {parts.length < CASHIER_PAYMENT_METHODS.length && (
+                    <Button type="button" variant="outline" className="w-full" onClick={addPart}>
+                      <Plus className="size-4" /> Добавить способ оплаты
+                    </Button>
+                  )}
+                  {allocated > available && (
+                    <p className="text-xs text-[var(--destructive)]">Распределение превышает доступный остаток.</p>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-sm text-[var(--muted-foreground)]">Примечание</span>
+                  <Input
+                    placeholder="Введите примечание (необязательно)"
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                  />
+                </div>
+              </>
+            )}
+
+            <p className="flex items-start gap-2 border-t pt-3 text-xs text-[var(--muted-foreground)]">
+              <ShieldCheck className="mt-0.5 size-4 shrink-0" />
+              Платёж уменьшит долг только после ручного подтверждения получения кассиром.
+            </p>
           </>
         )}
-
-        <p className="flex items-start gap-2 border-t pt-3 text-xs text-[var(--muted-foreground)]">
-          <ShieldCheck className="mt-0.5 size-4 shrink-0" />
-          Платёж уменьшит долг только после ручного подтверждения получения кассиром.
-        </p>
       </div>
     </Modal>
   );

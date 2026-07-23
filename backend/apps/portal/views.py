@@ -87,7 +87,7 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         # paid_total и has_pending_payment обходят оплаты — грузим заранее.
         return (
             Order.objects.filter(client__user=self.request.user)
-            .select_related("store")
+            .select_related("store", "client")
             .prefetch_related(
                 "items__product",
                 Prefetch(
@@ -105,7 +105,12 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             request_client_debt(order, request.user)
         elif method == "kaspi":
             try:
-                start_order_payment(order, request.user)
+                invoice = start_order_payment(
+                    order,
+                    request.user,
+                    channel=request.data.get("channel") or "qr",
+                    phone_number=request.data.get("phone_number"),
+                )
             except ApiPayConfigurationError as exc:
                 raise PaymentProviderError({
                     "detail": "Онлайн-оплата Kaspi временно не настроена.",
@@ -123,7 +128,10 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         # without this the response incorrectly says that no payment is in
         # progress until the next request.
         order._prefetched_objects_cache.pop("payments", None)
-        return Response(self.get_serializer(order).data, status=201)
+        data = self.get_serializer(order).data
+        if method == "kaspi":
+            data["payment_redirect_url"] = invoice.qr_token_url or None
+        return Response(data, status=201)
 
     @action(detail=True, methods=["get"], url_path="invoice")
     def invoice(self, request, pk=None):

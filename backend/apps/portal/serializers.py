@@ -92,6 +92,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
     remaining_amount = serializers.SerializerMethodField()
     has_pending_payment = serializers.SerializerMethodField()
     apipay_invoice = serializers.SerializerMethodField()
+    client_phone = serializers.CharField(source="client.phone", read_only=True)
 
     class Meta:
         model = Order
@@ -100,7 +101,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
                   "transport_type",
                   "store", "store_name",
                   "items", "total_amount", "paid_total", "remaining_amount",
-                  "has_pending_payment", "apipay_invoice",
+                  "has_pending_payment", "apipay_invoice", "client_phone",
                   "truck_number", "debt_requested", "debt_override", "created_at"]
         read_only_fields = ["status", "payment_status",
                             "truck_number", "debt_requested", "debt_override"]
@@ -192,6 +193,12 @@ class PortalOrderSerializer(serializers.ModelSerializer):
                 "status": invoice.status,
                 "error_code": invoice.error_code or None,
                 "paid_at": invoice.paid_at,
+                "channel": invoice.channel,
+                "phone_number": invoice.phone_number or None,
+                "qr_token_url": invoice.qr_token_url or None,
+                "qr_image_url": invoice.qr_image_url or None,
+                "qr_expires_at": invoice.qr_expires_at,
+                "total_refunded": money_string(invoice.total_refunded),
             }
         return None
 

@@ -20,7 +20,7 @@ from reportlab.platypus import (
     HRFlowable, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
 )
 
-from .models import Order
+from .models import Order, Payment
 
 
 ONES = ["", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"]
@@ -40,6 +40,67 @@ SCALES = [
     ("квадриллион", "квадриллиона", "квадриллионов", False),
     ("квинтиллион", "квинтиллиона", "квинтиллионов", False),
 ]
+
+
+def build_payment_receipt_pdf(payment: Payment) -> bytes:
+    """Build a compact, printable internal receipt for any confirmed payment."""
+    _register_fonts()
+    payment = Payment.objects.select_related("order__client", "recorded_by").get(
+        pk=payment.pk
+    )
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4, rightMargin=24 * mm, leftMargin=24 * mm,
+        topMargin=22 * mm, bottomMargin=22 * mm,
+    )
+    styles = getSampleStyleSheet()
+    title = ParagraphStyle(
+        "ReceiptTitle", parent=styles["Title"], fontName="InvoiceSans-Bold",
+        fontSize=20, leading=24, alignment=TA_CENTER,
+    )
+    normal = ParagraphStyle(
+        "ReceiptNormal", parent=styles["BodyText"], fontName="InvoiceSans",
+        fontSize=11, leading=17,
+    )
+    method = {
+        "cash": "Наличные", "kaspi": "Kaspi Pay",
+        "invoice": "Счёт на оплату", "card": "Карта",
+    }.get(payment.method, payment.method)
+    rows = [
+        ["Номер квитанции", f"PAY-{payment.pk:06d}"],
+        ["Заказ", f"№{payment.order_id}"],
+        ["Клиент", _escape_paragraph_text(payment.order.client.name)],
+        ["Способ оплаты", method],
+        ["Статус", "Подтверждён" if payment.status == "confirmed" else payment.status],
+        ["Дата", timezone.localtime(payment.confirmed_at or payment.paid_at).strftime("%d.%m.%Y %H:%M")],
+        ["Сумма", f"{payment.amount:,.2f} {payment.order.currency}".replace(",", " ")],
+    ]
+    table = Table(rows, colWidths=[55 * mm, 90 * mm], hAlign="CENTER")
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "InvoiceSans"),
+        ("FONTSIZE", (0, 0), (-1, -1), 11),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#667085")),
+        ("FONTNAME", (1, 0), (1, -1), "InvoiceSans-Bold"),
+        ("GRID", (0, 0), (-1, -1), .5, colors.HexColor("#D0D5DD")),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+    ]))
+    story = [
+        Paragraph("ASUL LTD", title),
+        Spacer(1, 4 * mm),
+        Paragraph("Квитанция об оплате", title),
+        Spacer(1, 10 * mm),
+        table,
+        Spacer(1, 8 * mm),
+        Paragraph(
+            "Документ сформирован информационной системой ASUL LTD.",
+            normal,
+        ),
+    ]
+    doc.build(story)
+    return buffer.getvalue()
 
 
 def _escape_paragraph_text(value: object) -> str:
