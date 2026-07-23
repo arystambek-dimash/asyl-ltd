@@ -248,6 +248,15 @@ PORTAL_PAYMENT_INFO = {
     "instructions": "Отсканируйте QR в приложении Kaspi и переведите сумму к оплате.",
 }
 
+# ApiPay credentials are server-only. They must never be exposed through a
+# NEXT_PUBLIC_* variable or returned by an API response.
+APIPAY_API_KEY = os.environ.get("APIPAY_API_KEY", "").strip()
+APIPAY_WEBHOOK_SECRET = os.environ.get("APIPAY_WEBHOOK_SECRET", "").strip()
+APIPAY_BASE_URL = os.environ.get(
+    "APIPAY_BASE_URL", "https://api.apipay.kz/api/v1"
+).rstrip("/")
+APIPAY_TIMEOUT_SECONDS = float(os.environ.get("APIPAY_TIMEOUT_SECONDS", "10"))
+
 # Реквизиты поставщика в PDF-счёте. В проде могут быть переопределены через env.
 INVOICE_SUPPLIER = {
     "short_name": os.environ.get("INVOICE_SUPPLIER_SHORT_NAME", "АСЫЛ-LTD"),

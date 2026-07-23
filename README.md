@@ -525,6 +525,20 @@ go2rtc rate-limit'ить нельзя (живое видео).
 (config/throttles.py, поверх nginx-лимитов). Единый обработчик ошибок
 (`config/exceptions.py`) нормализует ответы к `{"detail", "code"}`.
 
+### ApiPay / Kaspi Pay
+
+- Клиент выбирает Kaspi Pay в портале; backend создаёт счёт через
+  `POST https://api.apipay.kz/api/v1/invoices` с серверным `X-API-Key`.
+- Публичный адрес уведомлений:
+  `https://asyl-ltd.kz/api/webhooks/apipay/`.
+- Подпись `X-Webhook-Signature` проверяется как HMAC-SHA256 от исходного тела
+  запроса. Секреты задаются только через `APIPAY_API_KEY` и
+  `APIPAY_WEBHOOK_SECRET` в `.env`.
+- `invoice.status_changed: paid` идемпотентно подтверждает внутреннюю оплату;
+  `cancelled`, `expired` и `error` закрывают незавершённую заявку без
+  зачисления денег. Проверенные уведомления сохраняются в журнале
+  `ApiPayWebhookEvent`.
+
 ---
 
 ## Тесты

@@ -11,9 +11,12 @@ from apps.common.permissions import IsClientUser
 from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Client, Store
 from apps.clients.serializers import StoreSerializer
-from apps.orders.models import Order
+from apps.orders.models import Order, Payment
 from apps.orders.invoices import build_invoice_pdf
 from apps.orders.services import create_client_payment, request_client_debt, set_truck_number
+from apps.orders.apipay import (
+    ApiPayAPIError, ApiPayConfigurationError, start_order_payment,
+)
 from apps.eventlog.services import log_event
 from config.throttles import PortalOrderCreateRateThrottle
 from .serializers import CatalogProductSerializer, PortalOrderSerializer
@@ -30,6 +33,11 @@ class PortalStoreViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 class Conflict(APIException):
     status_code = 409
     default_code = "conflict"
+
+
+class PaymentProviderError(APIException):
+    status_code = 502
+    default_code = "payment_provider_error"
 
 
 class PortalCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
@@ -80,7 +88,13 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         return (
             Order.objects.filter(client__user=self.request.user)
             .select_related("store")
-            .prefetch_related("items__product", "payments")
+            .prefetch_related(
+                "items__product",
+                Prefetch(
+                    "payments",
+                    queryset=Payment.objects.select_related("apipay_invoice"),
+                ),
+            )
         )
 
     @action(detail=True, methods=["post"], url_path="pay")
@@ -89,6 +103,19 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         method = request.data.get("method")
         if method == "debt":
             request_client_debt(order, request.user)
+        elif method == "kaspi":
+            try:
+                start_order_payment(order, request.user)
+            except ApiPayConfigurationError as exc:
+                raise PaymentProviderError({
+                    "detail": "Онлайн-оплата Kaspi временно не настроена.",
+                    "code": "apipay_not_configured",
+                }) from exc
+            except ApiPayAPIError as exc:
+                raise PaymentProviderError({
+                    "detail": exc.message,
+                    "code": exc.error_code,
+                }) from exc
         else:
             create_client_payment(order, method, request.user)
         # get_object() comes from a queryset with prefetched payments.  A

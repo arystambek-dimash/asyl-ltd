@@ -46,6 +46,10 @@ services:
       AI_SERVICE_TIMEOUT: "${AI_SERVICE_TIMEOUT:-10}"
       CAMERA_PLAYBACK_URL: "${CAMERA_PLAYBACK_URL:-}"
       GO2RTC_API_URL: "${GO2RTC_API_URL:-}"
+      APIPAY_API_KEY: "${APIPAY_API_KEY:-}"
+      APIPAY_WEBHOOK_SECRET: "${APIPAY_WEBHOOK_SECRET:-}"
+      APIPAY_BASE_URL: "${APIPAY_BASE_URL:-https://api.apipay.kz/api/v1}"
+      APIPAY_TIMEOUT_SECONDS: "${APIPAY_TIMEOUT_SECONDS:-10}"
     depends_on:
       db:
         condition: service_healthy

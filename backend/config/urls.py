@@ -4,6 +4,7 @@ from django.contrib import admin
 from django.urls import include, path
 from rest_framework_simplejwt.views import TokenObtainPairView
 from apps.accounts.views import MeView, RevocableTokenRefreshView
+from apps.orders.webhooks import apipay_webhook
 from config.throttles import LoginRateThrottle
 
 
@@ -17,6 +18,7 @@ urlpatterns = [
     path("api/auth/login/", ThrottledTokenObtainPairView.as_view(), name="login"),
     path("api/auth/refresh/", RevocableTokenRefreshView.as_view(), name="refresh"),
     path("api/auth/me/", MeView.as_view(), name="me"),
+    path("api/webhooks/apipay/", apipay_webhook, name="apipay-webhook"),
     path("api/", include("apps.catalog.urls")),
     path("api/", include("apps.clients.urls")),
     path("api/", include("apps.eventlog.urls")),

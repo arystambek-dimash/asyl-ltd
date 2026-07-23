@@ -1,5 +1,4 @@
 "use client";
-/* eslint-disable @next/next/no-img-element -- trusted payment QR can be a data URL or external HTTPS URL */
 import { use, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,19 +9,16 @@ import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { DataGate } from "@/components/ui/data-state";
-import { Banknote, CheckCircle2, Clock, FileText, HandCoins, QrCode } from "lucide-react";
+import { Banknote, CheckCircle2, Clock, FileText, HandCoins, Smartphone } from "lucide-react";
 import { useApi } from "@/lib/use-api";
 import { apiError } from "@/lib/api";
 import { currencySymbol, formatMoney, formatPortalMoney } from "@/lib/utils";
-import { resolveSafeImageUrl } from "@/lib/safe-url";
 import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import {
   clientStep,
   downloadInvoice,
   payOrder,
   setTruck,
-  getPaymentInfo,
-  type PaymentInfo,
 } from "@/lib/portal-actions";
 import type { PortalOrder, PortalPaymentMethod } from "@/lib/types";
 
@@ -32,7 +28,6 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [truck, setTruckVal] = useState("");
-  const [info, setInfo] = useState<PaymentInfo | null>(null);
 
   async function run(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -48,8 +43,6 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
   }
 
   async function selectPayment(method: PortalPaymentMethod) {
-    if (method === "kaspi") setInfo(await getPaymentInfo());
-    else setInfo(null);
     await payOrder(Number(id), method);
     if (method === "invoice") await downloadInvoice(Number(id));
   }
@@ -63,8 +56,6 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
 
   const step = clientStep(order.status, order.payment_status);
   const remaining = order.remaining_amount == null ? 0 : Number(order.remaining_amount);
-  const qrSrc =
-    info?.kaspi_qr && typeof window !== "undefined" ? resolveSafeImageUrl(info.kaspi_qr, window.location.origin) : "";
 
   return (
     <AppShell title={`Заказ #${order.id}`} portal>
@@ -173,6 +164,16 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                       <HandCoins className="mt-0.5 size-4 shrink-0 text-[var(--primary)]" />
                       Запрос «В долг» отправлен. Ожидайте решения сотрудника.
                     </div>
+                  ) : order.apipay_invoice && ["creating", "processing", "pending"].includes(order.apipay_invoice.status) ? (
+                    <div className="flex items-start gap-2 rounded-lg border border-[var(--primary)]/25 bg-[var(--primary)]/5 p-3 text-sm">
+                      <Smartphone className="mt-0.5 size-4 shrink-0 text-[var(--primary)]" />
+                      <div>
+                        <div className="font-medium">Счёт отправлен в приложение Kaspi</div>
+                        <div className="mt-0.5 text-[var(--muted-foreground)]">
+                          Откройте Kaspi и подтвердите оплату. Статус обновится автоматически.
+                        </div>
+                      </div>
+                    </div>
                   ) : order.has_pending_payment ? (
                     <div className="flex items-start gap-2 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 p-3 text-sm text-[var(--warning)]">
                       <Clock className="mt-0.5 size-4 shrink-0" />
@@ -198,7 +199,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                           className="h-auto justify-start py-3"
                           onClick={() => run(() => selectPayment("kaspi"))}
                         >
-                          <QrCode className="size-4" /> Каспи
+                          <Smartphone className="size-4" /> Kaspi Pay
                         </Button>
                         <Button
                           disabled={busy}
@@ -220,21 +221,6 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                     </>
                   )}
 
-                  {info && (
-                    <div className="rounded-lg border p-3 text-sm">
-                      <p>{info.instructions}</p>
-                      {qrSrc && (
-                        <img
-                          src={qrSrc}
-                          alt="Kaspi QR"
-                          className="mt-2 size-40"
-                          referrerPolicy="no-referrer"
-                          decoding="async"
-                        />
-                      )}
-                      {info.account && <p className="mt-1">Счёт: {info.account}</p>}
-                    </div>
-                  )}
                   <p className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
                     <CheckCircle2 className="size-3.5" /> Способ и валюта оплаты фиксируются в заказе.
                   </p>

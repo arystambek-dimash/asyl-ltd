@@ -91,6 +91,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
     paid_total = serializers.SerializerMethodField()
     remaining_amount = serializers.SerializerMethodField()
     has_pending_payment = serializers.SerializerMethodField()
+    apipay_invoice = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -99,7 +100,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
                   "transport_type",
                   "store", "store_name",
                   "items", "total_amount", "paid_total", "remaining_amount",
-                  "has_pending_payment",
+                  "has_pending_payment", "apipay_invoice",
                   "truck_number", "debt_requested", "debt_override", "created_at"]
         read_only_fields = ["status", "payment_status",
                             "truck_number", "debt_requested", "debt_override"]
@@ -176,6 +177,23 @@ class PortalOrderSerializer(serializers.ModelSerializer):
             payment.status in Payment.IN_PROGRESS_STATUSES
             for payment in obj.payments.all()
         )
+
+    def get_apipay_invoice(self, obj):
+        payments = sorted(
+            obj.payments.all(), key=lambda row: row.paid_at, reverse=True
+        )
+        for payment in payments:
+            try:
+                invoice = payment.apipay_invoice
+            except ObjectDoesNotExist:
+                continue
+            return {
+                "id": invoice.invoice_id,
+                "status": invoice.status,
+                "error_code": invoice.error_code or None,
+                "paid_at": invoice.paid_at,
+            }
+        return None
 
     @transaction.atomic
     def create(self, validated_data):

@@ -212,6 +212,36 @@ class Payment(models.Model):
     confirmed_at = models.DateTimeField(null=True, blank=True)
 
 
+class ApiPayInvoice(models.Model):
+    """Счёт ApiPay, связанный с внутренней заявкой на оплату."""
+
+    payment = models.OneToOneField(
+        Payment, on_delete=models.CASCADE, related_name="apipay_invoice"
+    )
+    invoice_id = models.BigIntegerField(unique=True, null=True, blank=True)
+    idempotency_key = models.CharField(max_length=191, unique=True)
+    status = models.CharField(max_length=32, default="creating")
+    error_code = models.CharField(max_length=100, blank=True, default="")
+    error_message = models.TextField(blank=True, default="")
+    response_payload = models.JSONField(default=dict, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class ApiPayWebhookEvent(models.Model):
+    """Неизменяемый журнал принятых и проверенных уведомлений ApiPay."""
+
+    body_sha256 = models.CharField(max_length=64, unique=True)
+    event = models.CharField(max_length=100)
+    invoice = models.ForeignKey(
+        ApiPayInvoice, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="webhook_events",
+    )
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class StatusChangeRequest(models.Model):
     STATUSES = ["pending", "approved", "rejected"]
 

@@ -176,6 +176,12 @@ export interface PortalOrder {
   paid_total: string | null;
   remaining_amount: string | null;
   has_pending_payment: boolean;
+  apipay_invoice: {
+    id: number | null;
+    status: string;
+    error_code: string | null;
+    paid_at: string | null;
+  } | null;
   truck_number: string;
   debt_requested: boolean;
   debt_override: boolean;

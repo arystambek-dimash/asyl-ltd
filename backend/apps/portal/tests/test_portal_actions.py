@@ -1,5 +1,7 @@
 import pytest
+import json
 from decimal import Decimal
+from unittest.mock import patch
 from apps.clients.models import Client
 from apps.catalog.models import Product
 from apps.warehouse.models import StockItem
@@ -13,7 +15,7 @@ def client_and_order(db, make_user):
         user=user,
         first_name="A",
         last_name="B",
-        phone="1",
+        phone="87001234567",
         company_name="ТОО Клиент",
         iin="990101300123",
     )
@@ -42,8 +44,14 @@ def test_create_order_is_pending(db, make_user, auth_client):
     assert Order.objects.get(id=r.data["id"]).status == "pending"
 
 
-def test_pay_creates_pending_payment(client_and_order, auth_client):
+@patch("apps.orders.apipay.urllib.request.urlopen")
+def test_pay_creates_pending_payment(urlopen, client_and_order, auth_client, settings):
     # Оплата доступна после отгрузки; заявка клиента встаёт в цепочку («принята»).
+    settings.APIPAY_API_KEY = "test-key"
+    response = urlopen.return_value.__enter__.return_value
+    response.read.return_value = json.dumps({
+        "id": 42, "status": "processing",
+    }).encode()
     user, o = client_and_order
     o.status = "shipped"
     o.save()
@@ -104,9 +112,15 @@ def test_client_payment_method_must_be_supported(client_and_order, auth_client):
     assert response.data["code"] == "bad_method"
 
 
+@patch("apps.orders.apipay.urllib.request.urlopen")
 def test_changing_client_payment_method_reuses_open_request(
-    client_and_order, auth_client
+    urlopen, client_and_order, auth_client, settings
 ):
+    settings.APIPAY_API_KEY = "test-key"
+    response = urlopen.return_value.__enter__.return_value
+    response.read.return_value = json.dumps({
+        "id": 43, "status": "processing",
+    }).encode()
     user, order = client_and_order
     order.status = "shipped"
     order.save()
