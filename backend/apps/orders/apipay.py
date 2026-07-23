@@ -206,7 +206,8 @@ def create_invoice(
 
 
 def start_order_payment(
-    order: Order, user, *, channel: str = "phone", phone_number: str | None = None
+    order: Order, user, *, channel: str = "phone", phone_number: str | None = None,
+    payment_method: str = "kaspi", amount=None,
 ) -> ApiPayInvoice:
     """Validate, create the internal payment, then issue the ApiPay invoice."""
     if order.currency != "KZT":
@@ -218,7 +219,9 @@ def start_order_payment(
         raise ValidationError({"detail": "Выберите QR или оплату по номеру."})
     if channel == "phone":
         normalize_phone(phone_number or order.client.phone)
-    payment = create_client_payment(order, "kaspi", user)
+    if payment_method not in ("kaspi", "invoice"):
+        raise ValidationError({"detail": "Недопустимый способ оплаты ApiPay."})
+    payment = create_client_payment(order, payment_method, user, amount=amount)
     try:
         return create_invoice(payment, channel=channel, phone_number=phone_number)
     except (ApiPayAPIError, ApiPayConfigurationError, ValidationError):
@@ -511,6 +514,30 @@ def apply_invoice_status(
             payment.status = "confirmed"
             payment.confirmed_at = record.paid_at
             payment.save(update_fields=["status", "confirmed_at"])
+            # QR нельзя отозвать у провайдера. Если клиент уже заменил его
+            # другим способом, поздняя фактическая оплата имеет приоритет:
+            # снимаем только те новые резервы, которые теперь дали бы переплату.
+            confirmed_total = sum(
+                (
+                    row.net_amount for row in Payment.objects.select_for_update()
+                    .filter(order=order, status="confirmed")
+                ),
+                Decimal("0"),
+            )
+            capacity = max(Decimal("0"), order.total_amount - confirmed_total)
+            pending = list(
+                Payment.objects.select_for_update()
+                .filter(order=order, status__in=Payment.IN_PROGRESS_STATUSES)
+                .exclude(pk=payment.pk)
+                .order_by("-paid_at")
+            )
+            reserved = sum((row.amount for row in pending), Decimal("0"))
+            for pending_payment in pending:
+                if reserved <= capacity:
+                    break
+                pending_payment.status = "rejected"
+                pending_payment.save(update_fields=["status"])
+                reserved -= pending_payment.amount
             sync_payment_status(order)
     elif status in ("cancelled", "expired", "error"):
         if payment.status in Payment.IN_PROGRESS_STATUSES:

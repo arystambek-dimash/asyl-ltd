@@ -166,7 +166,7 @@ export interface PortalOrder {
   status: string;
   payment_status?: string;
   settlement_intent: string;
-  payment_method: PortalPaymentMethod;
+  payment_method: PortalPaymentMethod | "mixed";
   currency: "KZT" | "USD";
   transport_type: "truck" | "train";
   store: number | null;
@@ -176,7 +176,23 @@ export interface PortalOrder {
   paid_total: string | null;
   remaining_amount: string | null;
   has_pending_payment: boolean;
+  available_amount: string | null;
+  payment_parts: {
+    id: number;
+    amount: string;
+    method: "invoice" | "kaspi" | "cash";
+    status: PaymentStage;
+    apipay_invoice: {
+      id: number | null;
+      status: string;
+      channel: "phone" | "qr";
+      qr_token_url: string | null;
+      qr_image_url: string | null;
+      qr_expires_at: string | null;
+    } | null;
+  }[];
   apipay_invoice: {
+    payment_id: number;
     id: number | null;
     status: string;
     error_code: string | null;

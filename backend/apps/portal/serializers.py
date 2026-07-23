@@ -1,10 +1,11 @@
+from decimal import Decimal
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from rest_framework import serializers
 from apps.common.money import money_string
 from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Department, Store
-from apps.orders.models import Order, OrderItem
+from apps.orders.models import Order, OrderItem, Payment
 
 
 MAX_PORTAL_ORDER_ITEMS = 100
@@ -91,6 +92,8 @@ class PortalOrderSerializer(serializers.ModelSerializer):
     paid_total = serializers.SerializerMethodField()
     remaining_amount = serializers.SerializerMethodField()
     has_pending_payment = serializers.SerializerMethodField()
+    available_amount = serializers.SerializerMethodField()
+    payment_parts = serializers.SerializerMethodField()
     apipay_invoice = serializers.SerializerMethodField()
     client_phone = serializers.CharField(source="client.phone", read_only=True)
     receipt_available = serializers.SerializerMethodField()
@@ -102,7 +105,8 @@ class PortalOrderSerializer(serializers.ModelSerializer):
                   "transport_type",
                   "store", "store_name",
                   "items", "total_amount", "paid_total", "remaining_amount",
-                  "has_pending_payment", "apipay_invoice", "client_phone",
+                  "has_pending_payment", "available_amount", "payment_parts",
+                  "apipay_invoice", "client_phone",
                   "receipt_available",
                   "truck_number", "debt_requested", "debt_override", "created_at"]
         read_only_fields = ["status", "payment_status",
@@ -181,6 +185,45 @@ class PortalOrderSerializer(serializers.ModelSerializer):
             for payment in obj.payments.all()
         )
 
+    def get_available_amount(self, obj):
+        if not self._money_visible(obj):
+            return None
+        reserved = sum(
+            (payment.amount for payment in obj.payments.all()
+             if payment.status in Payment.IN_PROGRESS_STATUSES),
+            Decimal("0"),
+        )
+        return money_string(max(Decimal("0"), obj.remaining_amount - reserved))
+
+    def get_payment_parts(self, obj):
+        result = []
+        for payment in sorted(
+            obj.payments.all(), key=lambda row: row.paid_at, reverse=True
+        ):
+            if payment.status not in (*Payment.IN_PROGRESS_STATUSES, "confirmed"):
+                continue
+            invoice = None
+            try:
+                provider = payment.apipay_invoice
+                invoice = {
+                    "id": provider.invoice_id,
+                    "status": provider.status,
+                    "channel": provider.channel,
+                    "qr_token_url": provider.qr_token_url or None,
+                    "qr_image_url": provider.qr_image_url or None,
+                    "qr_expires_at": provider.qr_expires_at,
+                }
+            except ObjectDoesNotExist:
+                pass
+            result.append({
+                "id": payment.id,
+                "amount": money_string(payment.amount),
+                "method": payment.method,
+                "status": payment.status,
+                "apipay_invoice": invoice,
+            })
+        return result
+
     def get_apipay_invoice(self, obj):
         payments = sorted(
             obj.payments.all(), key=lambda row: row.paid_at, reverse=True
@@ -191,6 +234,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
             except ObjectDoesNotExist:
                 continue
             return {
+                "payment_id": payment.id,
                 "id": invoice.invoice_id,
                 "status": invoice.status,
                 "error_code": invoice.error_code or None,

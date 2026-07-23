@@ -199,6 +199,38 @@ def test_cancelled_then_paid_is_supported(api_client, settings):
     assert invoice.webhook_events.count() == 2
 
 
+def test_late_superseded_qr_payment_releases_conflicting_replacement(
+    api_client, settings
+):
+    payment = _payment()
+    payment.status = "rejected"
+    payment.save(update_fields=["status"])
+    ApiPayInvoice.objects.create(
+        payment=payment, invoice_id=46,
+        idempotency_key=f"asyl-payment-{payment.id}", status="superseded",
+        channel="qr",
+    )
+    replacement = Payment.objects.create(
+        order=payment.order, amount=payment.amount,
+        method="cash", status="requested",
+    )
+    payload = {
+        "event": "invoice.status_changed",
+        "invoice": {
+            "id": 46, "amount": "5000.00", "status": "paid",
+            "paid_at": "2026-07-23T08:35:00Z",
+        },
+    }
+
+    response = _signed_post(api_client, settings, payload)
+
+    assert response.status_code == 200
+    payment.refresh_from_db()
+    replacement.refresh_from_db()
+    assert payment.status == "confirmed"
+    assert replacement.status == "rejected"
+
+
 def test_webhook_does_not_confirm_mismatched_amount(api_client, settings):
     payment = _payment()
     ApiPayInvoice.objects.create(

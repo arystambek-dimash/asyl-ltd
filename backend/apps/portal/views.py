@@ -13,7 +13,10 @@ from apps.clients.models import Client, Store
 from apps.clients.serializers import StoreSerializer
 from apps.orders.models import Order, Payment
 from apps.orders.invoices import build_invoice_pdf, build_payment_receipt_pdf
-from apps.orders.services import create_client_payment, request_client_debt, set_truck_number
+from apps.orders.services import (
+    create_client_payment, release_client_payment, request_client_debt,
+    set_truck_number,
+)
 from apps.orders.apipay import (
     ApiPayAPIError, ApiPayConfigurationError, start_order_payment,
 )
@@ -103,17 +106,19 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         method = request.data.get("method")
         if method == "debt":
             request_client_debt(order, request.user)
-        elif method == "kaspi":
+        elif method in ("kaspi", "invoice"):
             try:
                 invoice = start_order_payment(
                     order,
                     request.user,
-                    channel=request.data.get("channel") or "qr",
+                    channel="qr" if method == "kaspi" else "phone",
                     phone_number=request.data.get("phone_number"),
+                    payment_method=method,
+                    amount=request.data.get("amount"),
                 )
             except ApiPayConfigurationError as exc:
                 raise PaymentProviderError({
-                    "detail": "Онлайн-оплата Kaspi временно не настроена.",
+                    "detail": "Онлайн-оплата ApiPay временно не настроена.",
                     "code": "apipay_not_configured",
                 }) from exc
             except ApiPayAPIError as exc:
@@ -122,7 +127,9 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                     "code": exc.error_code,
                 }) from exc
         else:
-            create_client_payment(order, method, request.user)
+            create_client_payment(
+                order, method, request.user, amount=request.data.get("amount")
+            )
         # get_object() comes from a queryset with prefetched payments.  A
         # payment created by the service does not invalidate that cache, and
         # without this the response incorrectly says that no payment is in
@@ -132,6 +139,23 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         if method == "kaspi":
             data["payment_redirect_url"] = invoice.qr_token_url or None
         return Response(data, status=201)
+
+    @action(
+        detail=True, methods=["post"],
+        url_path=r"payments/(?P<payment_id>\d+)/release",
+    )
+    def release_payment(self, request, pk=None, payment_id=None):
+        order = self.get_object()
+        try:
+            payment = order.payments.get(pk=payment_id)
+        except Payment.DoesNotExist as exc:
+            raise ValidationError({
+                "detail": "Заявка на оплату не найдена.",
+                "code": "payment_not_found",
+            }) from exc
+        release_client_payment(payment, request.user)
+        order._prefetched_objects_cache.pop("payments", None)
+        return Response(self.get_serializer(order).data)
 
     @action(detail=True, methods=["get"], url_path="invoice")
     def invoice(self, request, pk=None):

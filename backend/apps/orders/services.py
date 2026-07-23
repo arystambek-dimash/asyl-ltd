@@ -211,40 +211,58 @@ def add_mixed_payments(order: Order, parts, user, note="") -> list[Payment]:
 
 
 @transaction.atomic
-def create_client_payment(order: Order, method: str, user) -> Payment:
+def create_client_payment(order: Order, method: str, user, amount=None) -> Payment:
     if method not in ("invoice", "kaspi", "cash", "card"):
         raise ValidationError({"detail": "Недопустимый способ оплаты", "code": "bad_method"})
     order = _locked_payment_order(order)
     _validate_payment_open(order)
-    if method == "invoice":
-        missing = []
-        if not order.client.iin.strip():
-            missing.append("ИИН/БИН")
-        if not (order.client.company_name.strip() or order.client.name):
-            missing.append("название ТОО / ИП")
-        if missing:
-            raise ValidationError({
-                "detail": "Для счета заполните реквизиты клиента: " + ", ".join(missing),
-                "code": "client_requisites_missing",
-            })
     remaining = order.total_amount - order.paid_total
     if remaining <= 0:
         raise ValidationError({"detail": "Заказ уже оплачен", "code": "already_paid"})
+    open_payments = list(
+        order.payments.select_for_update()
+        .filter(status__in=Payment.IN_PROGRESS_STATUSES)
+        .order_by("-paid_at")
+    )
+    payment = None
+    if amount in (None, "") and len(open_payments) == 1:
+        candidate = open_payments[0]
+        if not hasattr(candidate, "apipay_invoice"):
+            payment = candidate
+    reserved = sum((row.amount for row in open_payments), Decimal("0"))
+    available = max(Decimal("0"), remaining - reserved)
+    requested_amount = (
+        remaining if payment is not None or (amount in (None, "") and not open_payments)
+        else _positive_money(
+            available if amount in (None, "") else amount,
+            detail="Сумма оплаты должна быть положительным денежным значением",
+            code="invalid_amount",
+        )
+    )
+    if requested_amount > available and open_payments and payment is None:
+        raise ValidationError({
+            "detail": f"Доступно для новой оплаты: {available} {order.currency}",
+            "code": "payment_exceeds_remaining",
+        })
+    if requested_amount > remaining:
+        raise ValidationError({
+            "detail": f"Остаток по заказу: {remaining} {order.currency}",
+            "code": "payment_exceeds_remaining",
+        })
     stage = "received" if method in ("kaspi", "card") else "requested"
-    # Несколько кликов и смена способа не должны плодить параллельные заявки.
-    payment = (order.payments.select_for_update()
-               .filter(status__in=Payment.IN_PROGRESS_STATUSES)
-               .order_by("-paid_at").first())
+    # Старые клиенты без суммы продолжают менять обычную заявку на другой
+    # способ. Провайдерский счёт переиспользовать нельзя: у него уже зафиксированы
+    # сумма и idempotency key.
     created = payment is None
     if created:
         payment = Payment.objects.create(
-            order=order, amount=remaining, method=method, status=stage,
+            order=order, amount=requested_amount, method=method, status=stage,
             recorded_by=user,
             **({"received_by": user, "received_at": timezone.now()}
                if stage == "received" else {}),
         )
     else:
-        payment.amount = remaining
+        payment.amount = requested_amount
         payment.method = method
         payment.status = stage
         payment.recorded_by = user
@@ -253,19 +271,56 @@ def create_client_payment(order: Order, method: str, user) -> Payment:
         payment.save(update_fields=[
             "amount", "method", "status", "recorded_by", "received_by", "received_at",
         ])
-    public_method = "invoice" if method == "card" else method
+    active_methods = {
+        row.method for row in order.payments.filter(
+            status__in=(*Payment.IN_PROGRESS_STATUSES, "confirmed")
+        )
+    }
+    active_methods.add(method)
+    public_method = "mixed" if len(active_methods) > 1 else (
+        "invoice" if method == "card" else method
+    )
     order.payment_method = public_method
     order.settlement_intent = "instant"
     order.debt_requested = False
     order.save(update_fields=["payment_method", "settlement_intent", "debt_requested"])
     action = "инициировал" if created else "обновил"
     log_event(
-        "payment", f"Клиент {action} оплату {remaining} {order.currency} ({method})",
+        "payment", f"Клиент {action} оплату {requested_amount} {order.currency} ({method})",
               user=user, order=order,
-              payload={"payment_id": payment.id, "amount": str(remaining), "method": method,
+              payload={"payment_id": payment.id, "amount": str(requested_amount), "method": method,
                        "currency": order.currency, "payment_stage": stage},
     )
     return payment
+
+
+@transaction.atomic
+def release_client_payment(payment: Payment, user) -> Payment:
+    """Освободить зарезервированную часть, не скрывая возможную позднюю оплату."""
+    payment, order = _locked_payment_with_order(payment)
+    if payment.status not in Payment.IN_PROGRESS_STATUSES:
+        raise ValidationError({
+            "detail": "Эта заявка уже завершена.",
+            "code": "payment_not_in_progress",
+        })
+    payment.status = "rejected"
+    payment.save(update_fields=["status"])
+    if hasattr(payment, "apipay_invoice"):
+        invoice = payment.apipay_invoice
+        invoice.status = "superseded"
+        invoice.save(update_fields=["status", "updated_at"])
+    log_event(
+        "payment",
+        f"Клиент выбрал другой способ вместо оплаты {payment.amount} {order.currency}",
+        user=user,
+        order=order,
+        payload={
+            "action": "client_payment_released",
+            "payment_id": payment.id,
+            "provider_invoice_may_still_be_payable": hasattr(payment, "apipay_invoice"),
+        },
+    )
+    return _sync_payment_instance(payment, payment)
 
 
 @transaction.atomic

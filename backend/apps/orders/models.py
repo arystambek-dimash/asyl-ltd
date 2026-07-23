@@ -22,7 +22,7 @@ class Order(models.Model):
                 "loading", "loaded", "shipped", "rejected", "cancelled"]
     PAYMENT_STATUSES = ["unpaid", "partial", "settled"]
     SETTLEMENT_INTENTS = ["debt", "instant"]
-    PAYMENT_METHODS = ["invoice", "kaspi", "cash", "debt"]
+    PAYMENT_METHODS = ["invoice", "kaspi", "cash", "debt", "mixed"]
     TRANSPORT_TYPES = ["truck", "train"]
 
     client = models.ForeignKey(

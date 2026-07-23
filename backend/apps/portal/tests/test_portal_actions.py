@@ -63,7 +63,7 @@ def test_pay_creates_pending_payment(urlopen, client_and_order, auth_client, set
     assert r.data["has_pending_payment"] is True
 
 
-@pytest.mark.parametrize("method", ["invoice", "cash"])
+@pytest.mark.parametrize("method", ["cash"])
 def test_invoice_and_cash_create_requested_payment(
     client_and_order, auth_client, method
 ):
@@ -82,6 +82,35 @@ def test_invoice_and_cash_create_requested_payment(
     order.refresh_from_db()
     assert order.payment_method == method
     assert order.settlement_intent == "instant"
+
+
+@patch("apps.orders.apipay.urllib.request.urlopen")
+def test_invoice_is_sent_through_apipay_phone_channel(
+    urlopen, client_and_order, auth_client, settings
+):
+    settings.APIPAY_API_KEY = "test-key"
+    response = urlopen.return_value.__enter__.return_value
+    response.read.return_value = json.dumps({
+        "id": 44, "status": "processing",
+    }).encode()
+    user, order = client_and_order
+    order.status = "shipped"
+    order.save()
+
+    result = auth_client(user).post(
+        f"/api/portal/orders/{order.id}/pay/",
+        {"method": "invoice", "phone_number": "87762838451", "amount": "40"},
+        format="json",
+    )
+
+    assert result.status_code == 201
+    payment = order.payments.get()
+    assert payment.method == "invoice"
+    assert payment.amount == Decimal("40")
+    assert payment.apipay_invoice.channel == "phone"
+    request_payload = json.loads(urlopen.call_args.args[0].data)
+    assert request_payload["phone_number"] == "87762838451"
+    assert request_payload["amount"] == 40.0
 
 
 def test_client_can_choose_debt_through_payment_endpoint(client_and_order, auth_client):
@@ -127,7 +156,7 @@ def test_changing_client_payment_method_reuses_open_request(
     endpoint = f"/api/portal/orders/{order.id}/pay/"
     assert (
         auth_client(user)
-        .post(endpoint, {"method": "invoice"}, format="json")
+        .post(endpoint, {"method": "cash"}, format="json")
         .status_code
         == 201
     )
@@ -140,6 +169,46 @@ def test_changing_client_payment_method_reuses_open_request(
     payment = order.payments.get()
     assert payment.method == "kaspi"
     assert payment.status == "received"
+
+
+@patch("apps.orders.apipay.urllib.request.urlopen")
+def test_client_can_release_qr_and_split_remaining_payment(
+    urlopen, client_and_order, auth_client, settings
+):
+    settings.APIPAY_API_KEY = "test-key"
+    response = urlopen.return_value.__enter__.return_value
+    response.read.return_value = json.dumps({
+        "id": 45, "status": "pending",
+        "qr_token_url": "https://qr.kaspi.kz/example",
+    }).encode()
+    user, order = client_and_order
+    order.status = "shipped"
+    order.save()
+    client = auth_client(user)
+    endpoint = f"/api/portal/orders/{order.id}/pay/"
+
+    first = client.post(
+        endpoint, {"method": "kaspi", "amount": "60"}, format="json"
+    )
+    assert first.status_code == 201
+    payment_id = first.data["payment_parts"][0]["id"]
+    assert first.data["available_amount"] == "40.00"
+
+    released = client.post(
+        f"/api/portal/orders/{order.id}/payments/{payment_id}/release/"
+    )
+    assert released.status_code == 200
+    assert released.data["available_amount"] == "100.00"
+    payment = order.payments.get(pk=payment_id)
+    payment.refresh_from_db()
+    assert payment.status == "rejected"
+    assert payment.apipay_invoice.status == "superseded"
+
+    split = client.post(
+        endpoint, {"method": "cash", "amount": "35"}, format="json"
+    )
+    assert split.status_code == 201
+    assert split.data["available_amount"] == "65.00"
 
 
 def test_request_debt(client_and_order, auth_client):
