@@ -43,8 +43,9 @@ SCALES = [
 
 
 def build_payment_receipt_pdf(payment: Payment) -> bytes:
-    """Build a compact, printable internal receipt for any confirmed payment."""
+    """Build an ASYL LTD payment statement for a confirmed payment."""
     _register_fonts()
+    supplier = settings.INVOICE_SUPPLIER
     payment = Payment.objects.select_related("order__client", "recorded_by").get(
         pk=payment.pk
     )
@@ -52,6 +53,8 @@ def build_payment_receipt_pdf(payment: Payment) -> bytes:
     doc = SimpleDocTemplate(
         buffer, pagesize=A4, rightMargin=24 * mm, leftMargin=24 * mm,
         topMargin=22 * mm, bottomMargin=22 * mm,
+        title=f"Выписка {supplier['short_name']} PAY-{payment.pk:06d}",
+        author=supplier["legal_name"],
     )
     styles = getSampleStyleSheet()
     title = ParagraphStyle(
@@ -69,7 +72,8 @@ def build_payment_receipt_pdf(payment: Payment) -> bytes:
     rows = [
         ["Номер квитанции", f"PAY-{payment.pk:06d}"],
         ["Заказ", f"№{payment.order_id}"],
-        ["Клиент", _escape_paragraph_text(payment.order.client.name)],
+        ["Плательщик", payment.order.client.name],
+        ["Телефон", payment.order.client.phone or "—"],
         ["Способ оплаты", method],
         ["Статус", "Подтверждён" if payment.status == "confirmed" else payment.status],
         ["Дата", timezone.localtime(payment.confirmed_at or payment.paid_at).strftime("%d.%m.%Y %H:%M")],
@@ -87,15 +91,49 @@ def build_payment_receipt_pdf(payment: Payment) -> bytes:
         ("TOPPADDING", (0, 0), (-1, -1), 9),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
     ]))
+    company = Table(
+        [
+            [Paragraph("<b>Получатель</b>", normal),
+             Paragraph(_escape_paragraph_text(supplier["legal_name"]), normal)],
+            [Paragraph("<b>БИН</b>", normal),
+             Paragraph(_escape_paragraph_text(supplier["bin"]), normal)],
+            [Paragraph("<b>Банк / БИК</b>", normal),
+             Paragraph(
+                 f"{_escape_paragraph_text(supplier['bank'])} / "
+                 f"{_escape_paragraph_text(supplier['bic'])}",
+                 normal,
+             )],
+            [Paragraph("<b>ИИК</b>", normal),
+             Paragraph(_escape_paragraph_text(supplier["iban"]), normal)],
+            [Paragraph("<b>Адрес</b>", normal),
+             Paragraph(_escape_paragraph_text(supplier["address"]), normal)],
+        ],
+        colWidths=[42 * mm, 103 * mm],
+    )
+    company.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "InvoiceSans"),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
+        ("BOX", (0, 0), (-1, -1), .5, colors.HexColor("#D0D5DD")),
+        ("INNERGRID", (0, 0), (-1, -1), .5, colors.HexColor("#E4E7EC")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+    ]))
     story = [
-        Paragraph("ASUL LTD", title),
-        Spacer(1, 4 * mm),
-        Paragraph("Квитанция об оплате", title),
-        Spacer(1, 10 * mm),
+        Paragraph(
+            f"Выписка {_escape_paragraph_text(supplier['short_name'])}", title
+        ),
+        Spacer(1, 2 * mm),
+        Paragraph("Квитанция о подтверждённой оплате", normal),
+        Spacer(1, 7 * mm),
+        company,
+        Spacer(1, 7 * mm),
         table,
         Spacer(1, 8 * mm),
         Paragraph(
-            "Документ сформирован информационной системой ASUL LTD.",
+            f"Документ сформирован информационной системой "
+            f"{_escape_paragraph_text(supplier['short_name'])}. "
+            "Подлинность операции подтверждается записью в журнале платежей.",
             normal,
         ),
     ]

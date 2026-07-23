@@ -235,6 +235,32 @@ def check_invoice_statuses(invoice_ids: list[int]) -> dict[str, Any]:
     )
 
 
+def cancel_invoice(record: ApiPayInvoice) -> ApiPayInvoice:
+    if record.channel == "qr":
+        raise ValidationError({
+            "detail": (
+                "Kaspi не поддерживает отмену активного QR-счёта. "
+                "Дождитесь его истечения."
+            ),
+            "code": "qr_cancel_unsupported",
+        })
+    if record.invoice_id is None:
+        raise ValidationError({
+            "detail": "Счёт ApiPay ещё не создан.",
+            "code": "invoice_not_created",
+        })
+    response = api_request("POST", f"/invoices/{record.invoice_id}/cancel", {})
+    invoice_payload = response.get("invoice")
+    if isinstance(invoice_payload, dict):
+        record.status = str(invoice_payload.get("status") or "cancelled")
+        record.response_payload = invoice_payload
+    else:
+        record.status = "cancelling"
+        record.response_payload = response
+    record.save(update_fields=["status", "response_payload", "updated_at"])
+    return record
+
+
 def create_refund(
     record: ApiPayInvoice, user, *, amount: object = None, reason: str = ""
 ) -> ApiPayRefund:

@@ -1,4 +1,5 @@
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 
@@ -76,3 +77,89 @@ def test_transaction_search_runs_across_full_history(auth_client, accountant):
     assert response.status_code == 200
     assert response.data["count"] == 1
     assert response.data["results"][0]["client_name"] == matching.name
+
+
+def test_cashier_can_reject_pending_transaction_with_reason(
+    auth_client, accountant,
+):
+    client = Client.objects.create(
+        first_name="Клиент", phone="87770000003"
+    )
+    order = Order.objects.create(
+        client=client, status="shipped", currency="KZT"
+    )
+    payment = Payment.objects.create(
+        order=order, amount="100.00", method="cash", status="received"
+    )
+
+    response = auth_client(accountant).post(
+        f"/api/payment-transactions/{payment.id}/reject/",
+        {"reason": "Ошибочно внесённая оплата"},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    payment.refresh_from_db()
+    assert payment.status == "rejected"
+    assert "Ошибочно внесённая оплата" in payment.note
+
+
+@patch("apps.orders.apipay.api_request")
+def test_phone_kaspi_rejection_waits_for_provider_confirmation(
+    api_request, auth_client, accountant,
+):
+    api_request.return_value = {
+        "message": "Invoice cancellation queued",
+        "invoice_id": 991,
+    }
+    client = Client.objects.create(
+        first_name="Kaspi", phone="87770000004"
+    )
+    order = Order.objects.create(
+        client=client, status="shipped", currency="KZT"
+    )
+    payment = Payment.objects.create(
+        order=order, amount="100.00", method="kaspi", status="received"
+    )
+    invoice = ApiPayInvoice.objects.create(
+        payment=payment, invoice_id=991, channel="phone",
+        idempotency_key=f"asyl-payment-{payment.id}", status="pending",
+    )
+
+    response = auth_client(accountant).post(
+        f"/api/payment-transactions/{payment.id}/reject/",
+        {"reason": "Клиент отказался"},
+        format="json",
+    )
+
+    assert response.status_code == 202
+    payment.refresh_from_db()
+    invoice.refresh_from_db()
+    assert payment.status == "received"
+    assert invoice.status == "cancelling"
+    api_request.assert_called_once_with("POST", "/invoices/991/cancel", {})
+
+
+def test_active_qr_transaction_cannot_be_rejected(auth_client, accountant):
+    client = Client.objects.create(
+        first_name="QR", phone="87770000005"
+    )
+    order = Order.objects.create(
+        client=client, status="shipped", currency="KZT"
+    )
+    payment = Payment.objects.create(
+        order=order, amount="100.00", method="kaspi", status="received"
+    )
+    ApiPayInvoice.objects.create(
+        payment=payment, invoice_id=992, channel="qr",
+        idempotency_key=f"asyl-payment-{payment.id}", status="pending",
+    )
+
+    response = auth_client(accountant).post(
+        f"/api/payment-transactions/{payment.id}/reject/",
+        {"reason": "Клиент отказался"},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "qr_cancel_unsupported"

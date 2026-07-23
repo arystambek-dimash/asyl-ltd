@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Download, ExternalLink, RefreshCcw, RotateCcw, Search } from "lucide-react";
+import { Download, ExternalLink, RefreshCcw, RotateCcw, Search, XCircle } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -46,6 +46,8 @@ export default function TransactionsPage() {
     `/payment-transactions/?page=${page}&page_size=50&search=${encodeURIComponent(query.trim())}`,
   );
   const [refundFor, setRefundFor] = useState<Payment | null>(null);
+  const [rejectFor, setRejectFor] = useState<Payment | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -71,6 +73,24 @@ export default function TransactionsPage() {
       setRefundFor(null);
       setAmount("");
       setReason("");
+      await reload();
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reject() {
+    if (!rejectFor) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api.post(`/payment-transactions/${rejectFor.id}/reject/`, {
+        reason: rejectReason,
+      });
+      setRejectFor(null);
+      setRejectReason("");
       await reload();
     } catch (e) {
       setError(apiError(e));
@@ -192,9 +212,16 @@ export default function TransactionsPage() {
                                   <ExternalLink className="size-4" />
                                 </Button>
                               )}
-                              <Button size="sm" variant="ghost" title="Скачать чек" onClick={() => void receipt(row)}>
-                                <Download className="size-4" />
-                              </Button>
+                              {row.status === "confirmed" && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  title="Скачать выписку ASYL LTD"
+                                  onClick={() => void receipt(row)}
+                                >
+                                  <Download className="size-4" />
+                                </Button>
+                              )}
                               {row.status === "confirmed" &&
                                 row.provider?.channel === "phone" &&
                                 Number(row.provider.available_for_refund) > 0 && (
@@ -210,6 +237,26 @@ export default function TransactionsPage() {
                                     <RotateCcw className="size-4" />
                                   </Button>
                                 )}
+                              {["requested", "received"].includes(row.status) && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={row.provider?.channel === "qr"}
+                                  title={
+                                    row.provider?.channel === "qr"
+                                      ? "Активный Kaspi QR нельзя отменить — дождитесь истечения"
+                                      : "Отклонить платёж"
+                                  }
+                                  className="text-[var(--destructive)]"
+                                  onClick={() => {
+                                    setError("");
+                                    setRejectFor(row);
+                                    setRejectReason("");
+                                  }}
+                                >
+                                  <XCircle className="size-4" />
+                                </Button>
+                              )}
                             </div>
                           </TD>
                         </TR>
@@ -276,6 +323,45 @@ export default function TransactionsPage() {
               placeholder="Например: возврат товара"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
+            />
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={!!rejectFor}
+        onClose={() => !busy && setRejectFor(null)}
+        eyebrow="Касса · Контроль операции"
+        title={`Отклонить PAY-${String(rejectFor?.id ?? "").padStart(6, "0")}?`}
+        description="Платёж не будет учтён. Для телефонного счёта Kaspi сначала будет запрошена отмена в ApiPay."
+        footer={
+          <>
+            <Button variant="outline" disabled={busy} onClick={() => setRejectFor(null)}>
+              Не отклонять
+            </Button>
+            <Button variant="destructive" disabled={busy || !rejectReason.trim()} onClick={() => void reject()}>
+              {busy ? "Отклонение…" : "Отклонить платёж"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
+          <div className="rounded-lg border border-[var(--destructive)]/20 bg-[var(--destructive)]/5 p-3 text-sm">
+            <div className="font-medium">{rejectFor?.client_name}</div>
+            <div className="mt-1 text-[var(--muted-foreground)]">
+              Заказ #{rejectFor?.order} · {formatMoney(rejectFor?.amount ?? 0)}{" "}
+              {rejectFor?.currency === "USD" ? "$" : "₸"}
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm">Причина отклонения</label>
+            <Input
+              autoFocus
+              maxLength={500}
+              placeholder="Например: ошибочно внесённая оплата"
+              value={rejectReason}
+              onChange={(event) => setRejectReason(event.target.value)}
             />
           </div>
         </div>

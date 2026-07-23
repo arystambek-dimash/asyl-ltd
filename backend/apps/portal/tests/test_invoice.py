@@ -6,7 +6,7 @@ from reportlab.platypus import Paragraph as ReportLabParagraph
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
-from apps.orders.invoices import build_invoice_pdf
+from apps.orders.invoices import build_invoice_pdf, build_payment_receipt_pdf
 from apps.orders.models import Order, OrderItem
 
 pytestmark = pytest.mark.django_db
@@ -81,6 +81,36 @@ def test_client_receipt_requires_confirmed_payment(auth_client, client_user):
 
     assert response.status_code == 400
     assert response.data["code"] == "receipt_not_available"
+
+
+def test_receipt_contains_asyl_ltd_statement_and_requisites(
+    client_user, settings,
+):
+    order = _invoice_order(client_user)
+    payment = order.payments.get()
+    payment.status = "confirmed"
+    payment.save(update_fields=["status"])
+    paragraphs = []
+
+    def capture_paragraph(text, *args, **kwargs):
+        paragraph = ReportLabParagraph(text, *args, **kwargs)
+        paragraphs.append(paragraph)
+        return paragraph
+
+    with patch(
+        "apps.orders.invoices.Paragraph", side_effect=capture_paragraph
+    ):
+        payload = build_payment_receipt_pdf(payment)
+
+    assert payload.startswith(b"%PDF")
+    rendered_text = "\n".join(
+        paragraph.getPlainText() for paragraph in paragraphs
+    )
+    assert f"Выписка {settings.INVOICE_SUPPLIER['short_name']}" in rendered_text
+    assert settings.INVOICE_SUPPLIER["legal_name"] in rendered_text
+    assert settings.INVOICE_SUPPLIER["bin"] in rendered_text
+    assert settings.INVOICE_SUPPLIER["iban"] in rendered_text
+    assert "ASUL LTD" not in rendered_text
 
 
 def test_invoice_renders_dynamic_markup_as_text_without_loading_images(

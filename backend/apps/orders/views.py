@@ -19,7 +19,7 @@ from apps.shipments.services import (
     finish_train_loading, record_count, set_loading_camera, start_train_loading)
 from apps.shipments.serializers import LoadSerializer
 from .models import ApiPayInvoice, Order, Payment, StatusChangeRequest
-from .apipay import ApiPayAPIError, create_invoice, create_refund
+from .apipay import ApiPayAPIError, cancel_invoice, create_invoice, create_refund
 from .invoices import build_payment_receipt_pdf
 from .querysets import with_order_api_relations
 from .reports import summary_report
@@ -183,6 +183,52 @@ class PaymentKaspiQrView(APIView):
                 "detail": exc.message, "code": exc.error_code
             }) from exc
         return Response(PaymentSerializer(payment).data, status=201)
+
+
+class PaymentRejectView(APIView):
+    def get_permissions(self):
+        return [HasPerm("payments.confirm")]
+
+    def post(self, request, payment_id):
+        payment = get_object_or_404(
+            Payment.objects.select_related("order", "apipay_invoice"),
+            pk=payment_id,
+        )
+        if payment.status not in Payment.IN_PROGRESS_STATUSES:
+            raise ValidationError({
+                "detail": "Отклонить можно только ожидающий платёж.",
+                "code": "invalid_payment_stage",
+            })
+        reason = str(request.data.get("reason") or "").strip()
+        if not reason:
+            raise ValidationError({
+                "detail": "Укажите причину отклонения.",
+                "code": "rejection_reason_required",
+            })
+        try:
+            invoice = payment.apipay_invoice
+        except ApiPayInvoice.DoesNotExist:
+            invoice = None
+        if invoice and invoice.status not in ("cancelled", "expired", "error"):
+            try:
+                cancel_invoice(invoice)
+            except ApiPayAPIError as exc:
+                raise ValidationError({
+                    "detail": exc.message, "code": exc.error_code
+                }) from exc
+            if invoice.status == "cancelling":
+                payment.note = (
+                    f"{payment.note}\n" if payment.note else ""
+                ) + f"Запрошена отмена: {reason}"
+                payment.save(update_fields=["note"])
+                return Response(PaymentSerializer(payment).data, status=202)
+        payment.note = (
+            f"{payment.note}\n" if payment.note else ""
+        ) + f"Отклонено: {reason}"
+        payment.save(update_fields=["note"])
+        reject_payment(payment, request.user)
+        payment.refresh_from_db()
+        return Response(PaymentSerializer(payment).data)
 
 
 class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
