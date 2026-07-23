@@ -25,12 +25,16 @@ ssh "$production_host" \
 
 remote_checksum="$(
   ssh "$production_host" \
-    "cd '$remote_root' && sha256sum backups/asyl-latest.dump" |
+    "cd '$remote_root' \
+     && docker compose -f docker-compose.prod.yml exec -T db-backup \
+        sha256sum /backups/asyl-latest.dump" |
     awk '{print $1}'
 )"
 media_remote_checksum="$(
   ssh "$production_host" \
-    "cd '$remote_root' && sha256sum backups/media-latest.tar.gz" |
+    "cd '$remote_root' \
+     && docker compose -f docker-compose.prod.yml exec -T db-backup \
+        sha256sum /backups/media-latest.tar.gz" |
     awk '{print $1}'
 )"
 for checksum in "$remote_checksum" "$media_remote_checksum"; do
@@ -46,12 +50,14 @@ for checksum in "$remote_checksum" "$media_remote_checksum"; do
   fi
 done
 
-scp \
-  "${production_host}:${remote_root}/backups/asyl-latest.dump" \
-  "$temporary_file"
-scp \
-  "${production_host}:${remote_root}/backups/media-latest.tar.gz" \
-  "$media_temporary_file"
+ssh "$production_host" \
+  "cd '$remote_root' \
+   && docker compose -f docker-compose.prod.yml exec -T db-backup \
+      cat /backups/asyl-latest.dump" >"$temporary_file"
+ssh "$production_host" \
+  "cd '$remote_root' \
+   && docker compose -f docker-compose.prod.yml exec -T db-backup \
+      cat /backups/media-latest.tar.gz" >"$media_temporary_file"
 
 local_checksum="$(shasum -a 256 "$temporary_file" | awk '{print $1}')"
 media_local_checksum="$(
