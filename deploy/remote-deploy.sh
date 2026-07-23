@@ -4,6 +4,7 @@ set -eu
 APP_DIR="${APP_DIR:-/home/ubuntu/asyl-ltd}"
 BRANCH="${BRANCH:-main}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
+EXPECTED_SHA="${EXPECTED_SHA:-}"
 
 # Production must run the exact manifests built by this CI run. A mutable tag
 # such as `latest` can change between pull and restart (or be overwritten in the
@@ -36,6 +37,17 @@ echo "Deploying ${BRANCH} in ${APP_DIR}"
 git fetch origin "$BRANCH"
 git checkout "$BRANCH"
 git pull --ff-only origin "$BRANCH"
+if [ -n "$EXPECTED_SHA" ]; then
+  if ! printf '%s\n' "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+    echo "EXPECTED_SHA must be a 40-character Git commit." >&2
+    exit 1
+  fi
+  actual_sha="$(git rev-parse HEAD)"
+  if [ "$actual_sha" != "$EXPECTED_SHA" ]; then
+    echo "Refusing to deploy unverified commit $actual_sha; expected $EXPECTED_SHA." >&2
+    exit 1
+  fi
+fi
 
 if docker compose -f "$COMPOSE_FILE" ps --services --filter status=running | grep -qx db-backup; then
   echo "Writing pre-deploy database backup..."
@@ -87,3 +99,8 @@ docker compose -f "$COMPOSE_FILE" exec -T nginx nginx -s reload
 
 echo "Current containers:"
 docker compose -f "$COMPOSE_FILE" ps
+
+# CI builds and caches images remotely. Keep the production host lean after a
+# successful, healthy restart without touching running images or data volumes.
+echo "Cleaning safe Docker artifacts..."
+./deploy/maintenance/cleanup-docker.sh

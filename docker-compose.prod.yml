@@ -43,6 +43,12 @@ x-backend-environment: &backend-environment
   APIPAY_BASE_URL: ${APIPAY_BASE_URL:-https://api.apipay.kz/api/v1}
   APIPAY_TIMEOUT_SECONDS: ${APIPAY_TIMEOUT_SECONDS:-10}
 
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:16-alpine
@@ -58,6 +64,7 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - data
 
@@ -67,6 +74,7 @@ services:
     volumes:
       - redisdata:/data
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - data
 
@@ -95,6 +103,7 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - edge
       - data
@@ -137,6 +146,7 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    logging: *default-logging
     # The public UI has no reason to reach the Internet or the database. If a
     # future Node vulnerability is exploited, the process is confined to the
     # internal edge network and can talk only to nginx/backend peers.
@@ -167,6 +177,7 @@ services:
       retries: 12
       start_period: 10s
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - edge
       - default
@@ -187,6 +198,7 @@ services:
         condition: service_healthy
     init: true
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - data
       - default
@@ -210,6 +222,7 @@ services:
       - staticdata:/var/www/static:ro
       - mediadata:/var/www/media:ro
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - edge
       - default
@@ -222,6 +235,7 @@ services:
     entrypoint: /bin/sh
     command: -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $$!; done;'
     restart: unless-stopped
+    logging: *default-logging
 
   db-backup:
     image: postgres:16-alpine
@@ -233,14 +247,18 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-asyl}
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       BACKUP_FILE: /backups/asyl-latest.dump
+      MEDIA_BACKUP_FILE: /backups/media-latest.tar.gz
+      MEDIA_ROOT: /media
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - ./backups:/backups
       - ./deploy/backup:/backup:ro
+      - mediadata:/media:ro
     command: /bin/sh -c "crontab /backup/crontab && crond -f -l 8"
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - data
 
@@ -271,6 +289,7 @@ services:
       - net.ipv4.conf.all.src_valid_mark=1
       - net.ipv4.ip_forward=1
     restart: unless-stopped
+    logging: *default-logging
 
 volumes:
   pgdata:

@@ -1,1 +1,3 @@
-0 3 * * 0 /bin/sh /backup/backup.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
+# Ежедневный атомарный backup в 03:00 Алматы. На сервере остаются только
+# latest + prev; долговременная актуальная копия скачивается локально.
+0 3 * * * /bin/sh /backup/backup.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
