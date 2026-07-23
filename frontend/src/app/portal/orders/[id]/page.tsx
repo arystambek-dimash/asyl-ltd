@@ -14,12 +14,7 @@ import { useApi } from "@/lib/use-api";
 import { apiError } from "@/lib/api";
 import { currencySymbol, formatMoney, formatPortalMoney } from "@/lib/utils";
 import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
-import {
-  clientStep,
-  downloadInvoice,
-  payOrder,
-  setTruck,
-} from "@/lib/portal-actions";
+import { clientStep, downloadInvoice, payOrder, setTruck } from "@/lib/portal-actions";
 import type { PortalOrder, PortalPaymentMethod } from "@/lib/types";
 
 export default function PortalOrderDetail({ params }: { params: Promise<{ id: string }> }) {
@@ -164,7 +159,8 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                       <HandCoins className="mt-0.5 size-4 shrink-0 text-[var(--primary)]" />
                       Запрос «В долг» отправлен. Ожидайте решения сотрудника.
                     </div>
-                  ) : order.apipay_invoice && ["creating", "processing", "pending"].includes(order.apipay_invoice.status) ? (
+                  ) : order.apipay_invoice &&
+                    ["creating", "processing", "pending"].includes(order.apipay_invoice.status) ? (
                     <div className="flex items-start gap-2 rounded-lg border border-[var(--primary)]/25 bg-[var(--primary)]/5 p-3 text-sm">
                       <Smartphone className="mt-0.5 size-4 shrink-0 text-[var(--primary)]" />
                       <div>
