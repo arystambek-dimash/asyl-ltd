@@ -12,7 +12,7 @@ from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Client, Store
 from apps.clients.serializers import StoreSerializer
 from apps.orders.models import Order, Payment
-from apps.orders.invoices import build_invoice_pdf
+from apps.orders.invoices import build_invoice_pdf, build_payment_receipt_pdf
 from apps.orders.services import create_client_payment, request_client_debt, set_truck_number
 from apps.orders.apipay import (
     ApiPayAPIError, ApiPayConfigurationError, start_order_payment,
@@ -168,6 +168,31 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         filename = f"schet_na_oplatu_{order.id}_ot_{timezone.localdate():%d.%m.%Y}.pdf"
         return FileResponse(BytesIO(pdf), content_type="application/pdf",
                             as_attachment=True, filename=filename)
+
+    @action(detail=True, methods=["get"], url_path="receipt")
+    def receipt(self, request, pk=None):
+        order = self.get_object()
+        payment = order.payments.filter(
+            status="confirmed"
+        ).order_by("-confirmed_at", "-paid_at").first()
+        if payment is None:
+            raise ValidationError({
+                "detail": "Квитанция доступна только после подтверждения оплаты.",
+                "code": "receipt_not_available",
+            })
+        pdf = build_payment_receipt_pdf(payment)
+        log_event(
+            "payment", f"Квитанция PAY-{payment.id:06d} скачана клиентом",
+            user=request.user, order=order,
+            payload={
+                "payment_id": payment.id,
+                "action": "payment_receipt_downloaded",
+            },
+        )
+        return FileResponse(
+            BytesIO(pdf), content_type="application/pdf", as_attachment=True,
+            filename=f"receipt_order_{order.id}.pdf",
+        )
 
     @action(detail=True, methods=["post"], url_path="request-debt")
     def request_debt(self, request, pk=None):

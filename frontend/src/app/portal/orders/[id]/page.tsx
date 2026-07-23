@@ -15,7 +15,7 @@ import { useApi } from "@/lib/use-api";
 import { apiError } from "@/lib/api";
 import { currencySymbol, formatMoney, formatPortalMoney } from "@/lib/utils";
 import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
-import { clientStep, downloadInvoice, payOrder, setTruck } from "@/lib/portal-actions";
+import { clientStep, downloadInvoice, downloadReceipt, payOrder, setTruck } from "@/lib/portal-actions";
 import type { PortalOrder, PortalPaymentMethod } from "@/lib/types";
 
 export default function PortalOrderDetail({ params }: { params: Promise<{ id: string }> }) {
@@ -333,13 +333,18 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
 
         {(step === "shipping" || step === "done") && (
           <Card>
-            <CardContent className="py-6 text-center text-sm text-[var(--muted-foreground)]">
+            <CardContent className="flex flex-col items-center gap-3 py-6 text-center text-sm text-[var(--muted-foreground)]">
               {order.truck_number && (
-                <p className="mb-1">
+                <p>
                   КАМАЗ: <b>{order.truck_number}</b>
                 </p>
               )}
-              {step === "done" ? "Заказ отгружен." : "Заказ в обработке на складе."}
+              <p>{step === "done" ? "Заказ отгружен и оплачен." : "Заказ в обработке на складе."}</p>
+              {step === "done" && order.receipt_available && (
+                <Button variant="outline" disabled={busy} onClick={() => run(() => downloadReceipt(order.id))}>
+                  <FileText className="size-4" /> Скачать квитанцию
+                </Button>
+              )}
             </CardContent>
           </Card>
         )}

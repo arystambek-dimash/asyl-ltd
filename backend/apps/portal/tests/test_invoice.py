@@ -56,6 +56,33 @@ def test_invoice_unavailable_before_selecting_method(auth_client, client_user):
     assert response.data["code"] == "invoice_not_available"
 
 
+def test_client_downloads_receipt_after_confirmed_payment(auth_client, client_user):
+    order = _invoice_order(client_user)
+    payment = order.payments.get()
+    payment.status = "confirmed"
+    payment.save(update_fields=["status"])
+
+    response = auth_client(client_user).get(
+        f"/api/portal/orders/{order.id}/receipt/"
+    )
+
+    assert response.status_code == 200
+    assert response["Content-Type"] == "application/pdf"
+    assert "receipt_order" in response["Content-Disposition"]
+    assert b"".join(response.streaming_content).startswith(b"%PDF")
+
+
+def test_client_receipt_requires_confirmed_payment(auth_client, client_user):
+    order = _invoice_order(client_user)
+
+    response = auth_client(client_user).get(
+        f"/api/portal/orders/{order.id}/receipt/"
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "receipt_not_available"
+
+
 def test_invoice_renders_dynamic_markup_as_text_without_loading_images(
     client_user, settings,
 ):

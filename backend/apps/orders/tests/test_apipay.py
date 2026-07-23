@@ -10,7 +10,7 @@ from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.apipay import create_invoice
 from apps.orders.models import (
-    ApiPayInvoice, ApiPayWebhookEvent, Order, OrderItem, Payment,
+    ApiPayInvoice, ApiPayRefund, ApiPayWebhookEvent, Order, OrderItem, Payment,
 )
 
 
@@ -88,6 +88,31 @@ def test_create_invoice_uses_api_key_and_required_payload(urlopen, settings):
     }
     assert invoice.invoice_id == 42
     assert invoice.status == "processing"
+
+
+@patch("apps.orders.apipay.urllib.request.urlopen")
+def test_create_qr_invoice_persists_payment_links(urlopen, settings):
+    settings.APIPAY_API_KEY = "server-only-key"
+    settings.APIPAY_BASE_URL = "https://api.apipay.kz/api/v1"
+    urlopen.return_value = UpstreamResponse({
+        "id": 43,
+        "status": "pending",
+        "qr_token_url": "https://qr.kaspi.kz/example",
+        "qr_image_url": "https://api.apipay.kz/qr/example.png",
+        "qr_expires_at": "2026-07-23T09:05:00+00:00",
+    })
+    payment = _payment()
+
+    invoice = create_invoice(payment, channel="qr")
+
+    request = urlopen.call_args.args[0]
+    payload = json.loads(request.data)
+    assert request.full_url == "https://api.apipay.kz/api/v1/invoices/qr"
+    assert "phone_number" not in payload
+    assert invoice.channel == "qr"
+    assert invoice.qr_token_url == "https://qr.kaspi.kz/example"
+    assert invoice.qr_image_url == "https://api.apipay.kz/qr/example.png"
+    assert invoice.qr_expires_at.isoformat() == "2026-07-23T09:05:00+00:00"
 
 
 def test_webhook_rejects_invalid_signature(api_client, settings):
@@ -191,3 +216,34 @@ def test_webhook_does_not_confirm_mismatched_amount(api_client, settings):
     payment.refresh_from_db()
     assert payment.status == "received"
     assert not ApiPayWebhookEvent.objects.exists()
+
+
+def test_refund_webhook_updates_transaction_totals(api_client, settings):
+    payment = _payment()
+    payment.status = "confirmed"
+    payment.save(update_fields=["status"])
+    invoice = ApiPayInvoice.objects.create(
+        payment=payment, invoice_id=42, channel="phone",
+        idempotency_key=f"asyl-payment-{payment.id}", status="paid",
+    )
+    payload = {
+        "event": "invoice.refunded",
+        "invoice": {"id": 42, "amount": "5000.00", "status": "paid"},
+        "refund": {
+            "id": 77,
+            "invoice_id": 42,
+            "amount": "1250.00",
+            "status": "completed",
+            "reason": "Возврат товара",
+            "kaspi_refund_id": "K-77",
+        },
+    }
+
+    response = _signed_post(api_client, settings, payload)
+
+    assert response.status_code == 200
+    refund = ApiPayRefund.objects.get(refund_id=77)
+    invoice.refresh_from_db()
+    assert refund.status == "completed"
+    assert refund.amount == Decimal("1250.00")
+    assert invoice.total_refunded == Decimal("1250.00")

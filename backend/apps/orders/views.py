@@ -91,6 +91,11 @@ class PaymentReceiptView(APIView):
 
     def get(self, request, payment_id):
         payment = get_object_or_404(Payment, pk=payment_id)
+        if payment.status != "confirmed":
+            raise ValidationError({
+                "detail": "Квитанция доступна только после подтверждения оплаты.",
+                "code": "receipt_not_available",
+            })
         pdf = build_payment_receipt_pdf(payment)
         return FileResponse(
             BytesIO(pdf), content_type="application/pdf", as_attachment=True,

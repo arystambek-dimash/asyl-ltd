@@ -39,6 +39,13 @@ export async function downloadInvoice(id: number) {
   downloadBlob(response.data, `schet_na_oplatu_${id}.pdf`);
 }
 
+export async function downloadReceipt(id: number) {
+  const response = await api.get<Blob>(`/portal/orders/${id}/receipt/`, {
+    responseType: "blob",
+  });
+  downloadBlob(response.data, `receipt_order_${id}.pdf`);
+}
+
 export const registerClient = (payload: RegisterPayload) =>
   api.post<{ access: string; refresh: string }>("/portal/register/", payload).then((r) => r.data);
 

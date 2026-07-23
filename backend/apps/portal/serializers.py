@@ -93,6 +93,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
     has_pending_payment = serializers.SerializerMethodField()
     apipay_invoice = serializers.SerializerMethodField()
     client_phone = serializers.CharField(source="client.phone", read_only=True)
+    receipt_available = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -102,6 +103,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
                   "store", "store_name",
                   "items", "total_amount", "paid_total", "remaining_amount",
                   "has_pending_payment", "apipay_invoice", "client_phone",
+                  "receipt_available",
                   "truck_number", "debt_requested", "debt_override", "created_at"]
         read_only_fields = ["status", "payment_status",
                             "truck_number", "debt_requested", "debt_override"]
@@ -201,6 +203,11 @@ class PortalOrderSerializer(serializers.ModelSerializer):
                 "total_refunded": money_string(invoice.total_refunded),
             }
         return None
+
+    def get_receipt_available(self, obj):
+        return any(
+            payment.status == "confirmed" for payment in obj.payments.all()
+        )
 
     @transaction.atomic
     def create(self, validated_data):

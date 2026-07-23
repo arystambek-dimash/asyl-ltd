@@ -189,6 +189,7 @@ export interface PortalOrder {
     total_refunded: string;
   } | null;
   client_phone: string;
+  receipt_available: boolean;
   truck_number: string;
   debt_requested: boolean;
   debt_override: boolean;
