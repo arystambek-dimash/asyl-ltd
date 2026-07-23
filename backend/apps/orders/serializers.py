@@ -104,6 +104,9 @@ class PaymentSerializer(serializers.ModelSerializer):
     currency = serializers.CharField(source="order.currency", read_only=True)
     provider = serializers.SerializerMethodField()
     client_name = serializers.CharField(source="order.client.name", read_only=True)
+    effective_status = serializers.SerializerMethodField()
+    available_for_refund = serializers.SerializerMethodField()
+    refunds = serializers.SerializerMethodField()
 
     class Meta:
         model = Payment
@@ -111,7 +114,9 @@ class PaymentSerializer(serializers.ModelSerializer):
                   "note", "paid_at", "recorded_by", "recorded_by_name",
                   "received_by_name", "received_at",
                   "confirmed_by", "confirmed_by_name", "confirmed_at",
-                  "client_name", "provider"]
+                  "client_name", "provider", "effective_status",
+                  "refunded_amount", "pending_refund_amount",
+                  "available_for_refund", "refunds"]
         read_only_fields = ["order", "paid_at", "recorded_by", "confirmed_by"]
 
     def get_recorded_by_name(self, obj):
@@ -126,6 +131,35 @@ class PaymentSerializer(serializers.ModelSerializer):
     def get_method_label(self, obj):
         return PAYMENT_METHOD_LABELS.get(obj.method, obj.method)
 
+    def get_effective_status(self, obj):
+        if obj.status != "confirmed":
+            return obj.status
+        if obj.refunded_amount >= obj.amount:
+            return "refunded"
+        if obj.pending_refund_amount > 0:
+            return "refund_pending"
+        if obj.refunded_amount > 0:
+            return "partially_refunded"
+        return "confirmed"
+
+    def get_available_for_refund(self, obj):
+        return money_string(obj.available_for_refund)
+
+    def get_refunds(self, obj):
+        return [
+            {
+                "id": row.pk,
+                "amount": money_string(row.amount),
+                "method": row.method,
+                "status": row.status,
+                "reason": row.reason,
+                "requested_by_name": _username(row.requested_by),
+                "completed_at": row.completed_at,
+                "created_at": row.created_at,
+            }
+            for row in obj.payment_refunds.all()
+        ]
+
     def get_provider(self, obj):
         try:
             invoice = obj.apipay_invoice
@@ -139,9 +173,7 @@ class PaymentSerializer(serializers.ModelSerializer):
             "qr_token_url": invoice.qr_token_url or None,
             "qr_image_url": invoice.qr_image_url or None,
             "total_refunded": money_string(invoice.total_refunded),
-            "available_for_refund": money_string(max(
-                Decimal("0"), obj.amount - invoice.total_refunded
-            )),
+            "available_for_refund": money_string(obj.available_for_refund),
             "refunds": [
                 {
                     "id": row.refund_id,

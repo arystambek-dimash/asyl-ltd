@@ -13,13 +13,16 @@ from typing import Any
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import ValidationError
 
 from apps.eventlog.services import log_event
 
-from .models import ApiPayInvoice, ApiPayRefund, Order, Payment
+from .models import (
+    ApiPayInvoice, ApiPayRefund, Order, Payment, PaymentRefund,
+)
 from .services import create_client_payment, reject_payment, sync_payment_status
 
 
@@ -261,6 +264,81 @@ def cancel_invoice(record: ApiPayInvoice) -> ApiPayInvoice:
     return record
 
 
+def _validated_refund_amount(payment: Payment, amount: object) -> Decimal:
+    raw = payment.available_for_refund if amount in (None, "") else amount
+    try:
+        value = Decimal(str(raw)).quantize(Decimal("0.01"))
+    except InvalidOperation as exc:
+        raise ValidationError({"detail": "Некорректная сумма возврата."}) from exc
+    if value <= 0:
+        raise ValidationError({"detail": "Сумма возврата должна быть больше нуля."})
+    if value > payment.available_for_refund:
+        raise ValidationError({
+            "detail": (
+                f"Доступно к возврату: "
+                f"{payment.available_for_refund} {payment.order.currency}."
+            ),
+            "code": "refund_exceeds_available",
+        })
+    return value
+
+
+def _sync_refund_totals(payment: Payment) -> None:
+    totals = payment.payment_refunds.values("status").annotate(total=Sum("amount"))
+    by_status = {row["status"]: row["total"] for row in totals}
+    payment.refunded_amount = by_status.get("completed", Decimal("0"))
+    payment.pending_refund_amount = by_status.get("pending", Decimal("0"))
+    payment.save(update_fields=["refunded_amount", "pending_refund_amount"])
+    sync_payment_status(payment.order)
+
+
+@transaction.atomic
+def create_cash_refund(
+    payment: Payment, user, *, amount: object = None, reason: str = ""
+) -> PaymentRefund:
+    payment = (
+        Payment.objects.select_for_update().select_related("order")
+        .get(pk=payment.pk)
+    )
+    if payment.status != "confirmed":
+        raise ValidationError({
+            "detail": "Вернуть можно только подтверждённую оплату.",
+            "code": "payment_not_confirmed",
+        })
+    reason = reason.strip()
+    if not reason:
+        raise ValidationError({
+            "detail": "Укажите причину возврата.",
+            "code": "refund_reason_required",
+        })
+    value = _validated_refund_amount(payment, amount)
+    refund = PaymentRefund.objects.create(
+        payment=payment,
+        amount=value,
+        method="cash",
+        status="completed",
+        reason=reason[:500],
+        requested_by=user,
+        completed_at=timezone.now(),
+    )
+    _sync_refund_totals(payment)
+    log_event(
+        "payment",
+        f"Возврат из кассы {value} {payment.order.currency}",
+        user=user,
+        order=payment.order,
+        payload={
+            "action": "cash_refund_completed",
+            "payment_id": payment.pk,
+            "refund_id": refund.pk,
+            "amount": str(value),
+            "reason": reason[:500],
+        },
+    )
+    return refund
+
+
+@transaction.atomic
 def create_refund(
     record: ApiPayInvoice, user, *, amount: object = None, reason: str = ""
 ) -> ApiPayRefund:
@@ -269,32 +347,64 @@ def create_refund(
             "detail": "ApiPay не поддерживает возвраты QR-счетов.",
             "code": "qr_refund_unsupported",
         })
-    payload: dict[str, Any] = {}
-    if amount not in (None, ""):
-        try:
-            value = Decimal(str(amount)).quantize(Decimal("0.01"))
-        except InvalidOperation as exc:
-            raise ValidationError({"detail": "Некорректная сумма возврата."}) from exc
-        if value <= 0:
-            raise ValidationError({"detail": "Сумма возврата должна быть больше нуля."})
-        payload["amount"] = float(value)
+    payment = (
+        Payment.objects.select_for_update().select_related("order")
+        .get(pk=record.payment_id)
+    )
+    if payment.status != "confirmed":
+        raise ValidationError({
+            "detail": "Вернуть можно только подтверждённую оплату.",
+            "code": "payment_not_confirmed",
+        })
+    value = _validated_refund_amount(payment, amount)
+    payload: dict[str, Any] = {"amount": float(value)}
     if reason:
         payload["reason"] = reason[:500]
     response = api_request("POST", f"/invoices/{record.invoice_id}/refund", payload)
     refund_payload = response.get("refund") or {}
     refund_id = int(refund_payload["id"])
-    return ApiPayRefund.objects.update_or_create(
+    provider_refund, _ = ApiPayRefund.objects.update_or_create(
         refund_id=refund_id,
         defaults={
             "invoice": record,
-            "amount": Decimal(str(refund_payload.get("amount") or amount or record.payment.amount)),
+            "amount": Decimal(str(refund_payload.get("amount") or value)),
             "status": str(refund_payload.get("status") or "pending"),
             "reason": reason[:500],
             "kaspi_refund_id": str(refund_payload.get("kaspi_refund_id") or ""),
             "response_payload": response,
             "requested_by": user,
         },
-    )[0]
+    )
+    provider_status = str(refund_payload.get("status") or "pending")
+    status = "pending" if provider_status in {"pending", "processing"} else provider_status
+    generic_refund, _ = PaymentRefund.objects.update_or_create(
+        provider_refund=provider_refund,
+        defaults={
+            "payment": payment,
+            "amount": provider_refund.amount,
+            "method": "apipay",
+            "status": status,
+            "reason": reason[:500],
+            "requested_by": user,
+            "completed_at": timezone.now() if status == "completed" else None,
+        },
+    )
+    _sync_refund_totals(payment)
+    log_event(
+        "payment",
+        f"Возврат ApiPay {value} {payment.order.currency}: {status}",
+        user=user,
+        order=payment.order,
+        payload={
+            "action": "apipay_refund_created",
+            "payment_id": payment.pk,
+            "refund_id": generic_refund.pk,
+            "provider_refund_id": refund_id,
+            "amount": str(value),
+            "reason": reason[:500],
+        },
+    )
+    return provider_refund
 
 
 @transaction.atomic
@@ -313,13 +423,46 @@ def apply_refund_status(record: ApiPayInvoice, payload: dict[str, Any]) -> None:
             "response_payload": payload,
         },
     )
-    if refund.status == "completed":
-        total = sum(
-            (row.amount for row in record.refunds.filter(status="completed")),
-            Decimal("0"),
-        )
-        record.total_refunded = total
-        record.save(update_fields=["total_refunded", "updated_at"])
+    payment = Payment.objects.select_for_update().get(pk=record.payment_id)
+    generic_status = (
+        "pending" if refund.status in {"pending", "processing"} else refund.status
+    )
+    generic_refund, _ = PaymentRefund.objects.update_or_create(
+        provider_refund=refund,
+        defaults={
+            "payment": payment,
+            "amount": refund.amount,
+            "method": "apipay",
+            "status": generic_status,
+            "reason": refund.reason,
+            "requested_by": refund.requested_by,
+            "completed_at": (
+                timezone.now() if generic_status == "completed" else None
+            ),
+        },
+    )
+    _sync_refund_totals(payment)
+    record.total_refunded = (
+        record.refunds.filter(status="completed").aggregate(total=Sum("amount"))[
+            "total"
+        ]
+        or Decimal("0")
+    )
+    record.save(update_fields=["total_refunded", "updated_at"])
+    log_event(
+        "payment",
+        f"Статус возврата ApiPay: {generic_refund.status}",
+        user=None,
+        order=payment.order,
+        payload={
+            "action": "apipay_refund_status",
+            "payment_id": payment.pk,
+            "refund_id": generic_refund.pk,
+            "provider_refund_id": refund.refund_id,
+            "status": generic_refund.status,
+            "amount": str(generic_refund.amount),
+        },
+    )
 
 
 def _parsed_datetime(value: object) -> datetime | None:

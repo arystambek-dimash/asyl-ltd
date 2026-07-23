@@ -109,7 +109,11 @@ class Order(models.Model):
 
     @property
     def paid_total(self) -> Decimal:
-        return sum((p.amount for p in self.payments.all() if p.status == "confirmed"), Decimal("0"))
+        return sum(
+            (p.net_amount for p in self.payments.all()
+             if p.status == "confirmed"),
+            Decimal("0"),
+        )
 
     @property
     def is_fully_paid(self) -> bool:
@@ -190,6 +194,12 @@ class Payment(models.Model):
 
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="payments")
     amount = models.DecimalField(max_digits=12, decimal_places=2)
+    refunded_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0
+    )
+    pending_refund_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0
+    )
     method = models.CharField(max_length=10, default="cash")
     status = models.CharField(max_length=20, default="requested")
     # Примечание бухгалтера при внесении оплаты (видно в истории и на сверке).
@@ -210,6 +220,18 @@ class Payment(models.Model):
         on_delete=models.SET_NULL, related_name="confirmed_payments",
     )
     confirmed_at = models.DateTimeField(null=True, blank=True)
+
+    @property
+    def net_amount(self) -> Decimal:
+        return max(Decimal("0"), self.amount - self.refunded_amount)
+
+    @property
+    def available_for_refund(self) -> Decimal:
+        if self.status != "confirmed":
+            return Decimal("0")
+        return max(
+            Decimal("0"), self.net_amount - self.pending_refund_amount
+        )
 
 
 class ApiPayInvoice(models.Model):
@@ -255,6 +277,32 @@ class ApiPayRefund(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="requested_apipay_refunds",
     )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class PaymentRefund(models.Model):
+    """Единый журнал возвратов: ApiPay или выдача из кассы."""
+
+    METHODS = ["apipay", "cash"]
+    STATUSES = ["pending", "completed", "failed"]
+
+    payment = models.ForeignKey(
+        Payment, on_delete=models.CASCADE, related_name="payment_refunds"
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    method = models.CharField(max_length=20)
+    status = models.CharField(max_length=20, default="pending")
+    reason = models.CharField(max_length=500)
+    provider_refund = models.OneToOneField(
+        ApiPayRefund, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="payment_refund",
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="requested_payment_refunds",
+    )
+    completed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

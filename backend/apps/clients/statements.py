@@ -184,7 +184,7 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
                 )
     for payment in payments:
         if payment.status == "confirmed":
-            totals[payment.order.currency]["payments"] += payment.amount
+            totals[payment.order.currency]["payments"] += payment.net_amount
 
     ws.append([])
     ws.append(["Валюта", "Заказов", "Продажи", "Оплачено", "Текущий долг", "Баланс выписки"])
@@ -221,7 +221,7 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
     for payment in payments:
         if payment.status == "confirmed":
             stamp = payment.confirmed_at or payment.paid_at
-            operations.append((stamp, 1, payment.order.currency, Decimal("0"), payment.amount, payment))
+            operations.append((stamp, 1, payment.order.currency, Decimal("0"), payment.net_amount, payment))
     operations.sort(key=lambda item: (item[0], item[1], getattr(item[5], "id", 0)))
     balances: defaultdict[str, Decimal] = defaultdict(Decimal)
     for stamp, kind, currency, debit, credit, obj in operations:
@@ -380,8 +380,8 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
     for payment in payments:
         if payment.status != "confirmed":
             continue
-        totals[payment.order.currency]["payments"] += payment.amount
-        client_totals[payment.order.client_id][payment.order.currency]["payments"] += payment.amount
+        totals[payment.order.currency]["payments"] += payment.net_amount
+        client_totals[payment.order.client_id][payment.order.currency]["payments"] += payment.net_amount
 
     wb = Workbook()
     summary = wb.active
@@ -467,7 +467,7 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
     for payment in payments:
         if payment.status == "confirmed":
             stamp = payment.confirmed_at or payment.paid_at
-            operations.append((stamp, 1, payment.order.client_id, payment.order.currency, Decimal("0"), payment.amount, payment))
+            operations.append((stamp, 1, payment.order.client_id, payment.order.currency, Decimal("0"), payment.net_amount, payment))
     operations.sort(key=lambda item: (item[0], item[1], getattr(item[6], "id", 0)))
     balances: defaultdict[tuple[int, str], Decimal] = defaultdict(Decimal)
     for stamp, kind, client_id, currency, debit, credit, obj in operations:

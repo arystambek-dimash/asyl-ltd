@@ -19,7 +19,10 @@ from apps.shipments.services import (
     finish_train_loading, record_count, set_loading_camera, start_train_loading)
 from apps.shipments.serializers import LoadSerializer
 from .models import ApiPayInvoice, Order, Payment, StatusChangeRequest
-from .apipay import ApiPayAPIError, cancel_invoice, create_invoice, create_refund
+from .apipay import (
+    ApiPayAPIError, cancel_invoice, create_cash_refund, create_invoice,
+    create_refund,
+)
 from .invoices import build_payment_receipt_pdf
 from .querysets import with_order_api_relations
 from .reports import summary_report
@@ -64,7 +67,10 @@ class PaymentTransactionListView(APIView):
                 "order__client", "recorded_by", "received_by", "confirmed_by",
                 "apipay_invoice",
             )
-            .prefetch_related("apipay_invoice__refunds")
+            .prefetch_related(
+                "apipay_invoice__refunds",
+                "payment_refunds__requested_by",
+            )
             .order_by("-paid_at")
         )
         status = request.query_params.get("status")
@@ -100,19 +106,22 @@ class PaymentTransactionListView(APIView):
             page = pages
         start = (page - 1) * page_size
         rows = qs[start:start + page_size]
-        paid_by_currency = {
-            currency: money_string(
-                qs.filter(status="confirmed", order__currency=currency)
-                .aggregate(total=Sum("amount"))["total"] or Decimal("0")
+        paid_by_currency = {}
+        refunded_by_currency = {}
+        for currency in ("KZT", "USD"):
+            currency_rows = qs.filter(
+                status="confirmed", order__currency=currency
             )
-            for currency in ("KZT", "USD")
-        }
-        refunded_kzt = (
-            ApiPayInvoice.objects.filter(
-                payment__in=qs, total_refunded__gt=0
-            ).aggregate(total=Sum("total_refunded"))["total"]
-            or Decimal("0")
-        )
+            gross = (
+                currency_rows.aggregate(total=Sum("amount"))["total"]
+                or Decimal("0")
+            )
+            refunded = (
+                currency_rows.aggregate(total=Sum("refunded_amount"))["total"]
+                or Decimal("0")
+            )
+            paid_by_currency[currency] = money_string(gross - refunded)
+            refunded_by_currency[currency] = money_string(refunded)
         return Response({
             "results": PaymentSerializer(rows, many=True).data,
             "count": count,
@@ -120,7 +129,7 @@ class PaymentTransactionListView(APIView):
             "pages": pages,
             "summary": {
                 "paid_by_currency": paid_by_currency,
-                "refunded_kzt": money_string(refunded_kzt),
+                "refunded_by_currency": refunded_by_currency,
             },
         })
 
@@ -148,23 +157,53 @@ class PaymentRefundView(APIView):
         return [HasPerm("payments.confirm")]
 
     def post(self, request, payment_id):
-        invoice = get_object_or_404(
-            ApiPayInvoice.objects.select_related("payment"), payment_id=payment_id
+        payment = get_object_or_404(
+            Payment.objects.select_related("order", "apipay_invoice"),
+            pk=payment_id,
+        )
+        mode = str(request.data.get("mode") or "auto")
+        if mode not in ("auto", "apipay", "cash"):
+            raise ValidationError({
+                "detail": "Выберите возврат через ApiPay или из кассы.",
+                "code": "invalid_refund_mode",
+            })
+        try:
+            invoice = payment.apipay_invoice
+        except ApiPayInvoice.DoesNotExist:
+            invoice = None
+        use_apipay = (
+            mode != "cash"
+            and invoice is not None
+            and invoice.channel == "phone"
         )
         try:
-            refund = create_refund(
-                invoice, request.user, amount=request.data.get("amount"),
-                reason=request.data.get("reason") or "",
-            )
+            if use_apipay:
+                refund = create_refund(
+                    invoice, request.user, amount=request.data.get("amount"),
+                    reason=request.data.get("reason") or "",
+                )
+                response_data = {
+                    "id": refund.refund_id,
+                    "amount": money_string(refund.amount),
+                    "status": refund.status,
+                    "method": "apipay",
+                }
+            else:
+                refund = create_cash_refund(
+                    payment, request.user, amount=request.data.get("amount"),
+                    reason=request.data.get("reason") or "",
+                )
+                response_data = {
+                    "id": refund.pk,
+                    "amount": money_string(refund.amount),
+                    "status": refund.status,
+                    "method": "cash",
+                }
         except ApiPayAPIError as exc:
             raise ValidationError({
                 "detail": exc.message, "code": exc.error_code
             }) from exc
-        return Response({
-            "id": refund.refund_id,
-            "amount": money_string(refund.amount),
-            "status": refund.status,
-        }, status=201)
+        return Response(response_data, status=201)
 
 
 class PaymentKaspiQrView(APIView):
@@ -381,6 +420,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
               .filter(status__in=stages,
                       order__in=Order.objects.all())
               .select_related("order__client", "order__store", "recorded_by", "received_by")
+              .prefetch_related("payment_refunds__requested_by")
               .order_by("paid_at"))
         department = request.query_params.get("department")
         if department:

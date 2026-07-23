@@ -23,16 +23,81 @@ interface TransactionPage {
   pages: number;
   summary: {
     paid_by_currency: { KZT: string; USD: string };
-    refunded_kzt: string;
+    refunded_by_currency: { KZT: string; USD: string };
   };
 }
 
-const STATUS: Record<string, { label: string; tone: "success" | "warning" | "destructive" | "muted" }> = {
+const STATUS: Record<string, { label: string; tone: "success" | "warning" | "destructive" | "muted" | "primary" }> = {
   confirmed: { label: "Оплачено", tone: "success" },
   received: { label: "В кассе", tone: "warning" },
   requested: { label: "Ожидает", tone: "warning" },
   rejected: { label: "Отклонено", tone: "destructive" },
+  refund_pending: { label: "Возврат в обработке", tone: "warning" },
+  partially_refunded: { label: "Частично возвращено", tone: "primary" },
+  refunded: { label: "Возвращено", tone: "muted" },
 };
+
+const STATUS_HELP: Record<string, { meaning: string; money: string; next: string }> = {
+  requested: {
+    meaning: "Оплата создана, но сотрудник ещё не подтвердил получение.",
+    money: "Не учитывается в оплаченной сумме заказа.",
+    next: "Можно принять оплату или отклонить её.",
+  },
+  received: {
+    meaning: "Сотрудник принял операцию, бухгалтер ещё не подтвердил деньги.",
+    money: "Пока не учитывается в оплаченной сумме заказа.",
+    next: "Бухгалтер может подтвердить или отклонить операцию.",
+  },
+  confirmed: {
+    meaning: "Оплата подтверждена и деньги поступили.",
+    money: "Полностью учитывается в кассе и уменьшает долг заказа.",
+    next: "Можно скачать выписку или оформить полный/частичный возврат.",
+  },
+  rejected: {
+    meaning: "Операция отклонена и закрыта без оплаты.",
+    money: "Не учитывается в кассе и не уменьшает долг.",
+    next: "Если клиент платит заново, создайте новую операцию.",
+  },
+  refund_pending: {
+    meaning: "Запрос возврата отправлен в ApiPay и ожидает результата.",
+    money: "До подтверждения провайдера оплата ещё учитывается.",
+    next: "Дождитесь webhook ApiPay — статус обновится автоматически.",
+  },
+  partially_refunded: {
+    meaning: "Клиенту возвращена часть оплаты.",
+    money: "В кассе учитывается только остаток после возврата.",
+    next: "Можно вернуть оставшуюся доступную сумму.",
+  },
+  refunded: {
+    meaning: "Оплата возвращена клиенту полностью.",
+    money: "Больше не учитывается в кассе и снова увеличивает остаток заказа.",
+    next: "Повторный возврат для этой операции недоступен.",
+  },
+};
+
+function StatusExplanation({ status }: { status: string }) {
+  const help = STATUS_HELP[status] ?? {
+    meaning: "Технический статус платёжной операции.",
+    money: "Проверьте детали операции и историю возвратов.",
+    next: "Обновите страницу для получения актуального состояния.",
+  };
+  return (
+    <div className="space-y-2 text-sm">
+      <div className="rounded-lg border px-3 py-2.5">
+        <span className="font-medium">Что означает: </span>
+        <span className="text-[var(--muted-foreground)]">{help.meaning}</span>
+      </div>
+      <div className="rounded-lg border px-3 py-2.5">
+        <span className="font-medium">Деньги: </span>
+        <span className="text-[var(--muted-foreground)]">{help.money}</span>
+      </div>
+      <div className="rounded-lg border px-3 py-2.5">
+        <span className="font-medium">Что дальше: </span>
+        <span className="text-[var(--muted-foreground)]">{help.next}</span>
+      </div>
+    </div>
+  );
+}
 
 export default function TransactionsPage() {
   const [page, setPage] = useState(1);
@@ -46,6 +111,7 @@ export default function TransactionsPage() {
     `/payment-transactions/?page=${page}&page_size=50&search=${encodeURIComponent(query.trim())}`,
   );
   const [refundFor, setRefundFor] = useState<Payment | null>(null);
+  const [statusFor, setStatusFor] = useState<Payment | null>(null);
   const [rejectFor, setRejectFor] = useState<Payment | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [amount, setAmount] = useState("");
@@ -69,6 +135,7 @@ export default function TransactionsPage() {
       await api.post(`/payment-transactions/${refundFor.id}/refund/`, {
         amount: amount || undefined,
         reason,
+        mode: "auto",
       });
       setRefundFor(null);
       setAmount("");
@@ -126,7 +193,12 @@ export default function TransactionsPage() {
             <CardContent className="py-5">
               <div className="text-xs uppercase tracking-wide text-[var(--muted-foreground)]">Возвращено</div>
               <div className="mt-1 text-2xl font-semibold tabular-nums">
-                {formatMoney(data?.summary.refunded_kzt ?? 0)} ₸
+                {formatMoney(data?.summary.refunded_by_currency.KZT ?? 0)} ₸
+                {Number(data?.summary.refunded_by_currency.USD ?? 0) > 0 && (
+                  <span className="ml-2 text-base text-[var(--muted-foreground)]">
+                    + {formatMoney(data!.summary.refunded_by_currency.USD)} $
+                  </span>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -172,7 +244,11 @@ export default function TransactionsPage() {
                   </THead>
                   <TBody>
                     {rows.map((row) => {
-                      const state = STATUS[row.status] ?? { label: row.status, tone: "muted" as const };
+                      const effectiveStatus = row.effective_status ?? row.status;
+                      const state = STATUS[effectiveStatus] ?? {
+                        label: effectiveStatus,
+                        tone: "muted" as const,
+                      };
                       return (
                         <TR key={row.id}>
                           <TD>
@@ -190,12 +266,23 @@ export default function TransactionsPage() {
                             {formatMoney(row.amount)} {row.currency === "USD" ? "$" : "₸"}
                           </TD>
                           <TD>
-                            <Badge tone={state.tone}>{state.label}</Badge>
+                            <button
+                              type="button"
+                              onClick={() => setStatusFor(row)}
+                              className="rounded-md outline-none ring-offset-2 hover:opacity-80 focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                              title="Нажмите, чтобы узнать значение статуса"
+                            >
+                              <Badge tone={state.tone}>{state.label}</Badge>
+                            </button>
                           </TD>
                           <TD>
-                            {Number(row.provider?.total_refunded ?? 0) > 0 ? (
+                            {Number(row.refunded_amount ?? 0) > 0 ? (
                               <span className="text-sm tabular-nums">
-                                {formatMoney(row.provider!.total_refunded)} ₸
+                                {formatMoney(row.refunded_amount ?? 0)} {row.currency === "USD" ? "$" : "₸"}
+                              </span>
+                            ) : Number(row.pending_refund_amount ?? 0) > 0 ? (
+                              <span className="text-sm text-[var(--warning)]">
+                                {formatMoney(row.pending_refund_amount ?? 0)} в обработке
                               </span>
                             ) : (
                               "—"
@@ -222,21 +309,25 @@ export default function TransactionsPage() {
                                   <Download className="size-4" />
                                 </Button>
                               )}
-                              {row.status === "confirmed" &&
-                                row.provider?.channel === "phone" &&
-                                Number(row.provider.available_for_refund) > 0 && (
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    title="Оформить возврат"
-                                    onClick={() => {
-                                      setRefundFor(row);
-                                      setAmount(row.provider!.available_for_refund);
-                                    }}
-                                  >
-                                    <RotateCcw className="size-4" />
-                                  </Button>
-                                )}
+                              {row.status === "confirmed" && Number(row.available_for_refund ?? 0) > 0 && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  title={
+                                    row.provider?.channel === "phone"
+                                      ? "Вернуть через ApiPay"
+                                      : "Вернуть деньги из кассы"
+                                  }
+                                  onClick={() => {
+                                    setError("");
+                                    setRefundFor(row);
+                                    setAmount(row.available_for_refund ?? "");
+                                    setReason("");
+                                  }}
+                                >
+                                  <RotateCcw className="size-4" />
+                                </Button>
+                              )}
                               {["requested", "received"].includes(row.status) && (
                                 <Button
                                   size="sm"
@@ -296,15 +387,19 @@ export default function TransactionsPage() {
       <Modal
         open={!!refundFor}
         onClose={() => !busy && setRefundFor(null)}
-        eyebrow="ApiPay · Возврат"
+        eyebrow={refundFor?.provider?.channel === "phone" ? "ApiPay · Возврат" : "Касса · Возврат"}
         title="Вернуть оплату"
-        description="Можно вернуть всю доступную сумму или указать часть."
+        description={
+          refundFor?.provider?.channel === "phone"
+            ? "Возврат будет отправлен в ApiPay. Деньги учтутся после подтверждения провайдера."
+            : "Возврат будет сразу проведён как выдача денег из кассы и уменьшит оплаченную сумму заказа."
+        }
         footer={
           <>
             <Button variant="outline" onClick={() => setRefundFor(null)}>
               Отмена
             </Button>
-            <Button disabled={busy || !amount} onClick={() => void refund()}>
+            <Button disabled={busy || !amount || !reason.trim()} onClick={() => void refund()}>
               {busy ? "Отправка…" : "Оформить возврат"}
             </Button>
           </>
@@ -326,6 +421,55 @@ export default function TransactionsPage() {
             />
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        open={!!statusFor}
+        onClose={() => setStatusFor(null)}
+        eyebrow="Статус операции"
+        title={STATUS[statusFor?.effective_status ?? statusFor?.status ?? ""]?.label ?? statusFor?.status ?? "Статус"}
+        description="Статус показывает, учитываются ли деньги в кассе и что можно сделать с операцией."
+        footer={<Button onClick={() => setStatusFor(null)}>Понятно</Button>}
+      >
+        {statusFor && (
+          <div className="space-y-4">
+            <div className="rounded-xl border bg-[var(--muted)]/35 p-4">
+              <div className="text-sm font-medium">
+                {statusFor.client_name} · заказ #{statusFor.order}
+              </div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums">
+                {formatMoney(statusFor.amount)} {statusFor.currency === "USD" ? "$" : "₸"}
+              </div>
+            </div>
+            <StatusExplanation status={statusFor.effective_status ?? statusFor.status} />
+            {(statusFor.refunds?.length ?? 0) > 0 && (
+              <div>
+                <div className="mb-2 text-sm font-medium">История возвратов</div>
+                <div className="space-y-2">
+                  {statusFor.refunds!.map((refund) => (
+                    <div key={refund.id} className="rounded-lg border px-3 py-2 text-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-medium">
+                          {formatMoney(refund.amount)} {statusFor.currency === "USD" ? "$" : "₸"}
+                        </span>
+                        <span className="text-xs text-[var(--muted-foreground)]">
+                          {refund.status === "completed"
+                            ? "Завершён"
+                            : refund.status === "pending"
+                              ? "В обработке"
+                              : "Ошибка"}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-[var(--muted-foreground)]">
+                        {refund.method === "apipay" ? "Через ApiPay" : "Из кассы"} · {refund.reason}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </Modal>
 
       <Modal

@@ -174,7 +174,7 @@ def add_mixed_payments(order: Order, parts, user, note="") -> list[Payment]:
         normalized.append((method, amount))
 
     confirmed = sum(
-        (payment.amount for payment in locked.payments.all()
+        (payment.net_amount for payment in locked.payments.all()
          if payment.status == "confirmed"), Decimal("0"))
     reserved = sum(
         (payment.amount for payment in locked.payments.all()

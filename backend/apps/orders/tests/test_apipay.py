@@ -244,6 +244,10 @@ def test_refund_webhook_updates_transaction_totals(api_client, settings):
     assert response.status_code == 200
     refund = ApiPayRefund.objects.get(refund_id=77)
     invoice.refresh_from_db()
+    payment.refresh_from_db()
     assert refund.status == "completed"
     assert refund.amount == Decimal("1250.00")
     assert invoice.total_refunded == Decimal("1250.00")
+    assert payment.refunded_amount == Decimal("1250.00")
+    assert payment.pending_refund_amount == Decimal("0.00")
+    assert payment.payment_refunds.get().status == "completed"

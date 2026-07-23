@@ -213,6 +213,20 @@ export interface Payment {
   received_at?: string | null;
   confirmed_by_name?: string | null;
   confirmed_at?: string | null;
+  effective_status?: string;
+  refunded_amount?: string;
+  pending_refund_amount?: string;
+  available_for_refund?: string;
+  refunds?: {
+    id: number;
+    amount: string;
+    method: "apipay" | "cash";
+    status: "pending" | "completed" | "failed";
+    reason: string;
+    requested_by_name: string | null;
+    completed_at: string | null;
+    created_at: string;
+  }[];
   client_name?: string;
   provider?: {
     invoice_id: number | null;

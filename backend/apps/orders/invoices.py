@@ -78,6 +78,8 @@ def build_payment_receipt_pdf(payment: Payment) -> bytes:
         ["Статус", "Подтверждён" if payment.status == "confirmed" else payment.status],
         ["Дата", timezone.localtime(payment.confirmed_at or payment.paid_at).strftime("%d.%m.%Y %H:%M")],
         ["Сумма", f"{payment.amount:,.2f} {payment.order.currency}".replace(",", " ")],
+        ["Возвращено", f"{payment.refunded_amount:,.2f} {payment.order.currency}".replace(",", " ")],
+        ["Итого после возврата", f"{payment.net_amount:,.2f} {payment.order.currency}".replace(",", " ")],
     ]
     table = Table(rows, colWidths=[55 * mm, 90 * mm], hAlign="CENTER")
     table.setStyle(TableStyle([
