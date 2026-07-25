@@ -547,3 +547,54 @@ def test_auth_rejects_malformed_original_uri(
 ):
     token = _stream_token(auth_client, operator)
     assert _authorize_stream(api_client, token, original_uri).status_code == 403
+
+
+def test_known_topology_answers_without_waiting_for_the_network(monkeypatch):
+    """A stale cache must never make the request pay a camera-PC timeout.
+
+    The monoblock page re-reads cameras on a timer. When the shop floor is
+    offline, probing inline costs up to two ``PROBE_TIMEOUT`` waves per request
+    and left the page stuck on "Загрузка…". With a known topology the answer is
+    served immediately and the refresh happens in the background.
+    """
+    monkeypatch.setattr(services, "CAMERA_PASS", "x")
+    with patch.object(services, "_probe_path", side_effect=fake_probe(["online"])):
+        services.discover_cameras()
+    cache.delete(services.CACHE_KEY)  # снимок протух, last-known-good остался
+
+    started = []
+
+    class ImmediateThread:
+        def __init__(self, target, **kwargs):
+            self._target = target
+            started.append(self)
+
+        def start(self):
+            pass  # обнаружение НЕ должно выполняться внутри запроса
+
+    with patch.object(services.threading, "Thread", ImmediateThread), \
+         patch.object(services, "_probe_path") as probe:
+        cameras = services.discover_cameras()
+
+    assert probe.call_count == 0, "запрос не должен ходить по сети"
+    assert [c["id"] for c in cameras] == ["nvr:cam1"]
+    assert cameras[0]["online"] is False
+    assert started, "обновление должно уйти в фон"
+
+    # Фоновое обновление возвращает камеры в строй и снимает замок.
+    with patch.object(services, "_probe_path", side_effect=fake_probe(["online"])):
+        started[0]._target()
+    assert cache.get(services.REFRESH_LOCK_KEY) is None
+    assert services.discover_cameras()[0]["online"] is True
+
+
+def test_always_on_status_is_not_refetched_on_every_poll(monkeypatch):
+    """The polling read path must not call the camera PC per request."""
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    cache.delete(ai.ALWAYS_ON_CACHE_KEY)
+    payload = {"cameras": ["cam1"], "source": "sub", "processors": []}
+    with patch.object(ai, "_call", return_value=payload) as call:
+        first = ai.always_on_status_cached()
+        second = ai.always_on_status_cached()
+    assert call.call_count == 1
+    assert first == second == payload

@@ -460,7 +460,7 @@ class AlwaysOnCameraSettingsView(APIView):
                 row, sync_status="pending", detail="AI-сервис не настроен",
             ))
         try:
-            live = ai.always_on_status()
+            live = ai.always_on_status_cached()
             desired = row.always_on_camera_sources if row else []
             synced = sorted(live.get("cameras") or []) == sorted(desired)
             return Response(self._payload(
@@ -545,7 +545,7 @@ class AlwaysOnAnalyticsView(APIView):
     def get(self, request):
         if ai.enabled():
             try:
-                analytics.record_snapshot(ai.always_on_status())
+                analytics.record_snapshot(ai.always_on_status_cached())
             except (ai.AiUnavailable, ai.AiError):
                 # Уже сохранённая аналитика остаётся доступной при обрыве связи.
                 pass

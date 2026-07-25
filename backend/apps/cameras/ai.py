@@ -18,6 +18,8 @@ import urllib.request
 from collections.abc import Mapping, Sequence
 from numbers import Real
 
+from django.core.cache import cache
+
 from .services import CAMERA_HOST
 
 AI_URL = (
@@ -40,6 +42,10 @@ def _timeout() -> float:
 TIMEOUT = _timeout()  # запуск модели асинхронный, долгих ответов у API нет
 MAX_JSON_RESPONSE_BYTES = 512 * 1024
 MAX_ERROR_JSON_RESPONSE_BYTES = 64 * 1024
+# Снимок 24/7 для опрашивающих экранов. Короткий TTL: цифры на экране остаются
+# «живыми», но частый опрос перестаёт быть сетевым вызовом на каждый запрос.
+ALWAYS_ON_CACHE_KEY = "cameras:always-on-status:v1"
+ALWAYS_ON_TTL = 5
 
 # Контракт AI-сервиса допускает только NVR ID cam<N>. Строгая локальная
 # проверка не позволяет передать произвольный path в URL camera-PC.
@@ -261,6 +267,27 @@ def always_on_status() -> dict:
     }
 
 
+def always_on_status_cached() -> dict:
+    """Read path for polling views: a snapshot at most ``ALWAYS_ON_TTL`` old.
+
+    The monoblock page re-reads 24/7 state on a timer. Calling the camera PC on
+    every GET means each request pays a network round trip, and a full
+    ``TIMEOUT`` wait whenever the shop floor is offline — which is exactly what
+    left the page stuck on "Загрузка…". Writes stay uncached and invalidate
+    this snapshot, so an administrator still sees their change immediately.
+    """
+    cached = cache.get(ALWAYS_ON_CACHE_KEY)
+    if cached is not None:
+        return cached
+    status = always_on_status()
+    cache.set(ALWAYS_ON_CACHE_KEY, status, ALWAYS_ON_TTL)
+    return status
+
+
+def invalidate_always_on_cache() -> None:
+    cache.delete(ALWAYS_ON_CACHE_KEY)
+
+
 def configure_always_on(cameras: list[str], source: str = "sub") -> dict:
     """Atomically persist and apply the 24/7 camera set on the camera PC."""
     normalized = list(dict.fromkeys(normalize(camera) for camera in cameras))
@@ -280,7 +307,11 @@ def configure_always_on(cameras: list[str], source: str = "sub") -> dict:
         payload = _call(
             "PUT", "/always-on", {"cameras": normalized, "source": source},
         )
-    return _normalize_always_on(payload)
+    status = _normalize_always_on(payload)
+    # The administrator must see their own change immediately, not a snapshot
+    # taken before it. Store the authoritative response as the new snapshot.
+    cache.set(ALWAYS_ON_CACHE_KEY, status, ALWAYS_ON_TTL)
+    return status
 
 
 def delete_recordings(stream: str, starts: list[str]) -> dict:

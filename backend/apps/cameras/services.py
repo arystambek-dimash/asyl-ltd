@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import socket
+import threading
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -43,6 +44,13 @@ CACHE_TTL = 240  # сек; инвентарь на ПК обновляется �
 LAST_GOOD_CACHE_KEY = "cameras:last-good:v4"
 LAST_GOOD_TTL = 7 * 24 * 3600
 EMPTY_CACHE_TTL = 15  # полный сбой не должен приклеить пустую стену на 4 минуты
+# Один воркер за раз выполняет дорогое обнаружение. Остальные сразу получают
+# last-known-good, поэтому недоступный ПК цеха не превращается в очередь
+# gunicorn-воркеров, ждущих сетевых таймаутов.
+REFRESH_LOCK_KEY = "cameras:discovering:v4"
+# Пробы (до 2 волн по 12 с) плюс запрос инвентаря; замок снимается сам, если
+# воркер умер, и не может «залипнуть» дольше одного полного обнаружения.
+REFRESH_LOCK_TTL = 60
 
 # Известные зоны цеха по номерам каналов NVR; для остальных — «Камера N».
 ZONES = {
@@ -69,18 +77,19 @@ def normalize_camera_path(value: str) -> str:
     return path
 
 
-def discover_cameras() -> list[dict]:
-    """Актуальный список камер с last-known-good fallback.
+def _offline_view(cameras: list[dict]) -> list[dict]:
+    return [
+        {
+            **camera,
+            "online": False,
+            "note": camera.get("note") or "Связь потеряна, выполняется переподключение",
+        }
+        for camera in cameras
+    ]
 
-    При полном сетевом сбое резервные пробы возвращают пустой список. Вместо
-    исчезновения всех плиток сохраняем последнюю известную топологию с
-    ``online=False``: плееры продолжают переподключаться и сами оживают сразу
-    после восстановления. Пустой результат кэшируется лишь кратко.
-    """
-    cached = cache.get(CACHE_KEY)
-    if cached is not None:
-        return cached
 
+def _refresh_cameras() -> list[dict]:
+    """Дорогое обнаружение: запрос инвентаря и/или RTSP-пробы."""
     cameras = _discover_by_inventory()
     if cameras is None:
         cameras = _discover_by_probe()
@@ -90,18 +99,48 @@ def discover_cameras() -> list[dict]:
         cache.set(CACHE_KEY, cameras, CACHE_TTL)
         return cameras
 
-    last_good = cache.get(LAST_GOOD_CACHE_KEY) or []
-    if last_good:
-        cameras = [
-            {
-                **camera,
-                "online": False,
-                "note": camera.get("note") or "Связь потеряна, выполняется переподключение",
-            }
-            for camera in last_good
-        ]
+    cameras = _offline_view(cache.get(LAST_GOOD_CACHE_KEY) or [])
     cache.set(CACHE_KEY, cameras, EMPTY_CACHE_TTL)
     return cameras
+
+
+def discover_cameras() -> list[dict]:
+    """Актуальный список камер с last-known-good fallback.
+
+    Обнаружение ходит по сети к ПК цеха: недоступный инвентарь стоит таймаута,
+    а резервные RTSP-пробы — ещё до двух волн по ``PROBE_TIMEOUT``. Держать на
+    этом HTTP-запрос нельзя: страница моноблока опрашивает камеры по кругу и
+    зависала бы на «Загрузка…» каждый раз, когда цех офлайн.
+
+    Поэтому ожидание сети допускается только когда показать вообще нечего.
+    Если известна прошлая топология, ответ отдаётся мгновенно, а обновление
+    выполняется в фоне: плитки живут с ``online=False``, плееры сами
+    переподключаются и оживают сразу после восстановления связи.
+    """
+    cached = cache.get(CACHE_KEY)
+    if cached is not None:
+        return cached
+
+    last_good = cache.get(LAST_GOOD_CACHE_KEY)
+    if not last_good:
+        # Первый запуск: показать нечего, приходится дождаться обнаружения.
+        return _refresh_cameras()
+
+    # Обновляем в фоне и не даём параллельным запросам множить сетевые пробы.
+    if cache.add(REFRESH_LOCK_KEY, "1", REFRESH_LOCK_TTL):
+        def refresh() -> None:
+            try:
+                _refresh_cameras()
+            except Exception:  # pragma: no cover - фоновая изоляция
+                log.exception("Фоновое обновление списка камер не удалось")
+            finally:
+                cache.delete(REFRESH_LOCK_KEY)
+
+        threading.Thread(
+            target=refresh, name="camera-discovery", daemon=True
+        ).start()
+
+    return _offline_view(last_good)
 
 
 # --- основной путь: инвентарь ai_service -----------------------------------
