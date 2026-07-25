@@ -386,7 +386,9 @@ def test_superuser_cannot_exceed_camera_pc_processor_capacity(
     auth_client, superuser, monkeypatch,
 ):
     monkeypatch.setattr(ai, "AI_KEY", "k")
-    with patch.object(ai, "always_on_status", return_value={
+    # Проверка лимита читает кэшированный снимок, чтобы сохранение не платило
+    # второй сетевой таймаут, когда ПК цеха недоступен.
+    with patch.object(ai, "always_on_status_cached", return_value={
         "cameras": [], "source": "sub", "capacity": 1, "processors": [],
     }), patch.object(ai, "configure_always_on") as configure:
         response = auth_client(superuser).put(
@@ -598,3 +600,35 @@ def test_always_on_status_is_not_refetched_on_every_poll(monkeypatch):
         second = ai.always_on_status_cached()
     assert call.call_count == 1
     assert first == second == payload
+
+
+def test_always_on_choice_survives_an_unreachable_camera_pc(
+    auth_client, superuser, monkeypatch,
+):
+    """A camera-PC timeout must not discard the administrator's selection.
+
+    PostgreSQL is authoritative and the camera-monitor keeps retrying, so the
+    saved cameras have to come back on the next read even while the shop floor
+    is offline — the UI showed the choice reverting to zero instead.
+    """
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    cache.delete(ai.ALWAYS_ON_CACHE_KEY)
+    timeout = ai.AiUnavailable("<urlopen error timed out>")
+
+    with patch.object(ai, "always_on_status_cached", side_effect=timeout), \
+         patch.object(ai, "configure_always_on", side_effect=timeout):
+        response = auth_client(superuser).put(
+            "/api/cameras/always-on-settings/",
+            {"camera_sources": ["cam3"]},
+            format="json",
+        )
+
+    assert response.status_code == 202
+    assert response.data["camera_sources"] == ["cam3"]
+    assert response.data["sync_status"] == "pending"
+    assert MonoblockCameraSettings.always_on_sources() == ["cam3"]
+
+    # Follow-up reads keep showing it, so the page cannot fall back to "0".
+    with patch.object(ai, "always_on_status_cached", side_effect=timeout):
+        follow_up = auth_client(superuser).get("/api/cameras/always-on-settings/")
+    assert follow_up.data["camera_sources"] == ["cam3"]

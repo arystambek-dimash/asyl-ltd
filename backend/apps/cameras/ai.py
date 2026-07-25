@@ -277,9 +277,18 @@ def always_on_status_cached() -> dict:
     this snapshot, so an administrator still sees their change immediately.
     """
     cached = cache.get(ALWAYS_ON_CACHE_KEY)
+    if isinstance(cached, Exception):
+        # Отрицательный результат тоже кэшируется: иначе каждый опрос при
+        # выключенном ПК цеха снова платит полный TIMEOUT, и подряд идущие
+        # запросы копят это ожидание.
+        raise cached
     if cached is not None:
         return cached
-    status = always_on_status()
+    try:
+        status = always_on_status()
+    except (AiUnavailable, AiError) as outage:
+        cache.set(ALWAYS_ON_CACHE_KEY, outage, ALWAYS_ON_TTL)
+        raise
     cache.set(ALWAYS_ON_CACHE_KEY, status, ALWAYS_ON_TTL)
     return status
 

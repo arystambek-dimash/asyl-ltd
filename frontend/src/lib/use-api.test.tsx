@@ -78,4 +78,31 @@ describe("useApi", () => {
     expect(result.current.data).toEqual({ id: "updated" });
     expect(result.current.loading).toBe(false);
   });
+
+  it("keeps a saved value when an older request lands afterwards", async () => {
+    // Фоновый опрос стартует до записи и отвечает после неё. Без этого
+    // прежнее состояние затирало только что сохранённые настройки, и на
+    // экране выбор «слетал» обратно.
+    const inFlight = deferred<{ data: Payload }>();
+    const polling = deferred<{ data: Payload }>();
+    getMock.mockReturnValueOnce(inFlight.promise).mockReturnValueOnce(polling.promise);
+
+    const { result } = renderHook(() => useApi<Payload>("/cameras/always-on-settings/"));
+    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
+    await resolveRequest(inFlight, { id: "before-save" });
+
+    act(() => {
+      void result.current.reload();
+    });
+    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+
+    act(() => {
+      result.current.setData({ id: "saved" });
+    });
+    expect(result.current.data).toEqual({ id: "saved" });
+    expect(result.current.loading).toBe(false);
+
+    await resolveRequest(polling, { id: "before-save" });
+    expect(result.current.data).toEqual({ id: "saved" });
+  });
 });

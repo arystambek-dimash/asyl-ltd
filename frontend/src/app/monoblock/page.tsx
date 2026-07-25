@@ -471,11 +471,11 @@ function MonoblockDevicesButton({
 function AlwaysOnSettingsButton({
   cameras,
   settings,
-  reload,
+  onSaved,
 }: {
   cameras: (CameraFeed & { src: string })[];
   settings: AlwaysOnCameraSettings | null;
-  reload: () => Promise<void>;
+  onSaved: (next: AlwaysOnCameraSettings) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
@@ -504,8 +504,14 @@ function AlwaysOnSettingsButton({
     setSaving(true);
     setError("");
     try {
-      await api.put("/cameras/always-on-settings/", { camera_sources: selected });
-      await reload();
+      // Ответ PUT авторитетен: сохранение в PostgreSQL уже произошло, даже
+      // когда ПК цеха не ответил (202). Перечитывать список отдельным GET
+      // нельзя — фоновый опрос мог стартовать до записи и вернуть прежнее
+      // состояние уже после неё, из-за чего выбор «слетал» на экране.
+      const { data } = await api.put<AlwaysOnCameraSettings>("/cameras/always-on-settings/", {
+        camera_sources: selected,
+      });
+      onSaved(data);
       setOpen(false);
     } catch (cause) {
       setError(apiError(cause));
@@ -1167,9 +1173,11 @@ function MonoblockPageInner() {
   const { data: monoblockDevices, reload: reloadMonoblockDevices } = useApi<MonoblockDevice[]>(
     me?.is_superuser ? "/cameras/monoblock-devices/" : null,
   );
-  const { data: alwaysOnSettings, reload: reloadAlwaysOnSettings } = useApi<AlwaysOnCameraSettings>(
-    me?.is_superuser ? "/cameras/always-on-settings/" : null,
-  );
+  const {
+    data: alwaysOnSettings,
+    reload: reloadAlwaysOnSettings,
+    setData: setAlwaysOnSettings,
+  } = useApi<AlwaysOnCameraSettings>(me?.is_superuser ? "/cameras/always-on-settings/" : null);
   const { data: alwaysOnAnalytics, reload: reloadAlwaysOnAnalytics } = useApi<AlwaysOnDailyAnalytics>(
     me?.is_superuser ? "/cameras/always-on-analytics/" : null,
   );
@@ -1292,7 +1300,7 @@ function MonoblockPageInner() {
                   <AlwaysOnSettingsButton
                     cameras={playable}
                     settings={alwaysOnSettings}
-                    reload={reloadAlwaysOnSettings}
+                    onSaved={setAlwaysOnSettings}
                   />
                 ) : can(me, "rbac.manage") ? (
                   <>

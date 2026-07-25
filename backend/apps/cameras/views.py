@@ -502,7 +502,10 @@ class AlwaysOnCameraSettingsView(APIView):
         live_before = None
         if ai.enabled():
             try:
-                live_before = ai.always_on_status()
+                # Кэшированный снимок: проверка лимита не должна добавлять
+                # второе ожидание таймаута к самой записи, иначе сохранение
+                # висит вдвое дольше, когда ПК цеха недоступен.
+                live_before = ai.always_on_status_cached()
             except (ai.AiUnavailable, ai.AiError) as error:
                 log.warning(
                     "Camera processor capacity is temporarily unavailable: %s",

@@ -10,6 +10,21 @@ export function useApi<T>(url: string | null) {
   const latestRequest = useRef(0);
   const activeUrl = useRef<string | null>(null);
 
+  /** Записать authoritative-состояние (обычно ответ собственного PUT/POST).
+   *
+   * Запрос, начатый ДО записи, может завершиться после неё и вернуть прежнее
+   * состояние — на экране изменение «слетало» бы. Поэтому такая запись
+   * отменяет ответы в полёте: свежий результат мутации важнее их.
+   */
+  const commit = useCallback((next: T | null) => {
+    activeController.current?.abort();
+    activeController.current = null;
+    latestRequest.current += 1;
+    setData(next);
+    setError("");
+    setLoading(false);
+  }, []);
+
   const reload = useCallback(async () => {
     if (!url) {
       activeController.current?.abort();
@@ -60,6 +75,6 @@ export function useApi<T>(url: string | null) {
     loading: url ? !isCurrentUrl || loading : false,
     error: isCurrentUrl ? error : "",
     reload,
-    setData,
+    setData: commit,
   };
 }
