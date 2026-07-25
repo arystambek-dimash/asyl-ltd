@@ -211,6 +211,53 @@ def test_client_can_release_qr_and_split_remaining_payment(
     assert split.data["available_amount"] == "65.00"
 
 
+@patch("apps.orders.apipay.urllib.request.urlopen")
+def test_phone_invoice_stays_reserved_until_cancellation_is_confirmed(
+    urlopen, client_and_order, auth_client, settings
+):
+    settings.APIPAY_API_KEY = "test-key"
+    response = urlopen.return_value.__enter__.return_value
+    response.read.side_effect = [
+        json.dumps({"id": 46, "status": "pending"}).encode(),
+        json.dumps({
+            "invoice": {"id": 46, "status": "cancelling"},
+        }).encode(),
+    ]
+    user, order = client_and_order
+    order.status = "shipped"
+    order.save()
+    client = auth_client(user)
+    endpoint = f"/api/portal/orders/{order.id}/pay/"
+
+    created = client.post(
+        endpoint,
+        {
+            "method": "invoice",
+            "phone_number": "87762838451",
+            "amount": "60",
+        },
+        format="json",
+    )
+    assert created.status_code == 201
+    payment_id = created.data["payment_parts"][0]["id"]
+
+    released = client.post(
+        f"/api/portal/orders/{order.id}/payments/{payment_id}/release/"
+    )
+
+    assert released.status_code == 202
+    assert released.data["available_amount"] == "40.00"
+    payment = order.payments.get(pk=payment_id)
+    assert payment.status == "requested"
+    assert payment.apipay_invoice.status == "cancelling"
+
+    overbooked = client.post(
+        endpoint, {"method": "cash", "amount": "50"}, format="json"
+    )
+    assert overbooked.status_code == 400
+    assert overbooked.data["code"] == "payment_exceeds_remaining"
+
+
 def test_request_debt(client_and_order, auth_client):
     # Долг фиксируется после отгрузки.
     user, o = client_and_order

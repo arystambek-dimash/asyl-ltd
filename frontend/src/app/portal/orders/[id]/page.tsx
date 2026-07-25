@@ -1,22 +1,69 @@
 "use client";
-import { use, useState } from "react";
+import { use, useEffect, useState } from "react";
 import Image from "next/image";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { DataGate } from "@/components/ui/data-state";
-import { ArrowLeft, Banknote, CheckCircle2, Clock, FileText, HandCoins, QrCode, Smartphone } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Banknote,
+  CheckCircle2,
+  Clock,
+  FileText,
+  HandCoins,
+  QrCode,
+  Smartphone,
+} from "lucide-react";
 import { useApi } from "@/lib/use-api";
 import { apiError } from "@/lib/api";
-import { currencySymbol, formatMoney, formatPortalMoney } from "@/lib/utils";
+import { currencySymbol, formatDateTime, formatMoney, formatPortalMoney } from "@/lib/utils";
 import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { clientStep, downloadReceipt, payOrder, releasePortalPayment, setTruck } from "@/lib/portal-actions";
 import type { PortalOrder, PortalPaymentMethod } from "@/lib/types";
+
+type PortalPaymentPart = PortalOrder["payment_parts"][number];
+
+const PAYABLE_PROVIDER_STATUSES = new Set(["creating", "processing", "pending"]);
+
+const PROVIDER_STATUS_LABELS: Record<string, string> = {
+  creating: "Создаётся",
+  processing: "Ожидает оплаты",
+  pending: "Ожидает оплаты",
+  paid: "Оплачен",
+  cancelling: "Отменяется",
+  cancelled: "Отменён",
+  expired: "Истёк",
+  superseded: "Заменён",
+  error: "Ошибка",
+};
+
+function providerStatusTone(status: string): "muted" | "success" | "warning" | "destructive" {
+  if (status === "paid") return "success";
+  if (PAYABLE_PROVIDER_STATUSES.has(status) || status === "cancelling") return "warning";
+  if (status === "error") return "destructive";
+  return "muted";
+}
+
+function paymentAmountError(value: string, available: number) {
+  if (!value.trim()) return "Введите сумму оплаты.";
+  const parsed = Number(value.trim().replace(",", "."));
+  if (!Number.isFinite(parsed) || parsed <= 0) return "Сумма должна быть больше нуля.";
+  if (Math.abs(parsed * 100 - Math.round(parsed * 100)) > 1e-7) {
+    return "Укажите сумму с точностью не более двух знаков.";
+  }
+  if (Math.round(parsed * 100) > Math.round(available * 100)) {
+    return `Доступно не более ${formatMoney(available)}.`;
+  }
+  return "";
+}
 
 export default function PortalOrderDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -27,12 +74,38 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
   const [paymentMode, setPaymentMode] = useState<"qr" | "invoice" | null>(null);
   const [paymentPhone, setPaymentPhone] = useState("");
   const [paymentAmount, setPaymentAmount] = useState("");
+  const [amountTouched, setAmountTouched] = useState(false);
+  const [releasePart, setReleasePart] = useState<PortalPaymentPart | null>(null);
+  const [releaseError, setReleaseError] = useState("");
+  const [failedQrImages, setFailedQrImages] = useState<Set<number>>(() => new Set());
 
-  async function run(fn: () => Promise<unknown>) {
+  const loadedOrderId = order?.id;
+  const availableValue = order?.available_amount ?? order?.remaining_amount ?? "";
+  const clientPhone = order?.client_phone ?? "";
+
+  useEffect(() => {
+    if (loadedOrderId == null) return;
+    const nextAvailable = Number(availableValue);
+    setPaymentAmount(Number.isFinite(nextAvailable) && nextAvailable > 0 ? String(availableValue) : "");
+    setAmountTouched(false);
+    setPaymentMode(null);
+  }, [availableValue, loadedOrderId]);
+
+  useEffect(() => {
+    if (loadedOrderId == null) return;
+    setPaymentPhone(clientPhone);
+  }, [clientPhone, loadedOrderId]);
+
+  async function run(fn: () => Promise<unknown>, resetPayment = false) {
     setBusy(true);
     setError("");
     try {
       await fn();
+      if (resetPayment) {
+        setPaymentMode(null);
+        setPaymentAmount("");
+        setAmountTouched(false);
+      }
       await reload();
     } catch (e) {
       setError(apiError(e));
@@ -42,8 +115,25 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
   }
 
   async function selectPayment(method: PortalPaymentMethod, amount?: string) {
-    const result = await payOrder(Number(id), method, { amount });
-    if (result.payment_redirect_url) window.location.assign(result.payment_redirect_url);
+    await payOrder(Number(id), method, { amount });
+  }
+
+  async function confirmRelease() {
+    if (!order || !releasePart) return;
+    setBusy(true);
+    setReleaseError("");
+    try {
+      await releasePortalPayment(order.id, releasePart.id);
+      setReleasePart(null);
+      setPaymentMode(null);
+      setPaymentAmount("");
+      setAmountTouched(false);
+      await reload();
+    } catch (e) {
+      setReleaseError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   if (!order)
@@ -53,11 +143,25 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
       </AppShell>
     );
 
-  const step = clientStep(order.status, order.payment_status);
-  const remaining = order.remaining_amount == null ? 0 : Number(order.remaining_amount);
-  const phone = paymentPhone || order.client_phone || "";
+  const step = clientStep(order.status, order.payment_status, order.has_pending_payment);
+  const remaining = order.remaining_amount == null ? 0 : Math.max(0, Number(order.remaining_amount));
+  const phone = paymentPhone;
   const available = Number(order.available_amount ?? remaining);
-  const chosenAmount = paymentAmount || String(available);
+  const chosenAmount = paymentAmount;
+  const normalizedAmount = chosenAmount.trim().replace(",", ".");
+  const amountError = paymentAmountError(chosenAmount, available);
+  const releaseDescription =
+    order.payment_status === "settled"
+      ? releasePart?.method === "kaspi"
+        ? "Заказ уже оплачен. Уберите лишний QR из заказа и не оплачивайте открытую ранее ссылку — она может действовать до истечения срока."
+        : releasePart?.method === "invoice"
+          ? "Заказ уже оплачен. Мы запросим отмену лишнего счёта и дождёмся подтверждения ApiPay."
+          : "Заказ уже оплачен. Лишняя заявка на наличную оплату будет закрыта."
+      : releasePart?.method === "kaspi"
+        ? "После смены способа QR исчезнет из заказа, но уже открытая ссылка может оставаться доступной до истечения срока. Не оплачивайте старый QR."
+        : releasePart?.method === "invoice"
+          ? "Мы запросим отмену отправленного счёта. После подтверждения можно будет выбрать другой способ оплаты."
+          : "Текущая заявка на наличную оплату будет отменена. После этого можно выбрать другой способ.";
 
   return (
     <AppShell title={`Заказ #${order.id}`} portal>
@@ -168,72 +272,117 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                     </div>
                   ) : (
                     <>
-                      {order.payment_parts.map((part) => (
-                        <div
-                          key={part.id}
-                          className="rounded-xl border border-[var(--border)] bg-[var(--muted)]/25 p-4"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex items-start gap-2">
-                              {part.method === "kaspi" ? (
-                                <QrCode className="mt-0.5 size-4 shrink-0 text-[var(--primary)]" />
-                              ) : part.method === "invoice" ? (
-                                <FileText className="mt-0.5 size-4 shrink-0 text-[var(--primary)]" />
-                              ) : (
-                                <Clock className="mt-0.5 size-4 shrink-0 text-[var(--warning)]" />
-                              )}
-                              <div>
-                                <div className="font-medium">
-                                  {part.method === "kaspi"
-                                    ? "Kaspi QR"
-                                    : part.method === "invoice"
-                                      ? "Счёт на оплату"
-                                      : "Наличными"}
-                                  {" · "}
-                                  {formatMoney(part.amount)} {currencySymbol(order.currency)}
-                                </div>
-                                <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">
-                                  {part.status === "confirmed"
-                                    ? "Оплата подтверждена"
-                                    : "Ожидает оплаты или подтверждения"}
+                      {order.payment_parts.map((part) => {
+                        const provider = part.apipay_invoice;
+                        const providerIsPayable = provider != null && PAYABLE_PROVIDER_STATUSES.has(provider.status);
+                        const qrIsPayable =
+                          part.status !== "confirmed" && provider?.channel === "qr" && providerIsPayable;
+                        const qrImageFailed = failedQrImages.has(part.id);
+                        const paymentState =
+                          part.status === "confirmed"
+                            ? "Оплата подтверждена"
+                            : provider?.status === "paid"
+                              ? "Оплата получена, обновляем статус заказа"
+                              : provider?.status === "cancelling"
+                                ? "Отмена отправлена, ожидаем подтверждение"
+                                : part.method === "cash"
+                                  ? "Ожидает подтверждения кассиром"
+                                  : providerIsPayable
+                                    ? "Подтвердится автоматически после оплаты"
+                                    : "Этот платёж больше не активен";
+
+                        return (
+                          <div
+                            key={part.id}
+                            className="rounded-xl border border-[var(--border)] bg-[var(--muted)]/25 p-4"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex min-w-0 items-start gap-2">
+                                {part.method === "kaspi" ? (
+                                  <QrCode className="mt-0.5 size-4 shrink-0 text-[var(--primary)]" />
+                                ) : part.method === "invoice" ? (
+                                  <FileText className="mt-0.5 size-4 shrink-0 text-[var(--primary)]" />
+                                ) : (
+                                  <Clock className="mt-0.5 size-4 shrink-0 text-[var(--warning)]" />
+                                )}
+                                <div className="min-w-0">
+                                  <div className="font-medium">
+                                    {part.method === "kaspi"
+                                      ? "Kaspi QR"
+                                      : part.method === "invoice"
+                                        ? "Счёт на оплату"
+                                        : "Наличными"}
+                                    {" · "}
+                                    {formatMoney(part.amount)} {currencySymbol(order.currency)}
+                                  </div>
+                                  <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">{paymentState}</div>
                                 </div>
                               </div>
-                            </div>
-                            {part.status !== "confirmed" && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                disabled={busy}
-                                onClick={() => run(() => releasePortalPayment(order.id, part.id))}
-                              >
-                                <ArrowLeft className="size-4" /> Другой способ
-                              </Button>
-                            )}
-                          </div>
-                          {part.apipay_invoice?.channel === "qr" && (
-                            <>
-                              {part.apipay_invoice.qr_image_url && (
-                                <Image
-                                  src={part.apipay_invoice.qr_image_url}
-                                  alt="Kaspi QR для оплаты"
-                                  width={224}
-                                  height={224}
-                                  unoptimized
-                                  className="mx-auto mt-4 size-56 rounded-2xl bg-white p-2 shadow-sm"
-                                />
-                              )}
-                              {part.apipay_invoice.qr_token_url && (
+                              {part.can_release && provider?.status !== "cancelling" && (
                                 <Button
-                                  className="mt-4 w-full"
-                                  onClick={() => window.location.assign(part.apipay_invoice!.qr_token_url!)}
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={busy}
+                                  onClick={() => {
+                                    setReleaseError("");
+                                    setReleasePart(part);
+                                  }}
                                 >
-                                  <Smartphone className="size-4" /> Открыть Kaspi
+                                  <ArrowLeft className="size-4" />{" "}
+                                  {order.payment_status === "settled" ? "Закрыть лишнюю заявку" : "Другой способ"}
                                 </Button>
                               )}
-                            </>
-                          )}
-                        </div>
-                      ))}
+                            </div>
+
+                            {provider && (
+                              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-3 text-xs text-[var(--muted-foreground)]">
+                                <Badge tone={providerStatusTone(provider.status)} dot>
+                                  {PROVIDER_STATUS_LABELS[provider.status] ?? provider.status}
+                                </Badge>
+                                {provider.channel === "phone" && provider.phone_number && (
+                                  <span>Счёт отправлен на {provider.phone_number}</span>
+                                )}
+                                {provider.channel === "qr" && provider.qr_expires_at && providerIsPayable && (
+                                  <span>QR действует до {formatDateTime(provider.qr_expires_at)}</span>
+                                )}
+                              </div>
+                            )}
+
+                            {qrIsPayable && (
+                              <>
+                                {provider.qr_image_url && !qrImageFailed ? (
+                                  <Image
+                                    src={provider.qr_image_url}
+                                    alt="Kaspi QR для оплаты"
+                                    width={224}
+                                    height={224}
+                                    unoptimized
+                                    onError={() => setFailedQrImages((current) => new Set(current).add(part.id))}
+                                    className="mx-auto mt-4 size-56 rounded-2xl bg-white p-2 shadow-sm"
+                                  />
+                                ) : (
+                                  <div className="mx-auto mt-4 flex size-56 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-[var(--border)] bg-white p-6 text-center">
+                                    <QrCode className="size-12 text-[var(--primary)]" />
+                                    <p className="text-sm text-[var(--muted-foreground)]">
+                                      {provider.qr_token_url
+                                        ? "QR готов. Откройте Kaspi кнопкой ниже."
+                                        : "QR создаётся. Обновите страницу через несколько секунд."}
+                                    </p>
+                                  </div>
+                                )}
+                                {provider.qr_token_url && (
+                                  <Button
+                                    className="mt-4 w-full"
+                                    onClick={() => window.open(provider.qr_token_url!, "_blank", "noopener,noreferrer")}
+                                  >
+                                    <Smartphone className="size-4" /> Открыть Kaspi
+                                  </Button>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
 
                       {available > 0 && (
                         <>
@@ -250,30 +399,43 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                                 <Input
                                   inputMode="decimal"
                                   value={chosenAmount}
-                                  onChange={(event) => setPaymentAmount(event.target.value)}
+                                  aria-invalid={Boolean(amountError)}
+                                  onChange={(event) => {
+                                    setPaymentAmount(event.target.value);
+                                    setAmountTouched(true);
+                                  }}
                                 />
                               </div>
                             </div>
+                            {amountTouched && amountError && (
+                              <p className="mb-3 flex items-center gap-1.5 text-xs text-[var(--destructive)]">
+                                <AlertTriangle className="size-3.5" /> {amountError}
+                              </p>
+                            )}
                             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                              {order.currency === "KZT" && (
+                                <>
+                                  <Button
+                                    variant="outline"
+                                    className="h-auto justify-start py-3"
+                                    onClick={() => setPaymentMode("invoice")}
+                                  >
+                                    <FileText className="size-4" /> Счёт на оплату
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    className="h-auto justify-start py-3"
+                                    onClick={() => setPaymentMode("qr")}
+                                  >
+                                    <QrCode className="size-4" /> Kaspi Pay · QR
+                                  </Button>
+                                </>
+                              )}
                               <Button
+                                disabled={busy || Boolean(amountError)}
                                 variant="outline"
                                 className="h-auto justify-start py-3"
-                                onClick={() => setPaymentMode("invoice")}
-                              >
-                                <FileText className="size-4" /> Счёт на оплату
-                              </Button>
-                              <Button
-                                variant="outline"
-                                className="h-auto justify-start py-3"
-                                onClick={() => setPaymentMode("qr")}
-                              >
-                                <QrCode className="size-4" /> Kaspi Pay · QR
-                              </Button>
-                              <Button
-                                disabled={busy}
-                                variant="outline"
-                                className="h-auto justify-start py-3"
-                                onClick={() => run(() => selectPayment("cash", chosenAmount))}
+                                onClick={() => run(() => selectPayment("cash", normalizedAmount), true)}
                               >
                                 <Banknote className="size-4" /> Наличными
                               </Button>
@@ -286,9 +448,14 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                                 <HandCoins className="size-4" /> В долг
                               </Button>
                             </div>
+                            {order.currency !== "KZT" && (
+                              <p className="mt-3 text-xs text-[var(--muted-foreground)]">
+                                Для оплаты в долларах доступны наличные или оформление долга.
+                              </p>
+                            )}
                           </div>
 
-                          {paymentMode && (
+                          {paymentMode && order.currency === "KZT" && (
                             <div className="rounded-xl border border-[var(--primary)]/25 bg-[var(--primary)]/5 p-4">
                               <div className="mb-3 flex items-center justify-between">
                                 <div className="font-medium">
@@ -309,26 +476,23 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                                     onChange={(event) => setPaymentPhone(event.target.value)}
                                     placeholder="8 700 000 00 00"
                                   />
+                                  {!phone.trim() && (
+                                    <p className="mt-1.5 text-xs text-[var(--destructive)]">
+                                      Укажите номер, на который отправить счёт.
+                                    </p>
+                                  )}
                                 </div>
                               )}
                               <Button
                                 className="w-full"
-                                disabled={busy || !chosenAmount || (paymentMode === "invoice" && !phone)}
+                                disabled={busy || Boolean(amountError) || (paymentMode === "invoice" && !phone.trim())}
                                 onClick={() =>
                                   run(async () => {
-                                    const result = await payOrder(
-                                      Number(id),
-                                      paymentMode === "qr" ? "kaspi" : "invoice",
-                                      {
-                                        amount: chosenAmount,
-                                        phone_number: paymentMode === "invoice" ? phone : undefined,
-                                      },
-                                    );
-                                    setPaymentMode(null);
-                                    setPaymentAmount("");
-                                    if (result.payment_redirect_url)
-                                      window.location.assign(result.payment_redirect_url);
-                                  })
+                                    await payOrder(Number(id), paymentMode === "qr" ? "kaspi" : "invoice", {
+                                      amount: normalizedAmount,
+                                      phone_number: paymentMode === "invoice" ? phone.trim() : undefined,
+                                    });
+                                  }, true)
                                 }
                               >
                                 {paymentMode === "qr" ? "Создать QR" : "Отправить счёт на оплату"}
@@ -341,7 +505,10 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                   )}
 
                   <p className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
-                    <CheckCircle2 className="size-3.5" /> Валюта фиксирована, способы оплаты можно комбинировать.
+                    <CheckCircle2 className="size-3.5" /> Валюта фиксирована
+                    {order.currency === "KZT"
+                      ? ", наличные, QR и счёт можно комбинировать."
+                      : ", оплатить можно наличными или в долг."}
                   </p>
                 </CardContent>
               </Card>
@@ -390,6 +557,21 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
           </Card>
         )}
       </div>
+
+      <ConfirmDialog
+        open={releasePart != null}
+        onClose={() => {
+          setReleasePart(null);
+          setReleaseError("");
+        }}
+        title={order.payment_status === "settled" ? "Закрыть лишнюю заявку?" : "Выбрать другой способ оплаты?"}
+        description={releaseDescription}
+        confirmLabel={order.payment_status === "settled" ? "Закрыть заявку" : "Да, сменить способ"}
+        confirmVariant="default"
+        busy={busy}
+        error={releaseError}
+        onConfirm={() => void confirmRelease()}
+      />
     </AppShell>
   );
 }

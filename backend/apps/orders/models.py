@@ -255,12 +255,21 @@ class ApiPayInvoice(models.Model):
     error_message = models.TextField(blank=True, default="")
     response_payload = models.JSONField(default=dict, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
+    # Provider-side transition time used to ignore delayed/out-of-order
+    # webhook deliveries without relying on local receipt order.
+    provider_status_at = models.DateTimeField(null=True, blank=True)
+    # Independent provider-refund observation cursor. Invoice updated_at also
+    # changes for status/QR operations and therefore cannot provide fair,
+    # bounded round-robin discovery of refunds whose webhook was missed.
+    refund_checked_at = models.DateTimeField(
+        null=True, blank=True, db_index=True
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
 
 class ApiPayRefund(models.Model):
-    """Полный или частичный возврат по телефонному счёту ApiPay."""
+    """Полный или частичный возврат по оплаченному счёту ApiPay."""
 
     invoice = models.ForeignKey(
         ApiPayInvoice, on_delete=models.CASCADE, related_name="refunds"
@@ -308,15 +317,25 @@ class PaymentRefund(models.Model):
 
 
 class ApiPayWebhookEvent(models.Model):
-    """Неизменяемый журнал принятых и проверенных уведомлений ApiPay."""
+    """Надёжный журнал принятых и проверенных уведомлений ApiPay."""
 
     body_sha256 = models.CharField(max_length=64, unique=True)
+    semantic_key = models.CharField(
+        max_length=191, unique=True, null=True, blank=True
+    )
     event = models.CharField(max_length=100)
+    provider_invoice_id = models.BigIntegerField(
+        null=True, blank=True, db_index=True
+    )
     invoice = models.ForeignKey(
         ApiPayInvoice, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="webhook_events",
     )
     payload = models.JSONField(default=dict)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    processing_error = models.TextField(blank=True, default="")
+    attempt_count = models.PositiveIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 

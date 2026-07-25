@@ -197,6 +197,8 @@ class PortalOrderSerializer(serializers.ModelSerializer):
 
     def get_payment_parts(self, obj):
         result = []
+        request = self.context.get("request")
+        user_id = getattr(getattr(request, "user", None), "pk", None)
         for payment in sorted(
             obj.payments.all(), key=lambda row: row.paid_at, reverse=True
         ):
@@ -209,6 +211,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
                     "id": provider.invoice_id,
                     "status": provider.status,
                     "channel": provider.channel,
+                    "phone_number": provider.phone_number or None,
                     "qr_token_url": provider.qr_token_url or None,
                     "qr_image_url": provider.qr_image_url or None,
                     "qr_expires_at": provider.qr_expires_at,
@@ -220,6 +223,23 @@ class PortalOrderSerializer(serializers.ModelSerializer):
                 "amount": money_string(payment.amount),
                 "method": payment.method,
                 "status": payment.status,
+                "can_release": (
+                    payment.status in Payment.IN_PROGRESS_STATUSES
+                    and payment.recorded_by_id == user_id
+                    and not (
+                        invoice is not None
+                        and (
+                            invoice["status"] in (
+                                "paid", "partially_refunded",
+                            )
+                            or (
+                                invoice["channel"] == "qr"
+                                and invoice["id"] is None
+                                and invoice["status"] == "creating"
+                            )
+                        )
+                    )
+                ),
                 "apipay_invoice": invoice,
             })
         return result

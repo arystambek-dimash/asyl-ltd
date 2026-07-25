@@ -47,7 +47,13 @@ def _positive_money(raw, *, detail: str, code: str) -> Decimal:
         raise ValidationError({"detail": detail, "code": code}) from exc
     if not value.is_finite() or value <= 0 or value > MAX_MONEY:
         raise ValidationError({"detail": detail, "code": code})
-    return value
+    try:
+        quantized = value.quantize(Decimal("0.01"))
+    except InvalidOperation as exc:
+        raise ValidationError({"detail": detail, "code": code}) from exc
+    if value != quantized:
+        raise ValidationError({"detail": detail, "code": code})
+    return quantized
 
 
 def _status_message(prefix: str, old: str, new: str) -> str:
@@ -116,6 +122,22 @@ def add_payment(order: Order, amount, user, method="cash", stage="received",
     if method not in Payment.CASHIER_METHODS:
         raise ValidationError(
             {"detail": "Недопустимый способ оплаты", "code": "bad_method"})
+    confirmed = sum(
+        (payment.net_amount for payment in order.payments.all()
+         if payment.status == "confirmed"),
+        Decimal("0"),
+    )
+    reserved = sum(
+        (payment.amount for payment in order.payments.all()
+         if payment.status in Payment.IN_PROGRESS_STATUSES),
+        Decimal("0"),
+    )
+    available = max(Decimal("0"), order.total_amount - confirmed - reserved)
+    if amount > available:
+        raise ValidationError({
+            "detail": f"Доступно к оплате: {available} {order.currency}",
+            "code": "payment_exceeds_remaining",
+        })
     payment = Payment.objects.create(
         order=order, amount=amount, method=method, status=stage, note=note,
         recorded_by=user,
@@ -186,6 +208,13 @@ def add_mixed_payments(order: Order, parts, user, note="") -> list[Payment]:
             "detail": f"Доступно к распределению: {available} {locked.currency}",
             "code": "payment_exceeds_remaining",
         })
+    if locked.currency != "KZT" and any(
+        method in ("kaspi", "invoice") for method, _amount in normalized
+    ):
+        raise ValidationError({
+            "detail": "QR и счёт на оплату доступны только для заказов в тенге.",
+            "code": "online_payment_kzt_only",
+        })
 
     created = [
         add_payment(locked, amount, user, method=method, stage="received", note=note)
@@ -225,20 +254,34 @@ def create_client_payment(order: Order, method: str, user, amount=None) -> Payme
         .order_by("-paid_at")
     )
     payment = None
-    if amount in (None, "") and len(open_payments) == 1:
-        candidate = open_payments[0]
+    owned_open_payments = [
+        row for row in open_payments if row.recorded_by_id == getattr(user, "pk", None)
+    ]
+    if amount in (None, "") and len(owned_open_payments) == 1:
+        candidate = owned_open_payments[0]
         if not hasattr(candidate, "apipay_invoice"):
             payment = candidate
     reserved = sum((row.amount for row in open_payments), Decimal("0"))
     available = max(Decimal("0"), remaining - reserved)
-    requested_amount = (
-        remaining if payment is not None or (amount in (None, "") and not open_payments)
-        else _positive_money(
+    if payment is not None:
+        # Legacy clients omit amount when switching their own open payment.
+        # Only that payment's reservation is reusable; every other reservation
+        # must continue to reduce the available balance.
+        other_reserved = reserved - payment.amount
+        requested_amount = max(Decimal("0"), remaining - other_reserved)
+        if requested_amount <= 0:
+            raise ValidationError({
+                "detail": f"Доступно для оплаты: 0 {order.currency}",
+                "code": "payment_exceeds_remaining",
+            })
+    elif amount in (None, "") and not open_payments:
+        requested_amount = remaining
+    else:
+        requested_amount = _positive_money(
             available if amount in (None, "") else amount,
             detail="Сумма оплаты должна быть положительным денежным значением",
             code="invalid_amount",
         )
-    )
     if requested_amount > available and open_payments and payment is None:
         raise ValidationError({
             "detail": f"Доступно для новой оплаты: {available} {order.currency}",
@@ -298,10 +341,36 @@ def create_client_payment(order: Order, method: str, user, amount=None) -> Payme
 def release_client_payment(payment: Payment, user) -> Payment:
     """Освободить зарезервированную часть, не скрывая возможную позднюю оплату."""
     payment, order = _locked_payment_with_order(payment)
+    invoice = getattr(payment, "apipay_invoice", None)
     if payment.status not in Payment.IN_PROGRESS_STATUSES:
+        if (
+            payment.status == "rejected"
+            and invoice is not None
+            and invoice.status in {
+                "cancelled", "expired", "error", "superseded",
+            }
+        ):
+            # A synchronous provider cancellation already rejected the
+            # Payment through the shared status engine. Treat the following
+            # release call as the successful, idempotent completion of that
+            # same user action; never extend this to paid/confirmed money.
+            return _sync_payment_instance(payment, payment)
         raise ValidationError({
             "detail": "Эта заявка уже завершена.",
             "code": "payment_not_in_progress",
+        })
+    if (
+        invoice is not None
+        and invoice.channel == "qr"
+        and invoice.invoice_id is None
+        and invoice.status == "creating"
+    ):
+        raise ValidationError({
+            "detail": (
+                "Создание QR ещё сверяется с платёжным сервисом. "
+                "Нельзя освобождать сумму до завершения сверки."
+            ),
+            "code": "qr_issue_recovery_pending",
         })
     payment.status = "rejected"
     payment.save(update_fields=["status"])
@@ -330,9 +399,16 @@ def request_client_debt(order: Order, user) -> Order:
     if order.status != "shipped":
         raise ValidationError({"detail": "Долг фиксируется после отгрузки",
                                "code": "invalid_status"})
-    order.payments.select_for_update().filter(
+    if order.payments.select_for_update().filter(
         status__in=Payment.IN_PROGRESS_STATUSES,
-    ).update(status="rejected")
+    ).exists():
+        raise ValidationError({
+            "detail": (
+                "Сначала завершите текущую оплату или выберите «Другой способ» "
+                "у своей заявки."
+            ),
+            "code": "payment_in_progress",
+        })
     order.payment_method = "debt"
     order.settlement_intent = "debt"
     order.debt_requested = True
@@ -372,6 +448,33 @@ def accountant_confirm_payment(payment: Payment, user) -> Payment:
     """Бухгалтер (касса) сверил и подтвердил оплату — деньги учтены сразу."""
     original = payment
     payment, order = _locked_payment_with_order(payment)
+    provider = getattr(payment, "apipay_invoice", None)
+    if provider is not None and provider.status != "paid":
+        raise ValidationError({
+            "detail": (
+                "Онлайн-оплата подтверждается автоматически после поступления "
+                "уведомления от платёжного сервиса."
+            ),
+            "code": "provider_payment_auto_confirmation",
+        })
+    confirmed_total = sum(
+        (
+            row.net_amount
+            for row in order.payments.select_for_update().filter(
+                status="confirmed"
+            )
+        ),
+        Decimal("0"),
+    )
+    available = max(Decimal("0"), order.total_amount - confirmed_total)
+    if payment.amount > available:
+        raise ValidationError({
+            "detail": (
+                "Подтверждение создаст переплату. "
+                f"Текущий остаток заказа: {available} {order.currency}."
+            ),
+            "code": "payment_confirmation_overpayment",
+        })
     _advance_payment(payment, "received", user)
     _apply_payment_status(order, user)
     return _sync_payment_instance(original, payment)
@@ -390,6 +493,14 @@ def reopen_confirmed_payment(payment: Payment, user) -> Payment:
         raise ValidationError({
             "detail": "Вернуть можно только подтверждённую оплату",
             "code": "invalid_payment_stage",
+        })
+    if hasattr(payment, "apipay_invoice"):
+        raise ValidationError({
+            "detail": (
+                "Онлайн-оплату нельзя вернуть в очередь без возврата денег. "
+                "Используйте действие «Оформить возврат»."
+            ),
+            "code": "provider_payment_requires_refund",
         })
     previous_confirmed_by = payment.confirmed_by_id
     previous_confirmed_at = payment.confirmed_at
@@ -458,10 +569,51 @@ def restore_rejected_payment(payment: Payment, user) -> Payment:
             "code": "invalid_payment_stage",
         })
     invoice = getattr(payment, "apipay_invoice", None)
-    if invoice and invoice.status in ("cancelled", "expired", "error", "superseded"):
+    if (
+        invoice
+        and invoice.invoice_id is None
+        and invoice.status != "creating"
+    ):
+        raise ValidationError({
+            "detail": (
+                "Прежний ключ счёта закрыт. Создайте новую платёжную "
+                "операцию с новым ключом."
+            ),
+            "code": "provider_issue_key_retired",
+        })
+    if (
+        invoice
+        and invoice.invoice_id is not None
+        and invoice.status in ("cancelled", "expired", "error", "superseded")
+    ):
         raise ValidationError({
             "detail": "Отменённый счёт восстановить нельзя — создайте новый счёт на оплату.",
             "code": "provider_invoice_closed",
+        })
+    confirmed = sum(
+        (
+            row.net_amount
+            for row in order.payments.select_for_update().filter(status="confirmed")
+        ),
+        Decimal("0"),
+    )
+    reserved = sum(
+        (
+            row.amount
+            for row in order.payments.select_for_update().filter(
+                status__in=Payment.IN_PROGRESS_STATUSES
+            )
+        ),
+        Decimal("0"),
+    )
+    available = max(Decimal("0"), order.total_amount - confirmed - reserved)
+    if payment.amount > available:
+        raise ValidationError({
+            "detail": (
+                f"Восстановить нельзя: свободный остаток заказа "
+                f"{available} {order.currency}."
+            ),
+            "code": "payment_exceeds_remaining",
         })
     restored_stage = "received" if payment.received_at else "requested"
     payment.status = restored_stage

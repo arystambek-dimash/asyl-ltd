@@ -182,10 +182,12 @@ export interface PortalOrder {
     amount: string;
     method: "invoice" | "kaspi" | "cash";
     status: PaymentStage;
+    can_release: boolean;
     apipay_invoice: {
       id: number | null;
       status: string;
       channel: "phone" | "qr";
+      phone_number: string | null;
       qr_token_url: string | null;
       qr_image_url: string | null;
       qr_expires_at: string | null;
@@ -233,6 +235,9 @@ export interface Payment {
   refunded_amount?: string;
   pending_refund_amount?: string;
   available_for_refund?: string;
+  can_restore?: boolean;
+  can_issue?: boolean;
+  confirmation_mode?: "manual" | "automatic";
   refunds?: {
     id: number;
     amount: string;
@@ -251,6 +256,7 @@ export interface Payment {
     phone_number: string | null;
     qr_token_url: string | null;
     qr_image_url: string | null;
+    qr_expires_at: string | null;
     total_refunded: string;
     available_for_refund: string;
     refunds: {

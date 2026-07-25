@@ -10,6 +10,31 @@ from django.db.models import Prefetch, QuerySet
 from .models import Order, Payment, StatusChangeRequest
 
 
+def with_payment_api_relations(
+    queryset: QuerySet[Payment], *, order_context: bool = False
+) -> QuerySet[Payment]:
+    """Loading plan for ``PaymentSerializer`` and its queue subclass.
+
+    ``effective_status``/``can_issue`` read the provider invoice on every row,
+    and ``can_restore`` compares the sibling payments of the same order against
+    ``order.total_amount``, which sums the order items. All three relations
+    must therefore be loaded eagerly. ``order_context`` adds the order/client
+    columns the queue and transaction lists display.
+    """
+    queryset = queryset.select_related("apipay_invoice").prefetch_related(
+        "order__items",
+        "order__payments",
+        "apipay_invoice__refunds",
+        "payment_refunds__requested_by",
+    )
+    if order_context:
+        queryset = queryset.select_related(
+            "order__client", "order__store",
+            "recorded_by", "received_by", "confirmed_by",
+        )
+    return queryset
+
+
 def with_order_api_relations(queryset: QuerySet[Order]) -> QuerySet[Order]:
     payments = Payment.objects.select_related(
         "recorded_by", "received_by", "confirmed_by", "apipay_invoice"

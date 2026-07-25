@@ -49,10 +49,17 @@ if [ -n "$EXPECTED_SHA" ]; then
   fi
 fi
 
-if docker compose -f "$COMPOSE_FILE" ps --services --filter status=running | grep -qx db-backup; then
-  echo "Writing pre-deploy database backup..."
-  docker compose -f "$COMPOSE_FILE" exec -T db-backup /backup/backup.sh
+if ! docker compose -f "$COMPOSE_FILE" ps --services --filter status=running \
+  | grep -qx db-backup; then
+  echo "Refusing to deploy without a running db-backup service." >&2
+  echo "For a first install, follow the bootstrap steps in deploy/backup/README.md." >&2
+  exit 1
 fi
+
+echo "Writing and validating pre-deploy database/media backup..."
+docker compose -f "$COMPOSE_FILE" exec -T db-backup /backup/backup.sh
+docker compose -f "$COMPOSE_FILE" exec -T db-backup \
+  sh -c 'sha256sum -c /backups/asyl-latest.dump.sha256 && sha256sum -c /backups/media-latest.tar.gz.sha256'
 
 echo "Validating compose config..."
 # `config` expands all environment values, including camera/alert credentials.
@@ -66,8 +73,11 @@ if [ -n "${GHCR_TOKEN:-}" ]; then
   printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-github}" --password-stdin
 fi
 
-echo "Pulling images..."
-docker compose -f "$COMPOSE_FILE" pull --quiet
+echo "Pulling immutable application images..."
+# Infrastructure images are upgraded only during an explicit maintenance
+# operation. An application release must not silently replace Postgres,
+# Redis, nginx, WireGuard, certbot, or go2rtc.
+docker compose -f "$COMPOSE_FILE" pull --quiet backend frontend
 
 # Releases before the non-root backend transition created these persistent
 # volumes as root. Image-level chown cannot change an already-mounted volume,
@@ -79,7 +89,7 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
   backend -c 'chown -R app:app /app/media /app/staticfiles'
 
 echo "Starting containers..."
-if docker compose -f "$COMPOSE_FILE" up -d --remove-orphans --wait --wait-timeout 180; then
+if docker compose -f "$COMPOSE_FILE" up -d --remove-orphans --pull never --wait --wait-timeout 180; then
   :
 else
   status=$?

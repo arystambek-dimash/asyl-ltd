@@ -14,6 +14,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  production-manifests:
+    name: Production deploy + backup invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test fail-closed deploy and backup rotation
+        run: python -m unittest discover -s deploy/tests -p 'test_*.py'
+      - name: Validate production compose
+        env:
+          SECRET_KEY: ci-compose-secret
+          POSTGRES_PASSWORD: ci-compose-database
+          SUPER_ADMIN_EMAIL: ci@example.com
+          SUPER_ADMIN_PASS: ci-compose-admin
+          CAMERA_PASS: ci-compose-camera
+          APIPAY_API_KEY: ci-compose-apipay
+          APIPAY_WEBHOOK_SECRET: ci-compose-webhook
+          BACKEND_IMAGE_REF: ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          FRONTEND_IMAGE_REF: ghcr.io/arystambek-dimash/asyl-ltd-frontend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        run: docker compose -f docker-compose.prod.yml config --quiet
+
   camera-pc-static:
     name: Windows camera-PC package
     runs-on: windows-latest

@@ -1,5 +1,5 @@
 "use client";
-import { use, useEffect, useMemo, useState } from "react";
+import { use, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
@@ -110,6 +110,11 @@ function pendingSum(order: Order): number {
   return (order.pending_payments ?? []).reduce((s, p) => s + Number(p.amount), 0);
 }
 
+function moneyCents(value: number | string): number {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? Math.round(amount * 100) : 0;
+}
+
 /* ── Счёт по заказу: зафиксированные клиентские цены ───────────────────── */
 function InvoiceTable({ order }: { order: Order }) {
   const lines = order.items.map((it) => {
@@ -122,7 +127,9 @@ function InvoiceTable({ order }: { order: Order }) {
       total: price * it.quantity,
     };
   });
-  const toPay = Number(order.total_amount);
+  const total = Number(order.total_amount);
+  const paid = Number(order.paid_total);
+  const toPay = remainingOf(order);
   return (
     <div>
       <Table>
@@ -146,9 +153,19 @@ function InvoiceTable({ order }: { order: Order }) {
         </TBody>
       </Table>
       <div className="ml-auto mt-3 flex max-w-xs flex-col gap-1.5 border-t pt-3 text-sm">
+        <div className="flex justify-between text-[var(--muted-foreground)]">
+          <span>Сумма заказа</span>
+          <span className="tabular-nums">{money(total, order.currency)}</span>
+        </div>
+        {paid > 0 && (
+          <div className="flex justify-between text-[var(--success)]">
+            <span>Уже оплачено</span>
+            <span className="tabular-nums">−{money(paid, order.currency)}</span>
+          </div>
+        )}
         <div className="flex justify-between text-base font-semibold">
-          <span>К оплате</span>
-          <span className="tabular-nums">{money(toPay)}</span>
+          <span>Остаток к оплате</span>
+          <span className="tabular-nums">{money(toPay, order.currency)}</span>
         </div>
       </div>
     </div>
@@ -282,7 +299,7 @@ function OrderDebtCard({ order, canPay, onPay }: { order: Order; canPay: boolean
               <div className="flex items-center justify-between rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2 text-sm">
                 <span className="flex items-center gap-1.5 text-[var(--warning)]">
                   <Info className="size-4" />
-                  Ожидает подтверждения оплаты бухгалтером (бухгалтер → касса)
+                  Уже зарезервировано и ожидает оплаты либо подтверждения
                 </span>
                 <span className="tabular-nums font-semibold text-[var(--warning)]">
                   {money(pending, order.currency)}
@@ -387,7 +404,7 @@ const QUICK_FRACTIONS = [
   { label: "Весь долг", f: 1 },
 ];
 
-type PaymentPart = { id: number; method: string; amount: string };
+type PaymentPart = { id: number; method: string; amount: string; phone_number?: string };
 
 function PaymentModal({
   open,
@@ -405,7 +422,7 @@ function PaymentModal({
   selectedId: number | null;
   onSelect: (id: number) => void;
   blockedFor: (order: Order) => DebtStore | null;
-  onPaid: (msg: string) => Promise<void>;
+  onPaid: (msg: string, refresh?: boolean) => Promise<void>;
   onError: (msg: string) => void;
 }) {
   const order = orders.find((o) => o.id === selectedId) ?? orders[0];
@@ -413,19 +430,46 @@ function PaymentModal({
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [kaspiQr, setKaspiQr] = useState<Payment["provider"] | null>(null);
+  const [reviewing, setReviewing] = useState(false);
+  const [qrImageFailed, setQrImageFailed] = useState(false);
+  const ordersRef = useRef(orders);
+  ordersRef.current = orders;
 
   useEffect(() => {
     if (!open) return;
-    setParts([{ id: Date.now(), method: "cash", amount: "" }]);
+    const currentOrders = ordersRef.current;
+    const currentOrder = currentOrders.find((item) => item.id === selectedId) ?? currentOrders[0];
+    const currentAvailable = currentOrder
+      ? Math.max(0, moneyCents(remainingOf(currentOrder)) - moneyCents(pendingSum(currentOrder))) / 100
+      : 0;
+    setParts([{ id: Date.now(), method: "cash", amount: String(currentAvailable) }]);
     setNote("");
     setKaspiQr(null);
-  }, [order?.id, open]);
+    setReviewing(false);
+    setQrImageFailed(false);
+  }, [open, selectedId]);
 
   if (!order) return null;
   const remaining = remainingOf(order);
   const reserved = pendingSum(order);
-  const available = Math.max(0, remaining - reserved);
-  const allocated = parts.reduce((sum, part) => sum + Number(part.amount || 0), 0);
+  const availableCents = Math.max(0, moneyCents(remaining) - moneyCents(reserved));
+  const available = availableCents / 100;
+  const allocatedCents = parts.reduce((sum, part) => sum + moneyCents(part.amount || 0), 0);
+  const allocated = allocatedCents / 100;
+  const allowedMethods = order.currency === "KZT" ? [...CASHIER_PAYMENT_METHODS] : (["cash"] as string[]);
+  const allPartsValid =
+    parts.length > 0 &&
+    parts.every((part) => {
+      const amount = Number(part.amount);
+      const phoneDigits = (part.phone_number ?? order.client_phone ?? "").replace(/\D/g, "");
+      return (
+        Number.isFinite(amount) &&
+        amount > 0 &&
+        Math.abs(amount * 100 - Math.round(amount * 100)) <= 1e-7 &&
+        allowedMethods.includes(part.method) &&
+        (part.method !== "invoice" || [10, 11].includes(phoneDigits.length))
+      );
+    });
   const blockingStore = blockedFor(order);
   const quickValue = (f: number) => Math.round(available * f * 100) / 100;
 
@@ -435,27 +479,45 @@ function PaymentModal({
 
   function addPart() {
     const used = new Set(parts.map((part) => part.method));
-    const method = CASHIER_PAYMENT_METHODS.find((item) => !used.has(item));
+    const method = allowedMethods.find((item) => !used.has(item));
     if (!method) return;
     setParts((current) => [...current, { id: Date.now(), method, amount: "" }]);
+  }
+
+  function setQuickTotal(value: number) {
+    setParts((current) => {
+      if (current.length === 0) return current;
+      const totalCents = Math.round(value * 100);
+      const base = Math.floor(totalCents / current.length);
+      const remainder = totalCents - base * current.length;
+      return current.map((part, index) => {
+        const cents = base + (index < remainder ? 1 : 0);
+        return { ...part, amount: String(cents / 100) };
+      });
+    });
   }
 
   async function pay() {
     setBusy(true);
     onError("");
     try {
-      const payload = parts.filter((part) => Number(part.amount) > 0).map(({ method, amount }) => ({ method, amount }));
+      const payload = parts.map(({ method, amount, phone_number }) => ({ method, amount, phone_number }));
       const created = await api.post<Payment[]>(`/orders/${order.id}/payments/`, { parts: payload, note });
       const kaspi = created.data.find((payment) => payment.method === "kaspi");
-      if (kaspi) {
-        const qr = await api.post<Payment>(`/payment-transactions/${kaspi.id}/kaspi-qr/`);
-        setKaspiQr(qr.data.provider ?? null);
-      }
-      await onPaid(
-        kaspi
-          ? `Kaspi QR по заказу #${order.id} создан. Остальные части добавлены в кассу.`
-          : `Оплата по заказу #${order.id} распределена по ${payload.length} способам. Подтвердите получение в кассе.`,
-      );
+      const invoice = created.data.find((payment) => payment.method === "invoice");
+      if (kaspi) setKaspiQr(kaspi.provider ?? null);
+      setReviewing(false);
+      const notice = [
+        kaspi ? `QR по заказу #${order.id} создан.` : "",
+        invoice ? "Счёт на оплату отправлен клиенту." : "",
+        payload.some((part) => part.method === "cash") ? "Наличная часть добавлена на подтверждение кассиру." : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      // Keep the just-created QR visible until the operator explicitly closes
+      // the modal. A successful refresh can remove a fully paid order from
+      // this debt list and would otherwise unmount the QR immediately.
+      await onPaid(notice, !kaspi);
       if (!kaspi) onClose();
     } catch (e) {
       onError(apiError(e));
@@ -470,47 +532,108 @@ function PaymentModal({
       onClose={() => !busy && onClose()}
       eyebrow="Касса · Смешанная оплата"
       title="Внести оплату"
-      description="Разделите сумму между наличными, QR и счётом — кассир подтвердит каждую часть."
+      description="Разделите сумму между наличными, QR и счётом. Онлайн-части подтвердятся автоматически после оплаты."
       className="max-w-xl"
       mobileFullscreen
       footer={
         kaspiQr ? (
           <Button onClick={onClose}>Готово</Button>
+        ) : reviewing ? (
+          <>
+            <Button variant="outline" disabled={busy} onClick={() => setReviewing(false)}>
+              Назад
+            </Button>
+            <Button disabled={busy} onClick={() => void pay()}>
+              {busy ? "Создание…" : `Подтвердить · ${money(allocated, order.currency)}`}
+            </Button>
+          </>
         ) : (
           <>
             <Button variant="outline" disabled={busy} onClick={onClose}>
               Отмена
             </Button>
             <Button
-              disabled={busy || !!blockingStore || allocated <= 0 || allocated > available}
-              onClick={() => void pay()}
+              disabled={busy || !!blockingStore || !allPartsValid || allocatedCents > availableCents}
+              onClick={() => setReviewing(true)}
             >
-              {busy ? "Сохранение…" : `В очередь · ${money(allocated, order.currency)}`}
+              Проверить оплату · {money(allocated, order.currency)}
             </Button>
           </>
         )
       }
     >
       <div className="flex flex-col gap-5">
-        {kaspiQr?.qr_image_url ? (
+        {kaspiQr ? (
           <div className="text-center">
             <div className="text-lg font-semibold">Kaspi QR готов</div>
             <p className="mt-1 text-sm text-[var(--muted-foreground)]">
               Покажите QR клиенту или откройте оплату на его устройстве.
             </p>
-            <Image
-              src={kaspiQr.qr_image_url}
-              alt="Kaspi QR"
-              width={256}
-              height={256}
-              unoptimized
-              className="mx-auto mt-4 size-64 rounded-2xl bg-white p-2 shadow-sm"
-            />
+            {kaspiQr.qr_image_url && !qrImageFailed ? (
+              <Image
+                src={kaspiQr.qr_image_url}
+                alt="Kaspi QR"
+                width={256}
+                height={256}
+                unoptimized
+                onError={() => setQrImageFailed(true)}
+                className="mx-auto mt-4 size-64 rounded-2xl bg-white p-2 shadow-sm"
+              />
+            ) : (
+              <div className="mx-auto mt-4 flex size-64 flex-col items-center justify-center rounded-2xl border border-dashed bg-[var(--muted)]/35 p-6">
+                <FileText className="size-10 text-[var(--muted-foreground)]" />
+                <p className="mt-3 text-sm text-[var(--muted-foreground)]">
+                  Изображение QR недоступно. Откройте оплату кнопкой ниже.
+                </p>
+              </div>
+            )}
             {kaspiQr.qr_token_url && (
               <Button className="mt-4 w-full" onClick={() => window.open(kaspiQr.qr_token_url!, "_blank", "noopener")}>
                 Открыть Kaspi
               </Button>
             )}
+          </div>
+        ) : reviewing ? (
+          <div className="space-y-4">
+            <div className="rounded-xl border bg-[var(--muted)]/30 p-4">
+              <div className="text-xs uppercase tracking-wide text-[var(--muted-foreground)]">
+                Проверьте перед созданием
+              </div>
+              <div className="mt-1 text-3xl font-bold tabular-nums">{money(allocated, order.currency)}</div>
+              <div className="mt-1 text-sm text-[var(--muted-foreground)]">
+                Заказ #{order.id} · доступно {money(available, order.currency)}
+              </div>
+            </div>
+            <div className="space-y-2">
+              {parts.map((part) => (
+                <div key={part.id} className="flex items-start justify-between gap-4 rounded-lg border px-3 py-2.5">
+                  <div>
+                    <div className="font-medium">{CASHIER_PAYMENT_METHOD_LABELS[part.method] ?? part.method}</div>
+                    {part.method === "invoice" && (
+                      <div className="text-xs text-[var(--muted-foreground)]">
+                        Телефон: {part.phone_number ?? order.client_phone}
+                      </div>
+                    )}
+                    <div className="text-xs text-[var(--muted-foreground)]">
+                      {part.method === "cash"
+                        ? "Потребует подтверждения кассиром"
+                        : "Подтвердится автоматически после оплаты"}
+                    </div>
+                  </div>
+                  <div className="shrink-0 font-semibold tabular-nums">{money(part.amount, order.currency)}</div>
+                </div>
+              ))}
+            </div>
+            {note && (
+              <div className="rounded-lg border px-3 py-2 text-sm">
+                <span className="text-[var(--muted-foreground)]">Примечание: </span>
+                {note}
+              </div>
+            )}
+            <p className="text-xs text-[var(--muted-foreground)]">
+              После подтверждения наличная часть попадёт в очередь кассира, а QR и счёт сразу будут созданы у платёжного
+              сервиса.
+            </p>
           </div>
         ) : (
           <>
@@ -557,14 +680,12 @@ function PaymentModal({
                 <div className="grid grid-cols-4 gap-2">
                   {QUICK_FRACTIONS.map(({ label, f }) => {
                     const v = quickValue(f);
-                    const active = parts.length === 1 && Number(parts[0]?.amount) === v;
+                    const active = Math.abs(allocated - v) < 0.001;
                     return (
                       <button
                         key={label}
                         type="button"
-                        onClick={() =>
-                          setParts([{ id: Date.now(), method: parts[0]?.method ?? "cash", amount: String(v) }])
-                        }
+                        onClick={() => setQuickTotal(v)}
                         className={cn(
                           "flex flex-col items-center gap-0.5 rounded-lg border px-1 py-2 transition-colors",
                           active
@@ -587,56 +708,95 @@ function PaymentModal({
                     <span
                       className={cn(
                         "text-xs tabular-nums",
-                        allocated > available ? "text-[var(--destructive)]" : "text-[var(--muted-foreground)]",
+                        allocatedCents > availableCents
+                          ? "text-[var(--destructive)]"
+                          : "text-[var(--muted-foreground)]",
                       )}
                     >
                       {money(allocated, order.currency)} из {money(available, order.currency)}
                     </span>
                   </div>
                   {parts.map((part, index) => (
-                    <div key={part.id} className="grid grid-cols-[minmax(0,1fr)_minmax(100px,.75fr)_40px] gap-2">
-                      <Select value={part.method} onValueChange={(method) => updatePart(part.id, { method })}>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {CASHIER_PAYMENT_METHODS.filter(
-                            (method) => method === part.method || !parts.some((item) => item.method === method),
-                          ).map((method) => (
-                            <SelectItem key={method} value={method}>
-                              {CASHIER_PAYMENT_METHOD_LABELS[method]}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        inputMode="decimal"
-                        aria-label={`Сумма части ${index + 1}`}
-                        placeholder="0"
-                        value={part.amount}
-                        onChange={(event) => updatePart(part.id, { amount: event.target.value })}
-                      />
-                      <button
-                        type="button"
-                        disabled={parts.length === 1}
-                        onClick={() => setParts((current) => current.filter((item) => item.id !== part.id))}
-                        className="flex size-10 items-center justify-center rounded-md border text-[var(--muted-foreground)] hover:text-[var(--destructive)] disabled:opacity-30"
-                        aria-label="Удалить способ оплаты"
-                      >
-                        <Trash2 className="size-4" />
-                      </button>
+                    <div key={part.id} className="rounded-xl border bg-[var(--card)] p-2.5">
+                      <div className="grid grid-cols-[minmax(0,1fr)_minmax(100px,.75fr)_40px] gap-2">
+                        <Select
+                          value={part.method}
+                          onValueChange={(method) =>
+                            updatePart(part.id, {
+                              method,
+                              phone_number:
+                                method === "invoice" ? (part.phone_number ?? order.client_phone ?? "") : undefined,
+                            })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {allowedMethods
+                              .filter(
+                                (method) => method === part.method || !parts.some((item) => item.method === method),
+                              )
+                              .map((method) => (
+                                <SelectItem key={method} value={method}>
+                                  {CASHIER_PAYMENT_METHOD_LABELS[method]}
+                                </SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
+                        <Input
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          inputMode="decimal"
+                          aria-label={`Сумма части ${index + 1}`}
+                          placeholder="0"
+                          value={part.amount}
+                          onChange={(event) => updatePart(part.id, { amount: event.target.value })}
+                        />
+                        <button
+                          type="button"
+                          disabled={parts.length === 1}
+                          onClick={() => setParts((current) => current.filter((item) => item.id !== part.id))}
+                          className="flex size-10 items-center justify-center rounded-md border text-[var(--muted-foreground)] hover:text-[var(--destructive)] disabled:opacity-30"
+                          aria-label="Удалить способ оплаты"
+                        >
+                          <Trash2 className="size-4" />
+                        </button>
+                      </div>
+                      {part.method === "invoice" && (
+                        <div className="mt-2">
+                          <Input
+                            inputMode="tel"
+                            aria-label="Телефон для счёта на оплату"
+                            placeholder="Телефон клиента, например 8 700 000 00 00"
+                            value={part.phone_number ?? order.client_phone ?? ""}
+                            onChange={(event) => updatePart(part.id, { phone_number: event.target.value })}
+                          />
+                          <p className="mt-1 text-[11px] text-[var(--muted-foreground)]">
+                            Счёт будет отправлен на этот номер и подтвердится автоматически.
+                          </p>
+                        </div>
+                      )}
+                      {part.method === "kaspi" && (
+                        <p className="mt-2 text-[11px] text-[var(--muted-foreground)]">
+                          QR появится после создания и подтвердится автоматически после оплаты.
+                        </p>
+                      )}
                     </div>
                   ))}
-                  {parts.length < CASHIER_PAYMENT_METHODS.length && (
+                  {parts.length < allowedMethods.length && (
                     <Button type="button" variant="outline" className="w-full" onClick={addPart}>
                       <Plus className="size-4" /> Добавить способ оплаты
                     </Button>
                   )}
-                  {allocated > available && (
+                  {allocatedCents > availableCents && (
                     <p className="text-xs text-[var(--destructive)]">Распределение превышает доступный остаток.</p>
+                  )}
+                  {!allPartsValid && (
+                    <p className="text-xs text-[var(--warning)]">
+                      Укажите положительную сумму с точностью до тиына для каждого добавленного способа.
+                    </p>
                   )}
                 </div>
 
@@ -653,7 +813,7 @@ function PaymentModal({
 
             <p className="flex items-start gap-2 border-t pt-3 text-xs text-[var(--muted-foreground)]">
               <ShieldCheck className="mt-0.5 size-4 shrink-0" />
-              Платёж уменьшит долг только после ручного подтверждения получения кассиром.
+              Наличные уменьшат долг после подтверждения кассиром. QR и счёт — автоматически после оплаты клиентом.
             </p>
           </>
         )}
@@ -676,7 +836,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [notice, setNotice] = useState("");
 
   const payments = useMemo(() => history?.payments ?? [], [history]);
-  const invoices = useMemo(() => payments.filter((p) => p.status === "requested"), [payments]);
+  const invoices = useMemo(() => payments.filter((p) => p.method === "invoice"), [payments]);
 
   if (!data) {
     return (
@@ -695,10 +855,18 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
     return s;
   }
 
-  async function onPaid(msg: string) {
+  async function onPaid(msg: string, refresh = true) {
     setNotice(msg);
-    await reload();
-    reloadHistory();
+    if (refresh) {
+      await reload();
+      reloadHistory();
+    }
+  }
+
+  function closePaymentModal() {
+    setPaymentOpen(false);
+    void reload();
+    void reloadHistory();
   }
 
   return (
@@ -793,7 +961,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
       {isAccountant && data.orders.length > 0 && (
         <PaymentModal
           open={paymentOpen}
-          onClose={() => setPaymentOpen(false)}
+          onClose={closePaymentModal}
           orders={data.orders}
           selectedId={selectedId ?? data.orders[0]?.id ?? null}
           onSelect={setSelectedId}

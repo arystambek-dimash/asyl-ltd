@@ -139,6 +139,19 @@ if _database_password is None:
         raise ImproperlyConfigured("DB_PASSWORD must be set when DEBUG is off")
     _database_password = "asyl"
 
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name) or default)
+    except ValueError:
+        return default
+
+
+# Без CONN_MAX_AGE Django открывает новое TCP-соединение к Postgres на каждый
+# HTTP-запрос — это заметная часть задержки на каждой странице. Соединения
+# переиспользуются, а CONN_HEALTH_CHECKS отбрасывает те, что закрылись между
+# запросами (рестарт Postgres, простой). Долгоживущие мониторы обслуживают
+# по одному циклу за раз, поэтому суммарное число соединений остаётся
+# небольшим: воркеры gunicorn + по одному на монитор.
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -147,6 +160,8 @@ DATABASES = {
         "PASSWORD": _database_password,
         "HOST": os.environ.get("DB_HOST", "localhost"),
         "PORT": os.environ.get("DB_PORT", "5432"),
+        "CONN_MAX_AGE": _int_env("DB_CONN_MAX_AGE", 60),
+        "CONN_HEALTH_CHECKS": True,
     }
 }
 

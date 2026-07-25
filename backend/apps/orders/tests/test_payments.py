@@ -1,5 +1,6 @@
 import pytest
 from decimal import Decimal
+from unittest.mock import patch
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
@@ -9,7 +10,9 @@ pytestmark = pytest.mark.django_db
 
 def _order(status="confirmed", price="100.00", qty=5):
     prod = Product.objects.create(name="Премиум", color="Red", weight_kg="50", price=price)
-    c = Client.objects.create(first_name="L", last_name="К", phone="x")
+    c = Client.objects.create(
+        first_name="L", last_name="К", phone="87762838451"
+    )
     o = Order.objects.create(client=c, status=status)
     OrderItem.objects.create(order=o, product=prod, quantity=qty, unit_price=price)
     return o
@@ -207,15 +210,17 @@ def test_payment_note_saved_and_returned(auth_client, accountant):
     o = _order(status="shipped")
     resp = auth_client(accountant).post(
         f"/api/orders/{o.id}/payments/",
-        {"amount": "100.00", "method": "kaspi", "note": "перевод от директора"},
+        {"amount": "100.00", "method": "cash", "note": "принял кассир"},
         format="json",
     )
     assert resp.status_code == 201
-    assert resp.data["note"] == "перевод от директора"
-    assert resp.data["method"] == "kaspi"
+    assert resp.data["note"] == "принял кассир"
+    assert resp.data["method"] == "cash"
 
 
-def test_mixed_payment_is_created_atomically(auth_client, accountant):
+@patch("apps.orders.views._issue_mixed_provider_payments")
+def test_mixed_payment_is_created_atomically(
+        issue_provider_payments, auth_client, accountant):
     order = _order(status="shipped")
 
     response = auth_client(accountant).post(
@@ -223,7 +228,11 @@ def test_mixed_payment_is_created_atomically(auth_client, accountant):
         {"parts": [
             {"method": "cash", "amount": "125.00"},
             {"method": "kaspi", "amount": "200.00"},
-            {"method": "invoice", "amount": "175.00"},
+            {
+                "method": "invoice",
+                "amount": "175.00",
+                "phone_number": "87762838451",
+            },
         ], "note": "смешанная оплата"},
         format="json",
     )
@@ -233,6 +242,7 @@ def test_mixed_payment_is_created_atomically(auth_client, accountant):
     assert all(row["status"] == "received" for row in response.data)
     assert order.payments.count() == 3
     assert {payment.note for payment in order.payments.all()} == {"смешанная оплата"}
+    issue_provider_payments.assert_called_once()
 
 
 def test_mixed_payment_cannot_exceed_unreserved_balance(auth_client, accountant):
@@ -246,7 +256,11 @@ def test_mixed_payment_cannot_exceed_unreserved_balance(auth_client, accountant)
         f"/api/orders/{order.id}/payments/",
         {"parts": [
             {"method": "kaspi", "amount": "250.00"},
-            {"method": "invoice", "amount": "151.00"},
+            {
+                "method": "invoice",
+                "amount": "151.00",
+                "phone_number": "87762838451",
+            },
         ]}, format="json")
 
     assert response.status_code == 400
@@ -270,14 +284,13 @@ def test_mixed_payment_rejects_duplicate_method_without_partial_write(
     assert not order.payments.exists()
 
 
-@pytest.mark.parametrize("method", ["cash", "kaspi", "invoice"])
-def test_cashier_methods_are_counted_only_after_manual_confirmation(
-        auth_client, accountant, method):
+def test_cash_is_counted_only_after_manual_confirmation(
+        auth_client, accountant):
     order = _order(status="shipped")
 
     created = auth_client(accountant).post(
         f"/api/orders/{order.id}/payments/",
-        {"amount": "100.00", "method": method}, format="json",
+        {"amount": "100.00", "method": "cash"}, format="json",
     )
 
     assert created.status_code == 201
@@ -327,7 +340,17 @@ def test_manager_cannot_record_payment(auth_client, manager):
     assert resp.status_code == 403
 
 
-@pytest.mark.parametrize("amount", ["not-a-number", "NaN", "-1", "10000000000"])
+@pytest.mark.parametrize(
+    "amount",
+    [
+        "not-a-number",
+        "NaN",
+        "-1",
+        "0.001",
+        "1E-1000000000",
+        "10000000000",
+    ],
+)
 def test_invalid_payment_amount_returns_400(auth_client, accountant, amount):
     o = _order(status="shipped")
 

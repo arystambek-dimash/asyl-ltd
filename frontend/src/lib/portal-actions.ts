@@ -54,11 +54,14 @@ export const registerClient = (payload: RegisterPayload) =>
 
 export type ClientStep = "pending" | "pay" | "rejected" | "truck" | "shipping" | "done";
 
-export function clientStep(status: string, paymentStatus?: string): ClientStep {
+export function clientStep(status: string, paymentStatus?: string, hasPendingPayment = false): ClientStep {
   if (status === "pending" || status === "draft") return "pending";
   if (status === "rejected" || status === "cancelled") return "rejected";
   // Подтверждён → ввод КАМАЗа → склад → отгрузка → оплата.
   if (status === "confirmed") return "truck";
-  if (status === "shipped") return paymentStatus === "settled" ? "done" : "pay";
+  // A late QR can settle the order while a replacement invoice is still
+  // externally payable. Keep the payment controls visible until that extra
+  // reservation is safely cancelled/closed.
+  if (status === "shipped") return paymentStatus === "settled" && !hasPendingPayment ? "done" : "pay";
   return "shipping";
 }

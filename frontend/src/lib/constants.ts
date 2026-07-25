@@ -100,7 +100,7 @@ export const PAYMENT_STAGE_TONE: Record<string, "muted" | "primary" | "success" 
 };
 
 export const PAYMENT_METHOD_LABELS: Record<string, string> = {
-  invoice: "Счет на оплату",
+  invoice: "Счёт на оплату",
   kaspi: "Kaspi",
   cash: "Наличные",
   debt: "Долг",
@@ -112,12 +112,12 @@ export const CASHIER_PAYMENT_METHODS = ["cash", "kaspi", "invoice"] as const;
 export const CASHIER_PAYMENT_METHOD_LABELS: Record<string, string> = {
   cash: "Наличные",
   kaspi: "QR",
-  invoice: "Счет на оплату",
+  invoice: "Счёт на оплату",
 };
 
 export const PORTAL_PAYMENT_METHOD_LABELS: Record<string, string> = {
   pending: "Способ не выбран",
-  invoice: "Счет на оплату",
+  invoice: "Счёт на оплату",
   kaspi: "Каспи",
   cash: "Наличными",
   debt: "В долг",

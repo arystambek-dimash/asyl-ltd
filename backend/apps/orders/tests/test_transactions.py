@@ -76,9 +76,18 @@ def test_transaction_history_is_paginated_with_complete_currency_totals(
     }
 
 
-def test_paid_qr_can_be_returned_from_cash_desk(
-    auth_client, accountant,
+@patch("apps.orders.apipay.api_request")
+def test_paid_qr_refund_is_reserved_in_apipay_until_provider_confirmation(
+    api_request, auth_client, accountant,
 ):
+    api_request.return_value = {
+        "refund": {
+            "id": 502,
+            "amount": "1.00",
+            "status": "pending",
+            "reason": "Тестовый платёж",
+        }
+    }
     client = Client.objects.create(
         first_name="Возврат", phone="87770000000"
     )
@@ -114,19 +123,26 @@ def test_paid_qr_can_be_returned_from_cash_desk(
     )
 
     assert response.status_code == 201
-    assert response.data["method"] == "cash"
+    assert response.data["method"] == "apipay"
+    assert response.data["status"] == "pending"
     payment.refresh_from_db()
     order.refresh_from_db()
-    assert payment.refunded_amount == Decimal("1.00")
-    assert payment.pending_refund_amount == Decimal("0.00")
+    assert payment.refunded_amount == Decimal("0.00")
+    assert payment.pending_refund_amount == Decimal("1.00")
     assert payment.available_for_refund == Decimal("0.00")
-    assert order.paid_total == Decimal("0.00")
-    assert order.payment_status == "unpaid"
+    assert order.paid_total == Decimal("1.00")
+    assert order.payment_status == "settled"
     serialized = auth_client(accountant).get(
         "/api/payment-transactions/"
     ).data["results"][0]
-    assert serialized["effective_status"] == "refunded"
+    assert serialized["effective_status"] == "refund_pending"
     assert serialized["refunds"][0]["reason"] == "Тестовый платёж"
+    assert serialized["refunds"][0]["status"] == "pending"
+    api_request.assert_called_once_with(
+        "POST",
+        "/invoices/990/refund",
+        {"amount": 1.0, "reason": "Тестовый платёж"},
+    )
 
 
 def test_manual_refund_requires_reason_and_cannot_exceed_available(
@@ -148,11 +164,24 @@ def test_manual_refund_requires_reason_and_cannot_exceed_available(
         {"amount": "11.00", "reason": "Ошибка"},
         format="json",
     )
+    not_finite = auth_client(accountant).post(
+        f"/api/payment-transactions/{payment.id}/refund/",
+        {"amount": "NaN", "reason": "Ошибка"},
+        format="json",
+    )
+    fractional_tiyin = auth_client(accountant).post(
+        f"/api/payment-transactions/{payment.id}/refund/",
+        {"amount": "1.001", "reason": "Ошибка"},
+        format="json",
+    )
 
     assert missing_reason.status_code == 400
     assert missing_reason.data["code"] == "refund_reason_required"
     assert too_much.status_code == 400
     assert too_much.data["code"] == "refund_exceeds_available"
+    assert not_finite.status_code == 400
+    assert fractional_tiyin.status_code == 400
+    assert not PaymentRefund.objects.filter(payment=payment).exists()
 
 
 @patch("apps.orders.apipay.api_request")
@@ -302,3 +331,59 @@ def test_active_qr_transaction_cannot_be_rejected(auth_client, accountant):
 
     assert response.status_code == 400
     assert response.data["code"] == "qr_cancel_unsupported"
+
+
+def test_transaction_history_query_count_is_independent_of_row_count(
+    auth_client, accountant,
+):
+    """Serializing more operations must not add a query per row.
+
+    ``effective_status``/``can_issue`` read the provider invoice and
+    ``can_restore`` compares the sibling payments against ``total_amount``,
+    which sums the order items. All three relations have to stay eagerly
+    loaded by the shared payment loading plan. Comparing two dataset sizes
+    keeps this honest without pinning a brittle absolute query count.
+    """
+    import django.db
+    from django.test.utils import CaptureQueriesContext
+
+    client = Client.objects.create(
+        first_name="Нагрузочный", last_name="Клиент", phone="87009990000"
+    )
+
+    def add_orders(count, offset):
+        for index in range(count):
+            order = Order.objects.create(
+                client=client, status="shipped", currency="KZT"
+            )
+            OrderItem.objects.create(
+                order=order, quantity=1, unit_price="100.00",
+            )
+            payment = Payment.objects.create(
+                order=order, amount="100.00", method="kaspi",
+                status="received",
+            )
+            ApiPayInvoice.objects.create(
+                payment=payment, invoice_id=offset + index, channel="qr",
+                idempotency_key=f"asyl-payment-{payment.id}",
+                status="pending",
+            )
+            Payment.objects.create(
+                order=order, amount="10.00", method="cash", status="rejected",
+            )
+
+    def count_queries():
+        with CaptureQueriesContext(django.db.connection) as captured:
+            response = auth_client(accountant).get(
+                "/api/payment-transactions/"
+            )
+        assert response.status_code == 200
+        return len(captured), len(response.data["results"])
+
+    add_orders(2, 8000)
+    small_queries, small_rows = count_queries()
+    add_orders(10, 9000)
+    large_queries, large_rows = count_queries()
+
+    assert small_rows == 4 and large_rows == 24
+    assert large_queries == small_queries

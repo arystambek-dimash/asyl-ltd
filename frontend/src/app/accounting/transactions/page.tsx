@@ -1,11 +1,13 @@
 "use client";
 
+import Image from "next/image";
 import { useState } from "react";
-import { Download, ExternalLink, RefreshCcw, RotateCcw, Search, XCircle } from "lucide-react";
+import { Download, ExternalLink, QrCode, RefreshCcw, RotateCcw, Search, Send, Undo2, XCircle } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { DataGate } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -13,7 +15,7 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { api, apiError } from "@/lib/api";
 import { downloadBlob } from "@/lib/download";
 import { useApi } from "@/lib/use-api";
-import { formatMoney } from "@/lib/utils";
+import { formatDateTime, formatMoney } from "@/lib/utils";
 import type { Payment } from "@/lib/types";
 
 interface TransactionPage {
@@ -32,6 +34,9 @@ const STATUS: Record<string, { label: string; tone: "success" | "warning" | "des
   received: { label: "В кассе", tone: "warning" },
   requested: { label: "Ожидает", tone: "warning" },
   rejected: { label: "Отклонено", tone: "destructive" },
+  awaiting_customer: { label: "Ожидает клиента", tone: "warning" },
+  cancellation_pending: { label: "Отмена в обработке", tone: "warning" },
+  payment_error: { label: "Ошибка счёта", tone: "destructive" },
   refund_pending: { label: "Возврат в обработке", tone: "warning" },
   partially_refunded: { label: "Частично возвращено", tone: "primary" },
   refunded: { label: "Возвращено", tone: "muted" },
@@ -56,7 +61,22 @@ const STATUS_HELP: Record<string, { meaning: string; money: string; next: string
   rejected: {
     meaning: "Операция отклонена и закрыта без оплаты.",
     money: "Не учитывается в кассе и не уменьшает долг.",
-    next: "Если клиент платит заново, создайте новую операцию.",
+    next: "Если доступно восстановление, верните операцию в работу; иначе создайте новую.",
+  },
+  awaiting_customer: {
+    meaning: "QR или счёт создан и ожидает действия клиента.",
+    money: "Сумма зарезервирована, но ещё не считается оплаченной.",
+    next: "Ничего подтверждать вручную не нужно — статус обновится автоматически.",
+  },
+  cancellation_pending: {
+    meaning: "Запрос отмены телефонного счёта принят и ещё обрабатывается.",
+    money: "Сумма остаётся зарезервированной до окончательного статуса.",
+    next: "Дождитесь автоматической сверки с платёжным сервисом.",
+  },
+  payment_error: {
+    meaning: "Платёжный сервис не смог обработать этот QR или счёт.",
+    money: "Операция не учитывается как оплата.",
+    next: "Создайте новую платёжную операцию и проверьте телефон клиента.",
   },
   refund_pending: {
     meaning: "Запрос возврата по счёту отправлен и ожидает результата.",
@@ -99,6 +119,50 @@ function StatusExplanation({ status }: { status: string }) {
   );
 }
 
+const ACTIVE_PROVIDER_STATUSES = new Set(["creating", "processing", "pending", "cancelling"]);
+
+function PaymentQrPreview({ payment, onClose }: { payment: Payment; onClose: () => void }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const provider = payment.provider;
+  if (!provider) return null;
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      eyebrow={`PAY-${String(payment.id).padStart(6, "0")}`}
+      title="Kaspi QR готов"
+      description="Покажите QR клиенту или откройте оплату на его устройстве. Статус обновится автоматически."
+      footer={<Button onClick={onClose}>Готово</Button>}
+    >
+      <div className="space-y-4 text-center">
+        {provider.qr_image_url && !imageFailed ? (
+          <Image
+            src={provider.qr_image_url}
+            alt="Kaspi QR для оплаты"
+            width={288}
+            height={288}
+            unoptimized
+            onError={() => setImageFailed(true)}
+            className="mx-auto size-72 max-w-full rounded-2xl bg-white p-3 shadow-sm"
+          />
+        ) : (
+          <div className="mx-auto flex aspect-square w-72 max-w-full flex-col items-center justify-center rounded-2xl border border-dashed bg-[var(--muted)]/35 p-6">
+            <QrCode className="size-12 text-[var(--muted-foreground)]" />
+            <p className="mt-3 text-sm text-[var(--muted-foreground)]">
+              Изображение QR недоступно. Откройте оплату кнопкой ниже.
+            </p>
+          </div>
+        )}
+        {provider.qr_token_url && (
+          <Button className="w-full" onClick={() => window.open(provider.qr_token_url!, "_blank", "noopener")}>
+            <ExternalLink className="size-4" /> Открыть Kaspi
+          </Button>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 export default function TransactionsPage() {
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
@@ -113,6 +177,8 @@ export default function TransactionsPage() {
   const [refundFor, setRefundFor] = useState<Payment | null>(null);
   const [statusFor, setStatusFor] = useState<Payment | null>(null);
   const [rejectFor, setRejectFor] = useState<Payment | null>(null);
+  const [restoreFor, setRestoreFor] = useState<Payment | null>(null);
+  const [qrFor, setQrFor] = useState<Payment | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
@@ -166,6 +232,36 @@ export default function TransactionsPage() {
     }
   }
 
+  async function restore() {
+    if (!restoreFor) return;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await api.post<Payment>(`/payment-transactions/${restoreFor.id}/restore/`);
+      setRestoreFor(null);
+      if (response.data.provider?.channel === "qr") setQrFor(response.data);
+      await reload();
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function issue(payment: Payment) {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await api.post<Payment>(`/payment-transactions/${payment.id}/issue/`);
+      if (response.data.provider?.channel === "qr") setQrFor(response.data);
+      await reload();
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <AppShell title="Транзакции">
       <div className="space-y-4">
@@ -203,6 +299,12 @@ export default function TransactionsPage() {
             </CardContent>
           </Card>
         </div>
+
+        {error && !refundFor && !rejectFor && !restoreFor && (
+          <div className="rounded-lg border border-[var(--destructive)]/25 bg-[var(--destructive)]/5 px-3 py-2 text-sm text-[var(--destructive)]">
+            {error}
+          </div>
+        )}
 
         <Card>
           <CardHeader className="flex-row items-center justify-between gap-3">
@@ -254,6 +356,7 @@ export default function TransactionsPage() {
                           <TD>
                             <div className="font-medium">PAY-{String(row.id).padStart(6, "0")}</div>
                             <div className="text-xs text-[var(--muted-foreground)]">Заказ #{row.order}</div>
+                            <div className="text-xs text-[var(--muted-foreground)]">{formatDateTime(row.paid_at)}</div>
                           </TD>
                           <TD>{row.client_name ?? "—"}</TD>
                           <TD>
@@ -290,15 +393,44 @@ export default function TransactionsPage() {
                           </TD>
                           <TD>
                             <div className="flex justify-end gap-1">
-                              {row.provider?.qr_token_url && (
+                              {row.can_restore && (
                                 <Button
                                   size="sm"
-                                  variant="ghost"
-                                  onClick={() => window.open(row.provider!.qr_token_url!, "_blank", "noopener")}
+                                  variant="outline"
+                                  title="Восстановить отклонённую операцию"
+                                  onClick={() => {
+                                    setError("");
+                                    setRestoreFor(row);
+                                  }}
                                 >
-                                  <ExternalLink className="size-4" />
+                                  <Undo2 className="size-4" />
+                                  <span className="hidden xl:inline">Восстановить</span>
                                 </Button>
                               )}
+                              {row.can_issue && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={busy}
+                                  title={row.method === "kaspi" ? "Создать QR" : "Отправить счёт клиенту"}
+                                  onClick={() => void issue(row)}
+                                >
+                                  <Send className="size-4" />
+                                  <span className="hidden xl:inline">Отправить</span>
+                                </Button>
+                              )}
+                              {row.provider?.channel === "qr" &&
+                                row.provider.qr_token_url &&
+                                ACTIVE_PROVIDER_STATUSES.has(row.provider.status) && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    title="Открыть активный Kaspi QR"
+                                    onClick={() => window.open(row.provider!.qr_token_url!, "_blank", "noopener")}
+                                  >
+                                    <ExternalLink className="size-4" />
+                                  </Button>
+                                )}
                               {row.status === "confirmed" && (
                                 <Button
                                   size="sm"
@@ -313,9 +445,7 @@ export default function TransactionsPage() {
                                 <Button
                                   size="sm"
                                   variant="ghost"
-                                  title={
-                                    row.provider?.channel === "phone" ? "Вернуть по счёту" : "Вернуть деньги из кассы"
-                                  }
+                                  title={row.provider ? "Вернуть через ApiPay" : "Вернуть деньги из кассы"}
                                   onClick={() => {
                                     setError("");
                                     setRefundFor(row);
@@ -326,26 +456,22 @@ export default function TransactionsPage() {
                                   <RotateCcw className="size-4" />
                                 </Button>
                               )}
-                              {["requested", "received"].includes(row.status) && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  disabled={row.provider?.channel === "qr"}
-                                  title={
-                                    row.provider?.channel === "qr"
-                                      ? "Активный Kaspi QR нельзя отменить — дождитесь истечения"
-                                      : "Отклонить платёж"
-                                  }
-                                  className="text-[var(--destructive)]"
-                                  onClick={() => {
-                                    setError("");
-                                    setRejectFor(row);
-                                    setRejectReason("");
-                                  }}
-                                >
-                                  <XCircle className="size-4" />
-                                </Button>
-                              )}
+                              {["requested", "received"].includes(row.status) &&
+                                row.confirmation_mode !== "automatic" && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    title="Отклонить платёж"
+                                    className="text-[var(--destructive)]"
+                                    onClick={() => {
+                                      setError("");
+                                      setRejectFor(row);
+                                      setRejectReason("");
+                                    }}
+                                  >
+                                    <XCircle className="size-4" />
+                                  </Button>
+                                )}
                             </div>
                           </TD>
                         </TR>
@@ -385,11 +511,11 @@ export default function TransactionsPage() {
       <Modal
         open={!!refundFor}
         onClose={() => !busy && setRefundFor(null)}
-        eyebrow={refundFor?.provider?.channel === "phone" ? "Счёт на оплату · Возврат" : "Касса · Возврат"}
+        eyebrow={refundFor?.provider ? "ApiPay · Возврат" : "Касса · Возврат"}
         title="Вернуть оплату"
         description={
-          refundFor?.provider?.channel === "phone"
-            ? "Возврат будет отправлен по счёту. Деньги учтутся после подтверждения платёжного сервиса."
+          refundFor?.provider
+            ? "Возврат будет отправлен через ApiPay. Деньги учтутся после подтверждения платёжного сервиса."
             : "Возврат будет сразу проведён как выдача денег из кассы и уменьшит оплаченную сумму заказа."
         }
         footer={
@@ -437,6 +563,17 @@ export default function TransactionsPage() {
               </div>
               <div className="mt-1 text-2xl font-semibold tabular-nums">
                 {formatMoney(statusFor.amount)} {statusFor.currency === "USD" ? "$" : "₸"}
+              </div>
+              <div className="mt-2 space-y-0.5 text-xs text-[var(--muted-foreground)]">
+                <div>Создано: {formatDateTime(statusFor.paid_at)}</div>
+                <div>Добавил: {statusFor.recorded_by_name || "Система"}</div>
+                {statusFor.provider && (
+                  <div>
+                    Состояние счёта: {statusFor.provider.status}
+                    {statusFor.provider.phone_number ? ` · ${statusFor.provider.phone_number}` : ""}
+                  </div>
+                )}
+                {statusFor.note && <div>Примечание: {statusFor.note}</div>}
               </div>
             </div>
             <StatusExplanation status={statusFor.effective_status ?? statusFor.status} />
@@ -508,6 +645,31 @@ export default function TransactionsPage() {
           </div>
         </div>
       </Modal>
+
+      <ConfirmDialog
+        open={!!restoreFor}
+        onClose={() => {
+          if (!busy) {
+            setRestoreFor(null);
+            setError("");
+          }
+        }}
+        title={`Восстановить PAY-${String(restoreFor?.id ?? "").padStart(6, "0")}?`}
+        description={
+          restoreFor?.method === "invoice"
+            ? "Операция снова зарезервирует сумму заказа, после чего новый счёт будет отправлен клиенту."
+            : restoreFor?.method === "kaspi"
+              ? "Операция снова зарезервирует сумму заказа, после чего будет создан новый Kaspi QR."
+              : "Операция вернётся в очередь кассира. Восстановление доступно только в пределах свободного остатка заказа."
+        }
+        confirmLabel="Восстановить"
+        confirmVariant="default"
+        busy={busy}
+        error={error}
+        onConfirm={() => void restore()}
+      />
+
+      {qrFor && <PaymentQrPreview payment={qrFor} onClose={() => setQrFor(null)} />}
     </AppShell>
   );
 }

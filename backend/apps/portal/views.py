@@ -3,7 +3,7 @@ from django.db.models import Prefetch
 from django.http import FileResponse
 from django.utils import timezone
 from io import BytesIO
-from rest_framework import viewsets, mixins
+from rest_framework import status, viewsets, mixins
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError, APIException
@@ -18,7 +18,9 @@ from apps.orders.services import (
     set_truck_number,
 )
 from apps.orders.apipay import (
-    ApiPayAPIError, ApiPayConfigurationError, start_order_payment,
+    MONEY_RECEIVED_INVOICE_STATUSES,
+    ApiPayAPIError, ApiPayConfigurationError, cancel_invoice,
+    start_order_payment,
 )
 from apps.eventlog.services import log_event
 from config.throttles import PortalOrderCreateRateThrottle
@@ -147,12 +149,49 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     def release_payment(self, request, pk=None, payment_id=None):
         order = self.get_object()
         try:
-            payment = order.payments.get(pk=payment_id)
+            payment = order.payments.get(
+                pk=payment_id,
+                recorded_by=request.user,
+            )
         except Payment.DoesNotExist as exc:
             raise ValidationError({
-                "detail": "Заявка на оплату не найдена.",
+                "detail": "Эту заявку нельзя изменить из кабинета клиента.",
                 "code": "payment_not_found",
             }) from exc
+        invoice = getattr(payment, "apipay_invoice", None)
+        if (
+            invoice is not None
+            and invoice.status in MONEY_RECEIVED_INVOICE_STATUSES
+        ):
+            raise ValidationError({
+                "detail": (
+                    "Платёж уже получен и обрабатывается. Обновите страницу."
+                ),
+                "code": "payment_already_paid",
+            })
+        if (
+            invoice is not None
+            and invoice.channel == "phone"
+            and invoice.status not in ("cancelled", "expired", "error", "superseded")
+        ):
+            try:
+                cancel_invoice(invoice)
+            except ApiPayAPIError as exc:
+                raise PaymentProviderError({
+                    "detail": exc.message,
+                    "code": exc.error_code,
+                }) from exc
+            if invoice.status not in (
+                "cancelled", "expired", "error", "superseded",
+            ):
+                # ApiPay may acknowledge cancellation asynchronously. Keep the
+                # amount reserved until webhook/reconciliation proves that the
+                # remotely payable invoice is closed.
+                order._prefetched_objects_cache.pop("payments", None)
+                return Response(
+                    self.get_serializer(order).data,
+                    status=status.HTTP_202_ACCEPTED,
+                )
         release_client_payment(payment, request.user)
         order._prefetched_objects_cache.pop("payments", None)
         return Response(self.get_serializer(order).data)

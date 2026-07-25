@@ -8,6 +8,7 @@ from django.http import FileResponse
 from io import BytesIO
 from datetime import timedelta
 from decimal import Decimal
+import re
 from django.db.models import Q, Sum
 from django.utils import timezone
 from apps.common.permissions import HasPerm, PermViewSetMixin
@@ -20,11 +21,12 @@ from apps.shipments.services import (
 from apps.shipments.serializers import LoadSerializer
 from .models import ApiPayInvoice, Order, Payment, StatusChangeRequest
 from .apipay import (
-    ApiPayAPIError, cancel_invoice, create_cash_refund, create_invoice,
-    create_refund,
+    ApiPayAPIError, ApiPayConfigurationError, cancel_invoice,
+    create_cash_refund, create_invoice, create_refund,
+    MONEY_RECEIVED_INVOICE_STATUSES, normalize_phone,
 )
 from .invoices import build_payment_receipt_pdf
-from .querysets import with_order_api_relations
+from .querysets import with_order_api_relations, with_payment_api_relations
 from .reports import summary_report
 from .statuses import PUBLIC_STATUS_LABELS, statuses_in_group
 from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerializer,
@@ -37,6 +39,194 @@ from .services import (add_payment, add_mixed_payments, confirm_order, reject_or
                        repeat_order,
                        request_status_change, approve_status_change, reject_status_change)
 from apps.shipments.services import rollback_shipment
+
+
+PROVIDER_METHOD_CHANNELS = {"kaspi": "qr", "invoice": "phone"}
+PROVIDER_CLOSED_STATUSES = {"cancelled", "expired", "error", "superseded"}
+
+
+def _provider_error(exc):
+    if isinstance(exc, ApiPayConfigurationError):
+        return ValidationError({
+            "detail": "Счёт на оплату временно недоступен.",
+            "code": "payment_provider_not_configured",
+        })
+    if isinstance(exc, ApiPayAPIError):
+        return ValidationError({"detail": exc.message, "code": exc.error_code})
+    return exc
+
+
+def _issue_provider_payment(payment: Payment, *, phone_number=None):
+    """Создать обязательный внешний счёт для QR/счёта на оплату."""
+    channel = PROVIDER_METHOD_CHANNELS.get(payment.method)
+    if channel is None:
+        return None
+    current = getattr(payment, "apipay_invoice", None)
+    if (
+        current is not None
+        and current.channel == "qr"
+        and current.invoice_id is None
+        and current.status == "creating"
+    ):
+        raise ValidationError({
+            "detail": (
+                "Создание QR ещё сверяется с платёжным сервисом. "
+                "Повторный QR может списать деньги дважды."
+            ),
+            "code": "qr_issue_recovery_pending",
+        })
+    if (
+        current is not None
+        and current.invoice_id is not None
+        and current.status in PROVIDER_CLOSED_STATUSES
+    ):
+        raise ValidationError({
+            "detail": "Этот счёт уже закрыт. Создайте новую платёжную операцию.",
+            "code": "provider_invoice_closed",
+        })
+    return create_invoice(
+        payment,
+        channel=channel,
+        phone_number=phone_number if channel == "phone" else None,
+    )
+
+
+def _provider_issue_is_unresolved(payment: Payment) -> bool:
+    return ApiPayInvoice.objects.filter(
+        payment=payment,
+        invoice_id__isnull=True,
+        status="creating",
+    ).exists()
+
+
+def _reject_created_payments(payments, user, *, keep_payment_ids=None):
+    keep_payment_ids = set(keep_payment_ids or ())
+    for payment in payments:
+        if payment.pk in keep_payment_ids:
+            continue
+        payment.refresh_from_db()
+        if (
+            payment.status in Payment.IN_PROGRESS_STATUSES
+            and not _provider_issue_is_unresolved(payment)
+        ):
+            reject_payment(payment, user)
+
+
+def _issue_mixed_provider_payments(payments, parts, user):
+    """Выдать онлайн-счета сервером; QR создаётся последним для компенсации."""
+    part_by_method = {
+        str(part.get("method") or ""): part
+        for part in parts if isinstance(part, dict)
+    }
+    online = sorted(
+        (payment for payment in payments if payment.method in PROVIDER_METHOD_CHANNELS),
+        key=lambda payment: 1 if payment.method == "kaspi" else 0,
+    )
+    issued = []
+    try:
+        for payment in online:
+            part = part_by_method.get(payment.method, {})
+            record = _issue_provider_payment(
+                payment, phone_number=part.get("phone_number")
+            )
+            if record is not None:
+                issued.append(record)
+    except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
+        # Телефонный счёт можно попытаться закрыть. QR создаётся последним,
+        # поэтому после успешного QR следующих потенциально падающих шагов нет.
+        still_payable = set()
+        for record in issued:
+            if (
+                record.channel == "phone"
+                and record.status not in PROVIDER_CLOSED_STATUSES
+            ):
+                try:
+                    cancel_invoice(record)
+                except (ApiPayAPIError, ValidationError):
+                    pass
+            record.refresh_from_db()
+            if record.status not in PROVIDER_CLOSED_STATUSES:
+                still_payable.add(record.payment_id)
+        # A phone invoice in cancelling/unknown state continues to reserve its
+        # amount until a webhook or reconciliation proves it is closed.
+        _reject_created_payments(
+            payments, user, keep_payment_ids=still_payable
+        )
+        raise _provider_error(exc)
+    return issued
+
+
+def _restore_payment_and_provider(payment: Payment, user):
+    payment = restore_rejected_payment(payment, user)
+    try:
+        _issue_provider_payment(payment)
+    except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
+        payment.refresh_from_db()
+        if (
+            payment.status in Payment.IN_PROGRESS_STATUSES
+            and not _provider_issue_is_unresolved(payment)
+        ):
+            reject_payment(payment, user)
+        raise _provider_error(exc)
+    payment.refresh_from_db()
+    return payment
+
+
+def _reject_payment_with_provider(payment: Payment, user, *, reason: str):
+    """Reject a pending payment without leaving a payable phone invoice."""
+    reason = reason.strip() or "Отклонено сотрудником"
+    try:
+        invoice = payment.apipay_invoice
+    except ApiPayInvoice.DoesNotExist:
+        invoice = None
+    if (
+        invoice is not None
+        and invoice.status in MONEY_RECEIVED_INVOICE_STATUSES
+    ):
+        raise ValidationError({
+            "detail": "Платёж уже оплачен и будет подтверждён автоматически.",
+            "code": "payment_already_paid",
+        })
+    if invoice is not None and invoice.status not in (
+        "cancelled", "expired", "error", "superseded",
+    ):
+        if invoice.channel == "qr":
+            raise ValidationError({
+                "detail": (
+                    "Активный Kaspi QR нельзя отменить. Дождитесь его истечения "
+                    "или предложите клиенту не оплачивать этот QR."
+                ),
+                "code": "qr_cancel_unsupported",
+            })
+        cancel_invoice(invoice)
+        payment.refresh_from_db()
+        invoice.refresh_from_db()
+        if (
+            payment.status == "confirmed"
+            or invoice.status in MONEY_RECEIVED_INVOICE_STATUSES
+        ):
+            raise ValidationError({
+                "detail": (
+                    "Платёж уже оплачен и будет подтверждён автоматически."
+                ),
+                "code": "payment_already_paid",
+            })
+        if invoice.status not in PROVIDER_CLOSED_STATUSES:
+            payment.note = (
+                f"{payment.note}\n" if payment.note else ""
+            ) + f"Запрошена отмена: {reason}"
+            payment.save(update_fields=["note"])
+            return payment, True
+    payment.note = (
+        f"{payment.note}\n" if payment.note else ""
+    ) + f"Отклонено: {reason}"
+    payment.save(update_fields=["note"])
+    if payment.status == "rejected":
+        return payment, False
+    reject_payment(payment, user)
+    payment.refresh_from_db()
+    return payment, False
+
 
 class ReportSummaryView(APIView):
     """Сводный отчёт за период: касса (нал/безнал), отгрузки, долги, кассиры."""
@@ -63,17 +253,9 @@ class PaymentTransactionListView(APIView):
         return [HasPerm("payments.view")]
 
     def get(self, request):
-        qs = (
-            Payment.objects.select_related(
-                "order__client", "recorded_by", "received_by", "confirmed_by",
-                "apipay_invoice",
-            )
-            .prefetch_related(
-                "apipay_invoice__refunds",
-                "payment_refunds__requested_by",
-            )
-            .order_by("-paid_at")
-        )
+        qs = with_payment_api_relations(
+            Payment.objects.all(), order_context=True
+        ).order_by("-paid_at")
         status = request.query_params.get("status")
         method = request.query_params.get("method")
         search = request.query_params.get("search")
@@ -82,14 +264,19 @@ class PaymentTransactionListView(APIView):
         if method:
             qs = qs.filter(method=method)
         if search:
+            normalized_search = search.strip()
             search_query = (
-                Q(order__client__first_name__icontains=search)
-                | Q(order__client__last_name__icontains=search)
-                | Q(order__client__company_name__icontains=search)
-                | Q(order__client__phone__icontains=search)
+                Q(order__client__first_name__icontains=normalized_search)
+                | Q(order__client__last_name__icontains=normalized_search)
+                | Q(order__client__company_name__icontains=normalized_search)
+                | Q(order__client__phone__icontains=normalized_search)
             )
-            if search.isdigit():
-                search_query |= Q(order_id=int(search)) | Q(id=int(search))
+            operation_match = re.fullmatch(
+                r"(?:PAY[-\s]*)?0*(\d+)", normalized_search, flags=re.IGNORECASE
+            )
+            if operation_match:
+                operation_id = int(operation_match.group(1))
+                search_query |= Q(order_id=operation_id) | Q(id=operation_id)
             qs = qs.filter(search_query)
         try:
             page = max(1, int(request.query_params.get("page") or 1))
@@ -107,20 +294,25 @@ class PaymentTransactionListView(APIView):
             page = pages
         start = (page - 1) * page_size
         rows = qs[start:start + page_size]
+        # One grouped aggregate instead of a query per currency and metric.
+        # ``values()`` also drops the row prefetches, which the totals never use.
+        # ``order_by()`` is cleared deliberately: the default "-paid_at"
+        # ordering would join GROUP BY and split each currency per timestamp.
+        totals = (
+            qs.filter(status="confirmed")
+            .order_by()
+            .values("order__currency")
+            .annotate(gross=Sum("amount"), refunded=Sum("refunded_amount"))
+        )
+        totals_by_currency = {
+            row["order__currency"]: row for row in totals
+        }
         paid_by_currency = {}
         refunded_by_currency = {}
         for currency in ("KZT", "USD"):
-            currency_rows = qs.filter(
-                status="confirmed", order__currency=currency
-            )
-            gross = (
-                currency_rows.aggregate(total=Sum("amount"))["total"]
-                or Decimal("0")
-            )
-            refunded = (
-                currency_rows.aggregate(total=Sum("refunded_amount"))["total"]
-                or Decimal("0")
-            )
+            row = totals_by_currency.get(currency) or {}
+            gross = row.get("gross") or Decimal("0")
+            refunded = row.get("refunded") or Decimal("0")
             paid_by_currency[currency] = money_string(gross - refunded)
             refunded_by_currency[currency] = money_string(refunded)
         return Response({
@@ -175,8 +367,15 @@ class PaymentRefundView(APIView):
         use_apipay = (
             mode != "cash"
             and invoice is not None
-            and invoice.channel == "phone"
         )
+        if mode == "apipay" and not use_apipay:
+            raise ValidationError({
+                "detail": (
+                    "Возврат через ApiPay доступен только для оплаченного "
+                    "онлайн-счёта."
+                ),
+                "code": "apipay_refund_unavailable",
+            })
         try:
             if use_apipay:
                 refund = create_refund(
@@ -215,14 +414,54 @@ class PaymentKaspiQrView(APIView):
         payment = get_object_or_404(
             Payment.objects.select_related("order__client"), pk=payment_id,
             method="kaspi",
+            status__in=Payment.IN_PROGRESS_STATUSES,
+            order__deleted_at__isnull=True,
         )
         try:
-            invoice = create_invoice(payment, channel="qr")
-        except ApiPayAPIError as exc:
-            raise ValidationError({
-                "detail": exc.message, "code": exc.error_code
-            }) from exc
+            _issue_provider_payment(payment)
+        except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
+            raise _provider_error(exc) from exc
+        payment.refresh_from_db()
         return Response(PaymentSerializer(payment).data, status=201)
+
+
+class PaymentProviderIssueView(APIView):
+    """Повторно выдать отсутствующий QR или счёт для активной операции."""
+
+    def get_permissions(self):
+        return [HasPerm("payments.create")]
+
+    def post(self, request, payment_id):
+        payment = get_object_or_404(
+            Payment.objects.select_related("order__client", "apipay_invoice"),
+            pk=payment_id,
+            status__in=Payment.IN_PROGRESS_STATUSES,
+            method__in=PROVIDER_METHOD_CHANNELS,
+            order__deleted_at__isnull=True,
+        )
+        try:
+            _issue_provider_payment(
+                payment, phone_number=request.data.get("phone_number")
+            )
+        except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
+            raise _provider_error(exc) from exc
+        payment.refresh_from_db()
+        return Response(PaymentSerializer(payment).data, status=201)
+
+
+class PaymentRestoreView(APIView):
+    """Вернуть отклонённую операцию и снова выдать онлайн-счёт при необходимости."""
+
+    def get_permissions(self):
+        return [HasPerm("payments.confirm")]
+
+    def post(self, request, payment_id):
+        payment = get_object_or_404(
+            Payment.objects.select_related("order__client", "apipay_invoice"),
+            pk=payment_id,
+        )
+        payment = _restore_payment_and_provider(payment, request.user)
+        return Response(PaymentSerializer(payment).data)
 
 
 class PaymentRejectView(APIView):
@@ -246,29 +485,17 @@ class PaymentRejectView(APIView):
                 "code": "rejection_reason_required",
             })
         try:
-            invoice = payment.apipay_invoice
-        except ApiPayInvoice.DoesNotExist:
-            invoice = None
-        if invoice and invoice.status not in ("cancelled", "expired", "error"):
-            try:
-                cancel_invoice(invoice)
-            except ApiPayAPIError as exc:
-                raise ValidationError({
-                    "detail": exc.message, "code": exc.error_code
-                }) from exc
-            if invoice.status == "cancelling":
-                payment.note = (
-                    f"{payment.note}\n" if payment.note else ""
-                ) + f"Запрошена отмена: {reason}"
-                payment.save(update_fields=["note"])
-                return Response(PaymentSerializer(payment).data, status=202)
-        payment.note = (
-            f"{payment.note}\n" if payment.note else ""
-        ) + f"Отклонено: {reason}"
-        payment.save(update_fields=["note"])
-        reject_payment(payment, request.user)
-        payment.refresh_from_db()
-        return Response(PaymentSerializer(payment).data)
+            payment, pending = _reject_payment_with_provider(
+                payment, request.user, reason=reason
+            )
+        except ApiPayAPIError as exc:
+            raise ValidationError({
+                "detail": exc.message, "code": exc.error_code
+            }) from exc
+        return Response(
+            PaymentSerializer(payment).data,
+            status=202 if pending else 200,
+        )
 
 
 class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
@@ -418,12 +645,14 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         """Очередь ручной обработки кассиром (requested и received)."""
         stage = request.query_params.get("stage")
         stages = [stage] if stage in Payment.STATUSES else Payment.IN_PROGRESS_STATUSES
-        qs = (Payment.objects
-              .filter(status__in=stages,
-                      order__in=Order.objects.all())
-              .select_related("order__client", "order__store", "recorded_by", "received_by")
-              .prefetch_related("payment_refunds__requested_by")
-              .order_by("paid_at"))
+        qs = with_payment_api_relations(
+            Payment.objects.filter(
+                status__in=stages,
+                method="cash",
+                order__in=Order.objects.all(),
+            ),
+            order_context=True,
+        ).order_by("paid_at")
         department = request.query_params.get("department")
         if department:
             qs = qs.filter(order__department=department)
@@ -485,6 +714,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 status__in=("cancelled", "expired", "error", "superseded"),
             ).values_list("payment_id", flat=True)
         )
+        provider_payments = set(
+            ApiPayInvoice.objects.filter(
+                payment_id__in=payment_ids,
+            ).values_list("payment_id", flat=True)
+        )
         # После цикла confirm → reopen → confirm в журнале несколько событий
         # confirmed. Кнопка отката должна быть только у самого свежего.
         latest_confirmation: dict[int, int] = {}
@@ -513,6 +747,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 event.payload.get("payment_stage") == "confirmed"
                 and current_statuses.get(event.payload.get("payment_id")) == "confirmed"
                 and latest_confirmation.get(event.payload.get("payment_id")) == event.id
+                and event.payload.get("payment_id") not in provider_payments
             ),
             "can_restore": (
                 event.payload.get("payment_stage") == "rejected"
@@ -615,14 +850,42 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         order = self.get_object()
         parts = request.data.get("parts")
         if parts is not None:
+            if isinstance(parts, list):
+                normalized_parts = []
+                for raw_part in parts:
+                    part = dict(raw_part) if isinstance(raw_part, dict) else raw_part
+                    if isinstance(part, dict) and part.get("method") == "invoice":
+                        part["phone_number"] = normalize_phone(
+                            part.get("phone_number") or order.client.phone
+                        )
+                    normalized_parts.append(part)
+                parts = normalized_parts
             payments = add_mixed_payments(
                 order, parts, request.user, note=request.data.get("note") or "")
+            _issue_mixed_provider_payments(payments, parts, request.user)
+            for payment in payments:
+                payment.refresh_from_db()
             return Response(PaymentSerializer(payments, many=True).data, status=201)
+        method = request.data.get("method") or "cash"
+        phone_number = request.data.get("phone_number")
+        if method == "invoice":
+            phone_number = normalize_phone(
+                phone_number or order.client.phone
+            )
         payment = add_payment(
             order, request.data.get("amount"), request.user,
-            method=request.data.get("method") or "cash",
+            method=method,
             stage=request.data.get("stage") or "received",
             note=request.data.get("note") or "")
+        if method in PROVIDER_METHOD_CHANNELS:
+            try:
+                _issue_provider_payment(
+                    payment, phone_number=phone_number
+                )
+            except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
+                _reject_created_payments([payment], request.user)
+                raise _provider_error(exc) from exc
+            payment.refresh_from_db()
         return Response(PaymentSerializer(payment).data, status=201)
 
     @action(detail=True, methods=["post"], url_path=r"payments/(?P<pid>\d+)/receive")
@@ -665,14 +928,35 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     def restore_payment(self, request, pk=None, pid=None):
         """Восстановление случайно отклонённой оплаты: rejected → очередь."""
         payment = get_object_or_404(Payment, pk=pid, order=self.get_object())
-        payment = restore_rejected_payment(payment, request.user)
+        payment = _restore_payment_and_provider(payment, request.user)
         return Response(OrderSerializer(payment.order, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path=r"payments/(?P<pid>\d+)/reject")
     def reject_payment(self, request, pk=None, pid=None):
-        payment = get_object_or_404(Payment, pk=pid, order=self.get_object())
-        reject_payment(payment, request.user)
-        return Response(OrderSerializer(payment.order, context={"request": request}).data)
+        payment = get_object_or_404(
+            Payment.objects.select_related("apipay_invoice"),
+            pk=pid,
+            order=self.get_object(),
+        )
+        if payment.status not in Payment.IN_PROGRESS_STATUSES:
+            raise ValidationError({
+                "detail": "Отклонить можно только ожидающий платёж.",
+                "code": "invalid_payment_stage",
+            })
+        try:
+            payment, pending = _reject_payment_with_provider(
+                payment,
+                request.user,
+                reason=str(request.data.get("reason") or ""),
+            )
+        except ApiPayAPIError as exc:
+            raise ValidationError({
+                "detail": exc.message, "code": exc.error_code
+            }) from exc
+        return Response(
+            OrderSerializer(payment.order, context={"request": request}).data,
+            status=202 if pending else 200,
+        )
 
     @action(detail=True, methods=["post"], url_path="set-status")
     def set_status(self, request, pk=None):

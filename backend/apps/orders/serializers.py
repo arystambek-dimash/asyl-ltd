@@ -1,4 +1,5 @@
 from decimal import Decimal
+
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from rest_framework import serializers
@@ -83,7 +84,7 @@ class StatusChangeRequestSerializer(serializers.ModelSerializer):
 
 
 PAYMENT_METHOD_LABELS = {
-    "invoice": "Счет на оплату",
+    "invoice": "Счёт на оплату",
     "kaspi": "Kaspi",
     "cash": "Наличные",
     "debt": "Долг",
@@ -107,6 +108,9 @@ class PaymentSerializer(serializers.ModelSerializer):
     effective_status = serializers.SerializerMethodField()
     available_for_refund = serializers.SerializerMethodField()
     refunds = serializers.SerializerMethodField()
+    can_restore = serializers.SerializerMethodField()
+    can_issue = serializers.SerializerMethodField()
+    confirmation_mode = serializers.SerializerMethodField()
 
     class Meta:
         model = Payment
@@ -116,7 +120,8 @@ class PaymentSerializer(serializers.ModelSerializer):
                   "confirmed_by", "confirmed_by_name", "confirmed_at",
                   "client_name", "provider", "effective_status",
                   "refunded_amount", "pending_refund_amount",
-                  "available_for_refund", "refunds"]
+                  "available_for_refund", "refunds",
+                  "can_restore", "can_issue", "confirmation_mode"]
         read_only_fields = ["order", "paid_at", "recorded_by", "confirmed_by"]
 
     def get_recorded_by_name(self, obj):
@@ -132,6 +137,16 @@ class PaymentSerializer(serializers.ModelSerializer):
         return PAYMENT_METHOD_LABELS.get(obj.method, obj.method)
 
     def get_effective_status(self, obj):
+        if obj.status in Payment.IN_PROGRESS_STATUSES:
+            try:
+                provider = obj.apipay_invoice
+            except ObjectDoesNotExist:
+                return obj.status
+            if provider.status == "cancelling":
+                return "cancellation_pending"
+            if provider.status == "error":
+                return "payment_error"
+            return "awaiting_customer"
         if obj.status != "confirmed":
             return obj.status
         if obj.refunded_amount >= obj.amount:
@@ -144,6 +159,61 @@ class PaymentSerializer(serializers.ModelSerializer):
 
     def get_available_for_refund(self, obj):
         return money_string(obj.available_for_refund)
+
+    def get_can_restore(self, obj):
+        if obj.status != "rejected":
+            return False
+        confirmed = sum(
+            (
+                payment.net_amount
+                for payment in obj.order.payments.all()
+                if payment.status == "confirmed"
+            ),
+            Decimal("0"),
+        )
+        reserved = sum(
+            (
+                payment.amount
+                for payment in obj.order.payments.all()
+                if payment.status in Payment.IN_PROGRESS_STATUSES
+            ),
+            Decimal("0"),
+        )
+        available = max(
+            Decimal("0"),
+            obj.order.total_amount - confirmed - reserved,
+        )
+        if obj.amount > available:
+            return False
+        try:
+            invoice = obj.apipay_invoice
+        except ObjectDoesNotExist:
+            return True
+        return not (
+            invoice.invoice_id is not None
+            and invoice.status in ("cancelled", "expired", "error", "superseded")
+        )
+
+    def get_can_issue(self, obj):
+        if (
+            obj.status not in Payment.IN_PROGRESS_STATUSES
+            or obj.method not in ("kaspi", "invoice")
+        ):
+            return False
+        try:
+            invoice = obj.apipay_invoice
+        except ObjectDoesNotExist:
+            return True
+        return (
+            invoice.invoice_id is None
+            and not (
+                invoice.channel == "qr"
+                and invoice.status == "creating"
+            )
+        )
+
+    def get_confirmation_mode(self, obj):
+        return "automatic" if obj.method in ("kaspi", "invoice") else "manual"
 
     def get_refunds(self, obj):
         return [
@@ -172,6 +242,7 @@ class PaymentSerializer(serializers.ModelSerializer):
             "phone_number": invoice.phone_number or None,
             "qr_token_url": invoice.qr_token_url or None,
             "qr_image_url": invoice.qr_image_url or None,
+            "qr_expires_at": invoice.qr_expires_at,
             "total_refunded": money_string(invoice.total_refunded),
             "available_for_refund": money_string(obj.available_for_refund),
             "refunds": [
@@ -310,7 +381,6 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
 
     def get_bag_estimate_kg(self, obj):
         # Ожидаемый вес по ФАКТУ камеры = посчитанные мешки × вес фасовки.
-        from decimal import Decimal
         s = self._shipment(obj)
         bags = s.bags_loaded if s else 0
         first = self._first_item(obj)
@@ -318,7 +388,6 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         return str(bags * per)
 
     def get_bag_weight_kg(self, obj):
-        from decimal import Decimal
         first = self._first_item(obj)
         per = first.product_weight_kg if first else Decimal("0")
         return str(per)

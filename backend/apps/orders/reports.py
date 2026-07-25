@@ -46,15 +46,16 @@ def _day_bounds(qs, date_from, date_to):
 
 def _income_by_day(orders_qs, date_from, date_to):
     """Подтверждённые кассой оплаты по дням: наличные / безналичные."""
+    net = F("amount") - F("refunded_amount")
     qs = (Payment.objects
           .filter(status="confirmed", method__in=MONEY_METHODS,
                   order__in=orders_qs)
           .annotate(day=TruncDate(Coalesce("confirmed_at", "paid_at"))))
     qs = _day_bounds(qs, date_from, date_to)
     return qs.values("day").annotate(
-        cash=Coalesce(Sum("amount", filter=Q(method__in=CASH_METHODS)), _ZERO,
+        cash=Coalesce(Sum(net, filter=Q(method__in=CASH_METHODS)), _ZERO,
                       output_field=_MONEY),
-        cashless=Coalesce(Sum("amount", filter=Q(method__in=CASHLESS_METHODS)), _ZERO,
+        cashless=Coalesce(Sum(net, filter=Q(method__in=CASHLESS_METHODS)), _ZERO,
                           output_field=_MONEY),
         payments=Count("id"),
     )
