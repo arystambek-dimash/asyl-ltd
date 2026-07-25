@@ -15,7 +15,8 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { api, apiError } from "@/lib/api";
 import { downloadBlob } from "@/lib/download";
 import { useApi } from "@/lib/use-api";
-import { formatDateTime, formatMoney } from "@/lib/utils";
+import { formatCurrency, formatDateTime, formatMoney } from "@/lib/utils";
+import { CASHIER_PAYMENT_METHOD_LABELS } from "@/lib/constants";
 import type { Payment } from "@/lib/types";
 
 interface TransactionPage {
@@ -26,6 +27,8 @@ interface TransactionPage {
   summary: {
     paid_by_currency: { KZT: string; USD: string };
     refunded_by_currency: { KZT: string; USD: string };
+    /** {валюта: {способ: чистая сумма}} — сумма по способам равна итогу. */
+    paid_by_method: Record<string, Record<string, string>>;
   };
 }
 
@@ -94,6 +97,29 @@ const STATUS_HELP: Record<string, { meaning: string; money: string; next: string
     next: "Повторный возврат для этой операции недоступен.",
   },
 };
+
+/** Разбивка итога по способам: «300 000 ₸ наличными · 400 000 ₸ QR». */
+function PaidMethodSummary({ summary }: { summary?: Record<string, Record<string, string>> }) {
+  const parts = Object.entries(summary ?? {}).flatMap(([currency, methods]) =>
+    Object.entries(methods).map(([method, amount]) => ({ currency, method, amount })),
+  );
+  // Один способ ничего не добавляет к уже показанному итогу.
+  if (parts.length < 2) return null;
+  return (
+    // Сумма и способ не должны разъезжаться по строкам — переносим парами.
+    <div className="mt-2 text-xs text-[var(--muted-foreground)]">
+      {parts.map((part, index) => (
+        <span key={`${part.currency}-${part.method}`} className="whitespace-nowrap">
+          {index > 0 && <span className="px-1.5">·</span>}
+          <span className="font-medium tabular-nums text-[var(--foreground)]">
+            {formatCurrency(part.amount, part.currency)}
+          </span>{" "}
+          {CASHIER_PAYMENT_METHOD_LABELS[part.method] ?? part.method}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 function StatusExplanation({ status }: { status: string }) {
   const help = STATUS_HELP[status] ?? {
@@ -283,6 +309,8 @@ export default function TransactionsPage() {
                   </span>
                 )}
               </div>
+              {/* Из чего сложился итог: касса сразу видит нал/QR/счёт. */}
+              <PaidMethodSummary summary={data?.summary.paid_by_method} />
             </CardContent>
           </Card>
           <Card>

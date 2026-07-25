@@ -298,31 +298,61 @@ class PaymentTransactionListView(APIView):
         # ``values()`` also drops the row prefetches, which the totals never use.
         # ``order_by()`` is cleared deliberately: the default "-paid_at"
         # ordering would join GROUP BY and split each currency per timestamp.
+        # Группировка сразу по валюте и способу: итог кассы сам по себе не
+        # отвечает, чем платили, а при смешанной оплате это главный вопрос.
         totals = (
             qs.filter(status="confirmed")
             .order_by()
-            .values("order__currency")
+            .values("order__currency", "method")
             .annotate(gross=Sum("amount"), refunded=Sum("refunded_amount"))
         )
-        totals_by_currency = {
-            row["order__currency"]: row for row in totals
-        }
         paid_by_currency = {}
         refunded_by_currency = {}
+        paid_by_method = {}
+        for row in totals:
+            currency = row["order__currency"]
+            net = (row["gross"] or Decimal("0")) - (
+                row["refunded"] or Decimal("0")
+            )
+            paid_by_currency[currency] = (
+                paid_by_currency.get(currency, Decimal("0")) + net
+            )
+            refunded_by_currency[currency] = refunded_by_currency.get(
+                currency, Decimal("0")
+            ) + (row["refunded"] or Decimal("0"))
+            if net > 0:
+                by_method = paid_by_method.setdefault(currency, {})
+                by_method[row["method"]] = (
+                    by_method.get(row["method"], Decimal("0")) + net
+                )
         for currency in ("KZT", "USD"):
-            row = totals_by_currency.get(currency) or {}
-            gross = row.get("gross") or Decimal("0")
-            refunded = row.get("refunded") or Decimal("0")
-            paid_by_currency[currency] = money_string(gross - refunded)
-            refunded_by_currency[currency] = money_string(refunded)
+            paid_by_currency.setdefault(currency, Decimal("0"))
+            refunded_by_currency.setdefault(currency, Decimal("0"))
         return Response({
             "results": PaymentSerializer(rows, many=True).data,
             "count": count,
             "page": page,
             "pages": pages,
             "summary": {
-                "paid_by_currency": paid_by_currency,
-                "refunded_by_currency": refunded_by_currency,
+                "paid_by_currency": {
+                    currency: money_string(amount)
+                    for currency, amount in paid_by_currency.items()
+                },
+                "refunded_by_currency": {
+                    currency: money_string(amount)
+                    for currency, amount in refunded_by_currency.items()
+                },
+                # {валюта: {способ: сумма}} — суммы уже чистые, поэтому их
+                # сложение по способам совпадает с paid_by_currency.
+                "paid_by_method": {
+                    currency: {
+                        method: money_string(amount)
+                        for method, amount in sorted(
+                            methods.items(), key=lambda item: -item[1]
+                        )
+                    }
+                    for currency, methods in paid_by_method.items()
+                },
             },
         })
 

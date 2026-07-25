@@ -30,7 +30,7 @@ import {
 } from "@/lib/constants";
 import { DataGate } from "@/components/ui/data-state";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { PaymentChain, AddPaymentActions, paymentOpen } from "@/components/payment-chain";
+import { PaymentChain, AddPaymentActions, PaidMethodBreakdown, paymentOpen } from "@/components/payment-chain";
 import { OrderForm } from "@/components/order-form";
 import { Modal } from "@/components/ui/modal";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
@@ -296,6 +296,8 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                 <div className="mt-1 truncate font-semibold tabular-nums">
                   {formatMoney(order.paid_total)} {moneySymbol}
                 </div>
+                {/* Разбивка по способам живёт в блоке «Оплата» ниже: здесь
+                    плитка узкая и обрезала бы суммы по multiple. */}
               </div>
             </Card>
           </div>
@@ -448,11 +450,14 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                 </div>
               )}
               {pendingPayments.length === 0 && !canStartPayment && (
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-[var(--muted-foreground)]">Подтверждено системой</span>
-                  <b className="tabular-nums">
-                    {formatMoney(order.paid_total)} {moneySymbol}
-                  </b>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-[var(--muted-foreground)]">Подтверждено системой</span>
+                    <b className="tabular-nums">
+                      {formatMoney(order.paid_total)} {moneySymbol}
+                    </b>
+                  </div>
+                  <PaidMethodBreakdown order={order} className="text-xs" />
                 </div>
               )}
               {order.status === "shipped" && remaining > 0 && (

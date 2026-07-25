@@ -387,3 +387,40 @@ def test_transaction_history_query_count_is_independent_of_row_count(
 
     assert small_rows == 4 and large_rows == 24
     assert large_queries == small_queries
+
+
+def test_summary_splits_paid_total_by_payment_method(auth_client, accountant):
+    """A mixed payment must show what it consists of, not just the total.
+
+    Taking 300k in cash and 400k by QR reads as "700k paid" everywhere, which
+    is exactly what the cashier cannot act on. The split has to reconcile with
+    the total, so a refund reduces its own method's share.
+    """
+    client = Client.objects.create(
+        first_name="Смешанный", last_name="Клиент", phone="87005550000"
+    )
+    order = Order.objects.create(
+        client=client, status="shipped", currency="KZT"
+    )
+    Payment.objects.create(
+        order=order, amount="300000.00", method="cash", status="confirmed",
+    )
+    Payment.objects.create(
+        order=order, amount="400000.00", method="kaspi", status="confirmed",
+        refunded_amount="50000.00",
+    )
+    # Не подтверждённая оплата в разбивку не попадает.
+    Payment.objects.create(
+        order=order, amount="10000.00", method="invoice", status="received",
+    )
+
+    response = auth_client(accountant).get("/api/payment-transactions/")
+
+    assert response.status_code == 200
+    summary = response.data["summary"]
+    assert summary["paid_by_method"]["KZT"] == {
+        "cash": "300000.00",
+        "kaspi": "350000.00",
+    }
+    # Разбивка обязана сходиться с итогом, иначе кассир увидит два разных числа.
+    assert summary["paid_by_currency"]["KZT"] == "650000.00"

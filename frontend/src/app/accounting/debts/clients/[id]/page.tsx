@@ -19,6 +19,7 @@ import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { cn, formatCurrency, formatMoney, formatDateTime } from "@/lib/utils";
 import { can } from "@/lib/can";
+import { PaidMethodBreakdown } from "@/components/payment-chain";
 import { useAuth } from "@/store/auth";
 import {
   PAYMENT_STATUS_LABELS,
@@ -279,6 +280,7 @@ function OrderDebtCard({ order, canPay, onPay }: { order: Order; canPay: boolean
                 <div className="mt-0.5 tabular-nums font-semibold text-[var(--success)]">
                   {money(order.paid_total, order.currency)}
                 </div>
+                <PaidMethodBreakdown order={order} className="mt-0.5 text-[11px]" />
               </div>
               <div>
                 <div className="text-xs text-[var(--muted-foreground)]">Остаток долга</div>

@@ -52,6 +52,48 @@ function StageTrace({ p }: { p: Payment }) {
   );
 }
 
+/** Подтверждённые оплаты заказа, свёрнутые по способу: [способ, сумма]. */
+export function paidByMethod(order: Order): [string, number][] {
+  const totals = new Map<string, number>();
+  for (const payment of order.payments ?? []) {
+    if (payment.status !== "confirmed") continue;
+    // Та же чистая сумма, из которой сложен paid_total: возврат уменьшает
+    // вклад способа, иначе разбивка не сойдётся с итогом заказа.
+    const net = Number(payment.amount) - Number(payment.refunded_amount ?? 0);
+    if (net <= 0) continue;
+    totals.set(payment.method, (totals.get(payment.method) ?? 0) + net);
+  }
+  return [...totals.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+/**
+ * Из чего сложилась оплата: «300 000 ₸ наличными · 400 000 ₸ QR».
+ *
+ * Итоговая сумма сама по себе не отвечает на вопрос кассира «чем платили»,
+ * а при смешанной оплате это и есть главное, что нужно видеть сразу.
+ * Один способ показывать не нужно — он уже подписан рядом с суммой.
+ */
+export function PaidMethodBreakdown({ order, className = "" }: { order: Order; className?: string }) {
+  const parts = paidByMethod(order);
+  if (parts.length < 2) return null;
+  return (
+    // Сумма и её способ переносятся только вместе: «300 000 ₸» отдельно от
+    // «Наличные» читается как другая величина. Перенос допустим лишь между
+    // способами, поэтому разделитель живёт внутри своей пары.
+    <div className={`text-[var(--muted-foreground)] ${className}`}>
+      {parts.map(([method, amount], index) => (
+        <span key={method} className="whitespace-nowrap">
+          {index > 0 && <span className="px-1.5">·</span>}
+          <span className="font-medium tabular-nums text-[var(--foreground)]">
+            {formatCurrency(String(amount), order.currency)}
+          </span>{" "}
+          {CASHIER_PAYMENT_METHOD_LABELS[method] || method}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 /**
  * Оплаты заказа в цепочке подтверждения с действиями по правам:
  * приём (payments.create) → подтверждение бухгалтером-кассой (payments.confirm).
