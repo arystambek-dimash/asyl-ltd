@@ -112,3 +112,46 @@ def test_today_endpoint_returns_real_total_and_rejects_excess_subtraction(
         {"amount": 9, "reason": "Проверка ограничения"}, format="json",
     )
     assert too_much.status_code == 400
+
+
+@pytest.mark.parametrize("malformed", [None, "cam3", {"cam3": True}, 3])
+def test_reconcile_never_switches_off_on_an_unreadable_camera_list(malformed):
+    """An unparsable reply means "unknown", never "no cameras configured".
+
+    Coercing it to [] made a configured selection look like a mismatch, so the
+    monitor pushed an empty set back to the camera PC and the administrator's
+    24/7 cameras switched themselves off moments after being saved.
+    """
+    from apps.cameras import continuous
+
+    MonoblockCameraSettings.objects.update_or_create(
+        singleton=True, defaults={"always_on_camera_sources": ["cam3"]},
+    )
+
+    with patch.object(
+        ai, "always_on_status",
+        return_value={"cameras": malformed, "source": "sub", "processors": []},
+    ), patch.object(ai, "configure_always_on") as configure:
+        continuous.reconcile()
+
+    configure.assert_not_called()
+    assert MonoblockCameraSettings.always_on_sources() == ["cam3"]
+
+
+def test_reconcile_still_pushes_the_desired_set_when_the_pc_disagrees():
+    """A readable mismatch must still be corrected from PostgreSQL."""
+    from apps.cameras import continuous
+
+    MonoblockCameraSettings.objects.update_or_create(
+        singleton=True, defaults={"always_on_camera_sources": ["cam3"]},
+    )
+
+    with patch.object(
+        ai, "always_on_status",
+        return_value={"cameras": [], "source": "sub", "processors": []},
+    ), patch.object(ai, "configure_always_on", return_value={
+        "cameras": ["cam3"], "source": "sub", "processors": [],
+    }) as configure:
+        continuous.reconcile()
+
+    configure.assert_called_once_with(["cam3"], "sub")
