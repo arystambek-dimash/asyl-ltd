@@ -386,9 +386,9 @@ def test_superuser_cannot_exceed_camera_pc_processor_capacity(
     auth_client, superuser, monkeypatch,
 ):
     monkeypatch.setattr(ai, "AI_KEY", "k")
-    # Проверка лимита читает кэшированный снимок, чтобы сохранение не платило
+    # Проверка лимита читает только готовый снимок, чтобы сохранение не платило
     # второй сетевой таймаут, когда ПК цеха недоступен.
-    with patch.object(ai, "always_on_status_cached", return_value={
+    with patch.object(ai, "cached_always_on_status", return_value={
         "cameras": [], "source": "sub", "capacity": 1, "processors": [],
     }), patch.object(ai, "configure_always_on") as configure:
         response = auth_client(superuser).put(
@@ -615,14 +615,17 @@ def test_always_on_choice_survives_an_unreachable_camera_pc(
     cache.delete(ai.ALWAYS_ON_CACHE_KEY)
     timeout = ai.AiUnavailable("<urlopen error timed out>")
 
-    with patch.object(ai, "always_on_status_cached", side_effect=timeout), \
-         patch.object(ai, "configure_always_on", side_effect=timeout):
+    with patch.object(ai, "configure_always_on", side_effect=timeout), \
+         patch.object(ai, "always_on_status") as blocking_status:
         response = auth_client(superuser).put(
             "/api/cameras/always-on-settings/",
             {"camera_sources": ["cam3"]},
             format="json",
         )
 
+    # Saving must cost at most the write itself. The optional capacity hint may
+    # not add a second timeout wait on top of it.
+    blocking_status.assert_not_called()
     assert response.status_code == 202
     assert response.data["camera_sources"] == ["cam3"]
     assert response.data["sync_status"] == "pending"

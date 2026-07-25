@@ -499,18 +499,11 @@ class AlwaysOnCameraSettingsView(APIView):
                 normalized.append(source)
 
         row, _ = MonoblockCameraSettings.objects.get_or_create(singleton=True)
-        live_before = None
-        if ai.enabled():
-            try:
-                # Кэшированный снимок: проверка лимита не должна добавлять
-                # второе ожидание таймаута к самой записи, иначе сохранение
-                # висит вдвое дольше, когда ПК цеха недоступен.
-                live_before = ai.always_on_status_cached()
-            except (ai.AiUnavailable, ai.AiError) as error:
-                log.warning(
-                    "Camera processor capacity is temporarily unavailable: %s",
-                    error,
-                )
+        # Предварительная проверка лимита — подсказка, а не гарантия: сам ПК
+        # цеха всё равно отклонит превышение. Поэтому берём только уже готовый
+        # снимок и никогда не ждём сеть ради неё, иначе недоступный цех делал
+        # бы сохранение вдвое дольше (два таймаута подряд).
+        live_before = ai.cached_always_on_status() if ai.enabled() else None
         capacity = (live_before or {}).get("capacity")
         if isinstance(capacity, int) and len(normalized) > capacity:
             raise ValidationError({

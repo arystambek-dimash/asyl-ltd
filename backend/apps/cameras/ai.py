@@ -293,6 +293,17 @@ def always_on_status_cached() -> dict:
     return status
 
 
+def cached_always_on_status() -> dict | None:
+    """Уже готовый снимок, либо None — никогда не ходит по сети.
+
+    Для необязательных подсказок (например, предварительной проверки лимита
+    процессоров) ожидание ``TIMEOUT`` неоправданно: без снимка просто
+    пропускаем подсказку, а авторитетное решение принимает сам ПК цеха.
+    """
+    cached = cache.get(ALWAYS_ON_CACHE_KEY)
+    return None if isinstance(cached, Exception) else cached
+
+
 def invalidate_always_on_cache() -> None:
     cache.delete(ALWAYS_ON_CACHE_KEY)
 
