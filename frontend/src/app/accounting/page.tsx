@@ -15,6 +15,7 @@ import { Tabs, type TabDef } from "@/components/ui/tabs";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { PaymentStageBadge } from "@/components/payment-chain";
+import { TransactionsSection } from "@/components/transactions-section";
 import { can } from "@/lib/can";
 import { useAuth } from "@/store/auth";
 import { useApi } from "@/lib/use-api";
@@ -597,12 +598,13 @@ function CashFiltersPanel({
   );
 }
 
-type CashTab = "overview" | "confirm" | "journal";
+type CashTab = "overview" | "confirm" | "journal" | "transactions";
 
 function CashierInner() {
   const { me } = useAuth();
   const canPayments = can(me, "payments.confirm");
   const canReports = can(me, "reports.view");
+  const canTransactions = can(me, "payments.view");
 
   const [filters, setFilters] = useState<CashFilters>({
     dateFrom: "",
@@ -612,7 +614,7 @@ function CashierInner() {
     remainingMin: "",
     remainingMax: "",
   });
-  const [tab, setTab] = useState<CashTab>(canReports ? "overview" : "confirm");
+  const [tab, setTab] = useState<CashTab>(canReports ? "overview" : canPayments ? "confirm" : "transactions");
   const validFilters = filtersAreValid(filters);
   const commonParams = {
     date_from: filters.dateFrom,
@@ -661,6 +663,7 @@ function CashierInner() {
           { key: "journal", label: "Журнал" },
         ]
       : []),
+    ...(canTransactions ? [{ key: "transactions", label: "Транзакции" }] : []),
   ];
 
   function resetFilters() {
@@ -675,17 +678,24 @@ function CashierInner() {
   }
 
   return (
-    <AppShell title="Касса" section="Работа" description="Поступления, очередь подтверждений и долги в одном месте.">
+    <AppShell
+      title="Касса"
+      section="Работа"
+      description="Поступления, очередь подтверждений, долги и транзакции в одном месте."
+    >
       <div className="flex flex-col gap-6">
         <Tabs tabs={tabs} active={tab} onChange={(key) => setTab(key as CashTab)} />
 
-        <CashFiltersPanel
-          filters={filters}
-          stores={stores ?? []}
-          departments={departments ?? []}
-          onChange={(patch) => setFilters((current) => ({ ...current, ...patch }))}
-          onReset={resetFilters}
-        />
+        {/* У транзакций свой поиск — фильтры кассы к ним не применяются. */}
+        {tab !== "transactions" && (
+          <CashFiltersPanel
+            filters={filters}
+            stores={stores ?? []}
+            departments={departments ?? []}
+            onChange={(patch) => setFilters((current) => ({ ...current, ...patch }))}
+            onReset={resetFilters}
+          />
+        )}
 
         {tab === "overview" && canReports && (
           <>
@@ -728,15 +738,17 @@ function CashierInner() {
         {tab === "confirm" && canPayments && <ConfirmQueueSection q={queue} />}
 
         {tab === "journal" && canPayments && <PaymentJournalSection q={queue} />}
+
+        {tab === "transactions" && canTransactions && <TransactionsSection />}
       </div>
     </AppShell>
   );
 }
 
 export default function CashierPage() {
-  // Доступ, если есть хотя бы одна из секций: очередь или аналитика с долгами.
+  // Доступ, если есть хотя бы одна из секций: очередь, аналитика с долгами или транзакции.
   return (
-    <RequirePerm perm={["payments.confirm", "reports.view"]} title="Касса">
+    <RequirePerm perm={["payments.confirm", "reports.view", "payments.view"]} title="Касса">
       <CashierInner />
     </RequirePerm>
   );

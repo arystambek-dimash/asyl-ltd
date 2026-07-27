@@ -3,7 +3,6 @@
 import Image from "next/image";
 import { useState } from "react";
 import { Download, ExternalLink, QrCode, RefreshCcw, RotateCcw, Search, Send, Undo2, XCircle } from "lucide-react";
-import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -189,7 +188,8 @@ function PaymentQrPreview({ payment, onClose }: { payment: Payment; onClose: () 
   );
 }
 
-export default function TransactionsPage() {
+/* ── Вкладка «Транзакции»: все платежи, возвраты и чеки ─────────────────── */
+export function TransactionsSection() {
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
   const {
@@ -289,252 +289,250 @@ export default function TransactionsPage() {
   }
 
   return (
-    <AppShell title="Транзакции">
-      <div className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Card>
-            <CardContent className="py-5">
-              <div className="text-xs uppercase tracking-wide text-[var(--muted-foreground)]">Операций</div>
-              <div className="mt-1 text-2xl font-semibold tabular-nums">{data?.count ?? 0}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="py-5">
-              <div className="text-xs uppercase tracking-wide text-[var(--muted-foreground)]">Оплачено</div>
-              <div className="mt-1 text-2xl font-semibold tabular-nums text-[var(--success)]">
-                {formatMoney(data?.summary.paid_by_currency.KZT ?? 0)} ₸
-                {Number(data?.summary.paid_by_currency.USD ?? 0) > 0 && (
-                  <span className="ml-2 text-base text-[var(--muted-foreground)]">
-                    + {formatMoney(data!.summary.paid_by_currency.USD)} $
-                  </span>
-                )}
-              </div>
-              {/* Из чего сложился итог: касса сразу видит нал/QR/счёт. */}
-              <PaidMethodSummary summary={data?.summary.paid_by_method} />
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="py-5">
-              <div className="text-xs uppercase tracking-wide text-[var(--muted-foreground)]">Возвращено</div>
-              <div className="mt-1 text-2xl font-semibold tabular-nums">
-                {formatMoney(data?.summary.refunded_by_currency.KZT ?? 0)} ₸
-                {Number(data?.summary.refunded_by_currency.USD ?? 0) > 0 && (
-                  <span className="ml-2 text-base text-[var(--muted-foreground)]">
-                    + {formatMoney(data!.summary.refunded_by_currency.USD)} $
-                  </span>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {error && !refundFor && !rejectFor && !restoreFor && (
-          <div className="rounded-lg border border-[var(--destructive)]/25 bg-[var(--destructive)]/5 px-3 py-2 text-sm text-[var(--destructive)]">
-            {error}
-          </div>
-        )}
-
+    <section className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-3">
         <Card>
-          <CardHeader className="flex-row items-center justify-between gap-3">
-            <CardTitle>Все платежи, возвраты и чеки</CardTitle>
-            <Button variant="outline" size="sm" onClick={() => void reload()}>
-              <RefreshCcw className="size-4" /> Обновить
-            </Button>
-          </CardHeader>
-          <CardContent>
-            <div className="relative mb-4 max-w-sm">
-              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-              <Input
-                className="pl-9"
-                placeholder="Клиент, заказ или операция"
-                value={query}
-                onChange={(e) => {
-                  setQuery(e.target.value);
-                  setPage(1);
-                }}
-              />
+          <CardContent className="py-5">
+            <div className="text-xs uppercase tracking-wide text-[var(--muted-foreground)]">Операций</div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums">{data?.count ?? 0}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="py-5">
+            <div className="text-xs uppercase tracking-wide text-[var(--muted-foreground)]">Оплачено</div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums text-[var(--success)]">
+              {formatMoney(data?.summary.paid_by_currency.KZT ?? 0)} ₸
+              {Number(data?.summary.paid_by_currency.USD ?? 0) > 0 && (
+                <span className="ml-2 text-base text-[var(--muted-foreground)]">
+                  + {formatMoney(data!.summary.paid_by_currency.USD)} $
+                </span>
+              )}
             </div>
-            {(loading || loadError) && <DataGate loading={loading} error={loadError} onRetry={reload} />}
-            {!loading && !loadError && rows.length === 0 && (
-              <p className="py-8 text-center text-sm text-[var(--muted-foreground)]">Транзакций пока нет.</p>
-            )}
-            {rows.length > 0 && (
-              <>
-                <Table>
-                  <THead>
-                    <TR>
-                      <TH>Операция</TH>
-                      <TH>Клиент</TH>
-                      <TH>Способ</TH>
-                      <TH>Сумма</TH>
-                      <TH>Статус</TH>
-                      <TH>Возврат</TH>
-                      <TH />
-                    </TR>
-                  </THead>
-                  <TBody>
-                    {rows.map((row) => {
-                      const effectiveStatus = row.effective_status ?? row.status;
-                      const state = STATUS[effectiveStatus] ?? {
-                        label: effectiveStatus,
-                        tone: "muted" as const,
-                      };
-                      return (
-                        <TR key={row.id}>
-                          <TD>
-                            <div className="font-medium">PAY-{String(row.id).padStart(6, "0")}</div>
-                            <div className="text-xs text-[var(--muted-foreground)]">Заказ #{row.order}</div>
-                            <div className="text-xs text-[var(--muted-foreground)]">{formatDateTime(row.paid_at)}</div>
-                          </TD>
-                          <TD>{row.client_name ?? "—"}</TD>
-                          <TD>
-                            {row.method_label ?? row.method}
-                            {row.provider?.channel === "qr" && (
-                              <div className="text-xs text-[var(--muted-foreground)]">Kaspi QR</div>
-                            )}
-                          </TD>
-                          <TD className="font-medium tabular-nums">
-                            {formatMoney(row.amount)} {row.currency === "USD" ? "$" : "₸"}
-                          </TD>
-                          <TD>
-                            <button
-                              type="button"
-                              onClick={() => setStatusFor(row)}
-                              className="rounded-md outline-none ring-offset-2 hover:opacity-80 focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                              title="Нажмите, чтобы узнать значение статуса"
-                            >
-                              <Badge tone={state.tone}>{state.label}</Badge>
-                            </button>
-                          </TD>
-                          <TD>
-                            {Number(row.refunded_amount ?? 0) > 0 ? (
-                              <span className="text-sm tabular-nums">
-                                {formatMoney(row.refunded_amount ?? 0)} {row.currency === "USD" ? "$" : "₸"}
-                              </span>
-                            ) : Number(row.pending_refund_amount ?? 0) > 0 ? (
-                              <span className="text-sm text-[var(--warning)]">
-                                {formatMoney(row.pending_refund_amount ?? 0)} в обработке
-                              </span>
-                            ) : (
-                              "—"
-                            )}
-                          </TD>
-                          <TD>
-                            <div className="flex justify-end gap-1">
-                              {row.can_restore && (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  title="Восстановить отклонённую операцию"
-                                  onClick={() => {
-                                    setError("");
-                                    setRestoreFor(row);
-                                  }}
-                                >
-                                  <Undo2 className="size-4" />
-                                  <span className="hidden xl:inline">Восстановить</span>
-                                </Button>
-                              )}
-                              {row.can_issue && (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  disabled={busy}
-                                  title={row.method === "kaspi" ? "Создать QR" : "Отправить счёт клиенту"}
-                                  onClick={() => void issue(row)}
-                                >
-                                  <Send className="size-4" />
-                                  <span className="hidden xl:inline">Отправить</span>
-                                </Button>
-                              )}
-                              {row.provider?.channel === "qr" &&
-                                row.provider.qr_token_url &&
-                                ACTIVE_PROVIDER_STATUSES.has(row.provider.status) && (
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    title="Открыть активный Kaspi QR"
-                                    onClick={() => window.open(row.provider!.qr_token_url!, "_blank", "noopener")}
-                                  >
-                                    <ExternalLink className="size-4" />
-                                  </Button>
-                                )}
-                              {row.status === "confirmed" && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  title="Скачать выписку ASYL LTD"
-                                  onClick={() => void receipt(row)}
-                                >
-                                  <Download className="size-4" />
-                                </Button>
-                              )}
-                              {row.status === "confirmed" && Number(row.available_for_refund ?? 0) > 0 && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  title={row.provider ? "Вернуть через ApiPay" : "Вернуть деньги из кассы"}
-                                  onClick={() => {
-                                    setError("");
-                                    setRefundFor(row);
-                                    setAmount(row.available_for_refund ?? "");
-                                    setReason("");
-                                  }}
-                                >
-                                  <RotateCcw className="size-4" />
-                                </Button>
-                              )}
-                              {["requested", "received"].includes(row.status) &&
-                                row.confirmation_mode !== "automatic" && (
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    title="Отклонить платёж"
-                                    className="text-[var(--destructive)]"
-                                    onClick={() => {
-                                      setError("");
-                                      setRejectFor(row);
-                                      setRejectReason("");
-                                    }}
-                                  >
-                                    <XCircle className="size-4" />
-                                  </Button>
-                                )}
-                            </div>
-                          </TD>
-                        </TR>
-                      );
-                    })}
-                  </TBody>
-                </Table>
-                <div className="mt-4 flex items-center justify-between border-t pt-4">
-                  <span className="text-xs text-[var(--muted-foreground)]">
-                    Страница {data?.page ?? 1} из {data?.pages ?? 1}
-                  </span>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={(data?.page ?? 1) <= 1}
-                      onClick={() => setPage((value) => value - 1)}
-                    >
-                      Назад
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={(data?.page ?? 1) >= (data?.pages ?? 1)}
-                      onClick={() => setPage((value) => value + 1)}
-                    >
-                      Далее
-                    </Button>
-                  </div>
-                </div>
-              </>
-            )}
+            {/* Из чего сложился итог: касса сразу видит нал/QR/счёт. */}
+            <PaidMethodSummary summary={data?.summary.paid_by_method} />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="py-5">
+            <div className="text-xs uppercase tracking-wide text-[var(--muted-foreground)]">Возвращено</div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums">
+              {formatMoney(data?.summary.refunded_by_currency.KZT ?? 0)} ₸
+              {Number(data?.summary.refunded_by_currency.USD ?? 0) > 0 && (
+                <span className="ml-2 text-base text-[var(--muted-foreground)]">
+                  + {formatMoney(data!.summary.refunded_by_currency.USD)} $
+                </span>
+              )}
+            </div>
           </CardContent>
         </Card>
       </div>
+
+      {error && !refundFor && !rejectFor && !restoreFor && (
+        <div className="rounded-lg border border-[var(--destructive)]/25 bg-[var(--destructive)]/5 px-3 py-2 text-sm text-[var(--destructive)]">
+          {error}
+        </div>
+      )}
+
+      <Card>
+        <CardHeader className="flex-row items-center justify-between gap-3">
+          <CardTitle>Все платежи, возвраты и чеки</CardTitle>
+          <Button variant="outline" size="sm" onClick={() => void reload()}>
+            <RefreshCcw className="size-4" /> Обновить
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <div className="relative mb-4 max-w-sm">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+            <Input
+              className="pl-9"
+              placeholder="Клиент, заказ или операция"
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setPage(1);
+              }}
+            />
+          </div>
+          {(loading || loadError) && <DataGate loading={loading} error={loadError} onRetry={reload} />}
+          {!loading && !loadError && rows.length === 0 && (
+            <p className="py-8 text-center text-sm text-[var(--muted-foreground)]">Транзакций пока нет.</p>
+          )}
+          {rows.length > 0 && (
+            <>
+              <Table>
+                <THead>
+                  <TR>
+                    <TH>Операция</TH>
+                    <TH>Клиент</TH>
+                    <TH>Способ</TH>
+                    <TH>Сумма</TH>
+                    <TH>Статус</TH>
+                    <TH>Возврат</TH>
+                    <TH />
+                  </TR>
+                </THead>
+                <TBody>
+                  {rows.map((row) => {
+                    const effectiveStatus = row.effective_status ?? row.status;
+                    const state = STATUS[effectiveStatus] ?? {
+                      label: effectiveStatus,
+                      tone: "muted" as const,
+                    };
+                    return (
+                      <TR key={row.id}>
+                        <TD>
+                          <div className="font-medium">PAY-{String(row.id).padStart(6, "0")}</div>
+                          <div className="text-xs text-[var(--muted-foreground)]">Заказ #{row.order}</div>
+                          <div className="text-xs text-[var(--muted-foreground)]">{formatDateTime(row.paid_at)}</div>
+                        </TD>
+                        <TD>{row.client_name ?? "—"}</TD>
+                        <TD>
+                          {row.method_label ?? row.method}
+                          {row.provider?.channel === "qr" && (
+                            <div className="text-xs text-[var(--muted-foreground)]">Kaspi QR</div>
+                          )}
+                        </TD>
+                        <TD className="font-medium tabular-nums">
+                          {formatMoney(row.amount)} {row.currency === "USD" ? "$" : "₸"}
+                        </TD>
+                        <TD>
+                          <button
+                            type="button"
+                            onClick={() => setStatusFor(row)}
+                            className="rounded-md outline-none ring-offset-2 hover:opacity-80 focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                            title="Нажмите, чтобы узнать значение статуса"
+                          >
+                            <Badge tone={state.tone}>{state.label}</Badge>
+                          </button>
+                        </TD>
+                        <TD>
+                          {Number(row.refunded_amount ?? 0) > 0 ? (
+                            <span className="text-sm tabular-nums">
+                              {formatMoney(row.refunded_amount ?? 0)} {row.currency === "USD" ? "$" : "₸"}
+                            </span>
+                          ) : Number(row.pending_refund_amount ?? 0) > 0 ? (
+                            <span className="text-sm text-[var(--warning)]">
+                              {formatMoney(row.pending_refund_amount ?? 0)} в обработке
+                            </span>
+                          ) : (
+                            "—"
+                          )}
+                        </TD>
+                        <TD>
+                          <div className="flex justify-end gap-1">
+                            {row.can_restore && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                title="Восстановить отклонённую операцию"
+                                onClick={() => {
+                                  setError("");
+                                  setRestoreFor(row);
+                                }}
+                              >
+                                <Undo2 className="size-4" />
+                                <span className="hidden xl:inline">Восстановить</span>
+                              </Button>
+                            )}
+                            {row.can_issue && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={busy}
+                                title={row.method === "kaspi" ? "Создать QR" : "Отправить счёт клиенту"}
+                                onClick={() => void issue(row)}
+                              >
+                                <Send className="size-4" />
+                                <span className="hidden xl:inline">Отправить</span>
+                              </Button>
+                            )}
+                            {row.provider?.channel === "qr" &&
+                              row.provider.qr_token_url &&
+                              ACTIVE_PROVIDER_STATUSES.has(row.provider.status) && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  title="Открыть активный Kaspi QR"
+                                  onClick={() => window.open(row.provider!.qr_token_url!, "_blank", "noopener")}
+                                >
+                                  <ExternalLink className="size-4" />
+                                </Button>
+                              )}
+                            {row.status === "confirmed" && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                title="Скачать выписку ASYL LTD"
+                                onClick={() => void receipt(row)}
+                              >
+                                <Download className="size-4" />
+                              </Button>
+                            )}
+                            {row.status === "confirmed" && Number(row.available_for_refund ?? 0) > 0 && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                title={row.provider ? "Вернуть через ApiPay" : "Вернуть деньги из кассы"}
+                                onClick={() => {
+                                  setError("");
+                                  setRefundFor(row);
+                                  setAmount(row.available_for_refund ?? "");
+                                  setReason("");
+                                }}
+                              >
+                                <RotateCcw className="size-4" />
+                              </Button>
+                            )}
+                            {["requested", "received"].includes(row.status) &&
+                              row.confirmation_mode !== "automatic" && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  title="Отклонить платёж"
+                                  className="text-[var(--destructive)]"
+                                  onClick={() => {
+                                    setError("");
+                                    setRejectFor(row);
+                                    setRejectReason("");
+                                  }}
+                                >
+                                  <XCircle className="size-4" />
+                                </Button>
+                              )}
+                          </div>
+                        </TD>
+                      </TR>
+                    );
+                  })}
+                </TBody>
+              </Table>
+              <div className="mt-4 flex items-center justify-between border-t pt-4">
+                <span className="text-xs text-[var(--muted-foreground)]">
+                  Страница {data?.page ?? 1} из {data?.pages ?? 1}
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={(data?.page ?? 1) <= 1}
+                    onClick={() => setPage((value) => value - 1)}
+                  >
+                    Назад
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={(data?.page ?? 1) >= (data?.pages ?? 1)}
+                    onClick={() => setPage((value) => value + 1)}
+                  >
+                    Далее
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       <Modal
         open={!!refundFor}
@@ -698,6 +696,6 @@ export default function TransactionsPage() {
       />
 
       {qrFor && <PaymentQrPreview payment={qrFor} onClose={() => setQrFor(null)} />}
-    </AppShell>
+    </section>
   );
 }
