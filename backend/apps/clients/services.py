@@ -1,9 +1,11 @@
 from decimal import Decimal
 from apps.notifications.services import notify
 from apps.common.money import money_string as _d
+from apps.orders.debt import (
+    debt_orders, financial_orders, order_remaining, primary_currency,
+    sum_by_currency,
+)
 
-# Заказы в этих статусах не считаются финансовыми (не учитываются в обороте).
-NON_FINANCIAL_STATUSES = {"draft", "pending", "rejected", "cancelled"}
 
 def client_history(client) -> dict:
     """Детализация клиента: продажи, погашения и долги — плоские строки для таблиц."""
@@ -14,8 +16,8 @@ def client_history(client) -> dict:
         .prefetch_related("items__product", "payments")
         .order_by("-created_at")
     )
-    financial = [o for o in orders if o.status not in NON_FINANCIAL_STATUSES]
-    debt_orders = [o for o in orders if o.is_debt]
+    financial = financial_orders(orders)
+    debts = debt_orders(orders)
 
     # Служебный метод "debt" деньгами не является — в погашения не входит.
     # Обход через order__client не проходит через LiveOrderManager,
@@ -61,22 +63,41 @@ def client_history(client) -> dict:
             "bags": sum(i.quantity for i in o.items.all()),
             "amount": _d(o.total_amount),
             "paid": _d(o.paid_total),
-            "remaining": _d(o.remaining_amount),
+            "remaining": _d(order_remaining(o)),
+            "currency": o.currency,
         }
+
+    # Разные валюты не складываются: 1000 ₸ и 5 $ — это не «1005».
+    revenue = sum_by_currency(financial, lambda o: o.total_amount)
+    paid = sum_by_currency(financial, lambda o: o.paid_total)
+    debt = sum_by_currency(debts, order_remaining)
+    main = primary_currency(debt or revenue, fallback=client.currency)
+    by_currency = {
+        currency: {
+            "revenue": _d(revenue.get(currency, Decimal("0"))),
+            "paid": _d(paid.get(currency, Decimal("0"))),
+            "debt": _d(debt.get(currency, Decimal("0"))),
+        }
+        for currency in sorted({*revenue, *paid, *debt} or {main})
+    }
 
     return {
         "client": {"id": client.id, "name": client.name,
                    "phone": client.phone, "country": client.country,
                    "currency": client.currency},
         "summary": {
-            "revenue": _d(sum((o.total_amount for o in financial), Decimal("0"))),
-            "paid": _d(sum((o.paid_total for o in financial), Decimal("0"))),
-            "debt": _d(sum((o.remaining_amount for o in debt_orders), Decimal("0"))),
+            # Плоские поля описывают основную валюту клиента; полная
+            # раскладка — в by_currency.
+            "currency": main,
+            "revenue": _d(revenue.get(main, Decimal("0"))),
+            "paid": _d(paid.get(main, Decimal("0"))),
+            "debt": _d(debt.get(main, Decimal("0"))),
             "orders_count": len(financial),
+            "by_currency": by_currency,
         },
         "sales": [sale_row(o) for o in orders],
         "payments": [payment_row(p) for p in payments],
-        "debts": [debt_row(o) for o in debt_orders],
+        "debts": [debt_row(o) for o in debts],
     }
 
 
@@ -96,10 +117,15 @@ def detect_overdue(store, on_date) -> int:
     if not is_payment_window_open(store, on_date) or store.payment_schedule_type == "none":
         return 0
     from apps.orders.models import Order
-    overdue = Order.objects.filter(
-        store=store, status="shipped"
-    ).exclude(payment_status="settled")
-    count = overdue.count()
+    from apps.orders.debt import debt_orders
+    # Просрочка — это непогашенный долг, а не любой неоплаченный заказ.
+    # Считаем по тому же правилу, что Order.is_debt: денормализованный
+    # payment_status может отстать от факта, а моментальная оплата
+    # («instant») долгом не является и просрочки не образует.
+    count = len(debt_orders(
+        Order.objects.filter(store=store, status="shipped")
+        .prefetch_related("items", "payments")
+    ))
     if count:
         notify(store.client,
                f"Просрочка оплаты по магазину «{store.name}»: {count} заказ(ов)")

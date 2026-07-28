@@ -75,6 +75,9 @@ def _validate_payment_open(order: Order) -> None:
         )
 
 
+# Строчные формы для фразы журнала: «Оплата 100 KZT принята». Это не копия
+# labels.PAYMENT_STATUS_LABELS — там подпись колонки («Получена»), здесь
+# сказуемое внутри предложения, поэтому наборы намеренно разные.
 PAYMENT_STAGE_LABELS = {
     "requested": "запрошена", "received": "принята",
     "confirmed": "подтверждена бухгалтером", "rejected": "отклонена",

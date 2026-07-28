@@ -43,3 +43,8 @@ class StockMovement(models.Model):
 
     class Meta:
         ordering = ["-created_at", "-id"]
+        indexes = [
+            # История движений только растёт и читается «сверху».
+            models.Index(fields=["-created_at", "-id"],
+                         name="stockmovement_recent_idx"),
+        ]

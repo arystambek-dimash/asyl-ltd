@@ -288,8 +288,11 @@ class MonoblockCameraSettingsView(APIView):
         return Response(self._payload(row))
 
 
-def _device_payload(device):
-    names = MonoblockCameraSettings.display_names()
+def _device_payload(device, names=None):
+    # names передаётся списком: иначе справочник подписей читается заново на
+    # каждую строку ответа.
+    if names is None:
+        names = MonoblockCameraSettings.display_names()
     return {
         "id": device.pk,
         "name": device.name,
@@ -336,7 +339,8 @@ class MonoblockDeviceListView(APIView):
 
     def get(self, request):
         devices = MonoblockDevice.objects.select_related("user").all()
-        return Response([_device_payload(device) for device in devices])
+        names = MonoblockCameraSettings.display_names()
+        return Response([_device_payload(device, names) for device in devices])
 
     def post(self, request):
         name, username, camera = _clean_device_data(request.data)
@@ -1026,8 +1030,11 @@ def _recording_stream(session: AiCountingSession) -> str:
     return stream if isinstance(stream, str) else ""
 
 
-def _history_payload(session: AiCountingSession) -> dict:
-    names = MonoblockCameraSettings.display_names()
+def _history_payload(session: AiCountingSession, names=None) -> dict:
+    # names передаётся списком: иначе справочник подписей читается заново на
+    # каждую из 500 строк истории.
+    if names is None:
+        names = MonoblockCameraSettings.display_names()
     last = session.last_status if isinstance(session.last_status, dict) else {}
     total = session.final_total
     if total is None:
@@ -1088,7 +1095,9 @@ class CameraAiSessionHistoryView(APIView):
             except ValueError:
                 raise ValidationError({"detail": "Некорректный номер заказа", "code": "bad_order_id"})
             queryset = queryset.filter(order_id__in=order_ids)
-        return Response([_history_payload(session) for session in queryset[:500]])
+        names = MonoblockCameraSettings.display_names()
+        return Response(
+            [_history_payload(session, names) for session in queryset[:500]])
 
 
 def _history_session(pk: int) -> AiCountingSession:

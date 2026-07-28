@@ -6,6 +6,7 @@ from apps.common.money import money_string
 from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Department, Store
 from apps.orders.models import Order, OrderItem, Payment
+from apps.orders.statuses import is_financial
 
 
 MAX_PORTAL_ORDER_ITEMS = 100
@@ -158,7 +159,9 @@ class PortalOrderSerializer(serializers.ModelSerializer):
             }) from exc
 
     def _money_visible(self, obj):
-        return obj.status not in ("draft", "pending", "rejected", "cancelled")
+        # Деньги показываем только по финансовым заказам — правило общее с
+        # оборотом и долгами, живёт в apps.orders.statuses.
+        return is_financial(obj.status)
 
     def get_total_amount(self, obj):
         if not self._money_visible(obj):

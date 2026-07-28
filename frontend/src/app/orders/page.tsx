@@ -35,7 +35,7 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { cn, currencySymbol, formatDateTime, formatMoney } from "@/lib/utils";
+import { cn, currencySymbol, formatDateTime, formatIsoDate, formatMoney } from "@/lib/utils";
 import { useDismiss } from "@/lib/use-dismiss";
 import {
   Archive,
@@ -1153,7 +1153,7 @@ function OrdersPageInner() {
                     {o.arrival_date && (
                       <div>
                         <div className="text-[11px] text-[var(--muted-foreground)]">Прибытие</div>
-                        <div>{new Date(o.arrival_date).toLocaleDateString("ru-RU")}</div>
+                        <div>{formatIsoDate(o.arrival_date)}</div>
                       </div>
                     )}
                   </div>

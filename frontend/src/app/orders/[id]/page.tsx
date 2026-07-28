@@ -18,7 +18,7 @@ import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { cn } from "@/lib/utils";
-import { currencySymbol, formatDateTime, formatMoney } from "@/lib/utils";
+import { currencySymbol, formatDateTime, formatIsoDate, formatMoney } from "@/lib/utils";
 import {
   ORDER_PUBLIC_STATUSES,
   ORDER_STATUS_LABELS,
@@ -368,9 +368,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                 <div className="text-xs text-[var(--muted-foreground)]">Дата прибытия</div>
                 <div className="mt-1 flex items-center gap-1.5 font-medium">
                   <CalendarDays className="size-3.5" />{" "}
-                  {order.arrival_date
-                    ? new Date(`${order.arrival_date}T00:00:00`).toLocaleDateString("ru-RU")
-                    : "Не указана"}
+                  {order.arrival_date ? formatIsoDate(order.arrival_date) : "Не указана"}
                 </div>
               </div>
               <div>

@@ -17,6 +17,11 @@ class EventLog(models.Model):
 
     class Meta:
         ordering = ["-created_at", "-id"]
+        indexes = [
+            # Журнал только растёт и всегда читается «сверху» и по типу события.
+            models.Index(fields=["-created_at", "-id"], name="eventlog_recent_idx"),
+            models.Index(fields=["event_type"], name="eventlog_event_type_idx"),
+        ]
 
     def save(self, *args, **kwargs):
         if self.pk is not None:

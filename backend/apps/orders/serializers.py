@@ -5,6 +5,7 @@ from django.db import transaction
 from rest_framework import serializers
 from apps.clients.models import Department
 from apps.common.money import money_string
+from .labels import payment_method_label
 from .models import Order, OrderItem, Payment, StatusChangeRequest
 from .services import set_truck_number
 from .statuses import public_status_label
@@ -83,14 +84,6 @@ class StatusChangeRequestSerializer(serializers.ModelSerializer):
         return public_status_label(obj.to_status)
 
 
-PAYMENT_METHOD_LABELS = {
-    "invoice": "Счёт на оплату",
-    "kaspi": "Kaspi",
-    "cash": "Наличные",
-    "debt": "Долг",
-    # Легаси-способ внутренних банковских оплат.
-    "card": "Карта",
-}
 
 
 def _username(user):
@@ -134,7 +127,7 @@ class PaymentSerializer(serializers.ModelSerializer):
         return _username(obj.confirmed_by)
 
     def get_method_label(self, obj):
-        return PAYMENT_METHOD_LABELS.get(obj.method, obj.method)
+        return payment_method_label(obj.method)
 
     def get_effective_status(self, obj):
         if obj.status in Payment.IN_PROGRESS_STATUSES:

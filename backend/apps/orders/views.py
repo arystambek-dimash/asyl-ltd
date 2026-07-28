@@ -28,7 +28,7 @@ from .apipay import (
 from .invoices import build_payment_receipt_pdf
 from .querysets import with_order_api_relations, with_payment_api_relations
 from .reports import summary_report
-from .statuses import PUBLIC_STATUS_LABELS, statuses_in_group
+from .statuses import PUBLIC_STATUS_LABELS, is_financial, statuses_in_group
 from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerializer,
                           StatusChangeRequestSerializer)
 from .services import (add_payment, add_mixed_payments, confirm_order, reject_order,
@@ -662,7 +662,9 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 row["shipped"] += 1
             elif order.status not in ("rejected", "cancelled"):
                 row["active"] += 1
-            if order.status not in ("rejected", "cancelled"):
+            # В выручку идут только финансовые заказы: черновик и «на
+            # рассмотрении» ещё не подтверждены и оборотом не являются.
+            if is_financial(order.status):
                 row["revenue"] += order.total_amount
         return Response([
             {**row, "revenue": money_string(row["revenue"])}

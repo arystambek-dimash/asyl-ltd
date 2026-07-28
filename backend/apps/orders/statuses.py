@@ -30,6 +30,17 @@ PUBLIC_STATUS_LABELS = {
 PUBLIC_MANUAL_STATUSES = tuple(PUBLIC_STATUS_LABELS)
 
 
+# Заказ в этих статусах ещё (или уже) не является финансовым документом:
+# черновик и «на рассмотрении» не подтверждены, отказ и отмена аннулированы.
+# Ни один из них не входит в оборот, выручку и долги.
+NON_FINANCIAL_STATUSES = frozenset({"draft", "pending", "rejected", "cancelled"})
+
+
+def is_financial(status: str) -> bool:
+    """Учитывается ли заказ в денежных итогах (оборот, выручка, долг)."""
+    return status not in NON_FINANCIAL_STATUSES
+
+
 def public_status_key(status: str) -> str:
     return PUBLIC_STATUS_GROUPS.get(status, status)
 

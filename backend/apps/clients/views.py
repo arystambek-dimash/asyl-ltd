@@ -13,6 +13,10 @@ from apps.common.permissions import HasPerm, IsStaff, PermViewSetMixin
 from apps.common.money import money_string
 from apps.common.query_params import parse_iso_date, parse_store_id, validate_date_range
 from apps.orders.models import Order
+from apps.orders.debt import (
+    as_money_strings, debt_orders, order_remaining, primary_currency,
+    sum_by_currency,
+)
 from apps.orders.querysets import with_order_api_relations
 from apps.catalog.models import ClientPrice, Product
 from apps.catalog.serializers import ClientPriceUpdateSerializer
@@ -221,12 +225,9 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     def _debt_orders(self, client):
         # Заказы уже предзагружены queryset'ом — фильтруем кэш, не создавая
         # новый запрос на каждого клиента.
-        orders = [o for o in client.orders.all() if o.is_debt]
+        orders = debt_orders(client.orders.all())
         orders.sort(key=lambda o: o.created_at, reverse=True)
         return orders
-
-    def _debt_total(self, orders):
-        return sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
 
     @action(detail=False, methods=["get"], url_path="debts")
     def debts(self, request):
@@ -259,7 +260,9 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                           if timezone.localdate(o.created_at) <= date_to]
             if store_id:
                 orders = [o for o in orders if o.store_id == store_id]
-            debt = self._debt_total(orders)
+            totals = sum_by_currency(orders, order_remaining)
+            currency = primary_currency(totals, fallback=client.currency)
+            debt = totals.get(currency, Decimal("0"))
             if debt <= 0:
                 continue
             if debt_min is not None and debt < debt_min:
@@ -272,7 +275,10 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 "client_id": client.id,
                 "client_name": client.name,
                 "client_phone": client.phone,
+                # debt_total — основная валюта; полная раскладка рядом.
                 "debt_total": money_string(debt),
+                "debt_currency": currency,
+                "debt_by_currency": as_money_strings(totals),
                 "orders_count": len(orders),
                 "unpaid_count": sum(1 for o in orders if o.payment_status == "unpaid"),
                 "partial_count": sum(1 for o in orders if o.payment_status == "partial"),
@@ -292,26 +298,40 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         client = self.get_object()
         today = timezone.localdate()
         orders = list(self._debt_orders(client))
-        debt = self._debt_total(orders)
+        totals = sum_by_currency(orders, order_remaining)
+        currency = primary_currency(totals, fallback=client.currency)
+        debt = totals.get(currency, Decimal("0"))
         stores = [s for s in client.stores.all()
                   if any(o.store_id == s.id for o in orders)]
         # За всё время: отгруженные заказы «в долг», включая уже погашенные.
         lifetime = [o for o in client.orders.all()
                     if o.status == "shipped" and o.settlement_intent == "debt"]
+        lifetime_total = sum_by_currency(lifetime, lambda o: o.total_amount)
+        lifetime_paid = sum_by_currency(lifetime, lambda o: o.paid_total)
         # Просрочено = остаток по заказам магазинов, у которых сегодня день оплаты.
         overdue_stores = {s.id for s in stores
                           if s.payment_schedule_type != "none"
                           and is_payment_window_open(s, today)}
-        overdue = sum((o.total_amount - o.paid_total for o in orders
-                       if o.store_id in overdue_stores), Decimal("0"))
+        overdue = sum_by_currency(
+            [o for o in orders if o.store_id in overdue_stores], order_remaining)
         return Response({
             "client": ClientSerializer(client).data,
             "debt_total": money_string(debt),
-            "lifetime_total": money_string(sum(
-                (o.total_amount for o in lifetime), Decimal("0"))),
-            "lifetime_paid": money_string(sum(
-                (o.paid_total for o in lifetime), Decimal("0"))),
-            "overdue_total": money_string(overdue),
+            "debt_currency": currency,
+            "debt_by_currency": as_money_strings(totals),
+            "lifetime_total": money_string(
+                lifetime_total.get(currency, Decimal("0"))),
+            "lifetime_paid": money_string(
+                lifetime_paid.get(currency, Decimal("0"))),
+            "lifetime_by_currency": {
+                code: {
+                    "total": money_string(lifetime_total.get(code, Decimal("0"))),
+                    "paid": money_string(lifetime_paid.get(code, Decimal("0"))),
+                }
+                for code in sorted({*lifetime_total, *lifetime_paid})
+            },
+            "overdue_total": money_string(overdue.get(currency, Decimal("0"))),
+            "overdue_by_currency": as_money_strings(overdue),
             "orders_count": len(orders),
             "unpaid_count": sum(1 for o in orders if o.payment_status == "unpaid"),
             "partial_count": sum(1 for o in orders if o.payment_status == "partial"),
@@ -351,12 +371,15 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         store = self.get_object()
         today = timezone.localdate()
         qs = with_order_api_relations(store.orders.all()).order_by("created_at")
-        orders = [o for o in qs if o.is_debt]
-        debt = sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
+        orders = debt_orders(qs)
+        totals = sum_by_currency(orders, order_remaining)
+        currency = primary_currency(totals, fallback=store.client.currency)
         return Response({
             "store": StoreSerializer(store).data,
             "client_name": store.client.name,
-            "debt_total": money_string(debt),
+            "debt_total": money_string(totals.get(currency, Decimal("0"))),
+            "debt_currency": currency,
+            "debt_by_currency": as_money_strings(totals),
             "window_open": is_payment_window_open(store, today),
             "orders": OrderSerializer(orders, many=True, context={"request": request}).data,
         })
@@ -368,8 +391,10 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         rows = []
         for store in self.get_queryset().prefetch_related(
                 "orders__items__product", "orders__payments"):
-            orders = [o for o in store.orders.all() if o.is_debt]
-            debt = sum((o.total_amount - o.paid_total for o in orders), Decimal("0"))
+            orders = debt_orders(store.orders.all())
+            totals = sum_by_currency(orders, order_remaining)
+            currency = primary_currency(totals, fallback=store.client.currency)
+            debt = totals.get(currency, Decimal("0"))
             if debt <= 0:
                 continue
             window_open = is_payment_window_open(store, today)
@@ -381,6 +406,8 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 "payment_schedule_type": store.payment_schedule_type,
                 "payment_days": store.payment_days,
                 "debt_total": money_string(debt),
+                "debt_currency": currency,
+                "debt_by_currency": as_money_strings(totals),
                 "orders_count": len(orders),
                 "window_open": window_open,
                 # просрочка: окно сегодня открыто, но долг ещё висит

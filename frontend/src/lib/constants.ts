@@ -84,11 +84,11 @@ export const PAYMENT_STATUS_TONE: Record<string, "muted" | "primary" | "success"
 // Цепочка подтверждения оплаты: каждый шаг фиксируется с автором и временем.
 // accountant_ok — легаси-стадия (схлопнута в confirmed), подпись для старых записей.
 export const PAYMENT_STAGE_LABELS: Record<string, string> = {
-  requested: "Ожидается",
-  received: "На проверке",
+  requested: "Ожидает",
+  received: "В кассе",
   accountant_ok: "Подтверждена",
   confirmed: "Оплачено",
-  rejected: "Отклонена",
+  rejected: "Отклонено",
 };
 
 export const PAYMENT_STAGE_TONE: Record<string, "muted" | "primary" | "success" | "warning" | "destructive"> = {
@@ -98,6 +98,38 @@ export const PAYMENT_STAGE_TONE: Record<string, "muted" | "primary" | "success" 
   confirmed: "success",
   rejected: "destructive",
 };
+
+// Состояния, приходящие от платёжного провайдера. Живут рядом с этапами
+// кассы: журнал транзакций показывает и те, и другие одним столбцом, и без
+// общего словаря легаси-этап accountant_ok выводился сырым кодом.
+export const PROVIDER_STAGE_LABELS: Record<string, string> = {
+  awaiting_customer: "Ожидает клиента",
+  cancellation_pending: "Отмена в обработке",
+  payment_error: "Ошибка счёта",
+  refund_pending: "Возврат в обработке",
+  partially_refunded: "Частично возвращено",
+  refunded: "Возвращено",
+};
+
+export const PROVIDER_STAGE_TONE: Record<string, "muted" | "primary" | "success" | "warning" | "destructive"> = {
+  awaiting_customer: "warning",
+  cancellation_pending: "warning",
+  payment_error: "destructive",
+  refund_pending: "warning",
+  partially_refunded: "primary",
+  refunded: "muted",
+};
+
+/** Подпись и тон любого состояния оплаты — кассового или провайдерского. */
+export function paymentStage(status: string): {
+  label: string;
+  tone: "muted" | "primary" | "success" | "warning" | "destructive";
+} {
+  return {
+    label: PAYMENT_STAGE_LABELS[status] ?? PROVIDER_STAGE_LABELS[status] ?? status,
+    tone: PAYMENT_STAGE_TONE[status] ?? PROVIDER_STAGE_TONE[status] ?? "muted",
+  };
+}
 
 export const PAYMENT_METHOD_LABELS: Record<string, string> = {
   invoice: "Счёт на оплату",

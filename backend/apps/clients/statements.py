@@ -4,23 +4,24 @@ from decimal import Decimal
 from io import BytesIO
 from typing import TypedDict
 
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from apps.orders.labels import (
+    order_payment_method_label, payment_method_label, payment_status_label,
+    transport_label,
+)
 from apps.orders.models import Order, Payment
 from apps.orders.statuses import public_status_label
 
 
-METHOD_LABELS = {
-    "invoice": "Счёт на оплату", "kaspi": "Kaspi", "cash": "Наличными",
-    "debt": "В долг", "card": "Карта (архив)",
-}
-PAYMENT_STATUS_LABELS = {
-    "requested": "Запрошена", "received": "Получена",
-    "confirmed": "Подтверждена", "rejected": "Отклонена",
-}
+def _method_label(method: str) -> str:
+    """В выписке отмечаем архивные способы, чтобы их не искали в кассе."""
+    return payment_method_label(method, archived_hint=True)
+
 
 NAVY = "17233B"
 BLUE = "3367D6"
@@ -54,7 +55,29 @@ def _local(value):
 
 
 def _money(value):
-    return float(value or Decimal("0"))
+    """Денежное значение для ячейки Excel.
+
+    openpyxl пишет Decimal нативно, а float на суммах в миллионы тенге теряет
+    копейки (99999999.99 хранится как 99999999.98999999…): выписка клиента
+    начинала расходиться с API. Формат ячейки задаёт `_finish`.
+    """
+    return Decimal(value or 0)
+
+
+# Оплата признаётся днём подтверждения кассой; если подтверждения ещё нет —
+# днём записи. Тот же момент показывается в строках выписки, поэтому фильтр
+# периода обязан считать по нему же, иначе деньги, подтверждённые в периоде,
+# в выписку не попадут, а попавшие получат дату вне запрошенного окна.
+PAYMENT_STAMP = Coalesce("confirmed_at", "paid_at")
+
+
+def _payments_in_period(queryset, date_from, date_to):
+    queryset = queryset.annotate(_stamp=PAYMENT_STAMP)
+    if date_from:
+        queryset = queryset.filter(_stamp__date__gte=date_from)
+    if date_to:
+        queryset = queryset.filter(_stamp__date__lte=date_to)
+    return queryset.order_by("_stamp", "id")
 
 
 def _neutralize_formula_cells(workbook) -> None:
@@ -136,11 +159,7 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
     payments = Payment.objects.filter(
         order__client=client, order__deleted_at__isnull=True,
     ).select_related("order", "recorded_by", "received_by", "confirmed_by")
-    if date_from:
-        payments = payments.filter(paid_at__date__gte=date_from)
-    if date_to:
-        payments = payments.filter(paid_at__date__lte=date_to)
-    payments = list(payments.order_by("paid_at", "id"))
+    payments = list(_payments_in_period(payments, date_from, date_to))
 
     period = "за всё время"
     if date_from or date_to:
@@ -241,7 +260,7 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
             author = payment.confirmed_by or payment.received_by or payment.recorded_by
             values = [
                 _local(stamp), "Оплата", payment.order_id, payment.note or "Поступление оплаты",
-                METHOD_LABELS.get(payment.method, payment.method), currency, 0,
+                _method_label(payment.method), currency, 0,
                 _money(credit), _money(balances[currency]), author.username if author else "—",
             ]
         ledger.append(values)
@@ -260,7 +279,7 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
             order.id, _local(order.created_at), public_status_label(order.status),
             _local(shipment.shipped_at) if shipment else None, order.department,
             order.store.name if order.store else "—",
-            "Поезд" if order.transport_type == "train" else "Трак",
+            transport_label(order.transport_type),
             order.truck_number or "—", order.currency, _money(order.total_amount),
             _money(order.paid_total), _money(max(Decimal("0"), order.remaining_amount)),
             order.repeated_from_id, order.notes,
@@ -291,8 +310,8 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
         author = payment.confirmed_by or payment.received_by or payment.recorded_by
         pay_ws.append([
             payment.id, _local(payment.confirmed_at or payment.paid_at), payment.order_id,
-            METHOD_LABELS.get(payment.method, payment.method),
-            PAYMENT_STATUS_LABELS.get(payment.status, payment.status), _money(payment.amount),
+            _method_label(payment.method),
+            payment_status_label(payment.status), _money(payment.amount),
             payment.order.currency, author.username if author else "—", payment.note,
         ])
     _finish(pay_ws, (9, 19, 10, 20, 18, 18, 10, 20, 38), (6,), (2,))
@@ -311,7 +330,7 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
             order.store.name if order.store else "—",
             sum(item.quantity for item in order.items.all()), _money(order.total_amount),
             _money(order.paid_total), _money(order.remaining_amount), order.currency,
-            METHOD_LABELS.get(order.payment_method, order.payment_method),
+            order_payment_method_label(order.payment_method),
         ])
     _finish(debt_ws, (10, 19, 22, 12, 18, 18, 18, 10, 20), (5, 6, 7), (2,))
 
@@ -349,11 +368,7 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
     payments_qs = Payment.objects.filter(
         order__deleted_at__isnull=True,
     ).select_related("order", "order__client", "recorded_by", "received_by", "confirmed_by")
-    if date_from:
-        payments_qs = payments_qs.filter(paid_at__date__gte=date_from)
-    if date_to:
-        payments_qs = payments_qs.filter(paid_at__date__lte=date_to)
-    payments = list(payments_qs.order_by("paid_at", "id"))
+    payments = list(_payments_in_period(payments_qs, date_from, date_to))
 
     period = "за всё время"
     if date_from or date_to:
@@ -491,7 +506,7 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
             values = [
                 _local(stamp), payment.order.client.name, payment.order.client.phone,
                 "Оплата", payment.order_id, payment.note or "Поступление оплаты",
-                METHOD_LABELS.get(payment.method, payment.method), currency, 0,
+                _method_label(payment.method), currency, 0,
                 _money(credit), _money(balances[balance_key]),
                 author.username if author else "—",
             ]
@@ -512,7 +527,7 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
             public_status_label(order.status),
             _local(shipment.shipped_at) if shipment else None, order.department,
             order.store.name if order.store else "—",
-            "Вагон" if order.transport_type == "train" else "Трак",
+            transport_label(order.transport_type),
             order.truck_number or "—", order.currency, _money(order.total_amount),
             _money(order.paid_total), _money(max(Decimal("0"), order.remaining_amount)),
             sum(item.quantity for item in order.items.all()), order.repeated_from_id,
@@ -551,8 +566,8 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
         pay_ws.append([
             payment.id, _local(payment.confirmed_at or payment.paid_at),
             payment.order.client.name, payment.order.client.phone, payment.order_id,
-            METHOD_LABELS.get(payment.method, payment.method),
-            PAYMENT_STATUS_LABELS.get(payment.status, payment.status), _money(payment.amount),
+            _method_label(payment.method),
+            payment_status_label(payment.status), _money(payment.amount),
             payment.order.currency, author.username if author else "—", payment.note,
         ])
     _finish(pay_ws, (9, 19, 30, 18, 10, 20, 18, 18, 10, 20, 38), (8,), (2,))
@@ -573,7 +588,7 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
             order.store.name if order.store else "—",
             sum(item.quantity for item in order.items.all()), _money(order.total_amount),
             _money(order.paid_total), _money(order.remaining_amount), order.currency,
-            METHOD_LABELS.get(order.payment_method, order.payment_method), order.department,
+            order_payment_method_label(order.payment_method), order.department,
         ])
     _finish(debt_ws, (10, 19, 30, 18, 22, 12, 18, 18, 18, 10, 20, 18), (7, 8, 9), (2,))
 

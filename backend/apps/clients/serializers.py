@@ -3,6 +3,7 @@ from decimal import Decimal
 from uuid import uuid4
 from django.db import transaction
 from apps.common.money import money_string
+from apps.orders.debt import as_money_strings, debt_by_currency, primary_currency
 from .models import Client, Department, Store
 
 
@@ -75,21 +76,41 @@ class DepartmentSerializer(serializers.ModelSerializer):
 class ClientSerializer(serializers.ModelSerializer):
     name = serializers.CharField(read_only=True)
     debt_total = serializers.SerializerMethodField()
+    debt_currency = serializers.SerializerMethodField()
+    debt_by_currency = serializers.SerializerMethodField()
 
     class Meta:
         model = Client
         fields = ["id", "first_name", "last_name", "company_name", "phone", "name",
                   "country", "iin", "bank", "bank_account", "user",
                   "currency",
-                  "debt_total", "created_at"]
+                  "debt_total", "debt_currency", "debt_by_currency", "created_at"]
         # user связывает клиента с аккаунтом портала (создаётся при регистрации).
         # Запись через staff-API позволила бы перепривязать чужой аккаунт.
         read_only_fields = ["user", "created_at"]
 
+    def _debt(self, obj) -> dict:
+        # Считаем один раз на строку: сериализатор дёргает три поля подряд.
+        cached = getattr(obj, "_debt_totals_cache", None)
+        if cached is None:
+            cached = debt_by_currency(obj.orders.all())
+            obj._debt_totals_cache = cached
+        return cached
+
+    def get_debt_by_currency(self, obj):
+        return as_money_strings(self._debt(obj))
+
+    def get_debt_currency(self, obj):
+        return primary_currency(self._debt(obj), fallback=obj.currency)
+
     def get_debt_total(self, obj):
-        total = sum((o.remaining_amount for o in obj.orders.all() if o.is_debt),
-                    Decimal("0"))
-        return money_string(total)
+        """Долг в основной валюте клиента.
+
+        Разные валюты не складываются — полная раскладка лежит в
+        ``debt_by_currency``, а это поле описывает одну, самую крупную.
+        """
+        totals = self._debt(obj)
+        return money_string(totals.get(self.get_debt_currency(obj), Decimal("0")))
 
 class StoreSerializer(serializers.ModelSerializer):
     class Meta:

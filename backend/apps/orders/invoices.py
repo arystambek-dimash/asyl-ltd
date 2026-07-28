@@ -20,6 +20,7 @@ from reportlab.platypus import (
     HRFlowable, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
 )
 
+from .labels import payment_method_label
 from .models import Order, Payment
 
 
@@ -65,10 +66,7 @@ def build_payment_receipt_pdf(payment: Payment) -> bytes:
         "ReceiptNormal", parent=styles["BodyText"], fontName="InvoiceSans",
         fontSize=11, leading=17,
     )
-    method = {
-        "cash": "Наличные", "kaspi": "Kaspi Pay",
-        "invoice": "Счёт на оплату", "card": "Карта",
-    }.get(payment.method, payment.method)
+    method = payment_method_label(payment.method)
     rows = [
         ["Номер квитанции", f"PAY-{payment.pk:06d}"],
         ["Заказ", f"№{payment.order_id}"],

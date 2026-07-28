@@ -221,6 +221,16 @@ class Payment(models.Model):
     )
     confirmed_at = models.DateTimeField(null=True, blank=True)
 
+    class Meta:
+        indexes = [
+            # Журнал транзакций и выписки читают оплаты в обратном
+            # хронологическом порядке. Без индекса это Seq Scan по всей
+            # таблице на каждый запрос списка.
+            models.Index(fields=["-paid_at"], name="payment_paid_at_desc_idx"),
+            # Очередь кассы и сводный отчёт всегда фильтруют по этапу.
+            models.Index(fields=["status"], name="payment_status_idx"),
+        ]
+
     @property
     def net_amount(self) -> Decimal:
         return max(Decimal("0"), self.amount - self.refunded_amount)

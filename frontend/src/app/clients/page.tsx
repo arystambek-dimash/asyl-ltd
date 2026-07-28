@@ -399,8 +399,15 @@ function ClientsPageInner() {
   }
 
   const list = clients ?? [];
+  // Валюта долга берётся из заказов, а не из карточки клиента: у KZT-клиента
+  // может быть заказ в USD, и складывать их в одну сумму нельзя.
   const debtByCurrency = list.reduce<Record<string, number>>((totals, client) => {
-    totals[client.currency] = (totals[client.currency] ?? 0) + Number(client.debt_total ?? 0);
+    const rows = client.debt_by_currency ?? {
+      [client.debt_currency ?? client.currency]: client.debt_total ?? "0",
+    };
+    for (const [currency, amount] of Object.entries(rows)) {
+      totals[currency] = (totals[currency] ?? 0) + Number(amount);
+    }
     return totals;
   }, {});
 
@@ -579,7 +586,7 @@ function ClientsPageInner() {
                   <div className="text-[11px] text-[var(--muted-foreground)]">Задолженность</div>
                   {Number(c.debt_total ?? 0) > 0 ? (
                     <div className="font-medium tabular-nums text-[var(--destructive)]">
-                      {formatMoney(c.debt_total!)} {currencySymbol(c.currency)}
+                      {formatMoney(c.debt_total!)} {currencySymbol(c.debt_currency ?? c.currency)}
                     </div>
                   ) : (
                     <div className="text-[var(--muted-foreground)]">—</div>
@@ -646,7 +653,7 @@ function ClientsPageInner() {
                     <TD className="tabular-nums">
                       {Number(c.debt_total ?? 0) > 0 ? (
                         <span className="font-medium text-[var(--destructive)]">
-                          {formatMoney(c.debt_total!)} {currencySymbol(c.currency)}
+                          {formatMoney(c.debt_total!)} {currencySymbol(c.debt_currency ?? c.currency)}
                         </span>
                       ) : (
                         <span className="text-[var(--muted-foreground)]">—</span>

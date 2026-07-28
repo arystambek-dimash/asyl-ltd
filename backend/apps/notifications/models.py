@@ -11,3 +11,8 @@ class Notification(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            # Список клиента: «непрочитанные сверху» — самый частый запрос.
+            models.Index(fields=["client", "is_read", "-created_at"],
+                         name="notification_inbox_idx"),
+        ]

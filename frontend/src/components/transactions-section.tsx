@@ -15,7 +15,7 @@ import { api, apiError } from "@/lib/api";
 import { downloadBlob } from "@/lib/download";
 import { useApi } from "@/lib/use-api";
 import { formatCurrency, formatDateTime, formatMoney } from "@/lib/utils";
-import { CASHIER_PAYMENT_METHOD_LABELS } from "@/lib/constants";
+import { CASHIER_PAYMENT_METHOD_LABELS, paymentStage } from "@/lib/constants";
 import type { Payment } from "@/lib/types";
 
 interface TransactionPage {
@@ -31,18 +31,9 @@ interface TransactionPage {
   };
 }
 
-const STATUS: Record<string, { label: string; tone: "success" | "warning" | "destructive" | "muted" | "primary" }> = {
-  confirmed: { label: "Оплачено", tone: "success" },
-  received: { label: "В кассе", tone: "warning" },
-  requested: { label: "Ожидает", tone: "warning" },
-  rejected: { label: "Отклонено", tone: "destructive" },
-  awaiting_customer: { label: "Ожидает клиента", tone: "warning" },
-  cancellation_pending: { label: "Отмена в обработке", tone: "warning" },
-  payment_error: { label: "Ошибка счёта", tone: "destructive" },
-  refund_pending: { label: "Возврат в обработке", tone: "warning" },
-  partially_refunded: { label: "Частично возвращено", tone: "primary" },
-  refunded: { label: "Возвращено", tone: "muted" },
-};
+// Подписи и тона берутся из общего словаря (lib/constants): раньше здесь
+// лежала своя копия, которая расходилась с остальным интерфейсом и не знала
+// легаси-этап accountant_ok — он выводился сырым кодом.
 
 const STATUS_HELP: Record<string, { meaning: string; money: string; next: string }> = {
   requested: {
@@ -374,10 +365,7 @@ export function TransactionsSection() {
                 <TBody>
                   {rows.map((row) => {
                     const effectiveStatus = row.effective_status ?? row.status;
-                    const state = STATUS[effectiveStatus] ?? {
-                      label: effectiveStatus,
-                      tone: "muted" as const,
-                    };
+                    const state = paymentStage(effectiveStatus);
                     return (
                       <TR key={row.id}>
                         <TD>
@@ -577,7 +565,7 @@ export function TransactionsSection() {
         open={!!statusFor}
         onClose={() => setStatusFor(null)}
         eyebrow="Статус операции"
-        title={STATUS[statusFor?.effective_status ?? statusFor?.status ?? ""]?.label ?? statusFor?.status ?? "Статус"}
+        title={statusFor ? paymentStage(statusFor.effective_status ?? statusFor.status).label : "Статус"}
         description="Статус показывает, учитываются ли деньги в кассе и что можно сделать с операцией."
         footer={<Button onClick={() => setStatusFor(null)}>Понятно</Button>}
       >

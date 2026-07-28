@@ -73,7 +73,11 @@ export interface Client {
   bank: string;
   bank_account: string;
   user: number | null;
+  /** Долг в основной валюте клиента (debt_currency). Валюты не складываются. */
   debt_total?: string;
+  debt_currency?: "KZT" | "USD";
+  /** Полная раскладка долга по валютам заказов. */
+  debt_by_currency?: Record<string, string>;
   created_at?: string;
 }
 export interface Store {

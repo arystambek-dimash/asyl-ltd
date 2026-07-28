@@ -1,3 +1,4 @@
+from decimal import Decimal
 from io import BytesIO
 
 import pytest
@@ -116,3 +117,59 @@ def test_all_clients_statement_neutralizes_spreadsheet_formulas(
     ]
     assert all(cell.data_type == "s" for cell in cells)
     assert [cell.value[0] for cell in cells] == ["'", "'", "'", "'"]
+
+
+def test_statement_period_matches_payment_recognition_day(auth_client, user_with_perms):
+    """Оплата попадает в период по дню подтверждения — тому же, что показан в строке.
+
+    Раньше фильтр шёл по paid_at, а в выписке печатался confirmed_at: деньги,
+    подтверждённые в периоде, в выписку не попадали.
+    """
+    from datetime import timedelta
+    from django.utils import timezone
+
+    reporter = user_with_perms(
+        "statement-period", codes=["clients.view", "reports.export"])
+    client = Client.objects.create(first_name="Per", last_name="Iod", phone="9")
+    product = Product.objects.create(name="Цемент", color="Grey", weight_kg="50")
+    order = Order.objects.create(client=client, status="shipped")
+    OrderItem.objects.create(
+        order=order, product=product, quantity=1, unit_price="1000.00")
+
+    long_ago = timezone.now() - timedelta(days=30)
+    payment = Payment.objects.create(
+        order=order, amount="400.00", method="cash", status="confirmed",
+        confirmed_by=reporter,
+    )
+    # Записана 30 дней назад, подтверждена сегодня.
+    Payment.objects.filter(pk=payment.pk).update(
+        paid_at=long_ago, confirmed_at=timezone.now())
+
+    today = timezone.localdate().isoformat()
+    response = auth_client(reporter).get(
+        f"/api/clients/{client.pk}/statement/?date_from={today}&date_to={today}")
+
+    assert response.status_code == 200
+    wb = load_workbook(BytesIO(response.content), data_only=True)
+    paid_cell = wb["Сводка"]["D8"].value  # строка KZT: Заказов/Продажи/Оплачено
+    assert paid_cell == 400, "оплата, подтверждённая сегодня, должна войти в период"
+
+
+def test_statement_money_cells_keep_kopecks(auth_client, user_with_perms):
+    """Крупные суммы не теряют копейки: в ячейку пишется Decimal, а не float."""
+    reporter = user_with_perms(
+        "statement-money", codes=["clients.view", "reports.export"])
+    client = Client.objects.create(first_name="Big", last_name="Sum", phone="8")
+    product = Product.objects.create(name="Щебень", color="Grey", weight_kg="50")
+    order = Order.objects.create(client=client, status="shipped")
+    OrderItem.objects.create(
+        order=order, product=product, quantity=1, unit_price="99999999.99")
+
+    response = auth_client(reporter).get(f"/api/clients/{client.pk}/statement/")
+
+    wb = load_workbook(BytesIO(response.content), data_only=True)
+    written = wb["Сводка"]["C8"].value
+    # float(Decimal("99999999.99")) хранится как 99999999.98999999…, и Excel
+    # показал бы копейку меньше. Decimal доезжает без потери.
+    assert str(written) == "99999999.99"
+    assert Decimal(str(written)) == Decimal("99999999.99")

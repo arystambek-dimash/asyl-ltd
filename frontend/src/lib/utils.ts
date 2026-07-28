@@ -40,6 +40,18 @@ export function monthStartLocalIsoDate(): string {
   return toLocalIsoDate(new Date(today.getFullYear(), today.getMonth(), 1));
 }
 
+/** Календарная дата «ГГГГ-ММ-ДД» по-русски: «28.07.2026».
+ *
+ * `new Date("2026-07-28")` разбирается как UTC-полночь, и восточнее Гринвича
+ * (Алматы, +5) `toLocaleDateString` показал бы предыдущий день. Здесь дата
+ * читается как локальная, без сдвига.
+ */
+export function formatIsoDate(value: string): string {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return value;
+  return new Date(year, month - 1, day).toLocaleDateString("ru-RU");
+}
+
 /** Дата и время по-русски: «13.07.2026, 14:32». */
 export function formatDateTime(value: string | Date): string {
   return new Date(value).toLocaleString("ru-RU", {
