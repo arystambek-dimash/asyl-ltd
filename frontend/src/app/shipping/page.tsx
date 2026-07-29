@@ -11,6 +11,8 @@ import { BagCounter, type BagCounterHandle } from "@/components/shipping/bag-cou
 import { ErrorAlert } from "@/components/ui/data-state";
 import { ManualOrderStatusModal, type ManualOrderTarget } from "@/components/manual-order-status-modal";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { formatPlate } from "@/components/ui/license-plate-input";
 import { playableCameras, type CameraFeed } from "@/components/camera-wall";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
@@ -1247,6 +1249,9 @@ function ShippingPageInner() {
   const [rollbackOrder, setRollbackOrder] = useState<Order | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Кнопка отгрузки стоит вплотную под «+1/+5»: промах перчаткой отправлял
+  // машину с неверным счётом, а откат требует отдельного права.
+  const [finishing, setFinishing] = useState<Order | null>(null);
   const bagCounterRef = useRef<BagCounterHandle>(null);
 
   // Инвентарь камер и живой борд восстанавливаются после сетевых сбоев.
@@ -1422,6 +1427,12 @@ function ShippingPageInner() {
         setManualStatusTarget("shipped");
         return;
       }
+      // Отгрузка необратима без отдельного права: показываем счёт мешков,
+      // чтобы промах перчаткой мимо «+1» был виден до выезда машины.
+      if (target === "done") {
+        setFinishing(order);
+        return;
+      }
       void executeMove(order, target);
     },
     [executeMove],
@@ -1556,7 +1567,7 @@ function ShippingPageInner() {
                       <Button
                         className="h-14 rounded-xl text-base"
                         disabled={busy}
-                        onClick={() => act(() => finishSelectedOrder(selected))}
+                        onClick={() => setFinishing(selected)}
                       >
                         <Check className="size-5" /> Завершить отгрузку
                       </Button>
@@ -1591,7 +1602,7 @@ function ShippingPageInner() {
                       <Button
                         className="h-14 rounded-xl text-base"
                         disabled={busy}
-                        onClick={() => act(() => finishSelectedOrder(selected))}
+                        onClick={() => setFinishing(selected)}
                       >
                         <Check className="size-5" /> Завершить отгрузку
                       </Button>
@@ -1631,6 +1642,30 @@ function ShippingPageInner() {
         onClose={() => setRollbackOrder(null)}
         onChanged={async () => {
           await Promise.all([reload(), reloadSessions(), reloadHistories()]);
+        }}
+      />
+
+      {/* Счёт мешков виден в подтверждении: если промахнулись мимо «+1»,
+          ошибка заметна здесь, а не после выезда машины. */}
+      <ConfirmDialog
+        open={finishing !== null}
+        onClose={() => !busy && setFinishing(null)}
+        title="Завершить отгрузку?"
+        description={
+          finishing
+            ? `Машина ${formatPlate(finishing.truck_number) || "без номера"} уедет с ${
+                finishing.bags_loaded ?? 0
+              } из ${orderedBagCount(finishing)} меш. Откат потребует отдельного права.`
+            : ""
+        }
+        confirmLabel="Завершить"
+        confirmVariant="default"
+        busy={busy}
+        error={error}
+        onConfirm={() => {
+          const order = finishing;
+          if (!order) return;
+          void act(() => finishSelectedOrder(order)).then(() => setFinishing(null));
         }}
       />
       <Modal

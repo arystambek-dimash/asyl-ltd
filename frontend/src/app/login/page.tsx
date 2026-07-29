@@ -60,11 +60,24 @@ export default function LoginPage() {
           <form onSubmit={submit} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="u">Логин</Label>
-              <Input id="u" value={username} autoFocus onChange={(e) => setUsername(e.target.value)} required />
+              <Input
+                id="u"
+                value={username}
+                autoFocus
+                autoComplete="username"
+                onChange={(e) => setUsername(e.target.value)}
+                required
+              />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="p">Пароль</Label>
-              <PasswordInput id="p" value={password} onChange={(e) => setPassword(e.target.value)} required />
+              <PasswordInput
+                id="p"
+                value={password}
+                autoComplete="current-password"
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
             </div>
             {error && (
               <p className="rounded-md bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
