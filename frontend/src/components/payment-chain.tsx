@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, formatDateTime } from "@/lib/utils";
 import {
   CASHIER_PAYMENT_METHOD_LABELS,
   CASHIER_PAYMENT_METHODS,
@@ -44,7 +44,7 @@ function StageTrace({ p }: { p: Payment }) {
         {steps.map((s) => (
           <span key={s.label}>
             {s.label}: {s.by ?? "—"}
-            {s.at ? ` · ${new Date(s.at).toLocaleString("ru-RU")}` : ""}
+            {s.at ? ` · ${formatDateTime(s.at)}` : ""}
           </span>
         ))}
       </div>

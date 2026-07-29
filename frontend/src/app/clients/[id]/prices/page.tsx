@@ -11,7 +11,7 @@ import { DataGate } from "@/components/ui/data-state";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
-import { formatDateTime } from "@/lib/utils";
+import { formatDateTime, currencySymbol } from "@/lib/utils";
 import type { ClientPriceSheet } from "@/lib/types";
 import { ArrowLeft, CheckCircle2, Save, Search, Tags } from "lucide-react";
 
@@ -173,7 +173,7 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
                                 onChange={(event) => setPrice(row.product, currency, event.target.value)}
                               />
                               <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm font-medium text-[var(--muted-foreground)]">
-                                {currency === "USD" ? "$" : "₸"}
+                                {currencySymbol(currency)}
                               </span>
                             </div>
                             <p className="mt-1 text-right text-[10px] text-[var(--muted-foreground)]">

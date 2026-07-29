@@ -25,7 +25,7 @@ import { Select } from "@/components/ui/select";
 import { LicensePlateInput } from "@/components/ui/license-plate-input";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
-import { cn, formatCurrency, todayLocalIsoDate } from "@/lib/utils";
+import { cn, formatCurrency, todayLocalIsoDate, currencySymbol } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 import type { Client, Department, Order, Product, Store } from "@/lib/types";
 
@@ -632,7 +632,7 @@ export function OrderForm({
                     inputMode="decimal"
                     className="rounded-xl"
                     aria-label={`Цена, позиция ${index + 1}`}
-                    placeholder={`Цена, ${currency === "USD" ? "$" : "₸"}`}
+                    placeholder={`Цена, ${currencySymbol(currency)}`}
                     value={row.price}
                     onChange={(event) =>
                       setRows(

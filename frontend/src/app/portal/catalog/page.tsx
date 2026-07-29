@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { buttonVariants } from "@/components/ui/button";
 import { DataGate } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, currencySymbol } from "@/lib/utils";
 import { Boxes, ShoppingCart, Tag } from "lucide-react";
 
 interface PortalProduct {
@@ -48,7 +48,7 @@ export default function PortalCatalogPage() {
                     : "text-[var(--muted-foreground)]")
                 }
               >
-                {code} {code === "USD" ? "$" : "₸"}
+                {code} {currencySymbol(code)}
               </button>
             ))}
           </div>

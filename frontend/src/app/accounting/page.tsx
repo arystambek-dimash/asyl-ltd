@@ -21,7 +21,14 @@ import { useAuth } from "@/store/auth";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { showSuccess } from "@/lib/toast";
-import { formatCurrency, formatMoney, primaryDebtCurrency, sumDebtByCurrency, todayLocalIsoDate } from "@/lib/utils";
+import {
+  formatCurrency,
+  formatDateTime,
+  formatMoney,
+  primaryDebtCurrency,
+  sumDebtByCurrency,
+  todayLocalIsoDate,
+} from "@/lib/utils";
 import { CASHIER_PAYMENT_METHOD_LABELS } from "@/lib/constants";
 import { ArrowUpRight, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
 import type { CashierLogItem, ClientDebt, Department, Order, PaymentQueueItem, Store } from "@/lib/types";
@@ -278,7 +285,7 @@ function PaymentJournalSection({ q }: { q: CashierQueue }) {
                 <div>
                   <div className="text-sm font-medium">{event.message}</div>
                   <div className="text-xs text-[var(--muted-foreground)]">
-                    {new Date(event.created_at).toLocaleString("ru-RU")}
+                    {formatDateTime(event.created_at)}
                     {` · заказ #${event.order}`}
                     {event.client_name ? ` · ${event.client_name}` : ""}
                     {event.user_name ? ` · ${event.user_name}` : ""}

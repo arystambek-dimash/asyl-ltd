@@ -14,7 +14,7 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { api, apiError } from "@/lib/api";
 import { downloadBlob } from "@/lib/download";
 import { useApi } from "@/lib/use-api";
-import { formatCurrency, formatDateTime, formatMoney } from "@/lib/utils";
+import { formatCurrency, formatDateTime, formatMoney, currencySymbol } from "@/lib/utils";
 import { CASHIER_PAYMENT_METHOD_LABELS, paymentStage } from "@/lib/constants";
 import type { Payment } from "@/lib/types";
 
@@ -381,7 +381,7 @@ export function TransactionsSection() {
                           )}
                         </TD>
                         <TD className="font-medium tabular-nums">
-                          {formatMoney(row.amount)} {row.currency === "USD" ? "$" : "₸"}
+                          {formatMoney(row.amount)} {currencySymbol(row.currency)}
                         </TD>
                         <TD>
                           <button
@@ -396,7 +396,7 @@ export function TransactionsSection() {
                         <TD>
                           {Number(row.refunded_amount ?? 0) > 0 ? (
                             <span className="text-sm tabular-nums">
-                              {formatMoney(row.refunded_amount ?? 0)} {row.currency === "USD" ? "$" : "₸"}
+                              {formatMoney(row.refunded_amount ?? 0)} {currencySymbol(row.currency)}
                             </span>
                           ) : Number(row.pending_refund_amount ?? 0) > 0 ? (
                             <span className="text-sm text-[var(--warning)]">
@@ -576,7 +576,7 @@ export function TransactionsSection() {
                 {statusFor.client_name} · заказ #{statusFor.order}
               </div>
               <div className="mt-1 text-2xl font-semibold tabular-nums">
-                {formatMoney(statusFor.amount)} {statusFor.currency === "USD" ? "$" : "₸"}
+                {formatMoney(statusFor.amount)} {currencySymbol(statusFor.currency)}
               </div>
               <div className="mt-2 space-y-0.5 text-xs text-[var(--muted-foreground)]">
                 <div>Создано: {formatDateTime(statusFor.paid_at)}</div>
@@ -599,7 +599,7 @@ export function TransactionsSection() {
                     <div key={refund.id} className="rounded-lg border px-3 py-2 text-sm">
                       <div className="flex items-center justify-between gap-3">
                         <span className="font-medium">
-                          {formatMoney(refund.amount)} {statusFor.currency === "USD" ? "$" : "₸"}
+                          {formatMoney(refund.amount)} {currencySymbol(statusFor.currency)}
                         </span>
                         <span className="text-xs text-[var(--muted-foreground)]">
                           {refund.status === "completed"
@@ -643,8 +643,7 @@ export function TransactionsSection() {
           <div className="rounded-lg border border-[var(--destructive)]/20 bg-[var(--destructive)]/5 p-3 text-sm">
             <div className="font-medium">{rejectFor?.client_name}</div>
             <div className="mt-1 text-[var(--muted-foreground)]">
-              Заказ #{rejectFor?.order} · {formatMoney(rejectFor?.amount ?? 0)}{" "}
-              {rejectFor?.currency === "USD" ? "$" : "₸"}
+              Заказ #{rejectFor?.order} · {formatMoney(rejectFor?.amount ?? 0)} {currencySymbol(rejectFor?.currency)}
             </div>
           </div>
           <div>

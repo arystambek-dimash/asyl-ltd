@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
+import { formatCurrency } from "@/lib/utils";
 import type { Store } from "@/lib/types";
 import { Info, Plus, Trash2 } from "lucide-react";
 
@@ -142,7 +143,7 @@ export default function PortalNewOrderPage() {
                     <option key={p.id} value={p.id} disabled={p.available_bags <= 0}>
                       {p.label}
                       {p.available_bags > 0
-                        ? ` · ${p.price ? `${Number(p.price).toLocaleString("ru-RU")} ${p.currency === "USD" ? "$" : "₸"} · ` : ""}в наличии ${p.available_bags} меш.`
+                        ? ` · ${p.price ? `${formatCurrency(p.price, p.currency)} · ` : ""}в наличии ${p.available_bags} меш.`
                         : " — нет в наличии"}
                     </option>
                   ))}
@@ -230,7 +231,7 @@ export default function PortalNewOrderPage() {
                 {" Способ оплаты вы выберете после завершения отгрузки."}
                 {estimatedTotal > 0 && (
                   <b className="ml-1 text-[var(--foreground)]">
-                    Предварительно: {estimatedTotal.toLocaleString("ru-RU")} {selectedCurrency === "USD" ? "$" : "₸"}
+                    Предварительно: {formatCurrency(estimatedTotal, selectedCurrency)}
                   </b>
                 )}
               </span>

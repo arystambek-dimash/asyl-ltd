@@ -17,7 +17,7 @@ import { DataGate } from "@/components/ui/data-state";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select-ui";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
-import { cn, formatCompactCurrency, formatCurrency, formatMoney, formatDateTime } from "@/lib/utils";
+import { cn, formatCompactCurrency, formatCurrency, formatMoney, formatDateTime, currencySymbol } from "@/lib/utils";
 import { can } from "@/lib/can";
 import { PaidMethodBreakdown } from "@/components/payment-chain";
 import { useAuth } from "@/store/auth";
@@ -693,7 +693,7 @@ function PaymentModal({
                       >
                         <span className="text-sm font-semibold">{label}</span>
                         <span className="text-[11px] tabular-nums text-[var(--muted-foreground)]">
-                          {formatMoney(v)} {order.currency === "USD" ? "$" : "₸"}
+                          {formatMoney(v)} {currencySymbol(order.currency)}
                         </span>
                       </button>
                     );
