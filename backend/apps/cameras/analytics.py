@@ -414,6 +414,64 @@ def _archive_payload(archive: AlwaysOnCountArchive) -> dict:
     }
 
 
+@transaction.atomic
+def delete_archive(archive_id: int, user) -> dict:
+    """Удалить запись архива, вернув её дни в текущий счёт.
+
+    Архивация — это перенос, а не списание, поэтому и отмена возвращает:
+    помеченные дни снова становятся живыми и попадают в «за всё время».
+    Иначе ошибочное закрытие уничтожило бы уже посчитанные мешки.
+
+    День закрытия возвращать некуда — он продолжил считаться дальше, и его
+    строка уже занята новыми мешками. Его вклад лежал снимком в day_rows,
+    поэтому он прибавляется к этой строке, а не подменяет её.
+    """
+    archive = (AlwaysOnCountArchive.objects.select_for_update()
+               .filter(pk=archive_id).first())
+    if archive is None:
+        raise ValidationError({
+            "detail": "Запись архива не найдена", "code": "archive_not_found",
+        })
+
+    restored_days = archive.daily_rows.count()
+    AlwaysOnDailyAnalytics.objects.filter(archive=archive).update(
+        archived_at=None, archive=None)
+
+    # Снимок дня закрытия: возвращаем его мешки в ту же дату.
+    for snapshot in archive.day_rows or []:
+        day = snapshot.get("day")
+        if not day:
+            continue
+        row, _ = AlwaysOnDailyAnalytics.objects.select_for_update().get_or_create(
+            camera=archive.camera, day=day,
+        )
+        row.model_total += int(snapshot.get("model_total") or 0)
+        row.adjustment += int(snapshot.get("adjustment") or 0)
+        merged = dict(row.model_per_color or {})
+        for color, value in _normalized_colors(snapshot.get("model_per_color")).items():
+            merged[color] = int(merged.get(color, 0)) + value
+        row.model_per_color = merged
+        row.save(update_fields=["model_total", "adjustment", "model_per_color",
+                                "updated_at"])
+        restored_days += 1
+
+    payload = _archive_payload(archive)
+    archive.delete()
+    log_event(
+        "always_on_archive_deleted",
+        f"AI 24/7 · {archive.camera}: запись архива удалена, "
+        f"{payload['total']} мешков возвращены в счёт",
+        user=user,
+        payload={
+            "camera": archive.camera, "archive_id": archive_id,
+            "total": payload["total"], "days": restored_days,
+            "period_start": payload["period_start"],
+            "period_end": payload["period_end"],
+        },
+    )
+    return payload
+
+
 def archives_payload(camera: str | None = None) -> list[dict]:
     rows = (AlwaysOnCountArchive.objects
             .select_related("archived_by")

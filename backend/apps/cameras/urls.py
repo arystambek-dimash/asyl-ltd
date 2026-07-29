@@ -28,6 +28,10 @@ urlpatterns = [
         AlwaysOnAnalyticsArchiveView.as_view(),
     ),
     path(
+        "cameras/always-on-analytics/archives/<int:archive_id>/",
+        AlwaysOnAnalyticsArchiveView.as_view(),
+    ),
+    path(
         "cameras/always-on-analytics/<str:cam>/archive/",
         AlwaysOnAnalyticsArchiveView.as_view(),
     ),

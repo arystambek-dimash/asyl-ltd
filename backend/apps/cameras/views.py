@@ -581,6 +581,9 @@ class AlwaysOnAnalyticsArchiveView(APIView):
             cam, request.data.get("note") or "", request.user,
         ))
 
+    def delete(self, request, archive_id: int):
+        return Response(analytics.delete_archive(archive_id, request.user))
+
 
 class ShippingBoardSettingsView(APIView):
     """Admin policy for the live shipping board."""

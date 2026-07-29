@@ -112,6 +112,66 @@ def test_second_archive_does_not_borrow_days_from_the_first(boss):
     assert sum(row["total"] for row in second["day_rows"]) == 40
 
 
+def test_deleting_an_archive_returns_its_bags_to_the_counter(boss):
+    """Удаление архива — отмена переноса: мешки возвращаются, а не пропадают."""
+    _enable()
+    yesterday = timezone.localdate() - timedelta(days=1)
+    AlwaysOnDailyAnalytics.objects.create(
+        camera="cam3", day=yesterday, model_total=500,
+        model_per_color={"red": 500})
+    analytics.record_snapshot(_snapshot(80, colors={"Red_50": 80}))
+    archive = analytics.archive_camera("cam3", "ошибочное закрытие", boss)
+    assert analytics.today_payload()["all_time_total"] == 0
+
+    analytics.delete_archive(archive["id"], boss)
+
+    payload = analytics.today_payload()
+    assert payload["all_time_total"] == 580
+    # День закрытия тоже вернулся — его вклад лежал снимком.
+    assert payload["total"] == 80
+    assert not AlwaysOnCountArchive.objects.filter(pk=archive["id"]).exists()
+
+
+def test_deleting_one_archive_does_not_touch_another(boss):
+    _enable()
+    analytics.record_snapshot(_snapshot(100))
+    first = analytics.archive_camera("cam3", "первый", boss)
+    analytics.record_snapshot(_snapshot(40))
+    second = analytics.archive_camera("cam3", "второй", boss)
+
+    analytics.delete_archive(second["id"], boss)
+
+    assert AlwaysOnCountArchive.objects.filter(pk=first["id"]).exists()
+    assert analytics.today_payload()["all_time_total"] == 40
+
+
+def test_deleting_a_missing_archive_is_rejected(boss):
+    with pytest.raises(ValidationError) as exc:
+        analytics.delete_archive(99999, boss)
+    assert exc.value.detail["code"] == "archive_not_found"
+
+
+def test_only_a_superuser_can_delete_an_archive(make_user, auth_client, boss):
+    """Кнопка удаления доступна тем же, кто может архивировать."""
+    _enable()
+    analytics.record_snapshot(_snapshot(100))
+    archive = analytics.archive_camera("cam3", "", boss)
+    plain = make_user(username="not-super")
+
+    denied = auth_client(plain).delete(
+        f"/api/cameras/always-on-analytics/archives/{archive['id']}/")
+    assert denied.status_code in (401, 403)
+    assert AlwaysOnCountArchive.objects.filter(pk=archive["id"]).exists()
+
+    root = make_user(username="root-del")
+    root.is_superuser = True
+    root.save(update_fields=["is_superuser"])
+    allowed = auth_client(root).delete(
+        f"/api/cameras/always-on-analytics/archives/{archive['id']}/")
+    assert allowed.status_code == 200
+    assert not AlwaysOnCountArchive.objects.filter(pk=archive["id"]).exists()
+
+
 def test_archive_rejects_an_empty_counter(boss):
     _enable()
     with pytest.raises(ValidationError) as exc:

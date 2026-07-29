@@ -648,6 +648,9 @@ function AlwaysOnCard({
   const [archives, setArchives] = useState<AlwaysOnCountArchive[] | null>(null);
   const [archivesError, setArchivesError] = useState("");
   const [openArchiveId, setOpenArchiveId] = useState<number | null>(null);
+  const [archiveToDelete, setArchiveToDelete] = useState<AlwaysOnCountArchive | null>(null);
+  const [deletingArchiveId, setDeletingArchiveId] = useState<number | null>(null);
+  const [deleteArchiveError, setDeleteArchiveError] = useState("");
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [streamOnline, setStreamOnline] = useState(false);
   const [liveProcessor, setLiveProcessor] = useState(processor);
@@ -771,6 +774,24 @@ function AlwaysOnCard({
   useEffect(() => {
     if (open && modalView === "archive" && archives === null) void loadArchives();
   }, [open, modalView, archives, loadArchives]);
+
+  async function deleteArchive(row: AlwaysOnCountArchive) {
+    setDeletingArchiveId(row.id);
+    setDeleteArchiveError("");
+    try {
+      await api.delete(`/cameras/always-on-analytics/archives/${row.id}/`);
+      // Мешки возвращаются в текущий счёт, поэтому обновляем и аналитику.
+      const analyticsResponse = await api.get<AlwaysOnDailyAnalytics>("/cameras/always-on-analytics/");
+      setLiveDaily(analyticsResponse.data.cameras.find((item) => item.camera === processor.cam));
+      await onAnalyticsChanged();
+      await loadArchives();
+      setArchiveToDelete(null);
+    } catch (cause) {
+      setDeleteArchiveError(apiError(cause));
+    } finally {
+      setDeletingArchiveId(null);
+    }
+  }
 
   async function archiveCount() {
     setArchiving(true);
@@ -1357,6 +1378,20 @@ function AlwaysOnCard({
                             {row.note}
                           </p>
                         )}
+
+                        <button
+                          type="button"
+                          disabled={deletingArchiveId === row.id}
+                          onClick={() => setArchiveToDelete(row)}
+                          className="mt-4 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-400 transition hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {deletingArchiveId === row.id ? (
+                            <LoaderCircle className="size-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="size-3.5" />
+                          )}
+                          Удалить запись
+                        </button>
                       </div>
                     )}
                   </div>
@@ -1487,6 +1522,60 @@ function AlwaysOnCard({
             </p>
           )}
         </div>
+      </Modal>
+
+      <Modal
+        open={archiveToDelete !== null}
+        onClose={() => deletingArchiveId === null && setArchiveToDelete(null)}
+        eyebrow={`Суперадмин · ${camera?.zone || processor.cam}`}
+        title="Удалить запись архива?"
+        description="Мешки не пропадут — они вернутся в текущий счёт, как будто период не закрывали."
+        className="max-w-lg"
+        footer={
+          <>
+            <Button variant="ghost" disabled={deletingArchiveId !== null} onClick={() => setArchiveToDelete(null)}>
+              Отмена
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deletingArchiveId !== null}
+              onClick={() => archiveToDelete && void deleteArchive(archiveToDelete)}
+            >
+              {deletingArchiveId !== null ? (
+                <LoaderCircle className="size-4 animate-spin" />
+              ) : (
+                <Trash2 className="size-4" />
+              )}
+              Удалить
+            </Button>
+          </>
+        }
+      >
+        {archiveToDelete && (
+          <div className="space-y-4">
+            <div className="flex items-end justify-between rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-amber-600">Вернётся в счёт</div>
+                <div className="mt-1 text-4xl font-black tabular-nums text-slate-900">{archiveToDelete.total}</div>
+              </div>
+              <div className="text-right text-xs text-slate-500">
+                {fullDay(archiveToDelete.period_start)}
+                {archiveToDelete.period_end !== archiveToDelete.period_start &&
+                  ` — ${fullDay(archiveToDelete.period_end)}`}
+                <br />
+                {archiveToDelete.days} дн.
+              </div>
+            </div>
+            <p className="text-sm text-slate-500">
+              Запись исчезнет из архива, а её дни снова попадут в «за всё время» и на график. Действие попадёт в журнал.
+            </p>
+            {deleteArchiveError && (
+              <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-600">
+                {deleteArchiveError}
+              </p>
+            )}
+          </div>
+        )}
       </Modal>
     </>
   );
