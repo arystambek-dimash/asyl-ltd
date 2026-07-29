@@ -572,7 +572,9 @@ class AlwaysOnAnalyticsArchiveView(APIView):
     permission_classes = [IsSuperUser]
 
     def get(self, request, cam: str | None = None):
-        return Response(analytics.archives_payload(cam))
+        # Камера приходит либо из пути, либо из ?camera= для общего списка.
+        return Response(analytics.archives_payload(
+            cam or request.query_params.get("camera")))
 
     def post(self, request, cam: str):
         return Response(analytics.archive_camera(

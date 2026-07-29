@@ -116,6 +116,37 @@ def test_day_payload_carries_its_own_colour_breakdown():
     assert [c["color"] for c in past_row["colors"]] == ["red"]
 
 
+def test_colour_percentages_always_sum_to_a_hundred():
+    """Доли не должны давать 100.1% из-за поокругления каждой по отдельности."""
+    _enable()
+    # Реальные цифры с экрана: 5931 + 1744 + 530 = 8205.
+    analytics.record_snapshot(_snapshot(
+        8205, colors={"Red_50": 5931, "Blue_50": 1744, "Green_50": 530}))
+
+    colors = analytics.today_payload()["colors"]
+
+    assert sum(item["total"] for item in colors) == 8205
+    # Сравниваем в десятых: 33.3 + 33.3 + 33.4 в float даёт 99.99999999999999.
+    assert sum(round(item["percent"] * 10) for item in colors) == 1000
+
+
+@pytest.mark.parametrize("counts", [
+    {"Red_50": 1, "Blue_50": 1, "Green_50": 1},        # 33.3 × 3 = 99.9
+    {"Red_50": 2, "Blue_50": 1},                        # 66.7 + 33.3
+    {"Red_50": 1000, "Blue_50": 1},                     # почти всё в один цвет
+    {"Red_50": 7, "Blue_50": 7, "Green_50": 7, "White_50": 7},
+])
+def test_percentages_sum_to_a_hundred_for_awkward_splits(counts):
+    _enable()
+    analytics.record_snapshot(_snapshot(sum(counts.values()), colors=counts))
+
+    colors = analytics.today_payload()["colors"]
+
+    # Сравниваем в десятых: 33.3 + 33.3 + 33.4 в float даёт 99.99999999999999.
+    assert sum(round(item["percent"] * 10) for item in colors) == 1000
+    assert sum(item["total"] for item in colors) == sum(counts.values())
+
+
 def test_colours_and_total_agree_after_a_manual_correction(boss):
     """Ручная поправка не должна разводить сумму цветов и итог по смыслу."""
     _enable()

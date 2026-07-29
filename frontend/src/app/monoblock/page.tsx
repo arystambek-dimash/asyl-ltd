@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Archive,
   BarChart3,
@@ -42,6 +42,7 @@ import { can } from "@/lib/can";
 import type {
   AiCountingSession,
   AlwaysOnCameraSettings,
+  AlwaysOnCountArchive,
   AlwaysOnDailyAnalytics,
   AlwaysOnDailyCameraAnalytics,
   AlwaysOnProcessorStatus,
@@ -642,7 +643,9 @@ function AlwaysOnCard({
   onAnalyticsChanged: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
-  const [modalView, setModalView] = useState<"live" | "analytics">("live");
+  const [modalView, setModalView] = useState<"live" | "analytics" | "archive">("live");
+  const [archives, setArchives] = useState<AlwaysOnCountArchive[] | null>(null);
+  const [archivesError, setArchivesError] = useState("");
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [streamOnline, setStreamOnline] = useState(false);
   const [liveProcessor, setLiveProcessor] = useState(processor);
@@ -748,6 +751,23 @@ function AlwaysOnCard({
     }
   }
 
+  const loadArchives = useCallback(async () => {
+    setArchivesError("");
+    try {
+      const response = await api.get<AlwaysOnCountArchive[]>(
+        `/cameras/always-on-analytics/archives/?camera=${encodeURIComponent(processor.cam)}`,
+      );
+      setArchives(response.data);
+    } catch (cause) {
+      setArchivesError(apiError(cause));
+    }
+  }, [processor.cam]);
+
+  // Архив не меняется сам по себе — грузим при первом открытии вкладки.
+  useEffect(() => {
+    if (open && modalView === "archive" && archives === null) void loadArchives();
+  }, [open, modalView, archives, loadArchives]);
+
   async function archiveCount() {
     setArchiving(true);
     setArchiveError("");
@@ -758,8 +778,11 @@ function AlwaysOnCard({
       const analyticsResponse = await api.get<AlwaysOnDailyAnalytics>("/cameras/always-on-analytics/");
       setLiveDaily(analyticsResponse.data.cameras.find((item) => item.camera === processor.cam));
       await onAnalyticsChanged();
+      await loadArchives();
       setArchiveOpen(false);
       setArchiveNote("");
+      // Сразу показываем, куда уехали мешки.
+      setModalView("archive");
     } catch (cause) {
       setArchiveError(apiError(cause));
     } finally {
@@ -838,6 +861,16 @@ function AlwaysOnCard({
             )}
           >
             <BarChart3 className="size-4" /> Аналитика
+          </button>
+          <button
+            type="button"
+            onClick={() => setModalView("archive")}
+            className={cn(
+              "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
+              modalView === "archive" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
+            )}
+          >
+            <Archive className="size-4" /> Архив
           </button>
         </div>
 
@@ -1135,6 +1168,88 @@ function AlwaysOnCard({
                   Накопленное уйдёт в архив, счётчик начнётся с нуля. Дни останутся в истории.
                 </p>
               </section>
+            </div>
+          </div>
+        )}
+
+        {modalView === "archive" && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h3 className="font-bold text-slate-800">Закрытые периоды</h3>
+                <p className="mt-0.5 text-xs text-slate-400">
+                  Каждая строка — счёт, сданный в архив. Данные не меняются.
+                </p>
+              </div>
+              {archives !== null && archives.length > 0 && (
+                <div className="text-right">
+                  <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Всего в архиве</div>
+                  <div className="text-2xl font-black tabular-nums text-slate-900">
+                    {archives.reduce((sum, row) => sum + row.total, 0)}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {archivesError && (
+              <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-600">
+                {archivesError}
+              </p>
+            )}
+
+            {archives === null && !archivesError && (
+              <div className="flex min-h-40 items-center justify-center text-slate-400">
+                <LoaderCircle className="size-5 animate-spin" />
+              </div>
+            )}
+
+            {archives !== null && archives.length === 0 && (
+              <div className="mt-4 flex min-h-40 flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-slate-400">
+                <Archive className="mb-2 size-7 text-slate-300" />
+                <span className="text-sm font-semibold">Архив пуст</span>
+                <span className="mt-1 max-w-64 text-xs">
+                  Здесь появятся закрытые периоды после нажатия «Обнулить и сдать в архив».
+                </span>
+              </div>
+            )}
+
+            <div className="mt-4 space-y-3">
+              {(archives ?? []).map((row) => (
+                <div key={row.id} className="rounded-xl border border-slate-200 p-3 sm:p-4">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <div>
+                      <div className="font-bold text-slate-800">
+                        {fullDay(row.period_start)}
+                        {row.period_end !== row.period_start && ` — ${fullDay(row.period_end)}`}
+                      </div>
+                      <div className="mt-0.5 text-xs text-slate-400">
+                        {row.days} дн. · закрыл {row.archived_by_name || "—"}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-2xl font-black tabular-nums text-slate-900">{row.total}</div>
+                      <div className="text-[11px] text-slate-400">
+                        модель {row.model_total}
+                        {row.adjustment !== 0 && ` · поправка ${row.adjustment}`}
+                      </div>
+                    </div>
+                  </div>
+
+                  {row.colors.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
+                      {row.colors.map((item) => (
+                        <span key={item.color} className="flex items-center gap-1.5 text-xs">
+                          <span className={cn("size-2.5 rounded-full", colorMeta(item.color).dot)} />
+                          <span className="text-slate-600">{colorMeta(item.color).label}</span>
+                          <span className="font-bold tabular-nums text-slate-900">{item.total}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {row.note && <p className="mt-2 text-xs italic text-slate-500">{row.note}</p>}
+                </div>
+              ))}
             </div>
           </div>
         )}

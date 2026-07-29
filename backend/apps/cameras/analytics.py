@@ -187,14 +187,30 @@ def _merge_colors(rows) -> dict[str, int]:
 
 
 def _color_payload(colors: dict[str, int]) -> list[dict]:
+    """Доли цветов, дающие в сумме ровно 100%.
+
+    Округление каждой доли по отдельности давало 72.3 + 21.3 + 6.5 = 100.1%.
+    Считаем в десятых долях процента и раздаём остаток по наибольшему
+    дробному хвосту (метод наибольших остатков), поэтому сумма сходится.
+    """
     total = sum(colors.values())
+    rows = sorted(colors.items(), key=lambda item: (-item[1], item[0]))
+    if not total:
+        return [{"color": color, "total": value, "percent": 0} for color, value in rows]
+
+    # Работаем в целых десятых процента: 1000 = 100.00%.
+    exact = [value * 1000 / total for _color, value in rows]
+    tenths = [int(share) for share in exact]
+    remainder = 1000 - sum(tenths)
+    # Остаток отдаём тем, у кого отброшенная часть больше — при равенстве
+    # выигрывает более крупный цвет, порядок уже отсортирован по убыванию.
+    order = sorted(range(len(rows)), key=lambda i: (-(exact[i] - tenths[i]), i))
+    for i in order[:remainder]:
+        tenths[i] += 1
+
     return [
-        {
-            "color": color,
-            "total": value,
-            "percent": round(value * 100 / total, 1) if total else 0,
-        }
-        for color, value in sorted(colors.items(), key=lambda item: (-item[1], item[0]))
+        {"color": color, "total": value, "percent": tenths[index] / 10}
+        for index, (color, value) in enumerate(rows)
     ]
 
 
