@@ -79,6 +79,39 @@ def test_archived_days_stay_out_of_the_current_total(boss):
     assert AlwaysOnCountArchive.objects.get().total == 580
 
 
+def test_archive_keeps_a_per_day_breakdown(boss):
+    """Архив раскрывается по дням — включая день, когда его закрыли."""
+    _enable()
+    yesterday = timezone.localdate() - timedelta(days=1)
+    AlwaysOnDailyAnalytics.objects.create(
+        camera="cam3", day=yesterday, model_total=500,
+        model_per_color={"red": 300, "blue": 200})
+    analytics.record_snapshot(_snapshot(80, colors={"Red_50": 80}))
+
+    result = analytics.archive_camera("cam3", "", boss)
+
+    by_day = {row["day"]: row for row in result["day_rows"]}
+    assert set(by_day) == {yesterday.isoformat(), timezone.localdate().isoformat()}
+    assert by_day[yesterday.isoformat()]["total"] == 500
+    assert by_day[timezone.localdate().isoformat()]["total"] == 80
+    # Сумма по дням сходится с итогом архива.
+    assert sum(row["total"] for row in result["day_rows"]) == result["total"]
+    # У каждого дня своя разбивка по цветам.
+    assert [c["color"] for c in by_day[yesterday.isoformat()]["colors"]] == ["red", "blue"]
+
+
+def test_second_archive_does_not_borrow_days_from_the_first(boss):
+    """Дни закрепляются за своим закрытием, а не за меткой времени."""
+    _enable()
+    analytics.record_snapshot(_snapshot(100))
+    first = analytics.archive_camera("cam3", "первый", boss)
+    analytics.record_snapshot(_snapshot(40))
+    second = analytics.archive_camera("cam3", "второй", boss)
+
+    assert sum(row["total"] for row in first["day_rows"]) == 100
+    assert sum(row["total"] for row in second["day_rows"]) == 40
+
+
 def test_archive_rejects_an_empty_counter(boss):
     _enable()
     with pytest.raises(ValidationError) as exc:

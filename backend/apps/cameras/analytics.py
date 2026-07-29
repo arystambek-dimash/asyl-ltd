@@ -334,10 +334,21 @@ def archive_camera(camera: str, note: str, user) -> dict:
     if closed:
         AlwaysOnDailyAnalytics.objects.filter(
             pk__in=[row.pk for row in closed]
-        ).update(archived_at=now)
-    AlwaysOnDailyAnalytics.objects.filter(
-        camera=camera, day=today, archived_at__isnull=True,
-    ).update(model_total=0, model_per_color={}, adjustment=0)
+        ).update(archived_at=now, archive=archive)
+    live_today = next((row for row in rows if row.day == today), None)
+    if live_today is not None:
+        # Живую строку обнуляем, но её вклад сохраняем снимком — иначе
+        # разбивка архива по дням потеряла бы день закрытия.
+        archive.day_rows = [{
+            "day": today.isoformat(),
+            "model_total": live_today.model_total,
+            "adjustment": live_today.adjustment,
+            "total": live_today.total,
+            "model_per_color": _normalized_colors(live_today.model_per_color),
+        }]
+        archive.save(update_fields=["day_rows"])
+        AlwaysOnDailyAnalytics.objects.filter(pk=live_today.pk).update(
+            model_total=0, model_per_color={}, adjustment=0)
     # Сбрасываем базу отсчёта: воркер продолжает считать со своего числа, и
     # без сброса первая же разница вернула бы архивированное в текущий итог.
     AlwaysOnCounterCursor.objects.filter(camera=camera).delete()
@@ -360,6 +371,30 @@ def archive_camera(camera: str, note: str, user) -> dict:
     return _archive_payload(archive)
 
 
+def _archive_day_rows(archive: AlwaysOnCountArchive) -> list[dict]:
+    """Дни архива: помеченные строки плюс снимок дня закрытия."""
+    rows = [
+        {
+            "day": row.day.isoformat(),
+            "model_total": row.model_total,
+            "adjustment": row.adjustment,
+            "total": row.total,
+            "colors": _color_payload(_normalized_colors(row.model_per_color)),
+        }
+        for row in archive.daily_rows.all()
+    ]
+    for snapshot in archive.day_rows or []:
+        rows.append({
+            "day": snapshot.get("day"),
+            "model_total": snapshot.get("model_total", 0),
+            "adjustment": snapshot.get("adjustment", 0),
+            "total": snapshot.get("total", 0),
+            "colors": _color_payload(
+                _normalized_colors(snapshot.get("model_per_color"))),
+        })
+    return sorted(rows, key=lambda item: item["day"] or "", reverse=True)
+
+
 def _archive_payload(archive: AlwaysOnCountArchive) -> dict:
     return {
         "id": archive.pk,
@@ -371,6 +406,7 @@ def _archive_payload(archive: AlwaysOnCountArchive) -> dict:
         "total": archive.total,
         "days": archive.days,
         "colors": _color_payload(_normalized_colors(archive.model_per_color)),
+        "day_rows": _archive_day_rows(archive),
         "note": archive.note,
         "archived_by_name": (
             archive.archived_by.username if archive.archived_by else None),
@@ -379,7 +415,9 @@ def _archive_payload(archive: AlwaysOnCountArchive) -> dict:
 
 
 def archives_payload(camera: str | None = None) -> list[dict]:
-    rows = AlwaysOnCountArchive.objects.select_related("archived_by")
+    rows = (AlwaysOnCountArchive.objects
+            .select_related("archived_by")
+            .prefetch_related("daily_rows"))
     if camera:
         rows = rows.filter(camera=ai.normalize(camera))
     return [_archive_payload(row) for row in rows]

@@ -417,6 +417,13 @@ export interface AlwaysOnHistoryPoint {
   total: number;
   updated_at: string | null;
 }
+export interface AlwaysOnArchiveDay {
+  day: string;
+  model_total: number;
+  adjustment: number;
+  total: number;
+  colors: AlwaysOnColorAnalytics[];
+}
 export interface AlwaysOnCountArchive {
   id: number;
   camera: string;
@@ -427,6 +434,8 @@ export interface AlwaysOnCountArchive {
   total: number;
   days: number;
   colors: AlwaysOnColorAnalytics[];
+  /** Разбивка периода по дням — раскрывается по клику на строку архива. */
+  day_rows: AlwaysOnArchiveDay[];
   note: string;
   archived_by_name: string | null;
   created_at: string;

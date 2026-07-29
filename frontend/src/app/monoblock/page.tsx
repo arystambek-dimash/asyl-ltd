@@ -6,6 +6,7 @@ import {
   BarChart3,
   Camera,
   CalendarDays,
+  ChevronRight,
   Cpu,
   Check,
   Clock3,
@@ -646,6 +647,7 @@ function AlwaysOnCard({
   const [modalView, setModalView] = useState<"live" | "analytics" | "archive">("live");
   const [archives, setArchives] = useState<AlwaysOnCountArchive[] | null>(null);
   const [archivesError, setArchivesError] = useState("");
+  const [openArchiveId, setOpenArchiveId] = useState<number | null>(null);
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [streamOnline, setStreamOnline] = useState(false);
   const [liveProcessor, setLiveProcessor] = useState(processor);
@@ -758,8 +760,10 @@ function AlwaysOnCard({
         `/cameras/always-on-analytics/archives/?camera=${encodeURIComponent(processor.cam)}`,
       );
       setArchives(response.data);
+      return response.data;
     } catch (cause) {
       setArchivesError(apiError(cause));
+      return null;
     }
   }, [processor.cam]);
 
@@ -778,11 +782,12 @@ function AlwaysOnCard({
       const analyticsResponse = await api.get<AlwaysOnDailyAnalytics>("/cameras/always-on-analytics/");
       setLiveDaily(analyticsResponse.data.cameras.find((item) => item.camera === processor.cam));
       await onAnalyticsChanged();
-      await loadArchives();
+      const fresh = await loadArchives();
       setArchiveOpen(false);
       setArchiveNote("");
-      // Сразу показываем, куда уехали мешки.
+      // Сразу показываем, куда уехали мешки, и раскрываем свежую запись.
       setModalView("archive");
+      if (fresh?.length) setOpenArchiveId(fresh[0].id);
     } catch (cause) {
       setArchiveError(apiError(cause));
     } finally {
@@ -952,7 +957,7 @@ function AlwaysOnCard({
               </div>
             </aside>
           </div>
-        ) : (
+        ) : modalView === "analytics" ? (
           <div className="overflow-hidden rounded-[22px] border border-slate-200 bg-[#f8fafc] shadow-[0_20px_55px_rgba(15,23,42,0.09)]">
             <div className="grid grid-cols-2 border-b border-slate-200 bg-white sm:grid-cols-3">
               <div className="border-r border-slate-200 p-3 sm:p-5">
@@ -1170,7 +1175,7 @@ function AlwaysOnCard({
               </section>
             </div>
           </div>
-        )}
+        ) : null}
 
         {modalView === "archive" && (
           <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">
@@ -1213,43 +1218,150 @@ function AlwaysOnCard({
               </div>
             )}
 
-            <div className="mt-4 space-y-3">
-              {(archives ?? []).map((row) => (
-                <div key={row.id} className="rounded-xl border border-slate-200 p-3 sm:p-4">
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <div>
-                      <div className="font-bold text-slate-800">
-                        {fullDay(row.period_start)}
-                        {row.period_end !== row.period_start && ` — ${fullDay(row.period_end)}`}
+            <div className="mt-4 space-y-2.5">
+              {(archives ?? []).map((row) => {
+                const expanded = openArchiveId === row.id;
+                const dayMax = Math.max(1, ...row.day_rows.map((d) => d.total));
+                return (
+                  <div
+                    key={row.id}
+                    className={cn(
+                      "overflow-hidden rounded-xl border transition",
+                      expanded ? "border-blue-300 bg-blue-50/40" : "border-slate-200",
+                    )}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setOpenArchiveId(expanded ? null : row.id)}
+                      aria-expanded={expanded}
+                      className="flex w-full items-center gap-3 p-3 text-left transition hover:bg-slate-50/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 sm:p-4"
+                    >
+                      <ChevronRight
+                        className={cn("size-4 shrink-0 text-slate-400 transition-transform", expanded && "rotate-90")}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                          <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">
+                            Период
+                          </span>
+                          <span className="font-bold text-slate-800">
+                            {fullDay(row.period_start)}
+                            {row.period_end !== row.period_start && ` — ${fullDay(row.period_end)}`}
+                          </span>
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                            {row.days} дн.
+                          </span>
+                        </div>
+                        <div className="mt-1 text-xs text-slate-400">
+                          Заархивирован {formatDateTime(row.created_at)} · {row.archived_by_name || "—"}
+                        </div>
                       </div>
-                      <div className="mt-0.5 text-xs text-slate-400">
-                        {row.days} дн. · закрыл {row.archived_by_name || "—"}
+                      <div className="shrink-0 text-right">
+                        <div className="text-2xl font-black tabular-nums text-slate-900">{row.total}</div>
+                        <div className="text-[10px] text-slate-400">мешков</div>
                       </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-2xl font-black tabular-nums text-slate-900">{row.total}</div>
-                      <div className="text-[11px] text-slate-400">
-                        модель {row.model_total}
-                        {row.adjustment !== 0 && ` · поправка ${row.adjustment}`}
+                    </button>
+
+                    {expanded && (
+                      <div className="border-t border-blue-200/70 bg-white p-3 sm:p-4">
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          <div className="rounded-lg bg-slate-50 p-2.5">
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Итог</div>
+                            <div className="mt-0.5 text-xl font-black tabular-nums text-slate-900">{row.total}</div>
+                          </div>
+                          <div className="rounded-lg bg-slate-50 p-2.5">
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Модель</div>
+                            <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
+                              {row.model_total}
+                            </div>
+                          </div>
+                          <div className="rounded-lg bg-slate-50 p-2.5">
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Поправка</div>
+                            <div
+                              className={cn(
+                                "mt-0.5 text-xl font-black tabular-nums",
+                                row.adjustment < 0 ? "text-amber-600" : "text-slate-300",
+                              )}
+                            >
+                              {row.adjustment || 0}
+                            </div>
+                          </div>
+                          <div className="rounded-lg bg-slate-50 p-2.5">
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                              В среднем
+                            </div>
+                            <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
+                              {row.days > 0 ? Math.round(row.total / row.days) : 0}
+                            </div>
+                          </div>
+                        </div>
+
+                        {row.colors.length > 0 && (
+                          <div className="mt-4">
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                              Цвета за период
+                            </div>
+                            <div className="mt-2 space-y-2">
+                              {row.colors.map((item) => (
+                                <div key={item.color}>
+                                  <div className="mb-1 flex items-center gap-2 text-xs">
+                                    <span className={cn("size-2.5 rounded-full", colorMeta(item.color).dot)} />
+                                    <span className="font-semibold text-slate-700">{colorMeta(item.color).label}</span>
+                                    <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
+                                    <span className="w-12 text-right tabular-nums text-slate-400">{item.percent}%</span>
+                                  </div>
+                                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                                    <div
+                                      className={cn("h-full rounded-full", colorMeta(item.color).bar)}
+                                      style={{ width: `${item.percent}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {row.day_rows.length > 0 && (
+                          <div className="mt-4">
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">По дням</div>
+                            <div className="mt-2 space-y-1.5">
+                              {row.day_rows.map((entry) => (
+                                <div key={entry.day} className="flex items-center gap-3 text-xs">
+                                  <span className="w-20 shrink-0 font-medium text-slate-500">{fullDay(entry.day)}</span>
+                                  <div className="h-4 min-w-0 flex-1 overflow-hidden rounded bg-slate-100">
+                                    <div
+                                      className="h-full rounded bg-gradient-to-r from-[#cf4f3e] to-[#e8755f]"
+                                      style={{ width: `${Math.max(2, (entry.total * 100) / dayMax)}%` }}
+                                    />
+                                  </div>
+                                  <span className="w-14 shrink-0 text-right font-bold tabular-nums text-slate-900">
+                                    {entry.total}
+                                  </span>
+                                  <span className="hidden w-28 shrink-0 justify-end gap-1.5 sm:flex">
+                                    {entry.colors.map((c) => (
+                                      <span key={c.color} className="flex items-center gap-1 text-[10px]">
+                                        <span className={cn("size-2 rounded-full", colorMeta(c.color).dot)} />
+                                        <span className="tabular-nums text-slate-500">{c.total}</span>
+                                      </span>
+                                    ))}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {row.note && (
+                          <p className="mt-4 rounded-lg bg-slate-50 px-3 py-2 text-xs italic text-slate-500">
+                            {row.note}
+                          </p>
+                        )}
                       </div>
-                    </div>
+                    )}
                   </div>
-
-                  {row.colors.length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
-                      {row.colors.map((item) => (
-                        <span key={item.color} className="flex items-center gap-1.5 text-xs">
-                          <span className={cn("size-2.5 rounded-full", colorMeta(item.color).dot)} />
-                          <span className="text-slate-600">{colorMeta(item.color).label}</span>
-                          <span className="font-bold tabular-nums text-slate-900">{item.total}</span>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {row.note && <p className="mt-2 text-xs italic text-slate-500">{row.note}</p>}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

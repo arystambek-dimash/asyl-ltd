@@ -174,6 +174,12 @@ class AlwaysOnDailyAnalytics(models.Model):
     # остаётся на графике и в истории. Обнуление счётчика — это перенос
     # накопленного в архив, а не потеря данных.
     archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    # Прямая ссылка на закрытие: по одной метке времени дни двух архивов
+    # надёжно не разделить, а разбивка по дням нужна именно по каждому.
+    archive = models.ForeignKey(
+        "cameras.AlwaysOnCountArchive", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="daily_rows",
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -206,6 +212,9 @@ class AlwaysOnCountArchive(models.Model):
     adjustment = models.IntegerField(default=0)
     total = models.PositiveIntegerField(default=0)
     days = models.PositiveIntegerField(default=0)
+    # Снимок дней, которые нельзя пометить архивными: день закрытия
+    # продолжает считаться дальше, поэтому его вклад сохраняется здесь.
+    day_rows = models.JSONField(default=list, blank=True)
     note = models.CharField(max_length=500, blank=True, default="")
     archived_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
