@@ -14,7 +14,7 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { api, apiError } from "@/lib/api";
 import { downloadBlob } from "@/lib/download";
 import { useApi } from "@/lib/use-api";
-import { formatCurrency, formatDateTime, formatMoney, currencySymbol } from "@/lib/utils";
+import { cn, formatCurrency, formatDateTime, formatMoney, currencySymbol } from "@/lib/utils";
 import { CASHIER_PAYMENT_METHOD_LABELS, paymentStage } from "@/lib/constants";
 import type { Payment } from "@/lib/types";
 
@@ -579,8 +579,6 @@ export function TransactionsSection() {
                 {formatMoney(statusFor.amount)} {currencySymbol(statusFor.currency)}
               </div>
               <div className="mt-2 space-y-0.5 text-xs text-[var(--muted-foreground)]">
-                <div>Создано: {formatDateTime(statusFor.paid_at)}</div>
-                <div>Добавил: {statusFor.recorded_by_name || "Система"}</div>
                 {statusFor.provider && (
                   <div>
                     Состояние счёта: {statusFor.provider.status}
@@ -591,6 +589,63 @@ export function TransactionsSection() {
               </div>
             </div>
             <StatusExplanation status={statusFor.effective_status ?? statusFor.status} />
+            {/* Журнал операции — для любого способа, включая наличные: раньше
+                историю имели только онлайн-счета, и наличная транзакция
+                выглядела безымянной. */}
+            <div>
+              <div className="mb-2 text-sm font-medium">Журнал операции</div>
+              <div className="space-y-1.5">
+                {[
+                  {
+                    key: "created",
+                    label: "Создан",
+                    at: statusFor.paid_at,
+                    by: statusFor.recorded_by_name || "Система",
+                  },
+                  ...(statusFor.received_at
+                    ? [
+                        {
+                          key: "received",
+                          label: "Принят кассой",
+                          at: statusFor.received_at,
+                          by: statusFor.received_by_name,
+                        },
+                      ]
+                    : []),
+                  ...(statusFor.confirmed_at
+                    ? [
+                        {
+                          key: "confirmed",
+                          label:
+                            statusFor.confirmation_mode === "automatic" ? "Подтверждён автоматически" : "Подтверждён",
+                          at: statusFor.confirmed_at,
+                          by:
+                            statusFor.confirmation_mode === "automatic"
+                              ? "Платёжный сервис"
+                              : statusFor.confirmed_by_name,
+                        },
+                      ]
+                    : []),
+                  ...(statusFor.status === "rejected"
+                    ? [{ key: "rejected", label: "Отклонён", at: null, by: null }]
+                    : []),
+                ].map((step) => (
+                  <div key={step.key} className="flex items-baseline gap-2 text-sm">
+                    <span
+                      className={cn(
+                        "size-1.5 shrink-0 translate-y-[-1px] rounded-full",
+                        step.key === "rejected" ? "bg-[var(--destructive)]" : "bg-[var(--success)]",
+                      )}
+                    />
+                    <span className="font-medium">{step.label}</span>
+                    <span className="text-xs text-[var(--muted-foreground)]">
+                      {step.at ? formatDateTime(step.at) : ""}
+                      {step.by ? ` · ${step.by}` : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
             {(statusFor.refunds?.length ?? 0) > 0 && (
               <div>
                 <div className="mb-2 text-sm font-medium">История возвратов</div>

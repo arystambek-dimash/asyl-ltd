@@ -427,6 +427,7 @@ function PaymentModal({
   const [parts, setParts] = useState<PaymentPart[]>([{ id: 1, method: "cash", amount: "" }]);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [payError, setPayError] = useState("");
   const [kaspiQr, setKaspiQr] = useState<Payment["provider"] | null>(null);
   const [reviewing, setReviewing] = useState(false);
   const [qrImageFailed, setQrImageFailed] = useState(false);
@@ -497,6 +498,7 @@ function PaymentModal({
 
   async function pay() {
     setBusy(true);
+    setPayError("");
     onError("");
     try {
       const payload = parts.map(({ method, amount, phone_number }) => ({ method, amount, phone_number }));
@@ -518,6 +520,9 @@ function PaymentModal({
       await onPaid(notice, !kaspi);
       if (!kaspi) onClose();
     } catch (e) {
+      // Показ в модалке обязателен: страница с onError лежит под оверлеем,
+      // и кассир видел не ошибку, а «кнопка не работает».
+      setPayError(apiError(e));
       onError(apiError(e));
     } finally {
       setBusy(false);
@@ -538,6 +543,11 @@ function PaymentModal({
           <Button onClick={onClose}>Готово</Button>
         ) : reviewing ? (
           <>
+            {payError && (
+              <p role="alert" className="mr-auto max-w-sm self-center text-sm text-[var(--destructive)]">
+                {payError}
+              </p>
+            )}
             <Button variant="outline" disabled={busy} onClick={() => setReviewing(false)}>
               Назад
             </Button>
