@@ -1503,7 +1503,7 @@ function ShippingPageInner() {
             <div className="flex flex-wrap items-center gap-2 border-b bg-[var(--muted)]/30 px-5 py-3">
               {selected.items.map((it, i) => (
                 <span
-                  key={i}
+                  key={it.id ?? `item-${i}`}
                   className="flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm"
                 >
                   <Package className="size-3.5 text-[var(--muted-foreground)]" />

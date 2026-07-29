@@ -326,7 +326,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                     const price = Number(it.price ?? 0);
                     const sum = price * Number(it.quantity);
                     return (
-                      <TR key={i}>
+                      <TR key={it.id ?? `new-${i}`}>
                         <TD>
                           <div className="flex items-center gap-3">
                             <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-[var(--muted)]/60 text-[var(--muted-foreground)]">

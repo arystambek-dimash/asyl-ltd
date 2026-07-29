@@ -153,6 +153,14 @@ function errorDetail(e: unknown): string {
   const detail = err.response?.data?.detail;
   if (typeof detail === "string") return detail;
   if (detail && typeof detail === "object") return Object.values(detail).flat().join("; ");
+
+  // Без ответа сервера причина другая, и действие пользователя другое:
+  // «нет связи» лечится проверкой сети, а не повторным нажатием кнопки.
+  if (!err.response) return "Нет связи с сервером. Проверьте интернет и повторите.";
+  const status = err.response.status;
+  if (status >= 500) return "Сервер не отвечает. Попробуйте через минуту или сообщите администратору.";
+  if (status === 404) return "Запись не найдена — возможно, её уже удалили.";
+  if (status === 401) return "Сессия истекла. Войдите заново.";
   return "Произошла ошибка. Попробуйте ещё раз.";
 }
 

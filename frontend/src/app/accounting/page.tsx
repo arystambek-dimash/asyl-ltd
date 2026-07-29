@@ -20,7 +20,8 @@ import { can } from "@/lib/can";
 import { useAuth } from "@/store/auth";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
-import { formatCurrency, formatMoney, todayLocalIsoDate } from "@/lib/utils";
+import { showSuccess } from "@/lib/toast";
+import { formatCurrency, formatMoney, primaryDebtCurrency, sumDebtByCurrency, todayLocalIsoDate } from "@/lib/utils";
 import { CASHIER_PAYMENT_METHOD_LABELS } from "@/lib/constants";
 import { ArrowUpRight, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
 import type { CashierLogItem, ClientDebt, Department, Order, PaymentQueueItem, Store } from "@/lib/types";
@@ -103,7 +104,7 @@ function useCashierQueue(enabled: boolean, filters: CashFilters) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  async function act(fn: () => Promise<unknown>) {
+  async function act(fn: () => Promise<unknown>, done?: string) {
     setBusy(true);
     setError("");
     try {
@@ -111,6 +112,9 @@ function useCashierQueue(enabled: boolean, filters: CashFilters) {
       reloadPending();
       reloadQueue();
       reloadCashierLog();
+      // Без подтверждения удачное действие выглядит как «ничего не произошло»,
+      // и кассир жмёт кнопку второй раз.
+      if (done) showSuccess(done);
     } catch (e) {
       setError(apiError(e));
     } finally {
@@ -127,10 +131,13 @@ function useCashierQueue(enabled: boolean, filters: CashFilters) {
     error,
     loadError,
     reloadPending,
-    confirmOrder: (o: Order) => act(() => api.post(`/orders/${o.id}/confirm/`, {})),
-    confirmPayment: (p: PaymentQueueItem) => act(() => api.post(`/orders/${p.order}/payments/${p.id}/confirm/`)),
-    receivePayment: (p: PaymentQueueItem) => act(() => api.post(`/orders/${p.order}/payments/${p.id}/receive/`)),
-    rejectPayment: (p: PaymentQueueItem) => act(() => api.post(`/orders/${p.order}/payments/${p.id}/reject/`)),
+    confirmOrder: (o: Order) => act(() => api.post(`/orders/${o.id}/confirm/`, {}), "Заказ подтверждён"),
+    confirmPayment: (p: PaymentQueueItem) =>
+      act(() => api.post(`/orders/${p.order}/payments/${p.id}/confirm/`), "Оплата подтверждена"),
+    receivePayment: (p: PaymentQueueItem) =>
+      act(() => api.post(`/orders/${p.order}/payments/${p.id}/receive/`), "Оплата принята"),
+    rejectPayment: (p: PaymentQueueItem) =>
+      act(() => api.post(`/orders/${p.order}/payments/${p.id}/reject/`), "Оплата отклонена"),
     reopenPayment: (event: CashierLogItem) => {
       const paymentId = event.payload.payment_id;
       if (!paymentId) return;
@@ -649,7 +656,14 @@ function CashierInner() {
   const toReviewSum = queue.toReview.reduce((s, p) => s + Number(p.amount), 0);
   const toReviewCash = queue.toReview.filter((p) => p.method === "cash").reduce((s, p) => s + Number(p.amount), 0);
   const debtRows = validFilters ? (debts ?? []) : [];
-  const debtTotal = debtRows.reduce((sum, row) => sum + Number(row.debt_total), 0);
+  // Валюты не складываются: 1000 ₸ и 5 $ не дают «1005». Крупно — основная
+  // валюта, остальные отдельной строкой под ней.
+  const debtByCurrency = sumDebtByCurrency(debtRows);
+  const debtCurrency = primaryDebtCurrency(debtByCurrency);
+  const debtTotal = debtByCurrency[debtCurrency] ?? 0;
+  const otherDebtCurrencies = Object.entries(debtByCurrency).filter(
+    ([currency, value]) => currency !== debtCurrency && value > 0,
+  );
   const overdueClients = debtRows.filter((r) => r.overdue_count > 0).length;
   const today = todayLocalIsoDate();
   const isToday = filters.dateFrom === today && filters.dateTo === today;
@@ -723,8 +737,12 @@ function CashierInner() {
               <SummaryCard
                 title="Дебиторка"
                 tone="destructive"
-                value={money(debtTotal)}
+                value={money(debtTotal, debtCurrency)}
                 rows={[
+                  ...otherDebtCurrencies.map(([currency, value]) => ({
+                    label: "Также в долге",
+                    value: money(value, currency),
+                  })),
                   { label: "Клиентов с долгом", value: String(debtRows.length) },
                   { label: "С просрочкой", value: String(overdueClients) },
                 ]}

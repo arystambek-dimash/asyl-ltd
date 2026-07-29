@@ -131,21 +131,28 @@ export function paymentStage(status: string): {
   };
 }
 
+/** Как способ оплаты называется во всём интерфейсе сотрудника.
+ *
+ * Раньше kaspi звался «Kaspi» в истории платежей и «QR» в разбивке двумя
+ * блоками выше — на одном и том же экране. Слово выбрано то, которым
+ * пользуется касса: на терминале сотрудник видит QR-код.
+ */
 export const PAYMENT_METHOD_LABELS: Record<string, string> = {
   invoice: "Счёт на оплату",
-  kaspi: "Kaspi",
+  kaspi: "QR",
   cash: "Наличные",
   debt: "Долг",
   // Легаси-способ внутренних банковских оплат.
   card: "Карта",
 };
 
+export function paymentMethodLabel(method: string): string {
+  return PAYMENT_METHOD_LABELS[method] ?? method;
+}
+
 export const CASHIER_PAYMENT_METHODS = ["cash", "kaspi", "invoice"] as const;
-export const CASHIER_PAYMENT_METHOD_LABELS: Record<string, string> = {
-  cash: "Наличные",
-  kaspi: "QR",
-  invoice: "Счёт на оплату",
-};
+/** @deprecated Используйте PAYMENT_METHOD_LABELS — метки едины для сотрудника. */
+export const CASHIER_PAYMENT_METHOD_LABELS = PAYMENT_METHOD_LABELS;
 
 export const PORTAL_PAYMENT_METHOD_LABELS: Record<string, string> = {
   pending: "Способ не выбран",

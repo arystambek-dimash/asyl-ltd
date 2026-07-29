@@ -3,9 +3,12 @@
 /** Лёгкий стор всплывающих алертов. showToast() можно звать из любого кода
  * (в т.ч. из интерцепторов api.ts), <Toaster /> в корневом layout подписывается и рисует. */
 
+export type ToastKind = "error" | "success";
+
 export interface Toast {
   id: number;
   message: string;
+  kind: ToastKind;
 }
 
 type Listener = (toasts: Toast[]) => void;
@@ -20,11 +23,11 @@ function emit() {
   listeners.forEach((l) => l(toasts));
 }
 
-export function showToast(message: string) {
+export function showToast(message: string, kind: ToastKind = "error") {
   // Одинаковые сообщения от параллельных запросов не дублируем.
   if (toasts.some((t) => t.message === message)) return;
   const id = nextId++;
-  toasts = [...toasts, { id, message }];
+  toasts = [...toasts, { id, message, kind }];
   emit();
   setTimeout(() => dismissToast(id), TTL_MS);
 }
@@ -41,4 +44,10 @@ export function subscribeToasts(listener: Listener): () => void {
   return () => {
     listeners = listeners.filter((l) => l !== listener);
   };
+}
+
+/** Подтверждение удачного действия. Без него сохранение выглядит так же,
+ *  как ничего не произошло, и пользователь жмёт кнопку второй раз. */
+export function showSuccess(message: string) {
+  showToast(message, "success");
 }

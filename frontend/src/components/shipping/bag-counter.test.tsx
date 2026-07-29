@@ -124,7 +124,9 @@ describe("BagCounter persistence", () => {
     await expect(act(() => ref.current!.saveNow())).rejects.toThrow("offline");
     await settleMicrotasks();
     expect(onSave).toHaveBeenCalledWith(5);
-    expect(screen.getByRole("alert")).toHaveTextContent("Произошла ошибка");
+    // Сбой без ответа сервера теперь называется своим именем: оператору на
+    // посту важно понять, что чинить — связь, а не повторное нажатие.
+    expect(screen.getByRole("alert")).toHaveTextContent("Нет связи с сервером");
 
     let savedBags = 0;
     await act(async () => {

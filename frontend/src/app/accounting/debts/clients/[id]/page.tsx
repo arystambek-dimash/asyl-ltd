@@ -17,7 +17,7 @@ import { DataGate } from "@/components/ui/data-state";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select-ui";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
-import { cn, formatCurrency, formatMoney, formatDateTime } from "@/lib/utils";
+import { cn, formatCompactCurrency, formatCurrency, formatMoney, formatDateTime } from "@/lib/utils";
 import { can } from "@/lib/can";
 import { PaidMethodBreakdown } from "@/components/payment-chain";
 import { useAuth } from "@/store/auth";
@@ -48,14 +48,7 @@ import {
 import type { Client, Order, Payment } from "@/lib/types";
 
 const money = formatCurrency;
-
-function compactMoney(value: number | string) {
-  const amount = Number(value);
-  return `${new Intl.NumberFormat("ru-RU", {
-    notation: "compact",
-    maximumFractionDigits: 1,
-  }).format(Number.isFinite(amount) ? amount : 0)} ₸`;
-}
+const compactMoney = formatCompactCurrency;
 
 interface DebtStore {
   id: number;
@@ -67,7 +60,10 @@ interface DebtStore {
 
 interface ClientDebtDetail {
   client: Client;
+  /** Суммы в основной валюте клиента — её же показывают плитки сверху. */
   debt_total: string;
+  debt_currency?: "KZT" | "USD";
+  debt_by_currency?: Record<string, string>;
   lifetime_total: string;
   lifetime_paid: string;
   overdue_total: string;
@@ -831,6 +827,8 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const isAccountant = can(me, "payments.create");
   const { data, loading, error: loadError, reload } = useApi<ClientDebtDetail>(`/clients/${id}/debt-detail/`);
   const { data: history, reload: reloadHistory } = useApi<ClientHistory>(`/clients/${id}/history/`);
+  // Плитки сверху считаются в основной валюте клиента, а не всегда в тенге.
+  const debtCurrency = data?.debt_currency ?? data?.client?.currency ?? "KZT";
   const [tab, setTab] = useState("orders");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [paymentOpen, setPaymentOpen] = useState(false);
@@ -896,24 +894,38 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
           label="Текущий долг"
           tone="destructive"
           caption="к погашению"
-          value={<span title={money(data.debt_total)}>{compactMoney(data.debt_total)}</span>}
+          value={
+            <span title={money(data.debt_total, debtCurrency)}>{compactMoney(data.debt_total, debtCurrency)}</span>
+          }
         />
         <StatCard
           label="Общая задолженность"
           caption="всего за всё время"
-          value={<span title={money(data.lifetime_total)}>{compactMoney(data.lifetime_total)}</span>}
+          value={
+            <span title={money(data.lifetime_total, debtCurrency)}>
+              {compactMoney(data.lifetime_total, debtCurrency)}
+            </span>
+          }
         />
         <StatCard
           label="Оплачено"
           tone="success"
           caption="всего оплачено"
-          value={<span title={money(data.lifetime_paid)}>{compactMoney(data.lifetime_paid)}</span>}
+          value={
+            <span title={money(data.lifetime_paid, debtCurrency)}>
+              {compactMoney(data.lifetime_paid, debtCurrency)}
+            </span>
+          }
         />
         <StatCard
           label="Просрочено"
           tone="destructive"
           caption="просроченные суммы"
-          value={<span title={money(data.overdue_total)}>{compactMoney(data.overdue_total)}</span>}
+          value={
+            <span title={money(data.overdue_total, debtCurrency)}>
+              {compactMoney(data.overdue_total, debtCurrency)}
+            </span>
+          }
         />
       </section>
 

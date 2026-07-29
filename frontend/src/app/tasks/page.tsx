@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { DataGate } from "@/components/ui/data-state";
 import { VoiceRecorder } from "@/components/voice-recorder";
 import { api, apiError } from "@/lib/api";
+import { showSuccess } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
 import { can } from "@/lib/can";
 import { useAuth } from "@/store/auth";
@@ -63,6 +64,7 @@ function TaskCard({ task, onChanged }: { task: Task; onChanged: () => void }) {
     try {
       await api.post(`/tasks/${task.id}/${done ? "reopen" : "complete"}/`);
       onChanged();
+      showSuccess(done ? "Задача снова в работе" : "Задача выполнена");
     } catch (cause) {
       setError(apiError(cause));
     } finally {
@@ -190,6 +192,7 @@ export default function TasksPage() {
       setOpen(false);
       resetForm();
       reload();
+      showSuccess("Задача поставлена");
     } catch (cause) {
       setFormError(apiError(cause));
     } finally {

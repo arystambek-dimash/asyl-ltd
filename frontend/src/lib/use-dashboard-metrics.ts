@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import { useApi } from "@/lib/use-api";
 import { useLocalDay } from "@/lib/use-local-day";
 import { isFinancialOrderStatus, orderStatusGroup } from "@/lib/constants";
+import { primaryDebtCurrency, sumDebtByCurrency } from "@/lib/utils";
 import type { ClientDebt, EventLog, Order, Payment, StockItem } from "@/lib/types";
 
 function confirmedPayments(orders: Order[]): Payment[] {
@@ -20,6 +21,11 @@ export function useDashboardMetrics() {
   const { data: stock, error: stockErr, reload: reloadStock } = useApi<StockItem[]>("/stock/");
   const { data: events, error: eventsErr, reload: reloadEvents } = useApi<EventLog[]>("/events/");
   const { data: debts, error: debtsErr, reload: reloadDebts } = useApi<ClientDebt[]>("/clients/debts/");
+
+  // Пока долги и заказы не пришли, все счётчики равны нулю — и «требует
+  // внимания» показывал бы зелёное «ничего срочного» на пустых данных.
+  // Управляющий уходил бы со спокойным экраном за секунду до красного.
+  const loading = orders == null || debts == null;
 
   // Ошибка видна, только пока соответствующих данных нет совсем — частичный дашборд не глушим.
   const loadError =
@@ -133,15 +139,25 @@ export function useDashboardMetrics() {
   }, [stock]);
 
   // Долги: общая сумма, топ должников и отдельно просроченное.
-  const { debtTotal, topDebtors, overdueTotal, overdueClients } = useMemo(() => {
+  const { debtTotal, debtCurrency, topDebtors, overdueTotal, overdueClients } = useMemo(() => {
     const rows = debts ?? [];
     // Просрочка важнее общей суммы: 4,86 млрд долга — это норма работы в долг,
     // а вот «сегодня день оплаты, а деньги не пришли» требует звонка.
     const overdue = rows.filter((r) => r.overdue_count > 0);
+    // Валюты не складываются. Плитка показывает основную валюту, а сортировка
+    // должников идёт внутри неё: $5 000 и 100 000 ₸ несравнимы напрямую.
+    const byCurrency = sumDebtByCurrency(rows);
+    const currency = primaryDebtCurrency(byCurrency);
+    const amountIn = (row: ClientDebt) => {
+      const exact = row.debt_by_currency?.[currency];
+      if (exact != null) return Number(exact);
+      return (row.debt_currency ?? "KZT") === currency ? Number(row.debt_total) : 0;
+    };
     return {
-      debtTotal: rows.reduce((s, r) => s + Number(r.debt_total), 0),
-      topDebtors: [...rows].sort((a, b) => Number(b.debt_total) - Number(a.debt_total)).slice(0, 5),
-      overdueTotal: overdue.reduce((s, r) => s + Number(r.debt_total), 0),
+      debtTotal: byCurrency[currency] ?? 0,
+      debtCurrency: currency,
+      topDebtors: [...rows].sort((a, b) => amountIn(b) - amountIn(a)).slice(0, 5),
+      overdueTotal: sumDebtByCurrency(overdue)[currency] ?? 0,
       overdueClients: overdue.length,
     };
   }, [debts]);
@@ -170,10 +186,12 @@ export function useDashboardMetrics() {
     pipeline,
     stockByProduct,
     debtTotal,
+    debtCurrency,
     topDebtors,
     overdueTotal,
     overdueClients,
     attention,
+    loading,
     loadError,
     reload,
   };

@@ -311,7 +311,10 @@ export interface ClientDebt {
   client_id: number;
   client_name: string;
   client_phone: string;
+  /** Долг в основной валюте клиента. Полная разбивка — в debt_by_currency. */
   debt_total: string;
+  debt_currency?: "KZT" | "USD";
+  debt_by_currency?: Record<string, string>;
   orders_count: number;
   unpaid_count: number;
   partial_count: number;

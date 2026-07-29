@@ -22,7 +22,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { formatPlate } from "@/components/ui/license-plate-input";
 import { useDashboardMetrics, type DashboardMetrics } from "@/lib/use-dashboard-metrics";
 import { ORDER_STATUS_LABELS } from "@/lib/constants";
-import { formatCompact, formatMoney, cn } from "@/lib/utils";
+import { currencySymbol, formatCompact, formatCompactCurrency, formatCurrency, formatMoney, cn } from "@/lib/utils";
 
 const TOOLTIP_STYLE = {
   borderRadius: 8,
@@ -87,7 +87,7 @@ function AttentionBar({ m }: { m: DashboardMetrics }) {
       tone: "destructive" as const,
       label: "Просрочена оплата",
       value: String(m.overdueClients),
-      hint: `${formatCompact(m.overdueTotal)} ₸ · ${m.overdueClients === 1 ? "клиент" : "клиентов"}`,
+      hint: `${formatCompactCurrency(m.overdueTotal, m.debtCurrency)} · ${m.overdueClients === 1 ? "клиент" : "клиентов"}`,
     },
     {
       key: "payments",
@@ -120,6 +120,17 @@ function AttentionBar({ m }: { m: DashboardMetrics }) {
       hint: "на посту",
     },
   ].filter((item) => item.show);
+
+  // Пока данные не пришли, счётчики нулевые. Зелёное «ничего срочного» на
+  // ещё не загруженном экране — обещание, которого система не давала.
+  if (m.loading) {
+    return (
+      <section className="flex items-center gap-2 rounded-xl border bg-[var(--card)] px-4 py-3 text-sm">
+        <span className="size-4 shrink-0 animate-pulse rounded-full bg-[var(--muted)]" />
+        <span className="text-[var(--muted-foreground)]">Проверяем, что требует внимания…</span>
+      </section>
+    );
+  }
 
   if (items.length === 0) {
     return (
@@ -200,11 +211,11 @@ function MetricStrip({ m }: { m: DashboardMetrics }) {
       label: "Долг клиентов",
       value: formatCompact(String(m.debtTotal)),
       exact: formatMoney(String(m.debtTotal)),
-      unit: "₸",
+      unit: currencySymbol(m.debtCurrency),
       // Работа в долг здесь норма, поэтому тревожит не сумма, а просрочка.
       hint:
         m.overdueClients > 0
-          ? `просрочено ${formatCompact(m.overdueTotal)} ₸ · ${m.overdueClients} кл.`
+          ? `просрочено ${formatCompactCurrency(m.overdueTotal, m.debtCurrency)} · ${m.overdueClients} кл.`
           : m.topDebtors.length > 0
             ? "просрочки нет"
             : "долгов нет",
@@ -457,11 +468,12 @@ function DebtorsCard({ m }: { m: DashboardMetrics }) {
                   )}
                 </div>
               </div>
+              {/* Валюта у каждого своя: долг в долларах нельзя подписать «₸». */}
               <span
-                title={`${formatMoney(d.debt_total)} ₸`}
+                title={formatCurrency(d.debt_total, d.debt_currency)}
                 className="shrink-0 text-sm font-semibold tabular-nums text-[var(--destructive)]"
               >
-                {formatCompact(d.debt_total)} ₸
+                {formatCompactCurrency(d.debt_total, d.debt_currency)}
               </span>
             </div>
           ))}

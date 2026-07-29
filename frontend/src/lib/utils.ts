@@ -39,6 +39,39 @@ export function formatCompact(value: number | string): string {
   return `${text} ${suffix.trim()}`;
 }
 
+/** Строка долга в том виде, в каком её отдаёт бэкенд. */
+interface DebtRow {
+  debt_total?: string | null;
+  debt_currency?: string | null;
+  debt_by_currency?: Record<string, string> | null;
+  currency?: string | null;
+}
+
+/** Долги по валютам. Складывать KZT и USD нельзя — 1000 ₸ и 5 $ не дают 1005.
+ *
+ * Бэкенд отдаёт разбивку в debt_by_currency, а плоское debt_total описывает
+ * только основную валюту клиента. Правило одно на всю систему, поэтому живёт
+ * здесь, а не копией на каждой странице.
+ */
+export function sumDebtByCurrency(rows: readonly DebtRow[]): Record<string, number> {
+  return rows.reduce<Record<string, number>>((totals, row) => {
+    const parts = row.debt_by_currency ?? {
+      [row.debt_currency ?? row.currency ?? "KZT"]: row.debt_total ?? "0",
+    };
+    for (const [currency, amount] of Object.entries(parts)) {
+      totals[currency] = (totals[currency] ?? 0) + Number(amount || 0);
+    }
+    return totals;
+  }, {});
+}
+
+/** Валюта с наибольшим долгом — её показывают крупно, остальные рядом. */
+export function primaryDebtCurrency(totals: Record<string, number>): string {
+  const entries = Object.entries(totals).filter(([, value]) => value > 0);
+  if (entries.length === 0) return "KZT";
+  return entries.sort((a, b) => b[1] - a[1])[0][0];
+}
+
 export function currencySymbol(currency: "KZT" | "USD" | string = "KZT"): string {
   return currency === "USD" ? "$" : "₸";
 }
