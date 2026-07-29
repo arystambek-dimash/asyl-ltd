@@ -87,13 +87,13 @@ function staffSections(): NavSection[] {
       title: "Управление",
       items: [
         { href: "/events", label: "Журнал", icon: ScrollText, perm: "events.view" },
+        // Сотрудники и роли живут на одном экране вкладками — раскрывающаяся
+        // группа «Доступы» ради двух пунктов только прятала их на клик глубже.
         {
-          label: "Доступы",
+          href: "/management/employees",
+          label: "Сотрудники",
           icon: Settings,
-          children: [
-            { href: "/management/employees", label: "Сотрудники", perm: "employees.view" },
-            { href: "/management/roles", label: "Роли", perm: "rbac.view" },
-          ],
+          perm: ["employees.view", "rbac.view"],
         },
       ],
     },

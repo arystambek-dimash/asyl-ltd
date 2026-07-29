@@ -19,6 +19,16 @@ const nextConfig: NextConfig = {
     // fill the server disk. The app currently uses only local image sources.
     maximumDiskCacheSize: 50 * 1024 * 1024,
   },
+  async redirects() {
+    // Роли слиты в «Сотрудников» вкладкой — старые закладки ведут туда же.
+    return [
+      {
+        source: "/management/roles",
+        destination: "/management/employees?tab=roles",
+        permanent: false,
+      },
+    ];
+  },
   async headers() {
     return [
       {

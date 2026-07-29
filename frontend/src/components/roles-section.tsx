@@ -1,7 +1,5 @@
 "use client";
 import { useState } from "react";
-import { AppShell } from "@/components/layout/app-shell";
-import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,7 +16,13 @@ import { ErrorAlert } from "@/components/ui/data-state";
 import { PermissionPicker } from "@/components/permission-picker";
 import type { Role, Permission } from "@/lib/types";
 
-function RolesPageInner() {
+/** Вкладка «Роли» страницы сотрудников.
+ *
+ * Раньше это была отдельная страница /management/roles, но роль без
+ * сотрудника не имеет смысла — раздел «Доступы» из двух пунктов меню
+ * схлопнут в один экран с вкладками.
+ */
+export function RolesSection() {
   const { me, refreshMe } = useAuth();
   const canManage = can(me, "rbac.manage");
   const { data: roles, error: loadError, reload } = useApi<Role[]>("/roles/");
@@ -86,27 +90,18 @@ function RolesPageInner() {
   }
 
   return (
-    <AppShell
-      title="Роли"
-      section="Управление"
-      description="Роль определяет доступы сотрудников. Изменили права роли — они сразу действуют у всех, кому она назначена."
-      actions={
-        canManage && (
+    <section className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-[var(--muted-foreground)]">
+          {roles?.length ?? 0} ролей · изменили права роли — они сразу действуют у всех, кому она назначена.
+        </p>
+        {canManage && (
           <Button size="sm" onClick={openNew} aria-label="Новая роль">
-            <Plus className="size-4" /> <span className="hidden sm:inline">Новая роль</span>
+            <Plus className="size-4" /> Новая роль
           </Button>
-        )
-      }
-    >
-      <div className="mb-4">
-        <p className="text-sm text-[var(--muted-foreground)]">{roles?.length ?? 0} ролей</p>
+        )}
       </div>
-      {error && <p className="mb-3 text-sm text-[var(--destructive)]">{error}</p>}
-      {loadError && !roles && (
-        <div className="mb-3">
-          <ErrorAlert message={loadError} onRetry={reload} />
-        </div>
-      )}
+      {loadError && !roles && <ErrorAlert message={loadError} onRetry={reload} />}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {(roles ?? []).map((r) => (
           <Card key={r.id}>
@@ -147,7 +142,7 @@ function RolesPageInner() {
       <Modal
         open={open}
         onClose={() => setOpen(false)}
-        eyebrow="Доступы · Роль"
+        eyebrow="Сотрудники · Роль"
         title={editing ? `Роль: ${editing.name}` : "Новая роль"}
         description="Название и набор прав по разделам."
         className="max-w-2xl"
@@ -200,14 +195,6 @@ function RolesPageInner() {
         error={delError}
         onConfirm={confirmRemove}
       />
-    </AppShell>
-  );
-}
-
-export default function RolesPage() {
-  return (
-    <RequirePerm perm="rbac.view" title="Роли">
-      <RolesPageInner />
-    </RequirePerm>
+    </section>
   );
 }
