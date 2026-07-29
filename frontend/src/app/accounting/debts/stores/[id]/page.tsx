@@ -155,7 +155,9 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                     </div>
                     <div>
                       <span className="text-[var(--muted-foreground)]">Оплачено</span>
-                      <div className="tabular-nums text-[var(--success)]">{formatCurrency(o.paid_total, o.currency)}</div>
+                      <div className="tabular-nums text-[var(--success)]">
+                        {formatCurrency(o.paid_total, o.currency)}
+                      </div>
                     </div>
                     <div>
                       <span className="text-[var(--muted-foreground)]">Остаток</span>

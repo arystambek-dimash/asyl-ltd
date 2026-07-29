@@ -25,9 +25,7 @@ describe("shortDay / fullDay", () => {
 
 describe("dayColorBreakdown", () => {
   it("считает долю от распознанного и сортирует по убыванию", () => {
-    const rows = dayColorBreakdown(
-      point({ model_per_color: { green: 100, red: 700, blue: 200 }, model_total: 1000 }),
-    );
+    const rows = dayColorBreakdown(point({ model_per_color: { green: 100, red: 700, blue: 200 }, model_total: 1000 }));
     expect(rows.map((r) => r.color)).toEqual(["red", "blue", "green"]);
     expect(rows.map((r) => r.percent)).toEqual([70, 20, 10]);
     expect(rows.reduce((sum, r) => sum + r.percent, 0)).toBe(100);

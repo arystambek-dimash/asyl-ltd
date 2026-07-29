@@ -670,9 +670,7 @@ function AlwaysOnCard({
   const selectedPoint = (currentDaily?.history ?? []).find((item) => item.day === selectedDay);
   // Разбивку за день считает бэкенд — тем же кодом, что и общую, поэтому
   // цифры сходятся. Локальный расчёт остаётся на случай старого ответа.
-  const selectedColors = selectedPoint?.colors?.length
-    ? selectedPoint.colors
-    : dayColorBreakdown(selectedPoint);
+  const selectedColors = selectedPoint?.colors?.length ? selectedPoint.colors : dayColorBreakdown(selectedPoint);
 
   useEffect(() => {
     setLiveProcessor(processor);
@@ -1078,9 +1076,7 @@ function AlwaysOnCard({
                           ))}
                         </div>
                       ) : (
-                        <p className="mt-2 text-xs text-slate-400">
-                          В этот день модель ничего не распознала.
-                        </p>
+                        <p className="mt-2 text-xs text-slate-400">В этот день модель ничего не распознала.</p>
                       )}
                     </div>
                   </div>
@@ -1136,8 +1132,7 @@ function AlwaysOnCard({
                   <Archive className="size-3.5" /> Обнулить и сдать в архив
                 </button>
                 <p className="mt-2 text-center text-[11px] leading-snug text-slate-400">
-                  Накопленное уйдёт в архив, счётчик начнётся с нуля. Дни
-                  останутся в истории.
+                  Накопленное уйдёт в архив, счётчик начнётся с нуля. Дни останутся в истории.
                 </p>
               </section>
             </div>
@@ -1226,10 +1221,7 @@ function AlwaysOnCard({
             <Button variant="ghost" disabled={archiving} onClick={() => setArchiveOpen(false)}>
               Отмена
             </Button>
-            <Button
-              disabled={archiving || allTimeTotal <= 0}
-              onClick={() => void archiveCount()}
-            >
+            <Button disabled={archiving || allTimeTotal <= 0} onClick={() => void archiveCount()}>
               {archiving ? <LoaderCircle className="size-4 animate-spin" /> : <Archive className="size-4" />}
               Архивировать {allTimeTotal}
             </Button>
@@ -1258,7 +1250,9 @@ function AlwaysOnCard({
               placeholder="Например: закрытие месяца, сдано в CRM"
               className="min-h-20 w-full resize-y rounded-xl border bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15"
             />
-            <span className="text-xs text-[var(--muted-foreground)]">Необязательно — попадёт в журнал вместе с суммой.</span>
+            <span className="text-xs text-[var(--muted-foreground)]">
+              Необязательно — попадёт в журнал вместе с суммой.
+            </span>
           </div>
           {archiveError && (
             <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-600">
