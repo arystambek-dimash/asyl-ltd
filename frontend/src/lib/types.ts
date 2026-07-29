@@ -509,3 +509,50 @@ export interface EventLog {
   payload: Record<string, unknown>;
   created_at: string;
 }
+
+export type TaskStatus = "pending" | "done";
+
+export interface TaskAttachment {
+  id: number;
+  kind: "photo" | "voice" | "file";
+  url: string | null;
+  original_name: string;
+  size_bytes: number;
+  created_at: string;
+}
+
+export interface Task {
+  id: number;
+  title: string;
+  body: string;
+  status: TaskStatus;
+  status_label: string;
+  assignee: number;
+  assignee_name: string | null;
+  created_by: number | null;
+  created_by_name: string | null;
+  due_date: string | null;
+  done_at: string | null;
+  done_by_name: string | null;
+  attachments: TaskAttachment[];
+  /** Закрыть может исполнитель, постановщик или суперадмин — решает бэкенд. */
+  can_complete: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskAssignee {
+  id: number;
+  name: string;
+  position: string;
+}
+
+export interface TaskNotification {
+  id: number;
+  task: number;
+  task_title: string;
+  task_status: TaskStatus;
+  text: string;
+  is_read: boolean;
+  created_at: string;
+}

@@ -10,6 +10,7 @@ import {
   Users,
   Truck,
   ScrollText,
+  ListChecks,
   BarChart3,
   Package,
   ChevronDown,
@@ -77,6 +78,9 @@ function staffSections(): NavSection[] {
         { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
         { href: "/stores", label: "Магазины", icon: Store, perm: "clients.view" },
         { href: "/catalog/products", label: "Товары", icon: Package, perm: "catalog.view" },
+        // Без perm: свои задачи доступны каждому сотруднику, иначе исполнитель
+        // не смог бы открыть то, что ему поручили.
+        { href: "/tasks", label: "Задачи", icon: ListChecks },
       ],
     },
     {
