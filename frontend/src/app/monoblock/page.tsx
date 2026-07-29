@@ -48,6 +48,7 @@ import type {
   MonoblockDevice,
   Order,
 } from "@/lib/types";
+import { dayColorBreakdown, fullDay, shortDay } from "@/lib/day-analytics";
 import { useAiCounter } from "@/lib/use-ai-counter";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
@@ -74,11 +75,6 @@ function colorMeta(color: string) {
       dot: "bg-slate-500",
     }
   );
-}
-
-function shortDay(day: string) {
-  const [, month, date] = day.split("-");
-  return `${date}.${month}`;
 }
 
 function CameraChoice({
@@ -655,6 +651,7 @@ function AlwaysOnCard({
   const [correctionReason, setCorrectionReason] = useState("");
   const [correctionError, setCorrectionError] = useState("");
   const [correcting, setCorrecting] = useState(false);
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const current = open ? liveProcessor : processor;
   const currentDaily = open ? liveDaily : daily;
   const todayTotal = currentDaily?.total ?? 0;
@@ -662,12 +659,22 @@ function AlwaysOnCard({
   const inSession = current.mode === "session";
   const chartMax = Math.max(1, ...(currentDaily?.history ?? []).map((item) => item.total));
   const dominant = currentDaily?.colors?.[0];
+  // Разбор одного дня: сам столбик уже несёт полную статистику, поэтому
+  // выбранный день хранится ключом, а не копией — опрос обновляет данные,
+  // не закрывая панель.
+  const selectedPoint = (currentDaily?.history ?? []).find((item) => item.day === selectedDay);
+  const selectedColors = dayColorBreakdown(selectedPoint);
 
   useEffect(() => {
     setLiveProcessor(processor);
     setLiveDaily(daily);
     setLiveDetail(detail || "");
   }, [daily, detail, processor]);
+
+  // Разбор дня — состояние одного просмотра: закрыли окно, выбор снят.
+  useEffect(() => {
+    if (!open) setSelectedDay(null);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -930,25 +937,130 @@ function AlwaysOnCard({
                 <div className="mt-4 overflow-x-auto pb-1 sm:mt-5">
                   <div className="h-56 min-w-[560px] rounded-xl border border-slate-100 bg-[linear-gradient(to_bottom,transparent_24%,#e2e8f0_25%,transparent_26%,transparent_49%,#e2e8f0_50%,transparent_51%,transparent_74%,#e2e8f0_75%,transparent_76%)] px-3 pt-4 sm:h-64">
                     <div className="flex h-[173px] items-end gap-2 sm:h-[205px]">
-                      {(currentDaily?.history ?? []).map((item) => (
-                        <div key={item.day} className="group flex h-full min-w-0 flex-1 flex-col justify-end">
-                          <div className="relative flex flex-1 items-end justify-center">
-                            <span className="pointer-events-none absolute -top-7 z-10 hidden whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[10px] font-semibold text-white shadow-lg group-hover:block">
-                              {item.total} меш.
+                      {(currentDaily?.history ?? []).map((item) => {
+                        const active = item.day === selectedDay;
+                        return (
+                          <button
+                            type="button"
+                            key={item.day}
+                            aria-pressed={active}
+                            aria-label={`Аналитика за ${fullDay(item.day)}: ${item.total} мешков`}
+                            onClick={() => setSelectedDay(active ? null : item.day)}
+                            className="group flex h-full min-w-0 flex-1 cursor-pointer flex-col justify-end rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                          >
+                            <div className="relative flex flex-1 items-end justify-center">
+                              <span className="pointer-events-none absolute -top-7 z-10 hidden whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[10px] font-semibold text-white shadow-lg group-hover:block">
+                                {item.total} меш.
+                              </span>
+                              <div
+                                className={cn(
+                                  "w-full max-w-9 rounded-t-md bg-gradient-to-t transition-all duration-500 group-hover:brightness-110",
+                                  active
+                                    ? "from-[#1d4ed8] to-[#4a7ff0] ring-2 ring-blue-400 ring-offset-1"
+                                    : "from-[#cf4f3e] to-[#e8755f]",
+                                  selectedDay && !active && "opacity-45",
+                                )}
+                                style={{ height: item.total ? `${Math.max(4, (item.total * 100) / chartMax)}%` : 0 }}
+                              />
+                            </div>
+                            <span
+                              className={cn(
+                                "mt-2 block truncate text-center text-[9px] font-medium",
+                                active ? "font-bold text-blue-600" : "text-slate-400",
+                              )}
+                            >
+                              {shortDay(item.day)}
                             </span>
-                            <div
-                              className="w-full max-w-9 rounded-t-md bg-gradient-to-t from-[#cf4f3e] to-[#e8755f] transition-all duration-500 group-hover:brightness-110"
-                              style={{ height: item.total ? `${Math.max(4, (item.total * 100) / chartMax)}%` : 0 }}
-                            />
-                          </div>
-                          <span className="mt-2 block truncate text-center text-[9px] font-medium text-slate-400">
-                            {shortDay(item.day)}
-                          </span>
-                        </div>
-                      ))}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
+
+                {selectedPoint ? (
+                  <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50/60 p-3 sm:p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h4 className="font-bold text-slate-800">{fullDay(selectedPoint.day)}</h4>
+                      <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+                        Выбран день
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedDay(null)}
+                        className="ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-slate-500 transition hover:bg-white hover:text-slate-700"
+                      >
+                        Закрыть
+                      </button>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      <div className="rounded-lg bg-white p-2.5">
+                        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Итог</div>
+                        <div className="mt-0.5 text-xl font-black tabular-nums text-slate-900">
+                          {selectedPoint.total}
+                        </div>
+                      </div>
+                      <div className="rounded-lg bg-white p-2.5">
+                        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Модель</div>
+                        <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
+                          {selectedPoint.model_total}
+                        </div>
+                      </div>
+                      <div className="rounded-lg bg-white p-2.5">
+                        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Поправка</div>
+                        <div
+                          className={cn(
+                            "mt-0.5 text-xl font-black tabular-nums",
+                            selectedPoint.adjustment < 0 ? "text-amber-600" : "text-slate-300",
+                          )}
+                        >
+                          {selectedPoint.adjustment || 0}
+                        </div>
+                      </div>
+                      <div className="rounded-lg bg-white p-2.5">
+                        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Доля дня</div>
+                        <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
+                          {chartMax > 0 ? Math.round((selectedPoint.total * 100) / chartMax) : 0}%
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3">
+                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                        Цвета за этот день
+                      </div>
+                      {selectedColors.length ? (
+                        <div className="mt-2 space-y-2">
+                          {selectedColors.map((item) => (
+                            <div key={item.color}>
+                              <div className="mb-1 flex items-center gap-2 text-xs">
+                                <span className={cn("size-2.5 rounded-full", colorMeta(item.color).dot)} />
+                                <span className="font-semibold text-slate-700">{colorMeta(item.color).label}</span>
+                                <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
+                                <span className="w-10 text-right tabular-nums text-slate-400">{item.percent}%</span>
+                              </div>
+                              <div className="h-1.5 overflow-hidden rounded-full bg-white">
+                                <div
+                                  className={cn("h-full rounded-full", colorMeta(item.color).bar)}
+                                  style={{ width: `${item.percent}%` }}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-xs text-slate-400">
+                          В этот день модель ничего не распознала.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-3 text-center text-xs text-slate-400">
+                    Нажмите на столбик, чтобы посмотреть аналитику за день
+                  </p>
+                )}
               </section>
 
               <section className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">

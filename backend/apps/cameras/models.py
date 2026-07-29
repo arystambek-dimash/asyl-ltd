@@ -50,6 +50,11 @@ class AiCountingSession(models.Model):
 
     class Meta:
         ordering = ["-started_at"]
+        # Ordering по -started_at применяется к каждому чтению истории, но
+        # индекса под него не было: список сессий сортировал всю таблицу.
+        indexes = [
+            models.Index(fields=["-started_at"], name="ai_session_started_idx"),
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=["camera"],

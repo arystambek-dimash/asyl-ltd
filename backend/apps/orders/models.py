@@ -85,6 +85,28 @@ class Order(models.Model):
     all_objects = OrderQuerySet.as_manager()
 
     class Meta:
+        # LiveOrderManager добавляет deleted_at IS NULL к каждому запросу в
+        # системе, поэтому индексы частичные: в них не попадает корзина, и
+        # планировщик может брать их для любого списка заказов.
+        indexes = [
+            models.Index(
+                fields=["-created_at"], name="order_live_created_idx",
+                condition=Q(deleted_at__isnull=True),
+            ),
+            models.Index(
+                fields=["status", "-created_at"], name="order_live_status_idx",
+                condition=Q(deleted_at__isnull=True),
+            ),
+            models.Index(
+                fields=["department", "-created_at"], name="order_live_dept_idx",
+                condition=Q(deleted_at__isnull=True),
+            ),
+            # Корзина: обратное условие, её читает только раздел «Удалённые».
+            models.Index(
+                fields=["-deleted_at"], name="order_trash_idx",
+                condition=Q(deleted_at__isnull=False),
+            ),
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=["loading_camera"],
@@ -229,6 +251,10 @@ class Payment(models.Model):
             models.Index(fields=["-paid_at"], name="payment_paid_at_desc_idx"),
             # Очередь кассы и сводный отчёт всегда фильтруют по этапу.
             models.Index(fields=["status"], name="payment_status_idx"),
+            # Касса отчёта отбирает подтверждённые по способу оплаты
+            # (reports._income_by_day, фильтр журнала транзакций) — метод
+            # без статуса нигде не запрашивается, поэтому индекс составной.
+            models.Index(fields=["status", "method"], name="payment_status_method_idx"),
         ]
 
     @property

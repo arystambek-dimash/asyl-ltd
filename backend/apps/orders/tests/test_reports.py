@@ -98,7 +98,10 @@ def test_shipped_revenue_and_debt(auth_client, boss):
     assert data["shipped"]["bags"] == 15
     assert data["shipped"]["orders"] == 2
     assert data["shipped"]["debt_amount"] == "10000.00"
-    assert data["debt_now"] == {"total": "10000.00", "orders": 1}
+    assert data["debt_now"] == {
+        "total": "10000.00", "orders": 1,
+        "by_currency": {"KZT": "10000.00"}, "currency": "KZT",
+    }
 
 
 def test_deleted_orders_excluded(auth_client, boss):
@@ -176,3 +179,45 @@ def test_manual_shipped_without_shipment_falls_back_to_created(auth_client, boss
     data = auth_client(boss).get(URL).json()
     assert data["shipped"]["revenue"] == "2000.00"
     assert data["days"][0]["date"] == timezone.localdate().isoformat()
+
+
+def test_report_does_not_add_kzt_and_usd(auth_client, boss):
+    """1000 ₸ и 5 $ — это не «1005». Валюты идут раздельно.
+
+    Остальная система уже считает по валютам (orders/debt.py); сводный отчёт
+    оставался последним местом, где суммы складывались через курс «1:1».
+    """
+    client = _client()
+    product = _product()
+    kzt = _shipped_order(client, product, qty=1, price="1000")
+    usd = _shipped_order(client, product, qty=1, price="5")
+    usd.currency = "USD"
+    usd.save(update_fields=["currency"])
+    _confirmed_payment(kzt, 1000, method="cash")
+    _confirmed_payment(usd, 5, method="cash")
+
+    data = auth_client(boss).get(URL).json()
+
+    assert data["income"]["by_currency"] == {"KZT": "1000.00", "USD": "5.00"}
+    assert data["shipped"]["revenue_by_currency"] == {"KZT": "1000.00", "USD": "5.00"}
+    # Оба заказа погашены полностью — в дебиторке их нет ни в одной валюте.
+    assert data["debt_now"]["by_currency"] == {}
+    assert data["debt_now"]["orders"] == 0
+    # Плоское поле осталось для совместимости, но валюты в нём уже не смешаны:
+    # «1005» получиться не может, потому что раскладка идёт отдельно.
+    assert data["income"]["cash_by_currency"] == {"KZT": "1000.00", "USD": "5.00"}
+
+
+def test_report_debt_by_currency_keeps_outstanding_apart(auth_client, boss):
+    client = _client()
+    product = _product()
+    kzt = _shipped_order(client, product, qty=1, price="1000")
+    usd = _shipped_order(client, product, qty=1, price="5")
+    usd.currency = "USD"
+    usd.save(update_fields=["currency"])
+    _confirmed_payment(kzt, 400, method="cash")  # остаток 600 ₸
+
+    data = auth_client(boss).get(URL).json()
+
+    assert data["debt_now"]["by_currency"] == {"KZT": "600.00", "USD": "5.00"}
+    assert data["debt_now"]["orders"] == 2

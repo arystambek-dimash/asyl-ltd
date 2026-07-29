@@ -475,12 +475,13 @@ def test_summary_report_uses_net_amount_after_refunds(
     response = auth_client(boss).get("/api/reports/summary/")
 
     assert response.status_code == 200
-    assert response.data["income"] == {
-        "total": "235.00",
-        "cash": "60.00",
-        "cashless": "175.00",
-        "payments": 2,
-    }
+    income = response.data["income"]
+    assert income["total"] == "235.00"
+    assert income["cash"] == "60.00"
+    assert income["cashless"] == "175.00"
+    assert income["payments"] == 2
+    # Возвраты вычтены и в раскладке по валютам.
+    assert income["by_currency"] == {"KZT": "235.00"}
     assert response.data["days"][0]["received"] == "235.00"
 
 

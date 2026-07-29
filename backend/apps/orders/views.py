@@ -13,7 +13,9 @@ from django.db.models import Q, Sum
 from django.utils import timezone
 from apps.common.permissions import HasPerm, PermViewSetMixin
 from apps.common.money import money_string
-from apps.common.query_params import parse_iso_date, parse_store_id, validate_date_range
+from apps.common.query_params import (
+    filter_date_range, parse_date_range, parse_store_id,
+)
 from apps.clients.models import Department
 from apps.eventlog.models import EventLog
 from apps.shipments.services import (
@@ -28,7 +30,9 @@ from .apipay import (
 from .invoices import build_payment_receipt_pdf
 from .querysets import with_order_api_relations, with_payment_api_relations
 from .reports import summary_report
-from .statuses import PUBLIC_STATUS_LABELS, is_financial, statuses_in_group
+from .statuses import (
+    PUBLIC_STATUS_LABELS, is_financial, is_in_progress, statuses_in_group,
+)
 from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerializer,
                           StatusChangeRequestSerializer)
 from .services import (add_payment, add_mixed_payments, confirm_order, reject_order,
@@ -235,9 +239,7 @@ class ReportSummaryView(APIView):
         return [HasPerm("reports.view")]
 
     def get(self, request):
-        date_from = parse_iso_date(request.query_params.get("from"))
-        date_to = parse_iso_date(request.query_params.get("to"))
-        validate_date_range(date_from, date_to)
+        date_from, date_to = parse_date_range(request.query_params)
         qs = Order.objects.all()
         department = request.query_params.get("department")
         if department:
@@ -253,8 +255,12 @@ class PaymentTransactionListView(APIView):
         return [HasPerm("payments.view")]
 
     def get(self, request):
+        # Оплаты корзины деньгами не считаются: у Payment своего мягкого
+        # удаления нет, а order__ не проходит через LiveOrderManager — скоуп
+        # задаём явно, иначе итог кассы включает удалённые заказы.
         qs = with_payment_api_relations(
-            Payment.objects.all(), order_context=True
+            Payment.objects.filter(order__deleted_at__isnull=True),
+            order_context=True,
         ).order_by("-paid_at")
         status = request.query_params.get("status")
         method = request.query_params.get("method")
@@ -601,13 +607,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                         {"detail": "Неизвестная группа статусов",
                          "code": "bad_status_group"})
                 qs = qs.filter(status__in=statuses_in_group(group))
-            date_from = parse_iso_date(params.get("date_from"))
-            date_to = parse_iso_date(params.get("date_to"))
-            validate_date_range(date_from, date_to)
-            if date_from:
-                qs = qs.filter(created_at__date__gte=date_from)
-            if date_to:
-                qs = qs.filter(created_at__date__lte=date_to)
+            date_from, date_to = parse_date_range(params)
+            qs = filter_date_range(qs, "created_at", date_from, date_to)
             store = parse_store_id(params.get("store"))
             if store:
                 qs = qs.filter(store_id=store)
@@ -627,14 +628,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         """Оперативная аналитика заказов в разрезе динамических отделов."""
         params = request.query_params
         # Нужны только статус/отдел/сумма — полный план загрузки здесь лишний.
-        qs = Order.objects.prefetch_related("items__product")
-        date_from = parse_iso_date(params.get("date_from"))
-        date_to = parse_iso_date(params.get("date_to"))
-        validate_date_range(date_from, date_to)
-        if date_from:
-            qs = qs.filter(created_at__date__gte=date_from)
-        if date_to:
-            qs = qs.filter(created_at__date__lte=date_to)
+        # Выручка складывается из quantity/unit_price позиции — сам товар в
+        # сводке не читается, поэтому джоин к каталогу здесь лишний.
+        qs = Order.objects.prefetch_related("items")
+        date_from, date_to = parse_date_range(params)
+        qs = filter_date_range(qs, "created_at", date_from, date_to)
         group = params.get("status_group")
         if group:
             if group not in PUBLIC_STATUS_LABELS:
@@ -660,7 +658,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             row["orders"] += 1
             if order.status == "shipped":
                 row["shipped"] += 1
-            elif order.status not in ("rejected", "cancelled"):
+            elif is_in_progress(order.status):
                 row["active"] += 1
             # В выручку идут только финансовые заказы: черновик и «на
             # рассмотрении» ещё не подтверждены и оборотом не являются.
@@ -691,13 +689,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         store = parse_store_id(request.query_params.get("store"))
         if store:
             qs = qs.filter(order__store_id=store)
-        date_from = parse_iso_date(request.query_params.get("date_from"))
-        date_to = parse_iso_date(request.query_params.get("date_to"))
-        validate_date_range(date_from, date_to)
-        if date_from:
-            qs = qs.filter(paid_at__date__gte=date_from)
-        if date_to:
-            qs = qs.filter(paid_at__date__lte=date_to)
+        date_from, date_to = parse_date_range(request.query_params)
+        qs = filter_date_range(qs, "paid_at", date_from, date_to)
         return Response(PaymentQueueSerializer(qs, many=True).data)
 
     @action(detail=False, methods=["get"], url_path="cashier-log")
@@ -725,13 +718,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         store = parse_store_id(request.query_params.get("store"))
         if store:
             qs = qs.filter(order__store_id=store)
-        date_from = parse_iso_date(request.query_params.get("date_from"))
-        date_to = parse_iso_date(request.query_params.get("date_to"))
-        validate_date_range(date_from, date_to)
-        if date_from:
-            qs = qs.filter(created_at__date__gte=date_from)
-        if date_to:
-            qs = qs.filter(created_at__date__lte=date_to)
+        date_from, date_to = parse_date_range(request.query_params)
+        qs = filter_date_range(qs, "created_at", date_from, date_to)
 
         events = list(qs[:200])
         payment_ids = {

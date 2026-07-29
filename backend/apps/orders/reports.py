@@ -10,6 +10,7 @@
 - Удалённые (корзина) заказы не участвуют нигде: скоуп строится от
   Order.objects (LiveOrderManager).
 """
+from collections import defaultdict
 from decimal import Decimal
 from typing import TypedDict
 
@@ -17,6 +18,10 @@ from django.db.models import Count, DecimalField, F, Q, Sum, Value
 from django.db.models.functions import Coalesce, TruncDate
 
 from apps.common.money import money_string as _d
+from .debt import (
+    DEFAULT_CURRENCY, as_money_strings, debt_orders, order_remaining,
+    primary_currency, sum_by_currency,
+)
 from .models import OrderItem, Payment
 
 CASH_METHODS = ("cash",)
@@ -45,14 +50,14 @@ def _day_bounds(qs, date_from, date_to):
 
 
 def _income_by_day(orders_qs, date_from, date_to):
-    """Подтверждённые кассой оплаты по дням: наличные / безналичные."""
+    """Подтверждённые кассой оплаты по дням и валютам: наличные / безналичные."""
     net = F("amount") - F("refunded_amount")
     qs = (Payment.objects
           .filter(status="confirmed", method__in=MONEY_METHODS,
                   order__in=orders_qs)
           .annotate(day=TruncDate(Coalesce("confirmed_at", "paid_at"))))
     qs = _day_bounds(qs, date_from, date_to)
-    return qs.values("day").annotate(
+    return qs.values("day", "order__currency").annotate(
         cash=Coalesce(Sum(net, filter=Q(method__in=CASH_METHODS)), _ZERO,
                       output_field=_MONEY),
         cashless=Coalesce(Sum(net, filter=Q(method__in=CASHLESS_METHODS)), _ZERO,
@@ -62,7 +67,7 @@ def _income_by_day(orders_qs, date_from, date_to):
 
 
 def _shipped_by_day(orders_qs, date_from, date_to):
-    """Отгрузки по дням: сумма, мешки, заказы и сколько из этого ушло в долг."""
+    """Отгрузки по дням и валютам: сумма, мешки, заказы и доля в долг."""
     line = F("quantity") * Coalesce(
         F("unit_price"), Value(_ZERO), output_field=_MONEY)
     qs = (OrderItem.objects
@@ -70,7 +75,7 @@ def _shipped_by_day(orders_qs, date_from, date_to):
           .annotate(day=TruncDate(Coalesce("order__shipment__shipped_at",
                                            "order__created_at"))))
     qs = _day_bounds(qs, date_from, date_to)
-    return qs.values("day").annotate(
+    return qs.values("day", "order__currency").annotate(
         revenue=Coalesce(Sum(line, output_field=_MONEY), _ZERO, output_field=_MONEY),
         bags=Coalesce(Sum("quantity"), 0),
         orders=Count("order", distinct=True),
@@ -81,17 +86,23 @@ def _shipped_by_day(orders_qs, date_from, date_to):
 
 
 def _debt_now(orders_qs):
-    """Снапшот дебиторки на сейчас — по тем же правилам, что Order.is_debt."""
-    orders = (orders_qs.filter(status="shipped", settlement_intent="debt")
-              .prefetch_related("items__product", "payments"))
-    total = _ZERO
-    count = 0
-    for order in orders:
-        remaining = order.remaining_amount
-        if remaining > 0:
-            total += remaining
-            count += 1
-    return {"total": _d(total), "orders": count}
+    """Снапшот дебиторки на сейчас — по правилам orders/debt.py.
+
+    Долг считается тем же helper'ом, что и остальные экраны, и раскладывается
+    по валютам: 1000 ₸ и 5 $ не дают «1005».
+    """
+    orders = list(
+        orders_qs.filter(status="shipped", settlement_intent="debt")
+        .prefetch_related("items", "payments")
+    )
+    outstanding = debt_orders(orders)
+    totals = sum_by_currency(outstanding, order_remaining)
+    return {
+        "total": _d(sum(totals.values(), _ZERO)),
+        "by_currency": as_money_strings(totals),
+        "currency": primary_currency(totals),
+        "orders": len(outstanding),
+    }
 
 
 def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
@@ -104,20 +115,40 @@ def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
             "orders": 0, "bags": 0,
             "revenue": _ZERO, "debt_amount": _ZERO,
             "cash": _ZERO, "cashless": _ZERO, "payments": 0,
+            "revenue_by_currency": defaultdict(lambda: _ZERO),
+            "received_by_currency": defaultdict(lambda: _ZERO),
         })
+
+    # Валюты не складываются: суммы копятся отдельно по каждой (KZT/USD), а
+    # плоское поле остаётся для совместимости и показывает основную валюту.
+    by_currency: dict[str, dict[str, Decimal]] = defaultdict(
+        lambda: {"revenue": _ZERO, "debt_amount": _ZERO,
+                 "cash": _ZERO, "cashless": _ZERO}
+    )
+
+    def accumulate(currency: str, field: str, value: Decimal) -> None:
+        by_currency[currency or DEFAULT_CURRENCY][field] += value
 
     for r in _shipped_by_day(orders_qs, date_from, date_to):
         row = day_row(r["day"])
-        row["orders"] = r["orders"]
-        row["bags"] = r["bags"]
-        row["revenue"] = r["revenue"]
-        row["debt_amount"] = r["debt_amount"]
+        currency = r["order__currency"]
+        row["orders"] += r["orders"]
+        row["bags"] += r["bags"]
+        row["revenue"] += r["revenue"]
+        row["debt_amount"] += r["debt_amount"]
+        row["revenue_by_currency"][currency] += r["revenue"]
+        accumulate(currency, "revenue", r["revenue"])
+        accumulate(currency, "debt_amount", r["debt_amount"])
 
     for r in _income_by_day(orders_qs, date_from, date_to):
         row = day_row(r["day"])
-        row["cash"] = r["cash"]
-        row["cashless"] = r["cashless"]
-        row["payments"] = r["payments"]
+        currency = r["order__currency"]
+        row["cash"] += r["cash"]
+        row["cashless"] += r["cashless"]
+        row["payments"] += r["payments"]
+        row["received_by_currency"][currency] += r["cash"] + r["cashless"]
+        accumulate(currency, "cash", r["cash"])
+        accumulate(currency, "cashless", r["cashless"])
 
     total: _ReportTotals = {
         "revenue": _ZERO, "bags": 0, "orders": 0, "debt_amount": _ZERO,
@@ -136,11 +167,20 @@ def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
         {**row,
          "revenue": _d(row["revenue"]), "debt_amount": _d(row["debt_amount"]),
          "cash": _d(row["cash"]), "cashless": _d(row["cashless"]),
-         "received": _d(row["cash"] + row["cashless"])}
+         "received": _d(row["cash"] + row["cashless"]),
+         "revenue_by_currency": as_money_strings(row["revenue_by_currency"]),
+         "received_by_currency": as_money_strings(row["received_by_currency"])}
         for row in sorted(days.values(), key=lambda r: r["date"], reverse=True)
     ]
 
     received_total = total["cash"] + total["cashless"]
+    income_by_currency = {
+        currency: sums["cash"] + sums["cashless"]
+        for currency, sums in by_currency.items()
+    }
+    revenue_by_currency = {
+        currency: sums["revenue"] for currency, sums in by_currency.items()
+    }
     return {
         "from": date_from.isoformat() if date_from else None,
         "to": date_to.isoformat() if date_to else None,
@@ -149,12 +189,22 @@ def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
             "cash": _d(total["cash"]),
             "cashless": _d(total["cashless"]),
             "payments": total["payments"],
+            "currency": primary_currency(income_by_currency),
+            "by_currency": as_money_strings(income_by_currency),
+            "cash_by_currency": as_money_strings(
+                {c: s["cash"] for c, s in by_currency.items()}),
+            "cashless_by_currency": as_money_strings(
+                {c: s["cashless"] for c, s in by_currency.items()}),
         },
         "shipped": {
             "revenue": _d(total["revenue"]),
             "orders": total["orders"],
             "bags": total["bags"],
             "debt_amount": _d(total["debt_amount"]),
+            "currency": primary_currency(revenue_by_currency),
+            "revenue_by_currency": as_money_strings(revenue_by_currency),
+            "debt_amount_by_currency": as_money_strings(
+                {c: s["debt_amount"] for c, s in by_currency.items()}),
         },
         "debt_now": _debt_now(orders_qs),
         "days": day_list,

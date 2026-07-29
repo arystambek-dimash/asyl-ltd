@@ -41,6 +41,20 @@ def is_financial(status: str) -> bool:
     return status not in NON_FINANCIAL_STATUSES
 
 
+# Заказ закрыт: дальше по нему ничего не происходит. Отгруженный не входит —
+# он завершён логистически, но может быть ещё не оплачен.
+CLOSED_STATUSES = frozenset({"rejected", "cancelled"})
+
+
+def is_in_progress(status: str) -> bool:
+    """Заказ «сейчас в работе»: не отгружен и не закрыт.
+
+    Это НЕ то же самое, что :func:`is_financial`: черновик и «на рассмотрении»
+    в работе находятся, а в оборот ещё не входят.
+    """
+    return status != "shipped" and status not in CLOSED_STATUSES
+
+
 def public_status_key(status: str) -> str:
     return PUBLIC_STATUS_GROUPS.get(status, status)
 

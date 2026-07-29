@@ -11,7 +11,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import { DataGate } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
-import { formatMoney } from "@/lib/utils";
+import { formatCurrency } from "@/lib/utils";
 import { can } from "@/lib/can";
 import { useAuth } from "@/store/auth";
 import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
@@ -28,7 +28,10 @@ function describeSchedule(t: string, days: number[]): string {
 interface StoreDebtDetail {
   store: Store;
   client_name: string;
+  /** Долг в основной валюте магазина. Валюты не складываются. */
   debt_total: string;
+  debt_currency?: "KZT" | "USD";
+  debt_by_currency?: Record<string, string>;
   window_open: boolean;
   orders: Order[];
 }
@@ -103,7 +106,7 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
       </div>
 
       <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <StatCard label="Остаток долга" value={`${formatMoney(data.debt_total)} ₸`} />
+        <StatCard label="Остаток долга" value={formatCurrency(data.debt_total, data.debt_currency)} />
         <StatCard label="Заказов в долге" value={String(orders.length)} />
         <StatCard
           label="Способ оплаты"
@@ -148,16 +151,16 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                   <div className="grid grid-cols-3 gap-2 text-sm">
                     <div>
                       <span className="text-[var(--muted-foreground)]">Сумма</span>
-                      <div className="tabular-nums font-medium">{formatMoney(o.total_amount)} ₸</div>
+                      <div className="tabular-nums font-medium">{formatCurrency(o.total_amount, o.currency)}</div>
                     </div>
                     <div>
                       <span className="text-[var(--muted-foreground)]">Оплачено</span>
-                      <div className="tabular-nums text-[var(--success)]">{formatMoney(o.paid_total)} ₸</div>
+                      <div className="tabular-nums text-[var(--success)]">{formatCurrency(o.paid_total, o.currency)}</div>
                     </div>
                     <div>
                       <span className="text-[var(--muted-foreground)]">Остаток</span>
                       <div className="tabular-nums font-medium text-[var(--destructive)]">
-                        {formatMoney(String(remaining))} ₸
+                        {formatCurrency(String(remaining), o.currency)}
                       </div>
                     </div>
                   </div>
@@ -165,7 +168,10 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                     <div className="flex items-center justify-between rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2 text-xs">
                       <span className="text-[var(--warning)]">На подтверждении (бухгалтер → касса)</span>
                       <span className="tabular-nums font-semibold text-[var(--warning)]">
-                        {formatMoney(String(o.pending_payments!.reduce((s, p) => s + Number(p.amount), 0)))} ₸
+                        {formatCurrency(
+                          String(o.pending_payments!.reduce((s, p) => s + Number(p.amount), 0)),
+                          o.currency,
+                        )}
                       </span>
                     </div>
                   )}

@@ -109,9 +109,16 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         # debt_total и агрегаты долгов обходят заказы только по позициям и
         # оплатам — без предзагрузки список клиентов даёт N+1 на каждую строку,
         # а полный план (статусы, прайсы, отгрузки) здесь лишний.
+        #
+        # Набор сужен до отгруженных «в долг»: и debt_by_currency (Order.is_debt),
+        # и lifetime в debt_detail смотрят только на них, поэтому грузить всю
+        # историю заказов клиента ради сегодняшнего долга незачем. Погашенные
+        # остаются — lifetime_paid считает именно по ним.
         return Client.objects.prefetch_related(Prefetch(
             "orders",
-            queryset=Order.objects.prefetch_related("items", "payments"),
+            queryset=Order.objects.filter(
+                status="shipped", settlement_intent="debt",
+            ).prefetch_related("items", "payments"),
         ))
 
     @action(detail=True, methods=["get"], url_path="history")
@@ -389,8 +396,14 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         """Долги по магазинам: сумма непогашенного, расписание, окно/просрочка."""
         today = timezone.localdate()
         rows = []
+        # Долг считается по quantity/unit_price позиции — товар здесь не
+        # читается, поэтому джоин к каталогу не нужен. Набор сразу сужен до
+        # отгруженных «в долг»: остальные заказы debt_orders всё равно отсеет.
+        debt_candidates = Order.objects.filter(
+            status="shipped", settlement_intent="debt",
+        ).prefetch_related("items", "payments")
         for store in self.get_queryset().prefetch_related(
-                "orders__items__product", "orders__payments"):
+                Prefetch("orders", queryset=debt_candidates)):
             orders = debt_orders(store.orders.all())
             totals = sum_by_currency(orders, order_remaining)
             currency = primary_currency(totals, fallback=store.client.currency)

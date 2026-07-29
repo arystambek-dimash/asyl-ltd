@@ -277,3 +277,19 @@ def test_deleted_order_not_in_payments_queue(manager, accountant):
     _api(manager).delete(f"/api/orders/{o.id}/")
     r = _api(accountant).get("/api/orders/payments-queue/?stage=received")
     assert o.id not in [row["order"] for row in r.data]
+
+
+def test_deleted_order_not_in_transactions_journal(manager, accountant):
+    """Корзина не должна попадать ни в строки журнала, ни в итог кассы."""
+    p = _product()
+    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    live = _order(c, p, paid="1000.00")
+    trashed = _order(c, p, paid="7777.00")
+    _api(manager).delete(f"/api/orders/{trashed.id}/")
+
+    r = _api(accountant).get("/api/payment-transactions/")
+    assert trashed.id not in [row["order"] for row in r.data["results"]]
+    assert live.id in [row["order"] for row in r.data["results"]]
+    # Итог кассы считает только живой заказ, а не 8777.
+    assert r.data["summary"]["paid_by_currency"]["KZT"] == "1000.00"
+    assert r.data["summary"]["paid_by_method"]["KZT"]["cash"] == "1000.00"

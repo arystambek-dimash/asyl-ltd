@@ -24,6 +24,32 @@ def validate_date_range(date_from: date | None, date_to: date | None) -> None:
         )
 
 
+def parse_date_range(params) -> tuple[date | None, date | None]:
+    """Разобрать период из query-параметров и сразу проверить его.
+
+    Исторически сводный отчёт принимает ``from``/``to``, а остальные списки —
+    ``date_from``/``date_to``. Оба написания читаются везде: старые ссылки
+    продолжают работать, а ``?date_from=`` больше не игнорируется молча.
+    """
+    date_from = parse_iso_date(params.get("date_from") or params.get("from"))
+    date_to = parse_iso_date(params.get("date_to") or params.get("to"))
+    validate_date_range(date_from, date_to)
+    return date_from, date_to
+
+
+def filter_date_range(queryset, field: str, date_from, date_to):
+    """Ограничить queryset календарным периодом по полю ``field``.
+
+    Сравнение идёт через ``__date``, поэтому граничные дни входят целиком
+    независимо от времени в колонке.
+    """
+    if date_from:
+        queryset = queryset.filter(**{f"{field}__date__gte": date_from})
+    if date_to:
+        queryset = queryset.filter(**{f"{field}__date__lte": date_to})
+    return queryset
+
+
 def parse_store_id(raw: str | None) -> int | None:
     """Parse an optional ?store= id while preserving the public error contract."""
     if not raw:
