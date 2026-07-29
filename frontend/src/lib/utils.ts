@@ -34,7 +34,9 @@ export function formatCompact(value: number | string): string {
     minimumFractionDigits: 0,
     maximumFractionDigits: digits,
   }).format(scaled);
-  return `${text}${suffix}`;
+  // Неразрывный пробел перед «млн»: в узкой колонке обычный рвал число на
+  // две строки — «100» сверху, «млн» снизу.
+  return `${text} ${suffix.trim()}`;
 }
 
 export function currencySymbol(currency: "KZT" | "USD" | string = "KZT"): string {

@@ -132,14 +132,30 @@ export function useDashboardMetrics() {
     return [...top, { name: "Прочее", bags: rest }];
   }, [stock]);
 
-  // Долги: общая сумма и топ должников.
-  const { debtTotal, topDebtors } = useMemo(() => {
+  // Долги: общая сумма, топ должников и отдельно просроченное.
+  const { debtTotal, topDebtors, overdueTotal, overdueClients } = useMemo(() => {
     const rows = debts ?? [];
+    // Просрочка важнее общей суммы: 4,86 млрд долга — это норма работы в долг,
+    // а вот «сегодня день оплаты, а деньги не пришли» требует звонка.
+    const overdue = rows.filter((r) => r.overdue_count > 0);
     return {
       debtTotal: rows.reduce((s, r) => s + Number(r.debt_total), 0),
       topDebtors: [...rows].sort((a, b) => Number(b.debt_total) - Number(a.debt_total)).slice(0, 5),
+      overdueTotal: overdue.reduce((s, r) => s + Number(r.debt_total), 0),
+      overdueClients: overdue.length,
     };
   }, [debts]);
+
+  // Что требует действия прямо сейчас. Каждая строка ведёт на свой экран,
+  // поэтому в блоке только то, по чему есть куда нажать.
+  const attention = useMemo(() => {
+    const pendingPayments = list
+      .flatMap((order) => order.payments ?? [])
+      .filter((payment) => payment.status === "received").length;
+    const awaitingReview = list.filter((o) => orderStatusGroup(o.status) === "pending").length;
+    const stuckInLoading = list.filter((o) => o.status === "loading").length;
+    return { pendingPayments, awaitingReview, stuckInLoading };
+  }, [list]);
 
   return {
     queue,
@@ -155,6 +171,9 @@ export function useDashboardMetrics() {
     stockByProduct,
     debtTotal,
     topDebtors,
+    overdueTotal,
+    overdueClients,
+    attention,
     loadError,
     reload,
   };

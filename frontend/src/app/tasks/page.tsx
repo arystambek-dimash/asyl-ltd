@@ -153,6 +153,7 @@ export default function TasksPage() {
   const [dueDate, setDueDate] = useState("");
   const [photos, setPhotos] = useState<File[]>([]);
   const [voice, setVoice] = useState<File | null>(null);
+  const [extrasOpen, setExtrasOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
 
@@ -170,6 +171,7 @@ export default function TasksPage() {
     setDueDate("");
     setPhotos([]);
     setVoice(null);
+    setExtrasOpen(false);
     setFormError("");
   }
 
@@ -306,46 +308,60 @@ export default function TasksPage() {
             </select>
           </div>
 
-          <div className="grid gap-1.5">
-            <Label htmlFor="task-due">Срок</Label>
-            <Input id="task-due" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
-          </div>
-
-          <div className="grid gap-1.5">
-            <Label>Голосовое сообщение</Label>
-            <VoiceRecorder onChange={setVoice} disabled={saving} />
-          </div>
-
-          <div className="grid gap-1.5">
-            <Label htmlFor="task-photos">Фото</Label>
-            <input
-              id="task-photos"
-              type="file"
-              accept="image/*"
-              multiple
-              onChange={(e) => setPhotos(Array.from(e.target.files ?? []))}
-              className="text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--muted)] file:px-3 file:py-1.5 file:text-sm file:font-medium"
-            />
-            {photos.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {photos.map((file) => (
-                  <span
-                    key={file.name}
-                    className="flex items-center gap-1 rounded-lg bg-[var(--muted)] px-2 py-1 text-xs"
-                  >
-                    <ImageIcon className="size-3.5" /> {file.name}
-                  </span>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => setPhotos([])}
-                  className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-                >
-                  <X className="size-3.5" /> очистить
-                </button>
+          {/* Срок, голос и фото нужны не каждой задаче: в свёрнутом виде форма
+              умещается без прокрутки, и обычная постановка — это два поля. */}
+          {!extrasOpen ? (
+            <button
+              type="button"
+              onClick={() => setExtrasOpen(true)}
+              className="flex items-center justify-center gap-2 rounded-xl border border-dashed px-3 py-2.5 text-sm font-medium text-[var(--muted-foreground)] transition hover:border-[var(--primary)] hover:text-[var(--foreground)]"
+            >
+              <Plus className="size-4" /> Срок, голос, фото
+            </button>
+          ) : (
+            <div className="grid gap-4 rounded-xl border bg-[var(--muted)]/40 p-3">
+              <div className="grid gap-1.5">
+                <Label htmlFor="task-due">Срок</Label>
+                <Input id="task-due" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
               </div>
-            )}
-          </div>
+
+              <div className="grid gap-1.5">
+                <Label>Голосовое сообщение</Label>
+                <VoiceRecorder onChange={setVoice} disabled={saving} />
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="task-photos">Фото</Label>
+                <input
+                  id="task-photos"
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={(e) => setPhotos(Array.from(e.target.files ?? []))}
+                  className="text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--card)] file:px-3 file:py-1.5 file:text-sm file:font-medium"
+                />
+                {photos.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {photos.map((file) => (
+                      <span
+                        key={file.name}
+                        className="flex items-center gap-1 rounded-lg bg-[var(--card)] px-2 py-1 text-xs"
+                      >
+                        <ImageIcon className="size-3.5" /> {file.name}
+                      </span>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setPhotos([])}
+                      className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                    >
+                      <X className="size-3.5" /> очистить
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {formError && (
             <p className="rounded-xl border border-[var(--destructive)]/30 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">

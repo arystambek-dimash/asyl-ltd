@@ -1,7 +1,18 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ArrowDownRight, ArrowUpRight, BarChart3, ChevronRight, Truck, Video } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDownRight,
+  ArrowUpRight,
+  BarChart3,
+  CheckCircle2,
+  ChevronRight,
+  ClipboardList,
+  Truck,
+  Video,
+  Wallet,
+} from "lucide-react";
 import { Area, AreaChart, Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { AppShell } from "@/components/layout/app-shell";
 import { CameraWall } from "@/components/camera-wall";
@@ -58,6 +69,103 @@ function CardHeader({
   );
 }
 
+/* ── Требует действия ────────────────────────────────────────────── */
+
+/** То, по чему нужно что-то сделать сегодня.
+ *
+ * Итоговые цифры отвечают на вопрос «как дела», но не говорят, за что
+ * браться. Здесь только строки, ведущие на конкретный экран; когда всё
+ * закрыто, полоса схлопывается в одну спокойную строку.
+ */
+function AttentionBar({ m }: { m: DashboardMetrics }) {
+  const items = [
+    {
+      key: "overdue",
+      show: m.overdueClients > 0,
+      href: "/accounting",
+      icon: AlertTriangle,
+      tone: "destructive" as const,
+      label: "Просрочена оплата",
+      value: String(m.overdueClients),
+      hint: `${formatCompact(m.overdueTotal)} ₸ · ${m.overdueClients === 1 ? "клиент" : "клиентов"}`,
+    },
+    {
+      key: "payments",
+      show: m.attention.pendingPayments > 0,
+      href: "/accounting",
+      icon: Wallet,
+      tone: "warning" as const,
+      label: "Оплаты на подтверждении",
+      value: String(m.attention.pendingPayments),
+      hint: "ждут кассу",
+    },
+    {
+      key: "review",
+      show: m.attention.awaitingReview > 0,
+      href: "/orders",
+      icon: ClipboardList,
+      tone: "warning" as const,
+      label: "Заказы на рассмотрении",
+      value: String(m.attention.awaitingReview),
+      hint: "нужен ответ",
+    },
+    {
+      key: "loading",
+      show: m.attention.stuckInLoading > 0,
+      href: "/shipping",
+      icon: Truck,
+      tone: "info" as const,
+      label: "Идёт погрузка",
+      value: String(m.attention.stuckInLoading),
+      hint: "на посту",
+    },
+  ].filter((item) => item.show);
+
+  if (items.length === 0) {
+    return (
+      <section className="flex items-center gap-2 rounded-xl border border-[var(--success)]/25 bg-[var(--success)]/5 px-4 py-3 text-sm">
+        <CheckCircle2 className="size-4 shrink-0 text-[var(--success)]" />
+        <span className="text-[var(--muted-foreground)]">Ничего срочного — просрочек и незакрытых оплат нет.</span>
+      </section>
+    );
+  }
+
+  const toneClass = {
+    destructive: "border-[var(--destructive)]/25 bg-[var(--destructive)]/5 text-[var(--destructive)]",
+    warning: "border-[var(--warning)]/25 bg-[var(--warning)]/5 text-[var(--warning)]",
+    info: "border-[var(--ring)]/25 bg-[var(--ring)]/5 text-[var(--ring)]",
+  };
+
+  return (
+    <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {items.map((item) => {
+        const Icon = item.icon;
+        return (
+          <Link
+            key={item.key}
+            href={item.href}
+            className={cn(
+              "group flex items-center gap-2.5 rounded-xl border px-3 py-3 transition hover:shadow-sm",
+              toneClass[item.tone],
+            )}
+          >
+            <Icon className="size-5 shrink-0" />
+            <div className="min-w-0 flex-1">
+              {/* Заголовок и сумма в одну строку каждый: в узкой карточке
+                  перенос ломал и подпись, и «2,5 млн ₸» пополам. */}
+              <div className="truncate text-[13px] font-medium text-[var(--foreground)]">{item.label}</div>
+              <div className="truncate text-xs text-[var(--muted-foreground)]">{item.hint}</div>
+            </div>
+            {/* Стрелка появляется только при наведении и не занимает места —
+                иначе заголовок обрезался уже на «Просрочена оп…». */}
+            <div className="shrink-0 whitespace-nowrap text-lg font-semibold tabular-nums">{item.value}</div>
+          </Link>
+        );
+      })}
+    </section>
+  );
+}
+
 /* ── Полоса метрик ───────────────────────────────────────────────── */
 
 function MetricStrip({ m }: { m: DashboardMetrics }) {
@@ -93,8 +201,14 @@ function MetricStrip({ m }: { m: DashboardMetrics }) {
       value: formatCompact(String(m.debtTotal)),
       exact: formatMoney(String(m.debtTotal)),
       unit: "₸",
-      hint: `${m.topDebtors.length > 0 ? "по подтверждённым заказам" : "долгов нет"}`,
-      alert: m.debtTotal > 0,
+      // Работа в долг здесь норма, поэтому тревожит не сумма, а просрочка.
+      hint:
+        m.overdueClients > 0
+          ? `просрочено ${formatCompact(m.overdueTotal)} ₸ · ${m.overdueClients} кл.`
+          : m.topDebtors.length > 0
+            ? "просрочки нет"
+            : "долгов нет",
+      alert: m.overdueClients > 0,
     },
   ] as const;
   return (
@@ -429,6 +543,7 @@ function AnalyticsView() {
   return (
     <>
       {m.loadError && <ErrorAlert message={m.loadError} onRetry={m.reload} />}
+      <AttentionBar m={m} />
       <MetricStrip m={m} />
       <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,1fr)]">
         <ShipmentsCard m={m} />

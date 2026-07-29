@@ -293,5 +293,37 @@ class ProductionManifestTests(unittest.TestCase):
         )
 
 
+class SecurityHeaderTests(unittest.TestCase):
+    """Заголовки не должны молча отключать то, чем пользуются сотрудники."""
+
+    def _headers(self) -> str:
+        return (
+            REPO_ROOT / "deploy" / "nginx" / "conf.d" / "snippets"
+            / "security-headers.conf"
+        ).read_text(encoding="utf-8")
+
+    def test_microphone_is_allowed_for_voice_tasks(self) -> None:
+        # Пустой список запрещал запись всему сайту, и браузер отказывал,
+        # даже не спросив сотрудника — голосовые задачи было не записать.
+        headers = self._headers()
+        self.assertIn("microphone=(self)", headers)
+        self.assertNotIn("microphone=()", headers)
+
+    def test_camera_and_geolocation_stay_closed(self) -> None:
+        headers = self._headers()
+        self.assertIn("camera=()", headers)
+        self.assertIn("geolocation=()", headers)
+
+    def test_baseline_headers_are_present(self) -> None:
+        headers = self._headers()
+        for header in (
+            "Strict-Transport-Security",
+            "X-Content-Type-Options",
+            "X-Frame-Options",
+            "Referrer-Policy",
+        ):
+            self.assertIn(header, headers)
+
+
 if __name__ == "__main__":
     unittest.main()
