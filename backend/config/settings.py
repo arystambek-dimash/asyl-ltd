@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     "apps.portal",
     "apps.notifications",
     "apps.cameras",
+    "apps.tasks",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

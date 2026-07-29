@@ -12,6 +12,9 @@ _SECTIONS = {
     "reports": ("Отчёты", ["view", "export"]),
     "employees": ("Сотрудники", ["view", "manage"]),
     "rbac": ("Доступы", ["view", "manage"]),
+    # Свои задачи сотрудник видит и закрывает без прав; tasks.view открывает
+    # чужие, tasks.create — постановку.
+    "tasks": ("Задачи", ["view", "create"]),
 }
 
 _ACTION_LABELS = {
@@ -63,5 +66,5 @@ PRESETS = {
         "shipping.debt_override", "train", "orders.view", "warehouse.view"),
     "Начальник": _codes("catalog", "clients", "orders", "payments", "warehouse",
                         "shipping", "train", "employees", "rbac",
-                        "reports", "events.view"),
+                        "reports", "events.view", "tasks"),
 }
