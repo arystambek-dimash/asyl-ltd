@@ -52,9 +52,17 @@ def _processor_colors(processor: dict) -> dict[str, int]:
     return result
 
 
+# Перезапустившийся воркер начинает счёт с нуля, поэтому за перезапуск
+# принимаем только снимок у самого начала. Любое другое падение счётчика —
+# устаревший или чужой снимок, и целиком записывать его в дневной итог нельзя:
+# счётчик 5000 → 4000 давал бы +4000 мешков на пустом месте.
+_RESTART_TOTAL_MAX = 5
+
+
 def _counter_delta(current: int, previous: int) -> int:
-    # После перезапуска процесса сырой счётчик снова начинается с нуля.
-    return current - previous if current >= previous else current
+    if current >= previous:
+        return current - previous
+    return current if current <= _RESTART_TOTAL_MAX else 0
 
 
 def _color_delta(current: dict[str, int], previous: dict) -> dict[str, int]:
@@ -81,6 +89,17 @@ def _record_processor(processor: dict, day: date) -> None:
         return
     colors = _processor_colors(processor)
 
+    # Курсор — база отсчёта именно для 24/7. Снимок сессионной погрузки или
+    # остановленного воркера про неё ничего не говорит: его счётчик идёт с нуля
+    # и своей жизнью. Раньше такой снимок перезаписывал курсор, и следующая
+    # разница по возобновившемуся 24/7 уходила в дневной итог второй раз
+    # (100 → сессия 40 → 24/7 130 давало 190 вместо 130).
+    authoritative = (
+        processor.get("mode") == "always_on" and bool(processor.get("running"))
+    )
+    if not authoritative:
+        return
+
     cursor, created = AlwaysOnCounterCursor.objects.select_for_update().get_or_create(
         camera=camera,
         defaults={
@@ -96,13 +115,19 @@ def _record_processor(processor: dict, day: date) -> None:
         delta = _counter_delta(total, cursor.last_total)
         color_delta = _color_delta(colors, cursor.last_per_color)
 
+    # Устаревший снимок (кэш страницы аналитики) приходит, когда монитор уже
+    # учёл более свежий. Отматывать курсор назад нельзя: следующая свежая
+    # разница посчиталась бы дважды. Настоящий перезапуск воркера отличаем по
+    # счётчику, ушедшему в самое начало, — там база отсчёта обязана обнулиться.
+    rewind = not created and total < cursor.last_total
+    if rewind and total > _RESTART_TOTAL_MAX:
+        return
     cursor.last_total = total
     cursor.last_per_color = colors
     cursor.last_mode = str(processor.get("mode") or "")[:16]
     cursor.save(update_fields=["last_total", "last_per_color", "last_mode", "updated_at"])
 
-    # Сессионная погрузка учитывается в заказе, но не в фоновой аналитике.
-    if processor.get("mode") != "always_on" or not processor.get("running") or delta <= 0:
+    if delta <= 0:
         return
 
     row, _ = AlwaysOnDailyAnalytics.objects.select_for_update().get_or_create(

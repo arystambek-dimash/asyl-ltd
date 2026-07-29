@@ -254,15 +254,22 @@ def finish_loading(order, user):
     )
 
 
+def _valid_ai_total(bags) -> bool:
+    """Годное число мешков от воркера: целое неотрицательное, но не bool."""
+    return not isinstance(bags, bool) and isinstance(bags, int) and bags >= 0
+
+
 @transaction.atomic
 def finish_ai_loading(order, bags: int, user):
-    """Сохранить финальный AI-счёт и завершить отгрузку одним DB-действием."""
-    if isinstance(bags, bool) or not isinstance(bags, int) or bags < 0:
-        raise ValidationError({
-            "detail": "AI-сервис вернул некорректное количество мешков",
-            "code": "invalid_ai_total",
-        })
+    """Сохранить финальный AI-счёт и завершить отгрузку одним DB-действием.
 
+    Воркер на ПК цеха — сторонний процесс, и его ответ может прийти пустым
+    или битым. Раньше это роняло завершение посреди разбора AI-сессии: заказ
+    оставался в ``loading`` с открытой сессией, а её наличие блокировало и
+    ручное завершение, и откат — машина уже уехала, а заказ не закрыть.
+    Поэтому негодное число не останавливает отгрузку: за факт берётся
+    заказанное количество, а расхождение попадает в журнал.
+    """
     order = _locked(order)
     _assert_device_order_camera(order, user)
     if order.status != "loading":
@@ -271,6 +278,20 @@ def finish_ai_loading(order, bags: int, user):
             "code": "invalid_status",
         })
     shipment = _require_shipment(order)
+
+    source = "ai_final"
+    if not _valid_ai_total(bags):
+        rejected, bags = bags, sum(item.quantity for item in order.items.all())
+        source = "ai_final_fallback"
+        log_event(
+            "loading",
+            f"AI-сервис вернул некорректный счёт — принято по заказу: {bags} мешков",
+            user=user,
+            order=order,
+            payload={"bags": bags, "source": source,
+                     "rejected_total": repr(rejected)},
+        )
+
     shipment.bags_loaded = bags
     shipment.save(update_fields=["bags_loaded"])
     log_event(
@@ -278,14 +299,14 @@ def finish_ai_loading(order, bags: int, user):
         f"AI-подсчёт зафиксирован: {bags} мешков",
         user=user,
         order=order,
-        payload={"bags": bags, "source": "ai_final"},
+        payload={"bags": bags, "source": source},
     )
     log_event(
         "loading_done",
         "Отгрузка завершена по финальному AI-подсчёту",
         user=user,
         order=order,
-        payload={"bags": bags, "source": "ai_final"},
+        payload={"bags": bags, "source": source},
     )
     label = (
         "Вагон: отгрузка завершена"

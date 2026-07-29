@@ -55,9 +55,57 @@ class RoleViewSet(
             .order_by("-is_system", "name")
         )
 
+    def _assert_no_escalation(self, serializer):
+        """Раздать можно только то, чем владеешь сам.
+
+        Права роли входят в effective_perm_codes сотрудника, поэтому без этой
+        проверки владелец rbac.manage мог бы выписать роли payments.confirm
+        или shipping.debt_override. Штатные пресеты этого не допускают —
+        rbac есть только у «Начальника», у которого и так все права, — но
+        проверка закрывает саму возможность собрать такую роль руками.
+        """
+        user = self.request.user
+        permissions = serializer.validated_data.get("permissions")
+        if permissions is None or user.is_superuser:
+            return
+        excess = sorted({p.code for p in permissions} - user.perm_codes)
+        if excess:
+            raise ValidationError({
+                "detail": "Нельзя выдать права, которых нет у вас: "
+                          + ", ".join(excess),
+                "code": "perm_escalation",
+            })
+
+    def perform_create(self, serializer):
+        self._assert_no_escalation(serializer)
+        serializer.save()
+
+    def _assert_not_own_role(self, instance):
+        """Свою роль не редактируют: это обход проверки на эскалацию.
+
+        Иначе владелец rbac.manage дописывает права себе же — они попадают
+        в effective_perm_codes сразу, без участия второго человека.
+        """
+        user = self.request.user
+        if user.is_superuser:
+            return
+        employee = getattr(user, "_employee", None)
+        if employee is not None and employee.role_id == instance.pk:
+            raise ValidationError({
+                "detail": "Свою роль изменить нельзя — попросите администратора",
+                "code": "self_role_edit",
+            })
+
+    def perform_update(self, serializer):
+        self._assert_not_own_role(serializer.instance)
+        self._assert_no_escalation(serializer)
+        serializer.save()
+
     def perform_destroy(self, instance):
         # Удалять можно любые роли (включая системные), кроме тех, на которые
-        # назначены сотрудники — иначе они остались бы без роли.
+        # назначены сотрудники — иначе они остались бы без роли. Свою роль
+        # удалять нельзя: это лишило бы прав самого удаляющего.
+        self._assert_not_own_role(instance)
         if instance.employees.exists():
             raise ValidationError({"detail": "На роль назначены сотрудники — удаление запрещено", "code": "role_in_use"})
         instance.delete()

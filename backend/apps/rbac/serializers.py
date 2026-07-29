@@ -27,7 +27,10 @@ class RoleSerializer(serializers.ModelSerializer):
         read_only_fields = ["is_system"]
 
     def get_employee_count(self, obj):
-        return getattr(obj, "employee_count", obj.employees.count())
+        # getattr вычисляет запасное значение сразу, поэтому obj.employees.count()
+        # бил бы запросом по каждой роли даже при готовой аннотации из get_queryset.
+        count = getattr(obj, "employee_count", None)
+        return obj.employees.count() if count is None else count
 
     def create(self, validated_data):
         permissions = validated_data.pop("permissions", [])

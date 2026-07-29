@@ -57,7 +57,10 @@ def test_create_role_requires_rbac_manage(auth_client, user_with_perms):
     )
     assert resp.status_code == 403
 
-    manager = user_with_perms("roles-manager", codes=["rbac.manage"])
+    # Раздать можно только то, чем владеешь сам, поэтому у управляющего
+    # доступами есть и warehouse.view — см. test_role_escalation.py.
+    manager = user_with_perms(
+        "roles-manager", codes=["rbac.manage", "warehouse.view"])
     resp = auth_client(manager).post(
         "/api/roles/",
         {

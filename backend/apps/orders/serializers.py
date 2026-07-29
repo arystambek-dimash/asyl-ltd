@@ -373,12 +373,26 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         return items[0] if items else None
 
     def get_bag_estimate_kg(self, obj):
-        # Ожидаемый вес по ФАКТУ камеры = посчитанные мешки × вес фасовки.
-        s = self._shipment(obj)
-        bags = s.bags_loaded if s else 0
-        first = self._first_item(obj)
-        per = first.product_weight_kg if first else Decimal("0")
-        return str(bags * per)
+        """Ожидаемый вес груза по факту камеры.
+
+        Считаем по всем позициям: у смешанного заказа фасовки разные, и вес
+        первой позиции, умноженный на все мешки, завышал число (30×50кг +
+        20×25кг давало 2500 вместо 2000). Поле стоит рядом с весом машины на
+        весах, поэтому обязано совпадать с расчётом поста погрузки.
+        """
+        items = list(obj.items.all())
+        ordered = sum(item.quantity for item in items)
+        full_weight = sum(
+            (item.quantity * item.product_weight_kg for item in items), Decimal("0"))
+        shipment = self._shipment(obj)
+        bags = shipment.bags_loaded if shipment else 0
+        if not ordered:
+            return str(Decimal("0"))
+        if bags == ordered:
+            return str(full_weight)
+        # Камера насчитала не столько, сколько заказано: состав недогруза
+        # неизвестен, поэтому масштабируем средним весом мешка по заказу.
+        return str(full_weight * Decimal(bags) / Decimal(ordered))
 
     def get_bag_weight_kg(self, obj):
         first = self._first_item(obj)
