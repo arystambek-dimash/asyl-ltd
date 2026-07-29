@@ -3,7 +3,6 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   AlertTriangle,
-  ArrowDownRight,
   ArrowUpRight,
   BarChart3,
   CalendarDays,
@@ -22,20 +21,7 @@ import {
   Warehouse,
   XCircle,
 } from "lucide-react";
-import {
-  Area,
-  AreaChart,
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { AppShell } from "@/components/layout/app-shell";
 import { CameraWall } from "@/components/camera-wall";
 import { ErrorAlert } from "@/components/ui/data-state";
@@ -201,46 +187,32 @@ function AttentionBar({ m }: { m: DashboardMetrics }) {
   );
 }
 
-/* ── Плитки метрик ───────────────────────────────────────────────── */
+/* ── Сегодня: четыре ответа одним взглядом ──────────────────────── */
 
-function MetricStrip({ m, days }: { m: DashboardMetrics; days: number }) {
-  const delta = m.shippedToday - m.shippedYesterday;
-  // Крупные суммы показываем порядком величины: «4,81 млрд» читается с
-  // одного взгляда, а двенадцать цифр — нет. Точное значение остаётся
-  // в подсказке при наведении, ничего не теряется.
+function TodayStrip({ m }: { m: DashboardMetrics }) {
   const cells = [
     {
-      label: "На складе",
-      show: m.canStock,
-      value: formatCompact(m.totalBags),
-      exact: formatMoney(m.totalBags),
-      unit: "меш.",
-      hint: "текущий остаток",
-      info: "Сумма остатков по всем продуктам склада.",
-      icon: Warehouse,
-      tone: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-    },
-    {
       show: m.canOrders && m.canEvents,
-      label: "Ушло сегодня",
+      label: "Отгружено сегодня",
       value: formatCompact(m.shippedToday),
       exact: formatMoney(m.shippedToday),
       unit: "меш.",
-      hint: `${m.shippedTodayOrders} отгрузок`,
-      info: "Мешки в отгруженных сегодня заказах. Стрелка — сравнение со вчера.",
+      // «↘ 1 775» красным читалось как авария. Вчерашняя цифра текстом
+      // отвечает на тот же вопрос без тревоги.
+      hint: `${m.shippedTodayOrders} отгрузок · вчера ${formatCompact(m.shippedYesterday)}`,
+      info: "Мешки в отгруженных сегодня заказах.",
       icon: Truck,
       tone: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-      delta,
     },
     {
       show: m.canFinance && m.canOrders,
-      label: `Выручка · ${days} дней`,
-      value: formatCompact(String(m.periodRevenue)),
-      exact: formatMoney(String(m.periodRevenue)),
+      label: "Поступило сегодня",
+      value: formatCompact(String(m.receivedToday)),
+      exact: formatMoney(String(m.receivedToday)),
       unit: "₸",
-      hint: `поступило ${formatCompact(String(m.periodReceived))} ₸`,
-      info: "Подтверждённые заказы в тенге за период. Валюты не смешиваются.",
-      icon: BarChart3,
+      hint: m.receivedTodayCount > 0 ? `${m.receivedTodayCount} подтверждённых оплат` : "оплат пока не было",
+      info: "Подтверждённые сегодня оплаты в тенге.",
+      icon: Wallet,
       tone: "bg-violet-500/10 text-violet-600 dark:text-violet-400",
     },
     {
@@ -249,17 +221,25 @@ function MetricStrip({ m, days }: { m: DashboardMetrics; days: number }) {
       value: formatCompact(String(m.debtTotal)),
       exact: formatMoney(String(m.debtTotal)),
       unit: currencySymbol(m.debtCurrency),
-      // Работа в долг здесь норма, поэтому тревожит не сумма, а просрочка.
       hint:
         m.overdueClients > 0
           ? `просрочено ${formatCompactCurrency(m.overdueTotal, m.debtCurrency)} · ${m.overdueClients} кл.`
-          : m.topDebtors.length > 0
-            ? "просрочки нет"
-            : "долгов нет",
+          : "просрочки нет",
       info: "Непогашенный остаток по отгруженным в долг заказам.",
       icon: UserRound,
       tone: "bg-orange-500/10 text-orange-600 dark:text-orange-400",
       alert: m.overdueClients > 0,
+    },
+    {
+      show: m.canStock,
+      label: "На складе",
+      value: formatCompact(m.totalBags),
+      exact: formatMoney(m.totalBags),
+      unit: "меш.",
+      hint: `${m.stockByProduct.length} продуктов`,
+      info: "Сумма остатков по всем продуктам склада.",
+      icon: Warehouse,
+      tone: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
     },
   ] as const;
   const visible = cells.filter((c) => c.show);
@@ -289,23 +269,9 @@ function MetricStrip({ m, days }: { m: DashboardMetrics; days: number }) {
                   {c.value}
                 </span>
                 {c.unit && <span className="text-sm text-[var(--muted-foreground)]">{c.unit}</span>}
-                {"delta" in c && c.delta !== 0 && (
-                  <span
-                    className={cn(
-                      "flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] font-medium tabular-nums",
-                      c.delta > 0
-                        ? "bg-[var(--success)]/10 text-[var(--success)]"
-                        : "bg-[var(--destructive)]/10 text-[var(--destructive)]",
-                    )}
-                  >
-                    {c.delta > 0 ? <ArrowUpRight className="size-3" /> : <ArrowDownRight className="size-3" />}
-                    {formatCompact(Math.abs(c.delta))}
-                  </span>
-                )}
               </div>
               <div className="mt-0.5 truncate text-xs text-[var(--muted-foreground)]">{c.hint}</div>
             </div>
-            {/* Подсказка «что это за цифра» — по наведению на (i). */}
             <span title={c.info} className="absolute right-3 top-3 cursor-help text-[var(--muted-foreground)]/50">
               <Info className="size-3.5" />
             </span>
@@ -316,107 +282,159 @@ function MetricStrip({ m, days }: { m: DashboardMetrics; days: number }) {
   );
 }
 
-/* ── Отгрузки по дням ────────────────────────────────────────────── */
+/* ── Динамика: один крупный график с переключателем ─────────────── */
 
-function ShipmentsCard({ m, days }: { m: DashboardMetrics; days: number }) {
+const AXIS_TICK = { fontSize: 11, fill: "var(--muted-foreground)" } as const;
+
+function TrendCard({ m, days }: { m: DashboardMetrics; days: number }) {
+  const modes = [
+    ...(m.canOrders && m.canEvents ? [{ key: "bags", label: "Отгрузки" }] : []),
+    ...(m.canFinance && m.canOrders ? [{ key: "money", label: "Деньги" }] : []),
+  ];
+  const [mode, setMode] = useState(modes[0]?.key ?? "bags");
+  if (modes.length === 0) return null;
+  const active = modes.some((item) => item.key === mode) ? mode : modes[0].key;
+
+  const totalBags = m.shippedByDay.reduce((s, d) => s + d.bags, 0);
+  const activeDays = m.shippedByDay.filter((d) => d.bags > 0).length;
+  const summary =
+    active === "bags"
+      ? [
+          { label: "Всего", value: `${formatCompact(totalBags)} меш.`, exact: formatMoney(totalBags) },
+          {
+            label: "В среднем",
+            value: `${formatCompact(activeDays ? Math.round(totalBags / activeDays) : 0)} меш./день`,
+            exact: "по дням с отгрузками",
+          },
+        ]
+      : [
+          {
+            label: "Выручка",
+            value: `${formatCompact(String(m.periodRevenue))} ₸`,
+            exact: formatMoney(String(m.periodRevenue)),
+          },
+          {
+            label: "Поступило",
+            value: `${formatCompact(String(m.periodReceived))} ₸`,
+            exact: formatMoney(String(m.periodReceived)),
+          },
+        ];
+
   return (
     <section className="rounded-xl border bg-[var(--card)] shadow-sm">
-      <CardHeader
-        title="Отгрузки"
-        sub={`мешков в день · ${days} дней`}
-        href="/shipping"
-        hrefLabel="Перейти к отгрузкам"
-      />
-      <div className="p-4">
-        <div className="h-[200px] w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={m.shippedByDay} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="var(--border)" />
-              <XAxis
-                dataKey="label"
-                tickLine={false}
-                axisLine={false}
-                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                interval={days > 14 ? 3 : 1}
-              />
-              <YAxis
-                width={38}
-                tickLine={false}
-                axisLine={false}
-                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                tickFormatter={(v: number) => formatCompact(v)}
-              />
-              <Tooltip
-                cursor={{ fill: "var(--muted)" }}
-                contentStyle={TOOLTIP_STYLE}
-                formatter={(v: number) => [`${formatMoney(v)} меш.`, "Отгружено"]}
-                labelFormatter={(l) => `День ${l}`}
-              />
-              <Bar dataKey="bags" fill="var(--ring)" radius={[3, 3, 0, 0]} maxBarSize={28} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
+      <div className="flex flex-wrap items-center gap-2.5 border-b px-4 py-3">
+        <span className="text-sm font-semibold">Динамика</span>
+        <span className="text-xs text-[var(--muted-foreground)]">{days} дней</span>
+        {modes.length > 1 && (
+          <div className="ml-auto flex rounded-lg border bg-[var(--muted)]/50 p-0.5">
+            {modes.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => setMode(item.key)}
+                className={cn(
+                  "rounded-md px-3 py-1 text-xs font-medium transition",
+                  active === item.key
+                    ? "bg-[var(--card)] shadow-sm"
+                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
+                )}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
-    </section>
-  );
-}
-
-/* ── Финансы 14д ─────────────────────────────────────────────────── */
-
-function FinanceCard({ m, days }: { m: DashboardMetrics; days: number }) {
-  return (
-    <section className="rounded-xl border bg-[var(--card)] shadow-sm">
-      <CardHeader title="Финансы" sub={`${days} дней`} href="/reports" hrefLabel="Перейти к финансам" />
       <div className="p-4">
-        {/* Крупные «Выручка/Поступило» уже стоят в полосе метрик выше —
-            здесь они дублировались и съедали место у графика. */}
-        <div className="h-[200px] w-full">
+        {/* Итоги словами над графиком: цифры читают, график угадывают. */}
+        <div className="mb-3 flex flex-wrap gap-x-6 gap-y-1">
+          {summary.map((item) => (
+            <div key={item.label} className="flex items-baseline gap-1.5">
+              <span className="text-xs text-[var(--muted-foreground)]">{item.label}</span>
+              <span title={item.exact} className="text-sm font-semibold tabular-nums">
+                {item.value}
+              </span>
+            </div>
+          ))}
+        </div>
+        <div className="h-[240px] w-full">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={m.spark} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="var(--border)" />
-              <defs>
-                <linearGradient id="dash-rev" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--ring)" stopOpacity={0.25} />
-                  <stop offset="100%" stopColor="var(--ring)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis
-                dataKey="label"
-                tickLine={false}
-                axisLine={false}
-                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                interval={days > 14 ? 3 : 1}
-              />
-              <YAxis
-                width={44}
-                tickLine={false}
-                axisLine={false}
-                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                tickFormatter={(v: number) => formatCompact(v)}
-              />
-              <Tooltip
-                contentStyle={TOOLTIP_STYLE}
-                formatter={(v: number, name: string) => [
-                  `${formatMoney(String(v))} ₸`,
-                  name === "revenue" ? "Выручка" : "Поступления",
-                ]}
-                labelFormatter={(l) => `День ${l}`}
-              />
-              <Area type="monotone" dataKey="revenue" stroke="var(--ring)" strokeWidth={1.75} fill="url(#dash-rev)" />
-              <Area type="monotone" dataKey="received" stroke="var(--success)" strokeWidth={1.5} fillOpacity={0} />
-            </AreaChart>
+            {active === "bags" ? (
+              <BarChart data={m.shippedByDay} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="var(--border)" />
+                <XAxis
+                  dataKey="label"
+                  tickLine={false}
+                  axisLine={false}
+                  tick={AXIS_TICK}
+                  interval={days > 14 ? 3 : 1}
+                />
+                {/* Ширины 60 хватает на «1,5 млрд»: узкая ось резала подписи
+                    до бессмысленных «0 тыс» и двух одинаковых «5 млрд». */}
+                <YAxis
+                  width={60}
+                  tickCount={5}
+                  tickLine={false}
+                  axisLine={false}
+                  tick={AXIS_TICK}
+                  tickFormatter={(v: number) => formatCompact(v)}
+                />
+                <Tooltip
+                  cursor={{ fill: "var(--muted)" }}
+                  contentStyle={TOOLTIP_STYLE}
+                  formatter={(v: number) => [`${formatMoney(v)} меш.`, "Отгружено"]}
+                  labelFormatter={(l) => `День ${l}`}
+                />
+                <Bar dataKey="bags" fill="var(--ring)" radius={[3, 3, 0, 0]} maxBarSize={28} />
+              </BarChart>
+            ) : (
+              <AreaChart data={m.spark} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="dash-rev" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="var(--ring)" stopOpacity={0.25} />
+                    <stop offset="100%" stopColor="var(--ring)" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="var(--border)" />
+                <XAxis
+                  dataKey="label"
+                  tickLine={false}
+                  axisLine={false}
+                  tick={AXIS_TICK}
+                  interval={days > 14 ? 3 : 1}
+                />
+                <YAxis
+                  width={60}
+                  tickCount={5}
+                  tickLine={false}
+                  axisLine={false}
+                  tick={AXIS_TICK}
+                  tickFormatter={(v: number) => formatCompact(v)}
+                />
+                <Tooltip
+                  contentStyle={TOOLTIP_STYLE}
+                  formatter={(v: number, name: string) => [
+                    `${formatMoney(String(v))} ₸`,
+                    name === "revenue" ? "Выручка" : "Поступления",
+                  ]}
+                  labelFormatter={(l) => `День ${l}`}
+                />
+                <Area type="monotone" dataKey="revenue" stroke="var(--ring)" strokeWidth={1.75} fill="url(#dash-rev)" />
+                <Area type="monotone" dataKey="received" stroke="var(--success)" strokeWidth={1.5} fillOpacity={0} />
+              </AreaChart>
+            )}
           </ResponsiveContainer>
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--muted-foreground)]">
-          <span className="flex items-center gap-1.5">
-            <span className="h-0.5 w-3 rounded bg-[var(--ring)]" /> выручка{" "}
-            <b className="font-semibold text-[var(--foreground)]">{formatCompact(String(m.periodRevenue))} ₸</b>
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="h-0.5 w-3 rounded bg-[var(--success)]" /> поступления{" "}
-            <b className="font-semibold text-[var(--success)]">{formatCompact(String(m.periodReceived))} ₸</b>
-          </span>
-        </div>
+        {active === "money" && (
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--muted-foreground)]">
+            <span className="flex items-center gap-1.5">
+              <span className="h-0.5 w-3 rounded bg-[var(--ring)]" /> выручка
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="h-0.5 w-3 rounded bg-[var(--success)]" /> поступления
+            </span>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -427,62 +445,46 @@ function FinanceCard({ m, days }: { m: DashboardMetrics; days: number }) {
 function StockCard({ m }: { m: DashboardMetrics }) {
   const total = m.stockByProduct.reduce((s, x) => s + x.bags, 0);
   return (
-    <section className="rounded-xl border bg-[var(--card)] shadow-sm">
-      <CardHeader title="Склад по продуктам" href="/warehouse" hrefLabel="Перейти к складу" />
-      <div className="p-4">
+    <section className="flex flex-col rounded-xl border bg-[var(--card)] shadow-sm">
+      <CardHeader title="Склад" sub={`${formatCompact(total)} меш.`} href="/warehouse" hrefLabel="Перейти к складу" />
+      <div className="flex-1 p-4">
         {total === 0 ? (
           <div className="py-8 text-center text-sm text-[var(--muted-foreground)]">Склад пуст</div>
         ) : (
-          <div className="flex items-center gap-4">
-            <div className="relative h-[132px] w-[132px] shrink-0">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={m.stockByProduct}
-                    dataKey="bags"
-                    nameKey="name"
-                    innerRadius={44}
-                    outerRadius={62}
-                    paddingAngle={2}
-                    strokeWidth={0}
-                  >
-                    {m.stockByProduct.map((_, i) => (
-                      <Cell key={i} fill={DONUT_COLORS[i % DONUT_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [`${formatMoney(v)} меш.`]} />
-                </PieChart>
-              </ResponsiveContainer>
-              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                <span title={formatMoney(total)} className="text-lg font-semibold tabular-nums leading-none">
-                  {formatCompact(total)}
-                </span>
-                <span className="mt-0.5 text-[10px] text-[var(--muted-foreground)]">меш.</span>
-              </div>
-            </div>
-            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-              {m.stockByProduct.map((p, i) => (
-                <div key={p.name} className="flex items-center gap-2 text-xs">
-                  <span
-                    className="size-2 shrink-0 rounded-[3px]"
-                    style={{ background: DONUT_COLORS[i % DONUT_COLORS.length] }}
-                  />
-                  {/* Полное имя — в подсказке: «ДБН 1с 50кг · Красны…» без неё не прочесть. */}
-                  <span title={p.name} className="truncate">
-                    {p.name}
-                  </span>
-                  <span title={formatMoney(p.bags)} className="ml-auto font-medium tabular-nums">
-                    {formatCompact(p.bags)}
-                  </span>
+          <div className="flex flex-col gap-3">
+            {m.stockByProduct.map((p, i) => {
+              const share = total > 0 ? (p.bags / total) * 100 : 0;
+              return (
+                <div key={p.name}>
+                  <div className="flex items-baseline justify-between gap-2 text-sm">
+                    <span title={p.name} className="min-w-0 truncate">
+                      {p.name}
+                    </span>
+                    <span title={formatMoney(p.bags)} className="shrink-0 font-medium tabular-nums">
+                      {formatCompact(p.bags)}
+                      <span className="ml-1.5 text-xs font-normal text-[var(--muted-foreground)]">
+                        {share < 1 ? "<1" : Math.round(share)}%
+                      </span>
+                    </span>
+                  </div>
+                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${Math.max(share, 1.5)}%`,
+                        background: DONUT_COLORS[i % DONUT_COLORS.length],
+                      }}
+                    />
+                  </div>
                 </div>
-              ))}
-            </div>
+              );
+            })}
           </div>
         )}
         {m.negativeStock.length > 0 && (
           <Link
             href="/warehouse"
-            className="mt-3 flex items-center gap-2 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/5 px-3 py-2 text-xs text-[var(--warning)] transition hover:bg-[var(--warning)]/10"
+            className="mt-4 flex items-center gap-2 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/5 px-3 py-2 text-xs text-[var(--warning)] transition hover:bg-[var(--warning)]/10"
           >
             <AlertTriangle className="size-3.5 shrink-0" />
             <span className="min-w-0 truncate">
@@ -704,18 +706,8 @@ function AnalyticsView() {
       )}
       {m.loadError && <ErrorAlert message={m.loadError} onRetry={m.reload} />}
       {(m.canOrders || m.canFinance || m.canPayments) && <AttentionBar m={m} />}
-      <MetricStrip m={m} days={days} />
-      {(m.canOrders || m.canFinance) && (
-        <div
-          className={cn(
-            "grid grid-cols-1 items-start gap-4",
-            m.canOrders && m.canFinance && m.canEvents && "xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,1fr)]",
-          )}
-        >
-          {m.canOrders && m.canEvents && <ShipmentsCard m={m} days={days} />}
-          {m.canFinance && m.canOrders && <FinanceCard m={m} days={days} />}
-        </div>
-      )}
+      <TodayStrip m={m} />
+      <TrendCard m={m} days={days} />
       {(m.canStock || m.canOrders || m.canFinance) && (
         <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2 xl:grid-cols-3">
           {m.canStock && <StockCard m={m} />}

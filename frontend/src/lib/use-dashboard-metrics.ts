@@ -95,7 +95,7 @@ export function useDashboardMetrics(periodDays = 14) {
   }, [currentDay, list, events, periodDays]);
 
   // Финансы за 14 дней: выручка по заказам + подтверждённые поступления.
-  const { spark, periodRevenue, periodReceived } = useMemo(() => {
+  const { spark, periodRevenue, periodReceived, receivedToday, receivedTodayCount } = useMemo(() => {
     const days = periodDays;
     const today = new Date(`${currentDay}T23:59:59.999`);
     const start = new Date(today);
@@ -125,10 +125,23 @@ export function useDashboardMetrics(periodDays = 14) {
       }
     });
     const arr = Object.values(slots);
+    const todayKey = dayKey(new Date(`${currentDay}T12:00:00`));
+    let receivedToday = 0;
+    let receivedTodayCount = 0;
+    confirmedPayments(list).forEach((payment) => {
+      if ((payment.currency ?? "KZT") !== "KZT") return;
+      const recognized = new Date(payment.confirmed_at ?? payment.paid_at);
+      if (dayKey(recognized) === todayKey) {
+        receivedToday += Number(payment.amount);
+        receivedTodayCount += 1;
+      }
+    });
     return {
       spark: arr,
       periodRevenue: arr.reduce((s, x) => s + x.revenue, 0),
       periodReceived: arr.reduce((s, x) => s + x.received, 0),
+      receivedToday,
+      receivedTodayCount,
     };
   }, [currentDay, list, periodDays]);
 
@@ -203,6 +216,8 @@ export function useDashboardMetrics(periodDays = 14) {
     spark,
     periodRevenue,
     periodReceived,
+    receivedToday,
+    receivedTodayCount,
     pipeline,
     stockByProduct,
     negativeStock,
