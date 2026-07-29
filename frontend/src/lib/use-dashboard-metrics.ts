@@ -1,6 +1,8 @@
 "use client";
 import { useMemo } from "react";
 import { useApi } from "@/lib/use-api";
+import { useAuth } from "@/store/auth";
+import { can } from "@/lib/can";
 import { useLocalDay } from "@/lib/use-local-day";
 import { isFinancialOrderStatus, orderStatusGroup } from "@/lib/constants";
 import { primaryDebtCurrency, sumDebtByCurrency } from "@/lib/utils";
@@ -15,24 +17,38 @@ function dayKey(d: Date): string {
 }
 
 /** Все данные «Командного центра». Вызывать один раз на странице. */
-export function useDashboardMetrics() {
+export function useDashboardMetrics(periodDays = 14) {
   const currentDay = useLocalDay();
-  const { data: orders, error: ordersErr, reload: reloadOrders } = useApi<Order[]>("/orders/");
-  const { data: stock, error: stockErr, reload: reloadStock } = useApi<StockItem[]>("/stock/");
-  const { data: events, error: eventsErr, reload: reloadEvents } = useApi<EventLog[]>("/events/");
-  const { data: debts, error: debtsErr, reload: reloadDebts } = useApi<ClientDebt[]>("/clients/debts/");
+  // Главная открывается каждому сотруднику сразу после входа, а права у всех
+  // разные: у менеджера нет склада, у оператора — финансов, у загрузчика —
+  // почти ничего. Запрашиваем только разрешённое — иначе первый экран смены
+  // встречал человека колонкой 403-ошибок.
+  const { me } = useAuth();
+  const canOrders = can(me, "orders.view");
+  const canStock = can(me, "warehouse.view");
+  const canEvents = can(me, "events.view");
+  const canFinance = can(me, "reports.view");
+  const canPayments = can(me, "payments.confirm");
+  const { data: orders, error: ordersErr, reload: reloadOrders } = useApi<Order[]>(canOrders ? "/orders/" : null);
+  const { data: stock, error: stockErr, reload: reloadStock } = useApi<StockItem[]>(canStock ? "/stock/" : null);
+  const { data: events, error: eventsErr, reload: reloadEvents } = useApi<EventLog[]>(canEvents ? "/events/" : null);
+  const {
+    data: debts,
+    error: debtsErr,
+    reload: reloadDebts,
+  } = useApi<ClientDebt[]>(canFinance ? "/clients/debts/" : null);
 
   // Пока долги и заказы не пришли, все счётчики равны нулю — и «требует
   // внимания» показывал бы зелёное «ничего срочного» на пустых данных.
   // Управляющий уходил бы со спокойным экраном за секунду до красного.
-  const loading = orders == null || debts == null;
+  const loading = (canOrders && orders == null) || (canFinance && debts == null);
 
   // Ошибка видна, только пока соответствующих данных нет совсем — частичный дашборд не глушим.
   const loadError =
-    (orders == null && ordersErr) ||
-    (stock == null && stockErr) ||
-    (events == null && eventsErr) ||
-    (debts == null && debtsErr) ||
+    (canOrders && orders == null && ordersErr) ||
+    (canStock && stock == null && stockErr) ||
+    (canEvents && events == null && eventsErr) ||
+    (canFinance && debts == null && debtsErr) ||
     "";
   const reload = () => {
     reloadOrders();
@@ -50,7 +66,7 @@ export function useDashboardMetrics() {
     // Events reference orders by id. A map keeps aggregation O(orders + events)
     // instead of scanning the full order list for every shipment event.
     const bagsByOrder = new Map(list.map((order) => [order.id, order.bags_loaded ?? 0]));
-    const days = 14;
+    const days = periodDays;
     const start = new Date(`${currentDay}T00:00:00`);
     start.setDate(start.getDate() - (days - 1));
     const slots: Record<string, { label: string; bags: number; orders: number }> = {};
@@ -76,11 +92,11 @@ export function useDashboardMetrics() {
       shippedYesterday: yesterday?.bags ?? 0,
       shippedTodayOrders: today?.orders ?? 0,
     };
-  }, [currentDay, list, events]);
+  }, [currentDay, list, events, periodDays]);
 
   // Финансы за 14 дней: выручка по заказам + подтверждённые поступления.
   const { spark, periodRevenue, periodReceived } = useMemo(() => {
-    const days = 14;
+    const days = periodDays;
     const today = new Date(`${currentDay}T23:59:59.999`);
     const start = new Date(today);
     start.setDate(today.getDate() - (days - 1));
@@ -93,6 +109,7 @@ export function useDashboardMetrics() {
     }
     list.forEach((o) => {
       if (!isFinancialOrderStatus(o.status)) return;
+      if ((o.currency ?? "KZT") !== "KZT") return;
       const d = new Date(o.created_at);
       if (d >= start && d <= today) {
         const k = dayKey(d);
@@ -100,6 +117,7 @@ export function useDashboardMetrics() {
       }
     });
     confirmedPayments(list).forEach((payment) => {
+      if ((payment.currency ?? "KZT") !== "KZT") return;
       const d = new Date(payment.paid_at);
       if (d >= start && d <= today) {
         const k = dayKey(d);
@@ -112,7 +130,7 @@ export function useDashboardMetrics() {
       periodRevenue: arr.reduce((s, x) => s + x.revenue, 0),
       periodReceived: arr.reduce((s, x) => s + x.received, 0),
     };
-  }, [currentDay, list]);
+  }, [currentDay, list, periodDays]);
 
   // Единая пользовательская воронка: четыре статуса вместо внутренних этапов.
   const pipeline = useMemo(() => {
@@ -197,6 +215,11 @@ export function useDashboardMetrics() {
     loading,
     loadError,
     reload,
+    canOrders,
+    canStock,
+    canEvents,
+    canFinance,
+    canPayments,
   };
 }
 

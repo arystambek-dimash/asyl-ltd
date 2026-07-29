@@ -6,14 +6,36 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   BarChart3,
+  CalendarDays,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   ClipboardList,
+  Clock3,
+  Hourglass,
+  Info,
+  RefreshCw,
   Truck,
+  UserRound,
   Video,
   Wallet,
+  Warehouse,
+  XCircle,
 } from "lucide-react";
-import { Area, AreaChart, Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { AppShell } from "@/components/layout/app-shell";
 import { CameraWall } from "@/components/camera-wall";
 import { ErrorAlert } from "@/components/ui/data-state";
@@ -21,6 +43,8 @@ import { Tabs } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/status-badge";
 import { formatPlate } from "@/components/ui/license-plate-input";
 import { useDashboardMetrics, type DashboardMetrics } from "@/lib/use-dashboard-metrics";
+import { useAuth } from "@/store/auth";
+import { can } from "@/lib/can";
 import { ORDER_STATUS_LABELS } from "@/lib/constants";
 import { currencySymbol, formatCompact, formatCompactCurrency, formatCurrency, formatMoney, cn } from "@/lib/utils";
 
@@ -60,7 +84,7 @@ function CardHeader({
       {href && (
         <Link
           href={href}
-          className="ml-auto flex items-center gap-1 text-xs font-medium text-[var(--ring)] hover:underline"
+          className="ml-auto flex items-center gap-1 rounded-lg border border-[var(--ring)]/25 bg-[var(--ring)]/5 px-2.5 py-1 text-xs font-medium text-[var(--ring)] transition hover:bg-[var(--ring)]/10"
         >
           {hrefLabel} <ArrowUpRight className="size-3" />
         </Link>
@@ -81,7 +105,7 @@ function AttentionBar({ m }: { m: DashboardMetrics }) {
   const items = [
     {
       key: "overdue",
-      show: m.overdueClients > 0,
+      show: m.canFinance && m.overdueClients > 0,
       href: "/accounting",
       icon: AlertTriangle,
       tone: "destructive" as const,
@@ -91,7 +115,7 @@ function AttentionBar({ m }: { m: DashboardMetrics }) {
     },
     {
       key: "payments",
-      show: m.attention.pendingPayments > 0,
+      show: m.canPayments && m.attention.pendingPayments > 0,
       href: "/accounting",
       icon: Wallet,
       tone: "warning" as const,
@@ -101,7 +125,7 @@ function AttentionBar({ m }: { m: DashboardMetrics }) {
     },
     {
       key: "review",
-      show: m.attention.awaitingReview > 0,
+      show: m.canOrders && m.attention.awaitingReview > 0,
       href: "/orders",
       icon: ClipboardList,
       tone: "warning" as const,
@@ -111,7 +135,7 @@ function AttentionBar({ m }: { m: DashboardMetrics }) {
     },
     {
       key: "loading",
-      show: m.attention.stuckInLoading > 0,
+      show: m.canOrders && m.attention.stuckInLoading > 0,
       href: "/shipping",
       icon: Truck,
       tone: "info" as const,
@@ -177,9 +201,9 @@ function AttentionBar({ m }: { m: DashboardMetrics }) {
   );
 }
 
-/* ── Полоса метрик ───────────────────────────────────────────────── */
+/* ── Плитки метрик ───────────────────────────────────────────────── */
 
-function MetricStrip({ m }: { m: DashboardMetrics }) {
+function MetricStrip({ m, days }: { m: DashboardMetrics; days: number }) {
   const delta = m.shippedToday - m.shippedYesterday;
   // Крупные суммы показываем порядком величины: «4,81 млрд» читается с
   // одного взгляда, а двенадцать цифр — нет. Точное значение остаётся
@@ -187,27 +211,40 @@ function MetricStrip({ m }: { m: DashboardMetrics }) {
   const cells = [
     {
       label: "На складе",
+      show: m.canStock,
       value: formatCompact(m.totalBags),
       exact: formatMoney(m.totalBags),
       unit: "меш.",
       hint: "текущий остаток",
+      info: "Сумма остатков по всем продуктам склада.",
+      icon: Warehouse,
+      tone: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
     },
     {
+      show: m.canOrders && m.canEvents,
       label: "Ушло сегодня",
       value: formatCompact(m.shippedToday),
       exact: formatMoney(m.shippedToday),
       unit: "меш.",
       hint: `${m.shippedTodayOrders} отгрузок`,
+      info: "Мешки в отгруженных сегодня заказах. Стрелка — сравнение со вчера.",
+      icon: Truck,
+      tone: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
       delta,
     },
     {
-      label: "Выручка · 14 дней",
+      show: m.canFinance && m.canOrders,
+      label: `Выручка · ${days} дней`,
       value: formatCompact(String(m.periodRevenue)),
       exact: formatMoney(String(m.periodRevenue)),
       unit: "₸",
       hint: `поступило ${formatCompact(String(m.periodReceived))} ₸`,
+      info: "Подтверждённые заказы в тенге за период. Валюты не смешиваются.",
+      icon: BarChart3,
+      tone: "bg-violet-500/10 text-violet-600 dark:text-violet-400",
     },
     {
+      show: m.canFinance,
       label: "Долг клиентов",
       value: formatCompact(String(m.debtTotal)),
       exact: formatMoney(String(m.debtTotal)),
@@ -219,64 +256,95 @@ function MetricStrip({ m }: { m: DashboardMetrics }) {
           : m.topDebtors.length > 0
             ? "просрочки нет"
             : "долгов нет",
+      info: "Непогашенный остаток по отгруженным в долг заказам.",
+      icon: UserRound,
+      tone: "bg-orange-500/10 text-orange-600 dark:text-orange-400",
       alert: m.overdueClients > 0,
     },
   ] as const;
+  const visible = cells.filter((c) => c.show);
+  if (visible.length === 0) return null;
   return (
-    <section className="grid grid-cols-2 divide-y rounded-xl border bg-[var(--card)] shadow-sm sm:divide-x sm:divide-y-0 xl:grid-cols-4 max-sm:divide-x-0">
-      {cells.map((c) => (
-        <div key={c.label} className="px-5 py-4">
-          <div className="text-[13px] text-[var(--muted-foreground)]">{c.label}</div>
-          <div className="mt-1.5 flex items-baseline gap-1.5">
-            <span
-              title={`${c.exact}${c.unit ? ` ${c.unit}` : ""}`}
-              className={cn(
-                "text-2xl font-semibold tabular-nums tracking-tight",
-                "alert" in c && c.alert && "text-[var(--destructive)]",
-              )}
-            >
-              {c.value}
+    <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {visible.map((c) => {
+        const Icon = c.icon;
+        return (
+          <div
+            key={c.label}
+            className="relative flex items-start gap-3 rounded-xl border bg-[var(--card)] p-4 shadow-sm"
+          >
+            <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-xl", c.tone)}>
+              <Icon className="size-5" />
             </span>
-            {c.unit && <span className="text-sm text-[var(--muted-foreground)]">{c.unit}</span>}
-            {"delta" in c && c.delta !== 0 && (
-              <span
-                className={cn(
-                  "flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] font-medium tabular-nums",
-                  c.delta > 0
-                    ? "bg-[var(--success)]/10 text-[var(--success)]"
-                    : "bg-[var(--destructive)]/10 text-[var(--destructive)]",
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[13px] text-[var(--muted-foreground)]">{c.label}</div>
+              <div className="mt-1 flex flex-wrap items-baseline gap-1.5">
+                <span
+                  title={`${c.exact}${c.unit ? ` ${c.unit}` : ""}`}
+                  className={cn(
+                    "text-2xl font-semibold tabular-nums tracking-tight",
+                    "alert" in c && c.alert && "text-[var(--destructive)]",
+                  )}
+                >
+                  {c.value}
+                </span>
+                {c.unit && <span className="text-sm text-[var(--muted-foreground)]">{c.unit}</span>}
+                {"delta" in c && c.delta !== 0 && (
+                  <span
+                    className={cn(
+                      "flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] font-medium tabular-nums",
+                      c.delta > 0
+                        ? "bg-[var(--success)]/10 text-[var(--success)]"
+                        : "bg-[var(--destructive)]/10 text-[var(--destructive)]",
+                    )}
+                  >
+                    {c.delta > 0 ? <ArrowUpRight className="size-3" /> : <ArrowDownRight className="size-3" />}
+                    {formatCompact(Math.abs(c.delta))}
+                  </span>
                 )}
-              >
-                {c.delta > 0 ? <ArrowUpRight className="size-3" /> : <ArrowDownRight className="size-3" />}
-                {/* «↘ 93 110» шестизначным числом читался как авария —
-                    сжатая форма сообщает то же самое спокойнее. */}
-                {formatCompact(Math.abs(c.delta))}
-              </span>
-            )}
+              </div>
+              <div className="mt-0.5 truncate text-xs text-[var(--muted-foreground)]">{c.hint}</div>
+            </div>
+            {/* Подсказка «что это за цифра» — по наведению на (i). */}
+            <span title={c.info} className="absolute right-3 top-3 cursor-help text-[var(--muted-foreground)]/50">
+              <Info className="size-3.5" />
+            </span>
           </div>
-          <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">{c.hint}</div>
-        </div>
-      ))}
+        );
+      })}
     </section>
   );
 }
 
-/* ── Отгрузки по дням (14д) ──────────────────────────────────────── */
+/* ── Отгрузки по дням ────────────────────────────────────────────── */
 
-function ShipmentsCard({ m }: { m: DashboardMetrics }) {
+function ShipmentsCard({ m, days }: { m: DashboardMetrics; days: number }) {
   return (
     <section className="rounded-xl border bg-[var(--card)] shadow-sm">
-      <CardHeader title="Отгрузки" sub="мешков в день · 14 дней" href="/shipping" hrefLabel="Пост отгрузки" />
+      <CardHeader
+        title="Отгрузки"
+        sub={`мешков в день · ${days} дней`}
+        href="/shipping"
+        hrefLabel="Перейти к отгрузкам"
+      />
       <div className="p-4">
-        <div className="h-[180px] w-full">
+        <div className="h-[200px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={m.shippedByDay} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="var(--border)" />
               <XAxis
                 dataKey="label"
                 tickLine={false}
                 axisLine={false}
                 tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                interval={1}
+                interval={days > 14 ? 3 : 1}
+              />
+              <YAxis
+                width={38}
+                tickLine={false}
+                axisLine={false}
+                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                tickFormatter={(v: number) => formatCompact(v)}
               />
               <Tooltip
                 cursor={{ fill: "var(--muted)" }}
@@ -295,16 +363,17 @@ function ShipmentsCard({ m }: { m: DashboardMetrics }) {
 
 /* ── Финансы 14д ─────────────────────────────────────────────────── */
 
-function FinanceCard({ m }: { m: DashboardMetrics }) {
+function FinanceCard({ m, days }: { m: DashboardMetrics; days: number }) {
   return (
     <section className="rounded-xl border bg-[var(--card)] shadow-sm">
-      <CardHeader title="Финансы" sub="14 дней" href="/reports" hrefLabel="Отчёты" />
+      <CardHeader title="Финансы" sub={`${days} дней`} href="/reports" hrefLabel="Перейти к финансам" />
       <div className="p-4">
         {/* Крупные «Выручка/Поступило» уже стоят в полосе метрик выше —
             здесь они дублировались и съедали место у графика. */}
-        <div className="h-[168px] w-full">
+        <div className="h-[200px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={m.spark} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="var(--border)" />
               <defs>
                 <linearGradient id="dash-rev" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="var(--ring)" stopOpacity={0.25} />
@@ -316,7 +385,14 @@ function FinanceCard({ m }: { m: DashboardMetrics }) {
                 tickLine={false}
                 axisLine={false}
                 tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                interval={1}
+                interval={days > 14 ? 3 : 1}
+              />
+              <YAxis
+                width={44}
+                tickLine={false}
+                axisLine={false}
+                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                tickFormatter={(v: number) => formatCompact(v)}
               />
               <Tooltip
                 contentStyle={TOOLTIP_STYLE}
@@ -352,7 +428,7 @@ function StockCard({ m }: { m: DashboardMetrics }) {
   const total = m.stockByProduct.reduce((s, x) => s + x.bags, 0);
   return (
     <section className="rounded-xl border bg-[var(--card)] shadow-sm">
-      <CardHeader title="Склад" sub="по продуктам" href="/warehouse" hrefLabel="Склад" />
+      <CardHeader title="Склад по продуктам" href="/warehouse" hrefLabel="Перейти к складу" />
       <div className="p-4">
         {total === 0 ? (
           <div className="py-8 text-center text-sm text-[var(--muted-foreground)]">Склад пуст</div>
@@ -422,28 +498,47 @@ function StockCard({ m }: { m: DashboardMetrics }) {
 
 /* ── Заказы по четырём пользовательским статусам ────────────────── */
 
+const PIPELINE_ICONS: Record<string, React.ElementType> = {
+  pending: Clock3,
+  loading: Hourglass,
+  shipped: Truck,
+  cancelled: XCircle,
+};
+
 function PipelineCard({ m }: { m: DashboardMetrics }) {
   const total = m.pipeline.reduce((s, x) => s + x.count, 0);
   const max = Math.max(...m.pipeline.map((x) => x.count), 1);
   return (
-    <section className="rounded-xl border bg-[var(--card)] shadow-sm">
-      <CardHeader title="Заказы по статусам" sub={`${total} всего`} href="/orders" hrefLabel="Заказы" />
-      <div className="flex flex-col gap-3 p-4">
-        {m.pipeline.map((row) => (
-          <div key={row.status} className="flex items-center gap-3">
-            <span className="w-32 shrink-0 truncate text-xs text-[var(--muted-foreground)]">
-              {ORDER_STATUS_LABELS[row.status] ?? row.status}
-            </span>
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--muted)]">
-              <div
-                className="h-full rounded-full bg-[var(--ring)] transition-all"
-                style={{ width: `${(row.count / max) * 100}%`, opacity: row.count === 0 ? 0 : 1 }}
-              />
+    <section className="flex flex-col rounded-xl border bg-[var(--card)] shadow-sm">
+      <CardHeader title="Заказы по статусам" sub={`${total} всего`} />
+      <div className="flex flex-1 flex-col gap-3.5 p-4">
+        {m.pipeline.map((row) => {
+          const Icon = PIPELINE_ICONS[row.status] ?? Clock3;
+          return (
+            <div key={row.status} className="flex items-center gap-3">
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[var(--muted)]/70 text-[var(--muted-foreground)]">
+                <Icon className="size-4" />
+              </span>
+              <span className="w-28 shrink-0 truncate text-xs text-[var(--muted-foreground)]">
+                {ORDER_STATUS_LABELS[row.status] ?? row.status}
+              </span>
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--muted)]">
+                <div
+                  className="h-full rounded-full bg-[var(--ring)] transition-all"
+                  style={{ width: `${(row.count / max) * 100}%`, opacity: row.count === 0 ? 0 : 1 }}
+                />
+              </div>
+              <span className="w-8 shrink-0 text-right text-sm font-semibold tabular-nums">{row.count}</span>
             </div>
-            <span className="w-6 shrink-0 text-right text-sm font-semibold tabular-nums">{row.count}</span>
-          </div>
-        ))}
+          );
+        })}
       </div>
+      <Link
+        href="/orders"
+        className="flex items-center gap-1 border-t px-4 py-2.5 text-xs font-medium text-[var(--ring)] hover:underline"
+      >
+        Перейти к заказам <ArrowUpRight className="size-3" />
+      </Link>
     </section>
   );
 }
@@ -452,14 +547,17 @@ function PipelineCard({ m }: { m: DashboardMetrics }) {
 
 function DebtorsCard({ m }: { m: DashboardMetrics }) {
   return (
-    <section className="rounded-xl border bg-[var(--card)] shadow-sm">
-      <CardHeader title="Должники" sub="топ-5 по сумме" href="/accounting" hrefLabel="Долги" />
+    <section className="flex flex-col rounded-xl border bg-[var(--card)] shadow-sm">
+      <CardHeader title="Должники" sub="топ-5 по сумме" href="/accounting" hrefLabel="Перейти к должникам" />
       {m.topDebtors.length === 0 ? (
-        <div className="px-4 py-8 text-center text-sm text-[var(--muted-foreground)]">Долгов нет</div>
+        <div className="flex-1 px-4 py-8 text-center text-sm text-[var(--muted-foreground)]">Долгов нет</div>
       ) : (
-        <div className="divide-y">
-          {m.topDebtors.map((d) => (
+        <div className="flex-1 divide-y">
+          {m.topDebtors.map((d, i) => (
             <div key={d.client_id} className="flex items-center gap-3 px-4 py-2.5">
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-[var(--muted)] text-[11px] font-semibold tabular-nums text-[var(--muted-foreground)]">
+                {i + 1}
+              </span>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm">{d.client_name}</div>
                 <div className="text-[11px] text-[var(--muted-foreground)]">
@@ -480,6 +578,12 @@ function DebtorsCard({ m }: { m: DashboardMetrics }) {
           ))}
         </div>
       )}
+      <Link
+        href="/accounting"
+        className="flex items-center gap-1 border-t px-4 py-2.5 text-xs font-medium text-[var(--ring)] hover:underline"
+      >
+        Смотреть всех должников <ArrowUpRight className="size-3" />
+      </Link>
     </section>
   );
 }
@@ -551,28 +655,94 @@ function ViewSwitch({ view, onChange }: { view: DashboardView; onChange: (v: Das
   return <Tabs tabs={tabs} active={view} onChange={(k) => onChange(k as DashboardView)} />;
 }
 
+const PERIODS = [7, 14, 30] as const;
+const PERIOD_STORAGE_KEY = "dashboard:period";
+
 function AnalyticsView() {
-  const m = useDashboardMetrics();
+  // Период общий для графиков и «Выручки»: 7 — оперативно, 30 — тренд.
+  const [days, setDays] = useState(14);
+  useEffect(() => {
+    const saved = Number(localStorage.getItem(PERIOD_STORAGE_KEY));
+    if (PERIODS.includes(saved as (typeof PERIODS)[number])) setDays(saved);
+  }, []);
+  const changeDays = (value: number) => {
+    setDays(value);
+    localStorage.setItem(PERIOD_STORAGE_KEY, String(value));
+  };
+  const m = useDashboardMetrics(days);
+  const hasAnyData = m.canOrders || m.canStock || m.canFinance;
   return (
     <>
+      {hasAnyData && (
+        <div className="-mb-1 flex items-center justify-end gap-2">
+          <div className="relative">
+            <CalendarDays className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[var(--muted-foreground)]" />
+            <select
+              aria-label="Период аналитики"
+              value={days}
+              onChange={(event) => changeDays(Number(event.target.value))}
+              className="h-8 appearance-none rounded-lg border bg-[var(--card)] pl-8 pr-7 text-[13px] font-medium outline-none transition focus:ring-2 focus:ring-[var(--ring)]/25"
+            >
+              {PERIODS.map((value) => (
+                <option key={value} value={value}>
+                  {value} дней
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3.5 -translate-y-1/2 text-[var(--muted-foreground)]" />
+          </div>
+          <button
+            type="button"
+            aria-label="Обновить данные"
+            title="Обновить данные"
+            onClick={m.reload}
+            className="flex size-8 items-center justify-center rounded-lg border bg-[var(--card)] text-[var(--muted-foreground)] transition hover:text-[var(--foreground)]"
+          >
+            <RefreshCw className="size-3.5" />
+          </button>
+        </div>
+      )}
       {m.loadError && <ErrorAlert message={m.loadError} onRetry={m.reload} />}
-      <AttentionBar m={m} />
-      <MetricStrip m={m} />
-      <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,1fr)]">
-        <ShipmentsCard m={m} />
-        <FinanceCard m={m} />
-      </div>
-      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2 xl:grid-cols-3">
-        <StockCard m={m} />
-        <PipelineCard m={m} />
-        <DebtorsCard m={m} />
-      </div>
-      <QueueBoard m={m} />
+      {(m.canOrders || m.canFinance || m.canPayments) && <AttentionBar m={m} />}
+      <MetricStrip m={m} days={days} />
+      {(m.canOrders || m.canFinance) && (
+        <div
+          className={cn(
+            "grid grid-cols-1 items-start gap-4",
+            m.canOrders && m.canFinance && m.canEvents && "xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,1fr)]",
+          )}
+        >
+          {m.canOrders && m.canEvents && <ShipmentsCard m={m} days={days} />}
+          {m.canFinance && m.canOrders && <FinanceCard m={m} days={days} />}
+        </div>
+      )}
+      {(m.canStock || m.canOrders || m.canFinance) && (
+        <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2 xl:grid-cols-3">
+          {m.canStock && <StockCard m={m} />}
+          {m.canOrders && <PipelineCard m={m} />}
+          {m.canFinance && <DebtorsCard m={m} />}
+        </div>
+      )}
+      {m.canOrders && <QueueBoard m={m} />}
+      {!m.canOrders && !m.canStock && !m.canFinance && (
+        // Роль без аналитических прав (например, «Загрузчик»): вместо колонки
+        // 403-ошибок — спокойное объяснение и дорога к своим разделам.
+        <section className="flex min-h-64 flex-col items-center justify-center gap-2 rounded-xl border border-dashed text-center">
+          <BarChart3 className="size-8 text-[var(--muted-foreground)]/40" />
+          <p className="font-semibold">Сводка здесь появится, когда роль получит доступы</p>
+          <p className="max-w-md text-sm text-[var(--muted-foreground)]">
+            Ваши рабочие разделы — в меню слева. Если чего-то не хватает, попросите администратора расширить права роли.
+          </p>
+        </section>
+      )}
     </>
   );
 }
 
 export default function DashboardPage() {
+  const { me } = useAuth();
+  // Камеры открываются по shipping.view — без него вкладка вела бы в 403.
+  const showCameras = can(me, "shipping.view") || !!me?.is_superuser;
   // null до чтения localStorage: иначе AnalyticsView успевает смонтироваться
   // и выстрелить своими запросами даже у тех, кто живёт на камерах.
   // (Читать в инициализаторе useState нельзя — SSR-разметка разойдётся с клиентом.)
@@ -585,10 +755,14 @@ export default function DashboardPage() {
     setView(v);
     localStorage.setItem(VIEW_STORAGE_KEY, v);
   };
+  const activeView = showCameras ? view : "analytics";
 
   return (
-    <AppShell title="Главная" tabs={view && <ViewSwitch view={view} onChange={changeView} />}>
-      {view && (view === "analytics" ? <AnalyticsView /> : <CameraWall />)}
+    <AppShell
+      title="Главная"
+      tabs={showCameras && activeView && <ViewSwitch view={activeView} onChange={changeView} />}
+    >
+      {activeView && (activeView === "analytics" ? <AnalyticsView /> : <CameraWall />)}
     </AppShell>
   );
 }
