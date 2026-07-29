@@ -30,6 +30,7 @@ import {
 } from "@/lib/constants";
 import { DataGate } from "@/components/ui/data-state";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ActionMenu } from "@/components/ui/action-menu";
 import { PaymentChain, AddPaymentActions, PaidMethodBreakdown, paymentOpen } from "@/components/payment-chain";
 import { OrderForm } from "@/components/order-form";
 import { Modal } from "@/components/ui/modal";
@@ -40,11 +41,9 @@ import {
   Building2,
   Archive,
   CalendarDays,
-  ChevronDown,
   CircleHelp,
   Clock3,
   CreditCard,
-  Ellipsis,
   Package,
   Pencil,
   CopyPlus,
@@ -199,59 +198,46 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2 print:hidden">
-          <details className="group relative">
-            <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-md border bg-[var(--background)] px-3 text-xs font-medium shadow-xs hover:bg-[var(--accent)] [&::-webkit-details-marker]:hidden">
-              Действия <ChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="absolute right-0 z-30 mt-2 w-44 rounded-lg border bg-[var(--card)] p-1.5 shadow-lg">
-              <button
-                type="button"
-                onClick={() => setGuideOpen(true)}
-                className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[var(--accent)]"
-              >
-                <CircleHelp className="size-4" /> Как работать
-              </button>
-              {can(me, "orders.create") && (
-                <button
-                  type="button"
-                  onClick={() => router.push(`/orders?template=${order.id}`)}
-                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[var(--accent)]"
-                >
-                  <CopyPlus className="size-4" /> Использовать как шаблон
-                </button>
-              )}
-              {canEditOrder && (
-                <button
-                  type="button"
-                  onClick={() => setEditOpen(true)}
-                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[var(--accent)]"
-                >
-                  <Pencil className="size-4" /> Изменить заказ
-                </button>
-              )}
-            </div>
-          </details>
+          {/* ActionMenu вместо <details>: тот закрывался только повторным
+              кликом по себе и оставался поверх страницы, перехватывая
+              следующий тап — на телефоне он попадал в «В архив». */}
+          <ActionMenu
+            label="Действия"
+            items={[
+              { key: "guide", label: "Как работать", icon: CircleHelp, onSelect: () => setGuideOpen(true) },
+              ...(can(me, "orders.create")
+                ? [
+                    {
+                      key: "template",
+                      label: "Использовать как шаблон",
+                      icon: CopyPlus,
+                      onSelect: () => router.push(`/orders?template=${order.id}`),
+                    },
+                  ]
+                : []),
+              ...(canEditOrder
+                ? [{ key: "edit", label: "Изменить заказ", icon: Pencil, onSelect: () => setEditOpen(true) }]
+                : []),
+            ]}
+          />
           <Button size="icon" variant="outline" aria-label="Распечатать" onClick={() => window.print()}>
             <Printer className="size-4" />
           </Button>
           {canEditStatus && (
-            <details className="group relative">
-              <summary className="flex size-9 cursor-pointer list-none items-center justify-center rounded-md border bg-[var(--background)] shadow-xs hover:bg-[var(--accent)] [&::-webkit-details-marker]:hidden">
-                <Ellipsis className="size-4" />
-              </summary>
-              <div className="absolute right-0 z-30 mt-2 w-40 rounded-lg border bg-[var(--card)] p-1.5 shadow-lg">
-                <button
-                  type="button"
-                  onClick={() => {
+            <ActionMenu
+              items={[
+                {
+                  key: "archive",
+                  label: "В архив",
+                  icon: Archive,
+                  tone: "destructive",
+                  onSelect: () => {
                     setDelError("");
                     setDelOpen(true);
-                  }}
-                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[var(--accent)]"
-                >
-                  <Archive className="size-4" /> В архив
-                </button>
-              </div>
-            </details>
+                  },
+                },
+              ]}
+            />
           )}
         </div>
       </div>
