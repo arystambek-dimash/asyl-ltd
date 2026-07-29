@@ -558,7 +558,7 @@ function EmployeesPageInner() {
                       })}
                     </div>
                     {!departments?.some((department) => department.is_active) && (
-                      <p className="mt-3 text-xs font-medium text-red-600">
+                      <p className="mt-3 text-xs font-medium text-[var(--destructive)]">
                         Нет действующих отделов. Сначала создайте отдел на странице заказов.
                       </p>
                     )}

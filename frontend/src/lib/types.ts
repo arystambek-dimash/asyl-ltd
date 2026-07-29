@@ -55,7 +55,10 @@ export interface DepartmentSummary {
   orders: number;
   active: number;
   shipped: number;
+  /** Выручка в основной валюте отдела; полная раскладка — revenue_by_currency. */
   revenue: string;
+  revenue_currency?: "KZT" | "USD";
+  revenue_by_currency?: Record<string, string>;
 }
 export type PortalPaymentMethod = "pending" | "invoice" | "kaspi" | "cash" | "debt";
 export type PaymentMethod = PortalPaymentMethod | "card";

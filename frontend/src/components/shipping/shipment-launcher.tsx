@@ -244,7 +244,7 @@ export function ShipmentLauncher({
             ? "Выберите ожидающий въезда заказ — закреплённая камера моноблока включится автоматически, и начнётся живое считывание мешков."
             : "Выберите ожидающий въезда заказ и свободную камеру — заказ перейдёт в «Загружается», и начнётся живое считывание мешков."}
         </p>
-        {error && <p className="mt-2 text-center text-sm font-medium text-red-600">{error}</p>}
+        {error && <p className="mt-2 text-center text-sm font-medium text-[var(--destructive)]">{error}</p>}
 
         <div className="mt-4 flex flex-wrap justify-center gap-2 text-[11px] text-slate-500 lg:absolute lg:bottom-5 lg:right-6 lg:mt-0">
           <span className="flex items-center gap-1.5 rounded-full border border-white/80 bg-white/75 px-2.5 py-1 backdrop-blur">

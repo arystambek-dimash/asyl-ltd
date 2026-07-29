@@ -80,7 +80,7 @@ export function ManualOrderStatusModal({
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm leading-relaxed text-red-800">
           Если камера сейчас считает этот заказ, сначала остановите отгрузку в «Моноблоке» или на посту.
         </div>
-        {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+        {error && <p className="mt-3 text-sm text-[var(--destructive)]">{error}</p>}
       </Modal>
     );
   }
@@ -151,10 +151,12 @@ export function ManualOrderStatusModal({
           <Ban className="size-5 shrink-0" />
           <span>
             <span className="block text-sm font-semibold">Отменить без загрузки</span>
-            <span className="mt-0.5 block text-xs text-red-600">Заказ станет отменённым, склад не изменится</span>
+            <span className="mt-0.5 block text-xs text-[var(--destructive)]">
+              Заказ станет отменённым, склад не изменится
+            </span>
           </span>
         </button>
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
       </div>
     </Modal>
   );

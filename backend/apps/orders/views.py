@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from django.http import FileResponse
 from io import BytesIO
+from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal
 import re
@@ -28,6 +29,7 @@ from .apipay import (
     MONEY_RECEIVED_INVOICE_STATUSES, normalize_phone,
 )
 from .invoices import build_payment_receipt_pdf
+from .debt import as_money_strings, primary_currency
 from .querysets import with_order_api_relations, with_payment_api_relations
 from .reports import summary_report
 from .statuses import (
@@ -650,6 +652,9 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             "active": 0,
             "shipped": 0,
             "revenue": Decimal("0"),
+            # Валюты не складываются: у отдела могут быть заказы и в тенге,
+            # и в долларах, а «выручка» одним числом смешала бы их.
+            "revenue_by_currency": defaultdict(lambda: Decimal("0")),
         } for department in Department.objects.all()}
         for order in qs:
             row = rows.get(order.department)
@@ -663,12 +668,22 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             # В выручку идут только финансовые заказы: черновик и «на
             # рассмотрении» ещё не подтверждены и оборотом не являются.
             if is_financial(order.status):
-                row["revenue"] += order.total_amount
-        return Response([
-            {**row, "revenue": money_string(row["revenue"])}
-            for row in rows.values()
-            if row["is_active"] or row["orders"]
-        ])
+                row["revenue_by_currency"][order.currency or "KZT"] += order.total_amount
+        result = []
+        for row in rows.values():
+            if not (row["is_active"] or row["orders"]):
+                continue
+            totals = dict(row["revenue_by_currency"])
+            currency = primary_currency(totals)
+            result.append({
+                **row,
+                # Плоское поле описывает основную валюту отдела; полная
+                # раскладка идёт рядом, чтобы фронт показал обе строки.
+                "revenue": money_string(totals.get(currency, Decimal("0"))),
+                "revenue_currency": currency,
+                "revenue_by_currency": as_money_strings(totals),
+            })
+        return Response(result)
 
     @action(detail=False, methods=["get"], url_path="payments-queue")
     def payments_queue(self, request):

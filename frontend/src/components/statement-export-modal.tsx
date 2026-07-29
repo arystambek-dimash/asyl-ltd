@@ -159,7 +159,7 @@ export function StatementExportModal({
         </div>
 
         {error && (
-          <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-red-600">
+          <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-[var(--destructive)]">
             {error}
           </p>
         )}

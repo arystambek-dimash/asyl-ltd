@@ -537,8 +537,20 @@ function OrdersAnalytics({
                     <div className="text-right">
                       <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Выручка</div>
                       <div className="mt-1 truncate text-sm font-bold tabular-nums">
-                        {oneCurrency ? `${formatMoney(row.revenue)} ${currencySymbol(oneCurrency)}` : "По валютам"}
+                        {formatMoney(row.revenue)} {currencySymbol(row.revenue_currency ?? oneCurrency ?? "KZT")}
                       </div>
+                      {/* Вторая валюта отдельной строкой: раньше на её месте
+                          было слово «По валютам» и суммы не было видно вовсе. */}
+                      {Object.entries(row.revenue_by_currency ?? {})
+                        .filter(([currency]) => currency !== (row.revenue_currency ?? "KZT"))
+                        .map(([currency, amount]) => (
+                          <div
+                            key={currency}
+                            className="truncate text-[11px] tabular-nums text-[var(--muted-foreground)]"
+                          >
+                            {formatMoney(amount)} {currencySymbol(currency)}
+                          </div>
+                        ))}
                     </div>
                   </div>
                 </button>
@@ -1111,8 +1123,19 @@ function OrdersPageInner() {
               sorted.map((o) => (
                 <div
                   key={o.id}
+                  role="link"
+                  tabIndex={0}
+                  aria-label={`Заказ #${o.id}`}
                   onClick={() => router.push(`/orders/${o.id}`)}
-                  className="flex cursor-pointer flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card"
+                  // На телефоне карточка — единственный путь в заказ: без роли
+                  // и обработчика клавиш он был недоступен с клавиатуры.
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      router.push(`/orders/${o.id}`);
+                    }
+                  }}
+                  className="flex cursor-pointer flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-2">

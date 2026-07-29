@@ -560,10 +560,25 @@ function ClientsPageInner() {
           sorted.map((c) => (
             <div
               key={c.id}
+              role={canMoney ? "link" : undefined}
+              tabIndex={canMoney ? 0 : undefined}
+              aria-label={canMoney ? `Клиент ${c.name}` : undefined}
               onClick={canMoney ? () => router.push(`/clients/${c.id}`) : undefined}
+              // На телефоне карточка — единственный путь в карточку клиента.
+              onKeyDown={
+                canMoney
+                  ? (event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        router.push(`/clients/${c.id}`);
+                      }
+                    }
+                  : undefined
+              }
               className={cn(
                 "flex flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card",
-                canMoney && "cursor-pointer",
+                canMoney &&
+                  "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
               )}
             >
               <div className="flex items-start justify-between gap-2">

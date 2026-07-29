@@ -572,7 +572,7 @@ export function CameraWall() {
             Системная камера: {editing.name} · {editing.src}
           </p>
         )}
-        {renameError && <p className="mt-3 text-sm text-red-600">{renameError}</p>}
+        {renameError && <p className="mt-3 text-sm text-[var(--destructive)]">{renameError}</p>}
       </Modal>
 
       <Modal

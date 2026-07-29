@@ -51,7 +51,9 @@ export function OrderStatusSelect({
           if (next !== current) onChange(next);
         }}
         className={cn(
-          "h-8 max-w-full appearance-none rounded-lg border py-1 pl-7 pr-8 text-xs font-semibold outline-none transition focus:ring-2 focus:ring-blue-500/25 disabled:cursor-wait disabled:opacity-60",
+          // На телефоне это самый нажимаемый элемент списка, и жмут его в цехе
+          // перчаткой: 32px мимо, 44px попадает. На десктопе размер прежний.
+          "h-11 max-w-full appearance-none rounded-lg border py-1 pl-7 pr-8 text-xs font-semibold outline-none transition focus:ring-2 focus:ring-blue-500/25 disabled:cursor-wait disabled:opacity-60 sm:h-8",
           STATUS_STYLE[current] ?? STATUS_STYLE.pending,
         )}
       >

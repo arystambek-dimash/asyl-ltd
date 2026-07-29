@@ -38,7 +38,9 @@ import { ErrorAlert } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { api, apiError } from "@/lib/api";
+import { showSuccess } from "@/lib/toast";
 import { can } from "@/lib/can";
 import type {
   AiCountingSession,
@@ -240,7 +242,7 @@ function CameraSettingsButton({
             Подключённые камеры пока не обнаружены.
           </div>
         )}
-        {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+        {error && <p className="mt-3 text-sm text-[var(--destructive)]">{error}</p>}
       </Modal>
     </>
   );
@@ -299,14 +301,25 @@ function MonoblockDevicesButton({
     }
   }
 
-  async function remove(device: MonoblockDevice) {
-    if (!window.confirm(`Удалить моноблок «${device.name}» и его учётную запись?`)) return;
-    setError("");
+  // Удаление уносит учётную запись поста: системный confirm не защищал от
+  // повторного нажатия и выпадал из оформления остальных подтверждений.
+  const [removing, setRemoving] = useState<MonoblockDevice | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const [removeError, setRemoveError] = useState("");
+
+  async function confirmRemove() {
+    if (!removing) return;
+    setRemoveBusy(true);
+    setRemoveError("");
     try {
-      await api.delete(`/cameras/monoblock-devices/${device.id}/`);
+      await api.delete(`/cameras/monoblock-devices/${removing.id}/`);
       await reload();
+      setRemoving(null);
+      showSuccess("Моноблок удалён");
     } catch (cause) {
-      setError(apiError(cause));
+      setRemoveError(apiError(cause));
+    } finally {
+      setRemoveBusy(false);
     }
   }
 
@@ -367,7 +380,7 @@ function MonoblockDevicesButton({
                 <Button size="icon" variant="ghost" aria-label="Изменить моноблок" onClick={() => showForm(device)}>
                   <Pencil className="size-4" />
                 </Button>
-                <Button size="icon" variant="ghost" aria-label="Удалить моноблок" onClick={() => void remove(device)}>
+                <Button size="icon" variant="ghost" aria-label="Удалить моноблок" onClick={() => setRemoving(device)}>
                   <Trash2 className="size-4 text-red-500" />
                 </Button>
               </div>
@@ -379,7 +392,7 @@ function MonoblockDevicesButton({
             Моноблоки ещё не зарегистрированы.
           </div>
         )}
-        {error && !formOpen && <p className="mt-3 text-sm text-red-600">{error}</p>}
+        {error && !formOpen && <p className="mt-3 text-sm text-[var(--destructive)]">{error}</p>}
       </Modal>
 
       <Modal
@@ -460,9 +473,21 @@ function MonoblockDevicesButton({
               className="size-4 accent-blue-600"
             />
           </label>
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
         </div>
       </Modal>
+
+      <ConfirmDialog
+        open={removing !== null}
+        onClose={() => !removeBusy && setRemoving(null)}
+        title="Удалить моноблок?"
+        description={
+          removing ? `«${removing.name}» и его учётная запись будут удалены. Пост перестанет входить в систему.` : ""
+        }
+        busy={removeBusy}
+        error={removeError}
+        onConfirm={() => void confirmRemove()}
+      />
     </>
   );
 }
@@ -624,7 +649,7 @@ function AlwaysOnSettingsButton({
             Подключённые AI-камеры пока не обнаружены.
           </div>
         )}
-        {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+        {error && <p className="mt-3 text-sm text-[var(--destructive)]">{error}</p>}
       </Modal>
     </>
   );
@@ -1218,7 +1243,7 @@ function AlwaysOnCard({
             </div>
 
             {archivesError && (
-              <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-600">
+              <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-[var(--destructive)]">
                 {archivesError}
               </p>
             )}
@@ -1383,7 +1408,7 @@ function AlwaysOnCard({
                           type="button"
                           disabled={deletingArchiveId === row.id}
                           onClick={() => setArchiveToDelete(row)}
-                          className="mt-4 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-400 transition hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                          className="mt-4 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-400 transition hover:bg-red-50 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           {deletingArchiveId === row.id ? (
                             <LoaderCircle className="size-3.5 animate-spin" />
@@ -1464,7 +1489,7 @@ function AlwaysOnCard({
             <span className="text-xs text-[var(--muted-foreground)]">Обязательно, минимум 5 символов.</span>
           </div>
           {correctionError && (
-            <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-600">
+            <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-[var(--destructive)]">
               {correctionError}
             </p>
           )}
@@ -1517,7 +1542,7 @@ function AlwaysOnCard({
             </span>
           </div>
           {archiveError && (
-            <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-600">
+            <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-[var(--destructive)]">
               {archiveError}
             </p>
           )}
@@ -1570,7 +1595,7 @@ function AlwaysOnCard({
               Запись исчезнет из архива, а её дни снова попадут в «за всё время» и на график. Действие попадёт в журнал.
             </p>
             {deleteArchiveError && (
-              <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-600">
+              <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-[var(--destructive)]">
                 {deleteArchiveError}
               </p>
             )}
@@ -1661,7 +1686,7 @@ function SessionCard({
           {canStop ? (
             <Button
               variant="outline"
-              className="h-10 w-full rounded-xl border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+              className="h-10 w-full rounded-xl border-red-200 text-[var(--destructive)] hover:bg-red-50 hover:text-red-700"
               disabled={ai.busy}
               onClick={() => void stop()}
             >
@@ -1672,7 +1697,7 @@ function SessionCard({
               <LockKeyhole className="size-3.5" /> Остановить может {session.started_by_name} или администратор
             </div>
           )}
-          {ai.error && <p className="mt-2 text-center text-xs text-red-600">{ai.error}</p>}
+          {ai.error && <p className="mt-2 text-center text-xs text-[var(--destructive)]">{ai.error}</p>}
         </div>
       </div>
     </article>
