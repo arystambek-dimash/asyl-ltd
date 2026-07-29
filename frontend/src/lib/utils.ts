@@ -13,8 +13,36 @@ export function formatMoney(value: number | string): string {
   }).format(n);
 }
 
+/** Крупное число одним взглядом: 4 809 747 848 → «4,81 млрд».
+ *
+ * На дашборде важен порядок величины, а не копейки: полное число из
+ * двенадцати цифр читается дольше, чем занимает вся карточка. Точное
+ * значение остаётся в подсказке — см. formatMoney.
+ */
+export function formatCompact(value: number | string): string {
+  const n = typeof value === "string" ? Number(value) : value;
+  if (!Number.isFinite(n)) return "0";
+  const abs = Math.abs(n);
+  // Ниже 100 000 сокращать нечего: «99 999» и короче, и точнее «100,0 тыс».
+  if (abs < 100_000) return formatMoney(n);
+  const [divisor, suffix] =
+    abs >= 1_000_000_000 ? [1_000_000_000, " млрд"] : abs >= 1_000_000 ? [1_000_000, " млн"] : [1_000, " тыс"];
+  const scaled = n / divisor;
+  // Две значащие цифры после запятой у единиц, одна — у десятков и выше.
+  const digits = Math.abs(scaled) < 10 ? 2 : 1;
+  const text = new Intl.NumberFormat("ru-RU", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: digits,
+  }).format(scaled);
+  return `${text}${suffix}`;
+}
+
 export function currencySymbol(currency: "KZT" | "USD" | string = "KZT"): string {
   return currency === "USD" ? "$" : "₸";
+}
+
+export function formatCompactCurrency(value: number | string, currency: "KZT" | "USD" | string = "KZT"): string {
+  return `${formatCompact(value)} ${currencySymbol(currency)}`;
 }
 
 export function formatCurrency(value: number | string, currency: "KZT" | "USD" | string = "KZT"): string {

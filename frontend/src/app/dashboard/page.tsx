@@ -11,7 +11,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { formatPlate } from "@/components/ui/license-plate-input";
 import { useDashboardMetrics, type DashboardMetrics } from "@/lib/use-dashboard-metrics";
 import { ORDER_STATUS_LABELS } from "@/lib/constants";
-import { formatMoney, cn } from "@/lib/utils";
+import { formatCompact, formatMoney, cn } from "@/lib/utils";
 
 const TOOLTIP_STYLE = {
   borderRadius: 8,
@@ -62,24 +62,36 @@ function CardHeader({
 
 function MetricStrip({ m }: { m: DashboardMetrics }) {
   const delta = m.shippedToday - m.shippedYesterday;
+  // Крупные суммы показываем порядком величины: «4,81 млрд» читается с
+  // одного взгляда, а двенадцать цифр — нет. Точное значение остаётся
+  // в подсказке при наведении, ничего не теряется.
   const cells = [
-    { label: "На складе", value: formatMoney(m.totalBags), unit: "меш.", hint: "текущий остаток" },
+    {
+      label: "На складе",
+      value: formatCompact(m.totalBags),
+      exact: formatMoney(m.totalBags),
+      unit: "меш.",
+      hint: "текущий остаток",
+    },
     {
       label: "Ушло сегодня",
-      value: formatMoney(m.shippedToday),
+      value: formatCompact(m.shippedToday),
+      exact: formatMoney(m.shippedToday),
       unit: "меш.",
       hint: `${m.shippedTodayOrders} отгрузок`,
       delta,
     },
     {
       label: "Выручка · 14 дней",
-      value: formatMoney(String(m.periodRevenue)),
+      value: formatCompact(String(m.periodRevenue)),
+      exact: formatMoney(String(m.periodRevenue)),
       unit: "₸",
-      hint: `поступило ${formatMoney(String(m.periodReceived))} ₸`,
+      hint: `поступило ${formatCompact(String(m.periodReceived))} ₸`,
     },
     {
       label: "Долг клиентов",
-      value: formatMoney(String(m.debtTotal)),
+      value: formatCompact(String(m.debtTotal)),
+      exact: formatMoney(String(m.debtTotal)),
       unit: "₸",
       hint: `${m.topDebtors.length > 0 ? "по подтверждённым заказам" : "долгов нет"}`,
       alert: m.debtTotal > 0,
@@ -92,6 +104,7 @@ function MetricStrip({ m }: { m: DashboardMetrics }) {
           <div className="text-[13px] text-[var(--muted-foreground)]">{c.label}</div>
           <div className="mt-1.5 flex items-baseline gap-1.5">
             <span
+              title={`${c.exact}${c.unit ? ` ${c.unit}` : ""}`}
               className={cn(
                 "text-2xl font-semibold tabular-nums tracking-tight",
                 "alert" in c && c.alert && "text-[var(--destructive)]",
@@ -163,14 +176,20 @@ function FinanceCard({ m }: { m: DashboardMetrics }) {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <div className="text-[13px] text-[var(--muted-foreground)]">Выручка</div>
-            <div className="mt-1 text-xl font-semibold tabular-nums tracking-tight">
-              {formatMoney(String(m.periodRevenue))} ₸
+            <div
+              title={`${formatMoney(String(m.periodRevenue))} ₸`}
+              className="mt-1 text-xl font-semibold tabular-nums tracking-tight"
+            >
+              {formatCompact(String(m.periodRevenue))} ₸
             </div>
           </div>
           <div>
             <div className="text-[13px] text-[var(--muted-foreground)]">Поступило</div>
-            <div className="mt-1 text-xl font-semibold tabular-nums tracking-tight text-[var(--success)]">
-              {formatMoney(String(m.periodReceived))} ₸
+            <div
+              title={`${formatMoney(String(m.periodReceived))} ₸`}
+              className="mt-1 text-xl font-semibold tabular-nums tracking-tight text-[var(--success)]"
+            >
+              {formatCompact(String(m.periodReceived))} ₸
             </div>
           </div>
         </div>
@@ -248,7 +267,9 @@ function StockCard({ m }: { m: DashboardMetrics }) {
                 </PieChart>
               </ResponsiveContainer>
               <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                <span className="text-lg font-semibold tabular-nums leading-none">{formatMoney(total)}</span>
+                <span title={formatMoney(total)} className="text-lg font-semibold tabular-nums leading-none">
+                  {formatCompact(total)}
+                </span>
                 <span className="mt-0.5 text-[10px] text-[var(--muted-foreground)]">меш.</span>
               </div>
             </div>
@@ -260,7 +281,9 @@ function StockCard({ m }: { m: DashboardMetrics }) {
                     style={{ background: DONUT_COLORS[i % DONUT_COLORS.length] }}
                   />
                   <span className="truncate">{p.name}</span>
-                  <span className="ml-auto font-medium tabular-nums">{formatMoney(p.bags)}</span>
+                  <span title={formatMoney(p.bags)} className="ml-auto font-medium tabular-nums">
+                    {formatCompact(p.bags)}
+                  </span>
                 </div>
               ))}
             </div>
@@ -320,8 +343,11 @@ function DebtorsCard({ m }: { m: DashboardMetrics }) {
                   )}
                 </div>
               </div>
-              <span className="text-sm font-semibold tabular-nums text-[var(--destructive)]">
-                {formatMoney(d.debt_total)} ₸
+              <span
+                title={`${formatMoney(d.debt_total)} ₸`}
+                className="shrink-0 text-sm font-semibold tabular-nums text-[var(--destructive)]"
+              >
+                {formatCompact(d.debt_total)} ₸
               </span>
             </div>
           ))}
