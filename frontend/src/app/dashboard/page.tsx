@@ -248,7 +248,9 @@ function MetricStrip({ m }: { m: DashboardMetrics }) {
                 )}
               >
                 {c.delta > 0 ? <ArrowUpRight className="size-3" /> : <ArrowDownRight className="size-3" />}
-                {formatMoney(Math.abs(c.delta))}
+                {/* «↘ 93 110» шестизначным числом читался как авария —
+                    сжатая форма сообщает то же самое спокойнее. */}
+                {formatCompact(Math.abs(c.delta))}
               </span>
             )}
           </div>
@@ -298,27 +300,9 @@ function FinanceCard({ m }: { m: DashboardMetrics }) {
     <section className="rounded-xl border bg-[var(--card)] shadow-sm">
       <CardHeader title="Финансы" sub="14 дней" href="/reports" hrefLabel="Отчёты" />
       <div className="p-4">
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <div className="text-[13px] text-[var(--muted-foreground)]">Выручка</div>
-            <div
-              title={`${formatMoney(String(m.periodRevenue))} ₸`}
-              className="mt-1 text-xl font-semibold tabular-nums tracking-tight"
-            >
-              {formatCompact(String(m.periodRevenue))} ₸
-            </div>
-          </div>
-          <div>
-            <div className="text-[13px] text-[var(--muted-foreground)]">Поступило</div>
-            <div
-              title={`${formatMoney(String(m.periodReceived))} ₸`}
-              className="mt-1 text-xl font-semibold tabular-nums tracking-tight text-[var(--success)]"
-            >
-              {formatCompact(String(m.periodReceived))} ₸
-            </div>
-          </div>
-        </div>
-        <div className="mt-4 h-[120px] w-full">
+        {/* Крупные «Выручка/Поступило» уже стоят в полосе метрик выше —
+            здесь они дублировались и съедали место у графика. */}
+        <div className="h-[168px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={m.spark} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
               <defs>
@@ -347,12 +331,14 @@ function FinanceCard({ m }: { m: DashboardMetrics }) {
             </AreaChart>
           </ResponsiveContainer>
         </div>
-        <div className="mt-2 flex items-center gap-4 text-xs text-[var(--muted-foreground)]">
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--muted-foreground)]">
           <span className="flex items-center gap-1.5">
-            <span className="h-0.5 w-3 rounded bg-[var(--ring)]" /> выручка
+            <span className="h-0.5 w-3 rounded bg-[var(--ring)]" /> выручка{" "}
+            <b className="font-semibold text-[var(--foreground)]">{formatCompact(String(m.periodRevenue))} ₸</b>
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="h-0.5 w-3 rounded bg-[var(--success)]" /> поступления
+            <span className="h-0.5 w-3 rounded bg-[var(--success)]" /> поступления{" "}
+            <b className="font-semibold text-[var(--success)]">{formatCompact(String(m.periodReceived))} ₸</b>
           </span>
         </div>
       </div>
@@ -405,7 +391,10 @@ function StockCard({ m }: { m: DashboardMetrics }) {
                     className="size-2 shrink-0 rounded-[3px]"
                     style={{ background: DONUT_COLORS[i % DONUT_COLORS.length] }}
                   />
-                  <span className="truncate">{p.name}</span>
+                  {/* Полное имя — в подсказке: «ДБН 1с 50кг · Красны…» без неё не прочесть. */}
+                  <span title={p.name} className="truncate">
+                    {p.name}
+                  </span>
                   <span title={formatMoney(p.bags)} className="ml-auto font-medium tabular-nums">
                     {formatCompact(p.bags)}
                   </span>
@@ -413,6 +402,18 @@ function StockCard({ m }: { m: DashboardMetrics }) {
               ))}
             </div>
           </div>
+        )}
+        {m.negativeStock.length > 0 && (
+          <Link
+            href="/warehouse"
+            className="mt-3 flex items-center gap-2 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/5 px-3 py-2 text-xs text-[var(--warning)] transition hover:bg-[var(--warning)]/10"
+          >
+            <AlertTriangle className="size-3.5 shrink-0" />
+            <span className="min-w-0 truncate">
+              Минус на складе: {m.negativeStock.map((row) => `${row.name} ${formatMoney(row.bags)}`).join(", ")}
+            </span>
+            <ChevronRight className="ml-auto size-3.5 shrink-0" />
+          </Link>
         )}
       </div>
     </section>

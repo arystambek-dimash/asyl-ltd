@@ -123,19 +123,21 @@ export function useDashboardMetrics() {
     }));
   }, [list]);
 
-  // Склад в разрезе продуктов (топ-5 + «прочее»).
-  const stockByProduct = useMemo(() => {
+  // Склад в разрезе продуктов (топ-5 + «прочее»). Минусовые остатки — ошибка
+  // учёта, а не доля склада: в пончике им не место (отрицательный сектор
+  // ломает диаграмму), но молчать о них нельзя — отдаём отдельным списком.
+  const { stockByProduct, negativeStock } = useMemo(() => {
     const byProduct: Record<string, number> = {};
     (stock ?? []).forEach((i) => {
       byProduct[i.product_label] = (byProduct[i.product_label] ?? 0) + i.bags;
     });
-    const sorted = Object.entries(byProduct)
-      .map(([name, bags]) => ({ name, bags }))
-      .sort((a, b) => b.bags - a.bags);
-    if (sorted.length <= 6) return sorted;
+    const rows = Object.entries(byProduct).map(([name, bags]) => ({ name, bags }));
+    const negative = rows.filter((row) => row.bags < 0).sort((a, b) => a.bags - b.bags);
+    const sorted = rows.filter((row) => row.bags > 0).sort((a, b) => b.bags - a.bags);
+    if (sorted.length <= 6) return { stockByProduct: sorted, negativeStock: negative };
     const top = sorted.slice(0, 5);
     const rest = sorted.slice(5).reduce((s, x) => s + x.bags, 0);
-    return [...top, { name: "Прочее", bags: rest }];
+    return { stockByProduct: [...top, { name: "Прочее", bags: rest }], negativeStock: negative };
   }, [stock]);
 
   // Долги: общая сумма, топ должников и отдельно просроченное.
@@ -185,6 +187,7 @@ export function useDashboardMetrics() {
     periodReceived,
     pipeline,
     stockByProduct,
+    negativeStock,
     debtTotal,
     debtCurrency,
     topDebtors,

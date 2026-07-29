@@ -1276,37 +1276,55 @@ function AlwaysOnCard({
                       expanded ? "border-blue-300 bg-blue-50/40" : "border-slate-200",
                     )}
                   >
-                    <button
-                      type="button"
-                      onClick={() => setOpenArchiveId(expanded ? null : row.id)}
-                      aria-expanded={expanded}
-                      className="flex w-full items-center gap-3 p-3 text-left transition hover:bg-slate-50/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 sm:p-4"
-                    >
-                      <ChevronRight
-                        className={cn("size-4 shrink-0 text-slate-400 transition-transform", expanded && "rotate-90")}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                          <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">
-                            Период
-                          </span>
-                          <span className="font-bold text-slate-800">
-                            {fullDay(row.period_start)}
-                            {row.period_end !== row.period_start && ` — ${fullDay(row.period_end)}`}
-                          </span>
-                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
-                            {row.days} дн.
-                          </span>
+                    <div className="flex items-stretch pr-2">
+                      <button
+                        type="button"
+                        onClick={() => setOpenArchiveId(expanded ? null : row.id)}
+                        aria-expanded={expanded}
+                        className="flex min-w-0 flex-1 items-center gap-3 p-3 text-left transition hover:bg-slate-50/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 sm:p-4"
+                      >
+                        <ChevronRight
+                          className={cn("size-4 shrink-0 text-slate-400 transition-transform", expanded && "rotate-90")}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                            <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">
+                              Период
+                            </span>
+                            <span className="font-bold text-slate-800">
+                              {fullDay(row.period_start)}
+                              {row.period_end !== row.period_start && ` — ${fullDay(row.period_end)}`}
+                            </span>
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                              {row.days} дн.
+                            </span>
+                          </div>
+                          <div className="mt-1 text-xs text-slate-400">
+                            Заархивирован {formatDateTime(row.created_at)} · {row.archived_by_name || "—"}
+                          </div>
                         </div>
-                        <div className="mt-1 text-xs text-slate-400">
-                          Заархивирован {formatDateTime(row.created_at)} · {row.archived_by_name || "—"}
+                        <div className="shrink-0 text-right">
+                          <div className="text-2xl font-black tabular-nums text-slate-900">{row.total}</div>
+                          <div className="text-[10px] text-slate-400">мешков</div>
                         </div>
-                      </div>
-                      <div className="shrink-0 text-right">
-                        <div className="text-2xl font-black tabular-nums text-slate-900">{row.total}</div>
-                        <div className="text-[10px] text-slate-400">мешков</div>
-                      </div>
-                    </button>
+                      </button>
+                      {/* Корзинка прямо на строке: удаление, спрятанное внутри
+                        раскрытой карточки, никто не находил. */}
+                      <button
+                        type="button"
+                        aria-label={`Удалить архив за ${fullDay(row.period_start)}`}
+                        title="Удалить запись — мешки вернутся в счёт"
+                        disabled={deletingArchiveId === row.id}
+                        onClick={() => setArchiveToDelete(row)}
+                        className="flex size-9 shrink-0 items-center justify-center self-center rounded-lg text-slate-300 transition hover:bg-red-50 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {deletingArchiveId === row.id ? (
+                          <LoaderCircle className="size-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="size-4" />
+                        )}
+                      </button>
+                    </div>
 
                     {expanded && (
                       <div className="border-t border-blue-200/70 bg-white p-3 sm:p-4">

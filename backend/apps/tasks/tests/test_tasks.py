@@ -223,3 +223,48 @@ def test_notifications_are_private(make_user, auth_client):
     create_task(title="Задача", body="", assignee=worker, user=boss)
 
     assert auth_client(nosy).get("/api/task-notifications/").json()["unread"] == 0
+
+
+# ── Правка и удаление ────────────────────────────────────────────────
+
+def test_creator_edits_task(make_user, auth_client):
+    boss = _staff(make_user, "boss15", ["tasks.create"])
+    worker = _staff(make_user, "worker15")
+    other = _staff(make_user, "worker15b")
+    task = create_task(title="Опечятка", body="", assignee=worker, user=boss)
+
+    response = auth_client(boss).patch(
+        f"/api/tasks/{task.id}/",
+        {"title": "Опечатка исправлена", "assignee": other.id, "due_date": None},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    task.refresh_from_db()
+    assert task.title == "Опечатка исправлена"
+    assert task.assignee_id == other.id
+
+
+def test_worker_cannot_edit_task(make_user, auth_client):
+    boss = _staff(make_user, "boss16", ["tasks.create"])
+    worker = _staff(make_user, "worker16")
+    task = create_task(title="Задача", body="", assignee=worker, user=boss)
+
+    response = auth_client(worker).patch(
+        f"/api/tasks/{task.id}/", {"title": "Хак"}, format="json")
+
+    assert response.status_code == 403
+
+
+def test_creator_deletes_task_but_stranger_cannot(make_user, auth_client):
+    boss = _staff(make_user, "boss17", ["tasks.create"])
+    stranger = _staff(make_user, "boss17b", ["tasks.create", "tasks.view"])
+    worker = _staff(make_user, "worker17")
+    task = create_task(title="Дубль", body="", assignee=worker, user=boss)
+
+    # Чужой постановщик видит задачу, но снять её не может.
+    assert auth_client(stranger).delete(f"/api/tasks/{task.id}/").status_code == 403
+    assert Task.objects.filter(pk=task.id).exists()
+
+    assert auth_client(boss).delete(f"/api/tasks/{task.id}/").status_code == 204
+    assert not Task.objects.filter(pk=task.id).exists()

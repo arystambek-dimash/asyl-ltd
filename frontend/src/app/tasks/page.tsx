@@ -1,6 +1,6 @@
 "use client";
 import { useMemo, useState } from "react";
-import { CheckCircle2, Clock, ImageIcon, Paperclip, Plus, RotateCcw, X } from "lucide-react";
+import { CheckCircle2, Clock, ImageIcon, Paperclip, Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,6 +8,8 @@ import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { Badge } from "@/components/ui/badge";
 import { DataGate } from "@/components/ui/data-state";
+import { ActionMenu } from "@/components/ui/action-menu";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { VoiceRecorder } from "@/components/voice-recorder";
 import { api, apiError } from "@/lib/api";
 import { showSuccess } from "@/lib/toast";
@@ -53,7 +55,17 @@ function AttachmentChip({ kind, url, name }: { kind: string; url: string | null;
   );
 }
 
-function TaskCard({ task, onChanged }: { task: Task; onChanged: () => void }) {
+function TaskCard({
+  task,
+  onChanged,
+  onEdit,
+  onDelete,
+}: {
+  task: Task;
+  onChanged: () => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const done = task.status === "done";
@@ -123,19 +135,39 @@ function TaskCard({ task, onChanged }: { task: Task; onChanged: () => void }) {
           {error && <p className="mt-2 text-xs text-[var(--destructive)]">{error}</p>}
         </div>
 
-        {task.can_complete && (
-          <Button size="sm" variant={done ? "ghost" : "default"} disabled={busy} onClick={() => void toggle()}>
-            {done ? (
-              <>
-                <RotateCcw className="size-4" /> Вернуть
-              </>
-            ) : (
-              <>
-                <CheckCircle2 className="size-4" /> Выполнено
-              </>
-            )}
-          </Button>
-        )}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {task.can_complete && (
+            <Button size="sm" variant={done ? "ghost" : "default"} disabled={busy} onClick={() => void toggle()}>
+              {done ? (
+                <>
+                  <RotateCcw className="size-4" /> Вернуть
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="size-4" /> Выполнено
+                </>
+              )}
+            </Button>
+          )}
+          {(onEdit || onDelete) && (
+            <ActionMenu
+              items={[
+                ...(onEdit ? [{ key: "edit", label: "Изменить", icon: Pencil, onSelect: onEdit }] : []),
+                ...(onDelete
+                  ? [
+                      {
+                        key: "delete",
+                        label: "Удалить",
+                        icon: Trash2,
+                        tone: "destructive" as const,
+                        onSelect: onDelete,
+                      },
+                    ]
+                  : []),
+              ]}
+            />
+          )}
+        </div>
       </div>
     </div>
   );
@@ -158,6 +190,12 @@ export default function TasksPage() {
   const [extrasOpen, setExtrasOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+  // Задачу можно поправить или снять: опечатка в заголовке, не тот
+  // исполнитель или продублированная постановка — раньше жили навсегда.
+  const [editing, setEditing] = useState<Task | null>(null);
+  const [deleting, setDeleting] = useState<Task | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   const { data: assignees } = useApi<TaskAssignee[]>(canCreate ? "/task-assignees/" : null);
 
@@ -175,12 +213,53 @@ export default function TasksPage() {
     setVoice(null);
     setExtrasOpen(false);
     setFormError("");
+    setEditing(null);
+  }
+
+  function openEdit(task: Task) {
+    resetForm();
+    setEditing(task);
+    setTitle(task.title);
+    setBody(task.body);
+    setAssignee(String(task.assignee));
+    setDueDate(task.due_date ?? "");
+    setExtrasOpen(Boolean(task.due_date));
+    setOpen(true);
+  }
+
+  async function confirmDelete() {
+    if (!deleting) return;
+    setDeleteBusy(true);
+    setDeleteError("");
+    try {
+      await api.delete(`/tasks/${deleting.id}/`);
+      setDeleting(null);
+      reload();
+      showSuccess("Задача удалена");
+    } catch (cause) {
+      setDeleteError(apiError(cause));
+    } finally {
+      setDeleteBusy(false);
+    }
   }
 
   async function submit() {
     setSaving(true);
     setFormError("");
     try {
+      if (editing) {
+        await api.patch(`/tasks/${editing.id}/`, {
+          title,
+          body,
+          assignee: Number(assignee),
+          due_date: dueDate || null,
+        });
+        setOpen(false);
+        resetForm();
+        reload();
+        showSuccess("Задача обновлена");
+        return;
+      }
       const form = new FormData();
       form.append("title", title);
       form.append("body", body);
@@ -247,7 +326,13 @@ export default function TasksPage() {
       ) : (
         <div className="flex flex-col gap-3">
           {data.map((task) => (
-            <TaskCard key={task.id} task={task} onChanged={reload} />
+            <TaskCard
+              key={task.id}
+              task={task}
+              onChanged={reload}
+              onEdit={canCreate ? () => openEdit(task) : undefined}
+              onDelete={me?.is_superuser || (me && task.created_by === me.id) ? () => setDeleting(task) : undefined}
+            />
           ))}
         </div>
       )}
@@ -255,8 +340,12 @@ export default function TasksPage() {
       <Modal
         open={open}
         onClose={() => !saving && setOpen(false)}
-        title="Новая задача"
-        description="Опишите текстом или запишите голосом, приложите фото и выберите исполнителя."
+        title={editing ? `Изменить задачу #${editing.id}` : "Новая задача"}
+        description={
+          editing
+            ? "Заголовок, детали, исполнитель и срок. Вложения меняются в самой задаче."
+            : "Опишите текстом или запишите голосом, приложите фото и выберите исполнителя."
+        }
         className="max-w-lg"
         footer={
           <>
@@ -264,7 +353,15 @@ export default function TasksPage() {
               Отмена
             </Button>
             <Button disabled={saving || !title.trim() || !assignee} onClick={() => void submit()}>
-              <Plus className="size-4" /> Поставить
+              {editing ? (
+                <>
+                  <Pencil className="size-4" /> {saving ? "Сохранение…" : "Сохранить"}
+                </>
+              ) : (
+                <>
+                  <Plus className="size-4" /> {saving ? "Постановка…" : "Поставить"}
+                </>
+              )}
             </Button>
           </>
         }
@@ -319,7 +416,7 @@ export default function TasksPage() {
               onClick={() => setExtrasOpen(true)}
               className="flex items-center justify-center gap-2 rounded-xl border border-dashed px-3 py-2.5 text-sm font-medium text-[var(--muted-foreground)] transition hover:border-[var(--primary)] hover:text-[var(--foreground)]"
             >
-              <Plus className="size-4" /> Срок, голос, фото
+              <Plus className="size-4" /> {editing ? "Срок" : "Срок, голос, фото"}
             </button>
           ) : (
             <div className="grid gap-4 rounded-xl border bg-[var(--muted)]/40 p-3">
@@ -328,41 +425,45 @@ export default function TasksPage() {
                 <Input id="task-due" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
               </div>
 
-              <div className="grid gap-1.5">
-                <Label>Голосовое сообщение</Label>
-                <VoiceRecorder onChange={setVoice} disabled={saving} />
-              </div>
+              {!editing && (
+                <div className="grid gap-1.5">
+                  <Label>Голосовое сообщение</Label>
+                  <VoiceRecorder onChange={setVoice} disabled={saving} />
+                </div>
+              )}
 
-              <div className="grid gap-1.5">
-                <Label htmlFor="task-photos">Фото</Label>
-                <input
-                  id="task-photos"
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={(e) => setPhotos(Array.from(e.target.files ?? []))}
-                  className="text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--card)] file:px-3 file:py-1.5 file:text-sm file:font-medium"
-                />
-                {photos.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {photos.map((file) => (
-                      <span
-                        key={file.name}
-                        className="flex items-center gap-1 rounded-lg bg-[var(--card)] px-2 py-1 text-xs"
+              {!editing && (
+                <div className="grid gap-1.5">
+                  <Label htmlFor="task-photos">Фото</Label>
+                  <input
+                    id="task-photos"
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={(e) => setPhotos(Array.from(e.target.files ?? []))}
+                    className="text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--card)] file:px-3 file:py-1.5 file:text-sm file:font-medium"
+                  />
+                  {photos.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {photos.map((file) => (
+                        <span
+                          key={file.name}
+                          className="flex items-center gap-1 rounded-lg bg-[var(--card)] px-2 py-1 text-xs"
+                        >
+                          <ImageIcon className="size-3.5" /> {file.name}
+                        </span>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setPhotos([])}
+                        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
                       >
-                        <ImageIcon className="size-3.5" /> {file.name}
-                      </span>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() => setPhotos([])}
-                      className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-                    >
-                      <X className="size-3.5" /> очистить
-                    </button>
-                  </div>
-                )}
-              </div>
+                        <X className="size-3.5" /> очистить
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -373,6 +474,16 @@ export default function TasksPage() {
           )}
         </div>
       </Modal>
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => !deleteBusy && setDeleting(null)}
+        title="Удалить задачу?"
+        description={deleting ? `«${deleting.title}» исчезнет у исполнителя вместе с вложениями.` : ""}
+        busy={deleteBusy}
+        error={deleteError}
+        onConfirm={() => void confirmDelete()}
+      />
     </AppShell>
   );
 }

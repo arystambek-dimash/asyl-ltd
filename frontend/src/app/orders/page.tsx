@@ -35,7 +35,7 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { cn, currencySymbol, formatDateTime, formatIsoDate, formatMoney } from "@/lib/utils";
+import { cn, currencySymbol, formatDateTime, formatIsoDate, formatMoney, primaryDebtCurrency } from "@/lib/utils";
 import { useDismiss } from "@/lib/use-dismiss";
 import {
   Archive,
@@ -411,20 +411,31 @@ function OrdersAnalytics({
   onSelect,
   orders,
   activeCount,
-  total,
 }: {
   rows: DepartmentSummary[];
   active: string;
   onSelect: (code: string) => void;
   orders: Order[];
   activeCount: number;
-  total: number;
 }) {
   const [view, setView] = useState<"departments" | "overview">("departments");
   const totalOrders = rows.reduce((sum, row) => sum + row.orders, 0);
   const activeDepartment = rows.find((row) => row.code === active);
   const currencies = new Set(orders.map((order) => order.currency ?? "KZT"));
   const oneCurrency = currencies.size <= 1 ? (currencies.values().next().value ?? "KZT") : null;
+
+  // Сумма по валютам: тенге и доллары не складываются. Крупно — валюта с
+  // наибольшим оборотом, остальные строкой в подписи. Раньше при смешении
+  // валют вместо суммы стояло слово «Разные валюты» — цифр не было вовсе.
+  const sumByCurrency = orders.reduce<Record<string, number>>((totals, order) => {
+    const currency = order.currency ?? "KZT";
+    totals[currency] = (totals[currency] ?? 0) + Number(order.total_amount || 0);
+    return totals;
+  }, {});
+  const mainCurrency = primaryDebtCurrency(sumByCurrency);
+  const mainTotal = sumByCurrency[mainCurrency] ?? 0;
+  const otherSums = Object.entries(sumByCurrency).filter(([currency, value]) => currency !== mainCurrency && value > 0);
+  const mainOrders = orders.filter((order) => (order.currency ?? "KZT") === mainCurrency);
 
   return (
     <section className="mb-5 overflow-hidden rounded-2xl border bg-[var(--card)] shadow-card">
@@ -572,13 +583,17 @@ function OrdersAnalytics({
           <StatCard label="В процессе" value={String(activeCount)} icon={Clock3} />
           <StatCard
             label="Сумма"
-            value={oneCurrency ? `${formatMoney(total)} ${currencySymbol(oneCurrency)}` : "Разные валюты"}
+            value={`${formatMoney(mainTotal)} ${currencySymbol(mainCurrency)}`}
             icon={CircleDollarSign}
             accent
-            caption="Без отменённых и отклонённых"
+            caption={
+              otherSums.length > 0
+                ? `ещё ${otherSums.map(([c, v]) => `${formatMoney(v)} ${currencySymbol(c)}`).join(", ")} · без отменённых`
+                : "Без отменённых и отклонённых"
+            }
             className="col-span-2 sm:col-span-1"
           >
-            <StatusShareBar orders={orders} total={total} />
+            <StatusShareBar orders={mainOrders} total={mainTotal} />
           </StatCard>
         </div>
       )}
@@ -961,7 +976,6 @@ function OrdersPageInner() {
   // не искажают цифры, «в процессе» = ещё не загружен.
   const countable = filtered.filter((o) => orderStatusGroup(o.status) !== "cancelled");
   const activeCount = countable.filter((o) => orderStatusGroup(o.status) !== "shipped").length;
-  const totalSum = countable.reduce((s, o) => s + Number(o.total_amount || 0), 0);
 
   // Счётчики в опциях не показываем: при серверной фильтрации в наличии
   // только выбранная группа, честных цифр по остальным нет.
@@ -1069,7 +1083,6 @@ function OrdersPageInner() {
             onSelect={setDept}
             orders={countable}
             activeCount={activeCount}
-            total={totalSum}
           />
 
           <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
