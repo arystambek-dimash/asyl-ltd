@@ -7,6 +7,7 @@ function point(partial: Partial<AlwaysOnHistoryPoint>): AlwaysOnHistoryPoint {
     day: "2026-07-28",
     model_total: 0,
     model_per_color: {},
+    colors: [],
     adjustment: 0,
     total: 0,
     updated_at: null,

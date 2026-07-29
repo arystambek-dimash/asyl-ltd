@@ -170,6 +170,10 @@ class AlwaysOnDailyAnalytics(models.Model):
     model_total = models.PositiveIntegerField(default=0)
     model_per_color = models.JSONField(default=dict, blank=True)
     adjustment = models.IntegerField(default=0)
+    # Строка уехала в архив: в текущем счётчике её больше нет, но день
+    # остаётся на графике и в истории. Обнуление счётчика — это перенос
+    # накопленного в архив, а не потеря данных.
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -184,6 +188,33 @@ class AlwaysOnDailyAnalytics(models.Model):
     @property
     def total(self) -> int:
         return max(0, self.model_total + self.adjustment)
+
+
+class AlwaysOnCountArchive(models.Model):
+    """Закрытый период 24/7-счёта: что было накоплено на момент обнуления.
+
+    Архив хранит уже посчитанное, поэтому переписывать его нельзя — новые
+    закрытия добавляют строки, а не меняют старые.
+    """
+
+    camera = models.CharField(max_length=32, db_index=True)
+    # Границы включительно: с какого по какой день собран этот архив.
+    period_start = models.DateField()
+    period_end = models.DateField()
+    model_total = models.PositiveIntegerField(default=0)
+    model_per_color = models.JSONField(default=dict, blank=True)
+    adjustment = models.IntegerField(default=0)
+    total = models.PositiveIntegerField(default=0)
+    days = models.PositiveIntegerField(default=0)
+    note = models.CharField(max_length=500, blank=True, default="")
+    archived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="always_on_archives",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
 
 
 class CameraHealthState(models.Model):

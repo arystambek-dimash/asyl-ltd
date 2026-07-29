@@ -10,6 +10,7 @@ from apps.eventlog.services import log_event
 
 from . import ai
 from .models import (
+    AlwaysOnCountArchive,
     AlwaysOnCounterCursor,
     AlwaysOnDailyAnalytics,
     MonoblockCameraSettings,
@@ -152,24 +153,36 @@ def record_snapshot(live: dict, observed_at: datetime | None = None) -> None:
 
 
 def _row_payload(row: AlwaysOnDailyAnalytics | None, camera: str, day: date) -> dict:
+    colors = _normalized_colors(row.model_per_color if row else None)
     return {
         "camera": camera,
         "day": day.isoformat(),
         "model_total": row.model_total if row else 0,
-        "model_per_color": dict(row.model_per_color or {}) if row else {},
+        "model_per_color": colors,
+        # Готовая разбивка за день с процентами — её показывает клик по
+        # столбику, и считается она там же, где общая, чтобы цифры сходились.
+        "colors": _color_payload(colors),
         "adjustment": row.adjustment if row else 0,
         "total": row.total if row else 0,
         "updated_at": row.updated_at if row else None,
     }
 
 
+def _normalized_colors(raw) -> dict[str, int]:
+    """Отбросить мусорные значения из сохранённой разбивки по цветам."""
+    result: dict[str, int] = {}
+    for color, value in (raw or {}).items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        result[color] = result.get(color, 0) + max(0, int(value))
+    return result
+
+
 def _merge_colors(rows) -> dict[str, int]:
     result: dict[str, int] = {}
     for row in rows:
-        for color, value in (row.model_per_color or {}).items():
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                continue
-            result[color] = result.get(color, 0) + max(0, int(value))
+        for color, value in _normalized_colors(row.model_per_color).items():
+            result[color] = result.get(color, 0) + value
     return result
 
 
@@ -198,7 +211,10 @@ def today_payload() -> dict:
     day = timezone.localdate()
     history_start = day - timedelta(days=13)
     desired = MonoblockCameraSettings.always_on_sources()
-    all_rows = list(AlwaysOnDailyAnalytics.objects.filter(camera__in=desired))
+    # Архивные дни остаются в базе ради истории, но в текущий счёт не входят:
+    # их мешки уже посчитаны и перенесены в архив.
+    all_rows = list(AlwaysOnDailyAnalytics.objects.filter(
+        camera__in=desired, archived_at__isnull=True))
     rows_by_camera: dict[str, list[AlwaysOnDailyAnalytics]] = {camera: [] for camera in desired}
     for row in all_rows:
         rows_by_camera.setdefault(row.camera, []).append(row)
@@ -235,21 +251,122 @@ def today_payload() -> dict:
     history = []
     current = history_start
     while current <= day:
-        history.append(aggregate_by_day.get(current, {
+        item = aggregate_by_day.get(current, {
             "day": current.isoformat(), "model_total": 0, "model_per_color": {},
             "adjustment": 0, "total": 0, "updated_at": None,
-        }))
+        })
+        history.append(item | {"colors": _color_payload(item["model_per_color"])})
         current += timedelta(days=1)
     all_colors = _merge_colors(all_rows)
     return {
         "day": day.isoformat(),
         "total": sum(item["total"] for item in cameras),
         "all_time_total": sum(item["all_time_total"] for item in cameras),
+        # Сумма цветов описывает распознанное моделью, итог — уже с ручными
+        # поправками. Без этих двух чисел экран показывал бы «11670+2649+836,
+        # а всего 15154» без объяснения, откуда разница.
+        "model_all_time_total": sum(row.model_total for row in all_rows),
+        "adjustment": sum(row.adjustment for row in all_rows),
         "history": history,
         "colors": _color_payload(all_colors),
         "dominant_color": _color_payload(all_colors)[0]["color"] if all_colors else None,
         "cameras": cameras,
     }
+
+
+@transaction.atomic
+def archive_camera(camera: str, note: str, user) -> dict:
+    """Закрыть период: накопленное уходит в архив, счётчик начинается с нуля.
+
+    Обнуление не удаляет данные — дни остаются в истории и на графике, но
+    выпадают из «сегодня» и «за всё время». Курсор тоже сбрасывается, иначе
+    следующий снимок воркера дал бы разницу против уже заархивированного
+    значения и вернул бы весь счёт обратно.
+    """
+    camera = ai.normalize(camera)
+    note = " ".join(str(note or "").split())[:500]
+
+    rows = list(
+        AlwaysOnDailyAnalytics.objects.select_for_update()
+        .filter(camera=camera, archived_at__isnull=True)
+        .order_by("day")
+    )
+    if not rows:
+        raise ValidationError({
+            "detail": "Архивировать нечего — счётчик уже пуст",
+            "code": "nothing_to_archive",
+        })
+
+    now = timezone.now()
+    archive = AlwaysOnCountArchive.objects.create(
+        camera=camera,
+        period_start=rows[0].day,
+        period_end=rows[-1].day,
+        model_total=sum(row.model_total for row in rows),
+        model_per_color=_merge_colors(rows),
+        adjustment=sum(row.adjustment for row in rows),
+        total=sum(row.total for row in rows),
+        days=len(rows),
+        note=note,
+        archived_by=user,
+    )
+    # Сегодняшний день продолжает считаться после архивации, а уникальность
+    # (camera, day) не даёт завести вторую живую строку. Поэтому текущий день
+    # не помечаем архивным, а обнуляем: его накопленное уже лежит в архиве.
+    today = timezone.localdate()
+    closed = [row for row in rows if row.day != today]
+    if closed:
+        AlwaysOnDailyAnalytics.objects.filter(
+            pk__in=[row.pk for row in closed]
+        ).update(archived_at=now)
+    AlwaysOnDailyAnalytics.objects.filter(
+        camera=camera, day=today, archived_at__isnull=True,
+    ).update(model_total=0, model_per_color={}, adjustment=0)
+    # Сбрасываем базу отсчёта: воркер продолжает считать со своего числа, и
+    # без сброса первая же разница вернула бы архивированное в текущий итог.
+    AlwaysOnCounterCursor.objects.filter(camera=camera).delete()
+
+    log_event(
+        "always_on_count_archived",
+        f"AI 24/7 · {camera}: счётчик обнулён, {archive.total} мешков "
+        f"перенесены в архив"
+        + (f". Примечание: {note}" if note else ""),
+        user=user,
+        payload={
+            "camera": camera, "archive_id": archive.pk,
+            "total": archive.total, "model_total": archive.model_total,
+            "adjustment": archive.adjustment, "days": archive.days,
+            "period_start": archive.period_start.isoformat(),
+            "period_end": archive.period_end.isoformat(),
+            "note": note,
+        },
+    )
+    return _archive_payload(archive)
+
+
+def _archive_payload(archive: AlwaysOnCountArchive) -> dict:
+    return {
+        "id": archive.pk,
+        "camera": archive.camera,
+        "period_start": archive.period_start.isoformat(),
+        "period_end": archive.period_end.isoformat(),
+        "model_total": archive.model_total,
+        "adjustment": archive.adjustment,
+        "total": archive.total,
+        "days": archive.days,
+        "colors": _color_payload(_normalized_colors(archive.model_per_color)),
+        "note": archive.note,
+        "archived_by_name": (
+            archive.archived_by.username if archive.archived_by else None),
+        "created_at": archive.created_at,
+    }
+
+
+def archives_payload(camera: str | None = None) -> list[dict]:
+    rows = AlwaysOnCountArchive.objects.select_related("archived_by")
+    if camera:
+        rows = rows.filter(camera=ai.normalize(camera))
+    return [_archive_payload(row) for row in rows]
 
 
 @transaction.atomic

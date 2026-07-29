@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  Archive,
   BarChart3,
   Camera,
   CalendarDays,
@@ -651,6 +652,10 @@ function AlwaysOnCard({
   const [correctionReason, setCorrectionReason] = useState("");
   const [correctionError, setCorrectionError] = useState("");
   const [correcting, setCorrecting] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archiveNote, setArchiveNote] = useState("");
+  const [archiveError, setArchiveError] = useState("");
+  const [archiving, setArchiving] = useState(false);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const current = open ? liveProcessor : processor;
   const currentDaily = open ? liveDaily : daily;
@@ -663,7 +668,11 @@ function AlwaysOnCard({
   // выбранный день хранится ключом, а не копией — опрос обновляет данные,
   // не закрывая панель.
   const selectedPoint = (currentDaily?.history ?? []).find((item) => item.day === selectedDay);
-  const selectedColors = dayColorBreakdown(selectedPoint);
+  // Разбивку за день считает бэкенд — тем же кодом, что и общую, поэтому
+  // цифры сходятся. Локальный расчёт остаётся на случай старого ответа.
+  const selectedColors = selectedPoint?.colors?.length
+    ? selectedPoint.colors
+    : dayColorBreakdown(selectedPoint);
 
   useEffect(() => {
     setLiveProcessor(processor);
@@ -738,6 +747,25 @@ function AlwaysOnCard({
       setCorrectionError(apiError(cause));
     } finally {
       setCorrecting(false);
+    }
+  }
+
+  async function archiveCount() {
+    setArchiving(true);
+    setArchiveError("");
+    try {
+      await api.post(`/cameras/always-on-analytics/${processor.cam}/archive/`, {
+        note: archiveNote.trim(),
+      });
+      const analyticsResponse = await api.get<AlwaysOnDailyAnalytics>("/cameras/always-on-analytics/");
+      setLiveDaily(analyticsResponse.data.cameras.find((item) => item.camera === processor.cam));
+      await onAnalyticsChanged();
+      setArchiveOpen(false);
+      setArchiveNote("");
+    } catch (cause) {
+      setArchiveError(apiError(cause));
+    } finally {
+      setArchiving(false);
     }
   }
 
@@ -1099,6 +1127,18 @@ function AlwaysOnCard({
                 >
                   <Minus className="size-3.5" /> Уменьшить итог за сегодня
                 </button>
+                <button
+                  type="button"
+                  disabled={allTimeTotal <= 0 || archiving}
+                  onClick={() => setArchiveOpen(true)}
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  <Archive className="size-3.5" /> Обнулить и сдать в архив
+                </button>
+                <p className="mt-2 text-center text-[11px] leading-snug text-slate-400">
+                  Накопленное уйдёт в архив, счётчик начнётся с нуля. Дни
+                  останутся в истории.
+                </p>
               </section>
             </div>
           </div>
@@ -1169,6 +1209,60 @@ function AlwaysOnCard({
           {correctionError && (
             <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-600">
               {correctionError}
+            </p>
+          )}
+        </div>
+      </Modal>
+
+      <Modal
+        open={archiveOpen}
+        onClose={() => !archiving && setArchiveOpen(false)}
+        eyebrow={`Суперадмин · ${camera?.zone || processor.cam}`}
+        title="Обнулить счётчик и сдать в архив"
+        description="Накопленное переносится в архив целиком: счётчик начнётся с нуля, а дни останутся в истории и на графике."
+        className="max-w-lg"
+        footer={
+          <>
+            <Button variant="ghost" disabled={archiving} onClick={() => setArchiveOpen(false)}>
+              Отмена
+            </Button>
+            <Button
+              disabled={archiving || allTimeTotal <= 0}
+              onClick={() => void archiveCount()}
+            >
+              {archiving ? <LoaderCircle className="size-4 animate-spin" /> : <Archive className="size-4" />}
+              Архивировать {allTimeTotal}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-5">
+          <div className="flex items-end justify-between rounded-2xl border border-blue-100 bg-blue-50/70 p-4">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-500">Уйдёт в архив</div>
+              <div className="mt-1 text-4xl font-black tabular-nums text-slate-900">{allTimeTotal}</div>
+            </div>
+            <div className="text-right text-xs text-slate-500">
+              станет: 0
+              <br />
+              за сегодня: {todayTotal}
+            </div>
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor={`archive-note-${processor.cam}`}>Примечание</Label>
+            <textarea
+              id={`archive-note-${processor.cam}`}
+              value={archiveNote}
+              onChange={(event) => setArchiveNote(event.target.value)}
+              maxLength={500}
+              placeholder="Например: закрытие месяца, сдано в CRM"
+              className="min-h-20 w-full resize-y rounded-xl border bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15"
+            />
+            <span className="text-xs text-[var(--muted-foreground)]">Необязательно — попадёт в журнал вместе с суммой.</span>
+          </div>
+          {archiveError && (
+            <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-600">
+              {archiveError}
             </p>
           )}
         </div>

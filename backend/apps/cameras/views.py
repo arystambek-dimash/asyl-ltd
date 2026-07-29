@@ -566,6 +566,20 @@ class AlwaysOnAnalyticsSubtractView(APIView):
         ))
 
 
+class AlwaysOnAnalyticsArchiveView(APIView):
+    """Архив 24/7-счёта: список закрытых периодов и обнуление счётчика."""
+
+    permission_classes = [IsSuperUser]
+
+    def get(self, request, cam: str | None = None):
+        return Response(analytics.archives_payload(cam))
+
+    def post(self, request, cam: str):
+        return Response(analytics.archive_camera(
+            cam, request.data.get("note") or "", request.user,
+        ))
+
+
 class ShippingBoardSettingsView(APIView):
     """Admin policy for the live shipping board."""
 
