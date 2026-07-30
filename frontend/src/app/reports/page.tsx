@@ -5,6 +5,7 @@ import { ArrowRight, Scale } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
+import { ClientsTable } from "@/components/reports/clients-table";
 import { CHART_TOOLTIP_STYLE } from "@/components/ui/chart-tooltip";
 import { CurrencyAmounts } from "@/components/ui/currency-amounts";
 import { ErrorAlert } from "@/components/ui/data-state";
@@ -12,6 +13,7 @@ import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { Input } from "@/components/ui/input";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { Tabs } from "@/components/ui/tabs";
 import { amountForCurrency, otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
 import { paidSplit, reportChartSeries } from "@/lib/report-analytics";
 import { useApi } from "@/lib/use-api";
@@ -373,6 +375,8 @@ function ReportsPageInner() {
   const [from, setFrom] = useState(monthStartLocalIsoDate());
   const [to, setTo] = useState(todayLocalIsoDate());
   const [department, setDepartment] = useState("all");
+  // По клиентам — основной разрез: должников ищут по имени, а не по дате.
+  const [view, setView] = useState<"clients" | "days">("clients");
 
   const { data: departments } = useApi<Department[]>("/departments/");
   const validRange = !from || !to || from <= to;
@@ -431,7 +435,17 @@ function ReportsPageInner() {
             <PeriodStory data={data} />
             <DebtNowBand debt={data.debt_now} />
             <DaysChart data={data} />
-            <DaysTable data={data} />
+            <div className="flex flex-col gap-3">
+              <Tabs
+                tabs={[
+                  { key: "clients", label: "По клиентам" },
+                  { key: "days", label: "По дням" },
+                ]}
+                active={view}
+                onChange={(key) => setView(key as "clients" | "days")}
+              />
+              {view === "clients" ? <ClientsTable clients={data.clients ?? []} /> : <DaysTable data={data} />}
+            </div>
           </>
         )}
 

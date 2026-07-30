@@ -55,6 +55,16 @@ interface CashFilters {
   remainingCurrency: string;
 }
 
+const EMPTY_CASH_FILTERS: CashFilters = {
+  dateFrom: "",
+  dateTo: "",
+  department: "all",
+  store: "all",
+  remainingMin: "",
+  remainingMax: "",
+  remainingCurrency: "all",
+};
+
 function apiUrl(path: string, params: Record<string, string>) {
   const query = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
@@ -93,31 +103,46 @@ function debtPaymentState(row: ClientDebt) {
 }
 
 /* ── Очередь кассира: данные и действия, общие для вкладок ─────────────── */
-function useCashierQueue(enabled: boolean, canReviewOrders: boolean, filters: CashFilters) {
-  const valid = filtersAreValid(filters);
-  const active = enabled && valid;
-  const commonParams = {
-    date_from: filters.dateFrom,
-    date_to: filters.dateTo,
-    department: filters.department,
-    store: filters.store,
+// У очереди («Подтверждение») и журнала свои фильтры — каждая вкладка
+// ограничивает только себя, поэтому наборы приходят раздельно.
+function useCashierQueue(
+  enabled: boolean,
+  canReviewOrders: boolean,
+  queueFilters: CashFilters,
+  logFilters: CashFilters,
+) {
+  const queueActive = enabled && filtersAreValid(queueFilters);
+  const logActive = enabled && filtersAreValid(logFilters);
+  const queueParams = {
+    date_from: queueFilters.dateFrom,
+    date_to: queueFilters.dateTo,
+    department: queueFilters.department,
+    store: queueFilters.store,
+  };
+  const logParams = {
+    date_from: logFilters.dateFrom,
+    date_to: logFilters.dateTo,
+    department: logFilters.department,
+    store: logFilters.store,
   };
   // Кассе нужны заявки на подтверждение и оплаты — отбор отдела общий.
   const {
     data: pending,
     error: pendingError,
     reload: reloadPending,
-  } = useApi<Order[]>(active && canReviewOrders ? apiUrl("/orders/", { ...commonParams, status: "pending" }) : null);
+  } = useApi<Order[]>(
+    queueActive && canReviewOrders ? apiUrl("/orders/", { ...queueParams, status: "pending" }) : null,
+  );
   const {
     data: queue,
     error: queueError,
     reload: reloadQueue,
-  } = useApi<PaymentQueueItem[]>(active ? apiUrl("/orders/payments-queue/", commonParams) : null);
+  } = useApi<PaymentQueueItem[]>(queueActive ? apiUrl("/orders/payments-queue/", queueParams) : null);
   const {
     data: cashierLog,
     error: cashierLogError,
     reload: reloadCashierLog,
-  } = useApi<CashierLogItem[]>(active ? apiUrl("/orders/cashier-log/", commonParams) : null);
+  } = useApi<CashierLogItem[]>(logActive ? apiUrl("/orders/cashier-log/", logParams) : null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const loadError = pendingError || queueError || cashierLogError;
@@ -542,12 +567,15 @@ function CashFiltersPanel({
   filters,
   stores,
   departments,
+  showRemaining,
   onChange,
   onReset,
 }: {
   filters: CashFilters;
   stores: Store[];
   departments: Department[];
+  /** Диапазон остатка долга уместен только там, где есть долги («Общее»). */
+  showRemaining: boolean;
   onChange: (patch: Partial<CashFilters>) => void;
   onReset: () => void;
 }) {
@@ -555,12 +583,14 @@ function CashFiltersPanel({
     filters.dateFrom !== "" || filters.dateTo !== "",
     filters.department !== "all",
     filters.store !== "all",
-    filters.remainingMin !== "" || filters.remainingMax !== "",
+    showRemaining && (filters.remainingMin !== "" || filters.remainingMax !== ""),
   ].filter(Boolean).length;
   const datesInvalid = Boolean(filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo);
-  const remainingInvalid = Boolean(
-    filters.remainingMin && filters.remainingMax && Number(filters.remainingMin) > Number(filters.remainingMax),
-  );
+  const remainingInvalid =
+    showRemaining &&
+    Boolean(
+      filters.remainingMin && filters.remainingMax && Number(filters.remainingMin) > Number(filters.remainingMax),
+    );
 
   return (
     <Card>
@@ -627,40 +657,42 @@ function CashFiltersPanel({
                   .map((store) => ({ key: String(store.id), label: store.name })),
               ]}
             />
-            <div className="flex flex-col gap-1.5">
-              <span className="text-[11px] font-medium text-[var(--muted-foreground)]">Остаток долга</span>
-              <div className="flex items-center gap-1.5">
-                <FilterDropdown
-                  label="Валюта"
-                  active={filters.remainingCurrency}
-                  onChange={(remainingCurrency) => onChange({ remainingCurrency })}
-                  options={[
-                    { key: "all", label: "Основная" },
-                    { key: "KZT", label: "KZT" },
-                    { key: "USD", label: "USD" },
-                  ]}
-                />
-                <Input
-                  type="number"
-                  min="0"
-                  inputMode="decimal"
-                  placeholder="От"
-                  value={filters.remainingMin}
-                  onChange={(e) => onChange({ remainingMin: e.target.value })}
-                  className="h-9 w-[118px]"
-                />
-                <span className="text-[var(--muted-foreground)]">—</span>
-                <Input
-                  type="number"
-                  min="0"
-                  inputMode="decimal"
-                  placeholder="До"
-                  value={filters.remainingMax}
-                  onChange={(e) => onChange({ remainingMax: e.target.value })}
-                  className="h-9 w-[118px]"
-                />
+            {showRemaining && (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[11px] font-medium text-[var(--muted-foreground)]">Остаток долга</span>
+                <div className="flex items-center gap-1.5">
+                  <FilterDropdown
+                    label="Валюта"
+                    active={filters.remainingCurrency}
+                    onChange={(remainingCurrency) => onChange({ remainingCurrency })}
+                    options={[
+                      { key: "all", label: "Основная" },
+                      { key: "KZT", label: "KZT" },
+                      { key: "USD", label: "USD" },
+                    ]}
+                  />
+                  <Input
+                    type="number"
+                    min="0"
+                    inputMode="decimal"
+                    placeholder="От"
+                    value={filters.remainingMin}
+                    onChange={(e) => onChange({ remainingMin: e.target.value })}
+                    className="h-9 w-[118px]"
+                  />
+                  <span className="text-[var(--muted-foreground)]">—</span>
+                  <Input
+                    type="number"
+                    min="0"
+                    inputMode="decimal"
+                    placeholder="До"
+                    value={filters.remainingMax}
+                    onChange={(e) => onChange({ remainingMax: e.target.value })}
+                    className="h-9 w-[118px]"
+                  />
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           {(datesInvalid || remainingInvalid) && (
@@ -677,6 +709,8 @@ function CashFiltersPanel({
 }
 
 type CashTab = "overview" | "confirm" | "journal" | "transactions";
+// У «Транзакций» свой поиск, панель фильтров есть у остальных вкладок.
+type FilterableCashTab = Exclude<CashTab, "transactions">;
 
 function CashierInner() {
   const { me } = useAuth();
@@ -690,34 +724,32 @@ function CashierInner() {
   const canViewClients = can(me, "clients.view");
   const canCheckOverdue = can(me, "clients.edit");
 
-  const [filters, setFilters] = useState<CashFilters>({
-    dateFrom: "",
-    dateTo: "",
-    department: "all",
-    store: "all",
-    remainingMin: "",
-    remainingMax: "",
-    remainingCurrency: "all",
+  // Свои фильтры на каждой вкладке: период журнала не должен обрезать
+  // «Общее», а остаток долга имеет смысл только там, где есть долги.
+  const [filtersByTab, setFiltersByTab] = useState<Record<FilterableCashTab, CashFilters>>({
+    overview: EMPTY_CASH_FILTERS,
+    confirm: EMPTY_CASH_FILTERS,
+    journal: EMPTY_CASH_FILTERS,
   });
   const [tab, setTab] = useState<CashTab>(canReports ? "overview" : canPayments ? "confirm" : "transactions");
-  const validFilters = filtersAreValid(filters);
-  const commonParams = {
-    date_from: filters.dateFrom,
-    date_to: filters.dateTo,
-    department: filters.department,
-    store: filters.store,
-  };
+  const filterTab: FilterableCashTab = tab === "transactions" ? "overview" : tab;
+  const filters = filtersByTab[filterTab];
+  const overviewFilters = filtersByTab.overview;
+  const validOverview = filtersAreValid(overviewFilters);
   const reportUrl = apiUrl("/reports/summary/", {
-    from: filters.dateFrom,
-    to: filters.dateTo,
-    department: filters.department,
-    store: filters.store,
+    from: overviewFilters.dateFrom,
+    to: overviewFilters.dateTo,
+    department: overviewFilters.department,
+    store: overviewFilters.store,
   });
   const debtsUrl = apiUrl("/clients/debts/", {
-    ...commonParams,
-    remaining_min: filters.remainingMin,
-    remaining_max: filters.remainingMax,
-    remaining_currency: filters.remainingCurrency,
+    date_from: overviewFilters.dateFrom,
+    date_to: overviewFilters.dateTo,
+    department: overviewFilters.department,
+    store: overviewFilters.store,
+    remaining_min: overviewFilters.remainingMin,
+    remaining_max: overviewFilters.remainingMax,
+    remaining_currency: overviewFilters.remainingCurrency,
   });
 
   // Кассовая аналитика — тот же серверный отчёт, что и на «Отчётах».
@@ -725,14 +757,14 @@ function CashierInner() {
     data: summary,
     error: summaryError,
     reload: reloadSummary,
-  } = useApi<ReportSummary>(canReports && validFilters ? reportUrl : null);
-  const queue = useCashierQueue(canPayments, canReviewOrders, filters);
+  } = useApi<ReportSummary>(canReports && validOverview ? reportUrl : null);
+  const queue = useCashierQueue(canPayments, canReviewOrders, filtersByTab.confirm, filtersByTab.journal);
   const {
     data: debts,
     loading: debtsLoading,
     error: debtsError,
     reload: reloadDebts,
-  } = useApi<ClientDebt[]>(canReports && validFilters ? debtsUrl : null);
+  } = useApi<ClientDebt[]>(canReports && validOverview ? debtsUrl : null);
   const { data: stores } = useApi<Store[]>(canReports && canViewClients ? "/stores/" : null);
   const { data: departments } = useApi<Department[]>("/departments/");
 
@@ -751,7 +783,7 @@ function CashierInner() {
   const otherReviewCurrencies = Object.entries(toReviewByCurrency).filter(
     ([currency, value]) => currency !== toReviewCurrency && value > 0,
   );
-  const debtRows = validFilters ? (debts ?? []) : [];
+  const debtRows = validOverview ? (debts ?? []) : [];
   // Валюты не складываются: 1000 ₸ и 5 $ не дают «1005». Крупно — основная
   // валюта, остальные отдельной строкой под ней.
   const debtByCurrency = sumDebtByCurrency(debtRows);
@@ -762,8 +794,8 @@ function CashierInner() {
   );
   const overdueClients = debtRows.filter((r) => r.overdue_count > 0).length;
   const today = todayLocalIsoDate();
-  const isToday = filters.dateFrom === today && filters.dateTo === today;
-  const hasDates = Boolean(filters.dateFrom || filters.dateTo);
+  const isToday = overviewFilters.dateFrom === today && overviewFilters.dateTo === today;
+  const hasDates = Boolean(overviewFilters.dateFrom || overviewFilters.dateTo);
   const incomeByCurrency = summary?.income.by_currency ?? {};
   const incomeCurrency = summary?.income.currency || Object.keys(incomeByCurrency)[0] || "KZT";
   const incomeTotal = amountForCurrency(incomeByCurrency, summary?.income.total ?? "0", incomeCurrency);
@@ -790,16 +822,12 @@ function CashierInner() {
     ...(canTransactions ? [{ key: "transactions", label: "Транзакции" }] : []),
   ];
 
+  function patchFilters(patch: Partial<CashFilters>) {
+    setFiltersByTab((current) => ({ ...current, [filterTab]: { ...current[filterTab], ...patch } }));
+  }
+
   function resetFilters() {
-    setFilters({
-      dateFrom: "",
-      dateTo: "",
-      department: "all",
-      store: "all",
-      remainingMin: "",
-      remainingMax: "",
-      remainingCurrency: "all",
-    });
+    setFiltersByTab((current) => ({ ...current, [filterTab]: EMPTY_CASH_FILTERS }));
   }
 
   return (
@@ -811,13 +839,15 @@ function CashierInner() {
       <div className="flex flex-col gap-6">
         <Tabs tabs={tabs} active={tab} onChange={(key) => setTab(key as CashTab)} />
 
-        {/* У транзакций свой поиск — фильтры кассы к ним не применяются. */}
+        {/* У транзакций свой поиск — фильтры кассы к ним не применяются.
+            Панель правит фильтры только текущей вкладки. */}
         {tab !== "transactions" && (
           <CashFiltersPanel
             filters={filters}
             stores={stores ?? []}
             departments={departments ?? []}
-            onChange={(patch) => setFilters((current) => ({ ...current, ...patch }))}
+            showRemaining={filterTab === "overview"}
+            onChange={patchFilters}
             onReset={resetFilters}
           />
         )}

@@ -264,3 +264,49 @@ def test_report_includes_small_overdue_dashboard_aggregate(auth_client, boss):
     assert data["overdue_by_currency"] == {"KZT": "500.00"}
     assert data["overdue_currency"] == "KZT"
     assert data["overdue_clients"] == 1
+
+
+def test_clients_breakdown_groups_orders_with_details(auth_client, boss):
+    product = _product()
+    gani = _client(first_name="Гани", last_name="Таскен")
+    erzhan = _client(first_name="Ержан", last_name="Ко")
+    debt_order = _shipped_order(gani, product, qty=10, price="1000", intent="debt")
+    instant = _shipped_order(gani, product, qty=5, price="1000", intent="instant")
+    _shipped_order(erzhan, product, qty=2, price="500", intent="debt")
+
+    clients = auth_client(boss).get(URL).json()["clients"]
+
+    # Крупнейший по выручке — первым.
+    assert [c["name"] for c in clients] == ["Гани Таскен", "Ержан Ко"]
+    top = clients[0]
+    assert top["id"] == gani.id
+    assert top["orders"] == 2
+    assert top["bags"] == 15
+    assert top["revenue_by_currency"] == {"KZT": "15000.00"}
+    assert top["debt_amount_by_currency"] == {"KZT": "10000.00"}
+
+    by_id = {o["id"]: o for o in top["order_list"]}
+    assert set(by_id) == {debt_order.id, instant.id}
+    assert by_id[debt_order.id]["on_debt"] is True
+    assert by_id[debt_order.id]["bags"] == 10
+    assert by_id[debt_order.id]["total"] == "10000.00"
+    assert by_id[debt_order.id]["currency"] == "KZT"
+    assert by_id[instant.id]["on_debt"] is False
+
+
+def test_clients_breakdown_respects_period_and_currencies(auth_client, boss):
+    product = _product()
+    client = _client()
+    _shipped_order(client, product, qty=1, price="100",
+                   shipped_at=timezone.now() - timedelta(days=10))
+    usd = _shipped_order(client, product, qty=2, price="50")
+    usd.currency = "USD"
+    usd.save(update_fields=["currency"])
+
+    today = timezone.localdate().isoformat()
+    data = auth_client(boss).get(URL, {"from": today, "to": today}).json()
+
+    [row] = data["clients"]
+    # Валюты не складываются, старый заказ отрезан периодом.
+    assert row["revenue_by_currency"] == {"USD": "100.00"}
+    assert [o["id"] for o in row["order_list"]] == [usd.id]

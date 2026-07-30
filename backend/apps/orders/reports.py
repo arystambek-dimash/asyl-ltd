@@ -86,6 +86,72 @@ def _shipped_by_day(orders_qs, date_from, date_to):
     )
 
 
+def _clients_breakdown(orders_qs, date_from, date_to):
+    """Отгрузки периода по клиентам: итоги клиента и его заказы.
+
+    Правила те же, что и в остальном отчёте: только shipped, день — выезд
+    машины, валюты не складываются. Один запрос: строки по (клиент, заказ).
+    """
+    line = F("quantity") * Coalesce(
+        F("unit_price"), Value(_ZERO), output_field=_MONEY)
+    qs = (OrderItem.objects
+          .filter(order__in=orders_qs.filter(status="shipped"))
+          .annotate(day=TruncDate(Coalesce("order__shipment__shipped_at",
+                                           "order__created_at"))))
+    qs = _day_bounds(qs, date_from, date_to)
+    per_order = qs.values(
+        "order_id", "day", "order__currency", "order__settlement_intent",
+        "order__client_id", "order__client__first_name",
+        "order__client__last_name",
+    ).annotate(
+        total=Coalesce(Sum(line, output_field=_MONEY), _ZERO,
+                       output_field=_MONEY),
+        bags=Coalesce(Sum("quantity"), 0),
+    )
+
+    clients: dict = {}
+    for row in per_order:
+        currency = row["order__currency"] or DEFAULT_CURRENCY
+        name = (f'{row["order__client__first_name"]} '
+                f'{row["order__client__last_name"]}').strip()
+        entry = clients.setdefault(row["order__client_id"], {
+            "id": row["order__client_id"], "name": name,
+            "orders": 0, "bags": 0,
+            "revenue_by_currency": defaultdict(lambda: _ZERO),
+            "debt_amount_by_currency": defaultdict(lambda: _ZERO),
+            "order_list": [],
+        })
+        on_debt = row["order__settlement_intent"] == "debt"
+        entry["orders"] += 1
+        entry["bags"] += row["bags"]
+        entry["revenue_by_currency"][currency] += row["total"]
+        if on_debt:
+            entry["debt_amount_by_currency"][currency] += row["total"]
+        entry["order_list"].append({
+            "id": row["order_id"],
+            "date": row["day"].isoformat(),
+            "bags": row["bags"],
+            "total": _d(row["total"]),
+            "currency": currency,
+            "on_debt": on_debt,
+        })
+
+    def revenue_key(entry):
+        # Только порядок строк: номиналы валют сравниваются как числа, в
+        # арифметике отчёта они по-прежнему не смешиваются.
+        return max(entry["revenue_by_currency"].values(), default=_ZERO)
+
+    result = sorted(clients.values(), key=revenue_key, reverse=True)
+    for entry in result:
+        entry["order_list"].sort(key=lambda o: (o["date"], o["id"]),
+                                 reverse=True)
+        entry["revenue_by_currency"] = as_money_strings(
+            entry["revenue_by_currency"])
+        entry["debt_amount_by_currency"] = as_money_strings(
+            entry["debt_amount_by_currency"])
+    return result
+
+
 def _debt_now(orders_qs):
     """Снапшот дебиторки на сейчас — по правилам orders/debt.py.
 
@@ -255,5 +321,6 @@ def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
                 {c: s["debt_amount"] for c, s in by_currency.items()}),
         },
         "debt_now": _debt_now(orders_qs),
+        "clients": _clients_breakdown(orders_qs, date_from, date_to),
         "days": day_list,
     }

@@ -37,7 +37,6 @@ import { Modal } from "@/components/ui/modal";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
 import {
   ArrowLeft,
-  Banknote,
   Building2,
   Archive,
   CalendarDays,
@@ -52,7 +51,6 @@ import {
   Store as StoreIcon,
   Truck,
   UserRound,
-  WalletCards,
 } from "lucide-react";
 import type { Client, EventLogPage, Order, Store } from "@/lib/types";
 
@@ -254,48 +252,39 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
 
       <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="flex min-w-0 flex-col gap-4">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <Card className="flex min-h-24 items-center gap-3 p-4">
-              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[var(--success)]/10 text-[var(--success)]">
-                <Banknote />
-              </span>
-              <div className="min-w-0">
-                <div className="text-xs text-[var(--muted-foreground)]">Сумма заказа</div>
-                <div className="mt-1 truncate font-semibold tabular-nums">
-                  {formatMoney(order.total_amount)} {moneySymbol}
-                </div>
+          {/* Одна денежная полоса вместо трёх карточек: сумма → оплачено → долг
+              читаются как одно уравнение, страница не дробится на боксы. */}
+          <Card className="flex flex-wrap items-center gap-x-10 gap-y-3 p-4">
+            <div className="min-w-0">
+              <div className="text-xs text-[var(--muted-foreground)]">Сумма заказа</div>
+              <div className="mt-1 truncate text-lg font-semibold leading-none tabular-nums">
+                {formatMoney(order.total_amount)} {moneySymbol}
               </div>
-            </Card>
-            <Card className="flex min-h-24 items-center gap-3 p-4">
-              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[var(--destructive)]/10 text-[var(--destructive)]">
-                <WalletCards />
-              </span>
-              <div className="min-w-0">
-                <div className="text-xs text-[var(--muted-foreground)]">Долг клиента</div>
-                <div className="mt-1 truncate font-semibold tabular-nums text-[var(--destructive)]">
-                  {formatMoney(String(Math.max(0, remaining)))} {moneySymbol}
-                </div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-xs text-[var(--muted-foreground)]">Оплачено</div>
+              <div className="mt-1 truncate text-lg font-semibold leading-none tabular-nums text-[var(--success)]">
+                {formatMoney(order.paid_total)} {moneySymbol}
               </div>
-            </Card>
-            <Card className="flex min-h-24 items-center gap-3 p-4">
-              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[var(--ring)]/10 text-[var(--ring)]">
-                <CreditCard />
-              </span>
-              <div className="min-w-0">
-                <div className="text-xs text-[var(--muted-foreground)]">Оплачено</div>
-                <div className="mt-1 truncate font-semibold tabular-nums">
-                  {formatMoney(order.paid_total)} {moneySymbol}
-                </div>
-                {/* Разбивка по способам живёт в блоке «Оплата» ниже: здесь
-                    плитка узкая и обрезала бы суммы по multiple. */}
+              {/* Разбивка по способам живёт в блоке «Оплата» ниже. */}
+            </div>
+            <div className="min-w-0">
+              <div className="text-xs text-[var(--muted-foreground)]">Долг клиента</div>
+              <div
+                className={cn(
+                  "mt-1 truncate text-lg font-semibold leading-none tabular-nums",
+                  remaining > 0 ? "text-[var(--destructive)]" : "text-[var(--muted-foreground)]",
+                )}
+              >
+                {formatMoney(String(Math.max(0, remaining)))} {moneySymbol}
               </div>
-            </Card>
-          </div>
+            </div>
+          </Card>
 
           <Card>
             <CardHeader className="flex-row items-center justify-between p-4 pb-2">
               <CardTitle className="flex items-center gap-2">
-                <Package className="size-4 text-[var(--muted-foreground)]" /> Состав заказа
+                <Package className="size-4 text-[var(--muted-foreground)]" /> Состав и доставка
               </CardTitle>
               <Badge tone="primary">
                 {order.items.length} {order.items.length === 1 ? "позиция" : "поз."}
@@ -344,52 +333,46 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                   })}
                 </TBody>
               </Table>
-            </CardContent>
-          </Card>
 
-          <Card>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="flex items-center gap-2">
-                <Truck className="size-4 text-[var(--muted-foreground)]" /> Доставка
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="grid grid-cols-2 gap-4 p-4 pt-2 text-sm md:grid-cols-4">
-              <div>
-                <div className="text-xs text-[var(--muted-foreground)]">Дата прибытия</div>
-                <div className="mt-1 flex items-center gap-1.5 font-medium">
-                  <CalendarDays className="size-3.5" />{" "}
-                  {order.arrival_date ? formatIsoDate(order.arrival_date) : "Не указана"}
+              {/* Доставка — компактный футер состава, а не отдельный бокс. */}
+              <div className="mt-3 grid grid-cols-2 gap-4 border-t pt-3 text-sm md:grid-cols-4">
+                <div>
+                  <div className="text-xs text-[var(--muted-foreground)]">Дата прибытия</div>
+                  <div className="mt-1 flex items-center gap-1.5 font-medium">
+                    <CalendarDays className="size-3.5" />{" "}
+                    {order.arrival_date ? formatIsoDate(order.arrival_date) : "Не указана"}
+                  </div>
                 </div>
+                <div>
+                  <div className="text-xs text-[var(--muted-foreground)]">Способ</div>
+                  <div className="mt-1 flex items-center gap-1.5 font-medium">
+                    <Truck className="size-3.5" />{" "}
+                    {order.transport_type === "train" ? "Вагон" : order.truck_number || "Машина"}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-[var(--muted-foreground)]">Отдел</div>
+                  <div className="mt-1 flex items-center gap-1.5 font-medium">
+                    <Building2 className="size-3.5" /> {order.department_name ?? order.department}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-[var(--muted-foreground)]">Склад</div>
+                  <div className="mt-1 flex items-center gap-1.5 font-medium">
+                    <StoreIcon className="size-3.5" />{" "}
+                    {store?.name || (order.store ? `Склад #${order.store}` : "Основной")}
+                  </div>
+                </div>
+                {hasShipment && (
+                  <div className="col-span-2 border-t pt-3 md:col-span-4">
+                    <span className="text-[var(--muted-foreground)]">Вес машины: </span>
+                    <b>{formatMoney(order.weigh_in_kg!)} кг</b>
+                    <span className="mx-2 text-[var(--border)]">·</span>
+                    <span className="text-[var(--muted-foreground)]">Вес груза: </span>
+                    <b>{formatMoney(String(Number(order.bag_estimate_kg ?? itemsWeight)))} кг</b>
+                  </div>
+                )}
               </div>
-              <div>
-                <div className="text-xs text-[var(--muted-foreground)]">Способ</div>
-                <div className="mt-1 flex items-center gap-1.5 font-medium">
-                  <Truck className="size-3.5" />{" "}
-                  {order.transport_type === "train" ? "Вагон" : order.truck_number || "Машина"}
-                </div>
-              </div>
-              <div>
-                <div className="text-xs text-[var(--muted-foreground)]">Отдел</div>
-                <div className="mt-1 flex items-center gap-1.5 font-medium">
-                  <Building2 className="size-3.5" /> {order.department_name ?? order.department}
-                </div>
-              </div>
-              <div>
-                <div className="text-xs text-[var(--muted-foreground)]">Склад</div>
-                <div className="mt-1 flex items-center gap-1.5 font-medium">
-                  <StoreIcon className="size-3.5" />{" "}
-                  {store?.name || (order.store ? `Склад #${order.store}` : "Основной")}
-                </div>
-              </div>
-              {hasShipment && (
-                <div className="col-span-2 border-t pt-3 md:col-span-4">
-                  <span className="text-[var(--muted-foreground)]">Вес машины: </span>
-                  <b>{formatMoney(order.weigh_in_kg!)} кг</b>
-                  <span className="mx-2 text-[var(--border)]">·</span>
-                  <span className="text-[var(--muted-foreground)]">Вес груза: </span>
-                  <b>{formatMoney(String(Number(order.bag_estimate_kg ?? itemsWeight)))} кг</b>
-                </div>
-              )}
             </CardContent>
           </Card>
 

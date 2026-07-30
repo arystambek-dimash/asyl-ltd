@@ -78,6 +78,25 @@ export interface ReportDay {
   received_by_currency: Record<string, string>;
 }
 
+export interface ReportClientOrder {
+  id: number;
+  date: string;
+  bags: number;
+  total: string;
+  currency: string;
+  on_debt: boolean;
+}
+
+export interface ReportClientRow {
+  id: number;
+  name: string;
+  orders: number;
+  bags: number;
+  revenue_by_currency: Record<string, string>;
+  debt_amount_by_currency: Record<string, string>;
+  order_list: ReportClientOrder[];
+}
+
 /** Canonical accounting response from GET /reports/summary/. */
 export interface ReportSummary {
   from: string | null;
@@ -110,6 +129,8 @@ export interface ReportSummary {
     overdue_currency: string;
     overdue_clients: number;
   };
+  /** Может отсутствовать в ответе старого бэкенда во время раскатки. */
+  clients?: ReportClientRow[];
   days: ReportDay[];
 }
 
