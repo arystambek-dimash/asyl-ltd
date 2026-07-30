@@ -54,7 +54,7 @@ function FormItem({ className, ...props }: React.ComponentProps<"div">) {
   const id = React.useId();
   return (
     <FormItemContext.Provider value={{ id }}>
-      <div className={cn("grid gap-1.5", className)} {...props} />
+      <div className={cn("grid gap-2", className)} {...props} />
     </FormItemContext.Provider>
   );
 }
@@ -63,7 +63,7 @@ function FormLabel({ className, ...props }: React.ComponentProps<typeof LabelPri
   const { error, formItemId } = useFormField();
   return (
     <LabelPrimitive.Root
-      className={cn("text-[12px] font-semibold leading-none", error && "text-[var(--destructive)]", className)}
+      className={cn("text-sm font-medium leading-none", error && "text-[var(--destructive)]", className)}
       htmlFor={formItemId}
       {...props}
     />
@@ -82,7 +82,7 @@ function FormMessage({ className, ...props }: React.ComponentProps<"p">) {
   const body = error ? String(error?.message ?? "") : props.children;
   if (!body) return null;
   return (
-    <p id={formMessageId} className={cn("text-[12px] font-medium text-[var(--destructive)]", className)} {...props}>
+    <p id={formMessageId} className={cn("text-sm text-[var(--destructive)]", className)} {...props}>
       {body}
     </p>
   );

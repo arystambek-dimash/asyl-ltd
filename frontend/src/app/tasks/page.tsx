@@ -5,7 +5,6 @@ import { AppShell } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
 import { Modal } from "@/components/ui/modal";
 import { Badge } from "@/components/ui/badge";
 import { DataGate } from "@/components/ui/data-state";
@@ -30,9 +29,7 @@ const FILTERS: { key: Filter; label: string }[] = [
 
 function AttachmentChip({ kind, url, name }: { kind: string; url: string | null; name: string }) {
   if (kind === "voice") {
-    return (
-      <audio src={url ?? undefined} controls aria-label={name || "Голосовое сообщение"} className="h-8 max-w-[220px]" />
-    );
+    return <audio src={url ?? undefined} controls className="h-8 max-w-[220px]" />;
   }
   if (kind === "photo" && url) {
     return (
@@ -51,7 +48,7 @@ function AttachmentChip({ kind, url, name }: { kind: string; url: string | null;
       href={url ?? "#"}
       target="_blank"
       rel="noreferrer"
-      className="flex max-w-full items-center gap-1.5 break-all rounded-lg border px-2 py-1 text-xs hover:bg-[var(--muted)]"
+      className="flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs hover:bg-[var(--muted)]"
     >
       <Paperclip className="size-3.5" /> {name || "файл"}
     </a>
@@ -91,21 +88,11 @@ function TaskCard({
   const rest = task.attachments.filter((a) => a.kind !== "photo");
 
   return (
-    <div
-      className={cn(
-        "rounded-[20px] border border-[var(--border)] bg-[var(--card)] p-4 shadow-card transition-[border-color,box-shadow,opacity] hover:border-[var(--ring)]/25 sm:p-5",
-        done && "opacity-70",
-      )}
-    >
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-3">
+    <div className={cn("rounded-xl border bg-[var(--card)] p-4 shadow-sm transition", done && "opacity-70")}>
+      <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={cn(
-                "min-w-0 break-words font-semibold",
-                done && "line-through decoration-[var(--muted-foreground)]",
-              )}
-            >
+            <span className={cn("font-semibold", done && "line-through decoration-[var(--muted-foreground)]")}>
               {task.title}
             </span>
             <Badge tone={done ? "success" : "warning"} dot>
@@ -118,7 +105,7 @@ function TaskCard({
             )}
           </div>
           {task.body && (
-            <p className="mt-1.5 whitespace-pre-wrap break-words text-sm text-[var(--muted-foreground)]">{task.body}</p>
+            <p className="mt-1.5 whitespace-pre-wrap text-sm text-[var(--muted-foreground)]">{task.body}</p>
           )}
 
           {(photos.length > 0 || rest.length > 0) && (
@@ -145,22 +132,12 @@ function TaskCard({
               </span>
             )}
           </div>
-          {error && (
-            <p role="alert" className="mt-2 text-xs text-[var(--destructive)]">
-              {error}
-            </p>
-          )}
+          {error && <p className="mt-2 text-xs text-[var(--destructive)]">{error}</p>}
         </div>
 
-        <div className="flex w-full shrink-0 items-center gap-1.5 sm:w-auto">
+        <div className="flex shrink-0 items-center gap-1.5">
           {task.can_complete && (
-            <Button
-              className="flex-1 sm:flex-none"
-              size="sm"
-              variant={done ? "ghost" : "default"}
-              disabled={busy}
-              onClick={() => void toggle()}
-            >
+            <Button size="sm" variant={done ? "ghost" : "default"} disabled={busy} onClick={() => void toggle()}>
               {done ? (
                 <>
                   <RotateCcw className="size-4" /> Вернуть
@@ -320,19 +297,14 @@ export default function TasksPage() {
         ) : undefined
       }
     >
-      <div
-        className="mb-4 flex w-full rounded-xl border border-[var(--border)] bg-[var(--muted)]/70 p-1 sm:inline-flex sm:w-auto"
-        role="group"
-        aria-label="Фильтр задач"
-      >
+      <div className="mb-4 flex w-full rounded-xl border bg-[var(--muted)] p-1 sm:w-auto sm:inline-flex">
         {FILTERS.map((item) => (
           <button
             key={item.key}
             type="button"
             onClick={() => setFilter(item.key)}
-            aria-pressed={filter === item.key}
             className={cn(
-              "min-h-10 flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-[background-color,color,box-shadow] sm:flex-none sm:px-4",
+              "flex-1 rounded-lg px-4 py-2 text-sm font-semibold transition sm:flex-none",
               filter === item.key
                 ? "bg-[var(--card)] shadow-sm"
                 : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
@@ -346,7 +318,7 @@ export default function TasksPage() {
       {!data ? (
         <DataGate loading={loading} error={error} onRetry={reload} />
       ) : counts.total === 0 ? (
-        <div className="flex min-h-56 flex-col items-center justify-center rounded-[20px] border border-dashed border-[var(--border)] bg-[var(--card)]/60 px-5 text-center text-[var(--muted-foreground)]">
+        <div className="flex min-h-56 flex-col items-center justify-center rounded-xl border border-dashed text-center text-[var(--muted-foreground)]">
           <CheckCircle2 className="mb-2 size-8 opacity-40" />
           <p className="font-semibold">{filter === "done" ? "Выполненных задач нет" : "Задач нет"}</p>
           {canCreate && filter !== "done" && <p className="mt-1 text-sm">Нажмите «Поставить задачу».</p>}
@@ -414,13 +386,18 @@ export default function TasksPage() {
               value={body}
               onChange={(e) => setBody(e.target.value)}
               placeholder="Необязательно"
-              className="min-h-24 w-full resize-y rounded-xl border border-[var(--input)] bg-[var(--card)] px-3.5 py-3 text-sm shadow-[0_2px_8px_-7px_rgba(23,32,27,.5)] outline-none transition-[border-color,box-shadow,background-color] placeholder:text-[var(--muted-foreground)]/65 focus-visible:border-[var(--ring)] focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/14 disabled:cursor-not-allowed disabled:bg-[var(--muted)] disabled:opacity-70"
+              className="min-h-20 w-full resize-y rounded-xl border bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15"
             />
           </div>
 
           <div className="grid gap-1.5">
             <Label htmlFor="task-assignee">Исполнитель</Label>
-            <Select id="task-assignee" value={assignee} onChange={(e) => setAssignee(e.target.value)}>
+            <select
+              id="task-assignee"
+              value={assignee}
+              onChange={(e) => setAssignee(e.target.value)}
+              className="h-10 w-full rounded-xl border bg-[var(--background)] px-3 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15"
+            >
               <option value="">Выберите сотрудника</option>
               {(assignees ?? []).map((person) => (
                 <option key={person.id} value={person.id}>
@@ -428,7 +405,7 @@ export default function TasksPage() {
                   {person.position ? ` · ${person.position}` : ""}
                 </option>
               ))}
-            </Select>
+            </select>
           </div>
 
           {/* Срок, голос и фото нужны не каждой задаче: в свёрнутом виде форма
@@ -463,19 +440,15 @@ export default function TasksPage() {
                     type="file"
                     accept="image/*"
                     multiple
-                    aria-describedby="task-photos-hint"
                     onChange={(e) => setPhotos(Array.from(e.target.files ?? []))}
-                    className="w-full min-w-0 cursor-pointer rounded-xl border border-dashed border-[var(--input)] bg-[var(--card)] px-2 py-2 text-sm text-[var(--muted-foreground)] outline-none transition-[border-color,box-shadow] file:mr-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-[var(--muted)] file:px-3 file:py-2 file:text-sm file:font-semibold file:text-[var(--foreground)] hover:border-[var(--ring)]/40 focus-visible:border-[var(--ring)] focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/14"
+                    className="text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--card)] file:px-3 file:py-1.5 file:text-sm file:font-medium"
                   />
-                  <p id="task-photos-hint" className="text-xs text-[var(--muted-foreground)]">
-                    Можно выбрать несколько фотографий.
-                  </p>
                   {photos.length > 0 && (
                     <div className="flex flex-wrap gap-1.5">
                       {photos.map((file) => (
                         <span
                           key={file.name}
-                          className="flex max-w-full items-center gap-1 break-all rounded-lg bg-[var(--card)] px-2 py-1 text-xs"
+                          className="flex items-center gap-1 rounded-lg bg-[var(--card)] px-2 py-1 text-xs"
                         >
                           <ImageIcon className="size-3.5" /> {file.name}
                         </span>
@@ -495,10 +468,7 @@ export default function TasksPage() {
           )}
 
           {formError && (
-            <p
-              role="alert"
-              className="rounded-xl border border-[var(--destructive)]/30 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]"
-            >
+            <p className="rounded-xl border border-[var(--destructive)]/30 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
               {formError}
             </p>
           )}

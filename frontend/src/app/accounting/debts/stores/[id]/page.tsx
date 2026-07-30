@@ -4,7 +4,7 @@ import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/ui/stat-card";
@@ -81,8 +81,10 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
       title={`Долг · ${store.name}`}
       section="Касса"
       actions={
-        <Link href="/accounting" className={buttonVariants({ size: "sm", variant: "outline" })}>
-          <ArrowLeft className="size-4" /> К долгам
+        <Link href="/accounting">
+          <Button size="sm" variant="outline">
+            <ArrowLeft className="size-4" /> К долгам
+          </Button>
         </Link>
       }
     >
@@ -146,24 +148,24 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                   <span className="text-sm tabular-nums text-[var(--muted-foreground)]">{o.truck_number || ""}</span>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-3">
-                  <dl className="grid grid-cols-1 gap-2 text-sm min-[420px]:grid-cols-3">
-                    <div className="rounded-xl bg-[var(--muted)]/55 p-3 min-[420px]:bg-transparent min-[420px]:p-0">
-                      <dt className="text-[var(--muted-foreground)]">Сумма</dt>
-                      <dd className="mt-1 tabular-nums font-medium">{formatCurrency(o.total_amount, o.currency)}</dd>
+                  <div className="grid grid-cols-3 gap-2 text-sm">
+                    <div>
+                      <span className="text-[var(--muted-foreground)]">Сумма</span>
+                      <div className="tabular-nums font-medium">{formatCurrency(o.total_amount, o.currency)}</div>
                     </div>
-                    <div className="rounded-xl bg-[var(--soft-green)] p-3 min-[420px]:bg-transparent min-[420px]:p-0">
-                      <dt className="text-[var(--muted-foreground)]">Оплачено</dt>
-                      <dd className="mt-1 tabular-nums text-[var(--success)]">
+                    <div>
+                      <span className="text-[var(--muted-foreground)]">Оплачено</span>
+                      <div className="tabular-nums text-[var(--success)]">
                         {formatCurrency(o.paid_total, o.currency)}
-                      </dd>
+                      </div>
                     </div>
-                    <div className="rounded-xl bg-[var(--soft-red)] p-3 min-[420px]:bg-transparent min-[420px]:p-0">
-                      <dt className="text-[var(--muted-foreground)]">Остаток</dt>
-                      <dd className="mt-1 tabular-nums font-medium text-[var(--destructive)]">
+                    <div>
+                      <span className="text-[var(--muted-foreground)]">Остаток</span>
+                      <div className="tabular-nums font-medium text-[var(--destructive)]">
                         {formatCurrency(String(remaining), o.currency)}
-                      </dd>
+                      </div>
                     </div>
-                  </dl>
+                  </div>
                   {(o.pending_payments?.length ?? 0) > 0 && (
                     <div className="flex items-center justify-between rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2 text-xs">
                       <span className="text-[var(--warning)]">На подтверждении (бухгалтер → касса)</span>
@@ -176,22 +178,16 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                     </div>
                   )}
                   {isAccountant && remaining > 0 && (
-                    <div className="flex flex-col gap-2 border-t pt-3 min-[420px]:flex-row min-[420px]:items-end">
-                      <label className="flex min-w-0 flex-1 flex-col gap-1.5">
-                        <span className="text-xs font-medium text-[var(--muted-foreground)]">Сумма оплаты</span>
-                        <Input
-                          type="number"
-                          inputMode="decimal"
-                          min="0"
-                          placeholder="Введите сумму"
-                          disabled={blocked}
-                          value={amounts[o.id] ?? ""}
-                          onChange={(e) => setAmounts((a) => ({ ...a, [o.id]: e.target.value }))}
-                        />
-                      </label>
+                    <div className="flex gap-2 border-t pt-3">
+                      <Input
+                        type="number"
+                        placeholder="Сумма"
+                        disabled={blocked}
+                        value={amounts[o.id] ?? ""}
+                        onChange={(e) => setAmounts((a) => ({ ...a, [o.id]: e.target.value }))}
+                      />
                       <Button
                         size="sm"
-                        className="min-h-11 w-full min-[420px]:w-auto"
                         disabled={blocked || busyId === o.id || !amounts[o.id]}
                         onClick={() => pay(o.id)}
                       >

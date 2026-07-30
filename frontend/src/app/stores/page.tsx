@@ -161,7 +161,7 @@ function StoreForm({
         </div>
       </div>
 
-      <div className="border-t border-[var(--border)] pt-4">
+      <div className="border-t pt-4">
         <div className="mb-3 text-[12px] font-medium text-[var(--muted-foreground)]">Расписание оплат</div>
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
@@ -202,10 +202,10 @@ function StoreForm({
                     onClick={() => toggleWeekday(w.v)}
                     aria-pressed={days.includes(w.v)}
                     className={cn(
-                      "min-h-11 rounded-xl border px-3 py-2 text-sm font-medium transition-colors",
+                      "rounded-md border px-3 py-1.5 text-sm transition-colors",
                       days.includes(w.v)
                         ? "border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)]"
-                        : "border-[var(--border)] hover:bg-[var(--muted)]",
+                        : "hover:bg-[var(--muted)]",
                     )}
                   >
                     {w.label}
@@ -228,7 +228,7 @@ function StoreForm({
         </p>
       )}
 
-      <div className="flex flex-col-reverse gap-2 border-t border-[var(--border)] pt-5 sm:flex-row sm:justify-end">
+      <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-end">
         <Button type="button" variant="outline" className="w-full sm:w-auto sm:min-w-28" onClick={onCancel}>
           Отмена
         </Button>
@@ -303,155 +303,73 @@ function StoresPageInner() {
 
       <Card>
         <CardContent className="pt-6">
-          <div className="space-y-3 md:hidden">
-            {list.map((storeItem) => (
-              <article
-                key={storeItem.id}
-                className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 shadow-card"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h3 className="truncate font-semibold">{storeItem.name}</h3>
-                    <p className="mt-1 truncate text-sm text-[var(--muted-foreground)]">
-                      {clientName(storeItem.client)}
-                    </p>
-                  </div>
-                  {(canEdit || canDelete) && (
-                    <div className="flex shrink-0 items-center gap-1">
+          <Table>
+            <THead>
+              <TR>
+                <TH>Магазин</TH>
+                <TH>Клиент</TH>
+                <TH>Расписание</TH>
+                <TH></TH>
+              </TR>
+            </THead>
+            <TBody>
+              {list.map((s) => (
+                <TR key={s.id}>
+                  <TD className="font-medium">
+                    {s.name}
+                    {s.phone && <span className="block text-xs text-[var(--muted-foreground)]">{s.phone}</span>}
+                  </TD>
+                  <TD>{clientName(s.client)}</TD>
+                  <TD>
+                    <div className="flex items-center gap-2">
+                      <Badge tone={s.payment_schedule_type === "none" ? "muted" : "primary"}>
+                        {SCHEDULE_LABELS[s.payment_schedule_type]}
+                      </Badge>
+                      <span className="text-xs text-[var(--muted-foreground)]">{describeSchedule(s)}</span>
+                    </div>
+                  </TD>
+                  <TD>
+                    <div className="flex items-center justify-end gap-1">
                       {canEdit && (
                         <Button
-                          size="icon"
+                          size="sm"
                           variant="ghost"
-                          aria-label={`Изменить магазин ${storeItem.name}`}
                           onClick={() => {
-                            setEditing(storeItem);
+                            setEditing(s);
                             setOpen(true);
                           }}
+                          title="Изменить"
                         >
                           <Pencil className="size-4" />
                         </Button>
                       )}
                       {canDelete && (
                         <Button
-                          size="icon"
+                          size="sm"
                           variant="ghost"
                           className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                          aria-label={`Удалить магазин ${storeItem.name}`}
                           onClick={() => {
                             setDelError("");
-                            setDelItem(storeItem);
+                            setDelItem(s);
                           }}
+                          title="Удалить"
                         >
                           <Trash2 className="size-4" />
                         </Button>
                       )}
                     </div>
-                  )}
-                </div>
-                <div className="mt-4 rounded-xl bg-[var(--muted)]/55 p-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge tone={storeItem.payment_schedule_type === "none" ? "muted" : "primary"}>
-                      {SCHEDULE_LABELS[storeItem.payment_schedule_type]}
-                    </Badge>
-                    <span className="text-xs text-[var(--muted-foreground)]">{describeSchedule(storeItem)}</span>
-                  </div>
-                </div>
-                {(storeItem.address || storeItem.phone) && (
-                  <dl className="mt-3 grid gap-2 text-sm">
-                    {storeItem.address && (
-                      <div className="flex justify-between gap-4">
-                        <dt className="text-[var(--muted-foreground)]">Адрес</dt>
-                        <dd className="text-right">{storeItem.address}</dd>
-                      </div>
-                    )}
-                    {storeItem.phone && (
-                      <div className="flex justify-between gap-4">
-                        <dt className="text-[var(--muted-foreground)]">Телефон</dt>
-                        <dd className="tabular-nums">{storeItem.phone}</dd>
-                      </div>
-                    )}
-                  </dl>
-                )}
-              </article>
-            ))}
-            {list.length === 0 && (
-              <div className="rounded-2xl border border-dashed border-[var(--border)] px-4 py-10 text-center text-sm text-[var(--muted-foreground)]">
-                Магазинов пока нет.
-              </div>
-            )}
-          </div>
-
-          <div className="hidden md:block">
-            <Table>
-              <THead>
-                <TR>
-                  <TH>Магазин</TH>
-                  <TH>Клиент</TH>
-                  <TH>Расписание</TH>
-                  <TH></TH>
+                  </TD>
                 </TR>
-              </THead>
-              <TBody>
-                {list.map((s) => (
-                  <TR key={s.id}>
-                    <TD className="font-medium">
-                      {s.name}
-                      {s.phone && <span className="block text-xs text-[var(--muted-foreground)]">{s.phone}</span>}
-                    </TD>
-                    <TD>{clientName(s.client)}</TD>
-                    <TD>
-                      <div className="flex items-center gap-2">
-                        <Badge tone={s.payment_schedule_type === "none" ? "muted" : "primary"}>
-                          {SCHEDULE_LABELS[s.payment_schedule_type]}
-                        </Badge>
-                        <span className="text-xs text-[var(--muted-foreground)]">{describeSchedule(s)}</span>
-                      </div>
-                    </TD>
-                    <TD>
-                      <div className="flex items-center justify-end gap-1">
-                        {canEdit && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => {
-                              setEditing(s);
-                              setOpen(true);
-                            }}
-                            aria-label={`Изменить магазин ${s.name}`}
-                            title="Изменить"
-                          >
-                            <Pencil className="size-4" />
-                          </Button>
-                        )}
-                        {canDelete && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                            onClick={() => {
-                              setDelError("");
-                              setDelItem(s);
-                            }}
-                            aria-label={`Удалить магазин ${s.name}`}
-                            title="Удалить"
-                          >
-                            <Trash2 className="size-4" />
-                          </Button>
-                        )}
-                      </div>
-                    </TD>
-                  </TR>
-                ))}
-                {list.length === 0 && (
-                  <TR>
-                    <TD colSpan={4} className="py-4 text-center text-[var(--muted-foreground)]">
-                      Магазинов пока нет.
-                    </TD>
-                  </TR>
-                )}
-              </TBody>
-            </Table>
-          </div>
+              ))}
+              {list.length === 0 && (
+                <TR>
+                  <TD colSpan={4} className="py-4 text-center text-[var(--muted-foreground)]">
+                    Магазинов пока нет.
+                  </TD>
+                </TR>
+              )}
+            </TBody>
+          </Table>
         </CardContent>
       </Card>
 

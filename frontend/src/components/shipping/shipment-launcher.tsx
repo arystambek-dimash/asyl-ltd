@@ -1,17 +1,8 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
-import {
-  Camera,
-  Check,
-  ChevronDown,
-  ClipboardList,
-  LoaderCircle,
-  LockKeyhole,
-  Play,
-  Radio,
-  ShieldCheck,
-} from "lucide-react";
+import { Camera, Check, ChevronDown, ClipboardList, LoaderCircle, Play, Radio, LockKeyhole } from "lucide-react";
 import type { CameraFeed } from "@/components/camera-wall";
 import { apiError } from "@/lib/api";
 import { orderedBagCount } from "@/lib/orders";
@@ -39,28 +30,26 @@ function SelectCard({
 }) {
   const Icon = kind === "camera" ? Camera : ClipboardList;
   return (
-    <label className="group relative flex min-h-[104px] w-full cursor-pointer items-center gap-3 rounded-[18px] border bg-[var(--card)] px-4 py-4 shadow-card transition-colors hover:border-[var(--soft-blue-border)] hover:bg-[var(--soft-blue)]/35 focus-within:border-[var(--ring)] focus-within:ring-4 focus-within:ring-[color-mix(in_srgb,var(--ring)_16%,transparent)]">
-      <span className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-[var(--soft-blue-border)] bg-[var(--soft-blue)] text-[var(--soft-blue-foreground)]">
+    <label className="group relative flex min-h-[86px] w-full cursor-pointer items-center gap-3 rounded-[20px] border border-[#dfe7f4] bg-white/95 px-4 py-3 shadow-[0_14px_42px_rgba(41,72,126,0.10)] backdrop-blur-xl transition hover:-translate-y-0.5 hover:border-[#bfd0ee] hover:shadow-[0_18px_48px_rgba(41,72,126,0.14)] focus-within:ring-4 focus-within:ring-blue-500/10 lg:max-w-[338px]">
+      <span className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-[#f3f7ff] text-[#3f69dd] transition group-hover:bg-[#eaf1ff]">
         <Icon className="size-5" strokeWidth={1.9} />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-[11px] font-bold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
-          {label}
-        </span>
+        <span className="block text-[12px] font-medium text-slate-400">{label}</span>
         <span
           className={cn(
-            "mt-1.5 block truncate text-[15px] font-semibold",
-            value ? "text-[var(--foreground)]" : "font-medium text-[var(--muted-foreground)]",
+            "mt-1 block truncate text-[15px] font-semibold",
+            value ? "text-slate-800" : "font-medium text-slate-400",
           )}
         >
           {displayValue || placeholder}
         </span>
       </span>
-      <ChevronDown className="size-4 shrink-0 text-[var(--muted-foreground)]" />
+      <ChevronDown className="size-4 shrink-0 text-slate-500" />
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="absolute inset-0 min-h-11 cursor-pointer opacity-0"
+        className="absolute inset-0 cursor-pointer opacity-0"
         aria-label={label}
       >
         <option value="">{placeholder}</option>
@@ -72,21 +61,19 @@ function SelectCard({
 
 function AssignedCameraCard({ camera, available }: { camera: PlayableCamera | null; available: boolean }) {
   return (
-    <div className="flex min-h-[104px] w-full items-center gap-3 rounded-[18px] border border-[var(--soft-blue-border)] bg-[var(--soft-blue)] px-4 py-4">
-      <span className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-[var(--soft-blue-border)] bg-[var(--card)] text-[var(--soft-blue-foreground)]">
+    <div className="flex min-h-[86px] w-full items-center gap-3 rounded-[20px] border border-blue-200 bg-white/95 px-4 py-3 shadow-[0_14px_42px_rgba(41,72,126,0.10)] backdrop-blur-xl lg:max-w-[338px]">
+      <span className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
         <Camera className="size-5" strokeWidth={1.9} />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+        <span className="flex items-center gap-1.5 text-[12px] font-medium text-slate-400">
           Камера моноблока <LockKeyhole className="size-3" />
         </span>
-        <span className="mt-1.5 block truncate text-[15px] font-semibold text-[var(--foreground)]">
+        <span className="mt-1 block truncate text-[15px] font-semibold text-slate-800">
           {camera?.zone ?? "Камера не зарегистрирована"}
         </span>
       </span>
-      <span
-        className={cn("size-2.5 shrink-0 rounded-full", available ? "bg-[var(--success)]" : "bg-[var(--warning)]")}
-      />
+      <span className={cn("size-2.5 shrink-0 rounded-full", available ? "bg-emerald-500" : "bg-amber-400")} />
     </div>
   );
 }
@@ -156,71 +143,45 @@ export function ShipmentLauncher({
   }
 
   return (
-    <section className={cn("overflow-hidden rounded-[22px] border bg-[var(--card)] shadow-card", className)}>
-      <div className="flex flex-col gap-4 border-b px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-        <div className="flex items-start gap-3">
-          <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-[var(--foreground)] text-[var(--background)]">
-            <Play className="size-5" />
-          </span>
-          <div>
-            <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
-              Пульт погрузочного поста
-            </div>
-            <h2 className="mt-1 text-xl font-bold tracking-tight text-[var(--foreground)]">Запустить отгрузку</h2>
-            <p className="mt-1 max-w-2xl text-sm text-[var(--muted-foreground)]">
-              Свяжите ожидающий заказ с камерой. Пост зафиксирует сессию и начнёт подсчёт мешков.
-            </p>
-          </div>
-        </div>
+    <section
+      className={cn(
+        "shipping-console relative isolate min-h-[390px] overflow-hidden rounded-[28px] border border-[#d8e3f4] bg-[#f8fbff] shadow-[0_18px_54px_rgba(45,79,137,0.11)]",
+        className,
+      )}
+    >
+      <Image
+        src="/shipping/dock-hero.jpg"
+        alt="Складской пост отгрузки"
+        fill
+        priority
+        sizes="(max-width: 1024px) 100vw, 1400px"
+        className="-z-20 object-cover object-left"
+      />
+      <div className="absolute inset-0 -z-10 bg-[linear-gradient(90deg,rgba(248,251,255,0.18)_0%,rgba(248,251,255,0.78)_37%,rgba(248,251,255,0.97)_62%,rgba(248,251,255,0.92)_100%)]" />
+      <div className="shipping-orbit absolute left-1/2 top-[44%] -z-10 size-[360px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-blue-200/25" />
 
-        <div
-          className={cn(
-            "flex min-h-11 shrink-0 items-center gap-2.5 self-start rounded-xl border px-3.5 text-sm font-semibold sm:self-center",
-            equipmentOnline
-              ? "border-[var(--soft-green-border)] bg-[var(--soft-green)] text-[var(--soft-green-foreground)]"
-              : "border-[var(--soft-amber-border)] bg-[var(--soft-amber)] text-[var(--soft-amber-foreground)]",
+      <div className="absolute right-5 top-5 flex items-center gap-3 rounded-2xl border border-[#dce5f2] bg-white/90 px-4 py-3 text-[13px] shadow-[0_8px_28px_rgba(47,75,123,0.08)] backdrop-blur-lg sm:right-7 sm:top-6">
+        <span className="relative flex size-2.5">
+          {equipmentOnline && (
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-40" />
           )}
-          role="status"
-        >
-          <span className="relative flex size-2.5">
-            {equipmentOnline && (
-              <span className="absolute inline-flex size-full animate-ping rounded-full bg-[var(--success)] opacity-35" />
-            )}
-            <span
-              className={cn(
-                "relative size-2.5 rounded-full",
-                equipmentOnline ? "bg-[var(--success)]" : "bg-[var(--warning)]",
-              )}
-            />
-          </span>
-          Оборудование: {equipmentOnline ? "онлайн" : "нет связи"}
-        </div>
+          <span className={cn("relative size-2.5 rounded-full", equipmentOnline ? "bg-emerald-500" : "bg-amber-400")} />
+        </span>
+        <span className="font-semibold text-slate-700">Оборудование</span>
+        <span className={equipmentOnline ? "text-emerald-600" : "text-amber-600"}>
+          {equipmentOnline ? "Онлайн" : "Нет связи"}
+        </span>
       </div>
 
-      <div className="bg-[var(--muted)]/35 p-4 sm:p-6">
-        <div className="grid items-stretch gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_220px]">
-          <SelectCard
-            kind="order"
-            label="1 · Заказ"
-            value={orderId}
-            displayValue={order ? `#${order.id} · ${order.client_name || "Без клиента"}` : undefined}
-            placeholder={orders.length ? "Выберите заказ" : "Нет заказов в ожидании въезда"}
-            onChange={setOrderId}
-          >
-            {orders.map((item) => (
-              <option key={item.id} value={item.id}>
-                #{item.id} · {item.client_name || "Без клиента"} · {orderedBagCount(item)} меш.
-              </option>
-            ))}
-          </SelectCard>
-
-          <div>
+      <div className="relative z-10 flex min-h-[390px] flex-col items-center justify-center px-5 pb-7 pt-24 sm:px-8 lg:px-10 lg:pb-6 lg:pt-12">
+        <div className="grid w-full max-w-[1180px] items-center gap-5 lg:grid-cols-[minmax(230px,1fr)_260px_minmax(230px,1fr)] lg:gap-10">
+          <div className="order-2 flex justify-center lg:order-1 lg:justify-end">
             {cameraLocked ? (
-              <AssignedCameraCard camera={camera} available={!!camera} />
+              <AssignedCameraCard camera={cameras[0] ?? null} available={!!camera} />
             ) : (
               <SelectCard
                 kind="camera"
-                label="2 · Камера"
+                label="Камера"
                 value={cameraSrc}
                 displayValue={camera?.zone}
                 placeholder={availableCameras.length ? "Выберите камеру" : "Нет свободных камер"}
@@ -235,54 +196,61 @@ export function ShipmentLauncher({
             )}
           </div>
 
-          <button
-            type="button"
-            onClick={start}
-            disabled={!order || !camera || busy}
-            className="group flex min-h-[104px] items-center justify-center gap-3 rounded-[18px] bg-[var(--foreground)] px-5 text-[var(--background)] shadow-card transition-[transform,box-shadow,opacity] hover:-translate-y-0.5 hover:shadow-float active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-[var(--background)]/12">
+          <div className="order-1 flex flex-col items-center lg:order-2">
+            <button
+              type="button"
+              onClick={start}
+              disabled={!order || !camera || busy}
+              className="shipping-start group relative flex size-[214px] flex-col items-center justify-center rounded-full border-[5px] border-white bg-[radial-gradient(circle_at_36%_26%,#5d86f4_0%,#3564e7_45%,#2446cd_100%)] text-white shadow-[0_22px_60px_rgba(39,79,211,0.35),0_0_0_1px_rgba(54,102,226,0.18)] transition duration-300 hover:-translate-y-1 hover:shadow-[0_28px_70px_rgba(39,79,211,0.42),0_0_0_12px_rgba(65,112,232,0.06)] active:translate-y-0 disabled:cursor-not-allowed disabled:grayscale-[0.25] disabled:opacity-65 sm:size-[232px]"
+            >
               {busy ? (
-                <LoaderCircle className="size-5 animate-spin" />
+                <LoaderCircle className="mb-3 size-11 animate-spin" strokeWidth={2} />
               ) : (
-                <Play className="size-5 transition-transform group-hover:translate-x-0.5" />
+                <Play className="mb-3 size-12 fill-none transition-transform group-hover:scale-110" strokeWidth={1.8} />
               )}
-            </span>
-            <span className="text-left">
-              <span className="block text-[11px] font-bold uppercase tracking-[0.12em] opacity-65">3 · Запуск</span>
-              <span className="mt-1 block text-base font-bold">{busy ? "Запускаем…" : "Начать отгрузку"}</span>
+              <span className="text-center text-[20px] font-semibold leading-tight sm:text-[22px]">
+                Начать
+                <br />
+                отгрузку
+              </span>
               {activeSessionCount > 0 && (
-                <span className="mt-1 flex items-center gap-1.5 text-xs opacity-70">
+                <span className="mt-2 flex items-center gap-1.5 text-[11px] text-blue-100">
                   <Radio className="size-3" /> {activeSessionCount} активн.
                 </span>
               )}
-            </span>
-          </button>
+            </button>
+          </div>
+
+          <div className="order-3 flex justify-center lg:justify-start">
+            <SelectCard
+              kind="order"
+              label="Заказ"
+              value={orderId}
+              displayValue={order ? `#${order.id} · ${order.client_name || "Без клиента"}` : undefined}
+              placeholder={orders.length ? "Выберите заказ" : "Нет заказов в ожидании въезда"}
+              onChange={setOrderId}
+            >
+              {orders.map((item) => (
+                <option key={item.id} value={item.id}>
+                  #{item.id} · {item.client_name || "Без клиента"} · {orderedBagCount(item)} меш.
+                </option>
+              ))}
+            </SelectCard>
+          </div>
         </div>
 
-        <div className="mt-4 flex flex-col gap-3 rounded-2xl border bg-[var(--card)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-2.5 text-sm text-[var(--muted-foreground)]">
-            <ShieldCheck className="mt-0.5 size-4 shrink-0 text-[var(--success)]" />
-            <span>
-              {cameraLocked
-                ? "Камера моноблока назначается автоматически. Перед запуском проверьте выбранный заказ."
-                : "Одна камера обслуживает одну сессию. Занятые камеры скрыты из списка автоматически."}
-            </span>
-          </div>
-          <span className="flex shrink-0 items-center gap-1.5 text-xs font-semibold text-[var(--muted-foreground)]">
-            <Check className="size-3.5 text-[var(--success)]" />
-            {cameraLocked ? "Закреплённая камера" : "Свободные камеры синхронизированы"}
+        <p className="mt-5 max-w-[570px] text-center text-[14px] font-medium leading-relaxed text-[#415174] sm:text-[15px]">
+          {cameraLocked
+            ? "Выберите ожидающий въезда заказ — закреплённая камера моноблока включится автоматически, и начнётся живое считывание мешков."
+            : "Выберите ожидающий въезда заказ и свободную камеру — заказ перейдёт в «Загружается», и начнётся живое считывание мешков."}
+        </p>
+        {error && <p className="mt-2 text-center text-sm font-medium text-[var(--destructive)]">{error}</p>}
+
+        <div className="mt-4 flex flex-wrap justify-center gap-2 text-[11px] text-slate-500 lg:absolute lg:bottom-5 lg:right-6 lg:mt-0">
+          <span className="flex items-center gap-1.5 rounded-full border border-white/80 bg-white/75 px-2.5 py-1 backdrop-blur">
+            <Check className="size-3 text-emerald-600" /> одна камера — одна сессия
           </span>
         </div>
-
-        {error && (
-          <div
-            role="alert"
-            className="mt-3 rounded-xl border border-[var(--soft-red-border)] bg-[var(--soft-red)] px-4 py-3 text-sm font-medium text-[var(--soft-red-foreground)]"
-          >
-            {error}
-          </div>
-        )}
       </div>
     </section>
   );

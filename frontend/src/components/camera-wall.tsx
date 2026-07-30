@@ -96,16 +96,6 @@ function CameraTile({
   return (
     <div
       onClick={onClick}
-      onKeyDown={(event) => {
-        if (!onClick || event.target !== event.currentTarget) return;
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onClick();
-        }
-      }}
-      role={onClick ? "button" : undefined}
-      tabIndex={onClick ? 0 : undefined}
-      aria-label={onClick ? `Открыть камеру ${cam.zone}` : undefined}
       className={cn("group relative aspect-video overflow-hidden rounded-lg bg-[#1c1c1e]", onClick && "cursor-pointer")}
     >
       {ready && (
@@ -139,8 +129,8 @@ function CameraTile({
                 onConfigureLine(cam);
               }}
               className={cn(
-                "flex size-11 items-center justify-center rounded-xl border border-white/15 bg-black/55 text-white/85 shadow-sm backdrop-blur-md transition hover:bg-[var(--ring)] hover:text-white sm:size-9",
-                cam.line_config?.configured && "border-[var(--soft-blue-border)] bg-[var(--ring)]/80 text-white",
+                "flex size-8 items-center justify-center rounded-lg border border-white/15 bg-black/55 text-white/85 shadow-sm backdrop-blur-md transition hover:bg-sky-500 hover:text-white",
+                cam.line_config?.configured && "border-sky-300/50 bg-sky-500/80 text-white",
               )}
             >
               <ScanLine className="size-3.5" />
@@ -154,7 +144,7 @@ function CameraTile({
                 event.stopPropagation();
                 onRename(cam);
               }}
-              className="flex size-11 items-center justify-center rounded-xl border border-white/15 bg-black/55 text-white/80 shadow-sm backdrop-blur-md transition hover:bg-white hover:text-black sm:size-9"
+              className="flex size-8 items-center justify-center rounded-lg border border-white/15 bg-black/55 text-white/80 shadow-sm backdrop-blur-md transition hover:bg-white hover:text-slate-900"
             >
               <Pencil className="size-3.5" />
             </button>
@@ -165,7 +155,7 @@ function CameraTile({
       {/* Нижний скрим с именем камеры и статусом — как в UniFi Protect */}
       <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/70 to-transparent px-2.5 pb-1.5 pt-5">
         <span className="text-xs font-medium text-white drop-shadow-sm">{cam.zone}</span>
-        <span className={cn("size-1.5 rounded-full", online ? "bg-[var(--success)]" : "bg-white/30")} />
+        <span className={cn("size-1.5 rounded-full", online ? "bg-emerald-400" : "bg-white/30")} />
       </div>
     </div>
   );
@@ -562,7 +552,7 @@ export function CameraWall() {
         }
       >
         <label className="block">
-          <span className="mb-2 block text-sm font-medium text-[var(--foreground)]">Имя камеры</span>
+          <span className="mb-2 block text-sm font-medium text-slate-700">Имя камеры</span>
           <Input
             autoFocus
             maxLength={80}
@@ -578,7 +568,7 @@ export function CameraWall() {
           />
         </label>
         {editing && (
-          <p className="mt-2 text-xs text-[var(--muted-foreground)]">
+          <p className="mt-2 text-xs text-slate-400">
             Системная камера: {editing.name} · {editing.src}
           </p>
         )}
@@ -597,7 +587,7 @@ export function CameraWall() {
         footer={
           <>
             <div className="mr-auto hidden items-center gap-2 text-xs text-[var(--muted-foreground)] sm:flex">
-              <ShieldCheck className="size-4 text-[var(--soft-green-foreground)]" />
+              <ShieldCheck className="size-4 text-emerald-600" />
               Настройка защищена правами superuser
             </div>
             <Button variant="ghost" onClick={closeLineEditor}>
@@ -606,7 +596,7 @@ export function CameraWall() {
             <Button
               disabled={loadingLine || savingLine || !validCountingLine(lineDraft)}
               onClick={() => void saveCountingLine()}
-              className="min-w-36 bg-[var(--ring)] text-white hover:bg-[var(--ring)]"
+              className="min-w-36 bg-sky-600 text-white hover:bg-sky-700"
             >
               {savingLine ? (
                 <>
@@ -641,24 +631,22 @@ export function CameraWall() {
               }}
             />
             {loadingLine && (
-              <div className="flex items-center gap-2 rounded-lg border border-[var(--soft-blue-border)] bg-[var(--soft-blue)] px-4 py-3 text-sm text-[var(--soft-blue-foreground)]">
+              <div className="flex items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
                 <LoaderCircle className="size-4 animate-spin" /> Загружаем сохранённую линию…
               </div>
             )}
             {!validCountingLine(lineDraft) && !loadingLine && (
-              <p className="rounded-lg border border-[var(--soft-amber-border)] bg-[var(--soft-amber)] px-4 py-3 text-sm text-[var(--soft-amber-foreground)]">
+              <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 Линия слишком короткая. Протяните её между двумя разными точками.
               </p>
             )}
             {lineNotice && (
-              <p className="rounded-lg border border-[var(--soft-green-border)] bg-[var(--soft-green)] px-4 py-3 text-sm font-medium text-[var(--soft-green-foreground)]">
+              <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
                 {lineNotice}
               </p>
             )}
             {lineError && (
-              <p className="rounded-lg border border-[var(--soft-red-border)] bg-[var(--soft-red)] px-4 py-3 text-sm text-[var(--soft-red-foreground)]">
-                {lineError}
-              </p>
+              <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{lineError}</p>
             )}
           </div>
         )}

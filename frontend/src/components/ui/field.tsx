@@ -16,10 +16,10 @@ export function Field({
   className?: string;
 }) {
   return (
-    <div className={cn("flex flex-col gap-1.5", className)}>
+    <div className={cn("flex flex-col", className)}>
       {label && <Label htmlFor={htmlFor}>{label}</Label>}
       {children}
-      {hint && <p className="text-[11px] leading-relaxed text-[var(--muted-foreground)]">{hint}</p>}
+      {hint && <p className="mt-1.5 text-[12px] text-[var(--muted-foreground)]">{hint}</p>}
     </div>
   );
 }

@@ -115,7 +115,7 @@ export function ActionMenu({
         onClick={toggle}
         onKeyDown={onTriggerKeyDown}
         className={cn(
-          "inline-flex size-11 items-center justify-center rounded-xl text-[var(--muted-foreground)] transition-colors sm:size-9",
+          "inline-flex size-8 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors",
           "hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
           open && "bg-[var(--accent)] text-[var(--foreground)]",
           className,
@@ -135,7 +135,7 @@ export function ActionMenu({
             style={{ top: pos.top, right: pos.right }}
             onClick={(event) => event.stopPropagation()}
             onKeyDown={onMenuKeyDown}
-            className="fixed z-[120] w-52 rounded-xl border bg-[var(--popover)] p-1.5 shadow-float animate-modal-content"
+            className="fixed z-[120] w-48 rounded-xl border bg-[var(--popover)] p-1 shadow-[0_12px_40px_rgba(0,0,0,0.18)] animate-modal-content"
           >
             {items.map((item) => (
               <button
@@ -152,7 +152,7 @@ export function ActionMenu({
                   item.onSelect();
                 }}
                 className={cn(
-                  "flex min-h-11 w-full items-start gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm transition-colors sm:min-h-10",
+                  "flex w-full items-start gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors",
                   item.disabled
                     ? "cursor-default text-[var(--muted-foreground)] opacity-60"
                     : item.tone === "destructive"

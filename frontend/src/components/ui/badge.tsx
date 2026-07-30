@@ -5,10 +5,10 @@ type Tone = "muted" | "primary" | "success" | "warning" | "destructive" | "outli
 
 const toneClasses: Record<Tone, string> = {
   muted: "bg-[var(--muted)] text-[var(--muted-foreground)]",
-  primary: "bg-[var(--soft-blue)] text-[var(--soft-blue-foreground)]",
-  success: "bg-[var(--soft-green)] text-[var(--soft-green-foreground)]",
-  warning: "bg-[var(--soft-amber)] text-[var(--soft-amber-foreground)]",
-  destructive: "bg-[var(--soft-red)] text-[var(--soft-red-foreground)]",
+  primary: "bg-[var(--ring)]/12 text-[var(--ring)]",
+  success: "bg-[var(--success)]/12 text-[var(--success)]",
+  warning: "bg-[var(--warning)]/15 text-[var(--warning)]",
+  destructive: "bg-[var(--destructive)]/12 text-[var(--destructive)]",
   outline: "bg-transparent text-[var(--muted-foreground)] border border-[var(--border)]",
 };
 
@@ -31,7 +31,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        "inline-flex h-6 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 text-[11px] font-bold leading-none",
+        "inline-flex items-center gap-1 px-2 h-[22px] text-[12px] rounded-md font-medium leading-none whitespace-nowrap",
         toneClasses[tone],
         className,
       )}

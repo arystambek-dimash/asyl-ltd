@@ -165,14 +165,11 @@ export function Modal({
 
   return createPortal(
     <div
-      className={cn(
-        "fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-5",
-        mobileFullscreen && "max-sm:p-0",
-      )}
+      className={cn("fixed inset-0 z-[100] flex items-center justify-center p-4", mobileFullscreen && "max-sm:p-0")}
       onKeyDown={trapFocus}
     >
       <div
-        className="absolute inset-0 bg-[#07100b]/68 backdrop-blur-[3px] animate-modal-backdrop"
+        className="absolute inset-0 bg-black/55 backdrop-blur-[1px] animate-modal-backdrop"
         onClick={() => onCloseRef.current()}
       />
       <div
@@ -183,14 +180,14 @@ export function Modal({
         aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
         className={cn(
-          "relative z-10 flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-[24px] border bg-[var(--card)] shadow-float animate-modal-content",
+          "relative z-10 flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-xl border bg-[var(--card)] shadow-2xl animate-modal-content",
           mobileFullscreen && "max-sm:h-[100dvh] max-sm:max-h-[100dvh] max-sm:rounded-none max-sm:border-0",
           className,
         )}
       >
-        <div className="relative border-b bg-[var(--muted)]/28 px-4 pb-4 pt-[calc(1.25rem+env(safe-area-inset-top))] sm:px-6 sm:pb-5 sm:pt-6">
-          {eyebrow && <div className="eyebrow mb-1.5">{eyebrow}</div>}
-          <h2 id={titleId} className="pr-10 text-[22px] font-extrabold tracking-[-0.025em] sm:text-[24px]">
+        <div className="relative border-b px-4 pb-4 pt-5 sm:px-6 sm:pt-6">
+          {eyebrow && <div className="text-[12px] text-[var(--muted-foreground)]">{eyebrow}</div>}
+          <h2 id={titleId} className="text-[22px] font-bold tracking-tight">
             {title}
           </h2>
           {description && (
@@ -201,7 +198,7 @@ export function Modal({
           <button
             type="button"
             onClick={() => onCloseRef.current()}
-            className="absolute right-4 top-[calc(1rem+env(safe-area-inset-top))] inline-flex size-11 shrink-0 items-center justify-center rounded-xl border bg-[var(--card)] text-[var(--muted-foreground)] shadow-sm transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/28 sm:top-4 sm:size-9"
+            className="absolute right-4 top-4 inline-flex size-8 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/50"
             aria-label="Закрыть"
           >
             <X className="size-4" />
@@ -209,7 +206,7 @@ export function Modal({
         </div>
         <div className="overflow-y-auto p-4 sm:p-6">{children}</div>
         {footer && (
-          <div className="flex flex-wrap items-center justify-end gap-2 border-t bg-[var(--muted)]/45 px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 sm:px-6 sm:py-4">
+          <div className="flex items-center justify-end gap-2 border-t bg-[var(--muted)]/40 px-4 py-3 sm:px-6">
             {footer}
           </div>
         )}

@@ -20,9 +20,9 @@ export function SummaryCard({
     plain: "text-[var(--foreground)]",
   }[tone];
   return (
-    <div className="flex flex-col rounded-[20px] border border-[var(--border)] bg-[var(--card)] p-5 shadow-card transition-transform duration-200 hover:-translate-y-0.5">
-      <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-[var(--muted-foreground)]">{title}</span>
-      <div className={cn("mt-2 text-[28px] font-extrabold leading-none tracking-[-0.04em] tabular-nums", toneClass)}>
+    <div className="flex flex-col rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-card">
+      <span className="text-[13px] font-medium text-[var(--muted-foreground)]">{title}</span>
+      <div className={cn("mt-1 text-[26px] font-bold leading-none tracking-tight tabular-nums", toneClass)}>
         {value}
       </div>
       <div className="mt-4 flex flex-col gap-2 border-t border-[var(--border)] pt-3">

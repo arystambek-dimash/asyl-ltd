@@ -10,11 +10,11 @@ export function ProgressBar({ pct, className }: { pct: number; className?: strin
       aria-valuemax={100}
       aria-valuenow={clamped}
       aria-valuetext={`${Math.round(clamped)}%`}
-      className={cn("h-1.5 w-full overflow-hidden rounded-full bg-[var(--muted)]", className)}
+      className={cn("h-1 w-full overflow-hidden rounded-full bg-[var(--muted)]", className)}
     >
       <div
         className={cn(
-          "h-full rounded-full transition-all duration-500",
+          "h-full rounded-full transition-all",
           clamped >= 100 ? "bg-[var(--success)]" : "bg-[var(--ring)]",
         )}
         style={{ width: `${clamped}%` }}

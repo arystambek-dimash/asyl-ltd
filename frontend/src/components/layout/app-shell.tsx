@@ -5,7 +5,6 @@ import { useAuth } from "@/store/auth";
 import { homeFor } from "@/lib/can";
 import { isRefreshTokenRemoval, isRefreshTokenReplacement } from "@/lib/api";
 import { OnboardingTour } from "@/components/onboarding-tour";
-import { LoaderCircle } from "lucide-react";
 import { Sidebar } from "./sidebar";
 import { Topbar } from "./topbar";
 
@@ -73,41 +72,23 @@ export function AppShell({
 
   if (loading || !me)
     return (
-      <div className="app-workspace flex h-dvh items-center justify-center">
-        <div className="flex items-center gap-3 rounded-2xl border bg-[var(--card)] px-5 py-4 text-sm font-medium shadow-card">
-          <LoaderCircle className="size-5 animate-spin text-[var(--ring)]" />
-          Загружаем рабочее пространство
-        </div>
-      </div>
+      <div className="flex h-screen items-center justify-center text-sm text-[var(--muted-foreground)]">Загрузка…</div>
     );
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-[var(--sidebar)]">
+    <div className="flex h-screen overflow-hidden">
       {/* Обучение по системе: первый вход + повторно по кнопке «?» */}
       {!me.is_client && !me.is_monoblock && <OnboardingTour me={me} />}
       <Sidebar me={me} mobileOpen={navOpen} onClose={closeNav} />
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--workspace)]">
+      <div className="flex flex-1 flex-col overflow-hidden">
         <Topbar me={me} title={title} section={section} tabs={tabs} actions={actions} onMenu={openNav} />
-        {actions && (
-          <div className="no-scrollbar flex shrink-0 items-center justify-end gap-2 overflow-x-auto border-b bg-[var(--card)] px-3 py-2 sm:hidden">
-            {actions}
-          </div>
-        )}
         {/* На телефоне вкладкам нет места в навбаре — отдельная строка под ним. */}
-        {tabs && (
-          <div className="no-scrollbar shrink-0 overflow-x-auto border-b bg-[var(--card)] px-4 sm:hidden [&>div]:border-b-0">
-            {tabs}
-          </div>
-        )}
-        <main className="app-workspace min-w-0 flex-1 overflow-y-auto px-3 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4 sm:px-6 sm:py-6 lg:px-8 lg:py-7">
-          <div className="mx-auto w-full max-w-[1600px] animate-fade-up">
+        {tabs && <div className="overflow-x-auto px-4 sm:hidden">{tabs}</div>}
+        <main className="flex-1 overflow-y-auto bg-[var(--background)] px-4 py-5 sm:px-8 sm:py-7">
+          <div className="animate-fade-up">
             {/* Заголовок уже показан в топбаре — здесь только пояснение,
                 иначе название страницы дублируется и «режет глаза». */}
-            {description && (
-              <p className="mb-5 max-w-3xl text-[13px] leading-relaxed text-[var(--muted-foreground)] sm:mb-6 sm:text-sm">
-                {description}
-              </p>
-            )}
+            {description && <p className="mb-6 max-w-2xl text-sm text-[var(--muted-foreground)]">{description}</p>}
             {children}
           </div>
         </main>

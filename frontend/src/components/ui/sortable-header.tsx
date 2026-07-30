@@ -30,7 +30,7 @@ export function SortableHeader({
         type="button"
         onClick={() => onClick(sortKey)}
         className={cn(
-          "-mx-2 inline-flex min-h-9 items-center gap-1 rounded-lg px-2 transition-colors hover:bg-[var(--card)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]/25",
+          "inline-flex items-center gap-1 transition-colors hover:text-[var(--foreground)]",
           align === "right" && "flex-row-reverse",
           isActive && "text-[var(--foreground)] font-medium",
         )}

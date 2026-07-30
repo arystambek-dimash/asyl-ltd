@@ -5,7 +5,7 @@ import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/ui/stat-card";
@@ -129,49 +129,26 @@ function InvoiceTable({ order }: { order: Order }) {
   const toPay = remainingOf(order);
   return (
     <div>
-      <div className="hidden md:block">
-        <Table>
-          <THead>
-            <TR>
-              <TH>Товар</TH>
-              <TH className="text-right">Количество</TH>
-              <TH className="text-right">Цена за единицу, ₸</TH>
-              <TH className="text-right">Итого</TH>
+      <Table>
+        <THead>
+          <TR>
+            <TH>Товар</TH>
+            <TH className="text-right">Количество</TH>
+            <TH className="text-right">Цена за единицу, ₸</TH>
+            <TH className="text-right">Итого</TH>
+          </TR>
+        </THead>
+        <TBody>
+          {lines.map((l) => (
+            <TR key={l.key}>
+              <TD className="font-medium">{l.label}</TD>
+              <TD className="text-right tabular-nums">{l.qty}</TD>
+              <TD className="text-right tabular-nums">{money(l.price)}</TD>
+              <TD className="text-right tabular-nums font-medium">{money(l.total)}</TD>
             </TR>
-          </THead>
-          <TBody>
-            {lines.map((l) => (
-              <TR key={l.key}>
-                <TD className="font-medium">{l.label}</TD>
-                <TD className="text-right tabular-nums">{l.qty}</TD>
-                <TD className="text-right tabular-nums">{money(l.price)}</TD>
-                <TD className="text-right tabular-nums font-medium">{money(l.total)}</TD>
-              </TR>
-            ))}
-          </TBody>
-        </Table>
-      </div>
-      <div className="divide-y rounded-xl border md:hidden">
-        {lines.map((line) => (
-          <article key={line.key} className="p-3.5">
-            <h4 className="font-medium">{line.label}</h4>
-            <dl className="mt-2 grid grid-cols-1 gap-2 text-sm min-[420px]:grid-cols-3">
-              <div>
-                <dt className="text-[11px] text-[var(--muted-foreground)]">Количество</dt>
-                <dd className="mt-0.5 tabular-nums">{line.qty}</dd>
-              </div>
-              <div>
-                <dt className="text-[11px] text-[var(--muted-foreground)]">Цена</dt>
-                <dd className="mt-0.5 tabular-nums">{money(line.price)}</dd>
-              </div>
-              <div className="text-right">
-                <dt className="text-[11px] text-[var(--muted-foreground)]">Итого</dt>
-                <dd className="mt-0.5 font-semibold tabular-nums">{money(line.total)}</dd>
-              </div>
-            </dl>
-          </article>
-        ))}
-      </div>
+          ))}
+        </TBody>
+      </Table>
       <div className="ml-auto mt-3 flex max-w-xs flex-col gap-1.5 border-t pt-3 text-sm">
         <div className="flex justify-between text-[var(--muted-foreground)]">
           <span>Сумма заказа</span>
@@ -345,11 +322,10 @@ function OrderDebtCard({ order, canPay, onPay }: { order: Order; canPay: boolean
         )}
 
         <div className="flex flex-col gap-2 border-t pt-3 sm:flex-row sm:justify-end">
-          <Link
-            href={`/orders/${order.id}`}
-            className={buttonVariants({ size: "sm", variant: "outline", className: "w-full sm:w-auto" })}
-          >
-            Открыть заказ <ExternalLink className="size-3.5" />
+          <Link href={`/orders/${order.id}`}>
+            <Button size="sm" variant="outline" className="w-full sm:w-auto">
+              Открыть заказ <ExternalLink className="size-3.5" />
+            </Button>
           </Link>
           {canPay && remainingOf(order) > 0 && (
             <Button size="sm" onClick={onPay} className="w-full sm:w-auto">
@@ -374,82 +350,45 @@ function PaymentHistoryTable({ rows, emptyText }: { rows: HistoryPayment[]; empt
   return (
     <Card>
       <CardContent className="pt-5">
-        <div className="hidden md:block">
-          <Table>
-            <THead>
-              <TR>
-                <TH>Дата</TH>
-                <TH>Заказ</TH>
-                <TH>Способ</TH>
-                <TH>Статус</TH>
-                <TH>Сотрудник</TH>
-                <TH className="text-right">Сумма</TH>
-              </TR>
-            </THead>
-            <TBody>
-              {rows.map((p) => (
-                <TR key={p.id}>
-                  <TD className="tabular-nums">{formatDateTime(p.date)}</TD>
-                  <TD>
-                    <Link href={`/orders/${p.order_id}`} className="font-medium hover:underline">
-                      #{p.order_id}
-                    </Link>
-                  </TD>
-                  <TD>{PAYMENT_METHOD_LABELS[p.method] ?? p.method}</TD>
-                  <TD>
-                    <Badge tone={PAYMENT_STAGE_TONE[p.status] ?? "muted"}>
-                      {PAYMENT_STAGE_LABELS[p.status] ?? p.status}
-                    </Badge>
-                  </TD>
-                  <TD className="text-[var(--muted-foreground)]">{p.employee ?? "—"}</TD>
-                  <TD
-                    className={cn(
-                      "text-right tabular-nums font-semibold",
-                      p.status === "confirmed" && "text-[var(--success)]",
-                    )}
-                  >
-                    {money(p.amount)}
-                  </TD>
-                </TR>
-              ))}
-            </TBody>
-          </Table>
-        </div>
-        <div className="divide-y md:hidden">
-          {rows.map((payment) => (
-            <article key={payment.id} className="py-4 first:pt-0 last:pb-0">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <Link href={`/orders/${payment.order_id}`} className="font-semibold hover:underline">
-                    Заказ #{payment.order_id}
+        <Table>
+          <THead>
+            <TR>
+              <TH>Дата</TH>
+              <TH>Заказ</TH>
+              <TH>Способ</TH>
+              <TH>Статус</TH>
+              <TH>Сотрудник</TH>
+              <TH className="text-right">Сумма</TH>
+            </TR>
+          </THead>
+          <TBody>
+            {rows.map((p) => (
+              <TR key={p.id}>
+                <TD className="tabular-nums">{formatDateTime(p.date)}</TD>
+                <TD>
+                  <Link href={`/orders/${p.order_id}`} className="font-medium hover:underline">
+                    #{p.order_id}
                   </Link>
-                  <p className="mt-1 text-xs tabular-nums text-[var(--muted-foreground)]">
-                    {formatDateTime(payment.date)}
-                  </p>
-                </div>
-                <div
+                </TD>
+                <TD>{PAYMENT_METHOD_LABELS[p.method] ?? p.method}</TD>
+                <TD>
+                  <Badge tone={PAYMENT_STAGE_TONE[p.status] ?? "muted"}>
+                    {PAYMENT_STAGE_LABELS[p.status] ?? p.status}
+                  </Badge>
+                </TD>
+                <TD className="text-[var(--muted-foreground)]">{p.employee ?? "—"}</TD>
+                <TD
                   className={cn(
-                    "shrink-0 text-right font-semibold tabular-nums",
-                    payment.status === "confirmed" && "text-[var(--success)]",
+                    "text-right tabular-nums font-semibold",
+                    p.status === "confirmed" && "text-[var(--success)]",
                   )}
                 >
-                  {money(payment.amount)}
-                </div>
-              </div>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Badge tone={PAYMENT_STAGE_TONE[payment.status] ?? "muted"}>
-                  {PAYMENT_STAGE_LABELS[payment.status] ?? payment.status}
-                </Badge>
-                <span className="text-xs text-[var(--muted-foreground)]">
-                  {PAYMENT_METHOD_LABELS[payment.method] ?? payment.method}
-                </span>
-              </div>
-              <p className="mt-2 text-xs text-[var(--muted-foreground)]">
-                Сотрудник: {payment.employee ?? "не указан"}
-              </p>
-            </article>
-          ))}
-        </div>
+                  {money(p.amount)}
+                </TD>
+              </TR>
+            ))}
+          </TBody>
+        </Table>
       </CardContent>
     </Card>
   );
@@ -708,11 +647,9 @@ function PaymentModal({
           <>
             {orders.length > 1 && (
               <div className="flex flex-col gap-1.5">
-                <span id="payment-order-label" className="text-sm text-[var(--muted-foreground)]">
-                  Заказ
-                </span>
+                <span className="text-sm text-[var(--muted-foreground)]">Заказ</span>
                 <Select value={String(order.id)} onValueChange={(v) => onSelect(Number(v))}>
-                  <SelectTrigger aria-labelledby="payment-order-label">
+                  <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -748,7 +685,7 @@ function PaymentModal({
               </div>
             ) : (
               <>
-                <div className="grid grid-cols-2 gap-2 min-[440px]:grid-cols-4">
+                <div className="grid grid-cols-4 gap-2">
                   {QUICK_FRACTIONS.map(({ label, f }) => {
                     const v = quickValue(f);
                     const active = Math.abs(allocated - v) < 0.001;
@@ -789,34 +726,32 @@ function PaymentModal({
                   </div>
                   {parts.map((part, index) => (
                     <div key={part.id} className="rounded-xl border bg-[var(--card)] p-2.5">
-                      <div className="grid grid-cols-[minmax(0,1fr)_44px] gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(100px,.75fr)_44px]">
-                        <div className="col-span-2 sm:col-span-1">
-                          <Select
-                            value={part.method}
-                            onValueChange={(method) =>
-                              updatePart(part.id, {
-                                method,
-                                phone_number:
-                                  method === "invoice" ? (part.phone_number ?? order.client_phone ?? "") : undefined,
-                              })
-                            }
-                          >
-                            <SelectTrigger aria-label={`Способ оплаты, часть ${index + 1}`}>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {allowedMethods
-                                .filter(
-                                  (method) => method === part.method || !parts.some((item) => item.method === method),
-                                )
-                                .map((method) => (
-                                  <SelectItem key={method} value={method}>
-                                    {CASHIER_PAYMENT_METHOD_LABELS[method]}
-                                  </SelectItem>
-                                ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
+                      <div className="grid grid-cols-[minmax(0,1fr)_minmax(100px,.75fr)_40px] gap-2">
+                        <Select
+                          value={part.method}
+                          onValueChange={(method) =>
+                            updatePart(part.id, {
+                              method,
+                              phone_number:
+                                method === "invoice" ? (part.phone_number ?? order.client_phone ?? "") : undefined,
+                            })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {allowedMethods
+                              .filter(
+                                (method) => method === part.method || !parts.some((item) => item.method === method),
+                              )
+                              .map((method) => (
+                                <SelectItem key={method} value={method}>
+                                  {CASHIER_PAYMENT_METHOD_LABELS[method]}
+                                </SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
                         <Input
                           type="number"
                           min="0.01"
@@ -831,7 +766,7 @@ function PaymentModal({
                           type="button"
                           disabled={parts.length === 1}
                           onClick={() => setParts((current) => current.filter((item) => item.id !== part.id))}
-                          className="flex size-11 items-center justify-center rounded-xl border text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--destructive)] disabled:opacity-30"
+                          className="flex size-10 items-center justify-center rounded-md border text-[var(--muted-foreground)] hover:text-[var(--destructive)] disabled:opacity-30"
                           aria-label="Удалить способ оплаты"
                         >
                           <Trash2 className="size-4" />
@@ -874,11 +809,8 @@ function PaymentModal({
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <label htmlFor="payment-note" className="text-sm text-[var(--muted-foreground)]">
-                    Примечание
-                  </label>
+                  <span className="text-sm text-[var(--muted-foreground)]">Примечание</span>
                   <Input
-                    id="payment-note"
                     placeholder="Введите примечание (необязательно)"
                     value={note}
                     onChange={(e) => setNote(e.target.value)}
@@ -959,8 +891,10 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
               <Wallet className="size-4" /> <span className="hidden sm:inline">Внести оплату</span>
             </Button>
           )}
-          <Link href="/accounting" className={buttonVariants({ size: "sm", variant: "outline" })}>
-            <ArrowLeft className="size-4" />К долгам
+          <Link href="/accounting">
+            <Button size="sm" variant="outline">
+              <ArrowLeft className="size-4" />К долгам
+            </Button>
           </Link>
         </div>
       }

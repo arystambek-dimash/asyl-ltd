@@ -112,13 +112,13 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
     m.overdueClients + m.attention.pendingPayments + m.attention.awaitingReview + m.negativeStock.length;
 
   return (
-    <section className="analytics-hero relative w-full min-w-0 overflow-hidden rounded-[24px] bg-[var(--hero)] text-[var(--hero-foreground)] shadow-[0_18px_60px_rgba(23,35,28,0.16)]">
+    <section className="analytics-hero relative w-full min-w-0 overflow-hidden rounded-[24px] bg-[#17231c] text-white shadow-[0_18px_60px_rgba(23,35,28,0.16)]">
       <div aria-hidden="true" className="absolute -right-12 -top-20 size-64 rounded-full border border-white/10" />
       <div aria-hidden="true" className="absolute -right-3 -top-4 size-36 rounded-full border border-white/10" />
       <div className="relative grid min-h-[300px] min-w-0 lg:grid-cols-[1.15fr_0.85fr]">
         <div className="flex min-w-0 flex-col justify-between border-white/10 p-6 sm:p-8 lg:border-r lg:p-10">
           <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
-            <span className="size-2 rounded-full bg-[var(--hero-accent)] shadow-[0_0_0_5px_rgba(217,249,157,0.12)]" />
+            <span className="size-2 rounded-full bg-[#d9f99d] shadow-[0_0_0_5px_rgba(217,249,157,0.12)]" />
             Сводка за сегодня
             {attentionCount > 0 && (
               <span className="w-fit rounded-full bg-white/10 px-2.5 py-1 text-center normal-case tracking-normal text-white/75 min-[360px]:ml-2">
@@ -143,7 +143,7 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
 
           <Link
             href={primary.href}
-            className="group inline-flex min-h-11 w-fit items-center gap-2 text-sm font-semibold text-[var(--hero-accent)] transition hover:text-white"
+            className="group inline-flex min-h-11 w-fit items-center gap-2 text-sm font-semibold text-[#d9f99d] transition hover:text-white"
           >
             Открыть детали
             <ArrowRight className="size-4 transition-transform group-hover:translate-x-1" />
@@ -179,7 +179,7 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
             })}
             {secondary.length === 0 && (
               <div className="flex min-h-44 flex-col items-center justify-center gap-2 px-6 text-center">
-                <Sparkles className="size-5 text-[var(--hero-accent)]" />
+                <Sparkles className="size-5 text-[#d9f99d]" />
                 <p className="text-sm text-white/55">Главный показатель уже перед вами</p>
               </div>
             )}

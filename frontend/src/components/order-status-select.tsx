@@ -5,16 +5,16 @@ import { ORDER_PUBLIC_STATUSES, ORDER_STATUS_LABELS, orderStatusGroup } from "@/
 import { cn } from "@/lib/utils";
 
 const STATUS_STYLE: Record<string, string> = {
-  pending: "border-[var(--border)] bg-[var(--muted)] text-[var(--foreground)]",
-  confirmed: "border-[var(--soft-amber-border)] bg-[var(--soft-amber)] text-[var(--soft-amber-foreground)]",
-  shipped: "border-[var(--soft-green-border)] bg-[var(--soft-green)] text-[var(--soft-green-foreground)]",
-  cancelled: "border-[var(--soft-red-border)] bg-[var(--soft-red)] text-[var(--soft-red-foreground)]",
+  pending: "border-slate-200 bg-slate-100 text-slate-700",
+  confirmed: "border-amber-200 bg-amber-50 text-amber-700",
+  shipped: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  cancelled: "border-red-200 bg-red-50 text-red-700",
 };
 const STATUS_DOT: Record<string, string> = {
-  pending: "bg-[var(--muted-foreground)]",
-  confirmed: "bg-[var(--warning)]",
-  shipped: "bg-[var(--success)]",
-  cancelled: "bg-[var(--destructive)]",
+  pending: "bg-slate-500",
+  confirmed: "bg-amber-500",
+  shipped: "bg-emerald-500",
+  cancelled: "bg-red-500",
 };
 
 export function OrderStatusSelect({
@@ -53,7 +53,7 @@ export function OrderStatusSelect({
         className={cn(
           // На телефоне это самый нажимаемый элемент списка, и жмут его в цехе
           // перчаткой: 32px мимо, 44px попадает. На десктопе размер прежний.
-          "h-11 max-w-full appearance-none rounded-lg border py-1 pl-7 pr-8 text-xs font-semibold outline-none transition focus:ring-2 focus:ring-[var(--ring)] disabled:cursor-wait disabled:opacity-60 sm:h-8",
+          "h-11 max-w-full appearance-none rounded-lg border py-1 pl-7 pr-8 text-xs font-semibold outline-none transition focus:ring-2 focus:ring-blue-500/25 disabled:cursor-wait disabled:opacity-60 sm:h-8",
           STATUS_STYLE[current] ?? STATUS_STYLE.pending,
         )}
       >

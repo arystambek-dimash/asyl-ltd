@@ -86,19 +86,19 @@ export function StatementExportModal({
       }
     >
       <div className="space-y-4">
-        <div className="rounded-2xl border border-[var(--soft-green-border)] bg-[var(--soft-green)] p-4">
+        <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-4">
           <div className="flex items-start gap-3">
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[var(--success)] text-white shadow-sm">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm">
               <FileSpreadsheet className="size-5" />
             </span>
             <div>
-              <div className="text-sm font-bold text-[var(--foreground)]">{scopeLabel}</div>
-              <div className="mt-1 text-xs leading-relaxed text-[var(--muted-foreground)]">{sheetsLabel}</div>
+              <div className="text-sm font-bold text-slate-900">{scopeLabel}</div>
+              <div className="mt-1 text-xs leading-relaxed text-slate-500">{sheetsLabel}</div>
             </div>
           </div>
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-3">
+        <div className="grid grid-cols-3 gap-2">
           <Button
             type="button"
             variant="outline"
@@ -132,9 +132,9 @@ export function StatementExportModal({
           </Button>
         </div>
 
-        <div className="rounded-2xl border border-[var(--border)] bg-[var(--secondary)] p-4">
-          <div className="mb-3 flex items-center gap-2 text-sm font-bold text-[var(--foreground)]">
-            <CalendarRange className="size-4 text-[var(--soft-blue-foreground)]" /> Период выписки
+        <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-bold text-slate-800">
+            <CalendarRange className="size-4 text-blue-600" /> Период выписки
           </div>
           <div className="grid grid-cols-2 gap-3">
             <label className="grid gap-1.5 text-sm font-medium">
@@ -159,7 +159,7 @@ export function StatementExportModal({
         </div>
 
         {error && (
-          <p className="rounded-xl border border-[var(--soft-red-border)] bg-[var(--soft-red)] px-3 py-2.5 text-sm font-medium text-[var(--destructive)]">
+          <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-[var(--destructive)]">
             {error}
           </p>
         )}

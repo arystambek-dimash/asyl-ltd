@@ -118,9 +118,9 @@ function EventsPageInner() {
       section="Управление"
       description="Неизменяемая лента событий системы: оплаты, отгрузки, движения склада и статусы заказов."
     >
-      <Card className="mb-4" role="search" aria-label="Фильтры журнала событий">
-        <CardContent className="pt-4 sm:pt-6">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+      <Card className="mb-4">
+        <CardContent className="pt-6">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="event-type">Тип события</Label>
               <Select id="event-type" value={type} onChange={(e) => setType(e.target.value)}>
@@ -153,13 +153,10 @@ function EventsPageInner() {
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="event-search">Поиск</Label>
               <div className="relative">
-                <Search
-                  aria-hidden="true"
-                  className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]"
-                />
+                <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
                 <Input
                   id="event-search"
-                  className="pl-10"
+                  className="pl-8"
                   placeholder="по сообщению"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
@@ -178,15 +175,13 @@ function EventsPageInner() {
       </Card>
 
       <Card>
-        <CardContent className="pt-4 sm:pt-6" aria-live="polite">
+        <CardContent className="pt-6">
           {loading ? (
-            <p role="status" className="py-8 text-center text-sm text-[var(--muted-foreground)]">
-              Загрузка…
-            </p>
+            <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
           ) : error && !events ? (
             <ErrorAlert message={error} onRetry={reload} />
           ) : groups.length === 0 ? (
-            <p className="py-8 text-center text-sm text-[var(--muted-foreground)]">
+            <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">
               {hasFilters ? "Ничего не найдено по фильтрам." : "Событий пока нет."}
             </p>
           ) : (
@@ -200,27 +195,27 @@ function EventsPageInner() {
                     <span className="h-px flex-1 bg-[var(--border)]" />
                     <span className="text-xs text-[var(--muted-foreground)]">{g.items.length} соб.</span>
                   </div>
-                  <ol className="relative ml-2 border-l border-[var(--border)] sm:ml-3">
+                  <ol className="relative ml-3 border-l border-[var(--border)]">
                     {g.items.map((e) => {
                       const m = metaFor(e.event_type);
                       const Icon = m.icon;
                       return (
-                        <li key={e.id} className="relative min-w-0 pb-5 pl-5 last:pb-0 sm:pl-6">
+                        <li key={e.id} className="relative pb-4 pl-6 last:pb-0">
                           {/* кружок-иконка на линии */}
                           <span
                             className="absolute -left-[13px] top-0 flex size-[26px] items-center justify-center rounded-full ring-4 ring-[var(--card)]"
                             style={{ background: `color-mix(in oklab, ${m.color} 14%, transparent)`, color: m.color }}
                           >
-                            <Icon aria-hidden="true" className="size-3.5" />
+                            <Icon className="size-3.5" />
                           </span>
-                          <div className="flex min-w-0 flex-wrap items-start gap-x-2 gap-y-1">
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                             <span
                               className="rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-none"
                               style={{ background: `color-mix(in oklab, ${m.color} 12%, transparent)`, color: m.color }}
                             >
                               {m.label}
                             </span>
-                            <p className="min-w-0 flex-1 break-words text-sm font-medium leading-5 text-[var(--foreground)]">
+                            <p className="text-sm font-medium text-[var(--foreground)]">
                               {translateOrderStatusMessage(e.message, e.payload)}
                             </p>
                           </div>

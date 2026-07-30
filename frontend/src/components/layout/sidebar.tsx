@@ -137,15 +137,14 @@ function NavLeaf({
       data-tour={`nav:${href}`}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "group flex min-h-10 items-center gap-3 rounded-xl px-3 py-2 text-[13px] transition-all duration-200",
+        "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
         active
-          ? "bg-[var(--sidebar-accent)] font-medium text-[var(--sidebar-accent-foreground)] shadow-[0_8px_22px_-14px_rgba(220,238,191,0.75)]"
-          : "font-normal text-[var(--sidebar-muted)] hover:translate-x-0.5 hover:bg-white/[0.055] hover:text-[var(--sidebar-foreground)]",
+          ? "bg-[var(--sidebar-accent)] font-medium text-[var(--sidebar-accent-foreground)]"
+          : "text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)]/60 hover:text-[var(--sidebar-foreground)]",
       )}
     >
-      <Icon className={cn("size-[18px] shrink-0 transition-colors", active && "stroke-[2.25]")} />
-      <span className="truncate">{label}</span>
-      {active && <span className="ml-auto size-1.5 rounded-full bg-[var(--sidebar-accent-foreground)]/60" />}
+      <Icon className="size-[18px] shrink-0" />
+      {label}
     </Link>
   );
 }
@@ -158,14 +157,12 @@ function NavGroup({ item, activeHref }: { item: NavItem; activeHref?: string }) 
   return (
     <div>
       <button
-        type="button"
         onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
         className={cn(
-          "flex min-h-10 w-full items-center gap-3 rounded-xl px-3 py-2 text-[13px] font-medium transition-all",
+          "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
           childActive
-            ? "text-[var(--sidebar-foreground)]"
-            : "text-[var(--sidebar-muted)] hover:bg-white/[0.055] hover:text-[var(--sidebar-foreground)]",
+            ? "font-medium text-[var(--sidebar-foreground)]"
+            : "text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)]/60 hover:text-[var(--sidebar-foreground)]",
         )}
       >
         <Icon className="size-[18px] shrink-0" />
@@ -173,18 +170,19 @@ function NavGroup({ item, activeHref }: { item: NavItem; activeHref?: string }) 
         {open ? <ChevronDown className="size-3.5 opacity-60" /> : <ChevronRight className="size-3.5 opacity-60" />}
       </button>
       {open && (
-        <div className="ml-5 mt-1 flex flex-col gap-1 border-l border-[var(--sidebar-border)] pl-3">
+        <div className="mt-0.5 flex flex-col gap-0.5 pl-[26px]">
           {item.children!.map((c) => {
             const active = c.href === activeHref;
             return (
               <Link
                 key={c.href}
                 href={c.href}
+                aria-current={active ? "page" : undefined}
                 className={cn(
-                  "rounded-lg px-2.5 py-2 text-[12px] font-medium transition-colors",
+                  "rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
                   active
-                    ? "bg-[var(--sidebar-accent)] text-[var(--sidebar-accent-foreground)]"
-                    : "text-[var(--sidebar-muted)] hover:bg-white/[0.055] hover:text-[var(--sidebar-foreground)]",
+                    ? "bg-[var(--sidebar-accent)] font-medium text-[var(--sidebar-accent-foreground)]"
+                    : "text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)]/60 hover:text-[var(--sidebar-foreground)]",
                 )}
               >
                 {c.label}
@@ -223,32 +221,28 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
   return (
     <>
       {/* профиль вверху */}
-      <div className="flex min-h-[76px] items-center gap-3 border-b border-[var(--sidebar-border)] px-4 py-3">
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-[14px] bg-white shadow-[0_8px_26px_-14px_rgba(255,255,255,0.9)]">
-          <Image
-            src="/logo-mark.png"
-            alt="ASYL-LTD"
-            width={30}
-            height={30}
-            className="size-7 object-contain"
-            priority
-          />
-        </span>
+      <div className="flex items-center gap-2.5 px-3 py-3">
+        <Image
+          src="/logo-mark.png"
+          alt="ASYL-LTD"
+          width={28}
+          height={28}
+          className="size-7 shrink-0 rounded-md object-contain"
+          priority
+        />
         <div className="min-w-0 leading-tight">
-          <div className="truncate text-[14px] font-extrabold tracking-[0.03em] text-[var(--sidebar-foreground)]">
-            ASYL-LTD
-          </div>
-          <div className="mt-0.5 truncate text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--sidebar-muted)]">
+          <div className="truncate text-[13px] font-semibold">ASYL-LTD</div>
+          <div className="truncate text-[11px] text-[var(--muted-foreground)]">
             {me.is_client ? "Кабинет клиента" : me.is_monoblock ? me.monoblock_name : "Мельничный комплекс"}
           </div>
         </div>
       </div>
 
       {/* навигация по группам */}
-      <nav className="flex flex-1 flex-col gap-6 overflow-y-auto px-3 py-5" onClick={onNavigate}>
+      <nav className="flex flex-1 flex-col gap-5 overflow-y-auto px-3 pb-3" onClick={onNavigate}>
         {visible.map((section) => (
           <div key={section.title} className="flex flex-col gap-0.5">
-            <div className="px-3 pb-2 text-[9px] font-bold uppercase tracking-[0.18em] text-[var(--sidebar-muted)]/70">
+            <div className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--muted-foreground)]/70">
               {section.title}
             </div>
             {section.items.map((item) =>
@@ -269,15 +263,11 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
       </nav>
 
       {/* футер */}
-      <div className="flex min-h-14 items-center justify-between border-t border-[var(--sidebar-border)] px-4 py-3 text-[10px] text-[var(--sidebar-muted)]">
-        <span className="flex items-center gap-2">
-          <span className="relative flex size-2">
-            <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#7fc98f] opacity-35" />
-            <span className="relative size-2 rounded-full bg-[#68b77b]" />
-          </span>
-          {initials} · В сети
+      <div className="flex items-center justify-between border-t px-4 py-2.5 text-[11px] text-[var(--muted-foreground)]">
+        <span className="flex items-center gap-1.5">
+          <span className="size-1.5 rounded-full bg-[var(--success)]" /> {initials} · В сети
         </span>
-        <span className="rounded-full border border-[var(--sidebar-border)] px-2 py-0.5">v1.0</span>
+        <span>v1.0</span>
       </div>
     </>
   );
@@ -296,8 +286,6 @@ export function Sidebar({ me, mobileOpen = false, onClose }: { me: Me; mobileOpe
 
   useEffect(() => {
     if (!mobileOpen) return;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
     restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const focusFrame = requestAnimationFrame(() => mobileCloseRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
@@ -326,7 +314,6 @@ export function Sidebar({ me, mobileOpen = false, onClose }: { me: Me; mobileOpe
     return () => {
       cancelAnimationFrame(focusFrame);
       document.removeEventListener("keydown", onKeyDown);
-      document.body.style.overflow = previousOverflow;
       const restoreTarget = restoreFocusRef.current;
       restoreFocusRef.current = null;
       if (restoreTarget?.isConnected && !restoreTarget.matches(":disabled")) {
@@ -340,22 +327,19 @@ export function Sidebar({ me, mobileOpen = false, onClose }: { me: Me; mobileOpe
       {/* десктоп: постоянный сайдбар */}
       <aside
         data-tour="nav"
-        className="hidden w-[260px] shrink-0 flex-col border-r border-[var(--sidebar-border)] bg-[var(--sidebar)] text-[var(--sidebar-foreground)] lg:flex"
+        className="hidden w-[248px] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)] md:flex"
       >
         <SidebarContent me={me} />
       </aside>
 
       {/* мобайл: выезжающая панель с оверлеем */}
       <div
-        className={cn("fixed inset-0 z-50 lg:hidden", mobileOpen ? "" : "pointer-events-none")}
+        className={cn("fixed inset-0 z-50 md:hidden", mobileOpen ? "" : "pointer-events-none")}
         aria-hidden={!mobileOpen}
         inert={!mobileOpen}
       >
         <div
-          className={cn(
-            "absolute inset-0 bg-black/60 backdrop-blur-[2px] transition-opacity",
-            mobileOpen ? "opacity-100" : "opacity-0",
-          )}
+          className={cn("absolute inset-0 bg-black/50 transition-opacity", mobileOpen ? "opacity-100" : "opacity-0")}
           onClick={onClose}
         />
         <aside
@@ -365,7 +349,7 @@ export function Sidebar({ me, mobileOpen = false, onClose }: { me: Me; mobileOpe
           aria-label="Меню навигации"
           tabIndex={-1}
           className={cn(
-            "absolute inset-y-0 left-0 flex w-[280px] max-w-[86vw] flex-col border-r border-[var(--sidebar-border)] bg-[var(--sidebar)] pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] text-[var(--sidebar-foreground)] shadow-2xl transition-transform duration-300",
+            "absolute inset-y-0 left-0 flex w-[248px] max-w-[80vw] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)] shadow-xl transition-transform",
             mobileOpen ? "translate-x-0" : "-translate-x-full",
           )}
         >
@@ -373,7 +357,7 @@ export function Sidebar({ me, mobileOpen = false, onClose }: { me: Me; mobileOpe
             ref={mobileCloseRef}
             type="button"
             onClick={onClose}
-            className="absolute right-3 top-[calc(1rem+env(safe-area-inset-top))] z-10 flex size-11 items-center justify-center rounded-xl text-[var(--sidebar-muted)] hover:bg-white/10 hover:text-[var(--sidebar-foreground)]"
+            className="absolute right-2 top-2 flex size-8 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)]/60"
             aria-label="Закрыть меню"
           >
             <X className="size-4" />

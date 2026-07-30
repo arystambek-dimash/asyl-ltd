@@ -25,10 +25,10 @@ export function StatCard({
   return (
     <div
       className={cn(
-        "relative flex min-h-32 flex-col gap-2 overflow-hidden rounded-[20px] border p-4 transition-all duration-200 sm:gap-3 sm:p-5",
+        "flex flex-col gap-2 sm:gap-3 rounded-lg border p-3 sm:p-5 transition-colors",
         accent
-          ? "border-[var(--ring)]/12 bg-[var(--soft-blue)]"
-          : "border-[var(--border)] bg-[var(--card)] shadow-card hover:-translate-y-0.5 hover:border-[var(--ring)]/25",
+          ? "border-[var(--ring)]/20 bg-[var(--ring)]/10"
+          : "border-[var(--border)] bg-[var(--card)] hover:border-[var(--ring)]/40",
         className,
       )}
     >
@@ -37,8 +37,8 @@ export function StatCard({
         {Icon && (
           <span
             className={cn(
-              "flex size-9 shrink-0 items-center justify-center rounded-xl",
-              accent ? "bg-[var(--card)]/75 text-[var(--ring)]" : "bg-[var(--muted)] text-[var(--muted-foreground)]",
+              "flex size-7 shrink-0 items-center justify-center rounded-md",
+              accent ? "bg-[var(--ring)]/15 text-[var(--ring)]" : "bg-[var(--muted)] text-[var(--muted-foreground)]",
             )}
           >
             <Icon className="size-4" />
@@ -47,7 +47,7 @@ export function StatCard({
       </div>
       <div
         className={cn(
-          "text-[24px] font-extrabold leading-[1.05] tracking-[-0.04em] tabular-nums sm:text-[32px]",
+          "text-[20px] sm:text-[30px] leading-[1.1] tracking-tight tabular-nums font-semibold",
           accent ? "text-[var(--ring)]" : "text-[var(--foreground)]",
           tone === "destructive" && "text-[var(--destructive)]",
           tone === "success" && "text-[var(--success)]",

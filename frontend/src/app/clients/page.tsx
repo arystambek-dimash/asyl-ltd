@@ -20,18 +20,7 @@ import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { cn, currencySymbol, formatPhone, formatMoney, formatDateTime } from "@/lib/utils";
 import { COUNTRIES } from "@/lib/countries";
-import {
-  ArrowUpRight,
-  BarChart3,
-  FileSpreadsheet,
-  MoreVertical,
-  Pencil,
-  Phone,
-  Plus,
-  Search,
-  Tags,
-  Trash2,
-} from "lucide-react";
+import { BarChart3, FileSpreadsheet, MoreVertical, Pencil, Phone, Plus, Search, Tags, Trash2 } from "lucide-react";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -202,7 +191,7 @@ function ClientForm({
           control={form.control}
           name="currency"
           render={({ field }) => (
-            <FormItem className="sm:col-span-2 rounded-2xl border border-[var(--soft-blue-border)] bg-[var(--soft-blue)] p-4">
+            <FormItem className="sm:col-span-2 rounded-2xl border border-blue-100 bg-blue-50/55 p-4">
               <div className="flex flex-col justify-between gap-1 sm:flex-row sm:items-start sm:gap-6">
                 <div>
                   <FormLabel>Валюта по умолчанию</FormLabel>
@@ -211,7 +200,7 @@ function ClientForm({
                   </p>
                 </div>
                 <FormControl>
-                  <div className="grid shrink-0 grid-cols-2 gap-1 rounded-xl border border-[var(--soft-blue-border)] bg-[var(--card)] p-1 shadow-sm">
+                  <div className="grid shrink-0 grid-cols-2 gap-1 rounded-xl border border-blue-100 bg-white p-1 shadow-sm">
                     {(["KZT", "USD"] as const).map((code) => (
                       <button
                         key={code}
@@ -221,18 +210,13 @@ function ClientForm({
                         className={cn(
                           "min-w-28 rounded-lg px-3 py-2 text-left transition",
                           field.value === code
-                            ? "bg-[var(--primary)] text-[var(--primary-foreground)] shadow-sm"
-                            : "text-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]",
+                            ? "bg-slate-900 text-white shadow-sm"
+                            : "text-slate-500 hover:bg-slate-50 hover:text-slate-800",
                         )}
                       >
                         <span className="block text-xs font-bold">{code}</span>
                         <span
-                          className={cn(
-                            "block text-[10px]",
-                            field.value === code
-                              ? "text-[var(--primary-foreground)]/65"
-                              : "text-[var(--muted-foreground)]",
-                          )}
+                          className={cn("block text-[10px]", field.value === code ? "text-white/60" : "text-slate-400")}
                         >
                           {code === "KZT" ? "тенге · ₸" : "доллар · $"}
                         </span>
@@ -503,7 +487,7 @@ function ClientsPageInner() {
                 aria-label="Общая Excel-выписка"
                 onClick={() => setStatementOpen(true)}
               >
-                <FileSpreadsheet className="size-4 text-[var(--soft-green-foreground)]" />
+                <FileSpreadsheet className="size-4 text-emerald-600" />
                 <span className="hidden sm:inline">Общая выписка</span>
               </Button>
             )}
@@ -574,28 +558,41 @@ function ClientsPageInner() {
           <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Здесь пусто</p>
         ) : (
           sorted.map((c) => (
-            <div key={c.id} className="flex flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card">
+            <div
+              key={c.id}
+              role={canMoney ? "link" : undefined}
+              tabIndex={canMoney ? 0 : undefined}
+              aria-label={canMoney ? `Клиент ${c.name}` : undefined}
+              onClick={canMoney ? () => router.push(`/clients/${c.id}`) : undefined}
+              // На телефоне карточка — единственный путь в карточку клиента.
+              onKeyDown={
+                canMoney
+                  ? (event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        router.push(`/clients/${c.id}`);
+                      }
+                    }
+                  : undefined
+              }
+              className={cn(
+                "flex flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card",
+                canMoney &&
+                  "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
+              )}
+            >
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  {canMoney ? (
-                    <Link
-                      href={`/clients/${c.id}`}
-                      className="-my-1 inline-flex min-h-11 items-center gap-1.5 text-sm font-semibold hover:text-[var(--ring)]"
-                    >
-                      {c.name}
-                      <ArrowUpRight className="size-3.5" aria-hidden="true" />
-                    </Link>
-                  ) : (
-                    <div className="text-sm font-semibold">{c.name}</div>
-                  )}
+                  <div className="text-sm font-semibold">{c.name}</div>
                   <a
                     href={`tel:${c.phone}`}
-                    className="flex min-h-10 items-center gap-1.5 text-sm text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                    onClick={(e) => e.stopPropagation()}
+                    className="flex items-center gap-1.5 text-sm text-[var(--muted-foreground)]"
                   >
                     <Phone className="size-3.5" /> {c.phone}
                   </a>
                 </div>
-                <div>
+                <div onClick={(e) => e.stopPropagation()}>
                   <RowMenu items={rowMenu(c)} />
                 </div>
               </div>
