@@ -77,10 +77,14 @@ export function ManualOrderStatusModal({
           </>
         }
       >
-        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm leading-relaxed text-red-800">
+        <div className="rounded-xl border border-[var(--soft-red-border)] bg-[var(--soft-red)] px-4 py-3 text-sm leading-relaxed text-[var(--soft-red-foreground)]">
           Если камера сейчас считает этот заказ, сначала остановите отгрузку в «Моноблоке» или на посту.
         </div>
-        {error && <p className="mt-3 text-sm text-[var(--destructive)]">{error}</p>}
+        {error && (
+          <p role="alert" className="mt-3 text-sm text-[var(--destructive)]">
+            {error}
+          </p>
+        )}
       </Modal>
     );
   }
@@ -107,8 +111,8 @@ export function ManualOrderStatusModal({
     >
       <div className="space-y-4">
         <label className="block">
-          <span className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-700">
-            <PackageCheck className="size-4 text-blue-600" /> Фактически загружено
+          <span className="mb-2 flex items-center gap-2 text-sm font-semibold text-[var(--foreground)]">
+            <PackageCheck className="size-4 text-[var(--soft-blue-foreground)]" /> Фактически загружено
           </span>
           <div className="relative">
             <input
@@ -119,9 +123,9 @@ export function ManualOrderStatusModal({
               inputMode="numeric"
               value={bags}
               onChange={(event) => setBags(event.target.value)}
-              className="h-20 w-full rounded-2xl border bg-slate-50 px-5 pr-24 text-right text-4xl font-black tabular-nums outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10"
+              className="h-20 w-full rounded-2xl border bg-[var(--secondary)] px-5 pr-24 text-right text-4xl font-black tabular-nums outline-none transition focus:border-[var(--ring)] focus:ring-4 focus:ring-[var(--ring)]"
             />
-            <span className="absolute right-5 top-1/2 -translate-y-1/2 text-sm font-semibold text-slate-400">
+            <span className="absolute right-5 top-1/2 -translate-y-1/2 text-sm font-semibold text-[var(--muted-foreground)]">
               мешков
             </span>
           </div>
@@ -131,22 +135,22 @@ export function ManualOrderStatusModal({
           type="button"
           disabled={busy}
           onClick={() => void apply("shipped")}
-          className="flex w-full items-center justify-between rounded-xl border border-dashed border-slate-300 bg-white px-4 py-3 text-left transition hover:border-blue-300 hover:bg-blue-50/50 disabled:opacity-60"
+          className="flex min-h-14 w-full items-center justify-between rounded-xl border border-dashed border-[var(--input)] bg-[var(--card)] px-4 py-3 text-left transition hover:border-[var(--ring)] hover:bg-[var(--soft-blue)] disabled:opacity-60"
         >
           <span>
-            <span className="block text-sm font-semibold text-slate-800">Завершить без ручного подсчёта</span>
-            <span className="mt-0.5 block text-xs text-slate-500">
+            <span className="block text-sm font-semibold text-[var(--foreground)]">Завершить без ручного подсчёта</span>
+            <span className="mt-0.5 block text-xs text-[var(--muted-foreground)]">
               {usesCurrentCount ? "Будет сохранён текущий результат погрузки" : "Будет принято количество из заказа"}
             </span>
           </span>
-          <b className="text-lg tabular-nums text-slate-700">{fallback}</b>
+          <b className="text-lg tabular-nums text-[var(--foreground)]">{fallback}</b>
         </button>
 
         <button
           type="button"
           disabled={busy}
           onClick={() => void apply("cancelled")}
-          className="flex w-full items-center gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-left text-red-800 transition hover:bg-red-100 disabled:opacity-60"
+          className="flex w-full items-center gap-3 rounded-xl border border-[var(--soft-red-border)] bg-[var(--soft-red)] px-4 py-3 text-left text-[var(--soft-red-foreground)] transition hover:bg-[var(--soft-red)] disabled:opacity-60"
         >
           <Ban className="size-5 shrink-0" />
           <span>
@@ -156,7 +160,11 @@ export function ManualOrderStatusModal({
             </span>
           </span>
         </button>
-        {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
+        {error && (
+          <p role="alert" className="text-sm text-[var(--destructive)]">
+            {error}
+          </p>
+        )}
       </div>
     </Modal>
   );

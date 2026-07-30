@@ -112,16 +112,16 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
     m.overdueClients + m.attention.pendingPayments + m.attention.awaitingReview + m.negativeStock.length;
 
   return (
-    <section className="analytics-hero relative overflow-hidden rounded-[26px] bg-[#17231c] text-white shadow-[0_18px_60px_rgba(23,35,28,0.16)]">
+    <section className="analytics-hero relative w-full min-w-0 overflow-hidden rounded-[24px] bg-[var(--hero)] text-[var(--hero-foreground)] shadow-[0_18px_60px_rgba(23,35,28,0.16)]">
       <div aria-hidden="true" className="absolute -right-12 -top-20 size-64 rounded-full border border-white/10" />
       <div aria-hidden="true" className="absolute -right-3 -top-4 size-36 rounded-full border border-white/10" />
-      <div className="relative grid min-h-[300px] lg:grid-cols-[1.15fr_0.85fr]">
-        <div className="flex flex-col justify-between border-white/10 p-6 sm:p-8 lg:border-r lg:p-10">
-          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
-            <span className="size-2 rounded-full bg-[#d9f99d] shadow-[0_0_0_5px_rgba(217,249,157,0.12)]" />
+      <div className="relative grid min-h-[300px] min-w-0 lg:grid-cols-[1.15fr_0.85fr]">
+        <div className="flex min-w-0 flex-col justify-between border-white/10 p-6 sm:p-8 lg:border-r lg:p-10">
+          <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+            <span className="size-2 rounded-full bg-[var(--hero-accent)] shadow-[0_0_0_5px_rgba(217,249,157,0.12)]" />
             Сводка за сегодня
             {attentionCount > 0 && (
-              <span className="ml-2 whitespace-nowrap rounded-full bg-white/10 px-2.5 py-1 normal-case tracking-normal text-white/75">
+              <span className="w-fit rounded-full bg-white/10 px-2.5 py-1 text-center normal-case tracking-normal text-white/75 min-[360px]:ml-2">
                 {attentionCount} требуют действия
               </span>
             )}
@@ -132,7 +132,7 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
             <div className="mt-2 flex flex-wrap items-end gap-x-3 gap-y-1">
               <span
                 title={primary.exact}
-                className="font-serif text-6xl font-medium leading-none tracking-[-0.055em] tabular-nums sm:text-7xl"
+                className="text-6xl font-extrabold leading-none tracking-[-0.055em] tabular-nums sm:text-7xl"
               >
                 {primary.value}
               </span>
@@ -143,14 +143,14 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
 
           <Link
             href={primary.href}
-            className="group inline-flex w-fit items-center gap-2 text-sm font-medium text-[#d9f99d] transition hover:text-white"
+            className="group inline-flex min-h-11 w-fit items-center gap-2 text-sm font-semibold text-[var(--hero-accent)] transition hover:text-white"
           >
             Открыть детали
             <ArrowRight className="size-4 transition-transform group-hover:translate-x-1" />
           </Link>
         </div>
 
-        <div className="relative flex flex-col justify-center px-6 pb-6 sm:px-8 sm:pb-8 lg:p-10">
+        <div className="relative flex min-w-0 flex-col justify-center px-6 pb-6 sm:px-8 sm:pb-8 lg:p-10">
           <div className="divide-y divide-white/10 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.045] backdrop-blur">
             {secondary.map((metric) => {
               const Icon = metric.icon;
@@ -179,7 +179,7 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
             })}
             {secondary.length === 0 && (
               <div className="flex min-h-44 flex-col items-center justify-center gap-2 px-6 text-center">
-                <Sparkles className="size-5 text-[#d9f99d]" />
+                <Sparkles className="size-5 text-[var(--hero-accent)]" />
                 <p className="text-sm text-white/55">Главный показатель уже перед вами</p>
               </div>
             )}
@@ -244,7 +244,7 @@ function AttentionPanel({ m }: { m: DashboardMetrics }) {
   ].filter((item) => item.show);
 
   return (
-    <section className="flex min-h-[390px] flex-col rounded-[22px] border bg-[var(--card)] shadow-card">
+    <section className="flex min-h-[390px] min-w-0 flex-col rounded-[22px] border bg-[var(--card)] shadow-card">
       <div className="flex items-start justify-between gap-4 px-5 pb-4 pt-5">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
@@ -355,13 +355,13 @@ function TrendPanel({ m, days }: { m: DashboardMetrics; days: number }) {
         ];
 
   return (
-    <section className="min-h-[390px] rounded-[22px] border bg-[var(--card)] shadow-card">
+    <section className="min-h-[390px] min-w-0 rounded-[22px] border bg-[var(--card)] shadow-card">
       <div className="flex flex-wrap items-start justify-between gap-4 px-5 pb-2 pt-5 sm:px-6 sm:pt-6">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
             Последние {days} дней
           </p>
-          <h3 className="mt-1 text-lg font-semibold tracking-tight">Динамика бизнеса</h3>
+          <h3 className="mt-1 text-lg font-semibold tracking-tight">Динамика производства</h3>
         </div>
         {modes.length > 1 && (
           <div className="flex rounded-xl bg-[var(--muted)] p-1">
@@ -371,7 +371,7 @@ function TrendPanel({ m, days }: { m: DashboardMetrics; days: number }) {
                 type="button"
                 onClick={() => setMode(item.key)}
                 className={cn(
-                  "rounded-lg px-3 py-1.5 text-xs font-medium transition",
+                  "min-h-11 rounded-lg px-3 py-1.5 text-xs font-medium transition sm:min-h-9",
                   active === item.key
                     ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
                     : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
@@ -393,7 +393,15 @@ function TrendPanel({ m, days }: { m: DashboardMetrics; days: number }) {
         ))}
       </div>
 
-      <div className="h-[235px] w-full px-2 pb-3 sm:px-4">
+      <div
+        className="h-[235px] w-full px-2 pb-3 sm:px-4"
+        role="img"
+        aria-label={
+          active === "bags"
+            ? `График отгрузок за ${days} дней. Всего ${totalBags} мешков.`
+            : `График выручки и поступлений за ${days} дней.`
+        }
+      >
         <ResponsiveContainer width="100%" height="100%">
           {active === "bags" ? (
             <BarChart data={bagChart} margin={{ top: 18, right: 8, left: 8, bottom: 0 }}>
@@ -462,6 +470,19 @@ function TrendPanel({ m, days }: { m: DashboardMetrics; days: number }) {
           )}
         </ResponsiveContainer>
       </div>
+      <ul className="sr-only">
+        {active === "bags"
+          ? m.shippedByDay.map((day) => (
+              <li key={day.label}>
+                День {day.label}: {day.bags} мешков
+              </li>
+            ))
+          : m.spark.map((day) => (
+              <li key={day.label}>
+                День {day.label}: выручка {day.revenue} ₸, поступления {day.received} ₸
+              </li>
+            ))}
+      </ul>
 
       {active === "bags" && hasOutlier && (
         <div className="mx-5 mb-4 flex items-center gap-2 rounded-xl bg-[var(--warning)]/10 px-3 py-2 text-xs text-[var(--warning)] sm:mx-6">
@@ -477,7 +498,7 @@ function LiveQueue({ m }: { m: DashboardMetrics }) {
   if (m.queue.length === 0) return null;
 
   return (
-    <section className="overflow-hidden rounded-[22px] border bg-[var(--card)] shadow-card">
+    <section className="min-w-0 overflow-hidden rounded-[22px] border bg-[var(--card)] shadow-card">
       <div className="flex items-center gap-3 border-b px-5 py-4 sm:px-6">
         <span className="relative flex size-9 items-center justify-center rounded-xl bg-[var(--ring)]/10 text-[var(--ring)]">
           <Truck className="size-[18px]" />
@@ -548,7 +569,7 @@ function AnalyticsView() {
   const hasAnyData = m.canOrders || m.canStock || m.canFinance;
 
   return (
-    <div className="mx-auto max-w-[1480px] space-y-5">
+    <div className="mx-auto w-full min-w-0 max-w-[1480px] space-y-5">
       {hasAnyData && (
         <div className="flex flex-wrap items-end justify-between gap-4 pb-1">
           <div>
@@ -567,7 +588,7 @@ function AnalyticsView() {
                 aria-label="Период аналитики"
                 value={days}
                 onChange={(event) => changeDays(Number(event.target.value))}
-                className="h-10 appearance-none rounded-xl border bg-[var(--card)] pl-9 pr-9 text-sm font-medium outline-none transition focus:ring-2 focus:ring-[var(--ring)]/25"
+                className="h-11 appearance-none rounded-xl border bg-[var(--card)] pl-9 pr-9 text-sm font-medium outline-none transition focus:ring-2 focus:ring-[var(--ring)]/25"
               >
                 {PERIODS.map((value) => (
                   <option key={value} value={value}>
@@ -582,7 +603,7 @@ function AnalyticsView() {
               aria-label="Обновить данные"
               title="Обновить данные"
               onClick={m.reload}
-              className="flex size-10 items-center justify-center rounded-xl border bg-[var(--card)] text-[var(--muted-foreground)] transition hover:border-[var(--input)] hover:text-[var(--foreground)]"
+              className="flex size-11 items-center justify-center rounded-xl border bg-[var(--card)] text-[var(--muted-foreground)] transition hover:border-[var(--input)] hover:text-[var(--foreground)]"
             >
               <RefreshCw className="size-4" />
             </button>
@@ -594,7 +615,7 @@ function AnalyticsView() {
       <SummaryHero m={m} />
 
       {(m.canOrders || m.canFinance || m.canStock) && (
-        <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="grid min-w-0 items-stretch gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
           <TrendPanel m={m} days={days} />
           <AttentionPanel m={m} />
         </div>

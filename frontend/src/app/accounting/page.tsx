@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
@@ -70,7 +70,7 @@ function DepartmentBadge({ name, color }: { name?: string; color?: string }) {
   if (!name) return null;
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold">
-      <span className="size-2 rounded-full" style={{ backgroundColor: color ?? "#64748B" }} />
+      <span className="size-2 rounded-full" style={{ backgroundColor: color ?? "var(--muted-foreground)" }} />
       {name}
     </span>
   );
@@ -377,12 +377,20 @@ function DebtsSection({
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
             <Input
               className="pl-9"
+              aria-label="Поиск по клиенту или телефону"
               placeholder="Поиск по клиенту или телефону"
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
           </div>
-          <Button size="sm" variant="outline" disabled={busy} onClick={checkOverdue} aria-label="Проверить просрочки">
+          <Button
+            size="sm"
+            variant="outline"
+            className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0"
+            disabled={busy}
+            onClick={checkOverdue}
+            aria-label="Проверить просрочки"
+          >
             <RefreshCw className={"size-4" + (busy ? " animate-spin" : "")} />
             <span className="hidden sm:inline">Проверить просрочки</span>
           </Button>
@@ -397,87 +405,155 @@ function DebtsSection({
 
       <Card>
         <CardContent className="pt-6">
-          <Table>
-            <THead>
-              <TR>
-                <TH>Клиент</TH>
-                <TH>Остаток</TH>
-                <TH>Заказы</TH>
-                <TH>Статус оплаты</TH>
-                <TH>Магазины</TH>
-                <TH>Просрочки</TH>
-                <TH></TH>
-              </TR>
-            </THead>
-            <TBody>
-              {loading ? (
+          <div className="hidden md:block">
+            <Table>
+              <THead>
                 <TR>
-                  <TD colSpan={7} className="py-8 text-center text-[var(--muted-foreground)]">
-                    Загрузка…
-                  </TD>
+                  <TH>Клиент</TH>
+                  <TH>Остаток</TH>
+                  <TH>Заказы</TH>
+                  <TH>Статус оплаты</TH>
+                  <TH>Магазины</TH>
+                  <TH>Просрочки</TH>
+                  <TH></TH>
                 </TR>
-              ) : error && rows.length === 0 ? (
-                <TR>
-                  <TD colSpan={7} className="py-4">
-                    <ErrorAlert message={error} onRetry={reload} />
-                  </TD>
-                </TR>
-              ) : filtered.length === 0 ? (
-                <TR>
-                  <TD colSpan={7} className="py-8 text-center text-[var(--muted-foreground)]">
-                    Долгов нет.
-                  </TD>
-                </TR>
-              ) : (
-                filtered.map((row) => {
-                  const state = debtPaymentState(row);
-                  return (
-                    <TR key={row.client_id}>
-                      <TD>
-                        <div className="font-medium">{row.client_name || "—"}</div>
-                        <div className="text-xs text-[var(--muted-foreground)]">{row.client_phone || "—"}</div>
-                      </TD>
-                      <TD className="tabular-nums text-lg font-semibold text-[var(--destructive)]">
-                        {formatMoney(row.debt_total)} ₸
-                      </TD>
-                      <TD className="tabular-nums">{row.orders_count}</TD>
-                      <TD>
-                        <Badge tone={state.tone} dot>
-                          {state.label}
-                        </Badge>
-                      </TD>
-                      <TD>
-                        {row.stores_count > 0 ? (
-                          <Badge tone="muted">{row.stores_count}</Badge>
-                        ) : (
-                          <span className="text-[var(--muted-foreground)]">—</span>
-                        )}
-                      </TD>
-                      <TD>
-                        {row.overdue_count > 0 ? (
-                          <Badge tone="destructive" dot>
-                            {row.overdue_count}
+              </THead>
+              <TBody>
+                {loading ? (
+                  <TR>
+                    <TD colSpan={7} className="py-8 text-center text-[var(--muted-foreground)]">
+                      Загрузка…
+                    </TD>
+                  </TR>
+                ) : error && rows.length === 0 ? (
+                  <TR>
+                    <TD colSpan={7} className="py-4">
+                      <ErrorAlert message={error} onRetry={reload} />
+                    </TD>
+                  </TR>
+                ) : filtered.length === 0 ? (
+                  <TR>
+                    <TD colSpan={7} className="py-8 text-center text-[var(--muted-foreground)]">
+                      Долгов нет.
+                    </TD>
+                  </TR>
+                ) : (
+                  filtered.map((row) => {
+                    const state = debtPaymentState(row);
+                    return (
+                      <TR key={row.client_id}>
+                        <TD>
+                          <div className="font-medium">{row.client_name || "—"}</div>
+                          <div className="text-xs text-[var(--muted-foreground)]">{row.client_phone || "—"}</div>
+                        </TD>
+                        <TD className="tabular-nums text-lg font-semibold text-[var(--destructive)]">
+                          {formatMoney(row.debt_total)} ₸
+                        </TD>
+                        <TD className="tabular-nums">{row.orders_count}</TD>
+                        <TD>
+                          <Badge tone={state.tone} dot>
+                            {state.label}
                           </Badge>
-                        ) : (
-                          <span className="text-[var(--muted-foreground)]">0</span>
-                        )}
-                      </TD>
-                      <TD>
-                        <div className="flex justify-end">
-                          <Link href={`/accounting/debts/clients/${row.client_id}`}>
-                            <Button size="sm" variant="ghost">
+                        </TD>
+                        <TD>
+                          {row.stores_count > 0 ? (
+                            <Badge tone="muted">{row.stores_count}</Badge>
+                          ) : (
+                            <span className="text-[var(--muted-foreground)]">—</span>
+                          )}
+                        </TD>
+                        <TD>
+                          {row.overdue_count > 0 ? (
+                            <Badge tone="destructive" dot>
+                              {row.overdue_count}
+                            </Badge>
+                          ) : (
+                            <span className="text-[var(--muted-foreground)]">0</span>
+                          )}
+                        </TD>
+                        <TD>
+                          <div className="flex justify-end">
+                            <Link
+                              href={`/accounting/debts/clients/${row.client_id}`}
+                              className={buttonVariants({ size: "sm", variant: "ghost" })}
+                            >
                               Детали
                               <ArrowUpRight className="size-4" />
-                            </Button>
-                          </Link>
-                        </div>
-                      </TD>
-                    </TR>
-                  );
-                })
-              )}
-            </TBody>
-          </Table>
+                            </Link>
+                          </div>
+                        </TD>
+                      </TR>
+                    );
+                  })
+                )}
+              </TBody>
+            </Table>
+          </div>
+
+          <div className="space-y-3 md:hidden">
+            {loading ? (
+              <p className="py-8 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+            ) : error && rows.length === 0 ? (
+              <ErrorAlert message={error} onRetry={reload} />
+            ) : filtered.length === 0 ? (
+              <p className="py-8 text-center text-sm text-[var(--muted-foreground)]">Долгов нет.</p>
+            ) : (
+              filtered.map((row) => {
+                const state = debtPaymentState(row);
+                return (
+                  <article key={row.client_id} className="rounded-2xl border bg-[var(--card)] p-4 shadow-card">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <h3 className="truncate font-semibold">{row.client_name || "—"}</h3>
+                        <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">{row.client_phone || "—"}</p>
+                      </div>
+                      <Badge tone={state.tone} dot>
+                        {state.label}
+                      </Badge>
+                    </div>
+                    <div className="mt-4 rounded-xl bg-[var(--soft-red)] p-3">
+                      <div className="text-xs font-medium text-[var(--muted-foreground)]">Остаток долга</div>
+                      <div className="mt-1 text-xl font-semibold tabular-nums text-[var(--destructive)]">
+                        {formatMoney(row.debt_total)} ₸
+                      </div>
+                    </div>
+                    <dl className="mt-3 grid grid-cols-1 gap-2 text-center min-[420px]:grid-cols-3">
+                      <div className="rounded-xl bg-[var(--muted)]/60 p-2.5">
+                        <dt className="text-[11px] text-[var(--muted-foreground)]">Заказы</dt>
+                        <dd className="mt-1 font-semibold tabular-nums">{row.orders_count}</dd>
+                      </div>
+                      <div className="rounded-xl bg-[var(--muted)]/60 p-2.5">
+                        <dt className="text-[11px] text-[var(--muted-foreground)]">Магазины</dt>
+                        <dd className="mt-1 font-semibold tabular-nums">{row.stores_count}</dd>
+                      </div>
+                      <div className="rounded-xl bg-[var(--muted)]/60 p-2.5">
+                        <dt className="text-[11px] text-[var(--muted-foreground)]">Просрочки</dt>
+                        <dd
+                          className={
+                            "mt-1 font-semibold tabular-nums" +
+                            (row.overdue_count > 0 ? " text-[var(--destructive)]" : "")
+                          }
+                        >
+                          {row.overdue_count}
+                        </dd>
+                      </div>
+                    </dl>
+                    <Link
+                      href={`/accounting/debts/clients/${row.client_id}`}
+                      className={buttonVariants({
+                        size: "sm",
+                        variant: "outline",
+                        className: "mt-3 min-h-11 w-full",
+                      })}
+                    >
+                      Открыть детали
+                      <ArrowUpRight className="size-4" />
+                    </Link>
+                  </article>
+                );
+              })
+            )}
+          </div>
         </CardContent>
       </Card>
     </section>
@@ -532,22 +608,22 @@ function CashFiltersPanel({
           </div>
 
           <div className="flex flex-wrap items-end gap-3">
-            <label className="flex flex-col gap-1.5">
+            <label className="flex w-full flex-col gap-1.5 sm:w-auto">
               <span className="text-[11px] font-medium text-[var(--muted-foreground)]">С даты</span>
               <Input
                 type="date"
                 value={filters.dateFrom}
                 onChange={(e) => onChange({ dateFrom: e.target.value })}
-                className="h-9 w-[158px]"
+                className="w-full sm:h-9 sm:w-[158px]"
               />
             </label>
-            <label className="flex flex-col gap-1.5">
+            <label className="flex w-full flex-col gap-1.5 sm:w-auto">
               <span className="text-[11px] font-medium text-[var(--muted-foreground)]">По дату</span>
               <Input
                 type="date"
                 value={filters.dateTo}
                 onChange={(e) => onChange({ dateTo: e.target.value })}
-                className="h-9 w-[158px]"
+                className="w-full sm:h-9 sm:w-[158px]"
               />
             </label>
             <FilterDropdown
@@ -573,27 +649,29 @@ function CashFiltersPanel({
                   .map((store) => ({ key: String(store.id), label: store.name })),
               ]}
             />
-            <div className="flex flex-col gap-1.5">
+            <div className="flex w-full flex-col gap-1.5 sm:w-auto">
               <span className="text-[11px] font-medium text-[var(--muted-foreground)]">Остаток долга, ₸</span>
-              <div className="flex items-center gap-1.5">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1.5">
                 <Input
                   type="number"
                   min="0"
                   inputMode="decimal"
+                  aria-label="Минимальный остаток долга"
                   placeholder="От"
                   value={filters.remainingMin}
                   onChange={(e) => onChange({ remainingMin: e.target.value })}
-                  className="h-9 w-[118px]"
+                  className="w-full sm:h-9 sm:w-[118px]"
                 />
                 <span className="text-[var(--muted-foreground)]">—</span>
                 <Input
                   type="number"
                   min="0"
                   inputMode="decimal"
+                  aria-label="Максимальный остаток долга"
                   placeholder="До"
                   value={filters.remainingMax}
                   onChange={(e) => onChange({ remainingMax: e.target.value })}
-                  className="h-9 w-[118px]"
+                  className="w-full sm:h-9 sm:w-[118px]"
                 />
               </div>
             </div>

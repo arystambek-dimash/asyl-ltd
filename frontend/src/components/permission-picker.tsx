@@ -66,7 +66,7 @@ export function PermissionPicker({
                     <span
                       key={p.code}
                       title="Обязательное право сотрудника отдела продаж"
-                      className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700"
+                      className="inline-flex items-center gap-1 rounded-md border border-[var(--soft-green-border)] bg-[var(--soft-green)] px-3 py-1.5 text-xs font-medium text-[var(--soft-green-foreground)]"
                     >
                       <LockKeyhole className="size-3" />
                       {PERM_ACTION_LABELS[p.action] ?? p.action} · обязательно
@@ -88,7 +88,7 @@ export function PermissionPicker({
                       }
                       className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
                         blocked
-                          ? "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                          ? "border-[var(--soft-red-border)] bg-[var(--soft-red)] text-[var(--soft-red-foreground)] hover:bg-[var(--soft-red)]"
                           : "border-[var(--primary)]/40 bg-[var(--primary)]/10 text-[var(--primary)] hover:bg-[var(--primary)]/15"
                       }`}
                     >

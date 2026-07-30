@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { can } from "@/lib/can";
@@ -71,6 +71,7 @@ export function OnboardingTour({ me }: { me: Me }) {
   const [active, setActive] = useState(false);
   const [step, setStep] = useState(0);
   const [rect, setRect] = useState<Rect | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
   const steps = useMemo(() => buildSteps(me), [me]);
 
   const finish = useCallback(() => {
@@ -100,7 +101,7 @@ export function OnboardingTour({ me }: { me: Me }) {
     return () => window.removeEventListener(TOUR_START_EVENT, start);
   }, []);
 
-  // Пересчёт позиции подсветки на каждом шаге, при ресайзе; Esc — выход.
+  // Пересчёт позиции подсветки на каждом шаге и при ресайзе.
   useEffect(() => {
     if (!active) return;
     const target = steps[step]?.target;
@@ -109,16 +110,54 @@ export function OnboardingTour({ me }: { me: Me }) {
     }
     const update = () => setRect(targetRect(target));
     update();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") finish();
-    };
     window.addEventListener("resize", update);
-    window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("resize", update);
-      window.removeEventListener("keydown", onKey);
     };
-  }, [active, finish, step, steps]);
+  }, [active, step, steps]);
+
+  // Тур ведёт себя как настоящий modal: фокус входит в карточку, не уходит
+  // под затемнение и возвращается к элементу, который его запустил.
+  useEffect(() => {
+    if (!active) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const frame = requestAnimationFrame(() => {
+      cardRef.current?.querySelector<HTMLElement>("button, [href], [tabindex]:not([tabindex='-1'])")?.focus();
+    });
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finish();
+        return;
+      }
+      if (event.key !== "Tab" || !cardRef.current) return;
+      const focusable = Array.from(
+        cardRef.current.querySelectorAll<HTMLElement>(
+          "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])",
+        ),
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previousOverflow;
+      previous?.focus();
+    };
+  }, [active, finish]);
 
   if (!active || steps.length === 0) return null;
   const current = steps[step];
@@ -165,7 +204,8 @@ export function OnboardingTour({ me }: { me: Me }) {
       className="fixed inset-0 z-[200]"
       role="dialog"
       aria-modal="true"
-      aria-label="Обучение по системе"
+      aria-labelledby="tour-title"
+      aria-describedby="tour-description"
       onClick={finish}
     >
       {/* затемнение с «окном» вокруг подсвеченного элемента */}
@@ -185,21 +225,27 @@ export function OnboardingTour({ me }: { me: Me }) {
       )}
 
       <div
+        ref={cardRef}
         style={cardStyle}
         onClick={(e) => e.stopPropagation()}
         className="animate-fade-up rounded-xl border bg-[var(--card)] p-4 shadow-2xl"
       >
         <div className="flex items-start justify-between gap-3">
-          <div className="text-[15px] font-semibold">{current.title}</div>
+          <div id="tour-title" className="text-[15px] font-semibold">
+            {current.title}
+          </div>
           <button
+            type="button"
             onClick={finish}
             aria-label="Закрыть обучение"
-            className="-mr-1 -mt-1 flex size-7 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
+            className="-mr-1 -mt-1 flex size-11 items-center justify-center rounded-xl text-[var(--muted-foreground)] hover:bg-[var(--muted)] sm:size-9"
           >
             <X className="size-4" />
           </button>
         </div>
-        <p className="mt-1.5 text-sm text-[var(--muted-foreground)]">{current.text}</p>
+        <p id="tour-description" className="mt-1.5 text-sm text-[var(--muted-foreground)]">
+          {current.text}
+        </p>
         <div className="mt-4 flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5">
             {steps.map((_, i) => (

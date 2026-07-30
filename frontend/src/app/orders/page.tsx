@@ -39,6 +39,7 @@ import { cn, currencySymbol, formatDateTime, formatIsoDate, formatMoney, primary
 import { useDismiss } from "@/lib/use-dismiss";
 import {
   Archive,
+  ArrowUpRight,
   BarChart3,
   Building2,
   CalendarDays,
@@ -781,15 +782,15 @@ function OrderTemplatePicker({
     .join(", ");
 
   return (
-    <section className="rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-50/90 via-white to-emerald-50/60 p-3.5 sm:p-4">
+    <section className="rounded-2xl border border-[var(--soft-blue-border)] bg-[var(--soft-blue)] p-3.5 sm:p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-3">
-          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[var(--ring)] text-white shadow-sm">
             <CopyPlus className="size-5" />
           </span>
           <div>
-            <h3 className="text-sm font-bold text-slate-900">Повторить старый заказ</h3>
-            <p className="mt-0.5 text-xs text-slate-500">
+            <h3 className="text-sm font-bold text-[var(--foreground)]">Повторить старый заказ</h3>
+            <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
               Выберите шаблон — данные заполнятся, но заказ сохранится только после вашей проверки.
             </p>
           </div>
@@ -801,7 +802,7 @@ function OrderTemplatePicker({
             const value = Number(event.target.value);
             onSelect(sorted.find((order) => order.id === value) ?? null);
           }}
-          className="h-10 min-w-56 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+          className="h-11 min-w-56 rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 text-sm font-semibold text-[var(--foreground)] shadow-sm outline-none transition focus:border-[var(--ring)] focus:ring-2 focus:ring-[var(--soft-blue-border)]"
         >
           <option value="">Новый заказ с нуля</option>
           {sorted.map((order) => (
@@ -812,13 +813,15 @@ function OrderTemplatePicker({
         </select>
       </div>
       {selected && (
-        <div className="mt-3 grid gap-2 border-t border-blue-100 pt-3 text-xs sm:grid-cols-[auto_1fr_auto] sm:items-center">
-          <span className="w-fit rounded-lg bg-blue-600 px-2.5 py-1 font-black text-white">Шаблон #{selected.id}</span>
-          <span className="truncate font-medium text-slate-700">
+        <div className="mt-3 grid gap-2 border-t border-[var(--soft-blue-border)] pt-3 text-xs sm:grid-cols-[auto_1fr_auto] sm:items-center">
+          <span className="w-fit rounded-lg bg-[var(--ring)] px-2.5 py-1 font-black text-white">
+            Шаблон #{selected.id}
+          </span>
+          <span className="truncate font-medium text-[var(--foreground)]">
             {selected.client_name} · {itemsSummary || "Без позиций"}
             {selected.items.length > 2 ? ` и ещё ${selected.items.length - 2}` : ""}
           </span>
-          <span className="font-bold tabular-nums text-slate-900">
+          <span className="font-bold tabular-nums text-[var(--foreground)]">
             {formatMoney(selected.total_amount)} {currencySymbol(selected.currency)}
           </span>
         </div>
@@ -1042,7 +1045,7 @@ function OrdersPageInner() {
                 aria-label="Общая Excel-выписка"
                 onClick={() => setStatementOpen(true)}
               >
-                <FileSpreadsheet className="size-4 text-emerald-600" />
+                <FileSpreadsheet className="size-4 text-[var(--soft-green-foreground)]" />
                 <span className="hidden lg:inline">Excel-выписка</span>
               </Button>
             )}
@@ -1134,25 +1137,17 @@ function OrdersPageInner() {
               <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Заказов пока нет.</p>
             ) : (
               sorted.map((o) => (
-                <div
-                  key={o.id}
-                  role="link"
-                  tabIndex={0}
-                  aria-label={`Заказ #${o.id}`}
-                  onClick={() => router.push(`/orders/${o.id}`)}
-                  // На телефоне карточка — единственный путь в заказ: без роли
-                  // и обработчика клавиш он был недоступен с клавиатуры.
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      router.push(`/orders/${o.id}`);
-                    }
-                  }}
-                  className="flex cursor-pointer flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                >
-                  <div className="flex items-start justify-between gap-2">
+                <div key={o.id} className="flex flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card">
+                  <div className="flex flex-col items-start justify-between gap-2 min-[360px]:flex-row">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold">#{o.id}</span>
+                      <Link
+                        href={`/orders/${o.id}`}
+                        className="-my-1 inline-flex min-h-11 items-center gap-1 text-sm font-semibold hover:text-[var(--ring)]"
+                        aria-label={`Открыть заказ #${o.id}`}
+                      >
+                        #{o.id}
+                        <ArrowUpRight className="size-3.5" aria-hidden="true" />
+                      </Link>
                       {showDept && <DepartmentBadge order={o} />}
                     </div>
                     {canEdit && (o.status !== "shipped" || canRollback) ? (
@@ -1165,7 +1160,12 @@ function OrdersPageInner() {
                       <StatusBadge status={o.status} dot />
                     )}
                   </div>
-                  <div className="text-sm font-medium">{o.client_name || `Клиент #${o.client}`}</div>
+                  <Link
+                    href={`/orders/${o.id}`}
+                    className="text-sm font-medium hover:text-[var(--ring)] hover:underline"
+                  >
+                    {o.client_name || `Клиент #${o.client}`}
+                  </Link>
                   <div className="text-xs text-[var(--muted-foreground)]">Создан {formatDateTime(o.created_at)}</div>
                   <div className="grid grid-cols-2 gap-2 text-sm">
                     <div>

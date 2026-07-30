@@ -12,7 +12,7 @@ import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
 import type { Store } from "@/lib/types";
-import { Info, Plus, Trash2 } from "lucide-react";
+import { Info, Plus, TrainFront, Trash2, Truck } from "lucide-react";
 
 interface PortalProduct {
   id: number;
@@ -78,7 +78,7 @@ export default function PortalNewOrderPage() {
 
   return (
     <AppShell title="Новый заказ" portal>
-      <form onSubmit={submit} className="max-w-2xl">
+      <form onSubmit={submit} className="max-w-3xl">
         <Card>
           <CardHeader>
             <CardTitle>Оформление заказа</CardTitle>
@@ -130,56 +130,66 @@ export default function PortalNewOrderPage() {
                 Показываем ваш личный прайс в {selectedCurrency}; оплата заказа будет в той же валюте.
               </p>
             </fieldset>
-            {rows.map((r, i) => (
-              <div key={r.id} className="flex gap-2">
-                <Select
-                  className="flex-1"
-                  value={r.product}
-                  aria-label={`Товар, позиция ${i + 1}`}
-                  onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, product: e.target.value } : x)))}
+            <fieldset className="space-y-3">
+              <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--muted-foreground)]">
+                Позиции заказа
+              </legend>
+              {rows.map((r, i) => (
+                <div
+                  key={r.id}
+                  className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-3 sm:grid-cols-[minmax(0,1fr)_8rem_auto] sm:border-0 sm:bg-transparent sm:p-0"
                 >
-                  <option value="">Товар</option>
-                  {(products ?? []).map((p) => (
-                    <option key={p.id} value={p.id} disabled={p.available_bags <= 0}>
-                      {p.label}
-                      {p.available_bags > 0
-                        ? ` · ${p.price ? `${formatCurrency(p.price, p.currency)} · ` : ""}в наличии ${p.available_bags} меш.`
-                        : " — нет в наличии"}
-                    </option>
-                  ))}
-                </Select>
-                <Input
-                  type="number"
-                  min="1"
-                  aria-label={`Количество мешков, позиция ${i + 1}`}
-                  max={products?.find((p) => String(p.id) === r.product)?.available_bags || undefined}
-                  placeholder="Мешков"
-                  className="w-24 sm:w-32"
-                  value={r.quantity}
-                  onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, quantity: e.target.value } : x)))}
-                />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  aria-label={`Удалить позицию ${i + 1}`}
-                  onClick={() => setRows(rows.filter((_, j) => j !== i))}
-                >
-                  <Trash2 className="size-4" />
-                </Button>
-              </div>
-            ))}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="self-start"
-              onClick={() => setRows([...rows, { id: nextRowId.current++, product: "", quantity: "" }])}
-            >
-              <Plus className="size-4" /> Добавить позицию
-            </Button>
+                  <span className="col-span-2 text-xs font-semibold text-[var(--muted-foreground)] sm:hidden">
+                    Позиция {i + 1}
+                  </span>
+                  <Select
+                    className="col-span-2 min-w-0 sm:col-span-1"
+                    value={r.product}
+                    aria-label={`Товар, позиция ${i + 1}`}
+                    onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, product: e.target.value } : x)))}
+                  >
+                    <option value="">Выберите товар</option>
+                    {(products ?? []).map((p) => (
+                      <option key={p.id} value={p.id} disabled={p.available_bags <= 0}>
+                        {p.label}
+                        {p.available_bags > 0
+                          ? ` · ${p.price ? `${formatCurrency(p.price, p.currency)} · ` : ""}в наличии ${p.available_bags} меш.`
+                          : " — нет в наличии"}
+                      </option>
+                    ))}
+                  </Select>
+                  <Input
+                    type="number"
+                    min="1"
+                    aria-label={`Количество мешков, позиция ${i + 1}`}
+                    max={products?.find((p) => String(p.id) === r.product)?.available_bags || undefined}
+                    placeholder="Мешков"
+                    className="min-w-0"
+                    value={r.quantity}
+                    onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, quantity: e.target.value } : x)))}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Удалить позицию ${i + 1}`}
+                    onClick={() => setRows(rows.filter((_, j) => j !== i))}
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full sm:w-auto"
+                onClick={() => setRows([...rows, { id: nextRowId.current++, product: "", quantity: "" }])}
+              >
+                <Plus className="size-4" /> Добавить позицию
+              </Button>
+            </fieldset>
             {(stores?.length ?? 0) > 0 && (
-              <div className="border-t pt-4">
+              <div className="border-t border-[var(--border)] pt-4">
                 <Label htmlFor="portal-order-store" className="mb-1.5 block">
                   Магазин (необязательно)
                 </Label>
@@ -193,30 +203,33 @@ export default function PortalNewOrderPage() {
                 </Select>
               </div>
             )}
-            <fieldset className="border-t pt-4">
+            <fieldset className="border-t border-[var(--border)] pt-4">
               <legend className="mb-2 text-[12px] font-medium">Вид транспорта</legend>
               <div className="grid grid-cols-2 gap-2">
                 {(
                   [
-                    ["truck", "🚚 Трак"],
-                    ["train", "🚃 Вагон"],
+                    { value: "truck", label: "Трак", icon: Truck },
+                    { value: "train", label: "Вагон", icon: TrainFront },
                   ] as const
-                ).map(([v, label]) => (
+                ).map(({ value, label, icon: TransportIcon }) => (
                   <label
-                    key={v}
+                    key={value}
                     className={
-                      "cursor-pointer rounded-lg border px-3 py-2 text-sm font-medium transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[var(--ring)]/40 " +
-                      (transport === v ? "border-[var(--primary)] bg-[var(--primary)]/5" : "hover:bg-[var(--muted)]/40")
+                      "flex min-h-14 cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 text-sm font-semibold transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[var(--ring)]/40 " +
+                      (transport === value
+                        ? "border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)]"
+                        : "border-[var(--border)] hover:bg-[var(--muted)]/60")
                     }
                   >
                     <input
                       className="sr-only"
                       type="radio"
                       name="transport"
-                      value={v}
-                      checked={transport === v}
-                      onChange={() => setTransport(v)}
+                      value={value}
+                      checked={transport === value}
+                      onChange={() => setTransport(value)}
                     />
+                    <TransportIcon className="size-5 shrink-0" aria-hidden="true" />
                     {label}
                   </label>
                 ))}
@@ -241,7 +254,7 @@ export default function PortalNewOrderPage() {
                 {error}
               </p>
             )}
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" className="w-full sm:w-auto sm:self-end" disabled={busy}>
               {busy ? "Отправка…" : "Отправить заказ"}
             </Button>
           </CardContent>

@@ -180,107 +180,207 @@ function ProductsPageInner() {
                 {restoreError}
               </p>
             )}
-            <Table>
-              <THead>
-                <TR>
-                  <TH>Название</TH>
-                  {canViewColor && <TH>Цвет</TH>}
-                  <TH>Фасовка</TH>
-                  <TH></TH>
-                </TR>
-              </THead>
-              <TBody>
-                {archiveList.map((p) => (
-                  <TR key={p.id}>
-                    <TD className="font-medium">{p.name}</TD>
-                    {canViewColor && <TD>{p.color_label}</TD>}
-                    <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
-                    <TD>
-                      <div className="flex items-center justify-end gap-1">
-                        <Badge tone="muted">В архиве</Badge>
-                        {canEdit && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={restoreBusyId === p.id}
-                            onClick={() => restore(p)}
-                          >
-                            <ArchiveRestore className="size-4" /> Восстановить
-                          </Button>
-                        )}
-                      </div>
-                    </TD>
-                  </TR>
-                ))}
-                {archiveList.length === 0 && (
+            <div className="space-y-3 md:hidden">
+              {archiveList.map((product) => (
+                <article
+                  key={product.id}
+                  className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 shadow-card"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="font-semibold">{product.name}</h3>
+                      <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+                        {canViewColor && product.color_label ? `${product.color_label} · ` : ""}
+                        <span className="tabular-nums">{Number(product.weight_kg)} кг</span>
+                      </p>
+                    </div>
+                    <Badge tone="muted">В архиве</Badge>
+                  </div>
+                  {canEdit && (
+                    <Button
+                      className="mt-4 w-full"
+                      variant="outline"
+                      disabled={restoreBusyId === product.id}
+                      onClick={() => restore(product)}
+                    >
+                      <ArchiveRestore className="size-4" /> Восстановить
+                    </Button>
+                  )}
+                </article>
+              ))}
+              {archiveList.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-[var(--border)] px-4 py-10 text-center text-sm text-[var(--muted-foreground)]">
+                  Архив пуст.
+                </div>
+              )}
+            </div>
+
+            <div className="hidden md:block">
+              <Table>
+                <THead>
                   <TR>
-                    <TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
-                      Архив пуст.
-                    </TD>
+                    <TH>Название</TH>
+                    {canViewColor && <TH>Цвет</TH>}
+                    <TH>Фасовка</TH>
+                    <TH></TH>
                   </TR>
-                )}
-              </TBody>
-            </Table>
+                </THead>
+                <TBody>
+                  {archiveList.map((p) => (
+                    <TR key={p.id}>
+                      <TD className="font-medium">{p.name}</TD>
+                      {canViewColor && <TD>{p.color_label}</TD>}
+                      <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
+                      <TD>
+                        <div className="flex items-center justify-end gap-1">
+                          <Badge tone="muted">В архиве</Badge>
+                          {canEdit && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={restoreBusyId === p.id}
+                              onClick={() => restore(p)}
+                            >
+                              <ArchiveRestore className="size-4" /> Восстановить
+                            </Button>
+                          )}
+                        </div>
+                      </TD>
+                    </TR>
+                  ))}
+                  {archiveList.length === 0 && (
+                    <TR>
+                      <TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
+                        Архив пуст.
+                      </TD>
+                    </TR>
+                  )}
+                </TBody>
+              </Table>
+            </div>
           </CardContent>
         </Card>
       ) : (
         <Card>
           <CardContent className="pt-6">
-            <Table>
-              <THead>
-                <TR>
-                  <SortableHeader
-                    label="Название"
-                    sortKey="name"
-                    activeKey={sortKey}
-                    dir={sortDir}
-                    onClick={toggleSort}
-                  />
-                  {canViewColor && <TH>Цвет</TH>}
-                  <TH>Фасовка</TH>
-                  <TH></TH>
-                </TR>
-              </THead>
-              <TBody>
-                {sorted.map((p) => (
-                  <TR key={p.id}>
-                    <TD className="font-medium">{p.name}</TD>
-                    {canViewColor && <TD>{p.color_label}</TD>}
-                    <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
-                    <TD>
-                      <div className="flex items-center justify-end gap-1">
-                        {canEdit && (
-                          <Button size="sm" variant="ghost" onClick={() => openEdit(p)} title="Изменить">
-                            <Pencil className="size-4" />
-                          </Button>
-                        )}
-                        {canEdit && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                            onClick={() => {
-                              setArcError("");
-                              setArcItem(p);
-                            }}
-                            title="В архив"
-                          >
-                            <Archive className="size-4" />
-                          </Button>
-                        )}
+            <div className="space-y-3 md:hidden">
+              {sorted.map((product) => (
+                <article
+                  key={product.id}
+                  className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 shadow-card"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="font-semibold">{product.name}</h3>
+                      <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+                        {canViewColor && product.color_label ? `${product.color_label} · ` : ""}
+                        <span className="tabular-nums">{Number(product.weight_kg)} кг</span>
+                      </p>
+                    </div>
+                    {canEdit && (
+                      <div className="flex shrink-0 items-center gap-1">
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          onClick={() => openEdit(product)}
+                          aria-label={`Изменить товар ${product.name}`}
+                        >
+                          <Pencil className="size-4" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                          onClick={() => {
+                            setArcError("");
+                            setArcItem(product);
+                          }}
+                          aria-label={`Отправить товар ${product.name} в архив`}
+                        >
+                          <Archive className="size-4" />
+                        </Button>
                       </div>
-                    </TD>
-                  </TR>
-                ))}
-                {sorted.length === 0 && (
+                    )}
+                  </div>
+                  <div className="mt-4 flex items-center justify-between rounded-xl bg-[var(--muted)]/55 px-3 py-2 text-sm">
+                    <span className="text-[var(--muted-foreground)]">Контроль веса машины</span>
+                    <Badge tone={product.ask_truck_weight ? "primary" : "muted"}>
+                      {product.ask_truck_weight ? "Включён" : "Не нужен"}
+                    </Badge>
+                  </div>
+                </article>
+              ))}
+              {sorted.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-[var(--border)] px-4 py-10 text-center text-sm text-[var(--muted-foreground)]">
+                  Товаров пока нет.
+                </div>
+              )}
+            </div>
+
+            <div className="hidden md:block">
+              <Table>
+                <THead>
                   <TR>
-                    <TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
-                      Товаров пока нет.
-                    </TD>
+                    <SortableHeader
+                      label="Название"
+                      sortKey="name"
+                      activeKey={sortKey}
+                      dir={sortDir}
+                      onClick={toggleSort}
+                    />
+                    {canViewColor && <TH>Цвет</TH>}
+                    <TH>Фасовка</TH>
+                    <TH></TH>
                   </TR>
-                )}
-              </TBody>
-            </Table>
+                </THead>
+                <TBody>
+                  {sorted.map((p) => (
+                    <TR key={p.id}>
+                      <TD className="font-medium">{p.name}</TD>
+                      {canViewColor && <TD>{p.color_label}</TD>}
+                      <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
+                      <TD>
+                        <div className="flex items-center justify-end gap-1">
+                          {canEdit && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => openEdit(p)}
+                              aria-label={`Изменить товар ${p.name}`}
+                              title="Изменить"
+                            >
+                              <Pencil className="size-4" />
+                            </Button>
+                          )}
+                          {canEdit && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                              onClick={() => {
+                                setArcError("");
+                                setArcItem(p);
+                              }}
+                              aria-label={`Отправить товар ${p.name} в архив`}
+                              title="В архив"
+                            >
+                              <Archive className="size-4" />
+                            </Button>
+                          )}
+                        </div>
+                      </TD>
+                    </TR>
+                  ))}
+                  {sorted.length === 0 && (
+                    <TR>
+                      <TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
+                        Товаров пока нет.
+                      </TD>
+                    </TR>
+                  )}
+                </TBody>
+              </Table>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -333,7 +433,7 @@ function ProductsPageInner() {
               </Select>
             </Field>
           </div>
-          <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border p-3">
+          <label className="flex min-h-12 cursor-pointer items-start gap-2.5 rounded-xl border border-[var(--border)] p-3">
             <input
               type="checkbox"
               className="mt-0.5 size-4 accent-[var(--primary)]"

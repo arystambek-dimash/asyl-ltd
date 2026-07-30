@@ -279,6 +279,107 @@ export function TransactionsSection() {
     }
   }
 
+  function transactionActions(row: Payment, mobile = false) {
+    const iconButtonClass = mobile ? "min-h-11 min-w-0 basis-[calc(50%-0.25rem)] grow" : undefined;
+    return (
+      <div className={cn("flex gap-1", mobile ? "w-full flex-wrap gap-2" : "justify-end")}>
+        {row.can_restore && (
+          <Button
+            size="sm"
+            variant="outline"
+            className={iconButtonClass}
+            title="Восстановить отклонённую операцию"
+            aria-label="Восстановить отклонённую операцию"
+            onClick={() => {
+              setError("");
+              setRestoreFor(row);
+            }}
+          >
+            <Undo2 className="size-4" />
+            <span className={mobile ? "" : "hidden xl:inline"}>Восстановить</span>
+          </Button>
+        )}
+        {row.can_issue && (
+          <Button
+            size="sm"
+            variant="outline"
+            className={iconButtonClass}
+            disabled={busy}
+            title={row.method === "kaspi" ? "Создать QR" : "Отправить счёт клиенту"}
+            aria-label={row.method === "kaspi" ? "Создать QR" : "Отправить счёт клиенту"}
+            onClick={() => void issue(row)}
+          >
+            <Send className="size-4" />
+            <span className={mobile ? "" : "hidden xl:inline"}>Отправить</span>
+          </Button>
+        )}
+        {row.provider?.channel === "qr" &&
+          row.provider.qr_token_url &&
+          ACTIVE_PROVIDER_STATUSES.has(row.provider.status) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className={iconButtonClass}
+              title="Открыть активный Kaspi QR"
+              aria-label="Открыть активный Kaspi QR"
+              onClick={() => window.open(row.provider!.qr_token_url!, "_blank", "noopener")}
+            >
+              <ExternalLink className="size-4" />
+              {mobile && <span>Открыть QR</span>}
+            </Button>
+          )}
+        {row.status === "confirmed" && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className={iconButtonClass}
+            title="Скачать выписку ASYL LTD"
+            aria-label="Скачать выписку ASYL LTD"
+            onClick={() => void receipt(row)}
+          >
+            <Download className="size-4" />
+            {mobile && <span>Выписка</span>}
+          </Button>
+        )}
+        {row.status === "confirmed" && Number(row.available_for_refund ?? 0) > 0 && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className={iconButtonClass}
+            title={row.provider ? "Вернуть через ApiPay" : "Вернуть деньги из кассы"}
+            aria-label={row.provider ? "Вернуть через ApiPay" : "Вернуть деньги из кассы"}
+            onClick={() => {
+              setError("");
+              setRefundFor(row);
+              setAmount(row.available_for_refund ?? "");
+              setReason("");
+            }}
+          >
+            <RotateCcw className="size-4" />
+            {mobile && <span>Возврат</span>}
+          </Button>
+        )}
+        {["requested", "received"].includes(row.status) && row.confirmation_mode !== "automatic" && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className={cn(iconButtonClass, "text-[var(--destructive)]")}
+            title="Отклонить платёж"
+            aria-label="Отклонить платёж"
+            onClick={() => {
+              setError("");
+              setRejectFor(row);
+              setRejectReason("");
+            }}
+          >
+            <XCircle className="size-4" />
+            {mobile && <span>Отклонить</span>}
+          </Button>
+        )}
+      </div>
+    );
+  }
+
   return (
     <section className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
@@ -325,9 +426,9 @@ export function TransactionsSection() {
       )}
 
       <Card>
-        <CardHeader className="flex-row items-center justify-between gap-3">
+        <CardHeader className="flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle>Все платежи, возвраты и чеки</CardTitle>
-          <Button variant="outline" size="sm" onClick={() => void reload()}>
+          <Button variant="outline" size="sm" className="min-h-11 sm:min-h-0" onClick={() => void reload()}>
             <RefreshCcw className="size-4" /> Обновить
           </Button>
         </CardHeader>
@@ -336,6 +437,7 @@ export function TransactionsSection() {
             <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
             <Input
               className="pl-9"
+              aria-label="Поиск по клиенту, заказу или операции"
               placeholder="Клиент, заказ или операция"
               value={query}
               onChange={(e) => {
@@ -350,150 +452,132 @@ export function TransactionsSection() {
           )}
           {rows.length > 0 && (
             <>
-              <Table>
-                <THead>
-                  <TR>
-                    <TH>Операция</TH>
-                    <TH>Клиент</TH>
-                    <TH>Способ</TH>
-                    <TH>Сумма</TH>
-                    <TH>Статус</TH>
-                    <TH>Возврат</TH>
-                    <TH />
-                  </TR>
-                </THead>
-                <TBody>
-                  {rows.map((row) => {
-                    const effectiveStatus = row.effective_status ?? row.status;
-                    const state = paymentStage(effectiveStatus);
-                    return (
-                      <TR key={row.id}>
-                        <TD>
-                          <div className="font-medium">PAY-{String(row.id).padStart(6, "0")}</div>
-                          <div className="text-xs text-[var(--muted-foreground)]">Заказ #{row.order}</div>
-                          <div className="text-xs text-[var(--muted-foreground)]">{formatDateTime(row.paid_at)}</div>
-                        </TD>
-                        <TD>{row.client_name ?? "—"}</TD>
-                        <TD>
-                          {row.method_label ?? row.method}
-                          {row.provider?.channel === "qr" && (
-                            <div className="text-xs text-[var(--muted-foreground)]">Kaspi QR</div>
-                          )}
-                        </TD>
-                        <TD className="font-medium tabular-nums">
+              <div className="hidden md:block">
+                <Table>
+                  <THead>
+                    <TR>
+                      <TH>Операция</TH>
+                      <TH>Клиент</TH>
+                      <TH>Способ</TH>
+                      <TH>Сумма</TH>
+                      <TH>Статус</TH>
+                      <TH>Возврат</TH>
+                      <TH />
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {rows.map((row) => {
+                      const effectiveStatus = row.effective_status ?? row.status;
+                      const state = paymentStage(effectiveStatus);
+                      return (
+                        <TR key={row.id}>
+                          <TD>
+                            <div className="font-medium">PAY-{String(row.id).padStart(6, "0")}</div>
+                            <div className="text-xs text-[var(--muted-foreground)]">Заказ #{row.order}</div>
+                            <div className="text-xs text-[var(--muted-foreground)]">{formatDateTime(row.paid_at)}</div>
+                          </TD>
+                          <TD>{row.client_name ?? "—"}</TD>
+                          <TD>
+                            {row.method_label ?? row.method}
+                            {row.provider?.channel === "qr" && (
+                              <div className="text-xs text-[var(--muted-foreground)]">Kaspi QR</div>
+                            )}
+                          </TD>
+                          <TD className="font-medium tabular-nums">
+                            {formatMoney(row.amount)} {currencySymbol(row.currency)}
+                          </TD>
+                          <TD>
+                            <button
+                              type="button"
+                              onClick={() => setStatusFor(row)}
+                              className="rounded-md outline-none ring-offset-2 hover:opacity-80 focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                              title="Нажмите, чтобы узнать значение статуса"
+                              aria-label={`Статус ${state.label}. Открыть пояснение`}
+                            >
+                              <Badge tone={state.tone}>{state.label}</Badge>
+                            </button>
+                          </TD>
+                          <TD>
+                            {Number(row.refunded_amount ?? 0) > 0 ? (
+                              <span className="text-sm tabular-nums">
+                                {formatMoney(row.refunded_amount ?? 0)} {currencySymbol(row.currency)}
+                              </span>
+                            ) : Number(row.pending_refund_amount ?? 0) > 0 ? (
+                              <span className="text-sm text-[var(--warning)]">
+                                {formatMoney(row.pending_refund_amount ?? 0)} в обработке
+                              </span>
+                            ) : (
+                              "—"
+                            )}
+                          </TD>
+                          <TD>{transactionActions(row)}</TD>
+                        </TR>
+                      );
+                    })}
+                  </TBody>
+                </Table>
+              </div>
+
+              <div className="space-y-3 md:hidden">
+                {rows.map((row) => {
+                  const effectiveStatus = row.effective_status ?? row.status;
+                  const state = paymentStage(effectiveStatus);
+                  return (
+                    <article key={row.id} className="rounded-2xl border bg-[var(--card)] p-4 shadow-card">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <h3 className="font-semibold">PAY-{String(row.id).padStart(6, "0")}</h3>
+                          <p className="mt-0.5 truncate text-sm text-[var(--muted-foreground)]">
+                            {row.client_name ?? "Клиент не указан"}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setStatusFor(row)}
+                          className="min-h-11 rounded-xl px-1 outline-none ring-offset-2 focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                          aria-label={`Статус ${state.label}. Открыть пояснение`}
+                        >
+                          <Badge tone={state.tone}>{state.label}</Badge>
+                        </button>
+                      </div>
+                      <div className="mt-4 rounded-xl bg-[var(--muted)]/55 p-3">
+                        <div className="text-xs text-[var(--muted-foreground)]">Сумма операции</div>
+                        <div className="mt-1 text-xl font-semibold tabular-nums">
                           {formatMoney(row.amount)} {currencySymbol(row.currency)}
-                        </TD>
-                        <TD>
-                          <button
-                            type="button"
-                            onClick={() => setStatusFor(row)}
-                            className="rounded-md outline-none ring-offset-2 hover:opacity-80 focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                            title="Нажмите, чтобы узнать значение статуса"
-                          >
-                            <Badge tone={state.tone}>{state.label}</Badge>
-                          </button>
-                        </TD>
-                        <TD>
-                          {Number(row.refunded_amount ?? 0) > 0 ? (
-                            <span className="text-sm tabular-nums">
-                              {formatMoney(row.refunded_amount ?? 0)} {currencySymbol(row.currency)}
-                            </span>
-                          ) : Number(row.pending_refund_amount ?? 0) > 0 ? (
-                            <span className="text-sm text-[var(--warning)]">
-                              {formatMoney(row.pending_refund_amount ?? 0)} в обработке
-                            </span>
-                          ) : (
-                            "—"
-                          )}
-                        </TD>
-                        <TD>
-                          <div className="flex justify-end gap-1">
-                            {row.can_restore && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                title="Восстановить отклонённую операцию"
-                                onClick={() => {
-                                  setError("");
-                                  setRestoreFor(row);
-                                }}
-                              >
-                                <Undo2 className="size-4" />
-                                <span className="hidden xl:inline">Восстановить</span>
-                              </Button>
-                            )}
-                            {row.can_issue && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                disabled={busy}
-                                title={row.method === "kaspi" ? "Создать QR" : "Отправить счёт клиенту"}
-                                onClick={() => void issue(row)}
-                              >
-                                <Send className="size-4" />
-                                <span className="hidden xl:inline">Отправить</span>
-                              </Button>
-                            )}
-                            {row.provider?.channel === "qr" &&
-                              row.provider.qr_token_url &&
-                              ACTIVE_PROVIDER_STATUSES.has(row.provider.status) && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  title="Открыть активный Kaspi QR"
-                                  onClick={() => window.open(row.provider!.qr_token_url!, "_blank", "noopener")}
-                                >
-                                  <ExternalLink className="size-4" />
-                                </Button>
-                              )}
-                            {row.status === "confirmed" && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                title="Скачать выписку ASYL LTD"
-                                onClick={() => void receipt(row)}
-                              >
-                                <Download className="size-4" />
-                              </Button>
-                            )}
-                            {row.status === "confirmed" && Number(row.available_for_refund ?? 0) > 0 && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                title={row.provider ? "Вернуть через ApiPay" : "Вернуть деньги из кассы"}
-                                onClick={() => {
-                                  setError("");
-                                  setRefundFor(row);
-                                  setAmount(row.available_for_refund ?? "");
-                                  setReason("");
-                                }}
-                              >
-                                <RotateCcw className="size-4" />
-                              </Button>
-                            )}
-                            {["requested", "received"].includes(row.status) &&
-                              row.confirmation_mode !== "automatic" && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  title="Отклонить платёж"
-                                  className="text-[var(--destructive)]"
-                                  onClick={() => {
-                                    setError("");
-                                    setRejectFor(row);
-                                    setRejectReason("");
-                                  }}
-                                >
-                                  <XCircle className="size-4" />
-                                </Button>
-                              )}
-                          </div>
-                        </TD>
-                      </TR>
-                    );
-                  })}
-                </TBody>
-              </Table>
+                        </div>
+                      </div>
+                      <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                        <div>
+                          <dt className="text-xs text-[var(--muted-foreground)]">Заказ</dt>
+                          <dd className="mt-0.5 font-medium tabular-nums">#{row.order}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs text-[var(--muted-foreground)]">Способ</dt>
+                          <dd className="mt-0.5">
+                            {row.method_label ?? row.method}
+                            {row.provider?.channel === "qr" ? " · Kaspi QR" : ""}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs text-[var(--muted-foreground)]">Дата</dt>
+                          <dd className="mt-0.5 tabular-nums">{formatDateTime(row.paid_at)}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs text-[var(--muted-foreground)]">Возврат</dt>
+                          <dd className="mt-0.5 tabular-nums">
+                            {Number(row.refunded_amount ?? 0) > 0
+                              ? `${formatMoney(row.refunded_amount ?? 0)} ${currencySymbol(row.currency)}`
+                              : Number(row.pending_refund_amount ?? 0) > 0
+                                ? `${formatMoney(row.pending_refund_amount ?? 0)} в обработке`
+                                : "—"}
+                          </dd>
+                        </div>
+                      </dl>
+                      <div className="mt-4 border-t pt-3">{transactionActions(row, true)}</div>
+                    </article>
+                  );
+                })}
+              </div>
               <div className="mt-4 flex items-center justify-between border-t pt-4">
                 <span className="text-xs text-[var(--muted-foreground)]">
                   Страница {data?.page ?? 1} из {data?.pages ?? 1}
@@ -502,6 +586,7 @@ export function TransactionsSection() {
                   <Button
                     variant="outline"
                     size="sm"
+                    className="min-h-11"
                     disabled={(data?.page ?? 1) <= 1}
                     onClick={() => setPage((value) => value - 1)}
                   >
@@ -510,6 +595,7 @@ export function TransactionsSection() {
                   <Button
                     variant="outline"
                     size="sm"
+                    className="min-h-11"
                     disabled={(data?.page ?? 1) >= (data?.pages ?? 1)}
                     onClick={() => setPage((value) => value + 1)}
                   >
@@ -546,12 +632,24 @@ export function TransactionsSection() {
         <div className="space-y-4">
           {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
           <div>
-            <label className="mb-1.5 block text-sm">Сумма возврата</label>
-            <Input type="number" min="0.01" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+            <label htmlFor="refund-amount" className="mb-1.5 block text-sm">
+              Сумма возврата
+            </label>
+            <Input
+              id="refund-amount"
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+            />
           </div>
           <div>
-            <label className="mb-1.5 block text-sm">Причина</label>
+            <label htmlFor="refund-reason" className="mb-1.5 block text-sm">
+              Причина
+            </label>
             <Input
+              id="refund-reason"
               maxLength={500}
               placeholder="Например: возврат товара"
               value={reason}
@@ -702,8 +800,11 @@ export function TransactionsSection() {
             </div>
           </div>
           <div>
-            <label className="mb-1.5 block text-sm">Причина отклонения</label>
+            <label htmlFor="reject-payment-reason" className="mb-1.5 block text-sm">
+              Причина отклонения
+            </label>
             <Input
+              id="reject-payment-reason"
               autoFocus
               maxLength={500}
               placeholder="Например: ошибочно внесённая оплата"

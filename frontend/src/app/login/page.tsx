@@ -1,7 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import Image from "next/image";
 import Link from "next/link";
 import { useAuth } from "@/store/auth";
 import { homeFor } from "@/lib/can";
@@ -10,6 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/ui/password-input";
+import { AuthShell } from "@/components/layout/auth-shell";
+import { ArrowRight, LockKeyhole } from "lucide-react";
 
 export default function LoginPage() {
   const { login, me, loadMe } = useAuth();
@@ -41,58 +42,61 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[var(--muted)]/40 p-4">
-      <div className="w-full max-w-sm animate-fade-up">
-        <div className="mb-8 flex flex-col items-center gap-3">
-          <Image
-            src="/logo.png"
-            alt="ASYL-LTD — Мельничный комплекс"
-            width={220}
-            height={200}
-            className="h-auto w-44 object-contain"
-            priority
-          />
-          <div className="text-center">
-            <div className="text-xs uppercase tracking-widest text-[var(--muted-foreground)]">Система учёта цеха</div>
-          </div>
-        </div>
-        <div className="rounded-xl border bg-[var(--card)] p-6 shadow-sm">
-          <form onSubmit={submit} className="flex flex-col gap-4">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="u">Логин</Label>
-              <Input
-                id="u"
-                value={username}
-                autoFocus
-                autoComplete="username"
-                onChange={(e) => setUsername(e.target.value)}
-                required
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="p">Пароль</Label>
-              <PasswordInput
-                id="p"
-                value={password}
-                autoComplete="current-password"
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-            {error && (
-              <p className="rounded-md bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
-                {error}
-              </p>
-            )}
-            <Button type="submit" disabled={busy} className="mt-1">
-              {busy ? "Вход…" : "Войти"}
-            </Button>
-          </form>
-          <Link href="/register" className="mt-4 block text-center text-sm text-[var(--muted-foreground)] underline">
-            Нет аккаунта? Регистрация
-          </Link>
+    <AuthShell
+      eyebrow="Рабочий доступ"
+      title="Вход в систему"
+      description="Используйте учётную запись сотрудника или клиента. Все действия фиксируются в журнале."
+    >
+      <div className="mb-5 flex items-center gap-3 rounded-2xl bg-[var(--soft-blue)] p-3.5">
+        <span className="flex size-9 items-center justify-center rounded-xl bg-[var(--card)] text-[var(--ring)] shadow-sm">
+          <LockKeyhole className="size-[18px]" />
+        </span>
+        <div>
+          <div className="text-xs font-bold">Безопасная сессия</div>
+          <div className="text-[11px] text-[var(--muted-foreground)]">Доступ определяется вашей ролью в цехе</div>
         </div>
       </div>
-    </div>
+      <form onSubmit={submit} className="flex flex-col gap-4">
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="u">Логин</Label>
+          <Input
+            id="u"
+            value={username}
+            autoFocus
+            autoComplete="username"
+            onChange={(e) => setUsername(e.target.value)}
+            required
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="p">Пароль</Label>
+          <PasswordInput
+            id="p"
+            value={password}
+            autoComplete="current-password"
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+        </div>
+        {error && (
+          <p
+            role="alert"
+            className="rounded-xl border border-[var(--soft-red-border)] bg-[var(--soft-red)] px-3 py-2.5 text-sm text-[var(--destructive)]"
+          >
+            {error}
+          </p>
+        )}
+        <Button type="submit" size="lg" disabled={busy} className="mt-1 w-full">
+          {busy ? "Проверяем доступ…" : "Войти в систему"}
+          {!busy && <ArrowRight className="size-4" />}
+        </Button>
+      </form>
+      <Link
+        href="/register"
+        className="mt-5 block text-center text-sm font-medium text-[var(--muted-foreground)] transition hover:text-[var(--ring)]"
+      >
+        Нет аккаунта? <span className="font-bold text-[var(--foreground)]">Регистрация клиента</span>
+      </Link>
+    </AuthShell>
   );
 }

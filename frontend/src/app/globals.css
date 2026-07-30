@@ -1,79 +1,134 @@
 @import "tailwindcss";
 
-/*
-  Asyl-LTD CRM design system — ported verbatim from the ai-referenced
-  reference (shadcn/ui new-york, OKLCH neutral). Light theme is the default
-  (spec §7a); .dark is retained as an opt-in.
-*/
+/* Tailwind v4 defaults dark: to the operating-system preference. The product
+   has its own theme switch, so every dark: utility must follow .dark instead. */
+@custom-variant dark (&:where(.dark, .dark *));
 
+/*
+  ASYL-LTD industrial interface
+  -----------------------------
+  A calm production canvas, graphite controls and restrained signal colours.
+  Blue = interaction/information, green = completed/online, amber = attention,
+  red = destructive or unsafe. Pastel surfaces carry context without competing
+  with the data operators need during a shift.
+*/
 :root {
-  --radius: 0.625rem;
-  --background: #ffffff;
-  --foreground: #37352f;
+  --radius: 0.875rem;
+  --background: #f4f6f3;
+  --workspace: #f4f6f3;
+  --foreground: #17201b;
   --card: #ffffff;
-  --card-foreground: #37352f;
+  --card-foreground: #17201b;
   --popover: #ffffff;
-  --popover-foreground: #37352f;
-  --primary: #37352f;
-  --primary-foreground: #ffffff;
-  --secondary: #f7f6f3;
-  --secondary-foreground: #37352f;
-  --muted: #f7f6f3;
-  --muted-foreground: #787671;
-  --accent: #f7f6f3;
-  --accent-foreground: #37352f;
-  --destructive: #d8473a;
+  --popover-foreground: #17201b;
+  --primary: #17241d;
+  --primary-foreground: #f8fbf5;
+  --secondary: #e9eeea;
+  --secondary-foreground: #243029;
+  --muted: #edf1ed;
+  --muted-foreground: #69736d;
+  --accent: #e5ece7;
+  --accent-foreground: #17201b;
+  --destructive: #a9362f;
   --destructive-foreground: #ffffff;
-  --success: #3d9c47;
-  --warning: #d49a2a;
-  --border: #ececea;
-  --input: #e2e1de;
-  --ring: #2383e2;
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: #fbfbfa;
-  --sidebar-foreground: #37352f;
-  --sidebar-primary: #37352f;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #efeeec;
-  --sidebar-accent-foreground: #37352f;
-  --sidebar-border: #ececea;
-  --sidebar-ring: #2383e2;
+  --success: #236b43;
+  --warning: #815306;
+  --border: #dde4de;
+  --input: #d4ddd6;
+  --ring: #3c68d2;
+  --chart-1: #4777dc;
+  --chart-2: #4f9b6a;
+  --chart-3: #d29b36;
+  --chart-4: #8072b5;
+  --chart-5: #d26d54;
+  --soft-blue: #e8effc;
+  --soft-blue-foreground: #234f92;
+  --soft-blue-border: #cbd9f3;
+  --soft-green: #e7f2e8;
+  --soft-green-foreground: #1f603c;
+  --soft-green-border: #c7dfcc;
+  --soft-amber: #fbf1d8;
+  --soft-amber-foreground: #744905;
+  --soft-amber-border: #ead8a7;
+  --soft-violet: #ede9f6;
+  --soft-violet-foreground: #665697;
+  --soft-violet-border: #d9d0eb;
+  --soft-red: #f8e8e5;
+  --soft-red-foreground: #913129;
+  --soft-red-border: #eec9c4;
+  --hero: #17231c;
+  --hero-foreground: #f5f8f5;
+  --hero-accent: #dceebf;
+  --sidebar: #121a16;
+  --sidebar-foreground: #f2f6f1;
+  --sidebar-muted: #8f9b93;
+  --sidebar-primary: #dceebf;
+  --sidebar-primary-foreground: #17201b;
+  --sidebar-accent: #dceebf;
+  --sidebar-accent-foreground: #17201b;
+  --sidebar-border: #26312a;
+  --sidebar-ring: #91adff;
+  --shadow-card: 0 1px 2px rgba(21, 32, 25, 0.035), 0 12px 32px -22px rgba(28, 42, 33, 0.32);
+  --shadow-float: 0 2px 8px rgba(21, 32, 25, 0.06), 0 24px 60px -24px rgba(21, 32, 25, 0.3);
 }
 
 .dark {
-  --background: #191919;
-  --foreground: #e6e3dc;
-  --card: #202020;
-  --card-foreground: #e6e3dc;
-  --popover: #252525;
-  --popover-foreground: #e6e3dc;
-  --primary: #e6e3dc;
-  --primary-foreground: #191919;
-  --secondary: #252525;
-  --secondary-foreground: #e6e3dc;
-  --muted: #252525;
-  --muted-foreground: #9b9a94;
-  --accent: #2f2f2f;
-  --accent-foreground: #e6e3dc;
-  --destructive: #d8473a;
-  --destructive-foreground: #ffffff;
-  --success: #3d9c47;
-  --warning: #d49a2a;
-  --border: #2a2a2a;
-  --input: #373737;
-  --ring: #4ea4ee;
-  --sidebar: #202020;
-  --sidebar-foreground: #e6e3dc;
-  --sidebar-primary: #e6e3dc;
-  --sidebar-primary-foreground: #191919;
-  --sidebar-accent: #2f2f2f;
-  --sidebar-accent-foreground: #e6e3dc;
-  --sidebar-border: #2a2a2a;
-  --sidebar-ring: #4ea4ee;
+  --background: #0f1411;
+  --workspace: #0f1411;
+  --foreground: #edf2ed;
+  --card: #171d19;
+  --card-foreground: #edf2ed;
+  --popover: #1c231e;
+  --popover-foreground: #edf2ed;
+  --primary: #dceebf;
+  --primary-foreground: #17201b;
+  --secondary: #222a25;
+  --secondary-foreground: #e5ebe6;
+  --muted: #202722;
+  --muted-foreground: #98a39b;
+  --accent: #29322c;
+  --accent-foreground: #f0f4ef;
+  --destructive: #eb746a;
+  --destructive-foreground: #1b0d0c;
+  --success: #65b77f;
+  --warning: #d7a84f;
+  --border: #2a332d;
+  --input: #354039;
+  --ring: #7c9bf0;
+  --chart-1: #7c9bf0;
+  --chart-2: #73bc89;
+  --chart-3: #ddb562;
+  --chart-4: #a899d4;
+  --chart-5: #e88a73;
+  --soft-blue: #1c2941;
+  --soft-blue-foreground: #9ab5f5;
+  --soft-blue-border: #33466f;
+  --soft-green: #1b3022;
+  --soft-green-foreground: #83c597;
+  --soft-green-border: #315c3d;
+  --soft-amber: #352a17;
+  --soft-amber-foreground: #e1ba6f;
+  --soft-amber-border: #5d4924;
+  --soft-violet: #2c273b;
+  --soft-violet-foreground: #b7a9df;
+  --soft-violet-border: #4d4567;
+  --soft-red: #38211f;
+  --soft-red-foreground: #f09b92;
+  --soft-red-border: #653732;
+  --hero: #111914;
+  --hero-foreground: #f1f5f1;
+  --hero-accent: #dceebf;
+  --sidebar: #0a0f0c;
+  --sidebar-foreground: #edf2ed;
+  --sidebar-muted: #839087;
+  --sidebar-primary: #dceebf;
+  --sidebar-primary-foreground: #17201b;
+  --sidebar-accent: #dceebf;
+  --sidebar-accent-foreground: #17201b;
+  --sidebar-border: #212a24;
+  --sidebar-ring: #91adff;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.2), 0 18px 34px -24px rgba(0, 0, 0, 0.78);
+  --shadow-float: 0 3px 12px rgba(0, 0, 0, 0.3), 0 30px 70px -26px rgba(0, 0, 0, 0.9);
 }
 
 @theme inline {
@@ -111,38 +166,136 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 6px);
+  --radius-md: calc(var(--radius) - 3px);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-xl: calc(var(--radius) + 5px);
 }
 
 * {
   border-color: var(--border);
 }
 
+html {
+  background: var(--background);
+  color-scheme: light;
+  scrollbar-gutter: stable;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
 body {
+  min-width: 320px;
   background: var(--background);
   color: var(--foreground);
-  font-family:
-    var(--font-sans),
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    system-ui,
-    sans-serif;
+  font-family: var(--font-sans), "Segoe UI", system-ui, sans-serif;
   font-size: 15px;
   line-height: 1.5;
   font-feature-settings:
     "rlig" 1,
-    "calt" 1;
+    "calt" 1,
+    "ss01" 1;
+  text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--ring) 24%, transparent);
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a {
+  touch-action: manipulation;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted-foreground) 42%, transparent);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--muted-foreground) 62%, transparent);
+  background-clip: padding-box;
+}
+
+.app-workspace {
+  background-color: var(--workspace);
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--border) 42%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--border) 42%, transparent) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: -1px -1px;
+}
+
+.app-workspace > * {
+  position: relative;
+}
+
+.surface-panel {
+  border: 1px solid var(--border);
+  border-radius: 1.25rem;
+  background: var(--card);
+  box-shadow: var(--shadow-card);
+}
+
+.eyebrow {
+  color: var(--muted-foreground);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.shadow-card {
+  box-shadow: var(--shadow-card);
+}
+
+.shadow-float {
+  box-shadow: var(--shadow-float);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 @keyframes fade-up {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(10px);
   }
   to {
     opacity: 1;
@@ -151,7 +304,7 @@ body {
 }
 
 .animate-fade-up {
-  animation: fade-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: fade-up 0.46s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes modal-backdrop {
@@ -166,7 +319,7 @@ body {
 @keyframes modal-content {
   from {
     opacity: 0;
-    transform: translateY(6px) scale(0.98);
+    transform: translateY(10px) scale(0.975);
   }
   to {
     opacity: 1;
@@ -175,55 +328,26 @@ body {
 }
 
 .animate-modal-backdrop {
-  animation: modal-backdrop 0.16s ease-out both;
+  animation: modal-backdrop 0.18s ease-out both;
 }
 
 .animate-modal-content {
-  animation: modal-content 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: modal-content 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-.shadow-card {
-  box-shadow:
-    0 1px 0 0 rgba(15, 15, 15, 0.04),
-    0 1px 3px 0 rgba(15, 15, 15, 0.06);
-}
-.dark .shadow-card {
-  box-shadow:
-    0 1px 0 0 rgba(0, 0, 0, 0.4),
-    0 1px 3px 0 rgba(0, 0, 0, 0.5);
-}
-
-@keyframes shipping-orbit {
-  0%,
-  100% {
-    transform: translate(-50%, -50%) scale(0.9);
-    opacity: 0.3;
+@media (max-width: 639px) {
+  .app-workspace {
+    background-image: none;
   }
-  50% {
-    transform: translate(-50%, -50%) scale(1.12);
-    opacity: 0.08;
-  }
-}
-
-.shipping-orbit {
-  animation: shipping-orbit 5.5s ease-in-out infinite;
-  box-shadow:
-    0 0 0 36px rgba(87, 129, 235, 0.035),
-    0 0 0 78px rgba(87, 129, 235, 0.022),
-    0 0 0 126px rgba(87, 129, 235, 0.012);
-}
-
-.shipping-start::after {
-  content: "";
-  position: absolute;
-  inset: 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  pointer-events: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .shipping-orbit {
-    animation: none;
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

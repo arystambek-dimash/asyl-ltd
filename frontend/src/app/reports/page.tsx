@@ -52,55 +52,129 @@ function EmptyRow({ colSpan }: { colSpan: number }) {
 function DaysTable({ data }: { data: ReportSummary }) {
   const cols = ["№", "Дата", "Заказов", "Мешков", "Отгружено", "Наличные", "Безналичные", "Поступило", "В долг"];
   return (
-    <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-card">
-      <Table>
-        <THead>
-          <TR>
-            {cols.map((c, i) => (
-              <TH key={c} className={i >= 2 ? "text-right" : ""}>
-                {c}
-              </TH>
+    <div>
+      <div className="space-y-3 md:hidden">
+        {data.days.length === 0 ? (
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] px-4 py-10 text-center text-sm text-[var(--muted-foreground)]">
+            Здесь пусто
+          </div>
+        ) : (
+          <>
+            {data.days.map((day) => (
+              <article
+                key={day.date}
+                className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 shadow-card"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--muted-foreground)]">
+                      Смена за день
+                    </p>
+                    <h3 className="mt-1 font-semibold tabular-nums">{dayLabel(day.date)}</h3>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs text-[var(--muted-foreground)]">Отгружено</p>
+                    <p className="mt-1 font-semibold tabular-nums">{money(day.revenue)}</p>
+                  </div>
+                </div>
+                <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-[var(--border)] pt-4 text-sm">
+                  <div>
+                    <dt className="text-xs text-[var(--muted-foreground)]">Заказы / мешки</dt>
+                    <dd className="mt-1 font-medium tabular-nums">
+                      {day.orders} / {day.bags}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-[var(--muted-foreground)]">Поступило</dt>
+                    <dd className="mt-1 font-semibold tabular-nums text-[var(--success)]">{money(day.received)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-[var(--muted-foreground)]">Наличные</dt>
+                    <dd className="mt-1 tabular-nums">{money(day.cash)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-[var(--muted-foreground)]">Безналичные</dt>
+                    <dd className="mt-1 tabular-nums">{money(day.cashless)}</dd>
+                  </div>
+                </dl>
+                {Number(day.debt_amount) > 0 && (
+                  <div className="mt-3 flex items-center justify-between rounded-xl bg-[var(--soft-red)] px-3 py-2 text-sm">
+                    <span className="text-[var(--soft-red-foreground)]">Отгружено в долг</span>
+                    <strong className="tabular-nums text-[var(--destructive)]">{money(day.debt_amount)}</strong>
+                  </div>
+                )}
+              </article>
             ))}
-          </TR>
-        </THead>
-        <TBody>
-          {data.days.length === 0 ? (
-            <EmptyRow colSpan={cols.length} />
-          ) : (
-            <>
-              {data.days.map((d, i) => (
-                <TR key={d.date}>
-                  <TD className="text-[var(--muted-foreground)]">{i + 1}</TD>
-                  <TD className="font-medium tabular-nums">{dayLabel(d.date)}</TD>
-                  <TD className="text-right tabular-nums">{d.orders}</TD>
-                  <TD className="text-right tabular-nums">{d.bags}</TD>
-                  <TD className="text-right tabular-nums">{money(d.revenue)}</TD>
-                  <TD className="text-right tabular-nums">{money(d.cash)}</TD>
-                  <TD className="text-right tabular-nums">{money(d.cashless)}</TD>
-                  <TD className="text-right font-semibold tabular-nums text-[var(--success)]">{money(d.received)}</TD>
-                  <TD className="text-right tabular-nums text-[var(--destructive)]">{money(d.debt_amount)}</TD>
-                </TR>
+            <article className="rounded-2xl border border-[var(--primary)]/20 bg-[var(--primary)] p-4 text-[var(--primary-foreground)] shadow-card">
+              <p className="text-xs font-semibold uppercase tracking-[0.08em] opacity-70">Итого за период</p>
+              <p className="mt-1 text-xl font-semibold tabular-nums">{money(data.income.total)}</p>
+              <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <dt className="opacity-70">Отгружено</dt>
+                  <dd className="mt-1 font-medium tabular-nums">{money(data.shipped.revenue)}</dd>
+                </div>
+                <div>
+                  <dt className="opacity-70">Заказы / мешки</dt>
+                  <dd className="mt-1 font-medium tabular-nums">
+                    {data.shipped.orders} / {data.shipped.bags}
+                  </dd>
+                </div>
+              </dl>
+            </article>
+          </>
+        )}
+      </div>
+
+      <div className="hidden overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-card md:block">
+        <Table>
+          <THead>
+            <TR>
+              {cols.map((c, i) => (
+                <TH key={c} className={i >= 2 ? "text-right" : ""}>
+                  {c}
+                </TH>
               ))}
-              <TR className="bg-[var(--muted)]/50">
-                <TD colSpan={2} className="font-semibold">
-                  Итого
-                </TD>
-                <TD className="text-right font-semibold tabular-nums">{data.shipped.orders}</TD>
-                <TD className="text-right font-semibold tabular-nums">{data.shipped.bags}</TD>
-                <TD className="text-right font-semibold tabular-nums">{money(data.shipped.revenue)}</TD>
-                <TD className="text-right font-semibold tabular-nums">{money(data.income.cash)}</TD>
-                <TD className="text-right font-semibold tabular-nums">{money(data.income.cashless)}</TD>
-                <TD className="text-right font-semibold tabular-nums text-[var(--success)]">
-                  {money(data.income.total)}
-                </TD>
-                <TD className="text-right font-semibold tabular-nums text-[var(--destructive)]">
-                  {money(data.shipped.debt_amount)}
-                </TD>
-              </TR>
-            </>
-          )}
-        </TBody>
-      </Table>
+            </TR>
+          </THead>
+          <TBody>
+            {data.days.length === 0 ? (
+              <EmptyRow colSpan={cols.length} />
+            ) : (
+              <>
+                {data.days.map((d, i) => (
+                  <TR key={d.date}>
+                    <TD className="text-[var(--muted-foreground)]">{i + 1}</TD>
+                    <TD className="font-medium tabular-nums">{dayLabel(d.date)}</TD>
+                    <TD className="text-right tabular-nums">{d.orders}</TD>
+                    <TD className="text-right tabular-nums">{d.bags}</TD>
+                    <TD className="text-right tabular-nums">{money(d.revenue)}</TD>
+                    <TD className="text-right tabular-nums">{money(d.cash)}</TD>
+                    <TD className="text-right tabular-nums">{money(d.cashless)}</TD>
+                    <TD className="text-right font-semibold tabular-nums text-[var(--success)]">{money(d.received)}</TD>
+                    <TD className="text-right tabular-nums text-[var(--destructive)]">{money(d.debt_amount)}</TD>
+                  </TR>
+                ))}
+                <TR className="bg-[var(--muted)]/50">
+                  <TD colSpan={2} className="font-semibold">
+                    Итого
+                  </TD>
+                  <TD className="text-right font-semibold tabular-nums">{data.shipped.orders}</TD>
+                  <TD className="text-right font-semibold tabular-nums">{data.shipped.bags}</TD>
+                  <TD className="text-right font-semibold tabular-nums">{money(data.shipped.revenue)}</TD>
+                  <TD className="text-right font-semibold tabular-nums">{money(data.income.cash)}</TD>
+                  <TD className="text-right font-semibold tabular-nums">{money(data.income.cashless)}</TD>
+                  <TD className="text-right font-semibold tabular-nums text-[var(--success)]">
+                    {money(data.income.total)}
+                  </TD>
+                  <TD className="text-right font-semibold tabular-nums text-[var(--destructive)]">
+                    {money(data.shipped.debt_amount)}
+                  </TD>
+                </TR>
+              </>
+            )}
+          </TBody>
+        </Table>
+      </div>
     </div>
   );
 }
@@ -171,14 +245,30 @@ function ReportsPageInner() {
         </div>
 
         {/* Фильтры периода */}
-        <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
+        <div className="grid grid-cols-1 items-end gap-3 sm:flex sm:flex-wrap sm:gap-x-4">
           <div className="flex flex-col gap-1.5">
-            <span className="text-[11px] font-medium text-[var(--muted-foreground)]">С даты</span>
-            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-[160px]" />
+            <label htmlFor="reports-date-from" className="text-xs font-medium text-[var(--muted-foreground)]">
+              С даты
+            </label>
+            <Input
+              id="reports-date-from"
+              type="date"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              className="w-full sm:w-[170px]"
+            />
           </div>
           <div className="flex flex-col gap-1.5">
-            <span className="text-[11px] font-medium text-[var(--muted-foreground)]">По дату</span>
-            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 w-[160px]" />
+            <label htmlFor="reports-date-to" className="text-xs font-medium text-[var(--muted-foreground)]">
+              По дату
+            </label>
+            <Input
+              id="reports-date-to"
+              type="date"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              className="w-full sm:w-[170px]"
+            />
           </div>
           {(departments?.length ?? 0) > 0 && (
             <FilterDropdown

@@ -1,6 +1,5 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
-import Image from "next/image";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Button } from "@/components/ui/button";
@@ -41,7 +40,6 @@ import {
   Scale,
   Settings2,
   TrainFront,
-  Truck,
   User,
   VideoOff,
 } from "lucide-react";
@@ -65,38 +63,35 @@ const BOARD_STAGES = [
   {
     key: "waiting",
     label: "Ожидание въезда",
-    color: "var(--ring)",
     statuses: ["confirmed"],
     hint: "Подтверждённые заказы",
-    image: null,
-    tint: "#f3f7ff",
     icon: Clock3,
-    activeCircle: "border-blue-600 bg-blue-600 text-white shadow-[0_12px_28px_rgba(37,99,235,0.32)]",
-    activeLabel: "text-blue-700",
+    surface: "border-[var(--soft-blue-border)] bg-[var(--soft-blue)]",
+    activeItem: "border-[var(--soft-blue-border)] bg-[var(--soft-blue)]",
+    activeIcon: "border-[var(--soft-blue-border)] bg-[var(--card)] text-[var(--soft-blue-foreground)]",
+    activeLabel: "text-[var(--soft-blue-foreground)]",
   },
   {
     key: "loading",
     label: "Загружается",
-    color: "var(--warning)",
     statuses: ["arrived", "loading"],
     hint: "Идёт погрузка",
-    image: "/shipping/loading-forklift.jpg",
-    tint: "#fffbf0",
     icon: Package,
-    activeCircle: "border-amber-500 bg-amber-500 text-white shadow-[0_12px_28px_rgba(245,158,11,0.32)]",
-    activeLabel: "text-amber-600",
+    surface: "border-[var(--soft-amber-border)] bg-[var(--soft-amber)]",
+    activeItem: "border-[var(--soft-amber-border)] bg-[var(--soft-amber)]",
+    activeIcon: "border-[var(--soft-amber-border)] bg-[var(--card)] text-[var(--soft-amber-foreground)]",
+    activeLabel: "text-[var(--soft-amber-foreground)]",
   },
   {
     key: "done",
     label: "Отгружено",
-    color: "var(--success)",
     statuses: ["loaded", "shipped"],
     hint: "Отгруженные заказы",
-    image: "/shipping/completed-clipboard.jpg",
-    tint: "#f4fbf5",
     icon: Check,
-    activeCircle: "border-emerald-600 bg-emerald-600 text-white shadow-[0_12px_28px_rgba(5,150,105,0.32)]",
-    activeLabel: "text-emerald-700",
+    surface: "border-[var(--soft-green-border)] bg-[var(--soft-green)]",
+    activeItem: "border-[var(--soft-green-border)] bg-[var(--soft-green)]",
+    activeIcon: "border-[var(--soft-green-border)] bg-[var(--card)] text-[var(--soft-green-foreground)]",
+    activeLabel: "text-[var(--soft-green-foreground)]",
   },
 ] as const;
 
@@ -127,7 +122,7 @@ function StageTrack({ status }: { status: string }) {
           <div
             key={s.key}
             className={cn(
-              "flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium sm:flex-none",
+              "flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-[13px] font-semibold sm:flex-none",
               done && "bg-[var(--success)]/10 text-[var(--success)]",
               active && "bg-[var(--foreground)] text-[var(--background)]",
               !done && !active && "bg-[var(--muted)] text-[var(--muted-foreground)]",
@@ -200,7 +195,7 @@ function PostCamera({
 
       {/* AI-поток: боксы и линия подсчёта рисуются прямо в кадре */}
       {aiOn && (
-        <div className="absolute right-3 top-3 flex items-center gap-1.5 rounded-md bg-emerald-600/90 px-2.5 py-1 backdrop-blur-sm">
+        <div className="absolute right-3 top-3 flex items-center gap-1.5 rounded-md bg-[var(--success)]/90 px-2.5 py-1 backdrop-blur-sm">
           <span className="size-1.5 animate-pulse rounded-full bg-white" />
           <span className="text-xs font-semibold text-white">AI-подсчёт</span>
         </div>
@@ -211,10 +206,12 @@ function PostCamera({
         <div className="absolute inset-x-3 bottom-3 flex gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {cameras.map((c) => (
             <button
+              type="button"
               key={c.id}
               onClick={() => setManualId(c.id)}
+              aria-pressed={c.id === cam?.id}
               className={cn(
-                "shrink-0 whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium backdrop-blur-sm transition-colors",
+                "min-h-11 shrink-0 whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold backdrop-blur-sm transition-colors",
                 c.id === cam?.id ? "bg-white text-black" : "bg-black/45 text-white/80 hover:bg-black/65",
               )}
             >
@@ -254,8 +251,8 @@ function AiCounterPanel({
   const st = ai.status;
   if (st?.busy && !st.owned_by_order) {
     return (
-      <div className="rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-3.5">
-        <div className="flex items-center gap-2 text-sm font-semibold text-amber-700 dark:text-amber-400">
+      <div className="rounded-xl border border-[var(--soft-amber-border)] bg-[var(--soft-amber)] p-3.5">
+        <div className="flex items-center gap-2 text-sm font-semibold text-[var(--soft-amber-foreground)]">
           <Cctv className="size-4" /> AI-подсчёт занят
         </div>
         <p className="mt-1 text-sm text-[var(--muted-foreground)]">
@@ -284,17 +281,18 @@ function AiCounterPanel({
   const warming = !isAiOnlineStatus(st.status);
   const total = st.total ?? 0;
   return (
-    <div className="rounded-xl border border-emerald-600/25 bg-emerald-500/[0.06] p-3.5">
+    <div className="rounded-xl border border-[var(--soft-green-border)] bg-[var(--soft-green)] p-3.5">
       <div className="flex items-center justify-between">
-        <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-600">
-          <span className={cn("size-1.5 rounded-full bg-emerald-500", !warming && "animate-pulse")} />
+        <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--soft-green-foreground)]">
+          <span className={cn("size-1.5 rounded-full bg-[var(--success)]", !warming && "animate-pulse")} />
           AI-подсчёт{warming && " · запуск модели…"}
         </span>
         {st.can_stop ? (
           <button
+            type="button"
             onClick={() => ai.stop().catch(() => {})}
             disabled={ai.busy}
-            className="text-xs text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+            className="min-h-11 rounded-lg px-3 text-xs font-semibold text-[var(--muted-foreground)] transition-colors hover:bg-[var(--card)] hover:text-[var(--foreground)]"
           >
             Выключить
           </button>
@@ -357,21 +355,23 @@ function AiCounterPanel({
 /** После назначения в «Моноблоке» камера фиксирована за заказом. */
 function BoundCamera({ camera, source }: { camera?: CameraFeed; source: string }) {
   return (
-    <div className="rounded-xl border border-blue-100 bg-blue-50/65 p-3">
+    <div className="rounded-xl border border-[var(--soft-blue-border)] bg-[var(--soft-blue)] p-3">
       <div className="flex items-center justify-between gap-3">
-        <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-blue-700">
+        <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--soft-blue-foreground)]">
           <Cctv className="size-3.5" /> Камера погрузки
         </span>
-        <span className="flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-500 shadow-sm">
+        <span className="flex items-center gap-1 rounded-full bg-[var(--card)] px-2 py-0.5 text-[10px] font-semibold text-[var(--muted-foreground)] shadow-sm">
           <LockKeyhole className="size-3" /> закреплена
         </span>
       </div>
-      <div className="mt-2 flex items-center gap-2 rounded-lg border border-blue-100/80 bg-white px-3 py-2.5">
-        <span className={cn("size-2 shrink-0 rounded-full", camera?.online ? "bg-emerald-500" : "bg-amber-400")} />
-        <span className="min-w-0 flex-1 truncate text-sm font-bold text-slate-800">
+      <div className="mt-2 flex min-h-11 items-center gap-2 rounded-lg border border-[var(--soft-blue-border)] bg-[var(--card)] px-3 py-2.5">
+        <span
+          className={cn("size-2 shrink-0 rounded-full", camera?.online ? "bg-[var(--success)]" : "bg-[var(--warning)]")}
+        />
+        <span className="min-w-0 flex-1 truncate text-sm font-bold text-[var(--foreground)]">
           {camera?.zone || camera?.name || source}
         </span>
-        <span className="text-[11px] text-slate-400">назначена в «Моноблоке»</span>
+        <span className="text-[11px] text-[var(--muted-foreground)]">назначена в «Моноблоке»</span>
       </div>
     </div>
   );
@@ -450,7 +450,7 @@ function BoardCard({
       className={cn(
         "group relative flex w-full flex-col gap-2 overflow-hidden rounded-xl border bg-[var(--card)] p-3 text-left shadow-card outline-none transition-all",
         clickable &&
-          "cursor-pointer hover:-translate-y-px hover:shadow-md focus-visible:ring-2 focus-visible:ring-blue-500",
+          "cursor-pointer hover:-translate-y-px hover:shadow-md focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
         draggable && "cursor-grab active:cursor-grabbing",
         moving && "pointer-events-none scale-[0.98] opacity-50",
       )}
@@ -470,7 +470,7 @@ function BoardCard({
         </div>
       </div>
       {order.loading_camera && (
-        <div className="flex items-center gap-1.5 rounded-lg border border-blue-100 bg-blue-50/80 px-2.5 py-1.5 text-[11px] font-semibold text-blue-700">
+        <div className="flex items-center gap-1.5 rounded-lg border border-[var(--soft-blue-border)] bg-[var(--soft-blue)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--soft-blue-foreground)]">
           <Cctv className="size-3.5 shrink-0" />
           <span className="truncate">{camera?.zone || camera?.name || order.loading_camera}</span>
           {stage.key === "loading" && (
@@ -485,16 +485,16 @@ function BoardCard({
               }
             >
               {session?.status === "active" && (
-                <span className="absolute inline-flex size-2 animate-ping rounded-full bg-emerald-400 opacity-50" />
+                <span className="absolute inline-flex size-2 animate-ping rounded-full bg-[var(--success)] opacity-40" />
               )}
               <span
                 className={cn(
                   "relative size-2 rounded-full",
                   session?.status === "active"
-                    ? "bg-emerald-500"
+                    ? "bg-[var(--success)]"
                     : session?.status === "starting"
-                      ? "animate-pulse bg-amber-400"
-                      : "bg-slate-300",
+                      ? "animate-pulse bg-[var(--warning)]"
+                      : "bg-[var(--input)]",
                 )}
               />
             </span>
@@ -519,7 +519,8 @@ function BoardCard({
             <Button
               size="sm"
               variant="ghost"
-              className="px-2.5"
+              className="h-11 px-3"
+              aria-label="Вернуть заказ в ожидание"
               title="Вернуть в ожидание"
               onClick={() => onQuickMove("waiting")}
             >
@@ -527,21 +528,21 @@ function BoardCard({
             </Button>
           )}
           {quickTargets.includes("done") && (
-            <Button size="sm" variant="outline" className="flex-1" onClick={() => onQuickMove("done")}>
+            <Button size="sm" variant="outline" className="h-11 flex-1" onClick={() => onQuickMove("done")}>
               <Check className="size-4" /> Завершить
             </Button>
           )}
         </div>
       )}
       {stage.key === "done" && history && (
-        <div className="absolute inset-x-0 bottom-0 flex translate-y-[calc(100%-4px)] items-center justify-between gap-3 bg-slate-900/95 px-3 py-2.5 text-white backdrop-blur-sm transition-transform duration-200 group-hover:translate-y-0 group-focus-visible:translate-y-0">
+        <div className="absolute inset-x-0 bottom-0 flex translate-y-[calc(100%-4px)] items-center justify-between gap-3 bg-[var(--foreground)] px-3 py-2.5 text-[var(--background)] transition-transform duration-200 group-hover:translate-y-0 group-focus-visible:translate-y-0">
           <span className="flex min-w-0 items-center gap-2 text-xs font-semibold">
-            <Cctv className="size-4 shrink-0 text-cyan-300" />
+            <Cctv className="size-4 shrink-0" />
             <span className="truncate">Камера насчитала</span>
           </span>
           <span className="flex shrink-0 items-center gap-2">
             <b className="text-lg tabular-nums">{cameraTotal ?? "—"}</b>
-            {history.has_recording && <Film className="size-4 text-emerald-300" />}
+            {history.has_recording && <Film className="size-4" />}
           </span>
         </div>
       )}
@@ -570,10 +571,9 @@ function StageNav({
   onDragLeaveStage: () => void;
   onDropStage: (key: BoardStageKey) => void;
 }) {
-  const activeIndex = BOARD_STAGES.findIndex((stage) => stage.key === active);
   return (
-    <div className="rounded-[22px] border bg-[var(--card)] px-3 pb-3 pt-5 shadow-[0_10px_30px_rgba(45,62,94,0.04)] sm:px-6">
-      <div className="grid grid-cols-3">
+    <div className="rounded-[22px] border bg-[var(--card)] p-2 shadow-card">
+      <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
         {BOARD_STAGES.map((stage) => {
           const Icon = stage.icon;
           const isActive = stage.key === active;
@@ -598,99 +598,57 @@ function StageNav({
                 event.preventDefault();
                 if (droppable) onDropStage(stage.key);
               }}
-              className="group flex flex-col items-center gap-2 outline-none"
+              className={cn(
+                "group flex min-h-[88px] min-w-0 flex-col items-center justify-center gap-2 rounded-2xl border border-transparent px-2 py-3 text-left outline-none transition-colors sm:flex-row sm:justify-start sm:px-4",
+                isActive ? stage.activeItem : "hover:border-[var(--border)] hover:bg-[var(--muted)]/70",
+                droppable && !isActive && "border-dashed border-[var(--ring)] bg-[var(--soft-blue)]/50",
+                isOver && "border-solid border-[var(--ring)] bg-[var(--soft-blue)]",
+              )}
             >
               <span
                 className={cn(
-                  "relative flex size-14 items-center justify-center rounded-full border-2 border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)] transition-all duration-300 group-focus-visible:ring-2 group-focus-visible:ring-blue-500 group-focus-visible:ring-offset-2",
-                  isActive && stage.activeCircle,
-                  !isActive && "group-hover:border-slate-300 group-hover:text-slate-600",
-                  droppable && !isActive && "border-dashed border-blue-400 text-blue-600",
-                  isOver && "scale-110 border-solid border-blue-500 bg-blue-50",
+                  "relative flex size-10 shrink-0 items-center justify-center rounded-xl border bg-[var(--muted)] text-[var(--muted-foreground)] transition-colors group-focus-visible:ring-2 group-focus-visible:ring-[var(--ring)]",
+                  isActive && stage.activeIcon,
                 )}
               >
-                <Icon className="size-6" />
+                <Icon className="size-5" />
                 <span
                   className={cn(
                     "absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full border-2 border-[var(--card)] px-1 text-[11px] font-bold tabular-nums",
-                    isActive ? "bg-slate-900 text-white" : "bg-[var(--muted)] text-[var(--muted-foreground)]",
+                    isActive
+                      ? "bg-[var(--foreground)] text-[var(--background)]"
+                      : "bg-[var(--card)] text-[var(--muted-foreground)]",
                   )}
                 >
                   {counts[stage.key]}
                 </span>
               </span>
-              <span
-                className={cn(
-                  "px-1 text-center text-[13px] font-semibold leading-tight",
-                  isActive ? stage.activeLabel : "text-[var(--muted-foreground)]",
-                )}
-              >
-                {stage.label}
+              <span className="min-w-0">
+                <span
+                  className={cn(
+                    "block text-center text-[12px] font-bold leading-tight sm:truncate sm:text-left sm:text-[13px]",
+                    isActive ? stage.activeLabel : "text-[var(--foreground)]",
+                  )}
+                >
+                  {stage.label}
+                </span>
+                <span className="mt-1 hidden truncate text-[11px] text-[var(--muted-foreground)] md:block">
+                  {stage.hint}
+                </span>
               </span>
-              <span className="hidden text-[11px] text-slate-400 sm:block">{stage.hint}</span>
             </button>
           );
         })}
-      </div>
-
-      {/* дорога: грузовик подъезжает к выбранному этапу */}
-      <div className="relative mx-[16.66%] mt-2 h-9">
-        <div className="absolute inset-x-0 top-1/2 border-t-2 border-dashed border-slate-200" />
-        {BOARD_STAGES.map((stage, index) => (
-          <span
-            key={stage.key}
-            className={cn(
-              "absolute top-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full transition-colors duration-300",
-              index === activeIndex ? "bg-slate-700" : "bg-slate-300",
-            )}
-            style={{ left: `${(index / (BOARD_STAGES.length - 1)) * 100}%` }}
-          />
-        ))}
-        <span
-          className="absolute top-1/2 z-10 -translate-y-1/2 transition-[left] duration-700 ease-in-out"
-          style={{ left: `${(activeIndex / (BOARD_STAGES.length - 1)) * 100}%` }}
-        >
-          <span className="flex size-8 -translate-x-1/2 items-center justify-center rounded-full bg-slate-900 text-white shadow-[0_6px_16px_rgba(15,23,42,0.35)]">
-            <Truck className="size-4" />
-          </span>
-        </span>
       </div>
     </div>
   );
 }
 
-/** Карусель этапов: полотно едет к выбранной остановке, высота подстраивается. */
+/** Неактивные панели размонтированы: скрытые кнопки не попадают в tab-порядок. */
 function StageCarousel({ active, slides }: { active: number; slides: ReactNode[] }) {
-  const panes = useRef<(HTMLDivElement | null)[]>([]);
-  const [height, setHeight] = useState<number>();
-  useEffect(() => {
-    const pane = panes.current[active];
-    if (!pane) return;
-    const update = () => setHeight(pane.offsetHeight);
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(pane);
-    return () => observer.disconnect();
-  }, [active]);
   return (
-    <div className="overflow-hidden transition-[height] duration-500 ease-in-out" style={{ height }}>
-      <div
-        className="flex items-start transition-transform duration-500 ease-in-out"
-        style={{ transform: `translateX(-${active * 100}%)` }}
-      >
-        {slides.map((slide, index) => (
-          <div
-            key={BOARD_STAGES[index].key}
-            ref={(el) => {
-              panes.current[index] = el;
-            }}
-            aria-hidden={index !== active}
-            className={cn("w-full shrink-0 pb-1", index !== active && "pointer-events-none")}
-          >
-            {slide}
-          </div>
-        ))}
-      </div>
+    <div key={BOARD_STAGES[active]?.key} className="w-full pb-1">
+      {slides[active]}
     </div>
   );
 }
@@ -751,18 +709,20 @@ function LiveBoard({
   return (
     <section>
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <span className="flex size-10 items-center justify-center rounded-xl border border-blue-100 bg-blue-50 text-blue-600 shadow-sm">
+        <span className="flex size-10 items-center justify-center rounded-xl border border-[var(--soft-blue-border)] bg-[var(--soft-blue)] text-[var(--soft-blue-foreground)] shadow-sm">
           <Layers3 className="size-5" />
         </span>
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="text-[20px] font-bold tracking-tight text-slate-800">Заказы на посту</h2>
+            <h2 className="text-[20px] font-bold tracking-tight text-[var(--foreground)]">Заказы на посту</h2>
             <span className="relative flex size-2">
-              <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-50" />
-              <span className="relative size-2 rounded-full bg-emerald-500" />
+              <span className="absolute inline-flex size-full animate-ping rounded-full bg-[var(--success)] opacity-40" />
+              <span className="relative size-2 rounded-full bg-[var(--success)]" />
             </span>
           </div>
-          <span className="text-[12px] text-slate-400">обновляется автоматически · отгруженные {completedLabel}</span>
+          <span className="text-[12px] text-[var(--muted-foreground)]">
+            обновляется автоматически · отгруженные {completedLabel}
+          </span>
         </div>
       </div>
       {error && (
@@ -795,25 +755,21 @@ function LiveBoard({
           slides={BOARD_STAGES.map((stage, index) => {
             const rows = stageRows[index];
             const finished = stage.key === "done";
+            const EmptyIcon = stage.icon;
             return (
-              <div
-                key={stage.key}
-                className="min-h-[300px] rounded-[22px] border p-3 shadow-[0_10px_30px_rgba(45,62,94,0.04)] sm:p-4"
-                style={{ background: stage.tint }}
-              >
+              <div key={stage.key} className={cn("min-h-[300px] rounded-[22px] border p-3 sm:p-4", stage.surface)}>
                 {rows.length === 0 ? (
-                  <div className="flex min-h-[280px] flex-col items-center justify-center rounded-2xl border border-white/80 bg-white/70 px-5 py-8 text-center shadow-sm">
-                    {stage.image ? (
-                      <div className="relative mb-4 size-32 overflow-hidden rounded-full">
-                        <Image src={stage.image} alt="" fill sizes="128px" className="object-cover" />
-                      </div>
-                    ) : (
-                      <span className="mb-4 flex size-20 items-center justify-center rounded-full bg-blue-50 text-blue-500">
-                        <Truck className="size-9" strokeWidth={1.6} />
-                      </span>
-                    )}
-                    <div className="text-[14px] font-semibold text-slate-600">{stage.hint}: пусто</div>
-                    <p className="mt-1 max-w-[210px] text-[12px] leading-relaxed text-slate-400">
+                  <div className="flex min-h-[280px] flex-col items-center justify-center rounded-2xl border border-dashed bg-[var(--card)] px-5 py-8 text-center">
+                    <span
+                      className={cn(
+                        "mb-4 flex size-16 items-center justify-center rounded-2xl border",
+                        stage.activeIcon,
+                      )}
+                    >
+                      <EmptyIcon className="size-7" strokeWidth={1.7} />
+                    </span>
+                    <div className="text-[14px] font-semibold text-[var(--muted-foreground)]">{stage.hint}: пусто</div>
+                    <p className="mt-1 max-w-[210px] text-[12px] leading-relaxed text-[var(--muted-foreground)]">
                       {stage.key === "loading" && "Здесь появятся заказы в процессе погрузки."}
                       {stage.key === "done" &&
                         `Нет отгруженных заказов ${completedDays === 1 ? "за сегодня" : `за последние ${completedDays} дней`}.`}
@@ -914,14 +870,14 @@ function CompletedOrdersSettingsModal({
         </>
       }
     >
-      <div className="rounded-2xl border bg-slate-50 p-4">
+      <div className="rounded-2xl border bg-[var(--secondary)] p-4">
         <div className="flex items-center gap-3">
-          <span className="flex size-11 items-center justify-center rounded-xl bg-blue-600 text-white">
+          <span className="flex size-11 items-center justify-center rounded-xl bg-[var(--ring)] text-white">
             <CalendarDays className="size-5" />
           </span>
           <div>
-            <div className="text-sm font-bold text-slate-800">Период на доске</div>
-            <div className="text-xs text-slate-500">От 1 до 90 дней</div>
+            <div className="text-sm font-bold text-[var(--foreground)]">Период на доске</div>
+            <div className="text-xs text-[var(--muted-foreground)]">От 1 до 90 дней</div>
           </div>
           <div className="relative ml-auto">
             <input
@@ -930,9 +886,9 @@ function CompletedOrdersSettingsModal({
               max={90}
               value={days}
               onChange={(event) => setDays(Number(event.target.value))}
-              className="h-12 w-24 rounded-xl border bg-white pr-9 text-center text-xl font-black tabular-nums outline-none focus:ring-2 focus:ring-blue-500"
+              className="h-12 w-24 rounded-xl border bg-[var(--card)] pr-9 text-center text-xl font-black tabular-nums outline-none focus:ring-2 focus:ring-[var(--ring)]"
             />
-            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[var(--muted-foreground)]">
               дн.
             </span>
           </div>
@@ -944,10 +900,10 @@ function CompletedOrdersSettingsModal({
               key={value}
               onClick={() => setDays(value)}
               className={cn(
-                "rounded-lg border py-2 text-xs font-bold transition-colors",
+                "min-h-11 rounded-lg border px-2 py-2 text-xs font-bold transition-colors",
                 days === value
-                  ? "border-blue-600 bg-blue-600 text-white"
-                  : "bg-white text-slate-600 hover:border-blue-300",
+                  ? "border-[var(--ring)] bg-[var(--ring)] text-white"
+                  : "bg-[var(--card)] text-[var(--muted-foreground)] hover:border-[var(--ring)]",
               )}
             >
               {value === 1 ? "Сегодня" : value}
@@ -955,7 +911,7 @@ function CompletedOrdersSettingsModal({
           ))}
         </div>
       </div>
-      <div className="mt-4 flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+      <div className="mt-4 flex items-start gap-3 rounded-xl border border-[var(--soft-green-border)] bg-[var(--soft-green)] px-4 py-3 text-sm text-[var(--soft-green-foreground)]">
         <Archive className="mt-0.5 size-4 shrink-0" />
         Видео подсчёта хранится отдельно на компьютере камер {settings?.video_retention_days ?? 14} дней.
       </div>
@@ -989,28 +945,28 @@ function CountingHistoryModal({ history, onClose }: { history: AiCountingHistory
       {history && (
         <div className="grid gap-4 md:grid-cols-[0.85fr_1.4fr]">
           <div className="flex flex-col gap-3">
-            <div className="rounded-2xl bg-slate-950 p-5 text-white">
-              <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-cyan-300">Итог модели</div>
+            <div className="rounded-2xl bg-[var(--foreground)] p-5 text-[var(--background)]">
+              <div className="text-[11px] font-bold uppercase tracking-[0.14em] opacity-65">Итог модели</div>
               <div className="mt-2 text-6xl font-black tabular-nums tracking-[-0.06em]">{total ?? "—"}</div>
-              <div className="text-sm text-white/55">мешков насчитано камерой</div>
+              <div className="text-sm opacity-55">мешков насчитано камерой</div>
             </div>
             <div className="rounded-2xl border p-4 text-sm">
               <div className="flex items-center gap-2 font-bold">
-                <Cctv className="size-4 text-blue-600" /> {history.camera_name}
+                <Cctv className="size-4 text-[var(--soft-blue-foreground)]" /> {history.camera_name}
               </div>
-              <div className="mt-3 grid gap-2 text-xs text-slate-500">
+              <div className="mt-3 grid gap-2 text-xs text-[var(--muted-foreground)]">
                 <span>
-                  <b className="text-slate-700">Клиент:</b> {history.order_client_name}
+                  <b className="text-[var(--foreground)]">Клиент:</b> {history.order_client_name}
                 </span>
                 <span>
-                  <b className="text-slate-700">Оператор:</b> {history.started_by_name || "—"}
+                  <b className="text-[var(--foreground)]">Оператор:</b> {history.started_by_name || "—"}
                 </span>
                 <span>
-                  <b className="text-slate-700">Начало:</b> {formatDateTime(history.started_at)}
+                  <b className="text-[var(--foreground)]">Начало:</b> {formatDateTime(history.started_at)}
                 </span>
                 {history.ended_at && (
                   <span>
-                    <b className="text-slate-700">Завершение:</b> {formatDateTime(history.ended_at)}
+                    <b className="text-[var(--foreground)]">Завершение:</b> {formatDateTime(history.ended_at)}
                   </span>
                 )}
               </div>
@@ -1034,7 +990,7 @@ function CountingHistoryModal({ history, onClose }: { history: AiCountingHistory
                         type="button"
                         onClick={() => setSegmentIndex(index)}
                         className={cn(
-                          "shrink-0 rounded-lg px-3 py-2 text-xs font-semibold",
+                          "min-h-11 shrink-0 rounded-lg px-3 py-2 text-xs font-semibold",
                           index === segmentIndex
                             ? "bg-white text-black"
                             : "bg-white/10 text-white/70 hover:bg-white/15",
@@ -1091,50 +1047,52 @@ function ActiveLoadingCard({
     <button
       type="button"
       onClick={() => onOpen(session.order_id)}
-      className="group relative overflow-hidden rounded-[20px] border border-slate-200/80 bg-white p-4 text-left shadow-[0_12px_32px_rgba(48,70,108,0.07)] transition duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_18px_42px_rgba(48,70,108,0.12)]"
+      className="group relative min-h-11 overflow-hidden rounded-[20px] border bg-[var(--card)] p-4 text-left shadow-card transition duration-200 hover:-translate-y-0.5 hover:border-[var(--soft-blue-border)] hover:shadow-float"
     >
-      <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-blue-500 via-cyan-400 to-emerald-400" />
+      <div className="absolute inset-y-0 left-0 w-1 bg-[var(--ring)]" />
       <div className="flex items-start gap-3 pl-1">
-        <span className="relative flex size-11 shrink-0 items-center justify-center rounded-[14px] bg-slate-900 text-white shadow-sm">
+        <span className="relative flex size-11 shrink-0 items-center justify-center rounded-[14px] bg-[var(--foreground)] text-[var(--background)]">
           <Cctv className="size-5" />
           <span
             className={cn(
-              "absolute -right-1 -top-1 size-3 rounded-full border-2 border-white",
-              isLive ? "animate-pulse bg-emerald-400" : "bg-amber-400",
+              "absolute -right-1 -top-1 size-3 rounded-full border-2 border-[var(--card)]",
+              isLive ? "animate-pulse bg-[var(--success)]" : "bg-[var(--warning)]",
             )}
           />
         </span>
 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[15px] font-bold text-slate-800">Заказ #{session.order_id}</span>
-            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-700">
+            <span className="text-[15px] font-bold text-[var(--foreground)]">Заказ #{session.order_id}</span>
+            <span className="rounded-full bg-[var(--soft-green)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[var(--soft-green-foreground)]">
               {isLive ? "камера считает" : "подключение"}
             </span>
           </div>
-          <p className="mt-0.5 truncate text-[12px] text-slate-500">
+          <p className="mt-0.5 truncate text-[12px] text-[var(--muted-foreground)]">
             {order?.client_name || session.order_client_name || "Без клиента"}
           </p>
         </div>
 
         <div className="shrink-0 text-right">
-          <div className="flex items-baseline justify-end gap-1 text-slate-900">
+          <div className="flex items-baseline justify-end gap-1 text-[var(--foreground)]">
             <span className="text-4xl font-black tabular-nums leading-none tracking-[-0.05em]">{counted}</span>
-            {expected > 0 && <span className="text-sm font-semibold text-slate-400">/ {expected}</span>}
+            {expected > 0 && <span className="text-sm font-semibold text-[var(--muted-foreground)]">/ {expected}</span>}
           </div>
-          <span className="text-[10px] font-bold uppercase tracking-[0.13em] text-slate-400">мешков камерой</span>
+          <span className="text-[10px] font-bold uppercase tracking-[0.13em] text-[var(--muted-foreground)]">
+            мешков камерой
+          </span>
         </div>
       </div>
 
       <div className="mt-4 pl-1">
-        <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+        <div className="h-2 overflow-hidden rounded-full bg-[var(--muted)]">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-blue-500 via-cyan-400 to-emerald-400 transition-all duration-500"
+            className="h-full rounded-full bg-[var(--success)] transition-all duration-500"
             style={{ width: `${percent}%` }}
           />
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
-          <span className="flex items-center gap-1.5 font-semibold text-blue-700">
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-[var(--muted-foreground)]">
+          <span className="flex items-center gap-1.5 font-semibold text-[var(--soft-blue-foreground)]">
             <Radio className="size-3.5" /> {camera?.zone || camera?.name || session.camera}
           </span>
           <span className="flex items-center gap-1.5">
@@ -1144,7 +1102,7 @@ function ActiveLoadingCard({
             <Clock3 className="size-3.5" /> {formatDateTime(session.started_at)}
           </span>
           {accepted !== counted && (
-            <span className="ml-auto tabular-nums text-slate-400">на посту принято: {accepted}</span>
+            <span className="ml-auto tabular-nums text-[var(--muted-foreground)]">на посту принято: {accepted}</span>
           )}
         </div>
       </div>
@@ -1164,28 +1122,30 @@ function ActiveLoadings({
   onOpen: (id: number) => void;
 }) {
   return (
-    <section className="overflow-hidden rounded-[24px] border border-slate-200/80 bg-[linear-gradient(135deg,#f7faff_0%,#f8fbff_55%,#f4fbf8_100%)] p-4 shadow-[0_14px_40px_rgba(48,70,108,0.06)] sm:p-5">
+    <section className="overflow-hidden rounded-[24px] border bg-[var(--card)] p-4 shadow-card sm:p-5">
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <span className="flex size-10 items-center justify-center rounded-xl bg-slate-900 text-white shadow-sm">
+        <span className="flex size-10 items-center justify-center rounded-xl bg-[var(--foreground)] text-[var(--background)]">
           <Activity className="size-5" />
         </span>
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="text-[18px] font-bold tracking-tight text-slate-800">Сейчас на погрузке</h2>
-            {!!sessions?.length && <span className="size-2 animate-pulse rounded-full bg-emerald-500" />}
+            <h2 className="text-[18px] font-bold tracking-tight text-[var(--foreground)]">Сейчас на погрузке</h2>
+            {!!sessions?.length && <span className="size-2 animate-pulse rounded-full bg-[var(--success)]" />}
           </div>
-          <p className="text-[12px] text-slate-400">Активные заказы и живой счёт камер</p>
+          <p className="text-[12px] text-[var(--muted-foreground)]">Активные заказы и живой счёт камер</p>
         </div>
-        <span className="ml-auto rounded-full border border-white bg-white/90 px-3 py-1 text-[12px] font-semibold tabular-nums text-slate-600 shadow-sm">
+        <span className="ml-auto flex min-h-8 items-center rounded-full border bg-[var(--muted)] px-3 text-[12px] font-semibold tabular-nums text-[var(--muted-foreground)]">
           {sessions?.length ?? 0} активн.
         </span>
       </div>
 
       {!sessions?.length ? (
-        <div className="flex min-h-28 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white/65 px-4 text-center">
-          <Cctv className="size-6 text-slate-300" />
-          <p className="mt-2 text-sm font-semibold text-slate-600">Камеры пока не считают</p>
-          <p className="mt-0.5 text-xs text-slate-400">Активная отгрузка появится после запуска в «Моноблоке».</p>
+        <div className="flex min-h-28 flex-col items-center justify-center rounded-2xl border border-dashed bg-[var(--muted)]/45 px-4 text-center">
+          <Cctv className="size-6 text-[var(--muted-foreground)]" />
+          <p className="mt-2 text-sm font-semibold text-[var(--muted-foreground)]">Камеры пока не считают</p>
+          <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
+            Активная отгрузка появится после запуска в «Моноблоке».
+          </p>
         </div>
       ) : (
         <div className="grid gap-3 xl:grid-cols-2 2xl:grid-cols-3">
@@ -1480,8 +1440,9 @@ function ShippingPageInner() {
         <div className="flex flex-col gap-4">
           {/* назад к посту */}
           <button
+            type="button"
             onClick={() => setSelectedId(null)}
-            className="flex w-fit items-center gap-1.5 text-sm font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+            className="flex min-h-11 w-fit items-center gap-1.5 rounded-xl px-2 text-sm font-semibold text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
           >
             <ArrowLeft className="size-4" /> К посту
           </button>
@@ -1695,15 +1656,17 @@ function ShippingPageInner() {
       >
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-              <div className="text-xs font-medium uppercase tracking-wide text-amber-700">Сбросится</div>
-              <div className="mt-1 text-2xl font-black tabular-nums text-amber-950">
+            <div className="rounded-xl border border-[var(--soft-amber-border)] bg-[var(--soft-amber)] p-4">
+              <div className="text-xs font-medium uppercase tracking-wide text-[var(--soft-amber-foreground)]">
+                Сбросится
+              </div>
+              <div className="mt-1 text-2xl font-black tabular-nums text-[var(--soft-amber-foreground)]">
                 {rewindDropOrder?.bags_loaded ?? 0} <span className="text-sm font-semibold">меш.</span>
               </div>
             </div>
-            <div className="rounded-xl border bg-slate-50 p-4">
-              <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Камера</div>
-              <div className="mt-1 truncate text-sm font-bold text-slate-800">
+            <div className="rounded-xl border bg-[var(--secondary)] p-4">
+              <div className="text-xs font-medium uppercase tracking-wide text-[var(--muted-foreground)]">Камера</div>
+              <div className="mt-1 truncate text-sm font-bold text-[var(--foreground)]">
                 {rewindDropOrder?.loading_camera
                   ? ((cameras ?? []).find((camera) => camera.src === rewindDropOrder.loading_camera)?.name ??
                     rewindDropOrder.loading_camera)
@@ -1716,8 +1679,8 @@ function ShippingPageInner() {
               className={cn(
                 "rounded-xl border px-4 py-3 text-sm",
                 rewindSession.can_stop
-                  ? "border-blue-200 bg-blue-50 text-blue-900"
-                  : "border-red-200 bg-red-50 text-red-900",
+                  ? "border-[var(--soft-blue-border)] bg-[var(--soft-blue)] text-[var(--soft-blue-foreground)]"
+                  : "border-[var(--soft-red-border)] bg-[var(--soft-red)] text-[var(--soft-red-foreground)]",
               )}
             >
               {rewindSession.can_stop
@@ -1725,7 +1688,7 @@ function ShippingPageInner() {
                 : `AI-подсчёт запустил ${rewindSession.started_by_name || "другой сотрудник"}. Сначала он или администратор должен остановить сессию.`}
             </div>
           )}
-          <p className="text-sm leading-relaxed text-slate-500">
+          <p className="text-sm leading-relaxed text-[var(--muted-foreground)]">
             Вес въезда и текущий результат незавершённой погрузки будут очищены. Действие запишется в журнал.
           </p>
         </div>

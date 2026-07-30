@@ -10,14 +10,14 @@ export function Toaster() {
   useEffect(() => subscribeToasts(setToasts), []);
   if (!toasts.length) return null;
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-4 z-[200] flex flex-col items-center gap-2 px-4 sm:items-end sm:pr-6">
+    <div className="pointer-events-none fixed inset-x-0 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-[200] flex flex-col items-center gap-2 px-3 sm:items-end sm:pr-6">
       {toasts.map((t) => (
         <div
           key={t.id}
           role={t.kind === "success" ? "status" : "alert"}
           className={cn(
-            "animate-fade-up pointer-events-auto flex w-full max-w-sm items-start gap-2.5 rounded-md border bg-[var(--card)] px-3.5 py-2.5 shadow-lg",
-            t.kind === "success" ? "border-[var(--success)]/25" : "border-[var(--destructive)]/25",
+            "animate-fade-up pointer-events-auto flex w-full max-w-sm items-start gap-3 rounded-2xl border bg-[var(--card)] px-4 py-3.5 shadow-float",
+            t.kind === "success" ? "border-[var(--success)]/20" : "border-[var(--destructive)]/20",
           )}
         >
           {t.kind === "success" ? (
@@ -29,7 +29,7 @@ export function Toaster() {
           <button
             aria-label="Закрыть"
             onClick={() => dismissToast(t.id)}
-            className="ml-auto shrink-0 rounded p-0.5 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+            className="ml-auto flex size-11 shrink-0 items-center justify-center rounded-xl text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] sm:size-9"
           >
             <X className="size-3.5" />
           </button>

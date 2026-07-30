@@ -84,6 +84,7 @@ export function CameraLineEditor({
 }) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState<"start" | "end" | "draw" | null>(null);
+  const [activePoint, setActivePoint] = useState<"start" | "end">("start");
   const [online, setOnline] = useState(false);
   const arrow = useMemo(() => directionalArrow(line, direction), [line, direction]);
 
@@ -107,10 +108,13 @@ export function CameraLineEditor({
       Math.hypot((point.x - x) * point.rect.width, (point.y - y) * point.rect.height);
     if (distance(line.x1, line.y1) <= 24) {
       setDragging("start");
+      setActivePoint("start");
     } else if (distance(line.x2, line.y2) <= 24) {
       setDragging("end");
+      setActivePoint("end");
     } else {
       setDragging("draw");
+      setActivePoint("end");
       onLineChange({ x1: point.x, y1: point.y, x2: point.x, y2: point.y });
     }
   };
@@ -130,6 +134,19 @@ export function CameraLineEditor({
     setDragging(null);
   };
 
+  const nudgeActivePoint = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (disabled || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    event.preventDefault();
+    const amount = event.shiftKey ? 0.05 : 0.01;
+    const dx = event.key === "ArrowLeft" ? -amount : event.key === "ArrowRight" ? amount : 0;
+    const dy = event.key === "ArrowUp" ? -amount : event.key === "ArrowDown" ? amount : 0;
+    if (activePoint === "start") {
+      onLineChange({ ...line, x1: clamp(line.x1 + dx), y1: clamp(line.y1 + dy) });
+    } else {
+      onLineChange({ ...line, x2: clamp(line.x2 + dx), y2: clamp(line.y2 + dy) });
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div
@@ -138,6 +155,10 @@ export function CameraLineEditor({
         onPointerMove={move}
         onPointerUp={finish}
         onPointerCancel={finish}
+        onKeyDown={nudgeActivePoint}
+        tabIndex={disabled ? -1 : 0}
+        aria-label={`Линия подсчёта. Выбрана точка ${activePoint === "start" ? "A" : "B"}. Перемещайте стрелками, с Shift — крупным шагом.`}
+        aria-describedby="camera-line-keyboard-hint"
         className={cn(
           "group/line relative aspect-video touch-none select-none overflow-hidden rounded-xl bg-[#111318] shadow-[0_20px_55px_-24px_rgba(15,23,42,.8)]",
           disabled ? "cursor-wait" : "cursor-crosshair",
@@ -213,25 +234,56 @@ export function CameraLineEditor({
         </svg>
 
         <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-2 rounded-full border border-white/15 bg-black/55 px-3 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur-md">
-          <span className={cn("size-2 rounded-full", online ? "bg-emerald-400" : "bg-amber-400")} />
+          <span className={cn("size-2 rounded-full", online ? "bg-[var(--success)]" : "bg-[var(--warning)]")} />
           {online ? "Живое видео" : "Подключение…"}
         </div>
         <div className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 rounded-lg border border-white/15 bg-black/60 px-3 py-2 text-xs text-white/90 backdrop-blur-md">
-          <Crosshair className="size-4 text-sky-300" />
+          <Crosshair className="size-4 text-[var(--hero-accent)]" />
           Проведите новую линию или перетащите её точки
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2 rounded-xl border bg-[var(--secondary)] p-3 sm:flex-row sm:items-center sm:justify-between">
+        <p id="camera-line-keyboard-hint" className="text-xs leading-relaxed text-[var(--muted-foreground)]">
+          Для точной настройки выберите точку и перемещайте её стрелками. Shift меняет шаг с 1% на 5%.
+        </p>
+        <div
+          className="inline-flex shrink-0 rounded-xl border bg-[var(--card)] p-1"
+          role="group"
+          aria-label="Активная точка линии"
+        >
+          {(["start", "end"] as const).map((point, index) => (
+            <button
+              key={point}
+              type="button"
+              onClick={() => {
+                setActivePoint(point);
+                surfaceRef.current?.focus();
+              }}
+              aria-pressed={activePoint === point}
+              className={cn(
+                "flex h-10 min-w-20 items-center justify-center rounded-lg px-3 text-xs font-bold transition",
+                activePoint === point
+                  ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
+                  : "text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]",
+              )}
+            >
+              Точка {index === 0 ? "A" : "B"}
+            </button>
+          ))}
         </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
         <label className="block">
           <span className="mb-1.5 flex items-center gap-2 text-sm font-semibold">
-            <ArrowDownUp className="size-4 text-sky-600" /> Направление подсчёта
+            <ArrowDownUp className="size-4 text-[var(--soft-blue-foreground)]" /> Направление подсчёта
           </span>
           <select
             value={direction}
             disabled={disabled}
             onChange={(event) => onDirectionChange(event.target.value as LineDirection)}
-            className="h-11 w-full rounded-lg border bg-[var(--background)] px-3.5 text-sm outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 disabled:opacity-60"
+            className="h-11 w-full rounded-xl border bg-[var(--card)] px-3.5 text-sm outline-none transition focus:border-[var(--ring)] focus:ring-2 focus:ring-[var(--ring)]/20 disabled:opacity-60"
           >
             {DIRECTIONS.map((item) => (
               <option key={item.value} value={item.value}>

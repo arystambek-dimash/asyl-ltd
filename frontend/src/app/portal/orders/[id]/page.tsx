@@ -5,6 +5,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -165,11 +166,11 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
 
   return (
     <AppShell title={`Заказ #${order.id}`} portal>
-      <div className="flex flex-col gap-4 max-w-2xl">
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
         <Card>
-          <CardHeader className="flex-row items-center justify-between">
+          <CardHeader className="flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
             <CardTitle>Заказ #{order.id}</CardTitle>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <StatusBadge status={order.status} />
               {order.status === "shipped" && order.payment_status && (
                 <Badge tone={PAYMENT_STATUS_TONE[order.payment_status] ?? "muted"} dot>
@@ -189,13 +190,13 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
               <TBody>
                 {order.items.map((it) => (
                   <TR key={it.id}>
-                    <TD>{it.product_label}</TD>
-                    <TD>{it.quantity}</TD>
+                    <TD className="min-w-0 break-words">{it.product_label}</TD>
+                    <TD className="text-right tabular-nums">{it.quantity}</TD>
                   </TR>
                 ))}
               </TBody>
             </Table>
-            <div className="mt-4 flex justify-between border-t pt-3 text-sm">
+            <div className="mt-4 flex items-center justify-between gap-4 rounded-xl bg-[var(--muted)]/55 px-3.5 py-3 text-sm">
               <span className="text-[var(--muted-foreground)]">Итого</span>
               <span
                 className={
@@ -208,7 +209,14 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
           </CardContent>
         </Card>
 
-        {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
+        {error && (
+          <p
+            role="alert"
+            className="rounded-xl border border-[var(--destructive)]/25 bg-[var(--destructive)]/8 px-3.5 py-3 text-sm text-[var(--destructive)]"
+          >
+            {error}
+          </p>
+        )}
 
         {step === "pending" && (
           <Card>
@@ -237,22 +245,22 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                 </CardHeader>
                 <CardContent className="flex flex-col gap-4">
                   {/* сводка */}
-                  <div className="grid grid-cols-3 gap-2 text-sm">
-                    <div>
-                      <div className="text-xs text-[var(--muted-foreground)]">Сумма</div>
-                      <div className="tabular-nums font-medium">
+                  <div className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-3">
+                    <div className="flex items-center justify-between gap-3 rounded-xl bg-[var(--muted)]/55 px-3.5 py-3 sm:block">
+                      <div className="text-xs font-medium text-[var(--muted-foreground)]">Сумма</div>
+                      <div className="text-right font-semibold tabular-nums sm:mt-1 sm:text-left">
                         {formatMoney(order.total_amount ?? 0)} {currencySymbol(order.currency)}
                       </div>
                     </div>
-                    <div>
-                      <div className="text-xs text-[var(--muted-foreground)]">Оплачено</div>
-                      <div className="tabular-nums text-[var(--success)]">
+                    <div className="flex items-center justify-between gap-3 rounded-xl bg-[var(--soft-green)] px-3.5 py-3 sm:block">
+                      <div className="text-xs font-medium text-[var(--muted-foreground)]">Оплачено</div>
+                      <div className="text-right font-semibold tabular-nums text-[var(--success)] sm:mt-1 sm:text-left">
                         {formatMoney(order.paid_total ?? "0")} {currencySymbol(order.currency)}
                       </div>
                     </div>
-                    <div>
-                      <div className="text-xs text-[var(--muted-foreground)]">Остаток</div>
-                      <div className="tabular-nums font-semibold text-[var(--destructive)]">
+                    <div className="flex items-center justify-between gap-3 rounded-xl bg-[var(--soft-red)] px-3.5 py-3 sm:block">
+                      <div className="text-xs font-medium text-[var(--muted-foreground)]">Остаток</div>
+                      <div className="text-right font-semibold tabular-nums text-[var(--destructive)] sm:mt-1 sm:text-left">
                         {formatMoney(remaining)} {currencySymbol(order.currency)}
                       </div>
                     </div>
@@ -294,9 +302,9 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                         return (
                           <div
                             key={part.id}
-                            className="rounded-xl border border-[var(--border)] bg-[var(--muted)]/25 p-4"
+                            className="rounded-2xl border border-[var(--border)] bg-[var(--muted)]/25 p-3.5 sm:p-4"
                           >
-                            <div className="flex items-start justify-between gap-3">
+                            <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-start">
                               <div className="flex min-w-0 items-start gap-2">
                                 {part.method === "kaspi" ? (
                                   <QrCode className="mt-0.5 size-4 shrink-0 text-[var(--primary)]" />
@@ -320,6 +328,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                               </div>
                               {part.can_release && provider?.status !== "cancelling" && (
                                 <Button
+                                  className="w-full justify-center sm:w-auto"
                                   size="sm"
                                   variant="ghost"
                                   disabled={busy}
@@ -358,12 +367,12 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                                     height={224}
                                     unoptimized
                                     onError={() => setFailedQrImages((current) => new Set(current).add(part.id))}
-                                    className="mx-auto mt-4 size-56 rounded-2xl bg-white p-2 shadow-sm"
+                                    className="mx-auto mt-4 aspect-square h-auto w-full max-w-56 rounded-2xl bg-white p-2 shadow-sm"
                                   />
                                 ) : (
-                                  <div className="mx-auto mt-4 flex size-56 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-[var(--border)] bg-white p-6 text-center">
+                                  <div className="mx-auto mt-4 flex aspect-square w-full max-w-56 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-[#d9dee7] bg-white p-5 text-center sm:p-6">
                                     <QrCode className="size-12 text-[var(--primary)]" />
-                                    <p className="text-sm text-[var(--muted-foreground)]">
+                                    <p className="text-sm text-[#4b5563]">
                                       {provider.qr_token_url
                                         ? "QR готов. Откройте Kaspi кнопкой ниже."
                                         : "QR создаётся. Обновите страницу через несколько секунд."}
@@ -386,20 +395,24 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
 
                       {available > 0 && (
                         <>
-                          <div className="rounded-xl border border-dashed border-[var(--border)] p-4">
-                            <div className="mb-3 flex items-end justify-between gap-4">
-                              <div>
+                          <div className="rounded-2xl border border-dashed border-[var(--border)] p-3.5 sm:p-4">
+                            <div className="mb-3 flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-end sm:gap-4">
+                              <div className="min-w-0">
                                 <div className="font-medium">Добавить часть оплаты</div>
                                 <div className="text-xs text-[var(--muted-foreground)]">
                                   Можно разделить остаток между несколькими способами.
                                 </div>
                               </div>
-                              <div className="w-40">
-                                <label className="mb-1 block text-xs text-[var(--muted-foreground)]">Сумма</label>
+                              <div className="w-full sm:w-44">
+                                <Label htmlFor="portal-payment-amount">Сумма</Label>
                                 <Input
+                                  id="portal-payment-amount"
                                   inputMode="decimal"
                                   value={chosenAmount}
-                                  aria-invalid={Boolean(amountError)}
+                                  aria-invalid={amountTouched && Boolean(amountError)}
+                                  aria-describedby={
+                                    amountTouched && amountError ? "portal-payment-amount-error" : undefined
+                                  }
                                   onChange={(event) => {
                                     setPaymentAmount(event.target.value);
                                     setAmountTouched(true);
@@ -408,7 +421,11 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                               </div>
                             </div>
                             {amountTouched && amountError && (
-                              <p className="mb-3 flex items-center gap-1.5 text-xs text-[var(--destructive)]">
+                              <p
+                                id="portal-payment-amount-error"
+                                role="alert"
+                                className="mb-3 flex items-start gap-1.5 text-xs text-[var(--destructive)]"
+                              >
                                 <AlertTriangle className="size-3.5" /> {amountError}
                               </p>
                             )}
@@ -417,14 +434,14 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                                 <>
                                   <Button
                                     variant="outline"
-                                    className="h-auto justify-start py-3"
+                                    className="h-auto w-full justify-start whitespace-normal py-3 text-left"
                                     onClick={() => setPaymentMode("invoice")}
                                   >
                                     <FileText className="size-4" /> Счёт на оплату
                                   </Button>
                                   <Button
                                     variant="outline"
-                                    className="h-auto justify-start py-3"
+                                    className="h-auto w-full justify-start whitespace-normal py-3 text-left"
                                     onClick={() => setPaymentMode("qr")}
                                   >
                                     <QrCode className="size-4" /> Kaspi Pay · QR
@@ -434,7 +451,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                               <Button
                                 disabled={busy || Boolean(amountError)}
                                 variant="outline"
-                                className="h-auto justify-start py-3"
+                                className="h-auto w-full justify-start whitespace-normal py-3 text-left"
                                 onClick={() => run(() => selectPayment("cash", normalizedAmount), true)}
                               >
                                 <Banknote className="size-4" /> Наличными
@@ -442,7 +459,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                               <Button
                                 disabled={busy || order.has_pending_payment}
                                 variant="outline"
-                                className="h-auto justify-start py-3"
+                                className="h-auto w-full justify-start whitespace-normal py-3 text-left"
                                 onClick={() => run(() => selectPayment("debt"))}
                               >
                                 <HandCoins className="size-4" /> В долг
@@ -456,28 +473,37 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                           </div>
 
                           {paymentMode && order.currency === "KZT" && (
-                            <div className="rounded-xl border border-[var(--primary)]/25 bg-[var(--primary)]/5 p-4">
-                              <div className="mb-3 flex items-center justify-between">
+                            <div className="rounded-2xl border border-[var(--ring)]/25 bg-[var(--soft-blue)] p-3.5 sm:p-4">
+                              <div className="mb-3 flex flex-col items-stretch justify-between gap-2 sm:flex-row sm:items-center">
                                 <div className="font-medium">
                                   {paymentMode === "qr" ? "Kaspi Pay — QR" : "Счёт на оплату"}
                                 </div>
-                                <Button size="sm" variant="ghost" onClick={() => setPaymentMode(null)}>
+                                <Button
+                                  className="w-full sm:w-auto"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setPaymentMode(null)}
+                                >
                                   <ArrowLeft className="size-4" /> Назад
                                 </Button>
                               </div>
                               {paymentMode === "invoice" && (
                                 <div className="mb-3">
-                                  <label className="mb-1.5 block text-xs text-[var(--muted-foreground)]">
-                                    Номер телефона для получения счёта
-                                  </label>
+                                  <Label htmlFor="portal-payment-phone">Номер телефона для получения счёта</Label>
                                   <Input
+                                    id="portal-payment-phone"
                                     inputMode="tel"
                                     value={phone}
                                     onChange={(event) => setPaymentPhone(event.target.value)}
                                     placeholder="8 700 000 00 00"
+                                    aria-invalid={!phone.trim()}
+                                    aria-describedby={!phone.trim() ? "portal-payment-phone-error" : undefined}
                                   />
                                   {!phone.trim() && (
-                                    <p className="mt-1.5 text-xs text-[var(--destructive)]">
+                                    <p
+                                      id="portal-payment-phone-error"
+                                      className="mt-1.5 text-xs text-[var(--destructive)]"
+                                    >
                                       Укажите номер, на который отправить счёт.
                                     </p>
                                   )}
@@ -529,9 +555,21 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                   Текущий номер: <b>{order.truck_number}</b>
                 </p>
               )}
-              <div className="flex gap-2">
-                <Input placeholder="Номер КАМАЗа" value={truck} onChange={(e) => setTruckVal(e.target.value)} />
-                <Button disabled={busy || !truck} onClick={() => run(() => setTruck(order.id, truck))}>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                <div className="min-w-0 flex-1">
+                  <Label htmlFor="portal-truck-number">Номер КАМАЗа</Label>
+                  <Input
+                    id="portal-truck-number"
+                    placeholder="Например, 123 ABC 02"
+                    value={truck}
+                    onChange={(e) => setTruckVal(e.target.value)}
+                  />
+                </div>
+                <Button
+                  className="w-full sm:w-auto"
+                  disabled={busy || !truck}
+                  onClick={() => run(() => setTruck(order.id, truck))}
+                >
                   Сохранить
                 </Button>
               </div>

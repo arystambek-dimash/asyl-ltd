@@ -40,7 +40,7 @@ export function LicensePlateInput({
 
   return (
     <div
-      className="flex items-stretch overflow-hidden rounded-xl border bg-[var(--background)] shadow-xs focus-within:ring-[3px] focus-within:ring-[var(--ring)]/40"
+      className="flex items-stretch overflow-hidden rounded-xl border bg-[var(--card)] shadow-sm focus-within:border-[var(--ring)] focus-within:ring-[3px] focus-within:ring-[var(--ring)]/24"
       role="group"
       aria-labelledby={labelledBy}
     >

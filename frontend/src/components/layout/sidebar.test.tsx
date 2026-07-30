@@ -1,11 +1,16 @@
 import { useCallback, useState } from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me } from "@/lib/types";
 import { Sidebar } from "./sidebar";
 
-vi.mock("next/navigation", () => ({ usePathname: () => "/portal/catalog" }));
+const nav = vi.hoisted(() => ({ pathname: "/portal/catalog" }));
+vi.mock("next/navigation", () => ({ usePathname: () => nav.pathname }));
+
+beforeEach(() => {
+  nav.pathname = "/portal/catalog";
+});
 
 const client: Me = {
   id: 1,
@@ -34,6 +39,31 @@ function Harness() {
     </>
   );
 }
+
+describe("подсветка активного пункта", () => {
+  const activeClass = "font-medium";
+
+  it("на «Новый заказ» горит только он, без «Мои заказы»", () => {
+    nav.pathname = "/portal/orders/new";
+    render(<Sidebar me={client} />);
+    expect(screen.getByRole("link", { name: "Новый заказ" })).toHaveClass(activeClass);
+    expect(screen.getByRole("link", { name: "Мои заказы" })).not.toHaveClass(activeClass);
+  });
+
+  it("на списке заказов горят «Мои заказы», а не «Новый заказ»", () => {
+    nav.pathname = "/portal/orders";
+    render(<Sidebar me={client} />);
+    expect(screen.getByRole("link", { name: "Мои заказы" })).toHaveClass(activeClass);
+    expect(screen.getByRole("link", { name: "Новый заказ" })).not.toHaveClass(activeClass);
+  });
+
+  it("на деталке заказа по-прежнему горят «Мои заказы»", () => {
+    nav.pathname = "/portal/orders/42";
+    render(<Sidebar me={client} />);
+    expect(screen.getByRole("link", { name: "Мои заказы" })).toHaveClass(activeClass);
+    expect(screen.getByRole("link", { name: "Новый заказ" })).not.toHaveClass(activeClass);
+  });
+});
 
 describe("mobile Sidebar", () => {
   it("moves, traps, and restores keyboard focus", async () => {

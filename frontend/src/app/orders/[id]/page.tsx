@@ -6,7 +6,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { StatusBadge } from "@/components/status-badge";
@@ -618,10 +618,8 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
               <CardTitle className="flex items-center gap-2">
                 <UserRound className="size-4 text-[var(--muted-foreground)]" /> Клиент
               </CardTitle>
-              <Link href={`/clients/${order.client}`}>
-                <Button size="sm" variant="outline">
-                  Открыть
-                </Button>
+              <Link href={`/clients/${order.client}`} className={buttonVariants({ size: "sm", variant: "outline" })}>
+                Открыть
               </Link>
             </CardHeader>
             <CardContent className="grid gap-2 p-4 pt-0 text-xs">

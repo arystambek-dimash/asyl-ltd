@@ -66,18 +66,22 @@ const SESSION_POLL_MS = 3_000;
 const SLOW_POLL_MS = 30_000;
 
 const COLOR_META: Record<string, { label: string; bar: string; dot: string }> = {
-  red: { label: "Красный", bar: "bg-[#dc604d]", dot: "bg-[#dc604d]" },
-  blue: { label: "Синий", bar: "bg-[#4169d8]", dot: "bg-[#4169d8]" },
-  green: { label: "Зелёный", bar: "bg-[#42a779]", dot: "bg-[#42a779]" },
-  white: { label: "Белый", bar: "border border-slate-300 bg-slate-100", dot: "border border-slate-300 bg-white" },
+  red: { label: "Красный", bar: "bg-[var(--chart-5)]", dot: "bg-[var(--chart-5)]" },
+  blue: { label: "Синий", bar: "bg-[var(--chart-1)]", dot: "bg-[var(--chart-1)]" },
+  green: { label: "Зелёный", bar: "bg-[var(--chart-2)]", dot: "bg-[var(--chart-2)]" },
+  white: {
+    label: "Белый",
+    bar: "border border-[var(--input)] bg-[var(--muted)]",
+    dot: "border border-[var(--input)] bg-white",
+  },
 };
 
 function colorMeta(color: string) {
   return (
     COLOR_META[color.toLowerCase()] ?? {
       label: color,
-      bar: "bg-slate-500",
-      dot: "bg-slate-500",
+      bar: "bg-[var(--muted-foreground)]",
+      dot: "bg-[var(--muted-foreground)]",
     }
   );
 }
@@ -101,11 +105,11 @@ function CameraChoice({
       className={cn(
         "group overflow-hidden rounded-2xl border text-left transition duration-200",
         checked
-          ? "border-blue-400 bg-blue-50 shadow-[0_10px_28px_rgba(59,104,210,0.15)] ring-2 ring-blue-500/20"
-          : "border-slate-200 bg-white hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md",
+          ? "border-[var(--ring)] bg-[var(--soft-blue)] shadow-card ring-2 ring-[var(--ring)]"
+          : "border-[var(--border)] bg-[var(--card)] hover:border-[var(--muted-foreground)]/45 hover:shadow-card",
       )}
     >
-      <div className="relative aspect-video overflow-hidden bg-[#151821]">
+      <div className="relative aspect-video overflow-hidden bg-[#111815]">
         <CameraStream
           src={camera.src}
           onStateChange={setStreamOnline}
@@ -113,7 +117,7 @@ function CameraChoice({
         />
 
         {!streamOnline && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-slate-950/75 text-white/45">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-[#0b100d]/80 text-white/45">
             <VideoOff className="size-5" />
             <span className="text-[11px]">Нет изображения</span>
           </div>
@@ -121,13 +125,17 @@ function CameraChoice({
 
         <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/65 to-transparent px-3 pb-8 pt-2.5">
           <span className="flex items-center gap-1.5 rounded-full bg-black/35 px-2 py-1 text-[10px] font-semibold text-white backdrop-blur-md">
-            <span className={cn("size-1.5 rounded-full", streamOnline ? "bg-emerald-400" : "bg-amber-400")} />
+            <span
+              className={cn("size-1.5 rounded-full", streamOnline ? "bg-[var(--success)]" : "bg-[var(--warning)]")}
+            />
             {streamOnline ? "ОНЛАЙН" : "НЕТ СИГНАЛА"}
           </span>
           <span
             className={cn(
               "flex size-7 items-center justify-center rounded-full border backdrop-blur-md transition",
-              checked ? "border-blue-300 bg-blue-600 text-white" : "border-white/35 bg-black/25 text-transparent",
+              checked
+                ? "border-[var(--ring)] bg-[var(--ring)] text-white"
+                : "border-white/35 bg-black/25 text-transparent",
             )}
           >
             <Check className="size-4" />
@@ -139,14 +147,14 @@ function CameraChoice({
         <span
           className={cn(
             "flex size-9 shrink-0 items-center justify-center rounded-xl",
-            checked ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400",
+            checked ? "bg-[var(--ring)] text-white" : "bg-[var(--muted)] text-[var(--muted-foreground)]",
           )}
         >
           <Camera className="size-4" />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-bold text-slate-800">{camera.zone}</span>
-          <span className="mt-0.5 block truncate text-[11px] text-slate-400">{camera.name}</span>
+          <span className="block truncate text-sm font-bold text-[var(--foreground)]">{camera.zone}</span>
+          <span className="mt-0.5 block truncate text-[11px] text-[var(--muted-foreground)]">{camera.name}</span>
         </span>
       </div>
     </button>
@@ -195,9 +203,9 @@ function CameraSettingsButton({
 
   return (
     <>
-      <Button variant="outline" className="h-10 rounded-xl bg-white" onClick={show}>
+      <Button variant="outline" className="w-full bg-[var(--card)] sm:w-auto" onClick={show}>
         <Settings2 className="size-4" /> Камеры моноблока
-        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] tabular-nums text-slate-500">
+        <span className="rounded-full bg-[var(--muted)] px-2 py-0.5 text-[11px] tabular-nums text-[var(--muted-foreground)]">
           {settings?.camera_sources.length ?? 0}
         </span>
       </Button>
@@ -220,8 +228,8 @@ function CameraSettingsButton({
           </>
         }
       >
-        <div className="mb-4 flex items-start gap-3 rounded-xl border border-blue-100 bg-blue-50/70 p-3 text-sm text-blue-900">
-          <ShieldCheck className="mt-0.5 size-5 shrink-0 text-blue-600" />
+        <div className="mb-4 flex items-start gap-3 rounded-xl border border-[var(--soft-blue-border)] bg-[var(--soft-blue)] p-3 text-sm text-[var(--soft-blue-foreground)]">
+          <ShieldCheck className="mt-0.5 size-5 shrink-0 text-[var(--soft-blue-foreground)]" />
           <p>
             Изменение применяется для всех устройств. Активные отгрузки продолжат работу, но новые увидят только
             выбранные камеры.
@@ -238,7 +246,7 @@ function CameraSettingsButton({
         </div>
 
         {!cameras.length && (
-          <div className="rounded-xl border border-dashed p-8 text-center text-sm text-slate-400">
+          <div className="rounded-xl border border-dashed p-8 text-center text-sm text-[var(--muted-foreground)]">
             Подключённые камеры пока не обнаружены.
           </div>
         )}
@@ -329,14 +337,14 @@ function MonoblockDevicesButton({
     <>
       <Button
         variant="outline"
-        className="h-10 rounded-xl bg-white"
+        className="w-full bg-[var(--card)] sm:w-auto"
         onClick={() => {
           setError("");
           setOpen(true);
         }}
       >
         <MonitorSmartphone className="size-4" /> Моноблоки
-        <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] tabular-nums text-blue-600">
+        <span className="rounded-full bg-[var(--soft-blue)] px-2 py-0.5 text-[11px] tabular-nums text-[var(--soft-blue-foreground)]">
           {devices.length}
         </span>
       </Button>
@@ -349,7 +357,9 @@ function MonoblockDevicesButton({
         className="max-w-2xl"
       >
         <div className="mb-4 flex items-center justify-between gap-3">
-          <p className="text-sm text-slate-500">Оператор входит под этим логином — камера выбирается автоматически.</p>
+          <p className="text-sm text-[var(--muted-foreground)]">
+            Оператор входит под этим логином — камера выбирается автоматически.
+          </p>
           <Button onClick={() => showForm()}>
             <Plus className="size-4" /> Добавить
           </Button>
@@ -360,35 +370,42 @@ function MonoblockDevicesButton({
               key={device.id}
               className={cn(
                 "rounded-2xl border p-4",
-                device.is_active ? "border-slate-200 bg-white" : "border-slate-200 bg-slate-50 opacity-70",
+                device.is_active
+                  ? "border-[var(--border)] bg-[var(--card)]"
+                  : "border-[var(--border)] bg-[var(--secondary)] opacity-70",
               )}
             >
               <div className="flex items-start gap-3">
-                <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[var(--soft-blue)] text-[var(--soft-blue-foreground)]">
                   <MonitorSmartphone className="size-5" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-bold text-slate-800">{device.name}</div>
-                  <div className="mt-0.5 truncate text-xs text-slate-400">Логин: {device.username}</div>
+                  <div className="truncate font-bold text-[var(--foreground)]">{device.name}</div>
+                  <div className="mt-0.5 truncate text-xs text-[var(--muted-foreground)]">Логин: {device.username}</div>
                 </div>
-                <span className={cn("size-2.5 rounded-full", device.is_active ? "bg-emerald-500" : "bg-slate-300")} />
+                <span
+                  className={cn(
+                    "size-2.5 rounded-full",
+                    device.is_active ? "bg-[var(--success)]" : "bg-[var(--input)]",
+                  )}
+                />
               </div>
-              <div className="mt-3 flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700">
-                <Camera className="size-4 text-blue-600" /> {device.camera_name}
+              <div className="mt-3 flex items-center gap-2 rounded-xl bg-[var(--secondary)] px-3 py-2 text-sm font-semibold text-[var(--foreground)]">
+                <Camera className="size-4 text-[var(--soft-blue-foreground)]" /> {device.camera_name}
               </div>
               <div className="mt-3 flex justify-end gap-1">
                 <Button size="icon" variant="ghost" aria-label="Изменить моноблок" onClick={() => showForm(device)}>
                   <Pencil className="size-4" />
                 </Button>
                 <Button size="icon" variant="ghost" aria-label="Удалить моноблок" onClick={() => setRemoving(device)}>
-                  <Trash2 className="size-4 text-red-500" />
+                  <Trash2 className="size-4 text-[var(--soft-red-foreground)]" />
                 </Button>
               </div>
             </div>
           ))}
         </div>
         {!devices.length && (
-          <div className="rounded-2xl border border-dashed p-10 text-center text-sm text-slate-400">
+          <div className="rounded-2xl border border-dashed p-10 text-center text-sm text-[var(--muted-foreground)]">
             Моноблоки ещё не зарегистрированы.
           </div>
         )}
@@ -433,7 +450,7 @@ function MonoblockDevicesButton({
           <label className="grid gap-1.5">
             <Label>{editing ? "Новый пароль (необязательно)" : "Пароль"}</Label>
             <div className="relative">
-              <KeyRound className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+              <KeyRound className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
               <Input
                 type="password"
                 className="pl-9"
@@ -449,7 +466,7 @@ function MonoblockDevicesButton({
             <select
               value={cameraSource}
               onChange={(event) => setCameraSource(event.target.value)}
-              className="h-10 rounded-lg border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20"
+              className="h-11 rounded-xl border border-[var(--input)] bg-[var(--card)] px-3 text-sm text-[var(--foreground)] outline-none transition focus:border-[var(--ring)] focus:ring-2 focus:ring-[var(--ring)]/20"
             >
               <option value="">Выберите камеру</option>
               {cameras
@@ -464,13 +481,13 @@ function MonoblockDevicesButton({
           <label className="flex items-center justify-between rounded-xl border p-3">
             <span>
               <span className="block text-sm font-semibold">Устройство активно</span>
-              <span className="text-xs text-slate-400">Отключённый логин не сможет войти</span>
+              <span className="text-xs text-[var(--muted-foreground)]">Отключённый логин не сможет войти</span>
             </span>
             <input
               type="checkbox"
               checked={active}
               onChange={(event) => setActive(event.target.checked)}
-              className="size-4 accent-blue-600"
+              className="size-5 accent-[var(--ring)]"
             />
           </label>
           {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
@@ -548,11 +565,11 @@ function AlwaysOnSettingsButton({
     <>
       <Button
         variant="outline"
-        className="h-10 rounded-xl border-blue-200 bg-blue-50/70 text-blue-700 hover:bg-blue-100"
+        className="w-full border-[var(--soft-blue-border)] bg-[var(--soft-blue)] text-[var(--soft-blue-foreground)] hover:bg-[var(--soft-blue)] sm:w-auto"
         onClick={show}
       >
         <Settings2 className="size-4" /> Настроить
-        <span className="rounded-full bg-white px-2 py-0.5 text-[11px] tabular-nums text-blue-600 shadow-sm">
+        <span className="rounded-full bg-[var(--card)] px-2 py-0.5 text-[11px] tabular-nums text-[var(--soft-blue-foreground)]">
           {settings?.camera_sources.length ?? 0}
         </span>
       </Button>
@@ -576,25 +593,33 @@ function AlwaysOnSettingsButton({
         }
       >
         <div className="mb-4 grid gap-2.5 sm:grid-cols-3">
-          <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-3">
-            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-600">Модель</p>
-            <p className="mt-1 text-sm font-bold text-slate-800">Всегда активна</p>
+          <div className="rounded-2xl border border-[var(--soft-green-border)] bg-[var(--soft-green)] p-3">
+            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[var(--soft-green-foreground)]">
+              Модель
+            </p>
+            <p className="mt-1 text-sm font-bold text-[var(--foreground)]">Всегда активна</p>
             {settings?.capacity && (
-              <p className="mt-0.5 text-[10px] text-emerald-700/70">до {settings.capacity} камер одновременно</p>
+              <p className="mt-0.5 text-[10px] text-[var(--soft-green-foreground)]/70">
+                до {settings.capacity} камер одновременно
+              </p>
             )}
           </div>
-          <div className="rounded-2xl border border-sky-100 bg-sky-50/70 p-3">
-            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-sky-600">Отгрузка</p>
-            <p className="mt-1 text-sm font-bold text-slate-800">Старт без прогрева</p>
+          <div className="rounded-2xl border border-[var(--soft-blue-border)] bg-[var(--soft-blue)] p-3">
+            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[var(--soft-blue-foreground)]">
+              Отгрузка
+            </p>
+            <p className="mt-1 text-sm font-bold text-[var(--foreground)]">Старт без прогрева</p>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Диск камеры</p>
-            <p className="mt-1 text-sm font-bold text-slate-800">Без фоновой записи</p>
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--secondary)] p-3">
+            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+              Диск камеры
+            </p>
+            <p className="mt-1 text-sm font-bold text-[var(--foreground)]">Без фоновой записи</p>
           </div>
         </div>
 
         {settings?.sync_status === "pending" && (
-          <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          <div className="mb-4 flex items-start gap-3 rounded-xl border border-[var(--soft-amber-border)] bg-[var(--soft-amber)] p-3 text-sm text-[var(--soft-amber-foreground)]">
             <RefreshCw className="mt-0.5 size-4 shrink-0" />
             <p>{settings.detail || "ПК камер переподключается. Настройка применится автоматически."}</p>
           </div>
@@ -613,29 +638,36 @@ function AlwaysOnSettingsButton({
                 className={cn(
                   "flex items-center gap-3 rounded-2xl border p-3 text-left transition",
                   checked
-                    ? "border-blue-400 bg-blue-50 ring-2 ring-blue-500/15"
-                    : "border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm",
+                    ? "border-[var(--ring)] bg-[var(--soft-blue)] ring-2 ring-[var(--ring)]"
+                    : "border-[var(--border)] bg-[var(--card)] hover:border-[var(--muted-foreground)]/45 hover:shadow-card",
                 )}
               >
                 <span
                   className={cn(
                     "flex size-11 shrink-0 items-center justify-center rounded-2xl",
-                    checked ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400",
+                    checked ? "bg-[var(--ring)] text-white" : "bg-[var(--muted)] text-[var(--muted-foreground)]",
                   )}
                 >
                   <Cpu className="size-5" />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-bold text-slate-800">{camera.zone}</span>
-                  <span className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-400">
-                    <span className={cn("size-1.5 rounded-full", live?.running ? "bg-emerald-400" : "bg-slate-300")} />
+                  <span className="block truncate text-sm font-bold text-[var(--foreground)]">{camera.zone}</span>
+                  <span className="mt-1 flex items-center gap-1.5 text-[11px] text-[var(--muted-foreground)]">
+                    <span
+                      className={cn(
+                        "size-1.5 rounded-full",
+                        live?.running ? "bg-[var(--success)]" : "bg-[var(--input)]",
+                      )}
+                    />
                     {live?.mode === "session" ? "занята отгрузкой" : live?.running ? "считает 24/7" : camera.src}
                   </span>
                 </span>
                 <span
                   className={cn(
                     "flex size-7 items-center justify-center rounded-full border",
-                    checked ? "border-blue-600 bg-blue-600 text-white" : "border-slate-200 text-transparent",
+                    checked
+                      ? "border-[var(--ring)] bg-[var(--ring)] text-white"
+                      : "border-[var(--border)] text-transparent",
                   )}
                 >
                   <Check className="size-4" />
@@ -645,7 +677,7 @@ function AlwaysOnSettingsButton({
           })}
         </div>
         {!cameras.length && (
-          <div className="rounded-xl border border-dashed p-8 text-center text-sm text-slate-400">
+          <div className="rounded-xl border border-dashed p-8 text-center text-sm text-[var(--muted-foreground)]">
             Подключённые AI-камеры пока не обнаружены.
           </div>
         )}
@@ -847,37 +879,39 @@ function AlwaysOnCard({
         type="button"
         onClick={showStream}
         aria-label={`Открыть прямой эфир камеры ${camera?.zone || processor.cam}`}
-        className="group relative w-full overflow-hidden rounded-[20px] border border-slate-200 bg-white p-4 text-left shadow-[0_10px_32px_rgba(44,65,103,0.06)] transition duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_16px_38px_rgba(44,65,103,0.12)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+        className="group relative w-full overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 text-left shadow-card transition duration-200 hover:border-[var(--ring)]/45 hover:shadow-float focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
       >
-        <span className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-blue-500 to-emerald-400" />
+        <span className="absolute inset-y-0 left-0 w-1 bg-[var(--ring)]" />
         <span className="flex items-start gap-3">
-          <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 transition group-hover:bg-blue-600 group-hover:text-white">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-[var(--soft-blue)] text-[var(--soft-blue-foreground)] transition group-hover:bg-[var(--ring)] group-hover:text-white">
             <Cpu className="size-5" />
           </span>
           <span className="min-w-0 flex-1">
             <span className="flex items-center justify-between gap-2">
-              <span className="truncate text-sm font-bold text-slate-800">{camera?.zone || processor.cam}</span>
+              <span className="truncate text-sm font-bold text-[var(--foreground)]">
+                {camera?.zone || processor.cam}
+              </span>
               <span className="text-right">
-                <span className="block text-2xl font-black tabular-nums tracking-tight text-slate-900">
+                <span className="block text-2xl font-black tabular-nums tracking-tight text-[var(--foreground)]">
                   {todayTotal}
                 </span>
-                <span className="block text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                <span className="block text-[9px] font-semibold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
                   сегодня
                 </span>
               </span>
             </span>
-            <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+            <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--muted-foreground)]">
               <span className="flex items-center gap-1.5">
                 <span
                   className={cn(
                     "size-1.5 rounded-full",
-                    current.running ? "animate-pulse bg-emerald-400" : "bg-amber-400",
+                    current.running ? "animate-pulse bg-[var(--success)]" : "bg-[var(--warning)]",
                   )}
                 />
                 {inSession ? "режим отгрузки" : current.running ? "фоновый подсчёт" : "переподключение"}
               </span>
               <span>{inSession ? "видео записывается" : "без записи видео"}</span>
-              <span className="ml-auto font-semibold text-slate-500">Всего: {allTimeTotal}</span>
+              <span className="ml-auto font-semibold text-[var(--muted-foreground)]">Всего: {allTimeTotal}</span>
             </span>
           </span>
         </span>
@@ -892,13 +926,15 @@ function AlwaysOnCard({
         className="max-w-5xl"
         mobileFullscreen
       >
-        <div className="mb-4 flex w-full rounded-xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex">
+        <div className="mb-4 flex w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] p-1 sm:inline-flex sm:w-auto">
           <button
             type="button"
             onClick={() => setModalView("live")}
             className={cn(
-              "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
-              modalView === "live" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
+              "flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
+              modalView === "live"
+                ? "bg-[var(--card)] text-[var(--foreground)] shadow-card"
+                : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
             )}
           >
             <Video className="size-4" /> Прямой эфир
@@ -907,8 +943,10 @@ function AlwaysOnCard({
             type="button"
             onClick={() => setModalView("analytics")}
             className={cn(
-              "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
-              modalView === "analytics" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
+              "flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
+              modalView === "analytics"
+                ? "bg-[var(--card)] text-[var(--foreground)] shadow-card"
+                : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
             )}
           >
             <BarChart3 className="size-4" /> Аналитика
@@ -917,8 +955,10 @@ function AlwaysOnCard({
             type="button"
             onClick={() => setModalView("archive")}
             className={cn(
-              "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
-              modalView === "archive" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
+              "flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
+              modalView === "archive"
+                ? "bg-[var(--card)] text-[var(--foreground)] shadow-card"
+                : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
             )}
           >
             <Archive className="size-4" /> Архив
@@ -926,8 +966,8 @@ function AlwaysOnCard({
         </div>
 
         {modalView === "live" ? (
-          <div className="grid overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 shadow-[0_24px_70px_rgba(15,23,42,0.22)] sm:rounded-[22px] lg:grid-cols-[minmax(0,1fr)_260px]">
-            <div className="relative aspect-video min-h-0 overflow-hidden bg-[#111827] lg:aspect-auto lg:min-h-[460px]">
+          <div className="grid overflow-hidden rounded-2xl border border-[var(--border)] bg-[#0b100d] shadow-float lg:grid-cols-[minmax(0,1fr)_260px]">
+            <div className="relative aspect-video min-h-0 overflow-hidden bg-[#0b100d] lg:aspect-auto lg:min-h-[460px]">
               {camera?.src ? (
                 <CameraStream
                   src={camera.src}
@@ -936,20 +976,23 @@ function AlwaysOnCard({
                 />
               ) : null}
               {!streamOnline && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950 text-white/45">
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#0b100d] text-white/45">
                   <VideoOff className="size-8" />
                   <span className="text-sm">Подключаем прямой поток…</span>
                 </div>
               )}
               <div className="absolute left-2.5 top-2.5 flex items-center gap-2 rounded-full border border-white/15 bg-black/45 px-2.5 py-1 text-[10px] font-semibold text-white backdrop-blur-md sm:left-4 sm:top-4 sm:px-3 sm:py-1.5 sm:text-xs">
                 <span
-                  className={cn("size-2 rounded-full", streamOnline ? "animate-pulse bg-emerald-400" : "bg-amber-400")}
+                  className={cn(
+                    "size-2 rounded-full",
+                    streamOnline ? "animate-pulse bg-[var(--success)]" : "bg-[var(--warning)]",
+                  )}
                 />
                 {streamOnline ? "ПРЯМОЙ ЭФИР" : "ПОДКЛЮЧЕНИЕ"}
               </div>
             </div>
 
-            <aside className="flex flex-col justify-between border-t border-white/10 bg-slate-900 p-4 text-white sm:p-5 lg:border-l lg:border-t-0">
+            <aside className="flex flex-col justify-between border-t border-white/10 bg-[#141c17] p-4 text-white sm:p-5 lg:border-l lg:border-t-0">
               <div>
                 <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/45">
                   <CalendarDays className="size-3.5" /> Реальный итог за сегодня
@@ -970,7 +1013,7 @@ function AlwaysOnCard({
                   </div>
                   <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
                     <span className="text-white/55">Модель</span>
-                    <span className={cn("font-semibold", current.running ? "text-emerald-400" : "text-amber-300")}>
+                    <span className={cn("font-semibold", current.running ? "text-[#7dce98]" : "text-[#e2bb70]")}>
                       {current.running ? "работает" : "ожидает связь"}
                     </span>
                   </div>
@@ -979,7 +1022,7 @@ function AlwaysOnCard({
                     <span className="font-semibold">{inSession ? "отгрузка" : "24/7"}</span>
                   </div>
                   {(currentDaily?.adjustment ?? 0) < 0 && (
-                    <div className="col-span-2 flex items-center justify-between rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5">
+                    <div className="col-span-2 flex items-center justify-between rounded-xl border border-[var(--soft-amber-border)] bg-amber-300/10 px-3 py-2.5">
                       <span className="text-amber-100/65">Корректировка</span>
                       <span className="font-semibold tabular-nums text-amber-200">{currentDaily?.adjustment}</span>
                     </div>
@@ -988,7 +1031,7 @@ function AlwaysOnCard({
               </div>
               <div className="mt-5 space-y-3">
                 {(current.error || liveDetail) && (
-                  <p className="rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5 text-xs leading-relaxed text-amber-100/80">
+                  <p className="rounded-xl border border-[var(--soft-amber-border)] bg-amber-300/10 px-3 py-2.5 text-xs leading-relaxed text-amber-100/80">
                     {current.error || liveDetail}
                   </p>
                 )}
@@ -1004,48 +1047,58 @@ function AlwaysOnCard({
             </aside>
           </div>
         ) : modalView === "analytics" ? (
-          <div className="overflow-hidden rounded-[22px] border border-slate-200 bg-[#f8fafc] shadow-[0_20px_55px_rgba(15,23,42,0.09)]">
-            <div className="grid grid-cols-2 border-b border-slate-200 bg-white sm:grid-cols-3">
-              <div className="border-r border-slate-200 p-3 sm:p-5">
-                <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Сегодня</div>
-                <div className="mt-1 text-3xl font-black tabular-nums tracking-tight text-slate-900 sm:text-4xl">
+          <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--muted)]/30 shadow-card">
+            <div className="grid grid-cols-2 border-b border-[var(--border)] bg-[var(--card)] sm:grid-cols-3">
+              <div className="border-r border-[var(--border)] p-3 sm:p-5">
+                <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+                  Сегодня
+                </div>
+                <div className="mt-1 text-3xl font-black tabular-nums tracking-tight text-[var(--foreground)] sm:text-4xl">
                   {todayTotal}
                 </div>
-                <div className="mt-1 text-xs text-slate-400">мешков за текущий день</div>
+                <div className="mt-1 text-xs text-[var(--muted-foreground)]">мешков за текущий день</div>
               </div>
               <div className="p-3 sm:border-r sm:p-5">
-                <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">За всё время</div>
-                <div className="mt-1 text-3xl font-black tabular-nums tracking-tight text-blue-600 sm:text-4xl">
+                <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+                  За всё время
+                </div>
+                <div className="mt-1 text-3xl font-black tabular-nums tracking-tight text-[var(--soft-blue-foreground)] sm:text-4xl">
                   {allTimeTotal}
                 </div>
-                <div className="mt-1 text-xs text-slate-400">накоплено CRM</div>
+                <div className="mt-1 text-xs text-[var(--muted-foreground)]">накоплено CRM</div>
               </div>
-              <div className="col-span-2 border-t border-slate-200 p-3 sm:col-span-1 sm:border-t-0 sm:p-5">
-                <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Чаще всего</div>
+              <div className="col-span-2 border-t border-[var(--border)] p-3 sm:col-span-1 sm:border-t-0 sm:p-5">
+                <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+                  Чаще всего
+                </div>
                 {dominant ? (
                   <div className="mt-2 flex items-center gap-2">
                     <span className={cn("size-4 rounded-full", colorMeta(dominant.color).dot)} />
-                    <span className="text-xl font-black text-slate-900">{colorMeta(dominant.color).label}</span>
-                    <span className="ml-auto text-sm font-bold tabular-nums text-slate-500">{dominant.total}</span>
+                    <span className="text-xl font-black text-[var(--foreground)]">
+                      {colorMeta(dominant.color).label}
+                    </span>
+                    <span className="ml-auto text-sm font-bold tabular-nums text-[var(--muted-foreground)]">
+                      {dominant.total}
+                    </span>
                   </div>
                 ) : (
-                  <div className="mt-2 text-xl font-bold text-slate-300">Нет данных</div>
+                  <div className="mt-2 text-xl font-bold text-[var(--muted-foreground)]/45">Нет данных</div>
                 )}
-                <div className="mt-1 text-xs text-slate-400">по всем распознанным цветам</div>
+                <div className="mt-1 text-xs text-[var(--muted-foreground)]">по всем распознанным цветам</div>
               </div>
             </div>
 
             <div className="grid gap-3 p-3 sm:gap-5 sm:p-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(260px,0.8fr)]">
-              <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">
+              <section className="min-w-0 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-3 sm:p-5">
                 <div className="flex items-end justify-between gap-3">
                   <div>
-                    <h3 className="font-bold text-slate-800">Подсчёт по дням</h3>
-                    <p className="mt-0.5 text-xs text-slate-400">Последние 14 календарных дней</p>
+                    <h3 className="font-bold text-[var(--foreground)]">Подсчёт по дням</h3>
+                    <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">Последние 14 календарных дней</p>
                   </div>
-                  <span className="text-xs font-semibold text-slate-400">макс. {chartMax}</span>
+                  <span className="text-xs font-semibold text-[var(--muted-foreground)]">макс. {chartMax}</span>
                 </div>
                 <div className="mt-4 overflow-x-auto pb-1 sm:mt-5">
-                  <div className="h-56 min-w-[560px] rounded-xl border border-slate-100 bg-[linear-gradient(to_bottom,transparent_24%,#e2e8f0_25%,transparent_26%,transparent_49%,#e2e8f0_50%,transparent_51%,transparent_74%,#e2e8f0_75%,transparent_76%)] px-3 pt-4 sm:h-64">
+                  <div className="h-56 min-w-[560px] rounded-xl border border-[var(--border)] bg-[linear-gradient(to_bottom,transparent_24%,var(--border)_25%,transparent_26%,transparent_49%,var(--border)_50%,transparent_51%,transparent_74%,var(--border)_75%,transparent_76%)] px-3 pt-4 sm:h-64">
                     <div className="flex h-[173px] items-end gap-2 sm:h-[205px]">
                       {(currentDaily?.history ?? []).map((item) => {
                         const active = item.day === selectedDay;
@@ -1056,18 +1109,18 @@ function AlwaysOnCard({
                             aria-pressed={active}
                             aria-label={`Аналитика за ${fullDay(item.day)}: ${item.total} мешков`}
                             onClick={() => setSelectedDay(active ? null : item.day)}
-                            className="group flex h-full min-w-0 flex-1 cursor-pointer flex-col justify-end rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                            className="group flex h-full min-w-0 flex-1 cursor-pointer flex-col justify-end rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                           >
                             <div className="relative flex flex-1 items-end justify-center">
-                              <span className="pointer-events-none absolute -top-7 z-10 hidden whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[10px] font-semibold text-white shadow-lg group-hover:block">
+                              <span className="pointer-events-none absolute -top-7 z-10 hidden whitespace-nowrap rounded-md bg-[var(--foreground)] px-2 py-1 text-[10px] font-semibold text-[var(--card)] shadow-card group-hover:block">
                                 {item.total} меш.
                               </span>
                               <div
                                 className={cn(
-                                  "w-full max-w-9 rounded-t-md bg-gradient-to-t transition-all duration-500 group-hover:brightness-110",
+                                  "w-full max-w-9 rounded-t-md transition-all duration-500 group-hover:brightness-110",
                                   active
-                                    ? "from-[#1d4ed8] to-[#4a7ff0] ring-2 ring-blue-400 ring-offset-1"
-                                    : "from-[#cf4f3e] to-[#e8755f]",
+                                    ? "bg-[var(--chart-1)] ring-2 ring-[var(--ring)] ring-offset-1"
+                                    : "bg-[var(--chart-5)]",
                                   selectedDay && !active && "opacity-45",
                                 )}
                                 style={{ height: item.total ? `${Math.max(4, (item.total * 100) / chartMax)}%` : 0 }}
@@ -1076,7 +1129,9 @@ function AlwaysOnCard({
                             <span
                               className={cn(
                                 "mt-2 block truncate text-center text-[9px] font-medium",
-                                active ? "font-bold text-blue-600" : "text-slate-400",
+                                active
+                                  ? "font-bold text-[var(--soft-blue-foreground)]"
+                                  : "text-[var(--muted-foreground)]",
                               )}
                             >
                               {shortDay(item.day)}
@@ -1089,55 +1144,65 @@ function AlwaysOnCard({
                 </div>
 
                 {selectedPoint ? (
-                  <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50/60 p-3 sm:p-4">
+                  <div className="mt-4 rounded-xl border border-[var(--soft-blue-border)] bg-[var(--soft-blue)] p-3 sm:p-4">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h4 className="font-bold text-slate-800">{fullDay(selectedPoint.day)}</h4>
-                      <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+                      <h4 className="font-bold text-[var(--foreground)]">{fullDay(selectedPoint.day)}</h4>
+                      <span className="rounded-full bg-[var(--ring)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
                         Выбран день
                       </span>
                       <button
                         type="button"
                         onClick={() => setSelectedDay(null)}
-                        className="ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-slate-500 transition hover:bg-white hover:text-slate-700"
+                        className="ml-auto min-h-9 rounded-lg px-3 py-1 text-xs font-semibold text-[var(--muted-foreground)] transition hover:bg-[var(--card)] hover:text-[var(--foreground)]"
                       >
                         Закрыть
                       </button>
                     </div>
 
                     <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                      <div className="rounded-lg bg-white p-2.5">
-                        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Итог</div>
-                        <div className="mt-0.5 text-xl font-black tabular-nums text-slate-900">
+                      <div className="rounded-lg bg-[var(--card)] p-2.5">
+                        <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
+                          Итог
+                        </div>
+                        <div className="mt-0.5 text-xl font-black tabular-nums text-[var(--foreground)]">
                           {selectedPoint.total}
                         </div>
                       </div>
-                      <div className="rounded-lg bg-white p-2.5">
-                        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Модель</div>
-                        <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
+                      <div className="rounded-lg bg-[var(--card)] p-2.5">
+                        <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
+                          Модель
+                        </div>
+                        <div className="mt-0.5 text-xl font-black tabular-nums text-[var(--foreground)]">
                           {selectedPoint.model_total}
                         </div>
                       </div>
-                      <div className="rounded-lg bg-white p-2.5">
-                        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Поправка</div>
+                      <div className="rounded-lg bg-[var(--card)] p-2.5">
+                        <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
+                          Поправка
+                        </div>
                         <div
                           className={cn(
                             "mt-0.5 text-xl font-black tabular-nums",
-                            selectedPoint.adjustment < 0 ? "text-amber-600" : "text-slate-300",
+                            selectedPoint.adjustment < 0
+                              ? "text-[var(--soft-amber-foreground)]"
+                              : "text-[var(--muted-foreground)]/45",
                           )}
                         >
                           {selectedPoint.adjustment || 0}
                         </div>
                       </div>
-                      <div className="rounded-lg bg-white p-2.5">
-                        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Доля дня</div>
-                        <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
+                      <div className="rounded-lg bg-[var(--card)] p-2.5">
+                        <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
+                          Доля дня
+                        </div>
+                        <div className="mt-0.5 text-xl font-black tabular-nums text-[var(--foreground)]">
                           {chartMax > 0 ? Math.round((selectedPoint.total * 100) / chartMax) : 0}%
                         </div>
                       </div>
                     </div>
 
                     <div className="mt-3">
-                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                      <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
                         Цвета за этот день
                       </div>
                       {selectedColors.length ? (
@@ -1146,11 +1211,17 @@ function AlwaysOnCard({
                             <div key={item.color}>
                               <div className="mb-1 flex items-center gap-2 text-xs">
                                 <span className={cn("size-2.5 rounded-full", colorMeta(item.color).dot)} />
-                                <span className="font-semibold text-slate-700">{colorMeta(item.color).label}</span>
-                                <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
-                                <span className="w-10 text-right tabular-nums text-slate-400">{item.percent}%</span>
+                                <span className="font-semibold text-[var(--foreground)]">
+                                  {colorMeta(item.color).label}
+                                </span>
+                                <span className="ml-auto font-bold tabular-nums text-[var(--foreground)]">
+                                  {item.total}
+                                </span>
+                                <span className="w-10 text-right tabular-nums text-[var(--muted-foreground)]">
+                                  {item.percent}%
+                                </span>
                               </div>
-                              <div className="h-1.5 overflow-hidden rounded-full bg-white">
+                              <div className="h-1.5 overflow-hidden rounded-full bg-[var(--card)]">
                                 <div
                                   className={cn("h-full rounded-full", colorMeta(item.color).bar)}
                                   style={{ width: `${item.percent}%` }}
@@ -1160,30 +1231,34 @@ function AlwaysOnCard({
                           ))}
                         </div>
                       ) : (
-                        <p className="mt-2 text-xs text-slate-400">В этот день модель ничего не распознала.</p>
+                        <p className="mt-2 text-xs text-[var(--muted-foreground)]">
+                          В этот день модель ничего не распознала.
+                        </p>
                       )}
                     </div>
                   </div>
                 ) : (
-                  <p className="mt-3 text-center text-xs text-slate-400">
+                  <p className="mt-3 text-center text-xs text-[var(--muted-foreground)]">
                     Нажмите на столбик, чтобы посмотреть аналитику за день
                   </p>
                 )}
               </section>
 
-              <section className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">
-                <h3 className="font-bold text-slate-800">Цвета продукции</h3>
-                <p className="mt-0.5 text-xs text-slate-400">За всё время по данным модели</p>
+              <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-3 sm:p-5">
+                <h3 className="font-bold text-[var(--foreground)]">Цвета продукции</h3>
+                <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">За всё время по данным модели</p>
                 <div className="mt-5 space-y-4">
                   {(currentDaily?.colors ?? []).map((item) => (
                     <div key={item.color}>
                       <div className="mb-1.5 flex items-center gap-2 text-sm">
                         <span className={cn("size-2.5 rounded-full", colorMeta(item.color).dot)} />
-                        <span className="font-semibold text-slate-700">{colorMeta(item.color).label}</span>
-                        <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
-                        <span className="w-10 text-right text-xs tabular-nums text-slate-400">{item.percent}%</span>
+                        <span className="font-semibold text-[var(--foreground)]">{colorMeta(item.color).label}</span>
+                        <span className="ml-auto font-bold tabular-nums text-[var(--foreground)]">{item.total}</span>
+                        <span className="w-10 text-right text-xs tabular-nums text-[var(--muted-foreground)]">
+                          {item.percent}%
+                        </span>
                       </div>
-                      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                      <div className="h-2 overflow-hidden rounded-full bg-[var(--muted)]">
                         <div
                           className={cn("h-full rounded-full transition-all duration-500", colorMeta(item.color).bar)}
                           style={{ width: `${item.percent}%` }}
@@ -1192,8 +1267,8 @@ function AlwaysOnCard({
                     </div>
                   ))}
                   {!currentDaily?.colors?.length && (
-                    <div className="flex min-h-40 flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-slate-400">
-                      <BarChart3 className="mb-2 size-7 text-slate-300" />
+                    <div className="flex min-h-40 flex-col items-center justify-center rounded-xl border border-dashed border-[var(--border)] text-center text-[var(--muted-foreground)]">
+                      <BarChart3 className="mb-2 size-7 text-[var(--muted-foreground)]/45" />
                       <span className="text-sm font-semibold">Цветов пока нет</span>
                       <span className="mt-1 max-w-48 text-xs">Они появятся после первых распознаваний модели.</span>
                     </div>
@@ -1203,7 +1278,7 @@ function AlwaysOnCard({
                   type="button"
                   disabled={todayTotal <= 0}
                   onClick={showCorrection}
-                  className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
+                  className="mt-5 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2.5 text-xs font-semibold text-[var(--muted-foreground)] transition hover:border-[var(--muted-foreground)]/45 hover:bg-[var(--secondary)] disabled:cursor-not-allowed disabled:opacity-35"
                 >
                   <Minus className="size-3.5" /> Уменьшить итог за сегодня
                 </button>
@@ -1211,11 +1286,11 @@ function AlwaysOnCard({
                   type="button"
                   disabled={allTimeTotal <= 0 || archiving}
                   onClick={() => setArchiveOpen(true)}
-                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
+                  className="mt-2 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2.5 text-xs font-semibold text-[var(--muted-foreground)] transition hover:border-[var(--muted-foreground)]/45 hover:bg-[var(--secondary)] disabled:cursor-not-allowed disabled:opacity-35"
                 >
                   <Archive className="size-3.5" /> Обнулить и сдать в архив
                 </button>
-                <p className="mt-2 text-center text-[11px] leading-snug text-slate-400">
+                <p className="mt-2 text-center text-[11px] leading-snug text-[var(--muted-foreground)]">
                   Накопленное уйдёт в архив, счётчик начнётся с нуля. Дни останутся в истории.
                 </p>
               </section>
@@ -1224,18 +1299,20 @@ function AlwaysOnCard({
         ) : null}
 
         {modalView === "archive" && (
-          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-3 shadow-card sm:p-5">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
-                <h3 className="font-bold text-slate-800">Закрытые периоды</h3>
-                <p className="mt-0.5 text-xs text-slate-400">
+                <h3 className="font-bold text-[var(--foreground)]">Закрытые периоды</h3>
+                <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
                   Каждая строка — счёт, сданный в архив. Данные не меняются.
                 </p>
               </div>
               {archives !== null && archives.length > 0 && (
                 <div className="text-right">
-                  <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Всего в архиве</div>
-                  <div className="text-2xl font-black tabular-nums text-slate-900">
+                  <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--muted-foreground)]">
+                    Всего в архиве
+                  </div>
+                  <div className="text-2xl font-black tabular-nums text-[var(--foreground)]">
                     {archives.reduce((sum, row) => sum + row.total, 0)}
                   </div>
                 </div>
@@ -1243,20 +1320,20 @@ function AlwaysOnCard({
             </div>
 
             {archivesError && (
-              <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-[var(--destructive)]">
+              <p className="mt-4 rounded-xl border border-[var(--soft-red-border)] bg-[var(--soft-red)] px-3 py-2.5 text-sm text-[var(--destructive)]">
                 {archivesError}
               </p>
             )}
 
             {archives === null && !archivesError && (
-              <div className="flex min-h-40 items-center justify-center text-slate-400">
+              <div className="flex min-h-40 items-center justify-center text-[var(--muted-foreground)]">
                 <LoaderCircle className="size-5 animate-spin" />
               </div>
             )}
 
             {archives !== null && archives.length === 0 && (
-              <div className="mt-4 flex min-h-40 flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-slate-400">
-                <Archive className="mb-2 size-7 text-slate-300" />
+              <div className="mt-4 flex min-h-40 flex-col items-center justify-center rounded-xl border border-dashed border-[var(--border)] text-center text-[var(--muted-foreground)]">
+                <Archive className="mb-2 size-7 text-[var(--muted-foreground)]/45" />
                 <span className="text-sm font-semibold">Архив пуст</span>
                 <span className="mt-1 max-w-64 text-xs">
                   Здесь появятся закрытые периоды после нажатия «Обнулить и сдать в архив».
@@ -1273,7 +1350,7 @@ function AlwaysOnCard({
                     key={row.id}
                     className={cn(
                       "overflow-hidden rounded-xl border transition",
-                      expanded ? "border-blue-300 bg-blue-50/40" : "border-slate-200",
+                      expanded ? "border-[var(--ring)] bg-[var(--soft-blue)]" : "border-[var(--border)]",
                     )}
                   >
                     <div className="flex items-stretch pr-2">
@@ -1281,31 +1358,34 @@ function AlwaysOnCard({
                         type="button"
                         onClick={() => setOpenArchiveId(expanded ? null : row.id)}
                         aria-expanded={expanded}
-                        className="flex min-w-0 flex-1 items-center gap-3 p-3 text-left transition hover:bg-slate-50/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 sm:p-4"
+                        className="flex min-w-0 flex-1 items-center gap-3 p-3 text-left transition hover:bg-[var(--secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] sm:p-4"
                       >
                         <ChevronRight
-                          className={cn("size-4 shrink-0 text-slate-400 transition-transform", expanded && "rotate-90")}
+                          className={cn(
+                            "size-4 shrink-0 text-[var(--muted-foreground)] transition-transform",
+                            expanded && "rotate-90",
+                          )}
                         />
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                            <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">
+                            <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
                               Период
                             </span>
-                            <span className="font-bold text-slate-800">
+                            <span className="font-bold text-[var(--foreground)]">
                               {fullDay(row.period_start)}
                               {row.period_end !== row.period_start && ` — ${fullDay(row.period_end)}`}
                             </span>
-                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                            <span className="rounded-full bg-[var(--muted)] px-2 py-0.5 text-[10px] font-semibold text-[var(--muted-foreground)]">
                               {row.days} дн.
                             </span>
                           </div>
-                          <div className="mt-1 text-xs text-slate-400">
+                          <div className="mt-1 text-xs text-[var(--muted-foreground)]">
                             Заархивирован {formatDateTime(row.created_at)} · {row.archived_by_name || "—"}
                           </div>
                         </div>
                         <div className="shrink-0 text-right">
-                          <div className="text-2xl font-black tabular-nums text-slate-900">{row.total}</div>
-                          <div className="text-[10px] text-slate-400">мешков</div>
+                          <div className="text-2xl font-black tabular-nums text-[var(--foreground)]">{row.total}</div>
+                          <div className="text-[10px] text-[var(--muted-foreground)]">мешков</div>
                         </div>
                       </button>
                       {/* Корзинка прямо на строке: удаление, спрятанное внутри
@@ -1316,7 +1396,7 @@ function AlwaysOnCard({
                         title="Удалить запись — мешки вернутся в счёт"
                         disabled={deletingArchiveId === row.id}
                         onClick={() => setArchiveToDelete(row)}
-                        className="flex size-9 shrink-0 items-center justify-center self-center rounded-lg text-slate-300 transition hover:bg-red-50 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
+                        className="flex size-10 shrink-0 items-center justify-center self-center rounded-xl text-[var(--muted-foreground)]/55 transition hover:bg-[var(--soft-red)] hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         {deletingArchiveId === row.id ? (
                           <LoaderCircle className="size-4 animate-spin" />
@@ -1327,34 +1407,44 @@ function AlwaysOnCard({
                     </div>
 
                     {expanded && (
-                      <div className="border-t border-blue-200/70 bg-white p-3 sm:p-4">
+                      <div className="border-t border-[var(--soft-blue-border)] bg-[var(--card)] p-3 sm:p-4">
                         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                          <div className="rounded-lg bg-slate-50 p-2.5">
-                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Итог</div>
-                            <div className="mt-0.5 text-xl font-black tabular-nums text-slate-900">{row.total}</div>
+                          <div className="rounded-lg bg-[var(--secondary)] p-2.5">
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
+                              Итог
+                            </div>
+                            <div className="mt-0.5 text-xl font-black tabular-nums text-[var(--foreground)]">
+                              {row.total}
+                            </div>
                           </div>
-                          <div className="rounded-lg bg-slate-50 p-2.5">
-                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Модель</div>
-                            <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
+                          <div className="rounded-lg bg-[var(--secondary)] p-2.5">
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
+                              Модель
+                            </div>
+                            <div className="mt-0.5 text-xl font-black tabular-nums text-[var(--foreground)]">
                               {row.model_total}
                             </div>
                           </div>
-                          <div className="rounded-lg bg-slate-50 p-2.5">
-                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Поправка</div>
+                          <div className="rounded-lg bg-[var(--secondary)] p-2.5">
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
+                              Поправка
+                            </div>
                             <div
                               className={cn(
                                 "mt-0.5 text-xl font-black tabular-nums",
-                                row.adjustment < 0 ? "text-amber-600" : "text-slate-300",
+                                row.adjustment < 0
+                                  ? "text-[var(--soft-amber-foreground)]"
+                                  : "text-[var(--muted-foreground)]/45",
                               )}
                             >
                               {row.adjustment || 0}
                             </div>
                           </div>
-                          <div className="rounded-lg bg-slate-50 p-2.5">
-                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                          <div className="rounded-lg bg-[var(--secondary)] p-2.5">
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
                               В среднем
                             </div>
-                            <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
+                            <div className="mt-0.5 text-xl font-black tabular-nums text-[var(--foreground)]">
                               {row.days > 0 ? Math.round(row.total / row.days) : 0}
                             </div>
                           </div>
@@ -1362,7 +1452,7 @@ function AlwaysOnCard({
 
                         {row.colors.length > 0 && (
                           <div className="mt-4">
-                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
                               Цвета за период
                             </div>
                             <div className="mt-2 space-y-2">
@@ -1370,11 +1460,17 @@ function AlwaysOnCard({
                                 <div key={item.color}>
                                   <div className="mb-1 flex items-center gap-2 text-xs">
                                     <span className={cn("size-2.5 rounded-full", colorMeta(item.color).dot)} />
-                                    <span className="font-semibold text-slate-700">{colorMeta(item.color).label}</span>
-                                    <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
-                                    <span className="w-12 text-right tabular-nums text-slate-400">{item.percent}%</span>
+                                    <span className="font-semibold text-[var(--foreground)]">
+                                      {colorMeta(item.color).label}
+                                    </span>
+                                    <span className="ml-auto font-bold tabular-nums text-[var(--foreground)]">
+                                      {item.total}
+                                    </span>
+                                    <span className="w-12 text-right tabular-nums text-[var(--muted-foreground)]">
+                                      {item.percent}%
+                                    </span>
                                   </div>
-                                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                                  <div className="h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
                                     <div
                                       className={cn("h-full rounded-full", colorMeta(item.color).bar)}
                                       style={{ width: `${item.percent}%` }}
@@ -1388,25 +1484,29 @@ function AlwaysOnCard({
 
                         {row.day_rows.length > 0 && (
                           <div className="mt-4">
-                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">По дням</div>
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
+                              По дням
+                            </div>
                             <div className="mt-2 space-y-1.5">
                               {row.day_rows.map((entry) => (
                                 <div key={entry.day} className="flex items-center gap-3 text-xs">
-                                  <span className="w-20 shrink-0 font-medium text-slate-500">{fullDay(entry.day)}</span>
-                                  <div className="h-4 min-w-0 flex-1 overflow-hidden rounded bg-slate-100">
+                                  <span className="w-20 shrink-0 font-medium text-[var(--muted-foreground)]">
+                                    {fullDay(entry.day)}
+                                  </span>
+                                  <div className="h-4 min-w-0 flex-1 overflow-hidden rounded bg-[var(--muted)]">
                                     <div
-                                      className="h-full rounded bg-gradient-to-r from-[#cf4f3e] to-[#e8755f]"
+                                      className="h-full rounded bg-[var(--chart-5)]"
                                       style={{ width: `${Math.max(2, (entry.total * 100) / dayMax)}%` }}
                                     />
                                   </div>
-                                  <span className="w-14 shrink-0 text-right font-bold tabular-nums text-slate-900">
+                                  <span className="w-14 shrink-0 text-right font-bold tabular-nums text-[var(--foreground)]">
                                     {entry.total}
                                   </span>
                                   <span className="hidden w-28 shrink-0 justify-end gap-1.5 sm:flex">
                                     {entry.colors.map((c) => (
                                       <span key={c.color} className="flex items-center gap-1 text-[10px]">
                                         <span className={cn("size-2 rounded-full", colorMeta(c.color).dot)} />
-                                        <span className="tabular-nums text-slate-500">{c.total}</span>
+                                        <span className="tabular-nums text-[var(--muted-foreground)]">{c.total}</span>
                                       </span>
                                     ))}
                                   </span>
@@ -1417,7 +1517,7 @@ function AlwaysOnCard({
                         )}
 
                         {row.note && (
-                          <p className="mt-4 rounded-lg bg-slate-50 px-3 py-2 text-xs italic text-slate-500">
+                          <p className="mt-4 rounded-lg bg-[var(--secondary)] px-3 py-2 text-xs italic text-[var(--muted-foreground)]">
                             {row.note}
                           </p>
                         )}
@@ -1426,7 +1526,7 @@ function AlwaysOnCard({
                           type="button"
                           disabled={deletingArchiveId === row.id}
                           onClick={() => setArchiveToDelete(row)}
-                          className="mt-4 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-400 transition hover:bg-red-50 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
+                          className="mt-4 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-[var(--muted-foreground)] transition hover:bg-[var(--soft-red)] hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           {deletingArchiveId === row.id ? (
                             <LoaderCircle className="size-3.5 animate-spin" />
@@ -1469,12 +1569,14 @@ function AlwaysOnCard({
         }
       >
         <div className="space-y-5">
-          <div className="flex items-end justify-between rounded-2xl border border-blue-100 bg-blue-50/70 p-4">
+          <div className="flex items-end justify-between rounded-2xl border border-[var(--soft-blue-border)] bg-[var(--soft-blue)] p-4">
             <div>
-              <div className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-500">Сейчас за сегодня</div>
-              <div className="mt-1 text-4xl font-black tabular-nums text-slate-900">{todayTotal}</div>
+              <div className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--soft-blue-foreground)]">
+                Сейчас за сегодня
+              </div>
+              <div className="mt-1 text-4xl font-black tabular-nums text-[var(--foreground)]">{todayTotal}</div>
             </div>
-            <div className="text-right text-xs text-slate-500">
+            <div className="text-right text-xs text-[var(--muted-foreground)]">
               модель: {currentDaily?.model_total ?? 0}
               <br />
               поправка: {currentDaily?.adjustment ?? 0}
@@ -1502,12 +1604,12 @@ function AlwaysOnCard({
               onChange={(event) => setCorrectionReason(event.target.value)}
               maxLength={500}
               placeholder="Например: два ложных пересечения линии"
-              className="min-h-24 w-full resize-y rounded-xl border bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15"
+              className="min-h-24 w-full resize-y rounded-xl border border-[var(--input)] bg-[var(--card)] px-3 py-2 text-sm text-[var(--foreground)] outline-none transition focus:border-[var(--ring)] focus:ring-2 focus:ring-[var(--ring)]/20"
             />
             <span className="text-xs text-[var(--muted-foreground)]">Обязательно, минимум 5 символов.</span>
           </div>
           {correctionError && (
-            <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-[var(--destructive)]">
+            <p className="rounded-xl border border-[var(--soft-red-border)] bg-[var(--soft-red)] px-3 py-2.5 text-sm text-[var(--destructive)]">
               {correctionError}
             </p>
           )}
@@ -1534,12 +1636,14 @@ function AlwaysOnCard({
         }
       >
         <div className="space-y-5">
-          <div className="flex items-end justify-between rounded-2xl border border-blue-100 bg-blue-50/70 p-4">
+          <div className="flex items-end justify-between rounded-2xl border border-[var(--soft-blue-border)] bg-[var(--soft-blue)] p-4">
             <div>
-              <div className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-500">Уйдёт в архив</div>
-              <div className="mt-1 text-4xl font-black tabular-nums text-slate-900">{allTimeTotal}</div>
+              <div className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--soft-blue-foreground)]">
+                Уйдёт в архив
+              </div>
+              <div className="mt-1 text-4xl font-black tabular-nums text-[var(--foreground)]">{allTimeTotal}</div>
             </div>
-            <div className="text-right text-xs text-slate-500">
+            <div className="text-right text-xs text-[var(--muted-foreground)]">
               станет: 0
               <br />
               за сегодня: {todayTotal}
@@ -1553,14 +1657,14 @@ function AlwaysOnCard({
               onChange={(event) => setArchiveNote(event.target.value)}
               maxLength={500}
               placeholder="Например: закрытие месяца, сдано в CRM"
-              className="min-h-20 w-full resize-y rounded-xl border bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15"
+              className="min-h-20 w-full resize-y rounded-xl border border-[var(--input)] bg-[var(--card)] px-3 py-2 text-sm text-[var(--foreground)] outline-none transition focus:border-[var(--ring)] focus:ring-2 focus:ring-[var(--ring)]/20"
             />
             <span className="text-xs text-[var(--muted-foreground)]">
               Необязательно — попадёт в журнал вместе с суммой.
             </span>
           </div>
           {archiveError && (
-            <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-[var(--destructive)]">
+            <p className="rounded-xl border border-[var(--soft-red-border)] bg-[var(--soft-red)] px-3 py-2.5 text-sm text-[var(--destructive)]">
               {archiveError}
             </p>
           )}
@@ -1596,12 +1700,16 @@ function AlwaysOnCard({
       >
         {archiveToDelete && (
           <div className="space-y-4">
-            <div className="flex items-end justify-between rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+            <div className="flex items-end justify-between rounded-2xl border border-[var(--soft-amber-border)] bg-[var(--soft-amber)] p-4">
               <div>
-                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-amber-600">Вернётся в счёт</div>
-                <div className="mt-1 text-4xl font-black tabular-nums text-slate-900">{archiveToDelete.total}</div>
+                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--soft-amber-foreground)]">
+                  Вернётся в счёт
+                </div>
+                <div className="mt-1 text-4xl font-black tabular-nums text-[var(--foreground)]">
+                  {archiveToDelete.total}
+                </div>
               </div>
-              <div className="text-right text-xs text-slate-500">
+              <div className="text-right text-xs text-[var(--muted-foreground)]">
                 {fullDay(archiveToDelete.period_start)}
                 {archiveToDelete.period_end !== archiveToDelete.period_start &&
                   ` — ${fullDay(archiveToDelete.period_end)}`}
@@ -1609,11 +1717,11 @@ function AlwaysOnCard({
                 {archiveToDelete.days} дн.
               </div>
             </div>
-            <p className="text-sm text-slate-500">
+            <p className="text-sm text-[var(--muted-foreground)]">
               Запись исчезнет из архива, а её дни снова попадут в «за всё время» и на график. Действие попадёт в журнал.
             </p>
             {deleteArchiveError && (
-              <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-[var(--destructive)]">
+              <p className="rounded-xl border border-[var(--soft-red-border)] bg-[var(--soft-red)] px-3 py-2.5 text-sm text-[var(--destructive)]">
                 {deleteArchiveError}
               </p>
             )}
@@ -1652,8 +1760,8 @@ function SessionCard({
   }
 
   return (
-    <article className="group overflow-hidden rounded-[22px] border border-slate-200/80 bg-white shadow-[0_12px_38px_rgba(44,65,103,0.07)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_48px_rgba(44,65,103,0.11)]">
-      <div className="relative aspect-[16/8] overflow-hidden bg-[#172033]">
+    <article className="group overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-card transition hover:border-[var(--muted-foreground)]/40 hover:shadow-float">
+      <div className="relative aspect-[16/8] overflow-hidden bg-[#111815]">
         {stream ? (
           <CameraStream src={stream} className="absolute inset-0 size-full object-cover" />
         ) : (
@@ -1664,14 +1772,16 @@ function SessionCard({
         )}
         <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/55 to-transparent px-4 pb-8 pt-3">
           <span className="flex items-center gap-2 rounded-full bg-black/35 px-2.5 py-1 text-[11px] font-semibold text-white backdrop-blur-md">
-            <span className={cn("size-2 rounded-full", live ? "animate-pulse bg-emerald-400" : "bg-amber-400")} />
+            <span
+              className={cn("size-2 rounded-full", live ? "animate-pulse bg-[var(--success)]" : "bg-[var(--warning)]")}
+            />
             {live ? "СЧИТЫВАНИЕ" : "ЗАПУСК"}
           </span>
           <span className="rounded-full bg-black/35 px-2.5 py-1 text-[11px] text-white/90 backdrop-blur-md">
             {camera?.zone || session.camera}
           </span>
         </div>
-        <div className="absolute bottom-3 right-3 rounded-2xl border border-white/20 bg-slate-950/65 px-4 py-2 text-right text-white backdrop-blur-lg">
+        <div className="absolute bottom-3 right-3 rounded-xl border border-white/20 bg-[#0b100d]/70 px-4 py-2 text-right text-white backdrop-blur-lg">
           <div className="text-[10px] uppercase tracking-[0.14em] text-white/55">мешков</div>
           <div className="text-3xl font-bold tabular-nums leading-none">{total}</div>
         </div>
@@ -1681,12 +1791,12 @@ function SessionCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <PackageCheck className="size-4 shrink-0 text-blue-600" />
-              <h3 className="truncate text-[15px] font-bold text-slate-800">
+              <PackageCheck className="size-4 shrink-0 text-[var(--soft-blue-foreground)]" />
+              <h3 className="truncate text-[15px] font-bold text-[var(--foreground)]">
                 Заказ #{session.order_id} · {session.order_client_name || "Без клиента"}
               </h3>
             </div>
-            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-slate-500">
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-[var(--muted-foreground)]">
               <span className="flex items-center gap-1.5">
                 <UserRound className="size-3.5" /> {session.started_by_name}
               </span>
@@ -1704,14 +1814,14 @@ function SessionCard({
           {canStop ? (
             <Button
               variant="outline"
-              className="h-10 w-full rounded-xl border-red-200 text-[var(--destructive)] hover:bg-red-50 hover:text-red-700"
+              className="w-full border-[var(--soft-red-border)] text-[var(--destructive)] hover:bg-[var(--soft-red)] hover:text-[var(--soft-red-foreground)]"
               disabled={ai.busy}
               onClick={() => void stop()}
             >
               <Square className="size-3.5 fill-current" /> Остановить и завершить
             </Button>
           ) : (
-            <div className="flex items-center justify-center gap-2 rounded-xl bg-slate-50 px-3 py-2.5 text-[12px] text-slate-500">
+            <div className="flex items-center justify-center gap-2 rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-[12px] text-[var(--muted-foreground)]">
               <LockKeyhole className="size-3.5" /> Остановить может {session.started_by_name} или администратор
             </div>
           )}
@@ -1807,26 +1917,28 @@ function MonoblockPageInner() {
       {error && !orders ? (
         <ErrorAlert message={error} onRetry={reloadOrders} />
       ) : (
-        <div className="flex flex-col gap-7">
+        <div className="flex flex-col gap-6">
           {(isSuper || can(me, "rbac.manage")) && (
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-2 shadow-card">
               {isSuper && (
-                <div className="flex w-full rounded-2xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex">
+                <div className="flex w-full rounded-xl bg-[var(--muted)] p-1 sm:inline-flex sm:w-auto">
                   <button
                     type="button"
                     onClick={() => setTab("shipments")}
                     className={cn(
-                      "flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition sm:flex-none",
+                      "flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition sm:flex-none",
                       activeTab === "shipments"
-                        ? "bg-white text-slate-900 shadow-sm"
-                        : "text-slate-500 hover:text-slate-800",
+                        ? "bg-[var(--card)] text-[var(--foreground)] shadow-card"
+                        : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
                     )}
                   >
                     <Radio className="size-4" /> Отгрузки
                     <span
                       className={cn(
                         "rounded-full px-2 py-0.5 text-[11px] tabular-nums",
-                        activeTab === "shipments" ? "bg-blue-50 text-blue-600" : "bg-white/70 text-slate-500",
+                        activeTab === "shipments"
+                          ? "bg-[var(--soft-blue)] text-[var(--soft-blue-foreground)]"
+                          : "bg-[var(--card)] text-[var(--muted-foreground)]",
                       )}
                     >
                       {sessions?.length ?? 0}
@@ -1836,17 +1948,19 @@ function MonoblockPageInner() {
                     type="button"
                     onClick={() => setTab("monoblock")}
                     className={cn(
-                      "flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition sm:flex-none",
+                      "flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition sm:flex-none",
                       activeTab === "monoblock"
-                        ? "bg-white text-slate-900 shadow-sm"
-                        : "text-slate-500 hover:text-slate-800",
+                        ? "bg-[var(--card)] text-[var(--foreground)] shadow-card"
+                        : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
                     )}
                   >
                     <Cpu className="size-4" /> AI 24/7
                     <span
                       className={cn(
                         "rounded-full px-2 py-0.5 text-[11px] tabular-nums",
-                        activeTab === "monoblock" ? "bg-blue-50 text-blue-600" : "bg-white/70 text-slate-500",
+                        activeTab === "monoblock"
+                          ? "bg-[var(--soft-blue)] text-[var(--soft-blue-foreground)]"
+                          : "bg-[var(--card)] text-[var(--muted-foreground)]",
                       )}
                     >
                       {alwaysOnSettings?.camera_sources.length ?? 0}
@@ -1854,7 +1968,7 @@ function MonoblockPageInner() {
                   </button>
                 </div>
               )}
-              <div className="ml-auto flex items-center gap-2">
+              <div className="grid w-full gap-2 sm:ml-auto sm:flex sm:w-auto sm:items-center">
                 {isSuper && activeTab === "monoblock" ? (
                   <AlwaysOnSettingsButton
                     cameras={playable}
@@ -1879,38 +1993,44 @@ function MonoblockPageInner() {
 
           {activeTab === "monoblock" ? (
             !alwaysOnSettings?.camera_sources.length ? (
-              <div className="flex min-h-56 flex-col items-center justify-center rounded-[24px] border border-dashed border-slate-200 bg-slate-50/70 p-8 text-center">
-                <span className="flex size-14 items-center justify-center rounded-full bg-white text-slate-300 shadow-sm">
+              <div className="flex min-h-56 flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--border)] bg-[var(--secondary)] p-8 text-center">
+                <span className="flex size-14 items-center justify-center rounded-full bg-[var(--card)] text-[var(--muted-foreground)]/45">
                   <Cpu className="size-6" />
                 </span>
-                <p className="mt-3 text-sm font-semibold text-slate-600">Бесконечный цикл пока не запущен</p>
-                <p className="mt-1 max-w-sm text-xs text-slate-400">
+                <p className="mt-3 text-sm font-semibold text-[var(--muted-foreground)]">
+                  Бесконечный цикл пока не запущен
+                </p>
+                <p className="mt-1 max-w-sm text-xs text-[var(--muted-foreground)]">
                   Выберите камеры в настройке «AI 24/7» — модель начнёт считать круглосуточно, без публикации и записи
                   видео.
                 </p>
               </div>
             ) : (
-              <section className="rounded-[24px] border border-blue-100 bg-gradient-to-br from-blue-50/80 via-white to-emerald-50/40 p-5">
-                <div className="mb-4 flex items-center gap-3">
-                  <span className="flex size-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-[0_8px_22px_rgba(37,99,235,0.25)]">
+              <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 shadow-card sm:p-5">
+                <div className="mb-4 flex flex-wrap items-center gap-3">
+                  <span className="flex size-10 items-center justify-center rounded-xl bg-[var(--soft-blue)] text-[var(--soft-blue-foreground)]">
                     <Cpu className="size-5" />
                   </span>
                   <div>
-                    <h2 className="text-[18px] font-bold tracking-tight text-slate-800">Постоянный AI-контур</h2>
-                    <p className="text-[12px] text-slate-400">
+                    <h2 className="text-[18px] font-bold tracking-tight text-[var(--foreground)]">
+                      Постоянный AI-контур
+                    </h2>
+                    <p className="text-[12px] text-[var(--muted-foreground)]">
                       Бесконечный цикл: модель считает круглосуточно, без публикации и записи фонового видео
                     </p>
                   </div>
-                  <div className="ml-auto flex items-center gap-2">
-                    <span className="flex items-center gap-2 rounded-full border border-blue-100 bg-white px-3 py-1 text-[11px] font-semibold text-blue-700 shadow-sm">
+                  <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto">
+                    <span className="flex min-h-9 items-center gap-2 rounded-full border border-[var(--soft-blue-border)] bg-[var(--soft-blue)] px-3 py-1 text-[11px] font-semibold text-[var(--soft-blue-foreground)]">
                       <CalendarDays className="size-3.5" /> Сегодня: {alwaysOnAnalytics?.total ?? 0}
-                      <span className="text-slate-300">·</span>
+                      <span className="text-[var(--soft-blue-foreground)]/35">·</span>
                       Всего: {alwaysOnAnalytics?.all_time_total ?? alwaysOnAnalytics?.total ?? 0}
                     </span>
                     <span
                       className={cn(
-                        "rounded-full border bg-white px-3 py-1 text-[11px] font-semibold shadow-sm",
-                        alwaysOnSettings.sync_status === "synced" ? "text-emerald-600" : "text-amber-600",
+                        "flex min-h-9 items-center rounded-full border px-3 py-1 text-[11px] font-semibold",
+                        alwaysOnSettings.sync_status === "synced"
+                          ? "border-[var(--soft-green-border)] bg-[var(--soft-green)] text-[var(--soft-green-foreground)]"
+                          : "border-[var(--soft-amber-border)] bg-[var(--soft-amber)] text-[var(--soft-amber-foreground)]",
                       )}
                     >
                       {alwaysOnSettings.sync_status === "synced" ? "синхронизировано" : "ожидает связь"}
@@ -1954,25 +2074,31 @@ function MonoblockPageInner() {
 
               <section>
                 <div className="mb-4 flex items-center gap-3">
-                  <span className="flex size-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                  <span className="flex size-10 items-center justify-center rounded-xl bg-[var(--soft-blue)] text-[var(--soft-blue-foreground)]">
                     <Radio className="size-5" />
                   </span>
                   <div>
-                    <h2 className="text-[20px] font-bold tracking-tight text-slate-800">Активные отгрузки</h2>
-                    <p className="text-[12px] text-slate-400">Каждая сессия закреплена за отдельной камерой</p>
+                    <h2 className="text-[20px] font-bold tracking-tight text-[var(--foreground)]">Активные отгрузки</h2>
+                    <p className="text-[12px] text-[var(--muted-foreground)]">
+                      Каждая сессия закреплена за отдельной камерой
+                    </p>
                   </div>
-                  <span className="ml-auto rounded-full border bg-white px-3 py-1 text-[12px] font-semibold text-slate-600 shadow-sm">
+                  <span className="ml-auto flex min-h-9 items-center rounded-full border bg-[var(--card)] px-3 py-1 text-[12px] font-semibold text-[var(--muted-foreground)]">
                     {sessions?.length ?? 0} активн.
                   </span>
                 </div>
 
                 {!sessions?.length ? (
-                  <div className="flex min-h-48 flex-col items-center justify-center rounded-[22px] border border-dashed border-slate-200 bg-slate-50/70 text-center">
-                    <span className="flex size-14 items-center justify-center rounded-full bg-white text-slate-300 shadow-sm">
+                  <div className="flex min-h-48 flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--border)] bg-[var(--secondary)] text-center">
+                    <span className="flex size-14 items-center justify-center rounded-full bg-[var(--card)] text-[var(--muted-foreground)]/45">
                       <Radio className="size-6" />
                     </span>
-                    <p className="mt-3 text-sm font-semibold text-slate-600">Активных сессий пока нет</p>
-                    <p className="mt-1 text-xs text-slate-400">Выберите заказ и камеру выше, чтобы начать.</p>
+                    <p className="mt-3 text-sm font-semibold text-[var(--muted-foreground)]">
+                      Активных сессий пока нет
+                    </p>
+                    <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                      Выберите заказ и камеру выше, чтобы начать.
+                    </p>
                   </div>
                 ) : (
                   <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">

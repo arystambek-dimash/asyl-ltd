@@ -10,6 +10,8 @@ export function NotificationBell() {
   const { data: items, reload } = useApi<Notification[]>("/portal/notifications/");
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   const list = items ?? [];
   const unread = list.filter((n) => !n.is_read).length;
@@ -21,6 +23,15 @@ export function NotificationBell() {
     if (open) document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
+
+  useEffect(() => {
+    if (open) panelRef.current?.focus();
+  }, [open]);
+
+  function closeAndRestoreFocus() {
+    setOpen(false);
+    requestAnimationFrame(() => triggerRef.current?.focus());
+  }
 
   async function markRead(id: number) {
     try {
@@ -34,9 +45,14 @@ export function NotificationBell() {
   return (
     <div className="relative" ref={ref}>
       <button
+        ref={triggerRef}
+        type="button"
         onClick={() => setOpen((v) => !v)}
-        className="relative text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+        className="relative flex size-11 items-center justify-center rounded-xl border bg-[var(--card)] text-[var(--muted-foreground)] shadow-sm transition hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"
         aria-label="Уведомления"
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-controls="portal-notifications"
       >
         <Bell className="size-5" />
         {unread > 0 && (
@@ -47,9 +63,22 @@ export function NotificationBell() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-9 z-50 w-80 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-lg">
+        <div
+          ref={panelRef}
+          id="portal-notifications"
+          role="dialog"
+          aria-label="Уведомления"
+          tabIndex={-1}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.stopPropagation();
+              closeAndRestoreFocus();
+            }
+          }}
+          className="fixed left-3 right-3 top-[76px] z-50 max-h-[calc(100dvh-5.5rem)] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-float outline-none sm:absolute sm:left-auto sm:right-0 sm:top-12 sm:w-80"
+        >
           <div className="border-b px-4 py-3 text-sm font-semibold">Уведомления</div>
-          <div className="max-h-96 overflow-y-auto">
+          <div className="max-h-[calc(100dvh-9rem)] overflow-y-auto sm:max-h-96">
             {list.length === 0 ? (
               <p className="px-4 py-6 text-center text-sm text-[var(--muted-foreground)]">Нет уведомлений.</p>
             ) : (
@@ -58,7 +87,7 @@ export function NotificationBell() {
                   key={n.id}
                   onClick={() => !n.is_read && markRead(n.id)}
                   className={cn(
-                    "flex w-full flex-col gap-1 border-b px-4 py-3 text-left last:border-0 transition-colors",
+                    "flex min-h-14 w-full flex-col gap-1 border-b px-4 py-3 text-left transition-colors last:border-0",
                     n.is_read ? "opacity-60" : "bg-[var(--muted)]/30 hover:bg-[var(--muted)]/50",
                   )}
                 >

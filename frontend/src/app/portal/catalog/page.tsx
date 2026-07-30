@@ -29,30 +29,40 @@ export default function PortalCatalogPage() {
   const selectedCurrency = currency ?? products?.[0]?.currency ?? "KZT";
   return (
     <AppShell title="Товары" portal>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <div className="mb-5 flex flex-col items-stretch justify-between gap-4 sm:flex-row sm:items-center">
         <div>
-          <p className="font-medium">Ваш личный прайс-лист</p>
-          <p className="text-xs text-[var(--muted-foreground)]">Цены закреплены специально для вашей компании</p>
+          <p className="font-semibold">Доступные позиции</p>
+          <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+            Актуальные цены, фасовка и остатки для оформления заказа.
+          </p>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-lg border bg-[var(--muted)]/30 p-1">
+        <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
+          <div
+            className="inline-flex w-full rounded-xl border border-[var(--border)] bg-[var(--muted)]/60 p-1 sm:w-auto"
+            role="group"
+            aria-label="Валюта каталога"
+          >
             {(["KZT", "USD"] as const).map((code) => (
               <button
                 key={code}
                 type="button"
                 onClick={() => setCurrency(code)}
+                aria-pressed={selectedCurrency === code}
                 className={
-                  "rounded-md px-3 py-1.5 text-xs font-semibold transition-all " +
+                  "min-h-10 flex-1 rounded-lg px-3 py-2 text-xs font-semibold transition-[background-color,color,box-shadow] sm:flex-none " +
                   (selectedCurrency === code
                     ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
-                    : "text-[var(--muted-foreground)]")
+                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]")
                 }
               >
                 {code} {currencySymbol(code)}
               </button>
             ))}
           </div>
-          <Link href="/portal/orders/new" className={buttonVariants({ size: "sm" })}>
+          <Link
+            href="/portal/orders/new"
+            className={buttonVariants({ size: "sm", className: "w-full justify-center sm:w-auto" })}
+          >
             <ShoppingCart className="size-4" /> Оформить заказ
           </Link>
         </div>
@@ -70,20 +80,27 @@ export default function PortalCatalogPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {products.map((p) => (
-            <Card key={p.id} className="p-6">
+            <Card
+              key={p.id}
+              className="p-5 transition-[border-color,box-shadow,transform] hover:-translate-y-0.5 hover:border-[var(--ring)]/25 hover:shadow-card sm:p-6"
+            >
               <div className="flex items-start justify-between gap-3">
-                <div className="font-medium">{p.label}</div>
-                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[var(--primary)]/8 text-[var(--primary)]">
-                  <Tag className="size-4" />
+                <div className="min-w-0 break-words font-semibold leading-5">{p.label}</div>
+                <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[var(--soft-blue)] text-[var(--ring)]">
+                  <Tag aria-hidden="true" className="size-4" />
                 </span>
               </div>
               <div className="mt-1 text-xs text-[var(--muted-foreground)]">{p.weight_kg} кг / мешок</div>
-              <div className="mt-4 border-t pt-4">
-                <div className="text-[11px] text-[var(--muted-foreground)]">Ваша цена за мешок</div>
+              <div className="mt-5 border-t border-[var(--border)] pt-4">
+                <div className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--muted-foreground)]">
+                  Цена за мешок
+                </div>
                 {p.price ? (
-                  <div className="mt-1 text-xl font-semibold tabular-nums">{formatCurrency(p.price, p.currency)}</div>
+                  <div className="mt-1.5 break-words text-xl font-bold tracking-[-0.02em] tabular-nums">
+                    {formatCurrency(p.price, p.currency)}
+                  </div>
                 ) : (
                   <div className="mt-1 text-sm font-medium text-[var(--muted-foreground)]">Цена уточняется</div>
                 )}
@@ -91,10 +108,18 @@ export default function PortalCatalogPage() {
               <div
                 className={
                   p.available_bags > 0
-                    ? "mt-3 text-xs font-medium text-[var(--success)]"
-                    : "mt-3 text-xs font-medium text-[var(--muted-foreground)]"
+                    ? "mt-4 flex items-center gap-2 rounded-xl bg-[var(--soft-green)] px-3 py-2.5 text-xs font-semibold text-[var(--success)]"
+                    : "mt-4 flex items-center gap-2 rounded-xl bg-[var(--muted)]/55 px-3 py-2.5 text-xs font-medium text-[var(--muted-foreground)]"
                 }
               >
+                <span
+                  aria-hidden="true"
+                  className={
+                    p.available_bags > 0
+                      ? "size-1.5 rounded-full bg-[var(--success)]"
+                      : "size-1.5 rounded-full bg-current"
+                  }
+                />
                 {p.available_bags > 0 ? `В наличии: ${p.available_bags} меш.` : "Остаток уточнит оператор"}
               </div>
             </Card>
