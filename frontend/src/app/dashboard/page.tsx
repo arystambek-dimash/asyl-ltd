@@ -24,6 +24,7 @@ import {
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { AppShell } from "@/components/layout/app-shell";
 import { StatusBadge } from "@/components/status-badge";
+import { CHART_TOOLTIP_STYLE as TOOLTIP_STYLE } from "@/components/ui/chart-tooltip";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { formatPlate } from "@/components/ui/license-plate-input";
 import { Tabs } from "@/components/ui/tabs";
@@ -38,16 +39,6 @@ const CameraWall = dynamic(() => import("@/components/camera-wall").then((module
     <div className="h-72 animate-pulse rounded-[22px] border bg-[var(--muted)]/45" aria-label="Загрузка камер" />
   ),
 });
-
-const TOOLTIP_STYLE = {
-  borderRadius: 12,
-  border: "1px solid var(--border)",
-  background: "var(--card)",
-  color: "var(--foreground)",
-  fontSize: 12,
-  padding: "8px 11px",
-  boxShadow: "0 12px 32px rgba(0,0,0,0.12)",
-} as const;
 
 type SummaryMetric = {
   key: string;
