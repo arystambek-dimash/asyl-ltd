@@ -9,6 +9,7 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
+from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import HasPerm, IsStaff, PermViewSetMixin
 from apps.common.money import money_string
 from apps.common.query_params import parse_iso_date, parse_store_id, validate_date_range
@@ -84,6 +85,7 @@ class DepartmentViewSet(viewsets.ModelViewSet):
 class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
+    pagination_class = OptInPageNumberPagination
     required_perms = {
         "list": "clients.view",
         "retrieve": "clients.view",
@@ -102,17 +104,19 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     }
 
     def get_queryset(self):
+        # Явный порядок обязателен для стабильных страниц пагинации.
+        base = Client.objects.order_by("-id")
         can_view_financials = self.request.user.has_perm_code("reports.view")
         if self.action not in {"list", "retrieve", "debts", "debt_detail"}:
-            return Client.objects.all()
+            return base
         if not can_view_financials:
             # Для обычного списка/карточки клиентские заказы не нужны.
             # Serializer также исключает финансовые поля, поэтому не делаем
             # тяжёлую предзагрузку items/payments без соответствующего права.
-            return Client.objects.all()
+            return base
         if self.action == "debt_detail":
             # Здесь заказы сериализуются целиком — нужен полный план загрузки.
-            return Client.objects.prefetch_related(Prefetch(
+            return base.prefetch_related(Prefetch(
                 "orders", queryset=with_order_api_relations(Order.objects.all())
             ))
         # debt_total и агрегаты долгов обходят заказы только по позициям и
@@ -123,7 +127,7 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         # и lifetime в debt_detail смотрят только на них, поэтому грузить всю
         # историю заказов клиента ради сегодняшнего долга незачем. Погашенные
         # остаются — lifetime_paid считает именно по ним.
-        return Client.objects.prefetch_related(Prefetch(
+        return base.prefetch_related(Prefetch(
             "orders",
             queryset=Order.objects.filter(
                 status="shipped", settlement_intent="debt",
@@ -402,8 +406,10 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
 
 class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
-    queryset = Store.objects.select_related("client").all()
+    # Явный порядок обязателен для стабильных страниц пагинации.
+    queryset = Store.objects.select_related("client").order_by("id")
     serializer_class = StoreSerializer
+    pagination_class = OptInPageNumberPagination
 
     required_perms = {
         "list": "clients.view", "retrieve": "clients.view",

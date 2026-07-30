@@ -37,22 +37,26 @@ import { Modal } from "@/components/ui/modal";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
 import {
   ArrowLeft,
-  Building2,
   Archive,
   CalendarDays,
   CircleHelp,
-  Clock3,
-  CreditCard,
-  Package,
   Pencil,
   CopyPlus,
   Printer,
-  SlidersHorizontal,
-  Store as StoreIcon,
   Truck,
   UserRound,
 } from "lucide-react";
 import type { Client, EventLogPage, Order, Store } from "@/lib/types";
+
+/** Строгая строка «подпись — значение»: единый табличный вид реквизитов. */
+function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 border-b border-[var(--border)]/60 py-2 last:border-0">
+      <span className="text-[var(--muted-foreground)]">{label}</span>
+      <span className="text-right font-medium">{children}</span>
+    </div>
+  );
+}
 
 const EVENT_LABELS: Record<string, string> = {
   status: "Статус изменён",
@@ -283,12 +287,10 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
 
           <Card>
             <CardHeader className="flex-row items-center justify-between p-4 pb-2">
-              <CardTitle className="flex items-center gap-2">
-                <Package className="size-4 text-[var(--muted-foreground)]" /> Состав и доставка
-              </CardTitle>
-              <Badge tone="primary">
+              <CardTitle>Состав и доставка</CardTitle>
+              <span className="text-xs text-[var(--muted-foreground)]">
                 {order.items.length} {order.items.length === 1 ? "позиция" : "поз."}
-              </Badge>
+              </span>
             </CardHeader>
             <CardContent className="p-4 pt-2">
               <Table>
@@ -307,19 +309,14 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                     return (
                       <TR key={it.id ?? `new-${i}`}>
                         <TD>
-                          <div className="flex items-center gap-3">
-                            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-[var(--muted)]/60 text-[var(--muted-foreground)]">
-                              <Package className="size-4" />
-                            </span>
-                            <span className="font-medium">
-                              {it.product_label || `Товар #${it.product}`}
-                              {it.weight_kg && (
-                                <span className="block text-xs font-normal text-[var(--muted-foreground)]">
-                                  {it.weight_kg} кг/мешок
-                                </span>
-                              )}
-                            </span>
-                          </div>
+                          <span className="font-medium">
+                            {it.product_label || `Товар #${it.product}`}
+                            {it.weight_kg && (
+                              <span className="block text-xs font-normal text-[var(--muted-foreground)]">
+                                {it.weight_kg} кг/мешок
+                              </span>
+                            )}
+                          </span>
                         </TD>
                         <TD className="text-right tabular-nums">{it.quantity}</TD>
                         <TD className="text-right tabular-nums text-[var(--muted-foreground)]">
@@ -334,43 +331,23 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                 </TBody>
               </Table>
 
-              {/* Доставка — компактный футер состава, а не отдельный бокс. */}
-              <div className="mt-3 grid grid-cols-2 gap-4 border-t pt-3 text-sm md:grid-cols-4">
-                <div>
-                  <div className="text-xs text-[var(--muted-foreground)]">Дата прибытия</div>
-                  <div className="mt-1 flex items-center gap-1.5 font-medium">
-                    <CalendarDays className="size-3.5" />{" "}
-                    {order.arrival_date ? formatIsoDate(order.arrival_date) : "Не указана"}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-[var(--muted-foreground)]">Способ</div>
-                  <div className="mt-1 flex items-center gap-1.5 font-medium">
-                    <Truck className="size-3.5" />{" "}
-                    {order.transport_type === "train" ? "Вагон" : order.truck_number || "Машина"}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-[var(--muted-foreground)]">Отдел</div>
-                  <div className="mt-1 flex items-center gap-1.5 font-medium">
-                    <Building2 className="size-3.5" /> {order.department_name ?? order.department}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-[var(--muted-foreground)]">Склад</div>
-                  <div className="mt-1 flex items-center gap-1.5 font-medium">
-                    <StoreIcon className="size-3.5" />{" "}
-                    {store?.name || (order.store ? `Склад #${order.store}` : "Основной")}
-                  </div>
-                </div>
+              {/* Доставка — строгие строки «подпись — значение» под позициями. */}
+              <div className="mt-3 flex flex-col border-t text-sm">
+                <InfoRow label="Дата прибытия">
+                  {order.arrival_date ? formatIsoDate(order.arrival_date) : "Не указана"}
+                </InfoRow>
+                <InfoRow label="Способ">
+                  {order.transport_type === "train" ? "Вагон" : order.truck_number || "Машина"}
+                </InfoRow>
+                <InfoRow label="Отдел">{order.department_name ?? order.department}</InfoRow>
+                <InfoRow label="Склад">{store?.name || (order.store ? `Склад #${order.store}` : "Основной")}</InfoRow>
                 {hasShipment && (
-                  <div className="col-span-2 border-t pt-3 md:col-span-4">
-                    <span className="text-[var(--muted-foreground)]">Вес машины: </span>
-                    <b>{formatMoney(order.weigh_in_kg!)} кг</b>
-                    <span className="mx-2 text-[var(--border)]">·</span>
-                    <span className="text-[var(--muted-foreground)]">Вес груза: </span>
-                    <b>{formatMoney(String(Number(order.bag_estimate_kg ?? itemsWeight)))} кг</b>
-                  </div>
+                  <>
+                    <InfoRow label="Вес машины">{formatMoney(order.weigh_in_kg!)} кг</InfoRow>
+                    <InfoRow label="Вес груза">
+                      {formatMoney(String(Number(order.bag_estimate_kg ?? itemsWeight)))} кг
+                    </InfoRow>
+                  </>
                 )}
               </div>
             </CardContent>
@@ -378,9 +355,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
 
           <Card>
             <CardHeader className="flex-row items-center justify-between p-4 pb-2">
-              <CardTitle className="flex items-center gap-2">
-                <CreditCard className="size-4 text-[var(--muted-foreground)]" /> Оплата
-              </CardTitle>
+              <CardTitle>Оплата</CardTitle>
               <Badge
                 tone={
                   pendingPayments.length
@@ -394,11 +369,10 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             </CardHeader>
             <CardContent className="flex flex-col gap-3 p-4 pt-2">
               {order.payment_method && (
-                <div className="flex items-center justify-between rounded-lg bg-[var(--muted)]/35 px-3 py-2 text-sm">
-                  <span className="text-[var(--muted-foreground)]">Выбор клиента</span>
-                  <span className="font-medium">
+                <div className="text-sm">
+                  <InfoRow label="Выбор клиента">
                     {PORTAL_PAYMENT_METHOD_LABELS[order.payment_method] ?? order.payment_method}
-                  </span>
+                  </InfoRow>
                 </div>
               )}
               {pendingPayments.length > 0 && (
@@ -421,13 +395,12 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                 </div>
               )}
               {pendingPayments.length === 0 && !canStartPayment && (
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-[var(--muted-foreground)]">Подтверждено системой</span>
-                    <b className="tabular-nums">
+                <div className="flex flex-col gap-1 text-sm">
+                  <InfoRow label="Подтверждено системой">
+                    <span className="tabular-nums">
                       {formatMoney(order.paid_total)} {moneySymbol}
-                    </b>
-                  </div>
+                    </span>
+                  </InfoRow>
                   <PaidMethodBreakdown order={order} className="text-xs" />
                 </div>
               )}
@@ -508,9 +481,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
         <aside className="flex flex-col gap-4 self-start print:hidden">
           <Card>
             <CardHeader className="p-4 pb-3">
-              <CardTitle className="flex items-center gap-2">
-                <SlidersHorizontal className="size-4 text-[var(--muted-foreground)]" /> Управление заказом
-              </CardTitle>
+              <CardTitle>Управление заказом</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col gap-3 p-4 pt-0">
               <div className="flex items-center justify-between text-xs">
@@ -602,9 +573,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
 
           <Card>
             <CardHeader className="flex-row items-center justify-between p-4 pb-3">
-              <CardTitle className="flex items-center gap-2">
-                <UserRound className="size-4 text-[var(--muted-foreground)]" /> Клиент
-              </CardTitle>
+              <CardTitle>Клиент</CardTitle>
               {canViewClients && (
                 <Link href={`/clients/${order.client}`} className={buttonVariants({ size: "sm", variant: "outline" })}>
                   Открыть
@@ -631,9 +600,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
 
           <Card>
             <CardHeader className="p-4 pb-3">
-              <CardTitle className="flex items-center gap-2">
-                <Clock3 className="size-4 text-[var(--muted-foreground)]" /> История заказа
-              </CardTitle>
+              <CardTitle>История заказа</CardTitle>
             </CardHeader>
             <CardContent className="p-4 pt-0">
               <div className="relative space-y-3 before:absolute before:bottom-2 before:left-[5px] before:top-2 before:w-px before:bg-[var(--border)]">

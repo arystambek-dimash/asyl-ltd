@@ -20,7 +20,10 @@ import { CurrencyAmounts } from "@/components/ui/currency-amounts";
 import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from "@/components/ui/form";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select-ui";
 import { useApi } from "@/lib/use-api";
+import { usePagedApi } from "@/lib/use-paged-api";
+import { LoadMore } from "@/components/ui/load-more";
 import { api, apiError } from "@/lib/api";
+import { finiteMoney } from "@/lib/currency-map";
 import { cn, currencySymbol, formatPhone, formatMoney, formatDateTime, sumDebtByCurrency } from "@/lib/utils";
 import { COUNTRIES } from "@/lib/countries";
 import { BarChart3, FileSpreadsheet, Pencil, Phone, Plus, Search, Tags, Trash2 } from "lucide-react";
@@ -28,7 +31,7 @@ import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { StatementExportModal } from "@/components/statement-export-modal";
-import type { Client } from "@/lib/types";
+import type { Client, ReportSummary } from "@/lib/types";
 
 const schema = z.object({
   first_name: z.string().min(2, "Введите имя (мин. 2 символа)"),
@@ -304,7 +307,6 @@ const digits = (s: string) => s.replace(/\D/g, "");
 
 function ClientsPageInner() {
   const router = useRouter();
-  const { data: clients, error, reload } = useApi<Client[]>("/clients/");
   const { me } = useAuth();
   const canCreate = can(me, "clients.create");
   const canEdit = can(me, "clients.edit");
@@ -319,6 +321,18 @@ function ClientsPageInner() {
   const [phoneQ, setPhoneQ] = useState("");
   const [sortKey, setSortKey] = useState("created");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  // Страницы — только в «дефолтном» виде: поиск и пересортировка должны
+  // видеть всех клиентов, поэтому в этих режимах грузим полный список.
+  const searching = Boolean(q || iinQ || phoneQ);
+  const usePaging = !searching && sortKey === "created" && sortDir === "desc";
+  const paged = usePagedApi<Client>(usePaging ? "/clients/" : null, 50);
+  const flat = useApi<Client[]>(usePaging ? null : "/clients/");
+  const clients = usePaging ? paged.items : flat.data;
+  const error = usePaging ? paged.error : flat.error;
+  const reload = usePaging ? paged.reload : flat.reload;
+  // Сводный долг обязан считаться по всем клиентам, а не по загруженной
+  // странице — в ленивом режиме берём его из серверного отчёта.
+  const { data: debtSummary } = useApi<ReportSummary>(usePaging && canMoney ? "/reports/summary/" : null);
   const [delItem, setDelItem] = useState<Client | null>(null);
   const [delError, setDelError] = useState("");
   const [delBusy, setDelBusy] = useState(false);
@@ -342,7 +356,16 @@ function ClientsPageInner() {
   const list = clients ?? [];
   // Валюта долга берётся из заказов, а не из карточки клиента: у KZT-клиента
   // может быть заказ в USD, и складывать их в одну сумму нельзя.
-  const debtByCurrency = canMoney ? sumDebtByCurrency(list) : {};
+  const debtByCurrency: Record<string, number> = !canMoney
+    ? {}
+    : usePaging
+      ? Object.fromEntries(
+          Object.entries(debtSummary?.debt_now.by_currency ?? {}).map(([currency, value]) => [
+            currency,
+            finiteMoney(value),
+          ]),
+        )
+      : sumDebtByCurrency(list);
 
   const filtered = list.filter(
     (c) =>
@@ -641,6 +664,15 @@ function ClientsPageInner() {
                 )}
               </TBody>
             </Table>
+            {usePaging && (
+              <LoadMore
+                shown={list.length}
+                total={paged.count}
+                hasMore={paged.hasMore}
+                loading={paged.loadingMore}
+                onClick={paged.loadMore}
+              />
+            )}
           </CardContent>
         </Card>
       </div>

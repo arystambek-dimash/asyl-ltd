@@ -4,6 +4,7 @@ import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { CurrencyAmounts } from "@/components/ui/currency-amounts";
+import { LoadMore } from "@/components/ui/load-more";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import type { ReportClientRow } from "@/lib/types";
 import { cn, formatCurrency, formatMoney } from "@/lib/utils";
@@ -16,6 +17,10 @@ function orderDayLabel(iso: string): string {
 /** Отчёт по клиентам: строка — итоги клиента, по клику раскрываются заказы. */
 export function ClientsTable({ clients }: { clients: ReportClientRow[] }) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  // Отчёт приходит целиком — рендерим лениво, чтобы сотни клиентов не
+  // раскатывались в одну простыню.
+  const [limit, setLimit] = useState(25);
+  const visible = clients.slice(0, limit);
 
   function toggle(id: number) {
     setExpanded((current) => {
@@ -46,7 +51,7 @@ export function ClientsTable({ clients }: { clients: ReportClientRow[] }) {
               </TD>
             </TR>
           ) : (
-            clients.map((client) => {
+            visible.map((client) => {
               const open = expanded.has(client.id);
               return (
                 <Fragment key={client.id}>
@@ -127,6 +132,12 @@ export function ClientsTable({ clients }: { clients: ReportClientRow[] }) {
           )}
         </TBody>
       </Table>
+      <LoadMore
+        shown={visible.length}
+        total={clients.length}
+        hasMore={clients.length > visible.length}
+        onClick={() => setLimit((current) => current + 25)}
+      />
     </div>
   );
 }

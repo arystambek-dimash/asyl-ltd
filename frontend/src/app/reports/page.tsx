@@ -7,6 +7,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { ClientsTable } from "@/components/reports/clients-table";
 import { CHART_TOOLTIP_STYLE } from "@/components/ui/chart-tooltip";
+import { LoadMore } from "@/components/ui/load-more";
 import { CurrencyAmounts } from "@/components/ui/currency-amounts";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
@@ -259,6 +260,9 @@ function DaysTable({ data }: { data: ReportSummary }) {
   const cols = ["№", "Дата", "Заказов", "Мешков", "Отгружено", "Наличные", "Безналичные", "Поступило", "В долг"];
   const shippedCurrency = data.shipped.currency || "KZT";
   const incomeCurrency = data.income.currency || "KZT";
+  // Длинный период рендерим лениво; строка «Итого» видна всегда.
+  const [limit, setLimit] = useState(31);
+  const visibleDays = data.days.slice(0, limit);
   return (
     <div>
       <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-card">
@@ -277,7 +281,7 @@ function DaysTable({ data }: { data: ReportSummary }) {
               <EmptyRow colSpan={cols.length} />
             ) : (
               <>
-                {data.days.map((d, i) => (
+                {visibleDays.map((d, i) => (
                   <TR key={d.date}>
                     <TD className="text-[var(--muted-foreground)]">{i + 1}</TD>
                     <TD className="font-medium tabular-nums">{dayLabel(d.date)}</TD>
@@ -366,6 +370,12 @@ function DaysTable({ data }: { data: ReportSummary }) {
             )}
           </TBody>
         </Table>
+        <LoadMore
+          shown={visibleDays.length}
+          total={data.days.length}
+          hasMore={data.days.length > visibleDays.length}
+          onClick={() => setLimit((current) => current + 31)}
+        />
       </div>
     </div>
   );

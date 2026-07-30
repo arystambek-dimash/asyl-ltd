@@ -21,6 +21,8 @@ import { can } from "@/lib/can";
 import { amountForCurrency, otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
 import { useAuth } from "@/store/auth";
 import { useApi } from "@/lib/use-api";
+import { usePagedApi } from "@/lib/use-paged-api";
+import { LoadMore } from "@/components/ui/load-more";
 import { api, apiError } from "@/lib/api";
 import { showSuccess } from "@/lib/toast";
 import {
@@ -103,27 +105,21 @@ function debtPaymentState(row: ClientDebt) {
 }
 
 /* ── Очередь кассира: данные и действия, общие для вкладок ─────────────── */
-// У очереди («Подтверждение») и журнала свои фильтры — каждая вкладка
-// ограничивает только себя, поэтому наборы приходят раздельно.
+// Журнал живёт на своей вкладке со своими фильтрами и ленивой подгрузкой —
+// хук очереди отдаёт только заявки и оплаты, а об изменениях сообщает
+// наружу, чтобы журнал перезагрузил себя сам.
 function useCashierQueue(
   enabled: boolean,
   canReviewOrders: boolean,
   queueFilters: CashFilters,
-  logFilters: CashFilters,
+  onChanged?: () => void,
 ) {
   const queueActive = enabled && filtersAreValid(queueFilters);
-  const logActive = enabled && filtersAreValid(logFilters);
   const queueParams = {
     date_from: queueFilters.dateFrom,
     date_to: queueFilters.dateTo,
     department: queueFilters.department,
     store: queueFilters.store,
-  };
-  const logParams = {
-    date_from: logFilters.dateFrom,
-    date_to: logFilters.dateTo,
-    department: logFilters.department,
-    store: logFilters.store,
   };
   // Кассе нужны заявки на подтверждение и оплаты — отбор отдела общий.
   const {
@@ -138,19 +134,14 @@ function useCashierQueue(
     error: queueError,
     reload: reloadQueue,
   } = useApi<PaymentQueueItem[]>(queueActive ? apiUrl("/orders/payments-queue/", queueParams) : null);
-  const {
-    data: cashierLog,
-    error: cashierLogError,
-    reload: reloadCashierLog,
-  } = useApi<CashierLogItem[]>(logActive ? apiUrl("/orders/cashier-log/", logParams) : null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const loadError = pendingError || queueError || cashierLogError;
+  const loadError = pendingError || queueError;
 
   function reloadAll() {
     void reloadPending();
     void reloadQueue();
-    void reloadCashierLog();
+    onChanged?.();
   }
 
   async function act(fn: () => Promise<unknown>, done?: string) {
@@ -172,7 +163,6 @@ function useCashierQueue(
   return {
     pendingOrders: pending ?? [],
     toReview: queue ?? [],
-    log: cashierLog ?? [],
     busy,
     error,
     loadError,
@@ -198,6 +188,7 @@ function useCashierQueue(
 }
 
 type CashierQueue = ReturnType<typeof useCashierQueue>;
+type PagedCashierLog = ReturnType<typeof usePagedApi<CashierLogItem>>;
 
 function ActionError({ message }: { message: string }) {
   if (!message) return null;
@@ -333,21 +324,21 @@ function ConfirmQueueSection({
 }
 
 /* ── Вкладка «Журнал»: действия по оплатам ─────────────────────────────── */
-function PaymentJournalSection({ q }: { q: CashierQueue }) {
+function PaymentJournalSection({ q, log }: { q: CashierQueue; log: PagedCashierLog }) {
   const [restoreEvent, setRestoreEvent] = useState<CashierLogItem | null>(null);
   return (
     <section className="flex flex-col gap-4">
       <ActionError message={q.error} />
-      {q.loadError && <ErrorAlert message={q.loadError} onRetry={q.reload} />}
+      {log.error && <ErrorAlert message={log.error} onRetry={log.reload} />}
       <Card>
         <CardHeader>
           <CardTitle>Журнал действий по оплатам</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-2">
-          {q.log.length === 0 ? (
+          {log.items.length === 0 ? (
             <p className="text-sm text-[var(--muted-foreground)]">Действий по оплатам пока нет.</p>
           ) : (
-            q.log.map((event) => (
+            log.items.map((event) => (
               <div
                 key={event.id}
                 className="flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between"
@@ -374,6 +365,13 @@ function PaymentJournalSection({ q }: { q: CashierQueue }) {
               </div>
             ))
           )}
+          <LoadMore
+            shown={log.items.length}
+            total={log.count}
+            hasMore={log.hasMore}
+            loading={log.loadingMore}
+            onClick={log.loadMore}
+          />
         </CardContent>
       </Card>
       <ConfirmDialog
@@ -416,10 +414,14 @@ function DebtsSection({
   const [q, setQ] = useState("");
   const [checkMsg, setCheckMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  // Данные уже загружены целиком — лениво рендерим, чтобы длинный список
+  // должников не разворачивался простынёй.
+  const [limit, setLimit] = useState(25);
 
   const filtered = rows.filter(
     (row) => !q || `${row.client_name} ${row.client_phone}`.toLowerCase().includes(q.toLowerCase()),
   );
+  const visible = filtered.slice(0, limit);
 
   async function checkOverdue() {
     setBusy(true);
@@ -503,7 +505,7 @@ function DebtsSection({
                   </TD>
                 </TR>
               ) : (
-                filtered.map((row) => {
+                visible.map((row) => {
                   const state = debtPaymentState(row);
                   return (
                     <TR key={row.client_id}>
@@ -557,6 +559,12 @@ function DebtsSection({
               )}
             </TBody>
           </Table>
+          <LoadMore
+            shown={visible.length}
+            total={filtered.length}
+            hasMore={filtered.length > visible.length}
+            onClick={() => setLimit((current) => current + 25)}
+          />
         </CardContent>
       </Card>
     </section>
@@ -758,7 +766,19 @@ function CashierInner() {
     error: summaryError,
     reload: reloadSummary,
   } = useApi<ReportSummary>(canReports && validOverview ? reportUrl : null);
-  const queue = useCashierQueue(canPayments, canReviewOrders, filtersByTab.confirm, filtersByTab.journal);
+  const journalFilters = filtersByTab.journal;
+  const journalLog = usePagedApi<CashierLogItem>(
+    canPayments && filtersAreValid(journalFilters)
+      ? apiUrl("/orders/cashier-log/", {
+          date_from: journalFilters.dateFrom,
+          date_to: journalFilters.dateTo,
+          department: journalFilters.department,
+          store: journalFilters.store,
+        })
+      : null,
+    50,
+  );
+  const queue = useCashierQueue(canPayments, canReviewOrders, filtersByTab.confirm, journalLog.reload);
   const {
     data: debts,
     loading: debtsLoading,
@@ -922,7 +942,7 @@ function CashierInner() {
           />
         )}
 
-        {tab === "journal" && canPayments && <PaymentJournalSection q={queue} />}
+        {tab === "journal" && canPayments && <PaymentJournalSection q={queue} log={journalLog} />}
 
         {tab === "transactions" && canTransactions && (
           <TransactionsSection canConfirm={canPayments} canCreate={canCreatePayments} />

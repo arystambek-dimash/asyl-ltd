@@ -12,6 +12,7 @@ from decimal import Decimal
 import re
 from django.db.models import Q, Sum
 from django.utils import timezone
+from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import HasPerm, PermViewSetMixin
 from apps.common.money import money_string
 from apps.common.query_params import (
@@ -548,8 +549,10 @@ class PaymentRejectView(APIView):
 class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     # Всё, что сериализатор трогает на каждой строке, загружаем заранее —
     # список заказов не должен порождать запросы «на заказ» (N+1).
-    queryset = with_order_api_relations(Order.objects.all())
+    # Явный порядок обязателен для стабильных страниц пагинации.
+    queryset = with_order_api_relations(Order.objects.all()).order_by("-id")
     serializer_class = OrderSerializer
+    pagination_class = OptInPageNumberPagination
     required_perms = {
         "list": "orders.view",
         "retrieve": "orders.view",
@@ -833,7 +836,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         date_from, date_to = parse_date_range(request.query_params)
         qs = filter_date_range(qs, "created_at", date_from, date_to)
 
-        events = list(qs[:200])
+        paginator = OptInPageNumberPagination()
+        page_events = paginator.paginate_queryset(qs, request, view=self)
+        # Без явного ?page журнал остаётся ограниченной лентой последних
+        # событий — так его читали до появления страниц.
+        events = page_events if page_events is not None else list(qs[:200])
         payment_ids = {
             event.payload.get("payment_id") for event in events
             if event.payload.get("payment_id") is not None
@@ -865,7 +872,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                     and event.payload.get("payment_stage") == "rejected"
                     and payment_id not in latest_rejection):
                 latest_rejection[payment_id] = event.id
-        return Response([{
+        rows = [{
             "id": event.id,
             "message": public_message(event.message),
             "user_name": event.user.username if event.user else None,
@@ -887,7 +894,10 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 and latest_rejection.get(event.payload.get("payment_id")) == event.id
                 and event.payload.get("payment_id") not in closed_provider_payments
             ),
-        } for event in events])
+        } for event in events]
+        if page_events is not None:
+            return paginator.get_paginated_response(rows)
+        return Response(rows)
 
     @action(detail=True, methods=["post"], url_path="train")
     def train(self, request, pk=None):

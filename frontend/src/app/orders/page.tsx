@@ -33,6 +33,8 @@ import {
   orderStatusGroup,
 } from "@/lib/constants";
 import { useApi } from "@/lib/use-api";
+import { usePagedApi } from "@/lib/use-paged-api";
+import { LoadMore } from "@/components/ui/load-more";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
@@ -681,7 +683,20 @@ function OrdersPageInner() {
     const query = params.toString();
     return `/orders/${query ? `?${query}` : ""}`;
   }, [dateFrom, dateTo, dept, status]);
-  const { data: orders, loading, error, reload } = useApi<Order[]>(ordersUrl);
+  const [q, setQ] = useState("");
+  const [sortKey, setSortKey] = useState("id");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  // Лениво грузим страницами только «дефолтный» список. Поиск и пересортировка
+  // работают по всем строкам, поэтому в этих режимах берём полный список —
+  // иначе они бы молча смотрели только на загруженную часть.
+  const defaultOrder = sortKey === "id" && sortDir === "desc";
+  const usePaging = !q && defaultOrder;
+  const paged = usePagedApi<Order>(usePaging ? ordersUrl : null, 50);
+  const flat = useApi<Order[]>(usePaging ? null : ordersUrl);
+  const orders = usePaging ? paged.items : flat.data;
+  const loading = usePaging ? paged.loading : flat.loading;
+  const error = usePaging ? paged.error : flat.error;
+  const reload = usePaging ? paged.reload : flat.reload;
   const summaryUrl = useMemo(() => {
     const params = new URLSearchParams();
     if (dateFrom) params.set("date_from", dateFrom);
@@ -703,9 +718,6 @@ function OrdersPageInner() {
   const [templateOrder, setTemplateOrder] = useState<Order | null>(null);
   const [statementOpen, setStatementOpen] = useState(false);
   const [editing, setEditing] = useState<Order | null>(null);
-  const [q, setQ] = useState("");
-  const [sortKey, setSortKey] = useState("id");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [view, setView] = useState<"orders" | "archive">("orders");
   const [delItem, setDelItem] = useState<Order | null>(null);
   const [delBusy, setDelBusy] = useState(false);
@@ -1169,6 +1181,15 @@ function OrdersPageInner() {
                     )}
                   </TBody>
                 </Table>
+              )}
+              {usePaging && (
+                <LoadMore
+                  shown={list.length}
+                  total={paged.count}
+                  hasMore={paged.hasMore}
+                  loading={paged.loadingMore}
+                  onClick={paged.loadMore}
+                />
               )}
             </CardContent>
           </Card>

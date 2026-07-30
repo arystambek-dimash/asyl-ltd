@@ -18,7 +18,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { amountForCurrency, otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
-import { cn, formatCompactCurrency, formatCurrency, formatMoney, formatDateTime, currencySymbol } from "@/lib/utils";
+import { cn, formatCompactCurrency, formatCurrency, formatDateTime } from "@/lib/utils";
 import { can } from "@/lib/can";
 import { PaidMethodBreakdown } from "@/components/payment-chain";
 import { useAuth } from "@/store/auth";
@@ -425,13 +425,6 @@ function PaymentHistoryTable({
 }
 
 /* ── Панель «Внести оплату» ─────────────────────────────────────────────── */
-const QUICK_FRACTIONS = [
-  { label: "25%", f: 0.25 },
-  { label: "50%", f: 0.5 },
-  { label: "75%", f: 0.75 },
-  { label: "Весь долг", f: 1 },
-];
-
 type PaymentPart = { id: number; method: string; amount: string; phone_number?: string };
 
 function PaymentModal({
@@ -459,7 +452,6 @@ function PaymentModal({
   const [busy, setBusy] = useState(false);
   const [payError, setPayError] = useState("");
   const [kaspiQr, setKaspiQr] = useState<Payment["provider"] | null>(null);
-  const [reviewing, setReviewing] = useState(false);
   const [qrImageFailed, setQrImageFailed] = useState(false);
   const ordersRef = useRef(orders);
   ordersRef.current = orders;
@@ -474,7 +466,6 @@ function PaymentModal({
     setParts([{ id: Date.now(), method: "cash", amount: String(currentAvailable) }]);
     setNote("");
     setKaspiQr(null);
-    setReviewing(false);
     setQrImageFailed(false);
   }, [open, selectedId]);
 
@@ -500,7 +491,6 @@ function PaymentModal({
       );
     });
   const blockingStore = blockedFor(order);
-  const quickValue = (f: number) => Math.round(available * f * 100) / 100;
 
   function updatePart(id: number, patch: Partial<PaymentPart>) {
     setParts((current) => current.map((part) => (part.id === id ? { ...part, ...patch } : part)));
@@ -536,7 +526,6 @@ function PaymentModal({
       const kaspi = created.data.find((payment) => payment.method === "kaspi");
       const invoice = created.data.find((payment) => payment.method === "invoice");
       if (kaspi) setKaspiQr(kaspi.provider ?? null);
-      setReviewing(false);
       const notice = [
         kaspi ? `QR по заказу #${order.id} создан.` : "",
         invoice ? "Счёт на оплату отправлен клиенту." : "",
@@ -563,38 +552,29 @@ function PaymentModal({
     <Modal
       open={open}
       onClose={() => !busy && onClose()}
-      eyebrow="Касса · Смешанная оплата"
+      eyebrow="Касса · Оплата"
       title="Внести оплату"
-      description="Разделите сумму между наличными, QR и счётом. Онлайн-части подтвердятся автоматически после оплаты."
+      description="Сумма делится на способы построчно; лишнего подтверждать не нужно."
       className="max-w-xl"
       mobileFullscreen
       footer={
         kaspiQr ? (
           <Button onClick={onClose}>Готово</Button>
-        ) : reviewing ? (
+        ) : (
           <>
             {payError && (
               <p role="alert" className="mr-auto max-w-sm self-center text-sm text-[var(--destructive)]">
                 {payError}
               </p>
             )}
-            <Button variant="outline" disabled={busy} onClick={() => setReviewing(false)}>
-              Назад
-            </Button>
-            <Button disabled={busy} onClick={() => void pay()}>
-              {busy ? "Создание…" : `Подтвердить · ${money(allocated, order.currency)}`}
-            </Button>
-          </>
-        ) : (
-          <>
             <Button variant="outline" disabled={busy} onClick={onClose}>
               Отмена
             </Button>
             <Button
               disabled={busy || !!blockingStore || !allPartsValid || allocatedCents > availableCents}
-              onClick={() => setReviewing(true)}
+              onClick={() => void pay()}
             >
-              Проверить оплату · {money(allocated, order.currency)}
+              {busy ? "Создание…" : `Внести оплату · ${money(allocated, order.currency)}`}
             </Button>
           </>
         )
@@ -631,48 +611,6 @@ function PaymentModal({
               </Button>
             )}
           </div>
-        ) : reviewing ? (
-          <div className="space-y-4">
-            <div className="rounded-xl border bg-[var(--muted)]/30 p-4">
-              <div className="text-xs uppercase tracking-wide text-[var(--muted-foreground)]">
-                Проверьте перед созданием
-              </div>
-              <div className="mt-1 text-3xl font-bold tabular-nums">{money(allocated, order.currency)}</div>
-              <div className="mt-1 text-sm text-[var(--muted-foreground)]">
-                Заказ #{order.id} · доступно {money(available, order.currency)}
-              </div>
-            </div>
-            <div className="space-y-2">
-              {parts.map((part) => (
-                <div key={part.id} className="flex items-start justify-between gap-4 rounded-lg border px-3 py-2.5">
-                  <div>
-                    <div className="font-medium">{PAYMENT_METHOD_LABELS[part.method] ?? part.method}</div>
-                    {part.method === "invoice" && (
-                      <div className="text-xs text-[var(--muted-foreground)]">
-                        Телефон: {part.phone_number ?? order.client_phone}
-                      </div>
-                    )}
-                    <div className="text-xs text-[var(--muted-foreground)]">
-                      {part.method === "cash"
-                        ? "Потребует подтверждения кассиром"
-                        : "Подтвердится автоматически после оплаты"}
-                    </div>
-                  </div>
-                  <div className="shrink-0 font-semibold tabular-nums">{money(part.amount, order.currency)}</div>
-                </div>
-              ))}
-            </div>
-            {note && (
-              <div className="rounded-lg border px-3 py-2 text-sm">
-                <span className="text-[var(--muted-foreground)]">Примечание: </span>
-                {note}
-              </div>
-            )}
-            <p className="text-xs text-[var(--muted-foreground)]">
-              После подтверждения наличная часть попадёт в очередь кассира, а QR и счёт сразу будут созданы у платёжного
-              сервиса.
-            </p>
-          </div>
         ) : (
           <>
             {orders.length > 1 && (
@@ -693,15 +631,22 @@ function PaymentModal({
               </div>
             )}
 
-            <div>
-              <div className="text-sm text-[var(--muted-foreground)]">Остаток к оплате</div>
-              <div className="mt-1 text-[28px] font-bold leading-none tracking-tight tabular-nums text-[var(--destructive)]">
-                {money(available, order.currency)}
-              </div>
-              {reserved > 0 && (
-                <div className="mt-1 text-xs text-[var(--muted-foreground)]">
-                  Ещё {money(reserved, order.currency)} уже ожидает подтверждения
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <div className="text-sm text-[var(--muted-foreground)]">Остаток к оплате</div>
+                <div className="mt-1 text-[28px] font-bold leading-none tracking-tight tabular-nums text-[var(--destructive)]">
+                  {money(available, order.currency)}
                 </div>
+                {reserved > 0 && (
+                  <div className="mt-1 text-xs text-[var(--muted-foreground)]">
+                    Ещё {money(reserved, order.currency)} уже ожидает подтверждения
+                  </div>
+                )}
+              </div>
+              {!blockingStore && (
+                <Button type="button" variant="outline" size="sm" onClick={() => setQuickTotal(available)}>
+                  Весь долг
+                </Button>
               )}
             </div>
 
@@ -715,48 +660,17 @@ function PaymentModal({
               </div>
             ) : (
               <>
-                <div className="grid grid-cols-4 gap-2">
-                  {QUICK_FRACTIONS.map(({ label, f }) => {
-                    const v = quickValue(f);
-                    const active = Math.abs(allocated - v) < 0.001;
-                    return (
-                      <button
-                        key={label}
-                        type="button"
-                        onClick={() => setQuickTotal(v)}
-                        className={cn(
-                          "flex flex-col items-center gap-0.5 rounded-lg border px-1 py-2 transition-colors",
-                          active
-                            ? "border-[var(--foreground)] bg-[var(--muted)]"
-                            : "border-[var(--border)] hover:border-[var(--foreground)]/40",
-                        )}
-                      >
-                        <span className="text-sm font-semibold">{label}</span>
-                        <span className="text-[11px] tabular-nums text-[var(--muted-foreground)]">
-                          {formatMoney(v)} {currencySymbol(order.currency)}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">Распределение</span>
-                    <span
-                      className={cn(
-                        "text-xs tabular-nums",
-                        allocatedCents > availableCents
-                          ? "text-[var(--destructive)]"
-                          : "text-[var(--muted-foreground)]",
-                      )}
-                    >
-                      {money(allocated, order.currency)} из {money(available, order.currency)}
-                    </span>
+                {/* Распределение — строгая таблица «Способ | Сумма»: одна строка
+                    на способ, без карточек и подсказок на каждый пункт. */}
+                <div className="flex flex-col">
+                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(110px,.7fr)_36px] gap-2 border-b pb-1.5 text-[11px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
+                    <span>Способ</span>
+                    <span>Сумма</span>
+                    <span />
                   </div>
                   {parts.map((part, index) => (
-                    <div key={part.id} className="rounded-xl border bg-[var(--card)] p-2.5">
-                      <div className="grid grid-cols-[minmax(0,1fr)_minmax(100px,.75fr)_40px] gap-2">
+                    <div key={part.id} className="border-b border-[var(--border)]/60 py-2">
+                      <div className="grid grid-cols-[minmax(0,1fr)_minmax(110px,.7fr)_36px] items-center gap-2">
                         <Select
                           value={part.method}
                           onValueChange={(method) =>
@@ -796,38 +710,41 @@ function PaymentModal({
                           type="button"
                           disabled={parts.length === 1}
                           onClick={() => setParts((current) => current.filter((item) => item.id !== part.id))}
-                          className="flex size-10 items-center justify-center rounded-md border text-[var(--muted-foreground)] hover:text-[var(--destructive)] disabled:opacity-30"
+                          className="flex size-9 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:text-[var(--destructive)] disabled:opacity-30"
                           aria-label="Удалить способ оплаты"
                         >
                           <Trash2 className="size-4" />
                         </button>
                       </div>
                       {part.method === "invoice" && (
-                        <div className="mt-2">
-                          <Input
-                            inputMode="tel"
-                            aria-label="Телефон для счёта на оплату"
-                            placeholder="Телефон клиента, например 8 700 000 00 00"
-                            value={part.phone_number ?? order.client_phone ?? ""}
-                            onChange={(event) => updatePart(part.id, { phone_number: event.target.value })}
-                          />
-                          <p className="mt-1 text-[11px] text-[var(--muted-foreground)]">
-                            Счёт будет отправлен на этот номер и подтвердится автоматически.
-                          </p>
-                        </div>
-                      )}
-                      {part.method === "kaspi" && (
-                        <p className="mt-2 text-[11px] text-[var(--muted-foreground)]">
-                          QR появится после создания и подтвердится автоматически после оплаты.
-                        </p>
+                        <Input
+                          className="mt-2"
+                          inputMode="tel"
+                          aria-label="Телефон для счёта на оплату"
+                          placeholder="Телефон клиента для счёта"
+                          value={part.phone_number ?? order.client_phone ?? ""}
+                          onChange={(event) => updatePart(part.id, { phone_number: event.target.value })}
+                        />
                       )}
                     </div>
                   ))}
-                  {parts.length < allowedMethods.length && (
-                    <Button type="button" variant="outline" className="w-full" onClick={addPart}>
-                      <Plus className="size-4" /> Добавить способ оплаты
-                    </Button>
-                  )}
+                  <div className="flex items-center justify-between gap-3 py-2">
+                    {parts.length < allowedMethods.length ? (
+                      <Button type="button" size="sm" variant="ghost" onClick={addPart}>
+                        <Plus className="size-4" /> Добавить способ
+                      </Button>
+                    ) : (
+                      <span />
+                    )}
+                    <span
+                      className={cn(
+                        "text-sm font-semibold tabular-nums",
+                        allocatedCents > availableCents ? "text-[var(--destructive)]" : "",
+                      )}
+                    >
+                      Итого: {money(allocated, order.currency)}
+                    </span>
+                  </div>
                   {allocatedCents > availableCents && (
                     <p className="text-xs text-[var(--destructive)]">Распределение превышает доступный остаток.</p>
                   )}

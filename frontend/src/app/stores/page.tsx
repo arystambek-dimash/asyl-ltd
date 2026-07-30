@@ -13,6 +13,8 @@ import { ErrorAlert } from "@/components/ui/data-state";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select-ui";
 import { useApi } from "@/lib/use-api";
+import { usePagedApi } from "@/lib/use-paged-api";
+import { LoadMore } from "@/components/ui/load-more";
 import { api, apiError } from "@/lib/api";
 import { formatPhone } from "@/lib/utils";
 import { cn } from "@/lib/utils";
@@ -263,7 +265,7 @@ function StoreForm({
 }
 
 function StoresPageInner() {
-  const { data: stores, error, reload } = useApi<Store[]>("/stores/");
+  const { items: stores, count, hasMore, loadingMore, error, reload, loadMore } = usePagedApi<Store>("/stores/", 50);
   const { me } = useAuth();
   const canCreate = can(me, "clients.create");
   const canEdit = can(me, "clients.edit");
@@ -280,7 +282,7 @@ function StoresPageInner() {
     reload: reloadClients,
   } = useApi<ClientPickerItem[]>(open ? "/clients/picker/" : null);
 
-  const list = stores ?? [];
+  const list = stores;
 
   async function confirmDelete() {
     if (!delItem) return;
@@ -396,6 +398,7 @@ function StoresPageInner() {
               )}
             </TBody>
           </Table>
+          <LoadMore shown={list.length} total={count} hasMore={hasMore} loading={loadingMore} onClick={loadMore} />
         </CardContent>
       </Card>
 
