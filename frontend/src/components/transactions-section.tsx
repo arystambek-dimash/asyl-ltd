@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Download, ExternalLink, QrCode, RefreshCcw, RotateCcw, Search, Send, Undo2, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,8 +14,9 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { api, apiError } from "@/lib/api";
 import { downloadBlob } from "@/lib/download";
 import { useApi } from "@/lib/use-api";
+import { useDebounced } from "@/lib/use-debounced";
 import { cn, formatCurrency, formatDateTime, formatMoney, currencySymbol } from "@/lib/utils";
-import { CASHIER_PAYMENT_METHOD_LABELS, paymentStage } from "@/lib/constants";
+import { PAYMENT_METHOD_LABELS, paymentStage } from "@/lib/constants";
 import type { Payment } from "@/lib/types";
 
 interface TransactionPage {
@@ -104,7 +105,7 @@ function PaidMethodSummary({ summary }: { summary?: Record<string, Record<string
           <span className="font-medium tabular-nums text-[var(--foreground)]">
             {formatCurrency(part.amount, part.currency)}
           </span>{" "}
-          {CASHIER_PAYMENT_METHOD_LABELS[part.method] ?? part.method}
+          {PAYMENT_METHOD_LABELS[part.method] ?? part.method}
         </span>
       ))}
     </div>
@@ -180,16 +181,18 @@ function PaymentQrPreview({ payment, onClose }: { payment: Payment; onClose: () 
 }
 
 /* ── Вкладка «Транзакции»: все платежи, возвраты и чеки ─────────────────── */
-export function TransactionsSection() {
+export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boolean; canCreate: boolean }) {
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
+  const debouncedQuery = useDebounced(query.trim());
+  useEffect(() => setPage(1), [debouncedQuery]);
   const {
     data,
     loading,
     error: loadError,
     reload,
   } = useApi<TransactionPage>(
-    `/payment-transactions/?page=${page}&page_size=50&search=${encodeURIComponent(query.trim())}`,
+    `/payment-transactions/?page=${page}&page_size=50&search=${encodeURIComponent(debouncedQuery)}`,
   );
   const [refundFor, setRefundFor] = useState<Payment | null>(null);
   const [statusFor, setStatusFor] = useState<Payment | null>(null);
@@ -204,10 +207,15 @@ export function TransactionsSection() {
   const rows = data?.results ?? [];
 
   async function receipt(payment: Payment) {
-    const response = await api.get<Blob>(`/payment-transactions/${payment.id}/receipt/`, {
-      responseType: "blob",
-    });
-    downloadBlob(response.data, `receipt_${payment.id}.pdf`);
+    setError("");
+    try {
+      const response = await api.get<Blob>(`/payment-transactions/${payment.id}/receipt/`, {
+        responseType: "blob",
+      });
+      downloadBlob(response.data, `receipt_${payment.id}.pdf`);
+    } catch (e) {
+      setError(apiError(e));
+    }
   }
 
   async function refund() {
@@ -408,7 +416,7 @@ export function TransactionsSection() {
                         </TD>
                         <TD>
                           <div className="flex justify-end gap-1">
-                            {row.can_restore && (
+                            {canConfirm && row.can_restore && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -422,7 +430,7 @@ export function TransactionsSection() {
                                 <span className="hidden xl:inline">Восстановить</span>
                               </Button>
                             )}
-                            {row.can_issue && (
+                            {canCreate && row.can_issue && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -456,7 +464,7 @@ export function TransactionsSection() {
                                 <Download className="size-4" />
                               </Button>
                             )}
-                            {row.status === "confirmed" && Number(row.available_for_refund ?? 0) > 0 && (
+                            {canConfirm && row.status === "confirmed" && Number(row.available_for_refund ?? 0) > 0 && (
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -471,7 +479,8 @@ export function TransactionsSection() {
                                 <RotateCcw className="size-4" />
                               </Button>
                             )}
-                            {["requested", "received"].includes(row.status) &&
+                            {canConfirm &&
+                              ["requested", "received"].includes(row.status) &&
                               row.confirmation_mode !== "automatic" && (
                                 <Button
                                   size="sm"

@@ -101,6 +101,9 @@ def test_shipped_revenue_and_debt(auth_client, boss):
     assert data["debt_now"] == {
         "total": "10000.00", "orders": 1,
         "by_currency": {"KZT": "10000.00"}, "currency": "KZT",
+        "overdue_by_currency": {},
+        "overdue_currency": "KZT",
+        "overdue_clients": 0,
     }
 
 
@@ -199,10 +202,30 @@ def test_report_does_not_add_kzt_and_usd(auth_client, boss):
     data = auth_client(boss).get(URL).json()
 
     assert data["income"]["by_currency"] == {"KZT": "1000.00", "USD": "5.00"}
+    assert data["income"]["total"] == "1000.00"
     assert data["shipped"]["revenue_by_currency"] == {"KZT": "1000.00", "USD": "5.00"}
+    assert data["shipped"]["revenue"] == "1000.00"
+    assert data["days"][0]["revenue_by_currency"] == {
+        "KZT": "1000.00",
+        "USD": "5.00",
+    }
+    assert data["days"][0]["cash_by_currency"] == {
+        "KZT": "1000.00",
+        "USD": "5.00",
+    }
+    assert data["days"][0]["cashless_by_currency"] == {
+        "KZT": "0.00",
+        "USD": "0.00",
+    }
+    assert data["days"][0]["received_by_currency"] == {
+        "KZT": "1000.00",
+        "USD": "5.00",
+    }
     # Оба заказа погашены полностью — в дебиторке их нет ни в одной валюте.
     assert data["debt_now"]["by_currency"] == {}
     assert data["debt_now"]["orders"] == 0
+    assert data["debt_now"]["overdue_by_currency"] == {}
+    assert data["debt_now"]["overdue_clients"] == 0
     # Плоское поле осталось для совместимости, но валюты в нём уже не смешаны:
     # «1005» получиться не может, потому что раскладка идёт отдельно.
     assert data["income"]["cash_by_currency"] == {"KZT": "1000.00", "USD": "5.00"}
@@ -220,4 +243,24 @@ def test_report_debt_by_currency_keeps_outstanding_apart(auth_client, boss):
     data = auth_client(boss).get(URL).json()
 
     assert data["debt_now"]["by_currency"] == {"KZT": "600.00", "USD": "5.00"}
+    assert data["debt_now"]["total"] == "600.00"
     assert data["debt_now"]["orders"] == 2
+
+
+def test_report_includes_small_overdue_dashboard_aggregate(auth_client, boss):
+    client = _client()
+    store = Store.objects.create(
+        client=client,
+        name="Сегодня",
+        payment_schedule_type="monthly",
+        payment_days=[timezone.localdate().day],
+    )
+    order = _shipped_order(client, _product(), qty=2, price="250")
+    order.store = store
+    order.save(update_fields=["store"])
+
+    data = auth_client(boss).get(URL).json()["debt_now"]
+
+    assert data["overdue_by_currency"] == {"KZT": "500.00"}
+    assert data["overdue_currency"] == "KZT"
+    assert data["overdue_clients"] == 1

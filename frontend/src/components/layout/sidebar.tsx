@@ -1,8 +1,9 @@
 "use client";
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
+import logoMark from "@/app/icon.png";
 import {
   LayoutDashboard,
   Boxes,
@@ -13,8 +14,6 @@ import {
   ListChecks,
   BarChart3,
   Package,
-  ChevronDown,
-  ChevronRight,
   Settings,
   X,
   Store,
@@ -27,18 +26,11 @@ import type { Me } from "@/lib/types";
 
 // perm — строка или массив (нужно ЛЮБОЕ из прав), как в RequirePerm.
 type Perm = string | string[];
-interface NavChild {
-  href: string;
-  label: string;
-  perm?: Perm;
-  superuser?: boolean;
-}
 interface NavItem {
-  href?: string;
+  href: string;
   label: string;
   icon: React.ElementType;
   perm?: Perm;
-  children?: NavChild[];
 }
 interface NavSection {
   title: string;
@@ -115,7 +107,7 @@ const PORTAL_SECTIONS: NavSection[] = [
 // /portal/orders/new горели бы и «Новый заказ», и «Мои заказы» (/portal/orders).
 function findActiveHref(sections: NavSection[], pathname: string): string | undefined {
   return sections
-    .flatMap((s) => s.items.flatMap((i) => (i.children ? i.children.map((c) => c.href) : (i.href ?? []))))
+    .flatMap((section) => section.items.map((item) => item.href))
     .filter((href) => pathname === href || pathname.startsWith(href + "/"))
     .sort((a, b) => b.length - a.length)[0];
 }
@@ -149,52 +141,6 @@ function NavLeaf({
   );
 }
 
-function NavGroup({ item, activeHref }: { item: NavItem; activeHref?: string }) {
-  const Icon = item.icon;
-  const childActive = item.children!.some((c) => c.href === activeHref);
-  const [open, setOpen] = useState(childActive);
-
-  return (
-    <div>
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className={cn(
-          "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
-          childActive
-            ? "font-medium text-[var(--sidebar-foreground)]"
-            : "text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)]/60 hover:text-[var(--sidebar-foreground)]",
-        )}
-      >
-        <Icon className="size-[18px] shrink-0" />
-        <span className="flex-1 text-left">{item.label}</span>
-        {open ? <ChevronDown className="size-3.5 opacity-60" /> : <ChevronRight className="size-3.5 opacity-60" />}
-      </button>
-      {open && (
-        <div className="mt-0.5 flex flex-col gap-0.5 pl-[26px]">
-          {item.children!.map((c) => {
-            const active = c.href === activeHref;
-            return (
-              <Link
-                key={c.href}
-                href={c.href}
-                aria-current={active ? "page" : undefined}
-                className={cn(
-                  "rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
-                  active
-                    ? "bg-[var(--sidebar-accent)] font-medium text-[var(--sidebar-accent-foreground)]"
-                    : "text-[var(--muted-foreground)] hover:bg-[var(--sidebar-accent)]/60 hover:text-[var(--sidebar-foreground)]",
-                )}
-              >
-                {c.label}
-              </Link>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void }) {
   const pathname = usePathname();
   const sections: NavSection[] = me.is_client
@@ -205,13 +151,7 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
   const visible = sections
     .map((s) => ({
       ...s,
-      items: s.items
-        .map((i) =>
-          i.children
-            ? { ...i, children: i.children.filter((c) => hasNavPerm(me, c.perm) && (!c.superuser || me.is_superuser)) }
-            : i,
-        )
-        .filter((i) => hasNavPerm(me, i.perm) && (!i.children || i.children.length > 0)),
+      items: s.items.filter((item) => hasNavPerm(me, item.perm)),
     }))
     .filter((s) => s.items.length > 0);
 
@@ -223,7 +163,7 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
       {/* профиль вверху */}
       <div className="flex items-center gap-2.5 px-3 py-3">
         <Image
-          src="/logo-mark.png"
+          src={logoMark}
           alt="ASYL-LTD"
           width={28}
           height={28}
@@ -245,19 +185,15 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
             <div className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--muted-foreground)]/70">
               {section.title}
             </div>
-            {section.items.map((item) =>
-              item.children ? (
-                <NavGroup key={item.label} item={item} activeHref={activeHref} />
-              ) : (
-                <NavLeaf
-                  key={item.href}
-                  href={item.href!}
-                  label={item.label}
-                  icon={item.icon}
-                  active={item.href === activeHref}
-                />
-              ),
-            )}
+            {section.items.map((item) => (
+              <NavLeaf
+                key={item.href}
+                href={item.href}
+                label={item.label}
+                icon={item.icon}
+                active={item.href === activeHref}
+              />
+            ))}
           </div>
         ))}
       </nav>
@@ -327,14 +263,14 @@ export function Sidebar({ me, mobileOpen = false, onClose }: { me: Me; mobileOpe
       {/* десктоп: постоянный сайдбар */}
       <aside
         data-tour="nav"
-        className="hidden w-[248px] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)] md:flex"
+        className="hidden w-[248px] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)] lg:flex"
       >
         <SidebarContent me={me} />
       </aside>
 
       {/* мобайл: выезжающая панель с оверлеем */}
       <div
-        className={cn("fixed inset-0 z-50 md:hidden", mobileOpen ? "" : "pointer-events-none")}
+        className={cn("fixed inset-0 z-50 lg:hidden", mobileOpen ? "" : "pointer-events-none")}
         aria-hidden={!mobileOpen}
         inert={!mobileOpen}
       >

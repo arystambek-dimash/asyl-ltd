@@ -55,9 +55,13 @@ function effectiveAccessCount(employee: Employee) {
 
 function EmployeesPageInner() {
   const searchParams = useSearchParams();
-  const { me: viewer } = useAuth();
-  const canStaff = can(viewer, "employees.view");
-  const canRoles = can(viewer, "rbac.view");
+  const { me, refreshMe } = useAuth();
+  const canStaff = can(me, "employees.view");
+  const canRoles = can(me, "rbac.view");
+  const canManage = can(me, "employees.manage");
+  const canManageRbac = can(me, "rbac.manage");
+  const canManageAccountSecurity = canManage && canManageRbac;
+  const canCreateOrDelete = canManageAccountSecurity;
   // Роли слиты сюда с бывшей страницы /management/roles: раздел «Доступы»
   // из двух пунктов меню стал одним экраном с вкладками.
   const [tab, setTab] = useState<"staff" | "roles">(
@@ -68,11 +72,8 @@ function EmployeesPageInner() {
     ...(canRoles ? [{ key: "roles", label: "Роли" }] : []),
   ];
   const { data: employees, error: loadError, reload } = useApi<Employee[]>(canStaff ? "/employees/" : null);
-  const { data: roles } = useApi<Role[]>("/roles/");
-  const { data: perms } = useApi<Permission[]>("/permissions/");
-  const { data: departments } = useApi<Department[]>("/departments/?all=1");
-  const { me, refreshMe } = useAuth();
-  const canManage = can(me, "employees.manage");
+  const { data: roles } = useApi<Role[]>(canRoles ? "/roles/" : null);
+  const { data: perms } = useApi<Permission[]>(canRoles || canManage ? "/permissions/" : null);
   const empty = {
     username: "",
     password: "",
@@ -96,8 +97,10 @@ function EmployeesPageInner() {
   const [delItem, setDelItem] = useState<Employee | null>(null);
   const [delError, setDelError] = useState("");
   const [delBusy, setDelBusy] = useState(false);
+  const { data: departments } = useApi<Department[]>(open && canManageAccountSecurity ? "/departments/?all=1" : null);
 
   function openNew() {
+    if (!canCreateOrDelete) return;
     setEditing(null);
     setForm(empty);
     setSalesEmployee(false);
@@ -144,10 +147,16 @@ function EmployeesPageInner() {
   }
 
   // Права выбранной роли действуют сами — из личного набора убираем дубли.
+  const selectedRole = (roles ?? []).find((r) => String(r.id) === form.role);
+  const editingRoleIsSelected = !!editing && String(editing.role ?? "") === form.role;
   const rolePerms = new Set(
-    ((roles ?? []).find((r) => String(r.id) === form.role)?.permissions ?? []).map((p) => p.code),
+    selectedRole?.permissions.map((permission) => permission.code) ??
+      (editingRoleIsSelected ? editing.role_permissions : []),
   );
+  const selectedRoleName = selectedRole?.name ?? (editingRoleIsSelected ? editing.role_name : null) ?? "Без роли";
+
   function pickRole(roleId: string) {
+    if (!canManageAccountSecurity || !canRoles) return;
     setForm((f) => ({ ...f, role: roleId }));
     const preset = (roles ?? []).find((r) => String(r.id) === roleId);
     const inRole = new Set((preset?.permissions ?? []).map((p) => p.code));
@@ -180,26 +189,32 @@ function EmployeesPageInner() {
     }
     setBusy(true);
     try {
-      const role = form.role ? Number(form.role) : null;
       const body: Record<string, unknown> = {
-        username: form.username,
         first_name: form.first_name,
         last_name: form.last_name,
         phone: form.phone,
         position: form.position,
-        role,
-        sales_department: salesEmployee ? Number(form.sales_department) : null,
-        permission_codes: Array.from(codes),
-        denied_permission_codes: Array.from(deniedCodes),
       };
-      if (salesEmployee && !form.sales_department) {
-        throw new Error("sales_department_required");
+
+      if (!editing && !canCreateOrDelete) {
+        throw new Error("employee_create_forbidden");
+      }
+      if (canManageAccountSecurity) {
+        body.username = form.username;
+        body.role = form.role ? Number(form.role) : null;
+        body.sales_department = salesEmployee ? Number(form.sales_department) : null;
+        body.permission_codes = Array.from(codes);
+        body.denied_permission_codes = Array.from(deniedCodes);
       }
       if (editing) {
-        if (form.password) body.password = form.password; // пустой = не менять
+        if (canManageAccountSecurity && form.password) body.password = form.password; // пустой = не менять
         await api.patch(`/employees/${editing.id}/`, body);
       } else {
-        await api.post("/employees/", { ...body, password: form.password });
+        await api.post("/employees/", {
+          ...body,
+          username: form.username,
+          password: form.password,
+        });
       }
       setForm(empty);
       setOpen(false);
@@ -209,7 +224,9 @@ function EmployeesPageInner() {
       setError(
         e instanceof Error && e.message === "sales_department_required"
           ? "Выберите отдел продаж для сотрудника."
-          : apiError(e),
+          : e instanceof Error && e.message === "employee_create_forbidden"
+            ? "Для создания сотрудника нужны права управления сотрудниками и ролями."
+            : apiError(e),
       );
     } finally {
       setBusy(false);
@@ -217,7 +234,7 @@ function EmployeesPageInner() {
   }
 
   async function confirmDelete() {
-    if (!delItem) return;
+    if (!delItem || !canCreateOrDelete) return;
     setDelBusy(true);
     setDelError("");
     try {
@@ -260,7 +277,7 @@ function EmployeesPageInner() {
       section="Управление"
       description="Учётные записи, роли и доступы — всё управление людьми на одном экране."
       actions={
-        tab === "staff" && canManage ? (
+        tab === "staff" && canCreateOrDelete ? (
           <Button size="sm" onClick={openNew} aria-label="Добавить сотрудника">
             <Plus className="size-4" /> <span className="hidden sm:inline">Добавить сотрудника</span>
           </Button>
@@ -347,18 +364,20 @@ function EmployeesPageInner() {
                             <Button size="sm" variant="ghost" onClick={() => openEdit(e)} title="Изменить">
                               <Pencil className="size-4" />
                             </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                              onClick={() => {
-                                setDelError("");
-                                setDelItem(e);
-                              }}
-                              title="Удалить"
-                            >
-                              <Trash2 className="size-4" />
-                            </Button>
+                            {canCreateOrDelete && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                                onClick={() => {
+                                  setDelError("");
+                                  setDelItem(e);
+                                }}
+                                title="Удалить"
+                              >
+                                <Trash2 className="size-4" />
+                              </Button>
+                            )}
                           </div>
                         )}
                       </TD>
@@ -473,6 +492,7 @@ function EmployeesPageInner() {
                           id="employee-username"
                           value={form.username}
                           required
+                          disabled={!!editing && !canManageAccountSecurity}
                           autoComplete="username"
                           onChange={(e) => setForm({ ...form, username: e.target.value })}
                         />
@@ -487,6 +507,7 @@ function EmployeesPageInner() {
                           value={form.password}
                           required={!editing}
                           minLength={6}
+                          disabled={!!editing && !canManageAccountSecurity}
                           autoComplete="new-password"
                           placeholder={editing ? "••••••" : ""}
                           onChange={(e) => setForm({ ...form, password: e.target.value })}
@@ -526,6 +547,7 @@ function EmployeesPageInner() {
                       <input
                         type="checkbox"
                         checked={salesEmployee}
+                        disabled={!canManageAccountSecurity}
                         onChange={(event) => {
                           const checked = event.target.checked;
                           setSalesEmployee(checked);
@@ -568,39 +590,57 @@ function EmployeesPageInner() {
                           <ShieldCheck className="size-5 text-emerald-500" />
                         </div>
                         <div className="grid gap-2 sm:grid-cols-2">
-                          {(departments ?? []).map((department) => {
-                            const selected = form.sales_department === String(department.id);
-                            return (
-                              <button
-                                key={department.id}
-                                type="button"
-                                disabled={!department.is_active}
-                                onClick={() =>
-                                  setForm((current) => ({ ...current, sales_department: String(department.id) }))
-                                }
-                                className={`flex min-h-12 items-center gap-2.5 rounded-xl border px-3 py-2 text-left text-sm font-semibold transition ${
-                                  selected
-                                    ? "border-slate-800 bg-slate-900 text-white shadow-md"
-                                    : "border-slate-200 bg-white text-slate-700 hover:-translate-y-0.5 hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-45"
-                                }`}
-                              >
-                                <span
-                                  className="size-2.5 shrink-0 rounded-full ring-4 ring-current/10"
-                                  style={{ backgroundColor: department.color, color: department.color }}
-                                />
-                                <span className="truncate">{department.name}</span>
-                                {!department.is_active && (
-                                  <span className="ml-auto text-[10px] font-normal">отключён</span>
-                                )}
-                              </button>
-                            );
-                          })}
+                          {canManageAccountSecurity
+                            ? (departments ?? []).map((department) => {
+                                const selected = form.sales_department === String(department.id);
+                                return (
+                                  <button
+                                    key={department.id}
+                                    type="button"
+                                    disabled={!department.is_active}
+                                    onClick={() =>
+                                      setForm((current) => ({
+                                        ...current,
+                                        sales_department: String(department.id),
+                                      }))
+                                    }
+                                    className={`flex min-h-12 items-center gap-2.5 rounded-xl border px-3 py-2 text-left text-sm font-semibold transition ${
+                                      selected
+                                        ? "border-slate-800 bg-slate-900 text-white shadow-md"
+                                        : "border-slate-200 bg-white text-slate-700 hover:-translate-y-0.5 hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-45"
+                                    }`}
+                                  >
+                                    <span
+                                      className="size-2.5 shrink-0 rounded-full ring-4 ring-current/10"
+                                      style={{ backgroundColor: department.color, color: department.color }}
+                                    />
+                                    <span className="truncate">{department.name}</span>
+                                    {!department.is_active && (
+                                      <span className="ml-auto text-[10px] font-normal">отключён</span>
+                                    )}
+                                  </button>
+                                );
+                              })
+                            : editing?.sales_department && (
+                                <div className="flex min-h-12 items-center gap-2.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm font-semibold text-slate-700">
+                                  <span
+                                    className="size-2.5 shrink-0 rounded-full ring-4 ring-current/10"
+                                    style={{
+                                      backgroundColor: editing.sales_department_color || "#315FD5",
+                                      color: editing.sales_department_color || "#315FD5",
+                                    }}
+                                  />
+                                  <span className="truncate">{editing.sales_department_name}</span>
+                                </div>
+                              )}
                         </div>
-                        {!departments?.some((department) => department.is_active) && (
-                          <p className="mt-3 text-xs font-medium text-[var(--destructive)]">
-                            Нет действующих отделов. Сначала создайте отдел на странице заказов.
-                          </p>
-                        )}
+                        {canManageAccountSecurity &&
+                          departments !== null &&
+                          !departments.some((department) => department.is_active) && (
+                            <p className="mt-3 text-xs font-medium text-[var(--destructive)]">
+                              Нет действующих отделов. Сначала создайте отдел на странице заказов.
+                            </p>
+                          )}
                       </div>
                     )}
                   </section>
@@ -612,14 +652,18 @@ function EmployeesPageInner() {
                       htmlFor="employee-role"
                       hint="На следующем шаге любое право роли можно лично отключить или добавить сотруднику."
                     >
-                      <Select id="employee-role" value={form.role} onChange={(e) => pickRole(e.target.value)}>
-                        <option value="">Без роли</option>
-                        {(roles ?? []).map((r) => (
-                          <option key={r.id} value={r.id}>
-                            {r.name}
-                          </option>
-                        ))}
-                      </Select>
+                      {canManageAccountSecurity && canRoles ? (
+                        <Select id="employee-role" value={form.role} onChange={(e) => pickRole(e.target.value)}>
+                          <option value="">Без роли</option>
+                          {(roles ?? []).map((r) => (
+                            <option key={r.id} value={r.id}>
+                              {r.name}
+                            </option>
+                          ))}
+                        </Select>
+                      ) : (
+                        <Input id="employee-role" value={selectedRoleName} readOnly disabled />
+                      )}
                     </Field>
                   </section>
                 </>
@@ -629,11 +673,8 @@ function EmployeesPageInner() {
                 <section className="space-y-3 border-t border-[var(--border)] pt-4">
                   <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Доступы</h4>
                   <div className="rounded-xl border bg-[var(--muted)]/35 px-3 py-2 text-xs text-[var(--muted-foreground)]">
-                    Базовая роль:{" "}
-                    <span className="font-semibold text-[var(--foreground)]">
-                      {(roles ?? []).find((role) => String(role.id) === form.role)?.name ?? "Без роли"}
-                    </span>
-                    . Серые доступы наследуются из роли, перечёркнутые отключены лично.
+                    Базовая роль: <span className="font-semibold text-[var(--foreground)]">{selectedRoleName}</span>.
+                    Серые доступы наследуются из роли, перечёркнутые отключены лично.
                   </div>
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
@@ -644,15 +685,17 @@ function EmployeesPageInner() {
                         {deniedCodes.size > 0 ? ` · Запрещено: ${deniedCodes.size}` : ""}
                       </span>
                     </div>
-                    <PermissionPicker
-                      perms={perms ?? []}
-                      selected={codes}
-                      onToggle={toggleCode}
-                      inherited={rolePerms}
-                      denied={deniedCodes}
-                      onToggleDenied={toggleDeniedCode}
-                      forced={salesEmployee ? SALES_REQUIRED : undefined}
-                    />
+                    <fieldset disabled={!canManageAccountSecurity}>
+                      <PermissionPicker
+                        perms={perms ?? []}
+                        selected={codes}
+                        onToggle={toggleCode}
+                        inherited={rolePerms}
+                        denied={deniedCodes}
+                        onToggleDenied={toggleDeniedCode}
+                        forced={salesEmployee ? SALES_REQUIRED : undefined}
+                      />
+                    </fieldset>
                   </div>
                 </section>
               )}

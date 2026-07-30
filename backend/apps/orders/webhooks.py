@@ -101,7 +101,9 @@ def _defer_event(event_id: int, error: str) -> None:
 
 
 def _positive_int(value: object, error_code: str) -> int:
-    if isinstance(value, bool):
+    # Webhook JSON identifiers are decimal strings or integers. Reject floats
+    # instead of silently truncating e.g. 12.7 to 12.
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
         raise WebhookPayloadError(error_code)
     try:
         result = int(value)

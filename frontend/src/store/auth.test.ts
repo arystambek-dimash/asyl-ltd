@@ -49,6 +49,10 @@ function me(id: number, username: string): Me {
   };
 }
 
+function responseError(status: number) {
+  return { response: { status } };
+}
+
 describe("auth store generations", () => {
   beforeEach(() => {
     useAuth.getState().logout();
@@ -63,6 +67,26 @@ describe("auth store generations", () => {
     await useAuth.getState().loadMe();
 
     expect(mocks.apiGet).not.toHaveBeenCalled();
+    expect(useAuth.getState().me).toBeNull();
+    expect(useAuth.getState().loading).toBe(false);
+  });
+
+  it("keeps an initial saved session after a transient /me failure", async () => {
+    mocks.apiGet.mockRejectedValueOnce(responseError(503));
+
+    await useAuth.getState().loadMe();
+
+    expect(mocks.clearTokens).not.toHaveBeenCalled();
+    expect(useAuth.getState().me).toBeNull();
+    expect(useAuth.getState().loading).toBe(false);
+  });
+
+  it.each([401, 403])("clears an initially rejected saved session (%s)", async (status) => {
+    mocks.apiGet.mockRejectedValueOnce(responseError(status));
+
+    await useAuth.getState().loadMe();
+
+    expect(mocks.clearTokens).toHaveBeenCalledTimes(1);
     expect(useAuth.getState().me).toBeNull();
     expect(useAuth.getState().loading).toBe(false);
   });
@@ -130,6 +154,52 @@ describe("auth store generations", () => {
     expect(mocks.setTokens).not.toHaveBeenCalled();
     expect(mocks.clearTokens).not.toHaveBeenCalled();
     expect(useAuth.getState().me).toEqual(external);
+  });
+
+  it("keeps the known user when external-session refresh fails transiently", async () => {
+    const current = me(1, "current-user");
+    useAuth.setState({ me: current, loading: false });
+    mocks.apiGet.mockRejectedValueOnce(responseError(503));
+
+    await useAuth.getState().syncExternalSession();
+
+    expect(mocks.clearTokens).not.toHaveBeenCalled();
+    expect(useAuth.getState().me).toEqual(current);
+    expect(useAuth.getState().loading).toBe(false);
+  });
+
+  it("clears an externally replaced session rejected by the server", async () => {
+    useAuth.setState({ me: me(1, "current-user"), loading: false });
+    mocks.apiGet.mockRejectedValueOnce(responseError(401));
+
+    await useAuth.getState().syncExternalSession();
+
+    expect(mocks.clearTokens).toHaveBeenCalledTimes(1);
+    expect(useAuth.getState().me).toBeNull();
+    expect(useAuth.getState().loading).toBe(false);
+  });
+
+  it("keeps the known user after a transient refresh failure", async () => {
+    const current = me(1, "current-user");
+    useAuth.setState({ me: current, loading: false });
+    mocks.apiGet.mockRejectedValueOnce(new Error("offline"));
+
+    await useAuth.getState().refreshMe(true);
+
+    expect(mocks.clearTokens).not.toHaveBeenCalled();
+    expect(useAuth.getState().me).toEqual(current);
+  });
+
+  it.each([401, 403])("expires a server-rejected session (%s)", async (status) => {
+    const current = me(1, "current-user");
+    useAuth.setState({ me: current, loading: false });
+    mocks.apiGet.mockRejectedValueOnce(responseError(status));
+
+    await useAuth.getState().refreshMe(true);
+
+    expect(mocks.clearTokens).toHaveBeenCalledTimes(1);
+    expect(useAuth.getState().me).toBeNull();
+    expect(useAuth.getState().loading).toBe(false);
   });
 
   it("throttles refreshMe only after a successful /me response", async () => {

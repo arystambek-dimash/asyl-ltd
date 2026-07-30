@@ -1,9 +1,14 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ActionMenu } from "./action-menu";
 
 describe("ActionMenu", () => {
+  it("does not render an empty trigger", () => {
+    render(<ActionMenu label="Нет действий" items={[]} />);
+    expect(screen.queryByRole("button", { name: "Нет действий" })).not.toBeInTheDocument();
+  });
+
   it("closes when its trigger is clicked a second time", async () => {
     const user = userEvent.setup();
     render(<ActionMenu label="Действия заказа" items={[{ key: "edit", label: "Редактировать", onSelect: vi.fn() }]} />);
@@ -46,7 +51,7 @@ describe("ActionMenu", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it("restores trigger focus before selection and when Tab closes the menu", async () => {
+  it("restores trigger focus before selection", async () => {
     const user = userEvent.setup();
     let focusedAtSelection: Element | null = null;
     render(
@@ -68,10 +73,40 @@ describe("ActionMenu", () => {
     await user.click(trigger);
     await user.click(screen.getByRole("menuitem", { name: "Редактировать" }));
     expect(focusedAtSelection).toBe(trigger);
+  });
 
-    await user.click(trigger);
+  it("closes on Tab and preserves native forward and backward focus order", async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <button type="button">До меню</button>
+        <ActionMenu label="Действия заказа" items={[{ key: "edit", label: "Редактировать", onSelect: vi.fn() }]} />
+        <button type="button">После меню</button>
+      </>,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Действия заказа" });
+    trigger.focus();
+    await user.keyboard("{ArrowDown}");
     await user.keyboard("{Tab}");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    expect(trigger).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("button", { name: "После меню" })).toHaveFocus());
+
+    trigger.focus();
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Shift>}{Tab}{/Shift}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "До меню" })).toHaveFocus());
+  });
+
+  it("closes a portalled menu when its viewport position becomes stale", async () => {
+    const user = userEvent.setup();
+    render(<ActionMenu items={[{ key: "edit", label: "Редактировать", onSelect: vi.fn() }]} />);
+
+    await user.click(screen.getByRole("button", { name: "Действия" }));
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+
+    fireEvent.scroll(window);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 });

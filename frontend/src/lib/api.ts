@@ -59,7 +59,7 @@ export function clearTokens() {
   localStorage.removeItem(ACCESS);
   localStorage.removeItem(REFRESH);
 }
-export function getAccess() {
+function getAccess() {
   return typeof window !== "undefined" ? localStorage.getItem(ACCESS) : null;
 }
 
@@ -140,6 +140,11 @@ api.interceptors.response.use(
         if (status === 401 || status === 403) {
           clearTokens();
           if (typeof window !== "undefined") window.location.href = "/login";
+        } else {
+          // Preserve the real failure mode for callers. Returning the original
+          // access-token 401 here would make an offline/5xx refresh look like
+          // an explicit server rejection and could incorrectly end a session.
+          return Promise.reject(refreshError);
         }
       }
     }

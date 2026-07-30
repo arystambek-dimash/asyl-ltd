@@ -26,7 +26,7 @@ def client_history(client) -> dict:
         Payment.objects
         .filter(order__client=client, order__deleted_at__isnull=True)
         .exclude(method="debt")
-        .select_related("recorded_by", "received_by", "confirmed_by")
+        .select_related("order", "recorded_by", "received_by", "confirmed_by")
         .order_by("-paid_at")
     )
 
@@ -42,6 +42,7 @@ def client_history(client) -> dict:
             "bags": sum(i.quantity for i in items),
             "amount": _d(o.total_amount),
             "paid": _d(o.paid_total),
+            "currency": o.currency,
         }
 
     def payment_row(p):
@@ -54,6 +55,7 @@ def client_history(client) -> dict:
             "method": p.method,
             "status": p.status,
             "amount": _d(p.amount),
+            "currency": p.order.currency,
         }
 
     def debt_row(o):

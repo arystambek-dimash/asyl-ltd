@@ -96,6 +96,31 @@ describe("auth refresh generation", () => {
     expect(localStorage.getItem("asyl_access")).toBe("fresh-access");
   });
 
+  it.each([
+    ["network", new AxiosError("Network Error", "ERR_NETWORK")],
+    [
+      "server",
+      new AxiosError("Service Unavailable", "ERR_BAD_RESPONSE", {} as InternalAxiosRequestConfig, undefined, {
+        config: {} as InternalAxiosRequestConfig,
+        data: { detail: "restarting" },
+        headers: {},
+        status: 503,
+        statusText: "Service Unavailable",
+      }),
+    ],
+  ])("preserves tokens and exposes a transient %s refresh failure", async (_label, refreshError) => {
+    setTokens("expired-access", "refresh-one");
+    const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => unauthorized(config));
+    api.defaults.adapter = adapter;
+    vi.spyOn(axios, "post").mockRejectedValueOnce(refreshError);
+
+    await expect(api.get("/auth/me/")).rejects.toBe(refreshError);
+
+    expect(localStorage.getItem("asyl_access")).toBe("expired-access");
+    expect(localStorage.getItem("asyl_refresh")).toBe("refresh-one");
+    expect(adapter).toHaveBeenCalledTimes(1);
+  });
+
   it("does not let an old refresh overwrite a newly established session", async () => {
     setTokens("expired-access", "refresh-one");
     api.defaults.adapter = vi.fn(async (config: InternalAxiosRequestConfig) => unauthorized(config));

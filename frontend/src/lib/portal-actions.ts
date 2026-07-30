@@ -2,13 +2,7 @@ import { api } from "@/lib/api";
 import { downloadBlob } from "@/lib/download";
 import type { PortalOrder, PortalPaymentMethod } from "@/lib/types";
 
-export interface PaymentInfo {
-  kaspi_qr: string;
-  bank: string;
-  account: string;
-  instructions: string;
-}
-export interface RegisterPayload {
+interface RegisterPayload {
   username: string;
   password: string;
   first_name: string;
@@ -33,15 +27,6 @@ export const releasePortalPayment = (orderId: number, paymentId: number) =>
 export const setTruck = (id: number, truck_number: string) =>
   api.patch<PortalOrder>(`/portal/orders/${id}/truck/`, { truck_number }).then((r) => r.data);
 
-export const getPaymentInfo = () => api.get<PaymentInfo>("/portal/payment-info/").then((r) => r.data);
-
-export async function downloadInvoice(id: number) {
-  const response = await api.get<Blob>(`/portal/orders/${id}/invoice/`, {
-    responseType: "blob",
-  });
-  downloadBlob(response.data, `schet_na_oplatu_${id}.pdf`);
-}
-
 export async function downloadReceipt(id: number) {
   const response = await api.get<Blob>(`/portal/orders/${id}/receipt/`, {
     responseType: "blob",
@@ -52,7 +37,7 @@ export async function downloadReceipt(id: number) {
 export const registerClient = (payload: RegisterPayload) =>
   api.post<{ access: string; refresh: string }>("/portal/register/", payload).then((r) => r.data);
 
-export type ClientStep = "pending" | "pay" | "rejected" | "truck" | "shipping" | "done";
+type ClientStep = "pending" | "pay" | "rejected" | "truck" | "shipping" | "done";
 
 export function clientStep(status: string, paymentStatus?: string, hasPendingPayment = false): ClientStep {
   if (status === "pending" || status === "draft") return "pending";

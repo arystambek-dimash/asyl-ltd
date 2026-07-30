@@ -1,7 +1,10 @@
 import pytest
 from unittest.mock import patch
 from rest_framework.test import APIClient
+from apps.catalog.models import Product
 from apps.clients.models import Client, Store
+from apps.clients.serializers import ClientSerializer
+from apps.orders.models import Order, OrderItem
 
 pytestmark = pytest.mark.django_db
 
@@ -25,6 +28,48 @@ def test_client_debts_requires_reports_view(user_with_perms):
     reporter = user_with_perms("rv2", codes=["reports.view"])
     assert _api(viewer).get("/api/clients/debts/").status_code == 403
     assert _api(reporter).get("/api/clients/debts/").status_code == 200
+
+
+def test_client_list_hides_debt_without_reports_view(user_with_perms):
+    client = Client.objects.create(first_name="A", last_name="B", phone="x")
+    product = Product.objects.create(
+        name="P", color="Red", weight_kg="50", price="100.00"
+    )
+    order = Order.objects.create(
+        client=client,
+        status="shipped",
+        settlement_intent="debt",
+    )
+    OrderItem.objects.create(
+        order=order,
+        product=product,
+        quantity=2,
+        unit_price="100.00",
+    )
+    viewer = user_with_perms("client-only", codes=["clients.view"])
+    reporter = user_with_perms(
+        "client-reporter", codes=["clients.view", "reports.view"]
+    )
+
+    hidden = _api(viewer).get("/api/clients/")
+    visible = _api(reporter).get("/api/clients/")
+
+    assert hidden.status_code == visible.status_code == 200
+    assert set(ClientSerializer.FINANCIAL_FIELDS).isdisjoint(hidden.data[0])
+    assert visible.data[0]["debt_total"] == "200.00"
+
+
+def test_client_prices_hides_debt_without_reports_view(user_with_perms):
+    client = Client.objects.create(first_name="A", last_name="B", phone="x")
+    price_manager = user_with_perms(
+        "price-no-reports",
+        codes=["clients.view", "clients.set_price"],
+    )
+
+    response = _api(price_manager).get(f"/api/clients/{client.id}/prices/")
+
+    assert response.status_code == 200
+    assert response.data["client"] == {"id": client.id, "name": client.name}
 
 
 def test_store_debts_requires_reports_view(user_with_perms):

@@ -68,7 +68,7 @@ export function playableCameras(cams: CameraFeed[] | null | undefined) {
   return (cams ?? []).filter((c): c is CameraFeed & { src: string } => !!c.src);
 }
 
-function CameraTile({
+export function CameraTile({
   cam,
   ready,
   onOnline,
@@ -92,12 +92,10 @@ function CameraTile({
     },
     [cam.id, onOnline],
   );
+  const accessibleName = cam.zone.trim() || cam.name;
 
   return (
-    <div
-      onClick={onClick}
-      className={cn("group relative aspect-video overflow-hidden rounded-lg bg-[#1c1c1e]", onClick && "cursor-pointer")}
-    >
+    <div className="group relative aspect-video overflow-hidden rounded-lg bg-[#1c1c1e]">
       {ready && (
         <CameraStream
           src={cam.src}
@@ -111,6 +109,15 @@ function CameraTile({
           <VideoOff className="size-5" />
           <span className="text-[11px]">Нет сигнала</span>
         </div>
+      )}
+
+      {onClick && (
+        <button
+          type="button"
+          aria-label={`Открыть камеру «${accessibleName}»`}
+          onClick={onClick}
+          className="absolute inset-0 z-[5] cursor-pointer rounded-lg border-0 bg-transparent p-0 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/90"
+        />
       )}
 
       {(onRename || onConfigureLine) && (
@@ -165,6 +172,9 @@ export function CameraWall() {
   const { me } = useAuth();
   const [cameras, setCameras] = useState<CameraFeed[]>([]);
   const [loading, setLoading] = useState(true);
+  const [inventoryError, setInventoryError] = useState("");
+  const [tokenError, setTokenError] = useState("");
+  const [retryVersion, setRetryVersion] = useState(0);
   const playable = playableCameras(cameras);
   const [mode, setMode] = useState<"grid" | "single">("grid");
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -333,9 +343,13 @@ export function CameraWall() {
       try {
         const response = await api.get<CameraFeed[]>("/cameras/", { timeout: 10_000 });
         if (!Array.isArray(response.data)) throw new Error("invalid camera inventory");
-        if (!disposed) setCameras(response.data);
+        if (!disposed) {
+          setCameras(response.data);
+          setInventoryError("");
+        }
         failures = 0;
-      } catch {
+      } catch (cause) {
+        if (!disposed) setInventoryError(apiError(cause));
         failures += 1;
         nextDelay = Math.min(RETRY_MAX_MS, 1000 * 2 ** Math.min(failures - 1, 6));
       } finally {
@@ -363,7 +377,7 @@ export function CameraWall() {
       document.removeEventListener("visibilitychange", refreshNow);
       window.removeEventListener("online", refreshNow);
     };
-  }, []);
+  }, [retryVersion]);
 
   // cookie-доступ к потокам go2rtc; без неё nginx отдаст 403. Ошибка не
   // оставляет стену навсегда пустой: повторяем с тем же capped backoff.
@@ -378,10 +392,12 @@ export function CameraWall() {
         if (!disposed) {
           failures = 0;
           setTokenReady(true);
+          setTokenError("");
         }
-      } catch {
+      } catch (cause) {
         if (disposed) return;
         setTokenReady(false);
+        setTokenError(apiError(cause));
         failures += 1;
         const delay = Math.min(30_000, 1000 * 2 ** Math.min(failures - 1, 5));
         timer = setTimeout(() => void acquire(), delay);
@@ -404,7 +420,7 @@ export function CameraWall() {
       document.removeEventListener("visibilitychange", acquireNow);
       window.removeEventListener("online", acquireNow);
     };
-  }, [tokenReady]);
+  }, [retryVersion, tokenReady]);
 
   // Удалённая из нового инвентаря камера не должна оставаться в счётчике.
   useEffect(() => {
@@ -467,12 +483,30 @@ export function CameraWall() {
           )}
         </div>
 
+        {(inventoryError || tokenError) && (
+          <div
+            role="alert"
+            className="mx-4 mt-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--destructive)]/20 bg-[var(--destructive)]/5 px-3 py-2 text-sm"
+          >
+            <span className="text-[var(--destructive)]">{inventoryError || tokenError}</span>
+            <button
+              type="button"
+              onClick={() => setRetryVersion((version) => version + 1)}
+              className="font-medium text-[var(--primary)] hover:underline"
+            >
+              Повторить
+            </button>
+          </div>
+        )}
+
         <div className="p-4">
           {playable.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-12 text-[var(--muted-foreground)]">
               <VideoOff className="size-6" />
-              <div className="text-sm font-medium">{loading ? "Загрузка…" : "Камеры недоступны"}</div>
-              {!loading && <div className="text-xs">NVR не в сети или потоки ещё не настроены</div>}
+              <div className="text-sm font-medium">
+                {loading ? "Загрузка…" : inventoryError ? "Не удалось загрузить камеры" : "Камеры недоступны"}
+              </div>
+              {!loading && !inventoryError && <div className="text-xs">NVR не в сети или потоки ещё не настроены</div>}
             </div>
           ) : mode === "grid" || playable.length === 1 ? (
             <div

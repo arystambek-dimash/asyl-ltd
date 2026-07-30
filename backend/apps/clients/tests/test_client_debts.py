@@ -20,12 +20,21 @@ def _product():
     return Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
 
 
-def _order(client, product, qty=2, payment_status="unpaid", paid=None, store=None):
+def _order(
+    client,
+    product,
+    qty=2,
+    payment_status="unpaid",
+    paid=None,
+    store=None,
+    currency="KZT",
+):
     order = Order.objects.create(
         client=client,
         store=store,
         status="shipped",
         payment_status=payment_status,
+        currency=currency,
     )
     OrderItem.objects.create(
         order=order, product=product, quantity=qty, unit_price="100.00")
@@ -88,6 +97,28 @@ def test_client_debts_filters_department_store_date_and_remaining(boss):
     assert _api(boss).get("/api/clients/debts/", {
         "remaining_min": "400", "remaining_max": "100",
     }).status_code == 400
+
+
+def test_client_debts_filters_requested_currency_without_mixing(boss):
+    product = _product()
+    first = Client.objects.create(
+        first_name="First", last_name="Client", phone="11"
+    )
+    second = Client.objects.create(
+        first_name="Second", last_name="Client", phone="22"
+    )
+    _order(first, product, qty=10, currency="KZT")
+    _order(first, product, qty=1, currency="USD")
+    _order(second, product, qty=3, currency="KZT")
+    _order(second, product, qty=5, currency="USD")
+
+    response = _api(boss).get("/api/clients/debts/", {
+        "remaining_currency": "USD",
+        "remaining_min": "400",
+    })
+
+    assert response.status_code == 200
+    assert [row["client_id"] for row in response.data] == [second.id]
 
 
 def test_client_debt_detail_returns_unsettled_orders(boss):

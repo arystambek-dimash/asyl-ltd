@@ -4,26 +4,21 @@ import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/ui/stat-card";
 import { DataGate } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
+import { amountForCurrency, otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
 import { formatCurrency } from "@/lib/utils";
 import { can } from "@/lib/can";
 import { useAuth } from "@/store/auth";
 import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { ArrowLeft } from "lucide-react";
 import type { Order, Store } from "@/lib/types";
-
-const WEEKDAYS = ["", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
-function describeSchedule(t: string, days: number[]): string {
-  if (t === "none") return "Без расписания — оплата в любой день";
-  if (t === "monthly") return days.length ? `Оплата по числам месяца: ${days.join(", ")}` : "Числа не заданы";
-  return days.length ? `Оплата по дням недели: ${days.map((d) => WEEKDAYS[d] ?? d).join(", ")}` : "Дни не заданы";
-}
+import { formatPaymentSchedule } from "@/app/stores/schedule-validation";
 
 interface StoreDebtDetail {
   store: Store;
@@ -40,6 +35,7 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { me } = useAuth();
   const isAccountant = can(me, "payments.create");
+  const canViewOrders = can(me, "orders.view");
   const { data, loading, error: loadError, reload } = useApi<StoreDebtDetail>(`/stores/${id}/debt-detail/`);
   const [amounts, setAmounts] = useState<Record<number, string>>({});
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -55,6 +51,10 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const { store, orders } = data;
   const blocked = store.payment_schedule_type !== "none" && !data.window_open;
+  const debtByCurrency = data.debt_by_currency ?? {};
+  const debtCurrency = primaryMoneyCurrency(debtByCurrency, data.debt_currency ?? "KZT");
+  const debtTotal = amountForCurrency(debtByCurrency, data.debt_total, debtCurrency);
+  const otherDebts = otherCurrencyAmounts(debtByCurrency, debtCurrency);
 
   async function pay(orderId: number) {
     const amount = amounts[orderId];
@@ -81,10 +81,8 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
       title={`Долг · ${store.name}`}
       section="Касса"
       actions={
-        <Link href="/accounting">
-          <Button size="sm" variant="outline">
-            <ArrowLeft className="size-4" /> К долгам
-          </Button>
+        <Link href="/accounting" className={buttonVariants({ size: "sm", variant: "outline" })}>
+          <ArrowLeft className="size-4" /> К долгам
         </Link>
       }
     >
@@ -93,9 +91,7 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
           <div>
             <div className="text-lg font-bold tracking-tight">{store.name}</div>
             <div className="text-sm text-[var(--muted-foreground)]">{data.client_name}</div>
-            <div className="mt-2 text-xs text-[var(--muted-foreground)]">
-              {describeSchedule(store.payment_schedule_type, store.payment_days)}
-            </div>
+            <div className="mt-2 text-xs text-[var(--muted-foreground)]">{formatPaymentSchedule(store, "detail")}</div>
           </div>
           {store.payment_schedule_type !== "none" && (
             <Badge tone={data.window_open ? "warning" : "muted"} dot={data.window_open}>
@@ -106,7 +102,15 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
       </div>
 
       <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <StatCard label="Остаток долга" value={formatCurrency(data.debt_total, data.debt_currency)} />
+        <StatCard label="Остаток долга" value={formatCurrency(debtTotal, debtCurrency)}>
+          {otherDebts.length > 0 && (
+            <div className="grid gap-0.5 text-xs text-[var(--muted-foreground)]">
+              {otherDebts.map(([currency, amount]) => (
+                <span key={currency}>Также {formatCurrency(amount, currency)}</span>
+              ))}
+            </div>
+          )}
+        </StatCard>
         <StatCard label="Заказов в долге" value={String(orders.length)} />
         <StatCard
           label="Способ оплаты"
@@ -138,9 +142,13 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
               <Card key={o.id}>
                 <CardHeader className="flex-row items-center justify-between gap-2 pb-3">
                   <CardTitle className="flex items-center gap-2 text-base">
-                    <Link href={`/orders/${o.id}`} className="hover:underline">
-                      Заказ #{o.id}
-                    </Link>
+                    {canViewOrders ? (
+                      <Link href={`/orders/${o.id}`} className="hover:underline">
+                        Заказ #{o.id}
+                      </Link>
+                    ) : (
+                      <span>Заказ #{o.id}</span>
+                    )}
                     <Badge tone={PAYMENT_STATUS_TONE[o.payment_status ?? "unpaid"] ?? "muted"} dot>
                       {PAYMENT_STATUS_LABELS[o.payment_status ?? "unpaid"] ?? o.payment_status}
                     </Badge>

@@ -10,8 +10,8 @@ import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { formatCurrency, formatDateTime } from "@/lib/utils";
 import {
-  CASHIER_PAYMENT_METHOD_LABELS,
   CASHIER_PAYMENT_METHODS,
+  PAYMENT_METHOD_LABELS,
   PAYMENT_STAGE_LABELS,
   PAYMENT_STAGE_TONE,
 } from "@/lib/constants";
@@ -87,7 +87,7 @@ export function PaidMethodBreakdown({ order, className = "" }: { order: Order; c
           <span className="font-medium tabular-nums text-[var(--foreground)]">
             {formatCurrency(String(amount), order.currency)}
           </span>{" "}
-          {CASHIER_PAYMENT_METHOD_LABELS[method] || method}
+          {PAYMENT_METHOD_LABELS[method] || method}
         </span>
       ))}
     </div>
@@ -133,7 +133,7 @@ export function PaymentChain({ order, me, onChanged }: { order: Order; me: Me | 
                     {formatCurrency(p.amount, order.currency)}
                   </span>
                   {" · "}
-                  {CASHIER_PAYMENT_METHOD_LABELS[p.method] || p.method_label || p.method}
+                  {PAYMENT_METHOD_LABELS[p.method] || p.method_label || p.method}
                 </div>
               </div>
             </div>
@@ -264,7 +264,7 @@ export function AddPaymentActions({
             <Select id="payment-method" value={method} onChange={(e) => setMethod(e.target.value)}>
               {CASHIER_PAYMENT_METHODS.map((key) => (
                 <option key={key} value={key}>
-                  {CASHIER_PAYMENT_METHOD_LABELS[key]}
+                  {PAYMENT_METHOD_LABELS[key]}
                 </option>
               ))}
             </Select>

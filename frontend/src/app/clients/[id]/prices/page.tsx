@@ -31,14 +31,33 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
     setDirty(false);
   }, [data]);
 
+  const productsById = useMemo(() => {
+    type PriceRow = ClientPriceSheet["prices"][number];
+    type ProductPrices = {
+      product: number;
+      product_label: string;
+      byCurrency: Partial<Record<PriceRow["currency"], PriceRow>>;
+    };
+
+    const products = new Map<number, ProductPrices>();
+    for (const row of data?.prices ?? []) {
+      const product = products.get(row.product) ?? {
+        product: row.product,
+        product_label: row.product_label,
+        byCurrency: {},
+      };
+      product.byCurrency[row.currency] = row;
+      products.set(row.product, product);
+    }
+    return products;
+  }, [data?.prices]);
+
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const products = new Map<number, { product: number; product_label: string }>();
-    for (const row of data?.prices ?? []) {
-      if (!products.has(row.product)) products.set(row.product, row);
-    }
-    return [...products.values()].filter((row) => !needle || row.product_label.toLowerCase().includes(needle));
-  }, [data, query]);
+    return [...productsById.values()].filter(
+      (product) => !needle || product.product_label.toLowerCase().includes(needle),
+    );
+  }, [productsById, query]);
 
   if (!data) {
     return (
@@ -50,7 +69,7 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
 
   const priceRows = data.prices;
   const assigned = priceRows.filter((row) => Number(values[`${row.product}:${row.currency}`]) > 0).length;
-  const productsTotal = new Set(priceRows.map((row) => row.product)).size;
+  const productsTotal = productsById.size;
 
   function setPrice(product: number, currency: "KZT" | "USD", value: string) {
     setValues((current) => ({ ...current, [`${product}:${currency}`]: value }));
@@ -150,14 +169,11 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
             </THead>
             <TBody>
               {filtered.map((row) => {
-                const byCurrency = Object.fromEntries(
-                  priceRows.filter((item) => item.product === row.product).map((item) => [item.currency, item]),
-                ) as Record<"KZT" | "USD", (typeof priceRows)[number]>;
                 return (
                   <TR key={row.product}>
                     <TD className="font-medium">{row.product_label}</TD>
                     {(["KZT", "USD"] as const).map((currency) => {
-                      const item = byCurrency[currency];
+                      const item = row.byCurrency[currency];
                       return (
                         <TD key={currency}>
                           <div className="ml-auto max-w-52">

@@ -56,6 +56,7 @@ import type {
 import { dayColorBreakdown, fullDay, shortDay } from "@/lib/day-analytics";
 import { useAiCounter } from "@/lib/use-ai-counter";
 import { useApi } from "@/lib/use-api";
+import { useRovingTabs } from "@/lib/use-roving-tabs";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { cn, formatDateTime } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
@@ -64,6 +65,8 @@ const SESSION_POLL_MS = 3_000;
 // Заказы/камеры/настройки меняются редко — не гоняем полный список заказов
 // каждые 3 секунды на экране, который висит открытым весь день.
 const SLOW_POLL_MS = 30_000;
+const ALWAYS_ON_MODAL_VIEWS = ["live", "analytics", "archive"] as const;
+const MONOBLOCK_PAGE_TABS = ["shipments", "monoblock"] as const;
 
 const COLOR_META: Record<string, { label: string; bar: string; dot: string }> = {
   red: { label: "Красный", bar: "bg-[#dc604d]", dot: "bg-[#dc604d]" },
@@ -669,7 +672,13 @@ function AlwaysOnCard({
   onAnalyticsChanged: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
-  const [modalView, setModalView] = useState<"live" | "analytics" | "archive">("live");
+  const [modalView, setModalView] = useState<(typeof ALWAYS_ON_MODAL_VIEWS)[number]>("live");
+  const modalTabs = useRovingTabs({
+    tabs: ALWAYS_ON_MODAL_VIEWS,
+    active: modalView,
+    onChange: setModalView,
+    label: "Режим мониторинга камеры",
+  });
   const [archives, setArchives] = useState<AlwaysOnCountArchive[] | null>(null);
   const [archivesError, setArchivesError] = useState("");
   const [openArchiveId, setOpenArchiveId] = useState<number | null>(null);
@@ -892,10 +901,13 @@ function AlwaysOnCard({
         className="max-w-5xl"
         mobileFullscreen
       >
-        <div className="mb-4 flex w-full rounded-xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex">
+        <div
+          {...modalTabs.tabListProps}
+          className="mb-4 flex w-full rounded-xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex"
+        >
           <button
             type="button"
-            onClick={() => setModalView("live")}
+            {...modalTabs.getTabProps("live")}
             className={cn(
               "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
               modalView === "live" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
@@ -905,7 +917,7 @@ function AlwaysOnCard({
           </button>
           <button
             type="button"
-            onClick={() => setModalView("analytics")}
+            {...modalTabs.getTabProps("analytics")}
             className={cn(
               "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
               modalView === "analytics" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
@@ -915,7 +927,7 @@ function AlwaysOnCard({
           </button>
           <button
             type="button"
-            onClick={() => setModalView("archive")}
+            {...modalTabs.getTabProps("archive")}
             className={cn(
               "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
               modalView === "archive" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
@@ -926,7 +938,10 @@ function AlwaysOnCard({
         </div>
 
         {modalView === "live" ? (
-          <div className="grid overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 shadow-[0_24px_70px_rgba(15,23,42,0.22)] sm:rounded-[22px] lg:grid-cols-[minmax(0,1fr)_260px]">
+          <div
+            {...modalTabs.getTabPanelProps("live")}
+            className="grid overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 shadow-[0_24px_70px_rgba(15,23,42,0.22)] sm:rounded-[22px] lg:grid-cols-[minmax(0,1fr)_260px]"
+          >
             <div className="relative aspect-video min-h-0 overflow-hidden bg-[#111827] lg:aspect-auto lg:min-h-[460px]">
               {camera?.src ? (
                 <CameraStream
@@ -1004,7 +1019,10 @@ function AlwaysOnCard({
             </aside>
           </div>
         ) : modalView === "analytics" ? (
-          <div className="overflow-hidden rounded-[22px] border border-slate-200 bg-[#f8fafc] shadow-[0_20px_55px_rgba(15,23,42,0.09)]">
+          <div
+            {...modalTabs.getTabPanelProps("analytics")}
+            className="overflow-hidden rounded-[22px] border border-slate-200 bg-[#f8fafc] shadow-[0_20px_55px_rgba(15,23,42,0.09)]"
+          >
             <div className="grid grid-cols-2 border-b border-slate-200 bg-white sm:grid-cols-3">
               <div className="border-r border-slate-200 p-3 sm:p-5">
                 <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Сегодня</div>
@@ -1224,7 +1242,10 @@ function AlwaysOnCard({
         ) : null}
 
         {modalView === "archive" && (
-          <div className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">
+          <div
+            {...modalTabs.getTabPanelProps("archive")}
+            className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-5"
+          >
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <h3 className="font-bold text-slate-800">Закрытые периоды</h3>
@@ -1724,28 +1745,46 @@ function SessionCard({
 
 function MonoblockPageInner() {
   const { me } = useAuth();
-  const { data: orders, error, reload: reloadOrders } = useApi<Order[]>("/orders/");
-  const { data: cameras, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
-  const { data: sessions, reload: reloadSessions } = useApi<AiCountingSession[]>("/cameras/ai/sessions/");
-  const { data: cameraSettings, reload: reloadCameraSettings } =
-    useApi<MonoblockCameraSettings>("/cameras/monoblock-settings/");
-  const { data: monoblockDevices, reload: reloadMonoblockDevices } = useApi<MonoblockDevice[]>(
-    me?.is_superuser ? "/cameras/monoblock-devices/" : null,
-  );
+  const { data: orders, error, reload: reloadOrders } = useApi<Order[]>("/orders/?post_board=1");
+  const { data: cameras, error: camerasError, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
+  const {
+    data: sessions,
+    error: sessionsError,
+    reload: reloadSessions,
+  } = useApi<AiCountingSession[]>("/cameras/ai/sessions/");
+  const {
+    data: cameraSettings,
+    error: cameraSettingsError,
+    reload: reloadCameraSettings,
+  } = useApi<MonoblockCameraSettings>("/cameras/monoblock-settings/");
+  const {
+    data: monoblockDevices,
+    error: monoblockDevicesError,
+    reload: reloadMonoblockDevices,
+  } = useApi<MonoblockDevice[]>(me?.is_superuser ? "/cameras/monoblock-devices/" : null);
   const {
     data: alwaysOnSettings,
+    error: alwaysOnSettingsError,
     reload: reloadAlwaysOnSettings,
     setData: setAlwaysOnSettings,
   } = useApi<AlwaysOnCameraSettings>(me?.is_superuser ? "/cameras/always-on-settings/" : null);
-  const { data: alwaysOnAnalytics, reload: reloadAlwaysOnAnalytics } = useApi<AlwaysOnDailyAnalytics>(
-    me?.is_superuser ? "/cameras/always-on-analytics/" : null,
-  );
+  const {
+    data: alwaysOnAnalytics,
+    error: alwaysOnAnalyticsError,
+    reload: reloadAlwaysOnAnalytics,
+  } = useApi<AlwaysOnDailyAnalytics>(me?.is_superuser ? "/cameras/always-on-analytics/" : null);
   const isSuper = !!me?.is_superuser;
   // Страница разделена на вкладки: «Отгрузки» (по умолчанию) — запуск сессий
   // и активные отгрузки, «AI 24/7» — сам моноблок с бесконечным циклом подсчёта.
   // Вкладка AI видна только суперпользователю, остальным — сразу отгрузки.
-  const [tab, setTab] = useState<"monoblock" | "shipments">("shipments");
+  const [tab, setTab] = useState<(typeof MONOBLOCK_PAGE_TABS)[number]>("shipments");
   const activeTab = isSuper && tab === "monoblock" ? "monoblock" : "shipments";
+  const pageTabs = useRovingTabs({
+    tabs: MONOBLOCK_PAGE_TABS,
+    active: activeTab,
+    onChange: setTab,
+    label: "Режим моноблока",
+  });
   const playable = useMemo(
     () => playableCameras(cameras).filter((camera) => /^cam[1-9]\d*$/.test(camera.src)),
     [cameras],
@@ -1766,6 +1805,23 @@ function MonoblockPageInner() {
       ]),
     SLOW_POLL_MS,
   );
+  const auxiliaryError =
+    camerasError ||
+    sessionsError ||
+    cameraSettingsError ||
+    monoblockDevicesError ||
+    alwaysOnSettingsError ||
+    alwaysOnAnalyticsError;
+  const reloadAll = () =>
+    Promise.all([
+      reloadOrders(),
+      reloadCameras(),
+      reloadSessions(),
+      reloadCameraSettings(),
+      reloadMonoblockDevices(),
+      reloadAlwaysOnSettings(),
+      reloadAlwaysOnAnalytics(),
+    ]);
 
   const sessionOrderIds = new Set((sessions ?? []).map((session) => session.order_id));
   const startable = (orders ?? []).filter((order) => {
@@ -1805,16 +1861,22 @@ function MonoblockPageInner() {
   return (
     <AppShell title="Моноблок" section="Работа">
       {error && !orders ? (
-        <ErrorAlert message={error} onRetry={reloadOrders} />
+        <ErrorAlert message={error} onRetry={() => void reloadAll()} />
       ) : (
         <div className="flex flex-col gap-7">
+          {(error || auxiliaryError) && (
+            <ErrorAlert message={error || auxiliaryError} onRetry={() => void reloadAll()} />
+          )}
           {(isSuper || can(me, "rbac.manage")) && (
             <div className="flex flex-wrap items-center gap-3">
               {isSuper && (
-                <div className="flex w-full rounded-2xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex">
+                <div
+                  {...pageTabs.tabListProps}
+                  className="flex w-full rounded-2xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex"
+                >
                   <button
                     type="button"
-                    onClick={() => setTab("shipments")}
+                    {...pageTabs.getTabProps("shipments")}
                     className={cn(
                       "flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition sm:flex-none",
                       activeTab === "shipments"
@@ -1834,7 +1896,7 @@ function MonoblockPageInner() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setTab("monoblock")}
+                    {...pageTabs.getTabProps("monoblock")}
                     className={cn(
                       "flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition sm:flex-none",
                       activeTab === "monoblock"
@@ -1877,120 +1939,122 @@ function MonoblockPageInner() {
             </div>
           )}
 
-          {activeTab === "monoblock" ? (
-            !alwaysOnSettings?.camera_sources.length ? (
-              <div className="flex min-h-56 flex-col items-center justify-center rounded-[24px] border border-dashed border-slate-200 bg-slate-50/70 p-8 text-center">
-                <span className="flex size-14 items-center justify-center rounded-full bg-white text-slate-300 shadow-sm">
-                  <Cpu className="size-6" />
-                </span>
-                <p className="mt-3 text-sm font-semibold text-slate-600">Бесконечный цикл пока не запущен</p>
-                <p className="mt-1 max-w-sm text-xs text-slate-400">
-                  Выберите камеры в настройке «AI 24/7» — модель начнёт считать круглосуточно, без публикации и записи
-                  видео.
-                </p>
-              </div>
+          <div {...(isSuper ? pageTabs.getTabPanelProps(activeTab) : {})} className="flex flex-col gap-7">
+            {activeTab === "monoblock" ? (
+              !alwaysOnSettings?.camera_sources.length ? (
+                <div className="flex min-h-56 flex-col items-center justify-center rounded-[24px] border border-dashed border-slate-200 bg-slate-50/70 p-8 text-center">
+                  <span className="flex size-14 items-center justify-center rounded-full bg-white text-slate-300 shadow-sm">
+                    <Cpu className="size-6" />
+                  </span>
+                  <p className="mt-3 text-sm font-semibold text-slate-600">Бесконечный цикл пока не запущен</p>
+                  <p className="mt-1 max-w-sm text-xs text-slate-400">
+                    Выберите камеры в настройке «AI 24/7» — модель начнёт считать круглосуточно, без публикации и записи
+                    видео.
+                  </p>
+                </div>
+              ) : (
+                <section className="rounded-[24px] border border-blue-100 bg-gradient-to-br from-blue-50/80 via-white to-emerald-50/40 p-5">
+                  <div className="mb-4 flex items-center gap-3">
+                    <span className="flex size-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-[0_8px_22px_rgba(37,99,235,0.25)]">
+                      <Cpu className="size-5" />
+                    </span>
+                    <div>
+                      <h2 className="text-[18px] font-bold tracking-tight text-slate-800">Постоянный AI-контур</h2>
+                      <p className="text-[12px] text-slate-400">
+                        Бесконечный цикл: модель считает круглосуточно, без публикации и записи фонового видео
+                      </p>
+                    </div>
+                    <div className="ml-auto flex items-center gap-2">
+                      <span className="flex items-center gap-2 rounded-full border border-blue-100 bg-white px-3 py-1 text-[11px] font-semibold text-blue-700 shadow-sm">
+                        <CalendarDays className="size-3.5" /> Сегодня: {alwaysOnAnalytics?.total ?? 0}
+                        <span className="text-slate-300">·</span>
+                        Всего: {alwaysOnAnalytics?.all_time_total ?? alwaysOnAnalytics?.total ?? 0}
+                      </span>
+                      <span
+                        className={cn(
+                          "rounded-full border bg-white px-3 py-1 text-[11px] font-semibold shadow-sm",
+                          alwaysOnSettings.sync_status === "synced" ? "text-emerald-600" : "text-amber-600",
+                        )}
+                      >
+                        {alwaysOnSettings.sync_status === "synced" ? "синхронизировано" : "ожидает связь"}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {alwaysOnSettings.camera_sources.map((source) => {
+                      const processor = alwaysOnSettings.processors.find((item) => item.cam === source) ?? {
+                        cam: source,
+                        running: false,
+                        mode: "always_on" as const,
+                        recording: false,
+                        total: 0,
+                      };
+                      return (
+                        <AlwaysOnCard
+                          key={source}
+                          processor={processor}
+                          camera={playable.find((item) => item.src === source)}
+                          detail={alwaysOnSettings.detail}
+                          daily={alwaysOnAnalytics?.cameras.find((item) => item.camera === source)}
+                          onAnalyticsChanged={reloadAlwaysOnAnalytics}
+                        />
+                      );
+                    })}
+                  </div>
+                </section>
+              )
             ) : (
-              <section className="rounded-[24px] border border-blue-100 bg-gradient-to-br from-blue-50/80 via-white to-emerald-50/40 p-5">
-                <div className="mb-4 flex items-center gap-3">
-                  <span className="flex size-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-[0_8px_22px_rgba(37,99,235,0.25)]">
-                    <Cpu className="size-5" />
-                  </span>
-                  <div>
-                    <h2 className="text-[18px] font-bold tracking-tight text-slate-800">Постоянный AI-контур</h2>
-                    <p className="text-[12px] text-slate-400">
-                      Бесконечный цикл: модель считает круглосуточно, без публикации и записи фонового видео
-                    </p>
-                  </div>
-                  <div className="ml-auto flex items-center gap-2">
-                    <span className="flex items-center gap-2 rounded-full border border-blue-100 bg-white px-3 py-1 text-[11px] font-semibold text-blue-700 shadow-sm">
-                      <CalendarDays className="size-3.5" /> Сегодня: {alwaysOnAnalytics?.total ?? 0}
-                      <span className="text-slate-300">·</span>
-                      Всего: {alwaysOnAnalytics?.all_time_total ?? alwaysOnAnalytics?.total ?? 0}
-                    </span>
-                    <span
-                      className={cn(
-                        "rounded-full border bg-white px-3 py-1 text-[11px] font-semibold shadow-sm",
-                        alwaysOnSettings.sync_status === "synced" ? "text-emerald-600" : "text-amber-600",
-                      )}
-                    >
-                      {alwaysOnSettings.sync_status === "synced" ? "синхронизировано" : "ожидает связь"}
-                    </span>
-                  </div>
-                </div>
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  {alwaysOnSettings.camera_sources.map((source) => {
-                    const processor = alwaysOnSettings.processors.find((item) => item.cam === source) ?? {
-                      cam: source,
-                      running: false,
-                      mode: "always_on" as const,
-                      recording: false,
-                      total: 0,
-                    };
-                    return (
-                      <AlwaysOnCard
-                        key={source}
-                        processor={processor}
-                        camera={playable.find((item) => item.src === source)}
-                        detail={alwaysOnSettings.detail}
-                        daily={alwaysOnAnalytics?.cameras.find((item) => item.camera === source)}
-                        onAnalyticsChanged={reloadAlwaysOnAnalytics}
-                      />
-                    );
-                  })}
-                </div>
-              </section>
-            )
-          ) : (
-            <>
-              <ShipmentLauncher
-                orders={startable}
-                cameras={monoblockCameras}
-                busyCameras={(sessions ?? []).map((session) => session.camera)}
-                cameraOwners={cameraOwners}
-                activeSessionCount={sessions?.length ?? 0}
-                cameraLocked={!!cameraSettings?.locked || !!me?.is_monoblock}
-                onStart={start}
-              />
+              <>
+                <ShipmentLauncher
+                  orders={startable}
+                  cameras={monoblockCameras}
+                  busyCameras={(sessions ?? []).map((session) => session.camera)}
+                  cameraOwners={cameraOwners}
+                  activeSessionCount={sessions?.length ?? 0}
+                  cameraLocked={!!cameraSettings?.locked || !!me?.is_monoblock}
+                  onStart={start}
+                />
 
-              <section>
-                <div className="mb-4 flex items-center gap-3">
-                  <span className="flex size-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-                    <Radio className="size-5" />
-                  </span>
-                  <div>
-                    <h2 className="text-[20px] font-bold tracking-tight text-slate-800">Активные отгрузки</h2>
-                    <p className="text-[12px] text-slate-400">Каждая сессия закреплена за отдельной камерой</p>
-                  </div>
-                  <span className="ml-auto rounded-full border bg-white px-3 py-1 text-[12px] font-semibold text-slate-600 shadow-sm">
-                    {sessions?.length ?? 0} активн.
-                  </span>
-                </div>
-
-                {!sessions?.length ? (
-                  <div className="flex min-h-48 flex-col items-center justify-center rounded-[22px] border border-dashed border-slate-200 bg-slate-50/70 text-center">
-                    <span className="flex size-14 items-center justify-center rounded-full bg-white text-slate-300 shadow-sm">
-                      <Radio className="size-6" />
+                <section>
+                  <div className="mb-4 flex items-center gap-3">
+                    <span className="flex size-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                      <Radio className="size-5" />
                     </span>
-                    <p className="mt-3 text-sm font-semibold text-slate-600">Активных сессий пока нет</p>
-                    <p className="mt-1 text-xs text-slate-400">Выберите заказ и камеру выше, чтобы начать.</p>
+                    <div>
+                      <h2 className="text-[20px] font-bold tracking-tight text-slate-800">Активные отгрузки</h2>
+                      <p className="text-[12px] text-slate-400">Каждая сессия закреплена за отдельной камерой</p>
+                    </div>
+                    <span className="ml-auto rounded-full border bg-white px-3 py-1 text-[12px] font-semibold text-slate-600 shadow-sm">
+                      {sessions?.length ?? 0} активн.
+                    </span>
                   </div>
-                ) : (
-                  <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
-                    {sessions.map((session) => (
-                      <SessionCard
-                        key={session.id}
-                        session={session}
-                        camera={playable.find((camera) => camera.src === session.camera)}
-                        onStopped={() => {
-                          void Promise.all([reloadOrders(), reloadSessions()]);
-                        }}
-                      />
-                    ))}
-                  </div>
-                )}
-              </section>
-            </>
-          )}
+
+                  {!sessions?.length ? (
+                    <div className="flex min-h-48 flex-col items-center justify-center rounded-[22px] border border-dashed border-slate-200 bg-slate-50/70 text-center">
+                      <span className="flex size-14 items-center justify-center rounded-full bg-white text-slate-300 shadow-sm">
+                        <Radio className="size-6" />
+                      </span>
+                      <p className="mt-3 text-sm font-semibold text-slate-600">Активных сессий пока нет</p>
+                      <p className="mt-1 text-xs text-slate-400">Выберите заказ и камеру выше, чтобы начать.</p>
+                    </div>
+                  ) : (
+                    <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+                      {sessions.map((session) => (
+                        <SessionCard
+                          key={session.id}
+                          session={session}
+                          camera={playable.find((camera) => camera.src === session.camera)}
+                          onStopped={() => {
+                            void Promise.all([reloadOrders(), reloadSessions()]);
+                          }}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </section>
+              </>
+            )}
+          </div>
         </div>
       )}
     </AppShell>

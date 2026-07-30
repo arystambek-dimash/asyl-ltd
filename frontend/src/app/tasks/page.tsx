@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 import { useMemo, useState } from "react";
 import { CheckCircle2, Clock, ImageIcon, Paperclip, Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
@@ -7,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { Badge } from "@/components/ui/badge";
-import { DataGate } from "@/components/ui/data-state";
+import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { VoiceRecorder } from "@/components/voice-recorder";
@@ -28,16 +29,31 @@ const FILTERS: { key: Filter; label: string }[] = [
 ];
 
 function AttachmentChip({ kind, url, name }: { kind: string; url: string | null; name: string }) {
-  if (kind === "voice") {
-    return <audio src={url ?? undefined} controls className="h-8 max-w-[220px]" />;
+  if (!url) {
+    return (
+      <span
+        className="flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs text-[var(--muted-foreground)]"
+        title="Файл недоступен"
+      >
+        <Paperclip className="size-3.5" />
+        {name || "файл"}
+        <span aria-hidden="true">·</span>
+        <span>недоступен</span>
+      </span>
+    );
   }
-  if (kind === "photo" && url) {
+  if (kind === "voice") {
+    return <audio src={url} controls className="h-8 max-w-[220px]" />;
+  }
+  if (kind === "photo") {
     return (
       <a href={url} target="_blank" rel="noreferrer" className="group relative">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
+        <Image
           src={url}
           alt={name}
+          width={64}
+          height={64}
+          unoptimized
           className="size-16 rounded-lg border object-cover transition group-hover:opacity-80"
         />
       </a>
@@ -45,7 +61,7 @@ function AttachmentChip({ kind, url, name }: { kind: string; url: string | null;
   }
   return (
     <a
-      href={url ?? "#"}
+      href={url}
       target="_blank"
       rel="noreferrer"
       className="flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs hover:bg-[var(--muted)]"
@@ -197,7 +213,12 @@ export default function TasksPage() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
 
-  const { data: assignees } = useApi<TaskAssignee[]>(canCreate ? "/task-assignees/" : null);
+  const {
+    data: assignees,
+    loading: assigneesLoading,
+    error: assigneesError,
+    reload: reloadAssignees,
+  } = useApi<TaskAssignee[]>(canCreate ? "/task-assignees/" : null);
 
   const counts = useMemo(() => {
     const rows = data ?? [];
@@ -352,7 +373,10 @@ export default function TasksPage() {
             <Button variant="ghost" disabled={saving} onClick={() => setOpen(false)}>
               Отмена
             </Button>
-            <Button disabled={saving || !title.trim() || !assignee} onClick={() => void submit()}>
+            <Button
+              disabled={saving || assigneesLoading || !!assigneesError || !title.trim() || !assignee}
+              onClick={() => void submit()}
+            >
               {editing ? (
                 <>
                   <Pencil className="size-4" /> {saving ? "Сохранение…" : "Сохранить"}
@@ -392,20 +416,25 @@ export default function TasksPage() {
 
           <div className="grid gap-1.5">
             <Label htmlFor="task-assignee">Исполнитель</Label>
-            <select
-              id="task-assignee"
-              value={assignee}
-              onChange={(e) => setAssignee(e.target.value)}
-              className="h-10 w-full rounded-xl border bg-[var(--background)] px-3 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15"
-            >
-              <option value="">Выберите сотрудника</option>
-              {(assignees ?? []).map((person) => (
-                <option key={person.id} value={person.id}>
-                  {person.name}
-                  {person.position ? ` · ${person.position}` : ""}
-                </option>
-              ))}
-            </select>
+            {assigneesError ? (
+              <ErrorAlert message={assigneesError} onRetry={() => void reloadAssignees()} />
+            ) : (
+              <select
+                id="task-assignee"
+                value={assignee}
+                disabled={assigneesLoading}
+                onChange={(e) => setAssignee(e.target.value)}
+                className="h-10 w-full rounded-xl border bg-[var(--background)] px-3 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15 disabled:cursor-wait disabled:opacity-60"
+              >
+                <option value="">{assigneesLoading ? "Загрузка сотрудников…" : "Выберите сотрудника"}</option>
+                {(assignees ?? []).map((person) => (
+                  <option key={person.id} value={person.id}>
+                    {person.name}
+                    {person.position ? ` · ${person.position}` : ""}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           {/* Срок, голос и фото нужны не каждой задаче: в свёрнутом виде форма

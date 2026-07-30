@@ -16,6 +16,7 @@ from typing import TypedDict
 
 from django.db.models import Count, DecimalField, F, Q, Sum, Value
 from django.db.models.functions import Coalesce, TruncDate
+from django.utils import timezone
 
 from apps.common.money import money_string as _d
 from .debt import (
@@ -97,11 +98,37 @@ def _debt_now(orders_qs):
     )
     outstanding = debt_orders(orders)
     totals = sum_by_currency(outstanding, order_remaining)
+    currency = primary_currency(totals)
+
+    # Просрочка определяется расписанием магазина на сегодняшний день.
+    # Считаем её на уже загруженном наборе долгов, чтобы дашборду не пришлось
+    # скачивать и агрегировать весь /clients/debts/ в браузере.
+    from apps.clients.models import Store
+    from apps.clients.services import is_payment_window_open
+
+    store_ids = {order.store_id for order in outstanding if order.store_id}
+    overdue_store_ids = {
+        store.id
+        for store in Store.objects.filter(id__in=store_ids)
+        if store.payment_schedule_type != "none"
+        and is_payment_window_open(store, timezone.localdate())
+    }
+    overdue_orders = [
+        order for order in outstanding if order.store_id in overdue_store_ids
+    ]
+    overdue_totals = sum_by_currency(overdue_orders, order_remaining)
+    overdue_currency = primary_currency(overdue_totals)
+
     return {
-        "total": _d(sum(totals.values(), _ZERO)),
+        "total": _d(totals.get(currency, _ZERO)),
         "by_currency": as_money_strings(totals),
-        "currency": primary_currency(totals),
+        "currency": currency,
         "orders": len(outstanding),
+        "overdue_by_currency": as_money_strings(overdue_totals),
+        "overdue_currency": overdue_currency,
+        "overdue_clients": len({
+            order.client_id for order in overdue_orders
+        }),
     }
 
 
@@ -116,6 +143,9 @@ def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
             "revenue": _ZERO, "debt_amount": _ZERO,
             "cash": _ZERO, "cashless": _ZERO, "payments": 0,
             "revenue_by_currency": defaultdict(lambda: _ZERO),
+            "debt_amount_by_currency": defaultdict(lambda: _ZERO),
+            "cash_by_currency": defaultdict(lambda: _ZERO),
+            "cashless_by_currency": defaultdict(lambda: _ZERO),
             "received_by_currency": defaultdict(lambda: _ZERO),
         })
 
@@ -137,6 +167,7 @@ def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
         row["revenue"] += r["revenue"]
         row["debt_amount"] += r["debt_amount"]
         row["revenue_by_currency"][currency] += r["revenue"]
+        row["debt_amount_by_currency"][currency] += r["debt_amount"]
         accumulate(currency, "revenue", r["revenue"])
         accumulate(currency, "debt_amount", r["debt_amount"])
 
@@ -146,6 +177,8 @@ def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
         row["cash"] += r["cash"]
         row["cashless"] += r["cashless"]
         row["payments"] += r["payments"]
+        row["cash_by_currency"][currency] += r["cash"]
+        row["cashless_by_currency"][currency] += r["cashless"]
         row["received_by_currency"][currency] += r["cash"] + r["cashless"]
         accumulate(currency, "cash", r["cash"])
         accumulate(currency, "cashless", r["cashless"])
@@ -169,11 +202,14 @@ def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
          "cash": _d(row["cash"]), "cashless": _d(row["cashless"]),
          "received": _d(row["cash"] + row["cashless"]),
          "revenue_by_currency": as_money_strings(row["revenue_by_currency"]),
+         "debt_amount_by_currency": as_money_strings(
+             row["debt_amount_by_currency"]),
+         "cash_by_currency": as_money_strings(row["cash_by_currency"]),
+         "cashless_by_currency": as_money_strings(row["cashless_by_currency"]),
          "received_by_currency": as_money_strings(row["received_by_currency"])}
         for row in sorted(days.values(), key=lambda r: r["date"], reverse=True)
     ]
 
-    received_total = total["cash"] + total["cashless"]
     income_by_currency = {
         currency: sums["cash"] + sums["cashless"]
         for currency, sums in by_currency.items()
@@ -181,15 +217,27 @@ def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
     revenue_by_currency = {
         currency: sums["revenue"] for currency, sums in by_currency.items()
     }
+    income_currency = primary_currency(income_by_currency)
+    revenue_currency = primary_currency(revenue_by_currency)
+    income_totals = by_currency.get(
+        income_currency,
+        {"cash": _ZERO, "cashless": _ZERO},
+    )
+    revenue_totals = by_currency.get(
+        revenue_currency,
+        {"revenue": _ZERO, "debt_amount": _ZERO},
+    )
     return {
         "from": date_from.isoformat() if date_from else None,
         "to": date_to.isoformat() if date_to else None,
         "income": {
-            "total": _d(received_total),
-            "cash": _d(total["cash"]),
-            "cashless": _d(total["cashless"]),
+            "total": _d(
+                income_totals["cash"] + income_totals["cashless"]
+            ),
+            "cash": _d(income_totals["cash"]),
+            "cashless": _d(income_totals["cashless"]),
             "payments": total["payments"],
-            "currency": primary_currency(income_by_currency),
+            "currency": income_currency,
             "by_currency": as_money_strings(income_by_currency),
             "cash_by_currency": as_money_strings(
                 {c: s["cash"] for c, s in by_currency.items()}),
@@ -197,11 +245,11 @@ def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
                 {c: s["cashless"] for c, s in by_currency.items()}),
         },
         "shipped": {
-            "revenue": _d(total["revenue"]),
+            "revenue": _d(revenue_totals["revenue"]),
             "orders": total["orders"],
             "bags": total["bags"],
-            "debt_amount": _d(total["debt_amount"]),
-            "currency": primary_currency(revenue_by_currency),
+            "debt_amount": _d(revenue_totals["debt_amount"]),
+            "currency": revenue_currency,
             "revenue_by_currency": as_money_strings(revenue_by_currency),
             "debt_amount_by_currency": as_money_strings(
                 {c: s["debt_amount"] for c, s in by_currency.items()}),

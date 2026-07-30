@@ -44,3 +44,56 @@ def test_post_board_uses_admin_completed_days(auth_client, operator):
     ids = {item["id"] for item in response.data}
     assert recent.id in ids
     assert old.id not in ids
+
+
+def test_post_board_is_available_to_train_loader(
+    auth_client, user_with_perms
+):
+    loader = user_with_perms(
+        "board-train-loader",
+        codes=["train.view", "train.load"],
+    )
+    client = Client.objects.create(
+        first_name="Train", last_name="Loader", phone="3"
+    )
+    active = _order(client, "confirmed")
+
+    response = auth_client(loader).get("/api/orders/?post_board=1")
+
+    assert response.status_code == 200
+    assert {item["id"] for item in response.data} == {active.id}
+
+
+def test_dashboard_operational_returns_authoritative_data(
+    auth_client, operator
+):
+    from apps.eventlog.models import EventLog
+
+    client = Client.objects.create(
+        first_name="Dashboard", last_name="Operator", phone="4"
+    )
+    loading = _order(client, "loading")
+    _order(client, "pending")
+    shipped = _order(client, "shipped", timezone.now())
+    EventLog.objects.create(
+        event_type="shipment",
+        message="Отгружено",
+        order=shipped,
+        payload={"bags_loaded": 12},
+    )
+    today = timezone.localdate().isoformat()
+
+    response = auth_client(operator).get(
+        f"/api/orders/dashboard-operational/?from={today}&to={today}"
+    )
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.data["queue"]] == [loading.id]
+    assert response.data["attention"] == {
+        "pending_payments": 0,
+        "awaiting_review": 1,
+        "stuck_in_loading": 1,
+    }
+    assert response.data["days"] == [
+        {"date": today, "bags": 12, "orders": 1}
+    ]

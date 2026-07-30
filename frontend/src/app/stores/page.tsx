@@ -20,7 +20,8 @@ import { Plus, Pencil, Trash2 } from "lucide-react";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import type { Store, Client } from "@/lib/types";
+import type { Store } from "@/lib/types";
+import { formatPaymentSchedule, validatePaymentSchedule } from "./schedule-validation";
 
 const SCHEDULE_LABELS: Record<string, string> = {
   none: "Без расписания",
@@ -37,13 +38,9 @@ const WEEKDAYS = [
   { v: 7, label: "Вс" },
 ];
 
-function describeSchedule(s: Store): string {
-  if (s.payment_schedule_type === "none") return "—";
-  const days = s.payment_days ?? [];
-  if (s.payment_schedule_type === "monthly") return days.length ? `Числа: ${days.join(", ")}` : "Числа не заданы";
-  return days.length
-    ? `Дни: ${days.map((d) => WEEKDAYS.find((w) => w.v === d)?.label ?? d).join(", ")}`
-    : "Дни не заданы";
+interface ClientPickerItem {
+  id: number;
+  name: string;
 }
 
 function StoreForm({
@@ -52,7 +49,7 @@ function StoreForm({
   onDone,
   onCancel,
 }: {
-  clients: Client[];
+  clients: ClientPickerItem[];
   editing?: Store | null;
   onDone: () => void;
   onCancel: () => void;
@@ -62,7 +59,11 @@ function StoreForm({
   const [address, setAddress] = useState(editing?.address ?? "");
   const [phone, setPhone] = useState(editing?.phone ?? "");
   const [scheduleType, setScheduleType] = useState(editing?.payment_schedule_type ?? "none");
-  const [days, setDays] = useState<number[]>(editing?.payment_days ?? []);
+  const [days, setDays] = useState<number[]>(
+    editing?.payment_schedule_type === "weekly"
+      ? (editing.payment_days ?? []).filter((day) => Number.isInteger(day) && day >= 1 && day <= 7)
+      : [],
+  );
   const [monthlyInput, setMonthlyInput] = useState(
     editing?.payment_schedule_type === "monthly" ? (editing.payment_days ?? []).join(", ") : "",
   );
@@ -70,32 +71,27 @@ function StoreForm({
   const [busy, setBusy] = useState(false);
 
   function toggleWeekday(v: number) {
+    setError("");
     setDays((d) => (d.includes(v) ? d.filter((x) => x !== v) : [...d, v].sort((a, b) => a - b)));
   }
 
-  function parseMonthly(s: string): number[] {
-    return Array.from(
-      new Set(
-        s
-          .split(/[,\s]+/)
-          .map((x) => parseInt(x, 10))
-          .filter((n) => Number.isInteger(n) && n >= 1 && n <= 31),
-      ),
-    ).sort((a, b) => a - b);
-  }
+  const scheduleValidation = validatePaymentSchedule(scheduleType, monthlyInput, days);
 
   async function submit() {
-    setBusy(true);
     setError("");
-    const payment_days =
-      scheduleType === "monthly" ? parseMonthly(monthlyInput) : scheduleType === "weekly" ? days : [];
+    if (!scheduleValidation.ok) {
+      setError(scheduleValidation.message);
+      return;
+    }
+
+    setBusy(true);
     const payload = {
       client: Number(client),
       name,
       address,
       phone,
       payment_schedule_type: scheduleType,
-      payment_days,
+      payment_days: scheduleValidation.days,
     };
     try {
       if (editing) await api.patch(`/stores/${editing.id}/`, payload);
@@ -108,7 +104,7 @@ function StoreForm({
     }
   }
 
-  const valid = client && name.trim().length >= 2;
+  const valid = Boolean(client) && name.trim().length >= 2 && scheduleValidation.ok;
 
   return (
     <div className="flex flex-col gap-5">
@@ -166,7 +162,13 @@ function StoreForm({
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="store-schedule">Тип</Label>
-            <Select value={scheduleType} onValueChange={(v) => setScheduleType(v as Store["payment_schedule_type"])}>
+            <Select
+              value={scheduleType}
+              onValueChange={(v) => {
+                setError("");
+                setScheduleType(v as Store["payment_schedule_type"]);
+              }}
+            >
               <SelectTrigger id="store-schedule">
                 <SelectValue />
               </SelectTrigger>
@@ -187,14 +189,24 @@ function StoreForm({
                 id="store-payment-days"
                 placeholder="напр. 5, 20"
                 value={monthlyInput}
-                onChange={(e) => setMonthlyInput(e.target.value)}
+                onChange={(e) => {
+                  setError("");
+                  setMonthlyInput(e.target.value);
+                }}
+                aria-invalid={!scheduleValidation.ok}
+                aria-describedby={!scheduleValidation.ok ? "store-schedule-error" : undefined}
               />
             </div>
           )}
           {scheduleType === "weekly" && (
             <div className="flex flex-col gap-1.5 sm:col-span-1">
               <Label id="store-weekdays-label">Дни недели</Label>
-              <div className="flex flex-wrap gap-1.5" role="group" aria-labelledby="store-weekdays-label">
+              <div
+                className="flex flex-wrap gap-1.5"
+                role="group"
+                aria-labelledby="store-weekdays-label"
+                aria-describedby={!scheduleValidation.ok ? "store-schedule-error" : undefined}
+              >
                 {WEEKDAYS.map((w) => (
                   <button
                     key={w.v}
@@ -216,14 +228,24 @@ function StoreForm({
           )}
         </div>
         {scheduleType !== "none" && (
-          <p className="mt-3 text-xs text-[var(--muted-foreground)]">
-            Магазин сможет гасить долг только в эти дни. Вне окна оплата блокируется.
-          </p>
+          <>
+            {!scheduleValidation.ok && (
+              <p id="store-schedule-error" role="alert" className="mt-3 text-xs text-[var(--destructive)]">
+                {scheduleValidation.message}
+              </p>
+            )}
+            <p className="mt-3 text-xs text-[var(--muted-foreground)]">
+              Магазин сможет гасить долг только в эти дни. Вне окна оплата блокируется.
+            </p>
+          </>
         )}
       </div>
 
       {error && (
-        <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
+        <p
+          role="alert"
+          className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]"
+        >
           {error}
         </p>
       )}
@@ -242,7 +264,6 @@ function StoreForm({
 
 function StoresPageInner() {
   const { data: stores, error, reload } = useApi<Store[]>("/stores/");
-  const { data: clients } = useApi<Client[]>("/clients/");
   const { me } = useAuth();
   const canCreate = can(me, "clients.create");
   const canEdit = can(me, "clients.edit");
@@ -252,9 +273,14 @@ function StoresPageInner() {
   const [delItem, setDelItem] = useState<Store | null>(null);
   const [delError, setDelError] = useState("");
   const [delBusy, setDelBusy] = useState(false);
+  const {
+    data: clients,
+    loading: clientsLoading,
+    error: clientsError,
+    reload: reloadClients,
+  } = useApi<ClientPickerItem[]>(open ? "/clients/picker/" : null);
 
   const list = stores ?? [];
-  const clientName = (id: number) => (clients ?? []).find((c) => c.id === id)?.name ?? `#${id}`;
 
   async function confirmDelete() {
     if (!delItem) return;
@@ -319,13 +345,13 @@ function StoresPageInner() {
                     {s.name}
                     {s.phone && <span className="block text-xs text-[var(--muted-foreground)]">{s.phone}</span>}
                   </TD>
-                  <TD>{clientName(s.client)}</TD>
+                  <TD>{s.client_name ?? `#${s.client}`}</TD>
                   <TD>
                     <div className="flex items-center gap-2">
                       <Badge tone={s.payment_schedule_type === "none" ? "muted" : "primary"}>
                         {SCHEDULE_LABELS[s.payment_schedule_type]}
                       </Badge>
-                      <span className="text-xs text-[var(--muted-foreground)]">{describeSchedule(s)}</span>
+                      <span className="text-xs text-[var(--muted-foreground)]">{formatPaymentSchedule(s)}</span>
                     </div>
                   </TD>
                   <TD>
@@ -381,7 +407,11 @@ function StoresPageInner() {
         description="Магазин принадлежит клиенту; операционист задаёт дни оплаты."
         className="max-w-xl"
       >
-        {open && (
+        {open && clientsError ? (
+          <ErrorAlert message={clientsError} onRetry={() => void reloadClients()} />
+        ) : open && (clientsLoading || !clients) ? (
+          <p className="py-8 text-center text-sm text-[var(--muted-foreground)]">Загрузка клиентов…</p>
+        ) : open ? (
           <StoreForm
             clients={clients ?? []}
             editing={editing}
@@ -391,7 +421,7 @@ function StoresPageInner() {
               reload();
             }}
           />
-        )}
+        ) : null}
       </Modal>
 
       <ConfirmDialog

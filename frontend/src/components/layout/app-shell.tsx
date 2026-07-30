@@ -1,12 +1,15 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/store/auth";
 import { homeFor } from "@/lib/can";
-import { isRefreshTokenRemoval, isRefreshTokenReplacement } from "@/lib/api";
+import { hasAuthTokens, isRefreshTokenRemoval, isRefreshTokenReplacement } from "@/lib/api";
 import { OnboardingTour } from "@/components/onboarding-tour";
 import { Sidebar } from "./sidebar";
 import { Topbar } from "./topbar";
+
+const INITIAL_SESSION_RETRY_MS = 2_000;
+const MAX_SESSION_RETRY_MS = 30_000;
 
 export function AppShell({
   title,
@@ -29,12 +32,31 @@ export function AppShell({
   const router = useRouter();
   const pathname = usePathname();
   const [navOpen, setNavOpen] = useState(false);
+  const sessionRetryDelay = useRef(INITIAL_SESSION_RETRY_MS);
   const closeNav = useCallback(() => setNavOpen(false), []);
   const openNav = useCallback(() => setNavOpen(true), []);
 
   useEffect(() => {
     if (!me) loadMe();
   }, [me, loadMe]);
+
+  // A saved session may be temporarily unverifiable while the API restarts.
+  // Keep the credentials, retry with bounded backoff, and avoid leaving a
+  // visible tab on the loading screen until the user happens to refocus it.
+  useEffect(() => {
+    if (me || !hasAuthTokens()) {
+      sessionRetryDelay.current = INITIAL_SESSION_RETRY_MS;
+      return;
+    }
+    if (loading) return;
+
+    const delay = sessionRetryDelay.current;
+    const timer = window.setTimeout(() => {
+      sessionRetryDelay.current = Math.min(delay * 2, MAX_SESSION_RETRY_MS);
+      void loadMe();
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [loadMe, loading, me]);
 
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
@@ -50,19 +72,28 @@ export function AppShell({
 
   // Права могли поменять, пока вкладка была в фоне — тихо перечитываем.
   useEffect(() => {
+    const refreshSession = () => {
+      if (me) refreshMe();
+      else if (hasAuthTokens()) {
+        sessionRetryDelay.current = INITIAL_SESSION_RETRY_MS;
+        loadMe();
+      }
+    };
     const onVisible = () => {
-      if (document.visibilityState === "visible") refreshMe();
+      if (document.visibilityState === "visible") refreshSession();
     };
     window.addEventListener("focus", onVisible);
+    window.addEventListener("online", refreshSession);
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       window.removeEventListener("focus", onVisible);
+      window.removeEventListener("online", refreshSession);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [refreshMe]);
+  }, [loadMe, me, refreshMe]);
 
   useEffect(() => {
-    if (!loading && !me) router.replace("/login");
+    if (!loading && !me && !hasAuthTokens()) router.replace("/login");
     if (!loading && me) {
       if (portal && !me.is_client) router.replace(homeFor(me));
       if (!portal && me.is_client) router.replace("/portal/catalog");

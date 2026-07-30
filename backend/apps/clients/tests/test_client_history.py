@@ -50,6 +50,7 @@ def test_history_rows():
     assert [r["id"] for r in h["sales"]] == [o2.id, o1.id]
     sale = next(r for r in h["sales"] if r["id"] == o1.id)
     assert sale["amount"] == "1000.00"
+    assert sale["currency"] == "KZT"
     assert sale["status"] == "shipped"
     assert sale["settlement_intent"] == "debt"
     assert sale["bags"] == 10
@@ -58,6 +59,7 @@ def test_history_rows():
     assert len(h["payments"]) == 1
     assert h["payments"][0]["order_id"] == o1.id
     assert h["payments"][0]["amount"] == "500.00"
+    assert h["payments"][0]["currency"] == "KZT"
     # Долги — только отгруженные в долг с остатком.
     assert [r["id"] for r in h["debts"]] == [o1.id]
     assert h["debts"][0]["remaining"] == "500.00"

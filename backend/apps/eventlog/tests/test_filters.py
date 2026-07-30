@@ -9,8 +9,8 @@ def test_filter_by_event_type(auth_client, operator):
     log_event("stock_adjust", "Корректировка +50", user=operator)
     resp = auth_client(operator).get("/api/events/?event_type=payment")
     assert resp.status_code == 200
-    assert len(resp.data) == 1
-    assert resp.data[0]["event_type"] == "payment"
+    assert resp.data["count"] == 1
+    assert resp.data["results"][0]["event_type"] == "payment"
 
 
 def test_filter_by_search(auth_client, operator):
@@ -18,8 +18,15 @@ def test_filter_by_search(auth_client, operator):
     log_event("status", "Заказ оплачен", user=operator)
     resp = auth_client(operator).get("/api/events/?search=оплачен")
     assert resp.status_code == 200
-    assert len(resp.data) == 1
-    assert "оплачен" in resp.data[0]["message"]
+    assert resp.data["count"] == 1
+    assert "оплачен" in resp.data["results"][0]["message"]
+
+
+def test_filter_rejects_invalid_order_id(auth_client, operator):
+    response = auth_client(operator).get("/api/events/?order=not-a-number")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "bad_order_id"
 
 
 @pytest.mark.parametrize("params, code", [
@@ -45,7 +52,7 @@ def test_event_payload_exposes_related_order(auth_client, operator):
     response = auth_client(operator).get("/api/events/")
 
     assert response.status_code == 200
-    row = next(item for item in response.data if item["id"] == event.id)
+    row = next(item for item in response.data["results"] if item["id"] == event.id)
     assert row["order"] == order.id
 
 
@@ -68,4 +75,7 @@ def test_order_events_include_all_departments(auth_client, operator):
     response = auth_client(operator).get("/api/events/")
 
     assert response.status_code == 200
-    assert {row["id"] for row in response.data} == {main_event.id, field_event.id}
+    assert {row["id"] for row in response.data["results"]} == {
+        main_event.id,
+        field_event.id,
+    }

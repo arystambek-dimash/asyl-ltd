@@ -25,7 +25,7 @@ import {
   Scale,
   Activity,
 } from "lucide-react";
-import type { EventLog } from "@/lib/types";
+import type { EventLog, EventLogPage } from "@/lib/types";
 
 type EventMeta = {
   label: string;
@@ -49,6 +49,16 @@ const EVENT_META: Record<string, EventMeta> = {
 };
 
 const FALLBACK_META: EventMeta = { label: "Событие", icon: Activity, color: "var(--muted-foreground)" };
+const EVENT_DAY_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+});
+const EVENT_TIME_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
+  hour: "2-digit",
+  minute: "2-digit",
+});
+const EVENTS_PER_PAGE = 100;
 
 function metaFor(eventType: string): EventMeta {
   return EVENT_META[eventType] ?? { ...FALLBACK_META, label: eventType };
@@ -60,7 +70,7 @@ function dateGroupLabel(d: Date, currentDay: string): string {
   const diffDays = Math.round((startOf(today) - startOf(d)) / 86_400_000);
   if (diffDays === 0) return "Сегодня";
   if (diffDays === 1) return "Вчера";
-  return d.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+  return EVENT_DAY_FORMATTER.format(d);
 }
 
 function EventsPageInner() {
@@ -70,22 +80,25 @@ function EventsPageInner() {
   const [search, setSearch] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [page, setPage] = useState(1);
   // Свободный ввод не должен дёргать API на каждую букву.
   const debouncedSearch = useDebounced(search);
   const debouncedOrder = useDebounced(order);
 
   const url = useMemo(() => {
     const q = new URLSearchParams();
+    q.set("page", String(page));
+    q.set("page_size", String(EVENTS_PER_PAGE));
     if (type) q.set("event_type", type);
     if (debouncedOrder) q.set("order", debouncedOrder);
     if (debouncedSearch) q.set("search", debouncedSearch);
     if (dateFrom) q.set("date_from", dateFrom);
     if (dateTo) q.set("date_to", dateTo);
-    const s = q.toString();
-    return s ? `/events/?${s}` : "/events/";
-  }, [type, debouncedOrder, debouncedSearch, dateFrom, dateTo]);
+    return `/events/?${q.toString()}`;
+  }, [page, type, debouncedOrder, debouncedSearch, dateFrom, dateTo]);
 
-  const { data: events, loading, error, reload } = useApi<EventLog[]>(url);
+  const { data: eventPage, loading, error, reload } = useApi<EventLogPage>(url);
+  const events = eventPage?.results;
 
   // Группируем события по календарному дню (сохраняя порядок ленты).
   const groups = useMemo(() => {
@@ -103,13 +116,18 @@ function EventsPageInner() {
     return out;
   }, [currentDay, events]);
 
-  const hasFilters = type || order || search || dateFrom || dateTo;
+  const hasFilters = Boolean(type || order || search || dateFrom || dateTo);
+  const totalPages = Math.max(1, Math.ceil((eventPage?.count ?? 0) / EVENTS_PER_PAGE));
+  const firstVisible = (page - 1) * EVENTS_PER_PAGE + 1;
+  const lastVisible = Math.min(page * EVENTS_PER_PAGE, eventPage?.count ?? 0);
+
   function reset() {
     setType("");
     setOrder("");
     setSearch("");
     setDateFrom("");
     setDateTo("");
+    setPage(1);
   }
 
   return (
@@ -123,7 +141,14 @@ function EventsPageInner() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="event-type">Тип события</Label>
-              <Select id="event-type" value={type} onChange={(e) => setType(e.target.value)}>
+              <Select
+                id="event-type"
+                value={type}
+                onChange={(e) => {
+                  setType(e.target.value);
+                  setPage(1);
+                }}
+              >
                 <option value="">Все типы</option>
                 {Object.entries(EVENT_META).map(([k, v]) => (
                   <option key={k} value={k}>
@@ -139,16 +164,35 @@ function EventsPageInner() {
                 type="number"
                 placeholder="напр. 12"
                 value={order}
-                onChange={(e) => setOrder(e.target.value)}
+                onChange={(e) => {
+                  setOrder(e.target.value);
+                  setPage(1);
+                }}
               />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="event-date-from">Дата с</Label>
-              <Input id="event-date-from" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+              <Input
+                id="event-date-from"
+                type="date"
+                value={dateFrom}
+                onChange={(e) => {
+                  setDateFrom(e.target.value);
+                  setPage(1);
+                }}
+              />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="event-date-to">Дата по</Label>
-              <Input id="event-date-to" type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+              <Input
+                id="event-date-to"
+                type="date"
+                value={dateTo}
+                onChange={(e) => {
+                  setDateTo(e.target.value);
+                  setPage(1);
+                }}
+              />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="event-search">Поиск</Label>
@@ -159,7 +203,10 @@ function EventsPageInner() {
                   className="pl-8"
                   placeholder="по сообщению"
                   value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  onChange={(e) => {
+                    setSearch(e.target.value);
+                    setPage(1);
+                  }}
                 />
               </div>
             </div>
@@ -178,7 +225,7 @@ function EventsPageInner() {
         <CardContent className="pt-6">
           {loading ? (
             <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
-          ) : error && !events ? (
+          ) : error && !eventPage ? (
             <ErrorAlert message={error} onRetry={reload} />
           ) : groups.length === 0 ? (
             <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">
@@ -220,7 +267,7 @@ function EventsPageInner() {
                             </p>
                           </div>
                           <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
-                            {new Date(e.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
+                            {EVENT_TIME_FORMATTER.format(new Date(e.created_at))}
                             {e.order ? ` · заказ #${e.order}` : ""}
                             {e.user_name ? ` · ${e.user_name}` : ""}
                           </p>
@@ -230,6 +277,31 @@ function EventsPageInner() {
                   </ol>
                 </div>
               ))}
+            </div>
+          )}
+          {eventPage && eventPage.count > 0 && (
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] pt-4">
+              <p className="text-xs text-[var(--muted-foreground)]" aria-live="polite">
+                События {firstVisible}–{lastVisible} из {eventPage.count} · страница {page} из {totalPages}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!eventPage.previous}
+                  onClick={() => setPage((value) => Math.max(1, value - 1))}
+                >
+                  Назад
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!eventPage.next}
+                  onClick={() => setPage((value) => value + 1)}
+                >
+                  Далее
+                </Button>
+              </div>
             </div>
           )}
         </CardContent>

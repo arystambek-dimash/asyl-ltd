@@ -60,7 +60,10 @@ def as_money_strings(totals: dict[str, Decimal]) -> dict[str, str]:
 
 
 def primary_currency(totals: dict[str, Decimal], fallback: str = DEFAULT_CURRENCY) -> str:
-    """Валюта с наибольшим итогом — для сортировки и однострочных сводок."""
-    if not totals:
+    """Business currency first; unlike nominal currencies are never compared."""
+    if totals.get(fallback, ZERO) != ZERO:
         return fallback
-    return max(totals.items(), key=lambda row: (row[1], row[0]))[0]
+    available = sorted(
+        currency for currency, amount in totals.items() if amount != ZERO
+    )
+    return available[0] if available else fallback

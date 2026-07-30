@@ -28,4 +28,32 @@ def test_events_endpoint_lists_newest_first(auth_client, operator):
     log_event("b", "second", user=operator)
     resp = auth_client(operator).get("/api/events/")
     assert resp.status_code == 200
-    assert resp.data[0]["message"] == "second"
+    assert resp.data["count"] == 2
+    assert resp.data["results"][0]["message"] == "second"
+
+
+def test_events_endpoint_paginates_without_truncating_history(auth_client, operator):
+    from apps.eventlog.models import EventLog
+
+    EventLog.objects.bulk_create(
+        [
+            EventLog(event_type="status", message=f"event-{index}", user=operator)
+            for index in range(1005)
+        ]
+    )
+
+    first = auth_client(operator).get("/api/events/?page=1&page_size=100")
+    last = auth_client(operator).get("/api/events/?page=11&page_size=100")
+
+    assert first.status_code == 200
+    assert first.data["count"] == 1005
+    assert len(first.data["results"]) == 100
+    assert first.data["previous"] is None
+    assert first.data["next"] is not None
+
+    assert last.status_code == 200
+    assert last.data["count"] == 1005
+    assert len(last.data["results"]) == 5
+    assert last.data["previous"] is not None
+    assert last.data["next"] is None
+    assert last.data["results"][-1]["message"] == "event-0"

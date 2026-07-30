@@ -14,7 +14,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Tabs } from "@/components/ui/tabs";
-import { ErrorAlert } from "@/components/ui/data-state";
+import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
@@ -23,8 +23,13 @@ import { Plus, Check, Pencil, Archive, ArchiveRestore } from "lucide-react";
 import type { Product } from "@/lib/types";
 
 function ProductsPageInner() {
-  const { data: products, error: loadError, reload } = useApi<Product[]>("/products/");
-  const { data: archived, reload: reloadArchived } = useApi<Product[]>("/products/?archived=1");
+  const { data: products, loading, error: loadError, reload } = useApi<Product[]>("/products/");
+  const {
+    data: archived,
+    loading: archivedLoading,
+    error: archivedLoadError,
+    reload: reloadArchived,
+  } = useApi<Product[]>("/products/?archived=1");
   const { me } = useAuth();
   const canCreate = can(me, "catalog.create");
   const canEdit = can(me, "catalog.edit");
@@ -161,16 +166,10 @@ function ProductsPageInner() {
     >
       <div className="mb-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <StatCard label="Активных товаров" value={String(list.length)} accent />
-          <StatCard label="В архиве" value={String(archiveList.length)} />
+          <StatCard label="Активных товаров" value={products ? String(list.length) : "—"} accent />
+          <StatCard label="В архиве" value={archived ? String(archiveList.length) : "—"} />
         </div>
       </div>
-
-      {loadError && !products && (
-        <div className="mb-4">
-          <ErrorAlert message={loadError} onRetry={reload} />
-        </div>
-      )}
 
       {tab === "archive" ? (
         <Card>
@@ -180,107 +179,129 @@ function ProductsPageInner() {
                 {restoreError}
               </p>
             )}
-            <Table>
-              <THead>
-                <TR>
-                  <TH>Название</TH>
-                  {canViewColor && <TH>Цвет</TH>}
-                  <TH>Фасовка</TH>
-                  <TH></TH>
-                </TR>
-              </THead>
-              <TBody>
-                {archiveList.map((p) => (
-                  <TR key={p.id}>
-                    <TD className="font-medium">{p.name}</TD>
-                    {canViewColor && <TD>{p.color_label}</TD>}
-                    <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
-                    <TD>
-                      <div className="flex items-center justify-end gap-1">
-                        <Badge tone="muted">В архиве</Badge>
-                        {canEdit && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={restoreBusyId === p.id}
-                            onClick={() => restore(p)}
-                          >
-                            <ArchiveRestore className="size-4" /> Восстановить
-                          </Button>
-                        )}
-                      </div>
-                    </TD>
-                  </TR>
-                ))}
-                {archiveList.length === 0 && (
-                  <TR>
-                    <TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
-                      Архив пуст.
-                    </TD>
-                  </TR>
+            {!archived ? (
+              <DataGate loading={archivedLoading} error={archivedLoadError} onRetry={reloadArchived} />
+            ) : (
+              <>
+                {archivedLoadError && (
+                  <div className="mb-4">
+                    <ErrorAlert message={archivedLoadError} onRetry={reloadArchived} />
+                  </div>
                 )}
-              </TBody>
-            </Table>
+                <Table>
+                  <THead>
+                    <TR>
+                      <TH>Название</TH>
+                      {canViewColor && <TH>Цвет</TH>}
+                      <TH>Фасовка</TH>
+                      <TH></TH>
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {archiveList.map((p) => (
+                      <TR key={p.id}>
+                        <TD className="font-medium">{p.name}</TD>
+                        {canViewColor && <TD>{p.color_label}</TD>}
+                        <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
+                        <TD>
+                          <div className="flex items-center justify-end gap-1">
+                            <Badge tone="muted">В архиве</Badge>
+                            {canEdit && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={restoreBusyId === p.id}
+                                onClick={() => restore(p)}
+                              >
+                                <ArchiveRestore className="size-4" /> Восстановить
+                              </Button>
+                            )}
+                          </div>
+                        </TD>
+                      </TR>
+                    ))}
+                    {archiveList.length === 0 && (
+                      <TR>
+                        <TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
+                          Архив пуст.
+                        </TD>
+                      </TR>
+                    )}
+                  </TBody>
+                </Table>
+              </>
+            )}
           </CardContent>
         </Card>
       ) : (
         <Card>
           <CardContent className="pt-6">
-            <Table>
-              <THead>
-                <TR>
-                  <SortableHeader
-                    label="Название"
-                    sortKey="name"
-                    activeKey={sortKey}
-                    dir={sortDir}
-                    onClick={toggleSort}
-                  />
-                  {canViewColor && <TH>Цвет</TH>}
-                  <TH>Фасовка</TH>
-                  <TH></TH>
-                </TR>
-              </THead>
-              <TBody>
-                {sorted.map((p) => (
-                  <TR key={p.id}>
-                    <TD className="font-medium">{p.name}</TD>
-                    {canViewColor && <TD>{p.color_label}</TD>}
-                    <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
-                    <TD>
-                      <div className="flex items-center justify-end gap-1">
-                        {canEdit && (
-                          <Button size="sm" variant="ghost" onClick={() => openEdit(p)} title="Изменить">
-                            <Pencil className="size-4" />
-                          </Button>
-                        )}
-                        {canEdit && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                            onClick={() => {
-                              setArcError("");
-                              setArcItem(p);
-                            }}
-                            title="В архив"
-                          >
-                            <Archive className="size-4" />
-                          </Button>
-                        )}
-                      </div>
-                    </TD>
-                  </TR>
-                ))}
-                {sorted.length === 0 && (
-                  <TR>
-                    <TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
-                      Товаров пока нет.
-                    </TD>
-                  </TR>
+            {!products ? (
+              <DataGate loading={loading} error={loadError} onRetry={reload} />
+            ) : (
+              <>
+                {loadError && (
+                  <div className="mb-4">
+                    <ErrorAlert message={loadError} onRetry={reload} />
+                  </div>
                 )}
-              </TBody>
-            </Table>
+                <Table>
+                  <THead>
+                    <TR>
+                      <SortableHeader
+                        label="Название"
+                        sortKey="name"
+                        activeKey={sortKey}
+                        dir={sortDir}
+                        onClick={toggleSort}
+                      />
+                      {canViewColor && <TH>Цвет</TH>}
+                      <TH>Фасовка</TH>
+                      <TH></TH>
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {sorted.map((p) => (
+                      <TR key={p.id}>
+                        <TD className="font-medium">{p.name}</TD>
+                        {canViewColor && <TD>{p.color_label}</TD>}
+                        <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
+                        <TD>
+                          <div className="flex items-center justify-end gap-1">
+                            {canEdit && (
+                              <Button size="sm" variant="ghost" onClick={() => openEdit(p)} title="Изменить">
+                                <Pencil className="size-4" />
+                              </Button>
+                            )}
+                            {canEdit && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                                onClick={() => {
+                                  setArcError("");
+                                  setArcItem(p);
+                                }}
+                                title="В архив"
+                              >
+                                <Archive className="size-4" />
+                              </Button>
+                            )}
+                          </div>
+                        </TD>
+                      </TR>
+                    ))}
+                    {sorted.length === 0 && (
+                      <TR>
+                        <TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
+                          Товаров пока нет.
+                        </TD>
+                      </TR>
+                    )}
+                  </TBody>
+                </Table>
+              </>
+            )}
           </CardContent>
         </Card>
       )}

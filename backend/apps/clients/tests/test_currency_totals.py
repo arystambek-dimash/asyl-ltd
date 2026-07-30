@@ -2,13 +2,15 @@
 
 1000 ₸ и 5 $ — это не «1005». Итог всегда разложен по коду валюты заказа.
 """
+from decimal import Decimal
+
 import pytest
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.clients.serializers import ClientSerializer
 from apps.clients.services import client_history
-from apps.orders.debt import debt_by_currency, order_remaining
+from apps.orders.debt import debt_by_currency, order_remaining, primary_currency
 from apps.orders.models import Order, OrderItem, Payment
 
 pytestmark = pytest.mark.django_db
@@ -43,6 +45,13 @@ def test_debt_by_currency_keeps_currencies_apart(client_with_two_currencies):
     assert {k: str(v) for k, v in totals.items()} == {
         "KZT": "1000.00", "USD": "5.00",
     }
+
+
+def test_primary_currency_prefers_business_currency_without_comparing_nominals():
+    totals = {"KZT": Decimal("100"), "USD": Decimal("5000")}
+
+    assert primary_currency(totals) == "KZT"
+    assert primary_currency(totals, fallback="USD") == "USD"
 
 
 def test_client_debt_total_is_per_currency(client_with_two_currencies):

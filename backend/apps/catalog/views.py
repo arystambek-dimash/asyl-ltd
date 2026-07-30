@@ -52,19 +52,32 @@ class ClientPricesView(APIView):
     """Текущие цены клиента: {product_id: price} — для предзаполнения формы заказа."""
 
     def get_permissions(self):
-        return [HasPerm("orders.create")]
+        return [HasPerm("orders.create", "orders.edit")]
 
     def get(self, request):
-        client_id = request.query_params.get("client")
+        raw_client_id = request.query_params.get("client")
+        if not raw_client_id:
+            raise ValidationError({"client": "Выберите клиента."})
+        try:
+            client_id = int(raw_client_id)
+            if client_id <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise ValidationError({"client": "Некорректный клиент."})
         currency = (request.query_params.get("currency") or "").upper()
         if currency and currency not in dict(ClientPrice.CURRENCIES):
             raise ValidationError({"currency": "Выберите KZT или USD."})
         # Договорные цены относятся к клиентским данным: id чужого клиента
         # не должен обходить разграничение по отделам.
+        reference_perm = (
+            "orders.create"
+            if request.user.has_perm_code("orders.create")
+            else "orders.edit"
+        )
         qs = ClientPrice.objects.filter(
-            client__in=visible_clients(request.user, "orders.create"))
-        if client_id:
-            qs = qs.filter(client_id=client_id)
+            client__in=visible_clients(request.user, reference_perm)
+        )
+        qs = qs.filter(client_id=client_id)
         if not currency:
             currency = (qs.values_list("client__currency", flat=True).first()
                         or "KZT")

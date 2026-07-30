@@ -1,6 +1,6 @@
 /** Четыре понятных статуса; ключ группы = реальный статус модели,
  * поэтому выбор в селекте отправляется на бэк без маппинга. */
-export const ORDER_STATUS_GROUPS: Record<string, string> = {
+const ORDER_STATUS_GROUPS: Record<string, string> = {
   draft: "pending",
   pending: "pending",
   confirmed: "confirmed",
@@ -63,12 +63,6 @@ export const ORDER_STATUS_TONE: Record<string, "muted" | "primary" | "success" |
   cancelled: "destructive",
 };
 
-export const NON_FINANCIAL_ORDER_STATUSES = new Set(["draft", "pending", "rejected", "cancelled"]);
-
-export function isFinancialOrderStatus(status: string): boolean {
-  return !NON_FINANCIAL_ORDER_STATUSES.has(status);
-}
-
 export const PAYMENT_STATUS_LABELS: Record<string, string> = {
   unpaid: "Не оплачен",
   partial: "Частично оплачен",
@@ -102,7 +96,7 @@ export const PAYMENT_STAGE_TONE: Record<string, "muted" | "primary" | "success" 
 // Состояния, приходящие от платёжного провайдера. Живут рядом с этапами
 // кассы: журнал транзакций показывает и те, и другие одним столбцом, и без
 // общего словаря легаси-этап accountant_ok выводился сырым кодом.
-export const PROVIDER_STAGE_LABELS: Record<string, string> = {
+const PROVIDER_STAGE_LABELS: Record<string, string> = {
   awaiting_customer: "Ожидает клиента",
   cancellation_pending: "Отмена в обработке",
   payment_error: "Ошибка счёта",
@@ -111,7 +105,7 @@ export const PROVIDER_STAGE_LABELS: Record<string, string> = {
   refunded: "Возвращено",
 };
 
-export const PROVIDER_STAGE_TONE: Record<string, "muted" | "primary" | "success" | "warning" | "destructive"> = {
+const PROVIDER_STAGE_TONE: Record<string, "muted" | "primary" | "success" | "warning" | "destructive"> = {
   awaiting_customer: "warning",
   cancellation_pending: "warning",
   payment_error: "destructive",
@@ -146,13 +140,7 @@ export const PAYMENT_METHOD_LABELS: Record<string, string> = {
   card: "Карта",
 };
 
-export function paymentMethodLabel(method: string): string {
-  return PAYMENT_METHOD_LABELS[method] ?? method;
-}
-
 export const CASHIER_PAYMENT_METHODS = ["cash", "kaspi", "invoice"] as const;
-/** @deprecated Используйте PAYMENT_METHOD_LABELS — метки едины для сотрудника. */
-export const CASHIER_PAYMENT_METHOD_LABELS = PAYMENT_METHOD_LABELS;
 
 export const PORTAL_PAYMENT_METHOD_LABELS: Record<string, string> = {
   pending: "Способ не выбран",

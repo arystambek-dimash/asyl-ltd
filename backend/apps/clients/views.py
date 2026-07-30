@@ -98,9 +98,18 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "statement": "reports.export",
         "all_statement": "reports.export",
         "prices": "clients.set_price",
+        "picker": "clients.view",
     }
 
     def get_queryset(self):
+        can_view_financials = self.request.user.has_perm_code("reports.view")
+        if self.action not in {"list", "retrieve", "debts", "debt_detail"}:
+            return Client.objects.all()
+        if not can_view_financials:
+            # Для обычного списка/карточки клиентские заказы не нужны.
+            # Serializer также исключает финансовые поля, поэтому не делаем
+            # тяжёлую предзагрузку items/payments без соответствующего права.
+            return Client.objects.all()
         if self.action == "debt_detail":
             # Здесь заказы сериализуются целиком — нужен полный план загрузки.
             return Client.objects.prefetch_related(Prefetch(
@@ -124,6 +133,19 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="history")
     def history(self, request, pk=None):
         return Response(client_history(self.get_object()))
+
+    @action(detail=False, methods=["get"], url_path="picker")
+    def picker(self, request):
+        """Minimal reference list for forms; excludes PII and finance."""
+        return Response([
+            {"id": client.id, "name": client.name}
+            for client in Client.objects.only(
+                "id",
+                "first_name",
+                "last_name",
+                "company_name",
+            ).order_by("company_name", "last_name", "first_name")
+        ])
 
     @action(detail=True, methods=["get"], url_path="statement")
     def statement(self, request, pk=None):
@@ -194,12 +216,18 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             for currency, _label in ClientPrice.CURRENCIES
         ]
 
+    @staticmethod
+    def _price_client(client):
+        # Прайс-листу нужны только идентификатор и подпись. Банковские
+        # реквизиты, ИИН и финансовая аналитика в этот контракт не входят.
+        return {"id": client.id, "name": client.name}
+
     @action(detail=True, methods=["get", "put"], url_path="prices")
     def prices(self, request, pk=None):
         """Личный прайс клиента. Изменять может только сотрудник с отдельным правом."""
         client = self.get_object()
         if request.method == "GET":
-            return Response({"client": ClientSerializer(client).data,
+            return Response({"client": self._price_client(client),
                              "prices": self._price_rows(client)})
 
         serializer = ClientPriceUpdateSerializer(data=request.data)
@@ -226,7 +254,7 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 user=request.user,
                 payload={"client_id": client.id, "updated": changed, "removed": removed},
             )
-        return Response({"client": ClientSerializer(client).data,
+        return Response({"client": self._price_client(client),
                          "prices": self._price_rows(client)})
 
     def _debt_orders(self, client):
@@ -246,6 +274,12 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         validate_date_range(date_from, date_to)
         debt_min = _money_param(params.get("remaining_min"), "Минимальный остаток")
         debt_max = _money_param(params.get("remaining_max"), "Максимальный остаток")
+        remaining_currency = params.get("remaining_currency")
+        if remaining_currency and remaining_currency not in ("KZT", "USD"):
+            raise ValidationError({
+                "detail": "Неизвестная валюта остатка",
+                "code": "bad_currency",
+            })
         if debt_min is not None and debt_max is not None and debt_min > debt_max:
             raise ValidationError(
                 {"detail": "Минимальный остаток больше максимального",
@@ -272,9 +306,14 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             debt = totals.get(currency, Decimal("0"))
             if debt <= 0:
                 continue
-            if debt_min is not None and debt < debt_min:
+            filtered_debt = (
+                totals.get(remaining_currency, Decimal("0"))
+                if remaining_currency
+                else debt
+            )
+            if debt_min is not None and filtered_debt < debt_min:
                 continue
-            if debt_max is not None and debt > debt_max:
+            if debt_max is not None and filtered_debt > debt_max:
                 continue
             stores = [s for s in client.stores.all()
                       if any(o.store_id == s.id for o in orders)]
@@ -295,7 +334,13 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                     if s.payment_schedule_type != "none" and is_payment_window_open(s, today)
                 ),
             })
-        rows.sort(key=lambda r: Decimal(r["debt_total"]), reverse=True)
+        # Валюты не ранжируем друг против друга без курса: сначала стабильная
+        # группа валюты, затем остаток по убыванию внутри этой группы.
+        rows.sort(key=lambda r: (
+            r["debt_currency"],
+            -Decimal(r["debt_total"]),
+            r["client_name"].casefold(),
+        ))
         return Response(rows)
 
     @action(detail=True, methods=["get"], url_path="debt-detail")
@@ -322,7 +367,7 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         overdue = sum_by_currency(
             [o for o in orders if o.store_id in overdue_stores], order_remaining)
         return Response({
-            "client": ClientSerializer(client).data,
+            "client": self.get_serializer(client).data,
             "debt_total": money_string(debt),
             "debt_currency": currency,
             "debt_by_currency": as_money_strings(totals),
@@ -426,7 +471,11 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 # просрочка: окно сегодня открыто, но долг ещё висит
                 "overdue": window_open and store.payment_schedule_type != "none",
             })
-        rows.sort(key=lambda r: Decimal(r["debt_total"]), reverse=True)
+        rows.sort(key=lambda r: (
+            r["debt_currency"],
+            -Decimal(r["debt_total"]),
+            r["store_name"].casefold(),
+        ))
         return Response(rows)
 
     @action(detail=False, methods=["post"], url_path="check-overdue")

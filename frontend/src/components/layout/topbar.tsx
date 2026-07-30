@@ -41,27 +41,45 @@ function ThemeToggle() {
     { key: "dark", icon: Moon, label: "Тёмная тема" },
     { key: "system", icon: Monitor, label: "Системная тема" },
   ];
+  const currentIndex = opts.findIndex(({ key }) => key === theme);
+  const current = opts[currentIndex] ?? opts[0];
+  const CurrentIcon = current.icon;
   return (
-    <div className="flex items-center gap-0.5 rounded-lg border p-0.5" role="group" aria-label="Тема оформления">
-      {opts.map(({ key, icon: Icon, label }) => (
-        <button
-          key={key}
-          type="button"
-          onClick={() => pick(key)}
-          aria-label={label}
-          aria-pressed={theme === key}
-          title={label}
-          className={cn(
-            "flex size-7 items-center justify-center rounded-md transition-colors",
-            theme === key
-              ? "bg-[var(--secondary)] text-[var(--foreground)]"
-              : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
-          )}
-        >
-          <Icon className="size-4" />
-        </button>
-      ))}
-    </div>
+    <>
+      <button
+        type="button"
+        onClick={() => pick(opts[(currentIndex + 1) % opts.length].key)}
+        aria-label={`${current.label}. Переключить тему`}
+        title={current.label}
+        className="flex size-8 items-center justify-center rounded-lg border text-[var(--foreground)] sm:hidden"
+      >
+        <CurrentIcon className="size-4" />
+      </button>
+      <div
+        className="hidden items-center gap-0.5 rounded-lg border p-0.5 sm:flex"
+        role="group"
+        aria-label="Тема оформления"
+      >
+        {opts.map(({ key, icon: Icon, label }) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => pick(key)}
+            aria-label={label}
+            aria-pressed={theme === key}
+            title={label}
+            className={cn(
+              "flex size-7 items-center justify-center rounded-md transition-colors",
+              theme === key
+                ? "bg-[var(--secondary)] text-[var(--foreground)]"
+                : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
+            )}
+          >
+            <Icon className="size-4" />
+          </button>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -91,12 +109,12 @@ export function Topbar({
         : me.role_name || "Сотрудник";
 
   return (
-    <header className="flex h-16 items-center justify-between gap-2 border-b px-4 sm:px-8">
-      <div className="flex min-w-0 items-center gap-2">
+    <header className="flex min-h-16 flex-wrap items-center gap-2 border-b px-4 py-2 sm:h-16 sm:flex-nowrap sm:px-8 sm:py-0">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
         <button
           type="button"
           onClick={onMenu}
-          className="-ml-1 flex size-9 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--secondary)] md:hidden"
+          className="-ml-1 flex size-9 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--secondary)] lg:hidden"
           aria-label="Меню"
         >
           <Menu className="size-5" />
@@ -120,8 +138,12 @@ export function Topbar({
           </div>
         )}
       </div>
-      <div className="flex items-center gap-2 sm:gap-3">
-        {actions}
+      {actions && (
+        <div className="order-3 flex w-full items-center justify-end overflow-x-auto pt-1 sm:order-none sm:w-auto sm:overflow-visible sm:pt-0">
+          {actions}
+        </div>
+      )}
+      <div className="flex shrink-0 items-center gap-2 sm:gap-3">
         {!me.is_client && !me.is_monoblock && (
           <button
             onClick={() => window.dispatchEvent(new Event(TOUR_START_EVENT))}

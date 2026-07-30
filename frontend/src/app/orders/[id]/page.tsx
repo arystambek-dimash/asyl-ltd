@@ -6,7 +6,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { StatusBadge } from "@/components/status-badge";
@@ -54,7 +54,7 @@ import {
   UserRound,
   WalletCards,
 } from "lucide-react";
-import type { Client, EventLog, Order, Store } from "@/lib/types";
+import type { Client, EventLogPage, Order, Store } from "@/lib/types";
 
 const EVENT_LABELS: Record<string, string> = {
   status: "Статус изменён",
@@ -74,10 +74,14 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
   const { me } = useAuth();
+  const canViewClients = can(me, "clients.view");
+  const canViewReports = can(me, "reports.view");
   const { data: order, loading, error: loadError, reload } = useApi<Order>(`/orders/${id}/`);
-  const { data: client } = useApi<Client>(order ? `/clients/${order.client}/` : null);
-  const { data: store } = useApi<Store>(order?.store ? `/stores/${order.store}/` : null);
-  const { data: events } = useApi<EventLog[]>(order && can(me, "events.view") ? `/events/?order=${order.id}` : null);
+  const { data: client } = useApi<Client>(order && canViewClients ? `/clients/${order.client}/` : null);
+  const { data: store } = useApi<Store>(order?.store && canViewClients ? `/stores/${order.store}/` : null);
+  const { data: events } = useApi<EventLogPage>(
+    order && can(me, "events.view") ? `/events/?order=${order.id}&page_size=5` : null,
+  );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -156,7 +160,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const hasPendingPayment = pendingPayments.length > 0;
   // Начать цепочку оплаты можно, пока есть непогашенный остаток.
   const canStartPayment = can(me, "payments.create") && paymentOpen(order) && remaining > 0 && !hasPendingPayment;
-  const orderEvents = (events ?? []).slice(0, 5);
+  const orderEvents = events?.results ?? [];
   // Ручной выбор ограничен четырьмя публичными статусами для всех (и суперадмина):
   // внутренние этапы ставят только бизнес-процессы, в журнале они видны как события.
   const statusOptions = order.status === "shipped" && !canRollback ? (["shipped"] as const) : ORDER_PUBLIC_STATUSES;
@@ -444,7 +448,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                   <PaidMethodBreakdown order={order} className="text-xs" />
                 </div>
               )}
-              {order.status === "shipped" && remaining > 0 && (
+              {order.status === "shipped" && remaining > 0 && canViewReports && (
                 <Link
                   href={`/accounting/debts/clients/${order.client}`}
                   className="w-fit text-xs font-medium text-[var(--ring)] hover:underline"
@@ -618,11 +622,11 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
               <CardTitle className="flex items-center gap-2">
                 <UserRound className="size-4 text-[var(--muted-foreground)]" /> Клиент
               </CardTitle>
-              <Link href={`/clients/${order.client}`}>
-                <Button size="sm" variant="outline">
+              {canViewClients && (
+                <Link href={`/clients/${order.client}`} className={buttonVariants({ size: "sm", variant: "outline" })}>
                   Открыть
-                </Button>
-              </Link>
+                </Link>
+              )}
             </CardHeader>
             <CardContent className="grid gap-2 p-4 pt-0 text-xs">
               <div className="flex justify-between gap-3">

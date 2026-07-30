@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, apiError, isCanceledRequest } from "@/lib/api";
 
 /**
@@ -45,11 +45,18 @@ function pollDelay(status: AiStatus | null): number {
 export function useAiCounter(cam: string | null, orderId: number | null, active: boolean) {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [commandError, setCommandError] = useState("");
+  const [pollError, setPollError] = useState("");
+  const [stale, setStale] = useState(false);
   const latestPoll = useRef(0);
+  const latestCommand = useRef(0);
   const scopeGeneration = useRef(0);
   const statusRef = useRef<AiStatus | null>(null);
   const reschedulePolling = useRef<() => void>(() => {});
+  const commandQueue = useRef<Promise<void>>(Promise.resolve());
+  const actionScope = useMemo(() => ({ active, cam, orderId }), [active, cam, orderId]);
+  const currentActionScope = useRef(actionScope);
+  currentActionScope.current = actionScope;
 
   // Polls are serialized and scheduled only after the previous request has
   // settled. Scope changes abort and invalidate any response from the old
@@ -57,9 +64,13 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
   useEffect(() => {
     const scope = ++scopeGeneration.current;
     latestPoll.current += 1;
+    latestCommand.current += 1;
+    commandQueue.current = Promise.resolve();
     statusRef.current = null;
     setStatus(null);
-    setError("");
+    setCommandError("");
+    setPollError("");
+    setStale(false);
     setBusy(false);
     if (!active || !cam || !orderId) return;
 
@@ -93,12 +104,17 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
         if (disposed || scope !== scopeGeneration.current || requestId !== latestPoll.current) return;
         statusRef.current = response.data;
         setStatus(response.data);
+        setPollError("");
+        setStale(false);
       } catch (cause) {
         if (disposed || isCanceledRequest(cause)) return;
         if (scope === scopeGeneration.current && requestId === latestPoll.current) {
-          // A status tick must not take down the loading post.
-          statusRef.current = null;
-          setStatus(null);
+          // A failed tick is not proof that the processor stopped. Keep the
+          // last authoritative status (and therefore its live cadence). Only
+          // an initial failure with no usable data is surfaced as an error.
+          const hasLastGoodStatus = statusRef.current !== null;
+          setStale(hasLastGoodStatus);
+          setPollError(hasLastGoodStatus ? "" : apiError(cause));
         }
       } finally {
         polling = false;
@@ -122,6 +138,7 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
       disposed = true;
       scopeGeneration.current += 1;
       latestPoll.current += 1;
+      latestCommand.current += 1;
       reschedulePolling.current = () => {};
       if (timer) clearTimeout(timer);
       controller?.abort();
@@ -133,24 +150,71 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
   const running = !!status?.running;
   const occupied = !!status?.busy;
 
-  const act = useCallback(async (fn: () => Promise<{ data: AiStatus }>) => {
-    const scope = scopeGeneration.current;
-    setBusy(true);
-    setError("");
-    try {
-      const res = await fn();
-      if (scope !== scopeGeneration.current) return;
-      latestPoll.current += 1; // ответ действия свежее любого выпущенного тика
-      statusRef.current = res.data;
-      setStatus(res.data);
-      reschedulePolling.current();
-    } catch (e) {
-      if (scope === scopeGeneration.current) setError(apiError(e));
-      throw e; // вызывающий решает, важна ли ошибка (стоп при завершении — нет)
-    } finally {
-      if (scope === scopeGeneration.current) setBusy(false);
-    }
-  }, []);
+  const act = useCallback(
+    (fn: () => Promise<{ data: AiStatus }>): Promise<void> => {
+      // A callback retained by a previous render must not issue a command for
+      // its old camera/order after the operator changes the active post.
+      if (
+        actionScope !== currentActionScope.current ||
+        !actionScope.active ||
+        !actionScope.cam ||
+        !actionScope.orderId
+      ) {
+        return Promise.resolve();
+      }
+
+      const scope = scopeGeneration.current;
+      const command = ++latestCommand.current;
+      latestPoll.current += 1;
+      setBusy(true);
+      setCommandError("");
+      setPollError("");
+
+      const run = async () => {
+        if (actionScope !== currentActionScope.current || scope !== scopeGeneration.current) return;
+        try {
+          const res = await fn();
+          if (
+            actionScope !== currentActionScope.current ||
+            scope !== scopeGeneration.current ||
+            command !== latestCommand.current
+          ) {
+            return;
+          }
+          latestPoll.current += 1; // ответ действия свежее любого выпущенного тика
+          statusRef.current = res.data;
+          setStatus(res.data);
+          setPollError("");
+          setStale(false);
+          reschedulePolling.current();
+        } catch (cause) {
+          if (
+            actionScope === currentActionScope.current &&
+            scope === scopeGeneration.current &&
+            command === latestCommand.current
+          ) {
+            setCommandError(apiError(cause));
+          }
+          throw cause; // вызывающий решает, важна ли ошибка (стоп при завершении — нет)
+        } finally {
+          if (
+            actionScope === currentActionScope.current &&
+            scope === scopeGeneration.current &&
+            command === latestCommand.current
+          ) {
+            setBusy(false);
+          }
+        }
+      };
+
+      const result = commandQueue.current.then(run);
+      // A failed command must reject for its own caller but must not poison the
+      // queue: a later stop/reset still has to run in invocation order.
+      commandQueue.current = result.catch(() => undefined);
+      return result;
+    },
+    [actionScope],
+  );
 
   // Дублируем order_id в query и JSON. Query переживает старые proxy/body
   // настройки и делает привязку заказа видимой в access-log; JSON оставляем
@@ -176,7 +240,18 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
     [act, cam, orderId, orderParams],
   );
 
-  return { status, running, occupied, busy, error, orderId, start, stop, reset };
+  return {
+    status,
+    running,
+    occupied,
+    busy,
+    stale,
+    error: commandError || pollError,
+    orderId,
+    start,
+    stop,
+    reset,
+  };
 }
 
 export type AiCounter = ReturnType<typeof useAiCounter>;

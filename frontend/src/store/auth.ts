@@ -61,12 +61,17 @@ function requestMe(generation: number): Promise<Me> {
 
 type AuthCommit = (state: { me: Me | null; loading: boolean }) => void;
 
-function beginSession(commit: AuthCommit) {
+function isUnauthorized(error: unknown) {
+  const status = (error as { response?: { status?: number } } | null)?.response?.status;
+  return status === 401 || status === 403;
+}
+
+function beginSession(commit: AuthCommit, currentMe: Me | null = null) {
   const generation = nextAuthGeneration();
   invalidateAuthSessionRequests();
   invalidateCameraStreamToken();
   lastMeFetch = 0;
-  commit({ me: null, loading: true });
+  commit({ me: currentMe, loading: true });
   return generation;
 }
 
@@ -101,9 +106,16 @@ export const useAuth = create<AuthState>((set, get) => ({
       if (generation !== authGeneration) return;
       lastMeFetch = Date.now();
       set({ me: data, loading: false });
-    } catch {
+    } catch (error) {
       if (generation !== authGeneration) return;
-      set({ me: null, loading: false });
+      if (isUnauthorized(error)) {
+        get().logout();
+        return;
+      }
+      // A saved session is still valid until the server explicitly rejects it.
+      // Offline/5xx failures leave the credentials intact so AppShell can
+      // retry on focus or when connectivity returns.
+      set({ loading: false });
     }
   },
   refreshMe: async (force = false) => {
@@ -114,8 +126,10 @@ export const useAuth = create<AuthState>((set, get) => ({
       if (generation !== authGeneration) return;
       lastMeFetch = Date.now();
       set({ me: data });
-    } catch {
-      /* сеть моргнула — оставляем текущие права */
+    } catch (error) {
+      if (generation !== authGeneration) return;
+      if (isUnauthorized(error)) get().logout();
+      // Network/5xx: retain the last known identity and permissions.
     }
   },
   login: async (username, password) => {
@@ -132,7 +146,10 @@ export const useAuth = create<AuthState>((set, get) => ({
       setTokens(data.access, data.refresh);
       return await commitSessionMe(generation, set);
     } catch (error) {
-      if (generation === authGeneration) set({ loading: false });
+      if (generation === authGeneration) {
+        if (isUnauthorized(error)) get().logout();
+        else set({ loading: false });
+      }
       throw error;
     } finally {
       if (loginController === controller) loginController = null;
@@ -144,20 +161,29 @@ export const useAuth = create<AuthState>((set, get) => ({
       setTokens(access, refresh);
       return await commitSessionMe(generation, set);
     } catch (error) {
-      if (generation === authGeneration) set({ loading: false });
+      if (generation === authGeneration) {
+        if (isUnauthorized(error)) get().logout();
+        else set({ loading: false });
+      }
       throw error;
     }
   },
   syncExternalSession: async () => {
-    const generation = beginSession(set);
+    const currentMe = get().me;
+    const generation = beginSession(set, currentMe);
     if (!hasAuthTokens()) {
       if (generation === authGeneration) set({ me: null, loading: false });
       return;
     }
     try {
       await commitSessionMe(generation, set);
-    } catch {
-      if (generation === authGeneration) set({ me: null, loading: false });
+    } catch (error) {
+      if (generation !== authGeneration) return;
+      if (isUnauthorized(error)) {
+        get().logout();
+        return;
+      }
+      set({ me: currentMe, loading: false });
     }
   },
   logout: () => {

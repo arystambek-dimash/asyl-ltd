@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
@@ -14,13 +14,16 @@ import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { ErrorAlert } from "@/components/ui/data-state";
+import { ActionMenu, type ActionMenuItem } from "@/components/ui/action-menu";
+import { ActionCard } from "@/components/ui/action-card";
+import { CurrencyAmounts } from "@/components/ui/currency-amounts";
 import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from "@/components/ui/form";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select-ui";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
-import { cn, currencySymbol, formatPhone, formatMoney, formatDateTime } from "@/lib/utils";
+import { cn, currencySymbol, formatPhone, formatMoney, formatDateTime, sumDebtByCurrency } from "@/lib/utils";
 import { COUNTRIES } from "@/lib/countries";
-import { BarChart3, FileSpreadsheet, MoreVertical, Pencil, Phone, Plus, Search, Tags, Trash2 } from "lucide-react";
+import { BarChart3, FileSpreadsheet, Pencil, Phone, Plus, Search, Tags, Trash2 } from "lucide-react";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -297,68 +300,6 @@ function ClientForm({
   );
 }
 
-/** Меню действий строки — «⋮», как в референсе. */
-function RowMenu({
-  items,
-}: {
-  items: { label: string; icon: React.ElementType; onClick: () => void; danger?: boolean }[];
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent | TouchEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("touchstart", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("touchstart", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  if (items.length === 0) return null;
-  return (
-    <div ref={ref} className="relative inline-block">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        aria-label="Действия"
-        className="flex size-8 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
-      >
-        <MoreVertical className="size-4" />
-      </button>
-      {open && (
-        <div className="absolute right-0 top-9 z-20 min-w-44 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-lg">
-          {items.map((it) => (
-            <button
-              key={it.label}
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                it.onClick();
-              }}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm hover:bg-[var(--muted)]",
-                it.danger && "text-[var(--destructive)]",
-              )}
-            >
-              <it.icon className="size-4" /> {it.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 const digits = (s: string) => s.replace(/\D/g, "");
 
 function ClientsPageInner() {
@@ -401,15 +342,7 @@ function ClientsPageInner() {
   const list = clients ?? [];
   // Валюта долга берётся из заказов, а не из карточки клиента: у KZT-клиента
   // может быть заказ в USD, и складывать их в одну сумму нельзя.
-  const debtByCurrency = list.reduce<Record<string, number>>((totals, client) => {
-    const rows = client.debt_by_currency ?? {
-      [client.debt_currency ?? client.currency]: client.debt_total ?? "0",
-    };
-    for (const [currency, amount] of Object.entries(rows)) {
-      totals[currency] = (totals[currency] ?? 0) + Number(amount);
-    }
-    return totals;
-  }, {});
+  const debtByCurrency = canMoney ? sumDebtByCurrency(list) : {};
 
   const filtered = list.filter(
     (c) =>
@@ -426,31 +359,45 @@ function ClientsPageInner() {
     }
   };
   const sorted = [...filtered].sort((a, b) => {
+    if (sortKey === "debt") {
+      const aCurrency = a.debt_currency ?? a.currency ?? "KZT";
+      const bCurrency = b.debt_currency ?? b.currency ?? "KZT";
+      const currencyCmp = aCurrency.localeCompare(bCurrency);
+      const amountCmp = Number(a.debt_total ?? 0) - Number(b.debt_total ?? 0);
+      const cmp = currencyCmp || amountCmp;
+      return sortDir === "asc" ? cmp : -cmp;
+    }
     let av: string | number = a.created_at ?? "";
     let bv: string | number = b.created_at ?? "";
     if (sortKey === "name") {
       av = a.name;
       bv = b.name;
     }
-    if (sortKey === "debt") {
-      av = Number(a.debt_total ?? 0);
-      bv = Number(b.debt_total ?? 0);
-    }
     const cmp = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv), "ru");
     return sortDir === "asc" ? cmp : -cmp;
   });
 
-  const rowMenu = (c: Client) => [
-    ...(canMoney ? [{ label: "Открыть", icon: BarChart3, onClick: () => router.push(`/clients/${c.id}`) }] : []),
+  const rowMenu = (c: Client): ActionMenuItem[] => [
+    ...(canMoney
+      ? [{ key: "open", label: "Открыть", icon: BarChart3, onSelect: () => router.push(`/clients/${c.id}`) }]
+      : []),
     ...(canSetPrice
-      ? [{ label: "Прайс-лист", icon: Tags, onClick: () => router.push(`/clients/${c.id}/prices`) }]
+      ? [
+          {
+            key: "prices",
+            label: "Прайс-лист",
+            icon: Tags,
+            onSelect: () => router.push(`/clients/${c.id}/prices`),
+          },
+        ]
       : []),
     ...(canEdit
       ? [
           {
+            key: "edit",
             label: "Изменить",
             icon: Pencil,
-            onClick: () => {
+            onSelect: () => {
               setEditing(c);
               setOpen(true);
             },
@@ -460,10 +407,11 @@ function ClientsPageInner() {
     ...(canDelete
       ? [
           {
+            key: "delete",
             label: "Удалить",
             icon: Trash2,
-            danger: true,
-            onClick: () => {
+            tone: "destructive" as const,
+            onSelect: () => {
               setDelError("");
               setDelItem(c);
             },
@@ -507,22 +455,24 @@ function ClientsPageInner() {
         )
       }
     >
-      {/* Общая задолженность — как в кассовых системах: одна цифра, красным. */}
-      <div className="mb-5 flex flex-wrap gap-3">
-        {(["KZT", "USD"] as const).map((currency) => (
-          <div
-            key={currency}
-            className="inline-flex min-w-56 flex-col gap-1 rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-card"
-          >
-            <span className="text-[13px] font-medium text-[var(--muted-foreground)]">
-              Общая задолженность · {currency}
-            </span>
-            <span className="text-[26px] font-bold leading-none tracking-tight tabular-nums text-[var(--destructive)]">
-              {formatMoney(debtByCurrency[currency] ?? 0)} {currencySymbol(currency)}
-            </span>
-          </div>
-        ))}
-      </div>
+      {canMoney && (
+        /* Общая задолженность доступна только финансовой роли. */
+        <div className="mb-5 flex flex-wrap gap-3">
+          {(["KZT", "USD"] as const).map((currency) => (
+            <div
+              key={currency}
+              className="inline-flex min-w-56 flex-col gap-1 rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-card"
+            >
+              <span className="text-[13px] font-medium text-[var(--muted-foreground)]">
+                Общая задолженность · {currency}
+              </span>
+              <span className="text-[26px] font-bold leading-none tracking-tight tabular-nums text-[var(--destructive)]">
+                {formatMoney(debtByCurrency[currency] ?? 0)} {currencySymbol(currency)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Фильтры — отдельные поля, как в референсе. */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -558,27 +508,20 @@ function ClientsPageInner() {
           <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Здесь пусто</p>
         ) : (
           sorted.map((c) => (
-            <div
+            <ActionCard
               key={c.id}
-              role={canMoney ? "link" : undefined}
-              tabIndex={canMoney ? 0 : undefined}
-              aria-label={canMoney ? `Клиент ${c.name}` : undefined}
-              onClick={canMoney ? () => router.push(`/clients/${c.id}`) : undefined}
-              // На телефоне карточка — единственный путь в карточку клиента.
-              onKeyDown={
+              primaryAction={
                 canMoney
-                  ? (event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        router.push(`/clients/${c.id}`);
-                      }
+                  ? {
+                      kind: "link",
+                      href: `/clients/${c.id}`,
+                      label: `Открыть клиента ${c.name}`,
                     }
                   : undefined
               }
               className={cn(
                 "flex flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card",
-                canMoney &&
-                  "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
+                canMoney && "cursor-pointer",
               )}
             >
               <div className="flex items-start justify-between gap-2">
@@ -586,33 +529,34 @@ function ClientsPageInner() {
                   <div className="text-sm font-semibold">{c.name}</div>
                   <a
                     href={`tel:${c.phone}`}
-                    onClick={(e) => e.stopPropagation()}
-                    className="flex items-center gap-1.5 text-sm text-[var(--muted-foreground)]"
+                    className="relative z-10 flex items-center gap-1.5 text-sm text-[var(--muted-foreground)]"
                   >
                     <Phone className="size-3.5" /> {c.phone}
                   </a>
                 </div>
-                <div onClick={(e) => e.stopPropagation()}>
-                  <RowMenu items={rowMenu(c)} />
+                <div className="relative z-10">
+                  <ActionMenu items={rowMenu(c)} />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-2 text-sm">
-                <div>
-                  <div className="text-[11px] text-[var(--muted-foreground)]">Задолженность</div>
-                  {Number(c.debt_total ?? 0) > 0 ? (
+              <div className={cn("grid gap-2 text-sm", canMoney ? "grid-cols-2" : "grid-cols-1")}>
+                {canMoney && (
+                  <div>
+                    <div className="text-[11px] text-[var(--muted-foreground)]">Задолженность</div>
                     <div className="font-medium tabular-nums text-[var(--destructive)]">
-                      {formatMoney(c.debt_total!)} {currencySymbol(c.debt_currency ?? c.currency)}
+                      <CurrencyAmounts
+                        byCurrency={c.debt_by_currency}
+                        fallbackAmount={c.debt_total}
+                        fallbackCurrency={c.debt_currency ?? c.currency}
+                      />
                     </div>
-                  ) : (
-                    <div className="text-[var(--muted-foreground)]">—</div>
-                  )}
-                </div>
+                  </div>
+                )}
                 <div>
                   <div className="text-[11px] text-[var(--muted-foreground)]">Дата</div>
                   <div className="tabular-nums">{c.created_at ? formatDateTime(c.created_at) : "—"}</div>
                 </div>
               </div>
-            </div>
+            </ActionCard>
           ))
         )}
       </div>
@@ -626,13 +570,15 @@ function ClientsPageInner() {
                   <SortableHeader label="Имя" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
                   <TH>ИИН/БИН</TH>
                   <TH>Телефон</TH>
-                  <SortableHeader
-                    label="Сумма задолженностей"
-                    sortKey="debt"
-                    activeKey={sortKey}
-                    dir={sortDir}
-                    onClick={toggleSort}
-                  />
+                  {canMoney && (
+                    <SortableHeader
+                      label="Сумма задолженностей"
+                      sortKey="debt"
+                      activeKey={sortKey}
+                      dir={sortDir}
+                      onClick={toggleSort}
+                    />
+                  )}
                   <SortableHeader
                     label="Дата"
                     sortKey="created"
@@ -665,28 +611,30 @@ function ClientsPageInner() {
                     </TD>
                     <TD className="tabular-nums">{c.iin || "—"}</TD>
                     <TD className="tabular-nums">{c.phone}</TD>
-                    <TD className="tabular-nums">
-                      {Number(c.debt_total ?? 0) > 0 ? (
+                    {canMoney && (
+                      <TD className="tabular-nums">
                         <span className="font-medium text-[var(--destructive)]">
-                          {formatMoney(c.debt_total!)} {currencySymbol(c.debt_currency ?? c.currency)}
+                          <CurrencyAmounts
+                            byCurrency={c.debt_by_currency}
+                            fallbackAmount={c.debt_total}
+                            fallbackCurrency={c.debt_currency ?? c.currency}
+                          />
                         </span>
-                      ) : (
-                        <span className="text-[var(--muted-foreground)]">—</span>
-                      )}
-                    </TD>
+                      </TD>
+                    )}
                     <TD className="tabular-nums text-[var(--muted-foreground)]">
                       {c.created_at ? formatDateTime(c.created_at) : "—"}
                     </TD>
                     <TD onClick={(e) => e.stopPropagation()}>
                       <div className="flex justify-end">
-                        <RowMenu items={rowMenu(c)} />
+                        <ActionMenu items={rowMenu(c)} />
                       </div>
                     </TD>
                   </TR>
                 ))}
                 {sorted.length === 0 && (
                   <TR>
-                    <TD colSpan={6} className="py-14 text-center text-[var(--muted-foreground)]">
+                    <TD colSpan={canMoney ? 6 : 5} className="py-14 text-center text-[var(--muted-foreground)]">
                       Здесь пусто
                     </TD>
                   </TR>

@@ -19,7 +19,23 @@ def test_create_store_via_api(manager):
     }, format="json")
     assert r.status_code == 201
     assert r.data["name"] == "Магазин №1"
+    assert r.data["client_name"] == client.name
     assert r.data["payment_days"] == [5, 20]
+
+
+def test_client_picker_exposes_only_form_reference_fields(manager):
+    client = Client.objects.create(
+        first_name="A",
+        last_name="B",
+        phone="secret",
+        iin="123456789012",
+        bank_account="KZSECRET",
+    )
+
+    response = _api(manager).get("/api/clients/picker/")
+
+    assert response.status_code == 200
+    assert response.data == [{"id": client.id, "name": client.name}]
 
 
 def test_can_create_store_for_any_client(manager):

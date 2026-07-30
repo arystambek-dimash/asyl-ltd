@@ -1,6 +1,7 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { Check, ChevronDown } from "lucide-react";
+import { useDismiss } from "@/lib/use-dismiss";
 import { cn } from "@/lib/utils";
 
 export type FilterOption = { key: string; label: string; count?: number };
@@ -22,35 +23,77 @@ export function FilterDropdown({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const focusIndexRef = useRef(0);
+  const listboxId = useId();
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent | TouchEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("touchstart", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("touchstart", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  useDismiss(ref, () => setOpen(false), open);
 
   const current = options.find((o) => o.key === active) ?? options[0];
+  const currentIndex = Math.max(
+    0,
+    options.findIndex((option) => option.key === current?.key),
+  );
   const isDefault = current?.key === options[0]?.key;
+
+  useEffect(() => {
+    if (open) optionRefs.current[focusIndexRef.current]?.focus();
+  }, [open]);
+
+  function openAt(index: number) {
+    focusIndexRef.current = index;
+    setOpen(true);
+  }
+
+  function selectOption(index: number) {
+    const option = options[index];
+    if (!option) return;
+    onChange(option.key);
+    setOpen(false);
+    triggerRef.current?.focus();
+  }
+
+  function onTriggerKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    openAt(event.key === "ArrowUp" ? options.length - 1 : currentIndex);
+  }
+
+  function onListboxKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const focusedIndex = optionRefs.current.findIndex((option) => option === document.activeElement);
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowDown") nextIndex = (focusedIndex + 1) % options.length;
+    if (event.key === "ArrowUp") nextIndex = (focusedIndex - 1 + options.length) % options.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = options.length - 1;
+    if (nextIndex !== null && options[nextIndex]) {
+      event.preventDefault();
+      focusIndexRef.current = nextIndex;
+      optionRefs.current[nextIndex]?.focus();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      triggerRef.current?.focus();
+    } else if (event.key === "Tab") {
+      setOpen(false);
+    }
+  }
 
   return (
     <div ref={ref} className="relative shrink-0">
       <button
+        ref={triggerRef}
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => (open ? setOpen(false) : openAt(currentIndex))}
+        onKeyDown={onTriggerKeyDown}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        disabled={options.length === 0}
         className={cn(
           "flex h-9 items-center gap-1.5 rounded-md border px-3 text-[13px] transition-colors",
           isDefault
@@ -70,23 +113,28 @@ export function FilterDropdown({
 
       {open && (
         <div
+          id={listboxId}
           role="listbox"
+          aria-label={label}
+          onKeyDown={onListboxKeyDown}
           className="absolute left-0 z-40 mt-1 max-h-72 min-w-[210px] overflow-y-auto rounded-lg border bg-[var(--card)] p-1 shadow-lg"
         >
-          {options.map((o) => {
+          {options.map((o, index) => {
             const on = o.key === active;
             return (
               <button
                 key={o.key}
+                ref={(node) => {
+                  optionRefs.current[index] = node;
+                }}
                 type="button"
                 role="option"
                 aria-selected={on}
-                onClick={() => {
-                  onChange(o.key);
-                  setOpen(false);
-                }}
+                aria-label={o.count === undefined ? undefined : `${o.label}, ${o.count}`}
+                tabIndex={-1}
+                onClick={() => selectOption(index)}
                 className={cn(
-                  "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] transition-colors",
+                  "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] outline-none transition-colors focus:bg-[var(--muted)]",
                   on ? "bg-[var(--muted)] font-medium" : "hover:bg-[var(--muted)]/60",
                 )}
               >

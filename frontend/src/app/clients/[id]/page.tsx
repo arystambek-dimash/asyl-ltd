@@ -17,7 +17,8 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
-import { currencySymbol, formatCurrency, formatDateTime } from "@/lib/utils";
+import { finiteMoney } from "@/lib/currency-map";
+import { formatCurrency, formatDateTime, sumMoneyByCurrency } from "@/lib/utils";
 import { StatementExportModal } from "@/components/statement-export-modal";
 import {
   ORDER_STATUS_LABELS,
@@ -49,6 +50,7 @@ interface SaleRow {
   bags: number;
   amount: string;
   paid: string;
+  currency: string;
 }
 interface PaymentRow {
   id: number;
@@ -58,6 +60,7 @@ interface PaymentRow {
   method: string;
   status: string;
   amount: string;
+  currency: string;
 }
 interface DebtRow {
   id: number;
@@ -66,10 +69,16 @@ interface DebtRow {
   amount: string;
   paid: string;
   remaining: string;
+  currency: string;
 }
+type SummaryMoney = { revenue: string; paid: string; debt: string };
 interface History {
   client: { id: number; name: string; phone: string; country: string; currency: "KZT" | "USD" };
-  summary: { revenue: string; paid: string; debt: string; orders_count: number };
+  summary: SummaryMoney & {
+    currency: string;
+    by_currency: Record<string, SummaryMoney>;
+    orders_count: number;
+  };
   sales: SaleRow[];
   payments: PaymentRow[];
   debts: DebtRow[];
@@ -82,6 +91,7 @@ interface CommonRow {
   id: number;
   date: string;
   amount: string;
+  currency: string;
 }
 
 function uniq(values: (string | null | undefined)[]): string[] {
@@ -92,7 +102,8 @@ function itemsText(items: { label: string; qty: number }[]): string {
   return items.map((i) => `${i.label} × ${i.qty}`).join(", ");
 }
 
-function DocLink({ orderId, children }: { orderId: number; children: React.ReactNode }) {
+function DocLink({ orderId, enabled, children }: { orderId: number; enabled: boolean; children: React.ReactNode }) {
+  if (!enabled) return <span className="font-medium">{children}</span>;
   return (
     <Link href={`/orders/${orderId}`} className="font-medium text-[var(--ring)] hover:underline">
       {children}
@@ -130,10 +141,39 @@ function Money({ value, currency, muted }: { value: string; currency: string; mu
   return <>{formatCurrency(value, currency)}</>;
 }
 
+function CurrencyBreakdown({
+  values,
+  primary,
+  field,
+}: {
+  values: Record<string, SummaryMoney>;
+  primary: string;
+  field: keyof SummaryMoney;
+}) {
+  const rows = Object.entries(values).filter(
+    ([currency, summary]) => currency !== primary && finiteMoney(summary[field]) !== 0,
+  );
+  if (rows.length === 0) return null;
+  return (
+    <div className="grid gap-0.5 text-xs text-[var(--muted-foreground)]">
+      {rows.map(([currency, summary]) => (
+        <span key={currency}>Также {formatCurrency(summary[field], currency)}</span>
+      ))}
+    </div>
+  );
+}
+
+function formatMoneyTotals(totals: Record<string, number>): string {
+  return Object.entries(totals)
+    .map(([currency, amount]) => formatCurrency(amount, currency))
+    .join(" · ");
+}
+
 function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { me } = useAuth();
   const canExport = can(me, "reports.export");
+  const canViewOrders = can(me, "orders.view");
   const { data, loading, error, reload } = useApi<History>(`/clients/${id}/history/`);
 
   const [tab, setTab] = useState("analytics");
@@ -143,6 +183,7 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
   const [fDoc, setFDoc] = useState("");
   const [fMin, setFMin] = useState("");
   const [fMax, setFMax] = useState("");
+  const [fCurrency, setFCurrency] = useState("all");
   // Вкладочные фильтры — сбрасываются при переключении.
   const [fProduct, setFProduct] = useState("all");
   const [fPay, setFPay] = useState("all");
@@ -161,8 +202,11 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
   }
 
   const { client, summary } = data;
-  const symbol = currencySymbol(client.currency);
-  const hasDebt = Number(summary.debt) > 0;
+  const summaryCurrency = summary.currency || client.currency;
+  const summaryByCurrency = summary.by_currency ?? {
+    [summaryCurrency]: { revenue: summary.revenue, paid: summary.paid, debt: summary.debt },
+  };
+  const hasDebt = Object.values(summaryByCurrency).some((row) => finiteMoney(row.debt) > 0);
   const initials =
     client.name
       .trim()
@@ -191,6 +235,7 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
     !!fDoc ||
     !!fMin ||
     !!fMax ||
+    fCurrency !== "all" ||
     fProduct !== "all" ||
     fPay !== "all" ||
     fStatus !== "all" ||
@@ -201,22 +246,32 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
     setFDoc("");
     setFMin("");
     setFMax("");
+    setFCurrency("all");
     setFProduct("all");
     setFPay("all");
     setFStatus("all");
     setFEmployee("all");
   };
 
+  const currencies = uniq([
+    ...data.sales.map((row) => row.currency),
+    ...data.payments.map((row) => row.currency),
+    ...data.debts.map((row) => row.currency),
+  ]);
+  const amountFilterEnabled = currencies.length <= 1 || fCurrency !== "all";
+
   const matches = (r: CommonRow) =>
     (!fFrom || r.date.slice(0, 10) >= fFrom) &&
     (!fTo || r.date.slice(0, 10) <= fTo) &&
     (!fDoc.trim() || String(r.id).includes(fDoc.replace(/\D/g, ""))) &&
-    (!fMin || Number(r.amount) >= Number(fMin)) &&
-    (!fMax || Number(r.amount) <= Number(fMax));
+    (fCurrency === "all" || r.currency === fCurrency) &&
+    (!amountFilterEnabled || !fMin || finiteMoney(r.amount) >= Number(fMin)) &&
+    (!amountFilterEnabled || !fMax || finiteMoney(r.amount) <= Number(fMax));
 
   const sortRows = <T extends CommonRow>(rows: T[]) =>
     [...rows].sort((a, b) => {
-      const cmp = sortKey === "amount" ? Number(a.amount) - Number(b.amount) : a.date.localeCompare(b.date);
+      if (sortKey === "amount" && a.currency !== b.currency) return a.currency.localeCompare(b.currency);
+      const cmp = sortKey === "amount" ? finiteMoney(a.amount) - finiteMoney(b.amount) : a.date.localeCompare(b.date);
       return sortDir === "asc" ? cmp : -cmp;
     });
   const toggleSort = (k: string) => {
@@ -255,14 +310,27 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
 
   const shownCount =
     tab === "analytics" ? 0 : tab === "sales" ? sales.length : tab === "payments" ? payments.length : debts.length;
-  const shownTotal =
+  const shownTotals =
     tab === "analytics"
-      ? 0
+      ? {}
       : tab === "sales"
-        ? sales.reduce((s, r) => s + Number(r.amount), 0)
+        ? sumMoneyByCurrency(
+            sales,
+            (row) => row.amount,
+            (row) => row.currency,
+          )
         : tab === "payments"
-          ? payments.reduce((s, r) => s + Number(r.amount), 0)
-          : debts.reduce((s, r) => s + Number(r.remaining), 0);
+          ? sumMoneyByCurrency(
+              payments,
+              (row) => row.amount,
+              (row) => row.currency,
+            )
+          : sumMoneyByCurrency(
+              debts,
+              (row) => row.remaining,
+              (row) => row.currency,
+            );
+  const shownTotalLabel = formatMoneyTotals(shownTotals);
   const activeTitle = tab === "sales" ? "История продаж" : tab === "payments" ? "История погашений" : "Текущие долги";
   const activeCaption =
     tab === "sales"
@@ -331,24 +399,30 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                 <StatCard label="Продаж" value={String(summary.orders_count)} caption="всего заказов" icon={FileText} />
                 <StatCard
                   label="Сумма продаж"
-                  value={formatCurrency(summary.revenue, client.currency)}
+                  value={formatCurrency(summary.revenue, summaryCurrency)}
                   caption="за всё время"
                   icon={TrendingUp}
                   accent
-                />
+                >
+                  <CurrencyBreakdown values={summaryByCurrency} primary={summaryCurrency} field="revenue" />
+                </StatCard>
                 <StatCard
                   label="Оплачено"
-                  value={formatCurrency(summary.paid, client.currency)}
+                  value={formatCurrency(summary.paid, summaryCurrency)}
                   caption="получено от клиента"
                   icon={Wallet}
-                />
+                >
+                  <CurrencyBreakdown values={summaryByCurrency} primary={summaryCurrency} field="paid" />
+                </StatCard>
                 <StatCard
                   label="Текущий долг"
-                  value={formatCurrency(summary.debt, client.currency)}
+                  value={formatCurrency(summary.debt, summaryCurrency)}
                   caption={hasDebt ? "ожидает погашения" : "задолженности нет"}
                   icon={AlertCircle}
                   className={hasDebt ? "border-[var(--destructive)]/25 bg-[var(--destructive)]/6" : undefined}
-                />
+                >
+                  <CurrencyBreakdown values={summaryByCurrency} primary={summaryCurrency} field="debt" />
+                </StatCard>
               </div>
             </div>
           ) : (
@@ -384,6 +458,33 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                       <Input type="date" value={fTo} onChange={(e) => setFTo(e.target.value)} aria-label="Период по" />
                     </div>
                   </div>
+                  {currencies.length > 1 && (
+                    <div className="grid gap-1.5">
+                      <span className="text-xs font-medium text-[var(--muted-foreground)]">Валюта</span>
+                      <Select
+                        value={fCurrency}
+                        onValueChange={(value) => {
+                          setFCurrency(value);
+                          if (value === "all") {
+                            setFMin("");
+                            setFMax("");
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="h-10">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Все валюты</SelectItem>
+                          {currencies.map((currency) => (
+                            <SelectItem key={currency} value={currency}>
+                              {currency}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
                   {tab === "sales" && (
                     <div className="grid gap-1.5">
                       <span className="text-xs font-medium text-[var(--muted-foreground)]">Товар</span>
@@ -472,17 +573,21 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                     />
                   </label>
                   <div className="grid gap-1.5">
-                    <span className="text-xs font-medium text-[var(--muted-foreground)]">Сумма, {symbol}</span>
+                    <span className="text-xs font-medium text-[var(--muted-foreground)]">
+                      Сумма{fCurrency !== "all" ? `, ${fCurrency}` : ""}
+                    </span>
                     <div className="grid grid-cols-2 gap-1.5">
                       <Input
-                        placeholder="От"
+                        placeholder={amountFilterEnabled ? "От" : "Выберите валюту"}
                         inputMode="numeric"
+                        disabled={!amountFilterEnabled}
                         value={fMin}
                         onChange={(e) => setFMin(e.target.value.replace(/\D/g, ""))}
                       />
                       <Input
-                        placeholder="До"
+                        placeholder={amountFilterEnabled ? "До" : "Выберите валюту"}
                         inputMode="numeric"
+                        disabled={!amountFilterEnabled}
                         value={fMax}
                         onChange={(e) => setFMax(e.target.value.replace(/\D/g, ""))}
                       />
@@ -499,10 +604,8 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                 <span className="text-sm text-[var(--muted-foreground)]">
                   {shownCount > 0 && (
                     <>
-                      <span className="tabular-nums font-semibold text-[var(--foreground)]">
-                        {formatCurrency(String(shownTotal), client.currency)}
-                      </span>{" "}
-                      · итог по списку
+                      <span className="tabular-nums font-semibold text-[var(--foreground)]">{shownTotalLabel}</span> ·
+                      итог по списку
                     </>
                   )}
                 </span>
@@ -542,7 +645,9 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                       sales.map((r) => (
                         <TR key={r.id}>
                           <TD>
-                            <DocLink orderId={r.id}>№ {r.id}</DocLink>
+                            <DocLink orderId={r.id} enabled={canViewOrders}>
+                              № {r.id}
+                            </DocLink>
                           </TD>
                           <TD className="tabular-nums text-[var(--muted-foreground)]">{formatDateTime(r.date)}</TD>
                           <TD>
@@ -552,10 +657,10 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                           </TD>
                           <TD className="text-right tabular-nums">{r.bags || "—"}</TD>
                           <TD className="text-right tabular-nums font-medium">
-                            {formatCurrency(r.amount, client.currency)}
+                            {formatCurrency(r.amount, r.currency)}
                           </TD>
                           <TD className="text-right tabular-nums">
-                            <Money value={r.paid} currency={client.currency} muted />
+                            <Money value={r.paid} currency={r.currency} muted />
                           </TD>
                           <TD>{SETTLEMENT_LABELS[r.settlement_intent] ?? r.settlement_intent}</TD>
                           <TD>
@@ -600,11 +705,13 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                       payments.map((r) => (
                         <TR key={r.id}>
                           <TD>
-                            <DocLink orderId={r.order_id}>№ {r.order_id}</DocLink>
+                            <DocLink orderId={r.order_id} enabled={canViewOrders}>
+                              № {r.order_id}
+                            </DocLink>
                           </TD>
                           <TD className="tabular-nums text-[var(--muted-foreground)]">{formatDateTime(r.date)}</TD>
                           <TD className="text-right tabular-nums font-medium">
-                            {formatCurrency(r.amount, client.currency)}
+                            {formatCurrency(r.amount, r.currency)}
                           </TD>
                           <TD>{PAYMENT_METHOD_LABELS[r.method] ?? r.method}</TD>
                           <TD>{r.employee ?? "—"}</TD>
@@ -652,16 +759,18 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                       debts.map((r) => (
                         <TR key={r.id}>
                           <TD>
-                            <DocLink orderId={r.id}>№ {r.id}</DocLink>
+                            <DocLink orderId={r.id} enabled={canViewOrders}>
+                              № {r.id}
+                            </DocLink>
                           </TD>
                           <TD className="tabular-nums text-[var(--muted-foreground)]">{formatDateTime(r.date)}</TD>
                           <TD className="text-right tabular-nums">{r.bags || "—"}</TD>
-                          <TD className="text-right tabular-nums">{formatCurrency(r.amount, client.currency)}</TD>
+                          <TD className="text-right tabular-nums">{formatCurrency(r.amount, r.currency)}</TD>
                           <TD className="text-right tabular-nums text-[var(--success)]">
-                            <Money value={r.paid} currency={client.currency} muted />
+                            <Money value={r.paid} currency={r.currency} muted />
                           </TD>
                           <TD className="text-right tabular-nums font-semibold text-[var(--destructive)]">
-                            {formatCurrency(r.remaining, client.currency)}
+                            {formatCurrency(r.remaining, r.currency)}
                           </TD>
                         </TR>
                       ))
@@ -674,7 +783,7 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                 <div className="flex items-center justify-between border-t bg-[var(--muted)]/20 px-4 py-3 text-[13px] sm:px-5">
                   <span className="text-[var(--muted-foreground)]">Документов: {shownCount}</span>
                   <span className="tabular-nums font-semibold">
-                    {tab === "debts" ? "Остаток" : "Итого"}: {formatCurrency(String(shownTotal), client.currency)}
+                    {tab === "debts" ? "Остаток" : "Итого"}: {shownTotalLabel}
                   </span>
                 </div>
               )}

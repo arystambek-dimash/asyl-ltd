@@ -236,13 +236,17 @@ def _invoice_payload_from_error(
     payload = exc.payload if isinstance(exc.payload, dict) else {}
     nested = payload.get("invoice")
     invoice = dict(nested) if isinstance(nested, dict) else dict(payload)
-    invoice_id = (
+    raw_invoice_id = (
         invoice.get("id")
         or invoice.get("invoice_id")
         or payload.get("invoice_id")
     )
+    if isinstance(raw_invoice_id, bool) or not isinstance(
+        raw_invoice_id, (str, int)
+    ):
+        return None
     try:
-        invoice_id = int(invoice_id)
+        invoice_id = int(raw_invoice_id)
         if invoice_id <= 0:
             raise ValueError
     except (TypeError, ValueError):
@@ -405,8 +409,9 @@ def create_invoice(
                     "status": exc.payload.get("status", "processing"),
                 }
             else:
-                response = _invoice_payload_from_error(exc)
-                if response is not None:
+                recovered_response = _invoice_payload_from_error(exc)
+                if recovered_response is not None:
+                    response = recovered_response
                     try:
                         invoice_id = int(response["id"])
                     except (KeyError, TypeError, ValueError):

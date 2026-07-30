@@ -196,6 +196,7 @@ def reconcile_apipay_invoices(
 
     mapped_limit = limit
     if bounded_requests:
+        assert requests_remaining is not None
         request_limited_rows = requests_remaining * batch_size
         mapped_limit = (
             request_limited_rows

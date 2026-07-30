@@ -3,7 +3,7 @@ import { Check, LockKeyhole, Minus } from "lucide-react";
 import type { Permission } from "@/lib/types";
 
 // Ярлыки разделов/действий каталога прав (единые для ролей и сотрудников).
-export const PERM_SECTION_LABELS: Record<string, string> = {
+const PERM_SECTION_LABELS: Record<string, string> = {
   catalog: "Товары",
   clients: "Клиенты",
   warehouse: "Склад",
@@ -16,7 +16,7 @@ export const PERM_SECTION_LABELS: Record<string, string> = {
   employees: "Сотрудники",
   rbac: "Доступы",
 };
-export const PERM_ACTION_LABELS: Record<string, string> = {
+const PERM_ACTION_LABELS: Record<string, string> = {
   view: "просмотр",
   create: "создание",
   edit: "редакт.",

@@ -24,7 +24,7 @@ export interface Product {
   available_bags?: number;
   ask_truck_weight?: boolean;
 }
-export interface ClientPriceRow {
+interface ClientPriceRow {
   product: number;
   product_label: string;
   currency: "KZT" | "USD";
@@ -33,7 +33,7 @@ export interface ClientPriceRow {
   updated_by_name: string | null;
 }
 export interface ClientPriceSheet {
-  client: Client;
+  client: Pick<Client, "id" | "name">;
   prices: ClientPriceRow[];
 }
 export interface Department {
@@ -60,8 +60,61 @@ export interface DepartmentSummary {
   revenue_currency?: "KZT" | "USD";
   revenue_by_currency?: Record<string, string>;
 }
+
+export interface ReportDay {
+  date: string;
+  orders: number;
+  bags: number;
+  revenue: string;
+  debt_amount: string;
+  cash: string;
+  cashless: string;
+  received: string;
+  payments: number;
+  revenue_by_currency: Record<string, string>;
+  debt_amount_by_currency: Record<string, string>;
+  cash_by_currency: Record<string, string>;
+  cashless_by_currency: Record<string, string>;
+  received_by_currency: Record<string, string>;
+}
+
+/** Canonical accounting response from GET /reports/summary/. */
+export interface ReportSummary {
+  from: string | null;
+  to: string | null;
+  income: {
+    total: string;
+    cash: string;
+    cashless: string;
+    payments: number;
+    currency: string;
+    by_currency: Record<string, string>;
+    cash_by_currency: Record<string, string>;
+    cashless_by_currency: Record<string, string>;
+  };
+  shipped: {
+    revenue: string;
+    orders: number;
+    bags: number;
+    debt_amount: string;
+    currency: string;
+    revenue_by_currency: Record<string, string>;
+    debt_amount_by_currency: Record<string, string>;
+  };
+  debt_now: {
+    total: string;
+    by_currency: Record<string, string>;
+    currency: string;
+    orders: number;
+    overdue_by_currency: Record<string, string>;
+    overdue_currency: string;
+    overdue_clients: number;
+  };
+  days: ReportDay[];
+}
+
 export type PortalPaymentMethod = "pending" | "invoice" | "kaspi" | "cash" | "debt";
-export type PaymentMethod = PortalPaymentMethod | "card";
+type PaymentMethod = PortalPaymentMethod | "card";
 
 export interface Client {
   id: number;
@@ -86,6 +139,7 @@ export interface Client {
 export interface Store {
   id: number;
   client: number;
+  client_name?: string;
   name: string;
   address: string;
   phone: string;
@@ -99,7 +153,7 @@ export interface Notification {
   is_read: boolean;
   created_at: string;
 }
-export interface OrderItem {
+interface OrderItem {
   id?: number;
   product: number | null;
   product_label?: string;
@@ -111,7 +165,7 @@ export interface OrderItem {
   weight_kg?: string | null;
   ask_truck_weight?: boolean;
 }
-export interface StatusChangeRequest {
+interface StatusChangeRequest {
   id: number;
   order: number;
   to_status: string;
@@ -167,6 +221,20 @@ export interface Order {
   deleted_by_name?: string | null;
 }
 
+export interface DashboardOperationalSummary {
+  queue: Order[];
+  attention: {
+    pending_payments: number;
+    awaiting_review: number;
+    stuck_in_loading: number;
+  };
+  days: {
+    date: string;
+    bags: number;
+    orders: number;
+  }[];
+}
+
 /** Client-portal projection: prices are deliberately hidden until confirmation. */
 export interface PortalOrder {
   id: number;
@@ -220,7 +288,7 @@ export interface PortalOrder {
   debt_override: boolean;
   created_at: string;
 }
-export type PaymentStage = "requested" | "received" | "accountant_ok" | "confirmed" | "rejected";
+type PaymentStage = "requested" | "received" | "accountant_ok" | "confirmed" | "rejected";
 
 export interface Payment {
   id: number;
@@ -354,7 +422,7 @@ export interface AiCountingHistory {
   has_recording: boolean;
   recording_available_until: string | null;
 }
-export interface AiRecordingSegment {
+interface AiRecordingSegment {
   start: string;
   duration: number;
   video_url: string;
@@ -423,7 +491,7 @@ export interface AlwaysOnHistoryPoint {
   total: number;
   updated_at: string | null;
 }
-export interface AlwaysOnArchiveDay {
+interface AlwaysOnArchiveDay {
   day: string;
   model_total: number;
   adjustment: number;
@@ -516,9 +584,16 @@ export interface EventLog {
   created_at: string;
 }
 
-export type TaskStatus = "pending" | "done";
+export interface EventLogPage {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: EventLog[];
+}
 
-export interface TaskAttachment {
+type TaskStatus = "pending" | "done";
+
+interface TaskAttachment {
   id: number;
   kind: "photo" | "voice" | "file";
   url: string | null;
@@ -551,14 +626,4 @@ export interface TaskAssignee {
   id: number;
   name: string;
   position: string;
-}
-
-export interface TaskNotification {
-  id: number;
-  task: number;
-  task_title: string;
-  task_status: TaskStatus;
-  text: string;
-  is_read: boolean;
-  created_at: string;
 }

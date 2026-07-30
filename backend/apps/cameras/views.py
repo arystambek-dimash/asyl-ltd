@@ -19,6 +19,7 @@ from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
 from apps.orders.models import Order
+from apps.orders.querysets import for_post_board
 from apps.shipments.services import begin_camera_loading, finish_ai_loading
 
 from . import ai, analytics, health, recordings, services, sessions
@@ -1105,7 +1106,20 @@ class CameraAiSessionHistoryView(APIView):
         raw_order_id = request.query_params.get("order_id", "").strip()
         if raw_order_id:
             raw_order_ids = raw_order_id
-        if raw_order_ids:
+        if request.query_params.get("post_board") == "1":
+            settings = MonoblockCameraSettings.objects.filter(
+                singleton=True
+            ).only("completed_orders_days").first()
+            completed_days = (
+                settings.completed_orders_days if settings else 1
+            )
+            queryset = queryset.filter(
+                order__in=for_post_board(
+                    Order.objects.all(),
+                    completed_days,
+                )
+            )
+        elif raw_order_ids:
             parts = [part.strip() for part in raw_order_ids.split(",") if part.strip()]
             if len(parts) > 100:
                 raise ValidationError({"detail": "Слишком много заказов", "code": "too_many_orders"})

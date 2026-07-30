@@ -1,16 +1,33 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
+const MONEY_FORMATTER = new Intl.NumberFormat("ru-RU", {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+const COMPACT_FORMATTERS = [0, 1, 2].map(
+  (maximumFractionDigits) =>
+    new Intl.NumberFormat("ru-RU", {
+      minimumFractionDigits: 0,
+      maximumFractionDigits,
+    }),
+);
+const ISO_DATE_FORMATTER = new Intl.DateTimeFormat("ru-RU");
+const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
 export function formatMoney(value: number | string): string {
   const n = typeof value === "string" ? Number(value) : value;
-  return new Intl.NumberFormat("ru-RU", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  }).format(n);
+  return MONEY_FORMATTER.format(Number.isFinite(n) ? n : 0);
 }
 
 /** Крупное число одним взглядом: 4 809 747 848 → «4,81 млрд».
@@ -30,10 +47,7 @@ export function formatCompact(value: number | string): string {
   const scaled = n / divisor;
   // Две значащие цифры после запятой у единиц, одна — у десятков и выше.
   const digits = Math.abs(scaled) < 10 ? 2 : 1;
-  const text = new Intl.NumberFormat("ru-RU", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: digits,
-  }).format(scaled);
+  const text = COMPACT_FORMATTERS[digits].format(scaled);
   // Неразрывный пробел перед «млн»: в узкой колонке обычный рвал число на
   // две строки — «100» сверху, «млн» снизу.
   return `${text} ${suffix.trim()}`;
@@ -59,21 +73,31 @@ export function sumDebtByCurrency(rows: readonly DebtRow[]): Record<string, numb
       [row.debt_currency ?? row.currency ?? "KZT"]: row.debt_total ?? "0",
     };
     for (const [currency, amount] of Object.entries(parts)) {
-      totals[currency] = (totals[currency] ?? 0) + Number(amount || 0);
+      const parsed = Number(amount || 0);
+      totals[currency] = (totals[currency] ?? 0) + (Number.isFinite(parsed) ? parsed : 0);
     }
     return totals;
   }, {});
 }
 
-/** Валюта с наибольшим долгом — её показывают крупно, остальные рядом. */
-export function primaryDebtCurrency(totals: Record<string, number>): string {
-  const entries = Object.entries(totals).filter(([, value]) => value > 0);
-  if (entries.length === 0) return "KZT";
-  return entries.sort((a, b) => b[1] - a[1])[0][0];
+/** Складывает денежные строки только внутри одной валюты. */
+export function sumMoneyByCurrency<T>(
+  rows: readonly T[],
+  amountOf: (row: T) => number | string | null | undefined,
+  currencyOf: (row: T) => string | null | undefined,
+): Record<string, number> {
+  return rows.reduce<Record<string, number>>((totals, row) => {
+    const currency = currencyOf(row) || "KZT";
+    const amount = Number(amountOf(row) ?? 0);
+    totals[currency] = (totals[currency] ?? 0) + (Number.isFinite(amount) ? amount : 0);
+    return totals;
+  }, {});
 }
 
 export function currencySymbol(currency: "KZT" | "USD" | string = "KZT"): string {
-  return currency === "USD" ? "$" : "₸";
+  if (currency === "KZT") return "₸";
+  if (currency === "USD") return "$";
+  return currency;
 }
 
 export function formatCompactCurrency(value: number | string, currency: "KZT" | "USD" | string = "KZT"): string {
@@ -112,18 +136,12 @@ export function monthStartLocalIsoDate(): string {
 export function formatIsoDate(value: string): string {
   const [year, month, day] = value.split("-").map(Number);
   if (!year || !month || !day) return value;
-  return new Date(year, month - 1, day).toLocaleDateString("ru-RU");
+  return ISO_DATE_FORMATTER.format(new Date(year, month - 1, day));
 }
 
 /** Дата и время по-русски: «13.07.2026, 14:32». */
 export function formatDateTime(value: string | Date): string {
-  return new Date(value).toLocaleString("ru-RU", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return DATE_TIME_FORMATTER.format(new Date(value));
 }
 
 // Телефон по шаблону +7 (___) ___-__-__ — форматирует ввод по мере набора.

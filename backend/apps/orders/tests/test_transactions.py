@@ -16,6 +16,35 @@ from apps.orders.models import (
 pytestmark = pytest.mark.django_db
 
 
+def test_transaction_capabilities_include_employee_permissions(
+    auth_client,
+    user_with_perms,
+):
+    client = Client.objects.create(first_name="Только", last_name="Просмотр")
+    order = Order.objects.create(client=client, status="shipped")
+    OrderItem.objects.create(order=order, quantity=2, unit_price="100.00")
+    rejected = Payment.objects.create(
+        order=order,
+        amount="50.00",
+        method="cash",
+        status="rejected",
+    )
+    issuable = Payment.objects.create(
+        order=order,
+        amount="50.00",
+        method="kaspi",
+        status="received",
+    )
+    viewer = user_with_perms("payment-viewer", codes=["payments.view"])
+
+    response = auth_client(viewer).get("/api/payment-transactions/")
+
+    assert response.status_code == 200
+    by_id = {row["id"]: row for row in response.data["results"]}
+    assert by_id[rejected.id]["can_restore"] is False
+    assert by_id[issuable.id]["can_issue"] is False
+
+
 def test_transaction_history_is_paginated_with_complete_currency_totals(
     auth_client, accountant,
 ):

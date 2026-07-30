@@ -88,6 +88,21 @@ def test_trash_lists_deleted_and_restore_brings_back(manager):
     assert _api(manager).get("/api/orders/trash/").data == []
 
 
+def test_trash_preview_is_bounded_and_reports_full_count(manager):
+    product = _product()
+    client = Client.objects.create(first_name="A", last_name="B", phone="1")
+    orders = [_order(client, product, status="draft") for _ in range(6)]
+    for order in orders:
+        _api(manager).delete(f"/api/orders/{order.id}/")
+
+    response = _api(manager).get("/api/orders/trash-preview/")
+
+    assert response.status_code == 200
+    assert response.data["count"] == 6
+    assert len(response.data["results"]) == 4
+    assert response.data["results"][0]["id"] == orders[-1].id
+
+
 def test_restore_of_live_order_fails(manager):
     p = _product()
     c = Client.objects.create(first_name="A", last_name="B", phone="1")

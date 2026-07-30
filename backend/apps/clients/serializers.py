@@ -74,6 +74,12 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
 
 class ClientSerializer(serializers.ModelSerializer):
+    FINANCIAL_FIELDS = frozenset({
+        "debt_total",
+        "debt_currency",
+        "debt_by_currency",
+    })
+
     name = serializers.CharField(read_only=True)
     debt_total = serializers.SerializerMethodField()
     debt_currency = serializers.SerializerMethodField()
@@ -88,6 +94,17 @@ class ClientSerializer(serializers.ModelSerializer):
         # user связывает клиента с аккаунтом портала (создаётся при регистрации).
         # Запись через staff-API позволила бы перепривязать чужой аккаунт.
         read_only_fields = ["user", "created_at"]
+
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get("request")
+        # Финансовые поля принадлежат reports.view. Без request сериализатор
+        # используется только внутри доменных/unit-тестов и сохраняет полный
+        # контракт; все HTTP-вызовы DRF передают request через context.
+        if request is not None and not request.user.has_perm_code("reports.view"):
+            for field_name in self.FINANCIAL_FIELDS:
+                fields.pop(field_name, None)
+        return fields
 
     def _debt(self, obj) -> dict:
         # Считаем один раз на строку: сериализатор дёргает три поля подряд.
@@ -113,9 +130,14 @@ class ClientSerializer(serializers.ModelSerializer):
         return money_string(totals.get(self.get_debt_currency(obj), Decimal("0")))
 
 class StoreSerializer(serializers.ModelSerializer):
+    client_name = serializers.CharField(
+        source="client.name",
+        read_only=True,
+    )
+
     class Meta:
         model = Store
-        fields = ["id", "client", "name", "address", "phone",
+        fields = ["id", "client", "client_name", "name", "address", "phone",
                   "payment_schedule_type", "payment_days", "contract_signed_at"]
 
     def validate_client(self, client):

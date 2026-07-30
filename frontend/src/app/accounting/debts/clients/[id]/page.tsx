@@ -5,7 +5,7 @@ import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/ui/stat-card";
@@ -13,10 +13,11 @@ import { Modal } from "@/components/ui/modal";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { Tabs } from "@/components/ui/tabs";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
-import { DataGate } from "@/components/ui/data-state";
+import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select-ui";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
+import { amountForCurrency, otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
 import { cn, formatCompactCurrency, formatCurrency, formatMoney, formatDateTime, currencySymbol } from "@/lib/utils";
 import { can } from "@/lib/can";
 import { PaidMethodBreakdown } from "@/components/payment-chain";
@@ -24,7 +25,6 @@ import { useAuth } from "@/store/auth";
 import {
   PAYMENT_STATUS_LABELS,
   PAYMENT_STATUS_TONE,
-  CASHIER_PAYMENT_METHOD_LABELS,
   CASHIER_PAYMENT_METHODS,
   PAYMENT_STAGE_LABELS,
   PAYMENT_STAGE_TONE,
@@ -46,9 +46,22 @@ import {
   Wallet,
 } from "lucide-react";
 import type { Client, Order, Payment } from "@/lib/types";
+import { formatPaymentSchedule } from "@/app/stores/schedule-validation";
 
 const money = formatCurrency;
 const compactMoney = formatCompactCurrency;
+
+function CurrencyRows({ totals, primary }: { totals: Record<string, string | number>; primary: string }) {
+  const rows = otherCurrencyAmounts(totals, primary);
+  if (rows.length === 0) return null;
+  return (
+    <div className="grid gap-0.5 text-xs text-[var(--muted-foreground)]">
+      {rows.map(([currency, amount]) => (
+        <span key={currency}>Также {money(amount, currency)}</span>
+      ))}
+    </div>
+  );
+}
 
 interface DebtStore {
   id: number;
@@ -66,7 +79,9 @@ interface ClientDebtDetail {
   debt_by_currency?: Record<string, string>;
   lifetime_total: string;
   lifetime_paid: string;
+  lifetime_by_currency?: Record<string, { total: string; paid: string }>;
   overdue_total: string;
+  overdue_by_currency?: Record<string, string>;
   orders_count: number;
   unpaid_count: number;
   partial_count: number;
@@ -83,20 +98,10 @@ interface HistoryPayment {
   method: string;
   status: string;
   amount: string;
+  currency: string;
 }
 interface ClientHistory {
   payments: HistoryPayment[];
-}
-
-const WEEKDAYS = ["", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
-function scheduleLabel(store: DebtStore) {
-  if (store.payment_schedule_type === "none") return "Свободная оплата";
-  if (store.payment_schedule_type === "monthly") {
-    return store.payment_days.length ? `Числа: ${store.payment_days.join(", ")}` : "Числа не заданы";
-  }
-  return store.payment_days.length
-    ? `Дни: ${store.payment_days.map((d) => WEEKDAYS[d] ?? d).join(", ")}`
-    : "Дни не заданы";
 }
 
 function remainingOf(order: Order): number {
@@ -134,7 +139,7 @@ function InvoiceTable({ order }: { order: Order }) {
           <TR>
             <TH>Товар</TH>
             <TH className="text-right">Количество</TH>
-            <TH className="text-right">Цена за единицу, ₸</TH>
+            <TH className="text-right">Цена за единицу</TH>
             <TH className="text-right">Итого</TH>
           </TR>
         </THead>
@@ -143,8 +148,8 @@ function InvoiceTable({ order }: { order: Order }) {
             <TR key={l.key}>
               <TD className="font-medium">{l.label}</TD>
               <TD className="text-right tabular-nums">{l.qty}</TD>
-              <TD className="text-right tabular-nums">{money(l.price)}</TD>
-              <TD className="text-right tabular-nums font-medium">{money(l.total)}</TD>
+              <TD className="text-right tabular-nums">{money(l.price, order.currency)}</TD>
+              <TD className="text-right tabular-nums font-medium">{money(l.total, order.currency)}</TD>
             </TR>
           ))}
         </TBody>
@@ -197,7 +202,7 @@ function WriteOffList({ order }: { order: Order }) {
               p.status === "confirmed" ? "text-[var(--success)]" : "text-[var(--muted-foreground)]",
             )}
           >
-            +{money(p.amount)}
+            +{money(p.amount, p.currency ?? order.currency)}
           </span>
         </div>
       ))}
@@ -206,7 +211,17 @@ function WriteOffList({ order }: { order: Order }) {
 }
 
 /* ── Карточка заказа в долге ────────────────────────────────────────────── */
-function OrderDebtCard({ order, canPay, onPay }: { order: Order; canPay: boolean; onPay: () => void }) {
+function OrderDebtCard({
+  order,
+  canPay,
+  canViewOrder,
+  onPay,
+}: {
+  order: Order;
+  canPay: boolean;
+  canViewOrder: boolean;
+  onPay: () => void;
+}) {
   const [tab, setTab] = useState("invoice");
   const [expanded, setExpanded] = useState(false);
   const status = order.payment_status ?? "unpaid";
@@ -322,11 +337,14 @@ function OrderDebtCard({ order, canPay, onPay }: { order: Order; canPay: boolean
         )}
 
         <div className="flex flex-col gap-2 border-t pt-3 sm:flex-row sm:justify-end">
-          <Link href={`/orders/${order.id}`}>
-            <Button size="sm" variant="outline" className="w-full sm:w-auto">
+          {canViewOrder && (
+            <Link
+              href={`/orders/${order.id}`}
+              className={buttonVariants({ size: "sm", variant: "outline", className: "w-full sm:w-auto" })}
+            >
               Открыть заказ <ExternalLink className="size-3.5" />
-            </Button>
-          </Link>
+            </Link>
+          )}
           {canPay && remainingOf(order) > 0 && (
             <Button size="sm" onClick={onPay} className="w-full sm:w-auto">
               <Wallet className="size-4" /> Внести оплату
@@ -339,7 +357,15 @@ function OrderDebtCard({ order, canPay, onPay }: { order: Order; canPay: boolean
 }
 
 /* ── История платежей / счета (из истории клиента) ──────────────────────── */
-function PaymentHistoryTable({ rows, emptyText }: { rows: HistoryPayment[]; emptyText: string }) {
+function PaymentHistoryTable({
+  rows,
+  emptyText,
+  canViewOrders,
+}: {
+  rows: HistoryPayment[];
+  emptyText: string;
+  canViewOrders: boolean;
+}) {
   if (rows.length === 0) {
     return (
       <Card>
@@ -366,9 +392,13 @@ function PaymentHistoryTable({ rows, emptyText }: { rows: HistoryPayment[]; empt
               <TR key={p.id}>
                 <TD className="tabular-nums">{formatDateTime(p.date)}</TD>
                 <TD>
-                  <Link href={`/orders/${p.order_id}`} className="font-medium hover:underline">
-                    #{p.order_id}
-                  </Link>
+                  {canViewOrders ? (
+                    <Link href={`/orders/${p.order_id}`} className="font-medium hover:underline">
+                      #{p.order_id}
+                    </Link>
+                  ) : (
+                    <span className="font-medium">#{p.order_id}</span>
+                  )}
                 </TD>
                 <TD>{PAYMENT_METHOD_LABELS[p.method] ?? p.method}</TD>
                 <TD>
@@ -383,7 +413,7 @@ function PaymentHistoryTable({ rows, emptyText }: { rows: HistoryPayment[]; empt
                     p.status === "confirmed" && "text-[var(--success)]",
                   )}
                 >
-                  {money(p.amount)}
+                  {money(p.amount, p.currency)}
                 </TD>
               </TR>
             ))}
@@ -616,7 +646,7 @@ function PaymentModal({
               {parts.map((part) => (
                 <div key={part.id} className="flex items-start justify-between gap-4 rounded-lg border px-3 py-2.5">
                   <div>
-                    <div className="font-medium">{CASHIER_PAYMENT_METHOD_LABELS[part.method] ?? part.method}</div>
+                    <div className="font-medium">{PAYMENT_METHOD_LABELS[part.method] ?? part.method}</div>
                     {part.method === "invoice" && (
                       <div className="text-xs text-[var(--muted-foreground)]">
                         Телефон: {part.phone_number ?? order.client_phone}
@@ -680,7 +710,7 @@ function PaymentModal({
                 <Clock className="mt-0.5 size-4 shrink-0" />
                 <span>
                   Оплата заблокирована: магазин «{blockingStore.name}» платит только по расписанию (
-                  {scheduleLabel(blockingStore)}).
+                  {formatPaymentSchedule(blockingStore, "payment")}).
                 </span>
               </div>
             ) : (
@@ -747,7 +777,7 @@ function PaymentModal({
                               )
                               .map((method) => (
                                 <SelectItem key={method} value={method}>
-                                  {CASHIER_PAYMENT_METHOD_LABELS[method]}
+                                  {PAYMENT_METHOD_LABELS[method]}
                                 </SelectItem>
                               ))}
                           </SelectContent>
@@ -835,10 +865,13 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { me } = useAuth();
   const isAccountant = can(me, "payments.create");
+  const canViewOrders = can(me, "orders.view");
   const { data, loading, error: loadError, reload } = useApi<ClientDebtDetail>(`/clients/${id}/debt-detail/`);
-  const { data: history, reload: reloadHistory } = useApi<ClientHistory>(`/clients/${id}/history/`);
-  // Плитки сверху считаются в основной валюте клиента, а не всегда в тенге.
-  const debtCurrency = data?.debt_currency ?? data?.client?.currency ?? "KZT";
+  const {
+    data: history,
+    error: historyError,
+    reload: reloadHistory,
+  } = useApi<ClientHistory>(`/clients/${id}/history/`);
   const [tab, setTab] = useState("orders");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [paymentOpen, setPaymentOpen] = useState(false);
@@ -855,6 +888,23 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
       </AppShell>
     );
   }
+
+  const debtByCurrency = data.debt_by_currency ?? {};
+  const debtCurrency = primaryMoneyCurrency(debtByCurrency, data.debt_currency ?? data.client.currency);
+  const debtTotal = amountForCurrency(debtByCurrency, data.debt_total, debtCurrency);
+  const lifetimeTotalByCurrency = Object.fromEntries(
+    Object.entries(data.lifetime_by_currency ?? {}).map(([currency, totals]) => [currency, totals.total]),
+  );
+  const lifetimePaidByCurrency = Object.fromEntries(
+    Object.entries(data.lifetime_by_currency ?? {}).map(([currency, totals]) => [currency, totals.paid]),
+  );
+  const lifetimeCurrency = primaryMoneyCurrency(lifetimeTotalByCurrency, debtCurrency);
+  const paidCurrency = primaryMoneyCurrency(lifetimePaidByCurrency, lifetimeCurrency);
+  const lifetimeTotal = amountForCurrency(lifetimeTotalByCurrency, data.lifetime_total, lifetimeCurrency);
+  const lifetimePaid = amountForCurrency(lifetimePaidByCurrency, data.lifetime_paid, paidCurrency);
+  const overdueByCurrency = data.overdue_by_currency ?? {};
+  const overdueCurrency = primaryMoneyCurrency(overdueByCurrency, debtCurrency);
+  const overdueTotal = amountForCurrency(overdueByCurrency, data.overdue_total, overdueCurrency);
 
   const storeById = new Map(data.stores.map((s) => [s.id, s]));
   // Магазин с расписанием блокирует оплату вне окна.
@@ -891,10 +941,8 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
               <Wallet className="size-4" /> <span className="hidden sm:inline">Внести оплату</span>
             </Button>
           )}
-          <Link href="/accounting">
-            <Button size="sm" variant="outline">
-              <ArrowLeft className="size-4" />К долгам
-            </Button>
+          <Link href="/accounting" className={buttonVariants({ size: "sm", variant: "outline" })}>
+            <ArrowLeft className="size-4" />К долгам
           </Link>
         </div>
       }
@@ -904,39 +952,37 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
           label="Текущий долг"
           tone="destructive"
           caption="к погашению"
-          value={
-            <span title={money(data.debt_total, debtCurrency)}>{compactMoney(data.debt_total, debtCurrency)}</span>
-          }
-        />
+          value={<span title={money(debtTotal, debtCurrency)}>{compactMoney(debtTotal, debtCurrency)}</span>}
+        >
+          <CurrencyRows totals={debtByCurrency} primary={debtCurrency} />
+        </StatCard>
         <StatCard
           label="Общая задолженность"
           caption="всего за всё время"
           value={
-            <span title={money(data.lifetime_total, debtCurrency)}>
-              {compactMoney(data.lifetime_total, debtCurrency)}
-            </span>
+            <span title={money(lifetimeTotal, lifetimeCurrency)}>{compactMoney(lifetimeTotal, lifetimeCurrency)}</span>
           }
-        />
+        >
+          <CurrencyRows totals={lifetimeTotalByCurrency} primary={lifetimeCurrency} />
+        </StatCard>
         <StatCard
           label="Оплачено"
           tone="success"
           caption="всего оплачено"
-          value={
-            <span title={money(data.lifetime_paid, debtCurrency)}>
-              {compactMoney(data.lifetime_paid, debtCurrency)}
-            </span>
-          }
-        />
+          value={<span title={money(lifetimePaid, paidCurrency)}>{compactMoney(lifetimePaid, paidCurrency)}</span>}
+        >
+          <CurrencyRows totals={lifetimePaidByCurrency} primary={paidCurrency} />
+        </StatCard>
         <StatCard
           label="Просрочено"
           tone="destructive"
           caption="просроченные суммы"
           value={
-            <span title={money(data.overdue_total, debtCurrency)}>
-              {compactMoney(data.overdue_total, debtCurrency)}
-            </span>
+            <span title={money(overdueTotal, overdueCurrency)}>{compactMoney(overdueTotal, overdueCurrency)}</span>
           }
-        />
+        >
+          <CurrencyRows totals={overdueByCurrency} primary={overdueCurrency} />
+        </StatCard>
       </section>
 
       {error && <p className="mb-4 text-sm text-[var(--destructive)]">{error}</p>}
@@ -958,6 +1004,9 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
             ]}
           />
 
+          {tab !== "orders" && historyError && (
+            <ErrorAlert message={historyError} onRetry={() => void reloadHistory()} />
+          )}
           {tab === "orders" &&
             (data.orders.length === 0 ? (
               <Card>
@@ -971,6 +1020,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                   key={order.id}
                   order={order}
                   canPay={isAccountant}
+                  canViewOrder={canViewOrders}
                   onPay={() => {
                     setSelectedId(order.id);
                     setPaymentOpen(true);
@@ -978,8 +1028,12 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                 />
               ))
             ))}
-          {tab === "history" && <PaymentHistoryTable rows={payments} emptyText="Платежей пока нет." />}
-          {tab === "invoices" && <PaymentHistoryTable rows={invoices} emptyText="Выставленных счетов нет." />}
+          {tab === "history" && (
+            <PaymentHistoryTable rows={payments} emptyText="Платежей пока нет." canViewOrders={canViewOrders} />
+          )}
+          {tab === "invoices" && (
+            <PaymentHistoryTable rows={invoices} emptyText="Выставленных счетов нет." canViewOrders={canViewOrders} />
+          )}
         </div>
       </div>
       {isAccountant && data.orders.length > 0 && (

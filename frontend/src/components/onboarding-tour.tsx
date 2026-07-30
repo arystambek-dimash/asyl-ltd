@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { can } from "@/lib/can";
@@ -8,6 +8,14 @@ import type { Me } from "@/lib/types";
 
 const TOUR_DONE_KEY = "asyl_tour_v1";
 export const TOUR_START_EVENT = "asyl:start-tour";
+const FOCUSABLE_SELECTOR = [
+  "button:not(:disabled)",
+  "a[href]",
+  "input:not(:disabled)",
+  "select:not(:disabled)",
+  "textarea:not(:disabled)",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
 
 interface TourStep {
   /** значение data-tour подсвечиваемого элемента; без него — карточка по центру */
@@ -72,6 +80,11 @@ export function OnboardingTour({ me }: { me: Me }) {
   const [step, setStep] = useState(0);
   const [rect, setRect] = useState<Rect | null>(null);
   const steps = useMemo(() => buildSteps(me), [me]);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const titleId = useId();
+  const descriptionId = useId();
 
   const finish = useCallback(() => {
     setActive(false);
@@ -110,7 +123,10 @@ export function OnboardingTour({ me }: { me: Me }) {
     const update = () => setRect(targetRect(target));
     update();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") finish();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish();
+      }
     };
     window.addEventListener("resize", update);
     window.addEventListener("keydown", onKey);
@@ -119,6 +135,67 @@ export function OnboardingTour({ me }: { me: Me }) {
       window.removeEventListener("keydown", onKey);
     };
   }, [active, finish, step, steps]);
+
+  useEffect(() => {
+    if (!active) return;
+
+    restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const overlay = overlayRef.current;
+    const siblings = overlay
+      ? Array.from(overlay.parentElement?.children ?? []).filter(
+          (element): element is HTMLElement => element instanceof HTMLElement && element !== overlay,
+        )
+      : [];
+    const siblingState = siblings.map((element) => ({
+      element,
+      inert: element.hasAttribute("inert"),
+      ariaHidden: element.getAttribute("aria-hidden"),
+    }));
+    for (const sibling of siblings) {
+      sibling.setAttribute("inert", "");
+      sibling.setAttribute("aria-hidden", "true");
+    }
+
+    const focusFrame = requestAnimationFrame(() => dialogRef.current?.focus());
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      for (const { element, inert, ariaHidden } of siblingState) {
+        if (!inert) element.removeAttribute("inert");
+        if (ariaHidden === null) element.removeAttribute("aria-hidden");
+        else element.setAttribute("aria-hidden", ariaHidden);
+      }
+
+      const restoreTarget = restoreFocusRef.current;
+      restoreFocusRef.current = null;
+      if (restoreTarget?.isConnected && !restoreTarget.matches(":disabled") && !restoreTarget.closest("[inert]")) {
+        restoreTarget.focus();
+      }
+    };
+  }, [active]);
+
+  function trapFocus(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Tab" || !dialogRef.current) return;
+    const dialog = dialogRef.current;
+    const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+      (element) => element.tabIndex >= 0 && !element.hidden && !element.closest("[inert]"),
+    );
+    if (focusable.length === 0) {
+      event.preventDefault();
+      dialog.focus();
+      return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const focused = document.activeElement;
+    if (event.shiftKey && (focused === first || focused === dialog || !dialog.contains(focused))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (focused === last || !dialog.contains(focused))) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   if (!active || steps.length === 0) return null;
   const current = steps[step];
@@ -161,13 +238,7 @@ export function OnboardingTour({ me }: { me: Me }) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-[200]"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Обучение по системе"
-      onClick={finish}
-    >
+    <div ref={overlayRef} className="fixed inset-0 z-[200]" onClick={finish} onKeyDown={trapFocus}>
       {/* затемнение с «окном» вокруг подсвеченного элемента */}
       {rect ? (
         <div
@@ -185,13 +256,22 @@ export function OnboardingTour({ me }: { me: Me }) {
       )}
 
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        tabIndex={-1}
         style={cardStyle}
         onClick={(e) => e.stopPropagation()}
         className="animate-fade-up rounded-xl border bg-[var(--card)] p-4 shadow-2xl"
       >
         <div className="flex items-start justify-between gap-3">
-          <div className="text-[15px] font-semibold">{current.title}</div>
+          <h2 id={titleId} className="text-[15px] font-semibold">
+            {current.title}
+          </h2>
           <button
+            type="button"
             onClick={finish}
             aria-label="Закрыть обучение"
             className="-mr-1 -mt-1 flex size-7 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
@@ -199,9 +279,11 @@ export function OnboardingTour({ me }: { me: Me }) {
             <X className="size-4" />
           </button>
         </div>
-        <p className="mt-1.5 text-sm text-[var(--muted-foreground)]">{current.text}</p>
+        <p id={descriptionId} className="mt-1.5 text-sm text-[var(--muted-foreground)]">
+          {current.text}
+        </p>
         <div className="mt-4 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5" aria-hidden="true">
             {steps.map((_, i) => (
               <span
                 key={i}

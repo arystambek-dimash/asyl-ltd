@@ -5,6 +5,15 @@ import { MoreVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDismiss } from "@/lib/use-dismiss";
 
+const TABBABLE_SELECTOR = [
+  "button:not(:disabled)",
+  "a[href]",
+  "input:not(:disabled)",
+  "select:not(:disabled)",
+  "textarea:not(:disabled)",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
+
 export interface ActionMenuItem {
   key: string;
   label: string;
@@ -27,7 +36,7 @@ export function ActionMenu({
   label?: string;
   className?: string;
 }) {
-  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
@@ -47,10 +56,33 @@ export function ActionMenu({
     enabledItems[index]?.focus();
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setPos(null);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [open]);
+
   function openMenu(button: HTMLButtonElement, focusEdge: "first" | "last" = "first") {
     const rect = button.getBoundingClientRect();
+    const viewportPadding = 8;
+    const gap = 4;
+    const menuWidth = 192;
+    const menuHeight = Math.min(items.length * 44 + 8, window.innerHeight - viewportPadding * 2);
+    const left = Math.max(
+      viewportPadding,
+      Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - viewportPadding),
+    );
+    const top =
+      rect.bottom + gap + menuHeight <= window.innerHeight - viewportPadding
+        ? rect.bottom + gap
+        : Math.max(viewportPadding, rect.top - menuHeight - gap);
     focusEdgeRef.current = focusEdge;
-    setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+    setPos({ top, left });
   }
 
   function toggle(e: React.MouseEvent<HTMLButtonElement>) {
@@ -83,8 +115,21 @@ export function ActionMenu({
     }
     if (e.key === "Tab") {
       e.preventDefault();
+      const trigger = triggerRef.current;
+      const tabbable = Array.from(document.querySelectorAll<HTMLElement>(TABBABLE_SELECTOR)).filter(
+        (element) =>
+          element.tabIndex >= 0 &&
+          !element.hidden &&
+          !element.closest("[inert]") &&
+          !menuRef.current?.contains(element),
+      );
+      const triggerIndex = trigger ? tabbable.indexOf(trigger) : -1;
+      const nextTarget = triggerIndex >= 0 ? tabbable[triggerIndex + (e.shiftKey ? -1 : 1)] : undefined;
       setPos(null);
-      triggerRef.current?.focus();
+      // The focused menu item is portalled and disappears when the menu
+      // closes. Move relative to the logical trigger after React unmounts the
+      // menu, preserving normal forward/backward document order.
+      requestAnimationFrame(() => nextTarget?.focus());
       return;
     }
     if (!enabledItems.length) return;
@@ -100,6 +145,8 @@ export function ActionMenu({
     e.stopPropagation();
     enabledItems[nextIndex]?.focus();
   }
+
+  if (items.length === 0) return null;
 
   return (
     <>
@@ -132,7 +179,7 @@ export function ActionMenu({
             role="menu"
             tabIndex={-1}
             aria-labelledby={triggerId}
-            style={{ top: pos.top, right: pos.right }}
+            style={{ top: pos.top, left: pos.left }}
             onClick={(event) => event.stopPropagation()}
             onKeyDown={onMenuKeyDown}
             className="fixed z-[120] w-48 rounded-xl border bg-[var(--popover)] p-1 shadow-[0_12px_40px_rgba(0,0,0,0.18)] animate-modal-content"

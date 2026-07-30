@@ -1,6 +1,5 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
@@ -19,11 +18,13 @@ import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ActionMenu, type ActionMenuItem } from "@/components/ui/action-menu";
+import { ActionCard } from "@/components/ui/action-card";
 import { OrderForm } from "@/components/order-form";
 import { OrderStatusSelect } from "@/components/order-status-select";
 import { ManualOrderStatusModal, type ManualOrderTarget } from "@/components/manual-order-status-modal";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
 import { StatementExportModal } from "@/components/statement-export-modal";
+import { ArchiveDock } from "@/components/orders/archive-dock";
 import {
   ORDER_PUBLIC_STATUSES,
   ORDER_STATUS_LABELS,
@@ -35,8 +36,10 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { cn, currencySymbol, formatDateTime, formatIsoDate, formatMoney, primaryDebtCurrency } from "@/lib/utils";
+import { otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
+import { cn, currencySymbol, formatDateTime, formatIsoDate, formatMoney, sumMoneyByCurrency } from "@/lib/utils";
 import { useDismiss } from "@/lib/use-dismiss";
+import { useRovingTabs } from "@/lib/use-roving-tabs";
 import {
   Archive,
   BarChart3,
@@ -282,7 +285,7 @@ function DepartmentManager({ onChanged }: { onChanged: () => void }) {
           begin();
         }}
       >
-        <Settings2 className="size-4" /> Отделы
+        <Settings2 className="size-4" /> <span className="hidden sm:inline">Отделы</span>
       </Button>
       <Modal
         open={open}
@@ -419,6 +422,12 @@ function OrdersAnalytics({
   activeCount: number;
 }) {
   const [view, setView] = useState<"departments" | "overview">("departments");
+  const analyticsTabs = useRovingTabs({
+    tabs: ["departments", "overview"] as const,
+    active: view,
+    onChange: setView,
+    label: "Вид аналитики заказов",
+  });
   const totalOrders = rows.reduce((sum, row) => sum + row.orders, 0);
   const activeDepartment = rows.find((row) => row.code === active);
   const currencies = new Set(orders.map((order) => order.currency ?? "KZT"));
@@ -427,14 +436,14 @@ function OrdersAnalytics({
   // Сумма по валютам: тенге и доллары не складываются. Крупно — валюта с
   // наибольшим оборотом, остальные строкой в подписи. Раньше при смешении
   // валют вместо суммы стояло слово «Разные валюты» — цифр не было вовсе.
-  const sumByCurrency = orders.reduce<Record<string, number>>((totals, order) => {
-    const currency = order.currency ?? "KZT";
-    totals[currency] = (totals[currency] ?? 0) + Number(order.total_amount || 0);
-    return totals;
-  }, {});
-  const mainCurrency = primaryDebtCurrency(sumByCurrency);
+  const sumByCurrency = sumMoneyByCurrency(
+    orders,
+    (order) => order.total_amount,
+    (order) => order.currency,
+  );
+  const mainCurrency = primaryMoneyCurrency(sumByCurrency);
   const mainTotal = sumByCurrency[mainCurrency] ?? 0;
-  const otherSums = Object.entries(sumByCurrency).filter(([currency, value]) => currency !== mainCurrency && value > 0);
+  const otherSums = otherCurrencyAmounts(sumByCurrency, mainCurrency);
   const mainOrders = orders.filter((order) => (order.currency ?? "KZT") === mainCurrency);
 
   return (
@@ -451,16 +460,12 @@ function OrdersAnalytics({
           </p>
         </div>
         <div
-          role="tablist"
-          aria-label="Вид аналитики заказов"
+          {...analyticsTabs.tabListProps}
           className="grid grid-cols-2 rounded-xl border bg-[var(--muted)]/55 p-1 sm:w-fit"
         >
           <button
             type="button"
-            role="tab"
-            aria-selected={view === "departments"}
-            aria-controls="orders-department-analytics"
-            onClick={() => setView("departments")}
+            {...analyticsTabs.getTabProps("departments")}
             className={cn(
               "flex min-h-9 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold transition-all",
               view === "departments"
@@ -472,10 +477,7 @@ function OrdersAnalytics({
           </button>
           <button
             type="button"
-            role="tab"
-            aria-selected={view === "overview"}
-            aria-controls="orders-overview-analytics"
-            onClick={() => setView("overview")}
+            {...analyticsTabs.getTabProps("overview")}
             className={cn(
               "flex min-h-9 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold transition-all",
               view === "overview"
@@ -489,7 +491,7 @@ function OrdersAnalytics({
       </div>
 
       {view === "departments" ? (
-        <div id="orders-department-analytics" role="tabpanel" className="p-3 sm:p-4">
+        <div {...analyticsTabs.getTabPanelProps("departments")} className="p-3 sm:p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1">
             <p className="text-xs text-[var(--muted-foreground)]">
               {activeDepartment ? (
@@ -575,8 +577,7 @@ function OrdersAnalytics({
         </div>
       ) : (
         <div
-          id="orders-overview-analytics"
-          role="tabpanel"
+          {...analyticsTabs.getTabPanelProps("overview")}
           className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 sm:p-4"
         >
           <StatCard label="Всего заказов" value={String(orders.length)} icon={ListChecks} />
@@ -598,170 +599,6 @@ function OrdersAnalytics({
         </div>
       )}
     </section>
-  );
-}
-
-/* ── Док архива в углу: клик раскрывает стопку удалённых, как Stacks в macOS ── */
-function ArchiveDock({
-  trashed,
-  onOpenArchive,
-  onChanged,
-}: {
-  trashed: Order[];
-  onOpenArchive: () => void;
-  onChanged: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [busyId, setBusyId] = useState<number | null>(null);
-  const [error, setError] = useState("");
-  const [purgeItem, setPurgeItem] = useState<Order | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
-  // Пока открыт диалог удаления, клик по нему не должен схлопывать стопку.
-  useDismiss(ref, () => setOpen(false), open && !purgeItem);
-
-  // Веер стопки: ближе к кнопке — удалённые последними.
-  const recent = [...trashed].sort((a, b) => (b.deleted_at ?? "").localeCompare(a.deleted_at ?? "")).slice(0, 4);
-  const fan = [...recent].reverse();
-
-  async function act(o: Order, fn: () => Promise<unknown>) {
-    setBusyId(o.id);
-    setError("");
-    try {
-      await fn();
-      onChanged();
-    } catch (e) {
-      setError(apiError(e));
-      throw e;
-    } finally {
-      setBusyId(null);
-    }
-  }
-  const restore = (o: Order) => act(o, () => api.post(`/orders/${o.id}/restore/`)).catch(() => {});
-  const purge = (o: Order) =>
-    act(o, () => api.delete(`/orders/${o.id}/purge/`))
-      .then(() => setPurgeItem(null))
-      .catch(() => setPurgeItem(null));
-
-  // Задержки анимации: карточки «выезжают» из кнопки снизу вверх.
-  const delay = (indexFromBottom: number) => ({ animationDelay: `${indexFromBottom * 45}ms` });
-
-  // Портал в body: у контента AppShell есть transform (animate-fade-up),
-  // внутри него fixed считается от контейнера, а не от окна.
-  return createPortal(
-    <div ref={ref} className="fixed bottom-5 right-4 z-[90] flex flex-col items-end sm:bottom-6 sm:right-6">
-      {open && (
-        <div className="mb-3 flex w-[300px] max-w-[calc(100vw-2rem)] flex-col gap-2">
-          <button
-            type="button"
-            style={delay(fan.length + 1)}
-            onClick={() => {
-              setOpen(false);
-              onOpenArchive();
-            }}
-            className="animate-fade-up flex items-center justify-center gap-1.5 self-center rounded-full border bg-[var(--popover)] px-4 py-1.5 text-xs font-medium shadow-lg transition-colors hover:bg-[var(--accent)]"
-          >
-            Открыть архив{trashed.length > 0 ? ` (${trashed.length})` : ""}
-            <ChevronDown className="size-3.5 -rotate-90" />
-          </button>
-          {error && (
-            <p
-              style={delay(fan.length)}
-              className="animate-fade-up rounded-lg border bg-[var(--popover)] px-3 py-2 text-xs text-[var(--destructive)] shadow-lg"
-            >
-              {error}
-            </p>
-          )}
-          {fan.length === 0 ? (
-            <div
-              style={delay(0)}
-              className="animate-fade-up rounded-xl border bg-[var(--popover)] px-4 py-5 text-center text-sm text-[var(--muted-foreground)] shadow-lg"
-            >
-              Архив пуст.
-            </div>
-          ) : (
-            fan.map((o, i) => (
-              <div
-                key={o.id}
-                style={delay(fan.length - 1 - i)}
-                className="animate-fade-up flex items-center justify-between gap-2 rounded-xl border bg-[var(--popover)] p-3 shadow-[0_10px_35px_rgba(0,0,0,0.16)]"
-              >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className="font-semibold">#{o.id}</span>
-                    <span className="truncate">{o.client_name || `Клиент #${o.client}`}</span>
-                  </div>
-                  <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">
-                    <span className="tabular-nums">
-                      {formatMoney(o.total_amount)} {currencySymbol(o.currency)}
-                    </span>
-                    {o.deleted_at && <> · {formatDateTime(o.deleted_at)}</>}
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busyId === o.id}
-                    title="Восстановить заказ"
-                    onClick={() => restore(o)}
-                  >
-                    <RotateCcw className="size-3.5" /> Вернуть
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busyId === o.id}
-                    className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                    title="Удалить навсегда"
-                    onClick={() => setPurgeItem(o)}
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      )}
-
-      <ConfirmDialog
-        open={!!purgeItem}
-        onClose={() => setPurgeItem(null)}
-        title="Удалить заказ навсегда?"
-        description={
-          purgeItem
-            ? `Заказ #${purgeItem.id} (${purgeItem.client_name ?? "клиент"}) будет удалён безвозвратно вместе с позициями и оплатами. Восстановить его будет нельзя.`
-            : ""
-        }
-        confirmLabel="Удалить навсегда"
-        busy={purgeItem ? busyId === purgeItem.id : false}
-        error={error}
-        onConfirm={() => purgeItem && purge(purgeItem)}
-      />
-
-      <button
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-        title="Архив заказов"
-        aria-label="Архив заказов"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className={cn(
-          "relative flex size-12 items-center justify-center rounded-2xl border shadow-lg transition-all",
-          open
-            ? "border-[var(--foreground)] bg-[var(--foreground)] text-[var(--background)]"
-            : "bg-[var(--card)] text-[var(--muted-foreground)] hover:-translate-y-0.5 hover:text-[var(--foreground)] hover:shadow-xl",
-        )}
-      >
-        <Archive className="size-5" />
-        {trashed.length > 0 && !open && (
-          <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--foreground)] px-1.5 text-[11px] font-semibold tabular-nums text-[var(--background)]">
-            {trashed.length}
-          </span>
-        )}
-      </button>
-    </div>,
-    document.body,
   );
 }
 
@@ -879,19 +716,34 @@ function OrdersPageInner() {
   const [manualStatusTarget, setManualStatusTarget] = useState<ManualOrderTarget | null>(null);
   const [rollbackOrder, setRollbackOrder] = useState<Order | null>(null);
   const [rollbackTarget, setRollbackTarget] = useState<"pending" | "confirmed" | "cancelled">("confirmed");
-  // Стопка архива в углу видна всегда — держим список удалённых под рукой.
-  const { data: trashed, reload: reloadTrash } = useApi<Order[]>(canEdit ? "/orders/trash/" : null);
-  const { data: templateOrders } = useApi<Order[]>(open ? "/orders/" : null);
+  const { data: trashPreview, reload: reloadTrashPreview } = useApi<{ count: number; results: Order[] }>(
+    canEdit && view === "orders" ? "/orders/trash-preview/" : null,
+  );
+  const {
+    data: trashed,
+    loading: trashLoading,
+    error: trashError,
+    reload: reloadTrash,
+  } = useApi<Order[]>(canEdit && view === "archive" ? "/orders/trash/" : null);
 
   const requestedTemplateId = Number(searchParams.get("template") || 0);
+  const {
+    data: requestedTemplate,
+    error: requestedTemplateError,
+    reload: reloadRequestedTemplate,
+  } = useApi<Order>(open && canCreate && requestedTemplateId > 0 ? `/orders/${requestedTemplateId}/` : null);
+  const templateOrders = useMemo(() => {
+    const candidates = orders ?? [];
+    if (!requestedTemplate || candidates.some((order) => order.id === requestedTemplate.id)) return candidates;
+    return [requestedTemplate, ...candidates];
+  }, [orders, requestedTemplate]);
+
   useEffect(() => {
     if (requestedTemplateId > 0 && canCreate) setOpen(true);
   }, [requestedTemplateId, canCreate]);
   useEffect(() => {
-    if (!requestedTemplateId || !templateOrders) return;
-    const requested = templateOrders.find((order) => order.id === requestedTemplateId);
-    if (requested) setTemplateOrder(requested);
-  }, [requestedTemplateId, templateOrders]);
+    if (requestedTemplate) setTemplateOrder(requestedTemplate);
+  }, [requestedTemplate]);
 
   function closeNewOrder() {
     setOpen(false);
@@ -907,7 +759,7 @@ function OrdersPageInner() {
       await api.delete(`/orders/${delItem.id}/`);
       setDelItem(null);
       reload();
-      reloadTrash();
+      reloadTrashPreview();
     } catch (e) {
       setDelError(apiError(e));
     } finally {
@@ -999,6 +851,8 @@ function OrdersPageInner() {
     if (rank !== 0) return rank;
     let av: number | string, bv: number | string;
     if (sortKey === "amount") {
+      const currencyCmp = a.currency.localeCompare(b.currency);
+      if (currencyCmp !== 0) return sortDir === "asc" ? currencyCmp : -currencyCmp;
       av = Number(a.total_amount || 0);
       bv = Number(b.total_amount || 0);
     } else if (sortKey === "client") {
@@ -1065,9 +919,12 @@ function OrdersPageInner() {
       {view === "archive" ? (
         <ArchiveView
           showDept={showDept}
+          trashed={trashed}
+          loading={trashLoading}
+          error={trashError}
+          reload={reloadTrash}
           onBack={() => {
             reload();
-            reloadTrash();
             setView("orders");
           }}
           onRestored={() => {
@@ -1134,21 +991,14 @@ function OrdersPageInner() {
               <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Заказов пока нет.</p>
             ) : (
               sorted.map((o) => (
-                <div
+                <ActionCard
                   key={o.id}
-                  role="link"
-                  tabIndex={0}
-                  aria-label={`Заказ #${o.id}`}
-                  onClick={() => router.push(`/orders/${o.id}`)}
-                  // На телефоне карточка — единственный путь в заказ: без роли
-                  // и обработчика клавиш он был недоступен с клавиатуры.
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      router.push(`/orders/${o.id}`);
-                    }
+                  primaryAction={{
+                    kind: "link",
+                    href: `/orders/${o.id}`,
+                    label: `Открыть заказ #${o.id}`,
                   }}
-                  className="flex cursor-pointer flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  className="flex cursor-pointer flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-2">
@@ -1156,11 +1006,13 @@ function OrdersPageInner() {
                       {showDept && <DepartmentBadge order={o} />}
                     </div>
                     {canEdit && (o.status !== "shipped" || canRollback) ? (
-                      <OrderStatusSelect
-                        status={o.status}
-                        disabled={statusBusyId === o.id}
-                        onChange={(target) => chooseStatus(o, target)}
-                      />
+                      <div className="relative z-10">
+                        <OrderStatusSelect
+                          status={o.status}
+                          disabled={statusBusyId === o.id}
+                          onChange={(target) => chooseStatus(o, target)}
+                        />
+                      </div>
                     ) : (
                       <StatusBadge status={o.status} dot />
                     )}
@@ -1201,9 +1053,13 @@ function OrdersPageInner() {
                     ) : (
                       <span />
                     )}
-                    {canEdit && <ActionMenu items={rowActions(o)} />}
+                    {canEdit && (
+                      <div className="relative z-10">
+                        <ActionMenu items={rowActions(o)} />
+                      </div>
+                    )}
                   </div>
-                </div>
+                </ActionCard>
               ))
             )}
           </div>
@@ -1321,11 +1177,12 @@ function OrdersPageInner() {
 
       {canEdit && view === "orders" && (
         <ArchiveDock
-          trashed={trashed ?? []}
+          trashed={trashPreview?.results ?? []}
+          count={trashPreview?.count ?? 0}
           onOpenArchive={() => setView("archive")}
           onChanged={() => {
             reload();
-            reloadTrash();
+            reloadTrashPreview();
           }}
         />
       )}
@@ -1353,7 +1210,7 @@ function OrdersPageInner() {
           setManualStatusTarget(null);
         }}
         onChanged={async () => {
-          await Promise.all([reload(), reloadSummary(), reloadTrash()]);
+          await Promise.all([reload(), reloadSummary(), reloadTrashPreview()]);
         }}
       />
       <ShipmentRollbackModal
@@ -1361,7 +1218,7 @@ function OrdersPageInner() {
         initialTarget={rollbackTarget}
         onClose={() => setRollbackOrder(null)}
         onChanged={async () => {
-          await Promise.all([reload(), reloadSummary(), reloadTrash()]);
+          await Promise.all([reload(), reloadSummary(), reloadTrashPreview()]);
         }}
       />
 
@@ -1376,7 +1233,10 @@ function OrdersPageInner() {
       >
         {open && (
           <div className="space-y-4">
-            <OrderTemplatePicker orders={templateOrders ?? []} selected={templateOrder} onSelect={setTemplateOrder} />
+            {requestedTemplateError && (
+              <ErrorAlert message={requestedTemplateError} onRetry={reloadRequestedTemplate} />
+            )}
+            <OrderTemplatePicker orders={templateOrders} selected={templateOrder} onSelect={setTemplateOrder} />
             <OrderForm
               key={templateOrder?.id ?? "blank"}
               template={templateOrder}
@@ -1431,14 +1291,21 @@ function OrdersPageInner() {
 /* ── Архив: удалённые заказы с восстановлением ──────────────────────────── */
 function ArchiveView({
   showDept,
+  trashed,
+  loading,
+  error,
+  reload,
   onBack,
   onRestored,
 }: {
   showDept: boolean;
+  trashed: Order[] | null | undefined;
+  loading: boolean;
+  error: string;
+  reload: () => Promise<unknown>;
   onBack: () => void;
   onRestored: () => void;
 }) {
-  const { data: trashed, loading, error, reload } = useApi<Order[]>("/orders/trash/");
   const [busyId, setBusyId] = useState<number | null>(null);
   const [actErr, setActErr] = useState("");
   const [purgeItem, setPurgeItem] = useState<Order | null>(null);

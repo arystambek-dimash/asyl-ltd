@@ -5,9 +5,26 @@ one place prevents list and detail endpoints from drifting back into N+1
 queries when serializer fields evolve.
 """
 
-from django.db.models import Prefetch, QuerySet
+from datetime import timedelta
+
+from django.db.models import Prefetch, Q, QuerySet
+from django.utils import timezone
 
 from .models import Order, Payment, StatusChangeRequest
+
+
+def for_post_board(
+    queryset: QuerySet[Order],
+    completed_order_days: int,
+) -> QuerySet[Order]:
+    """Active loading work plus the configured window of shipped orders."""
+    since = timezone.localdate() - timedelta(
+        days=max(0, completed_order_days - 1)
+    )
+    return queryset.filter(
+        Q(status__in=("confirmed", "arrived", "loading", "loaded"))
+        | Q(status="shipped", shipment__shipped_at__date__gte=since)
+    )
 
 
 def with_payment_api_relations(

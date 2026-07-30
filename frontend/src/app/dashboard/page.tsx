@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useEffect, useState, type ElementType } from "react";
 import {
   AlertTriangle,
@@ -21,7 +22,6 @@ import {
   Warehouse,
 } from "lucide-react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis } from "recharts";
-import { CameraWall } from "@/components/camera-wall";
 import { AppShell } from "@/components/layout/app-shell";
 import { StatusBadge } from "@/components/status-badge";
 import { ErrorAlert } from "@/components/ui/data-state";
@@ -29,8 +29,15 @@ import { formatPlate } from "@/components/ui/license-plate-input";
 import { Tabs } from "@/components/ui/tabs";
 import { can } from "@/lib/can";
 import { useDashboardMetrics, type DashboardMetrics } from "@/lib/use-dashboard-metrics";
-import { cn, currencySymbol, formatCompact, formatCompactCurrency, formatMoney } from "@/lib/utils";
+import { cn, currencySymbol, formatCompact, formatCompactCurrency, formatCurrency, formatMoney } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
+
+const CameraWall = dynamic(() => import("@/components/camera-wall").then((module) => module.CameraWall), {
+  ssr: false,
+  loading: () => (
+    <div className="h-72 animate-pulse rounded-[22px] border bg-[var(--muted)]/45" aria-label="Загрузка камер" />
+  ),
+});
 
 const TOOLTIP_STYLE = {
   borderRadius: 12,
@@ -65,7 +72,7 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
         m.shippedTodayOrders > 0
           ? `${m.shippedTodayOrders} отгрузок · вчера ${formatCompact(m.shippedYesterday)}`
           : `Пока без отгрузок · вчера ${formatCompact(m.shippedYesterday)}`,
-      href: "/orders",
+      href: m.canOrders ? "/orders" : "/reports",
       icon: Truck,
     },
     {
@@ -73,7 +80,7 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
       label: "Поступило сегодня",
       value: formatCompact(String(m.receivedToday)),
       exact: formatMoney(String(m.receivedToday)),
-      unit: "₸",
+      unit: currencySymbol(m.moneyCurrency),
       note: m.receivedTodayCount > 0 ? `${m.receivedTodayCount} подтверждённых оплат` : "Подтверждённых оплат пока нет",
       href: "/accounting",
       icon: Wallet,
@@ -84,7 +91,7 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
       value: formatCompact(m.totalBags),
       exact: formatMoney(m.totalBags),
       unit: "мешков",
-      note: `${m.stockByProduct.length} товарных позиций`,
+      note: `${m.stockPositionCount} товарных позиций`,
       href: "/warehouse",
       icon: Warehouse,
     },
@@ -93,14 +100,14 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
       label: m.overdueClients > 0 ? "Просроченный долг" : "Долг клиентов",
       value: formatCompact(String(m.overdueClients > 0 ? m.overdueTotal : m.debtTotal)),
       exact: formatMoney(String(m.overdueClients > 0 ? m.overdueTotal : m.debtTotal)),
-      unit: currencySymbol(m.debtCurrency),
+      unit: currencySymbol(m.overdueClients > 0 ? m.overdueCurrency : m.debtCurrency),
       note: m.overdueClients > 0 ? `${m.overdueClients} клиентов требуют внимания` : "Просроченных оплат нет",
       href: "/accounting",
       icon: CircleDollarSign,
     },
   ].filter((metric) => {
-    if (metric.key === "shipped") return m.canOrders && m.canEvents;
-    if (metric.key === "received") return m.canFinance && m.canOrders;
+    if (metric.key === "shipped") return m.canFinance || m.canOrders;
+    if (metric.key === "received") return m.canFinance;
     if (metric.key === "stock") return m.canStock;
     return m.canFinance;
   });
@@ -112,13 +119,13 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
     m.overdueClients + m.attention.pendingPayments + m.attention.awaitingReview + m.negativeStock.length;
 
   return (
-    <section className="analytics-hero relative w-full min-w-0 overflow-hidden rounded-[24px] bg-[#17231c] text-white shadow-[0_18px_60px_rgba(23,35,28,0.16)]">
+    <section className="analytics-hero relative w-full min-w-0 overflow-hidden rounded-[24px] bg-[var(--analytics-hero)] text-[var(--analytics-hero-foreground)] shadow-[0_18px_60px_rgba(12,28,80,0.2)]">
       <div aria-hidden="true" className="absolute -right-12 -top-20 size-64 rounded-full border border-white/10" />
       <div aria-hidden="true" className="absolute -right-3 -top-4 size-36 rounded-full border border-white/10" />
       <div className="relative grid min-h-[300px] min-w-0 lg:grid-cols-[1.15fr_0.85fr]">
         <div className="flex min-w-0 flex-col justify-between border-white/10 p-6 sm:p-8 lg:border-r lg:p-10">
           <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
-            <span className="size-2 rounded-full bg-[#d9f99d] shadow-[0_0_0_5px_rgba(217,249,157,0.12)]" />
+            <span className="size-2 rounded-full bg-[var(--analytics-hero-accent)] shadow-[0_0_0_5px_rgba(220,229,255,0.14)]" />
             Сводка за сегодня
             {attentionCount > 0 && (
               <span className="w-fit rounded-full bg-white/10 px-2.5 py-1 text-center normal-case tracking-normal text-white/75 min-[360px]:ml-2">
@@ -143,7 +150,7 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
 
           <Link
             href={primary.href}
-            className="group inline-flex min-h-11 w-fit items-center gap-2 text-sm font-semibold text-[#d9f99d] transition hover:text-white"
+            className="group inline-flex min-h-11 w-fit items-center gap-2 text-sm font-semibold text-[var(--analytics-hero-accent)] transition hover:text-white"
           >
             Открыть детали
             <ArrowRight className="size-4 transition-transform group-hover:translate-x-1" />
@@ -179,13 +186,25 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
             })}
             {secondary.length === 0 && (
               <div className="flex min-h-44 flex-col items-center justify-center gap-2 px-6 text-center">
-                <Sparkles className="size-5 text-[#d9f99d]" />
+                <Sparkles className="size-5 text-[var(--analytics-hero-accent)]" />
                 <p className="text-sm text-white/55">Главный показатель уже перед вами</p>
               </div>
             )}
           </div>
         </div>
       </div>
+    </section>
+  );
+}
+
+function SummaryHeroSkeleton() {
+  return (
+    <section
+      aria-label="Загрузка оперативной сводки"
+      aria-busy="true"
+      className="min-h-[360px] animate-pulse rounded-[24px] bg-[var(--analytics-hero)] shadow-[0_18px_60px_rgba(12,28,80,0.2)]"
+    >
+      <span className="sr-only">Загрузка…</span>
     </section>
   );
 }
@@ -202,13 +221,14 @@ type AttentionItem = {
 };
 
 function AttentionPanel({ m }: { m: DashboardMetrics }) {
+  const allScopesChecked = m.canFinance && m.canPayments && m.canOrders && m.canStock;
   const items: AttentionItem[] = [
     {
       key: "overdue",
       show: m.canFinance && m.overdueClients > 0,
       href: "/accounting",
       label: "Просрочена оплата",
-      hint: formatCompactCurrency(m.overdueTotal, m.debtCurrency),
+      hint: formatCompactCurrency(m.overdueTotal, m.overdueCurrency),
       value: String(m.overdueClients),
       icon: AlertTriangle,
       urgent: true,
@@ -279,7 +299,9 @@ function AttentionPanel({ m }: { m: DashboardMetrics }) {
           </span>
           <h4 className="mt-4 font-semibold">Всё спокойно</h4>
           <p className="mt-1 max-w-[220px] text-sm text-[var(--muted-foreground)]">
-            Нет просрочек, неподтверждённых оплат и ошибок склада.
+            {allScopesChecked
+              ? "Нет просрочек, неподтверждённых оплат и ошибок склада."
+              : "Нет задач в доступных вам разделах."}
           </p>
         </div>
       ) : (
@@ -321,8 +343,8 @@ type TrendMode = "bags" | "money";
 
 function TrendPanel({ m, days }: { m: DashboardMetrics; days: number }) {
   const modes = [
-    ...(m.canOrders && m.canEvents ? [{ key: "bags" as const, label: "Отгрузки" }] : []),
-    ...(m.canFinance && m.canOrders ? [{ key: "money" as const, label: "Деньги" }] : []),
+    ...(m.canFinance || m.canOrders ? [{ key: "bags" as const, label: "Отгрузки" }] : []),
+    ...(m.canFinance ? [{ key: "money" as const, label: "Деньги" }] : []),
   ];
   const [mode, setMode] = useState<TrendMode>(modes[0]?.key ?? "bags");
   if (modes.length === 0) return null;
@@ -350,8 +372,8 @@ function TrendPanel({ m, days }: { m: DashboardMetrics; days: number }) {
           { label: "Рабочих дней", value: `${activeDays} из ${days}` },
         ]
       : [
-          { label: "Выручка", value: `${formatCompact(String(m.periodRevenue))} ₸` },
-          { label: "Поступило", value: `${formatCompact(String(m.periodReceived))} ₸` },
+          { label: "Выручка", value: formatCompactCurrency(m.periodRevenue, m.moneyCurrency) },
+          { label: "Поступило", value: formatCompactCurrency(m.periodReceived, m.moneyCurrency) },
         ];
 
   return (
@@ -453,7 +475,7 @@ function TrendPanel({ m, days }: { m: DashboardMetrics; days: number }) {
               <Tooltip
                 contentStyle={TOOLTIP_STYLE}
                 formatter={(value: number, name: string) => [
-                  `${formatMoney(String(value))} ₸`,
+                  formatCurrency(value, m.moneyCurrency),
                   name === "revenue" ? "Выручка" : "Поступления",
                 ]}
                 labelFormatter={(label) => `День ${label}`}
@@ -479,7 +501,8 @@ function TrendPanel({ m, days }: { m: DashboardMetrics; days: number }) {
             ))
           : m.spark.map((day) => (
               <li key={day.label}>
-                День {day.label}: выручка {day.revenue} ₸, поступления {day.received} ₸
+                День {day.label}: выручка {formatCurrency(day.revenue, m.moneyCurrency)}, поступления{" "}
+                {formatCurrency(day.received, m.moneyCurrency)}
               </li>
             ))}
       </ul>
@@ -582,6 +605,17 @@ function AnalyticsView() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {m.stale && (
+              <span className="hidden rounded-full bg-[var(--warning)]/10 px-3 py-1.5 text-xs font-medium text-[var(--warning)] sm:inline">
+                Не обновлено
+                {m.lastUpdatedAt
+                  ? ` · ${m.lastUpdatedAt.toLocaleTimeString("ru-RU", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}`
+                  : ""}
+              </span>
+            )}
             <div className="relative">
               <CalendarDays className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
               <select
@@ -612,7 +646,7 @@ function AnalyticsView() {
       )}
 
       {m.loadError && <ErrorAlert message={m.loadError} onRetry={m.reload} />}
-      <SummaryHero m={m} />
+      {m.loading ? <SummaryHeroSkeleton /> : <SummaryHero m={m} />}
 
       {(m.canOrders || m.canFinance || m.canStock) && (
         <div className="grid min-w-0 items-stretch gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">

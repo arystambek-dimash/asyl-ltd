@@ -299,8 +299,8 @@ def create_client_payment(order: Order, method: str, user, amount=None) -> Payme
     # Старые клиенты без суммы продолжают менять обычную заявку на другой
     # способ. Провайдерский счёт переиспользовать нельзя: у него уже зафиксированы
     # сумма и idempotency key.
-    created = payment is None
-    if created:
+    if payment is None:
+        created = True
         payment = Payment.objects.create(
             order=order, amount=requested_amount, method=method, status=stage,
             recorded_by=user,
@@ -308,6 +308,7 @@ def create_client_payment(order: Order, method: str, user, amount=None) -> Payme
                if stage == "received" else {}),
         )
     else:
+        created = False
         payment.amount = requested_amount
         payment.method = method
         payment.status = stage

@@ -30,8 +30,13 @@ from .apipay import (
 )
 from .invoices import build_payment_receipt_pdf
 from .debt import as_money_strings, primary_currency
-from .querysets import with_order_api_relations, with_payment_api_relations
+from .querysets import (
+    for_post_board,
+    with_order_api_relations,
+    with_payment_api_relations,
+)
 from .reports import summary_report
+from .references import build_order_form_options
 from .statuses import (
     PUBLIC_STATUS_LABELS, is_financial, is_in_progress, statuses_in_group,
 )
@@ -314,9 +319,9 @@ class PaymentTransactionListView(APIView):
             .values("order__currency", "method")
             .annotate(gross=Sum("amount"), refunded=Sum("refunded_amount"))
         )
-        paid_by_currency = {}
-        refunded_by_currency = {}
-        paid_by_method = {}
+        paid_by_currency: dict[str, Decimal] = {}
+        refunded_by_currency: dict[str, Decimal] = {}
+        paid_by_method: dict[str, dict[str, Decimal]] = {}
         for row in totals:
             currency = row["order__currency"]
             net = (row["gross"] or Decimal("0")) - (
@@ -337,7 +342,11 @@ class PaymentTransactionListView(APIView):
             paid_by_currency.setdefault(currency, Decimal("0"))
             refunded_by_currency.setdefault(currency, Decimal("0"))
         return Response({
-            "results": PaymentSerializer(rows, many=True).data,
+            "results": PaymentSerializer(
+                rows,
+                many=True,
+                context={"request": request},
+            ).data,
             "count": count,
             "page": page,
             "pages": pages,
@@ -547,7 +556,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "create": "orders.create",
         "update": "orders.edit",
         "partial_update": "orders.edit", "destroy": "orders.edit",
-        "trash": "orders.edit", "restore": "orders.edit",
+        "trash": "orders.edit", "trash_preview": "orders.edit",
+        "restore": "orders.edit",
         "purge": "orders.edit",
         "payments": "payments.create", "confirm": "orders.confirm",
         "set_status": "orders.view",
@@ -566,8 +576,28 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "train": "train.load",
         "loading_camera": "shipping.load",
         "department_summary": "orders.view",
+        "dashboard_operational": "orders.view",
         "repeat": "orders.create",
+        "form_options": ("orders.create", "orders.edit"),
     }
+
+    def get_permissions(self):
+        if (
+            self.action == "list"
+            and self.request.query_params.get("post_board") == "1"
+        ):
+            # This query is a deliberately bounded projection of active work.
+            # Loading roles must not need the unfiltered order archive just to
+            # use their workstation.
+            return [
+                HasPerm(
+                    "orders.view",
+                    "shipping.view",
+                    "shipping.load",
+                    "train.view",
+                )
+            ]
+        return super().get_permissions()
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -591,11 +621,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                     "completed_orders_days"
                 ).first()
                 days = row.completed_orders_days if row else 1
-                since = timezone.localdate() - timedelta(days=max(0, days - 1))
-                qs = qs.filter(
-                    Q(status__in=("confirmed", "arrived", "loading", "loaded"))
-                    | Q(status="shipped", shipment__shipped_at__date__gte=since)
-                )
+                qs = for_post_board(qs, days)
             for field in ("department", "status", "payment_status"):
                 value = params.get(field)
                 if value:
@@ -615,6 +641,77 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             if store:
                 qs = qs.filter(store_id=store)
         return qs
+
+    @action(detail=False, methods=["get"], url_path="form-options")
+    def form_options(self, request):
+        """Minimal cross-domain reference data needed by the order form."""
+        return Response(build_order_form_options())
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="dashboard-operational",
+    )
+    def dashboard_operational(self, request):
+        """Small, authoritative dashboard projection instead of order history."""
+        qs = self.get_queryset()
+        date_from, date_to = parse_date_range(request.query_params)
+
+        queue = qs.filter(status__in=("arrived", "loading")).order_by("id")
+        shipment_events = EventLog.objects.filter(
+            order__in=qs.filter(status="shipped"),
+            event_type="shipment",
+        ).only("id", "order_id", "payload", "created_at")
+        shipment_events = filter_date_range(
+            shipment_events,
+            "created_at",
+            date_from,
+            date_to,
+        ).order_by("order_id", "-created_at", "-id")
+
+        # A rolled-back and re-shipped order can have several snapshots.
+        latest_by_order: dict[int, EventLog] = {}
+        for event in shipment_events:
+            latest_by_order.setdefault(event.order_id, event)
+
+        days: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"bags": 0, "orders": 0}
+        )
+        for event in latest_by_order.values():
+            raw_bags = event.payload.get("bags_loaded", 0)
+            try:
+                bags = int(raw_bags)
+            except (TypeError, ValueError):
+                bags = 0
+            day = timezone.localtime(event.created_at).date().isoformat()
+            days[day]["bags"] += max(0, bags)
+            days[day]["orders"] += 1
+
+        pending_payments = 0
+        if request.user.has_perm_code("payments.confirm"):
+            pending_payments = Payment.objects.filter(
+                order__in=qs,
+                status="received",
+            ).count()
+
+        return Response({
+            "queue": OrderSerializer(
+                queue,
+                many=True,
+                context={"request": request},
+            ).data,
+            "attention": {
+                "pending_payments": pending_payments,
+                "awaiting_review": qs.filter(
+                    status__in=statuses_in_group("pending")
+                ).count(),
+                "stuck_in_loading": qs.filter(status="loading").count(),
+            },
+            "days": [
+                {"date": date, **values}
+                for date, values in sorted(days.items())
+            ],
+        })
 
     @action(detail=True, methods=["post"], url_path="repeat")
     def repeat(self, request, pk=None):
@@ -859,6 +956,20 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         if department:
             qs = qs.filter(department=department)
         return Response(OrderSerializer(qs, many=True, context={"request": request}).data)
+
+    @action(detail=False, methods=["get"], url_path="trash-preview")
+    def trash_preview(self, request):
+        """Small archive dock projection; full history loads only on demand."""
+        base = Order.all_objects.deleted().order_by("-deleted_at")
+        rows = with_order_api_relations(base[:4])
+        return Response({
+            "count": base.count(),
+            "results": OrderSerializer(
+                rows,
+                many=True,
+                context={"request": request},
+            ).data,
+        })
 
     @action(detail=True, methods=["post"], url_path="restore")
     def restore(self, request, pk=None):

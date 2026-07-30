@@ -1,6 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useMemo, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
@@ -11,6 +10,7 @@ import { Field } from "@/components/ui/field";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ActionMenu } from "@/components/ui/action-menu";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
@@ -27,7 +27,6 @@ import {
   ArrowRight,
   ArrowUp,
   Boxes,
-  MoreHorizontal,
   Package,
   Pencil,
   Plus,
@@ -48,10 +47,11 @@ function stockTone(bags: number): { tone: "destructive" | "warning" | "success";
 const QUICK_AMOUNTS = [10, 50, 100, 500];
 
 function WarehousePageInner() {
-  const { data: stock, loading: stockLoading, error: loadError, reload } = useApi<StockItem[]>("/stock/");
-  const { data: products } = useApi<Product[]>("/products/");
   const { me } = useAuth();
   const canAdjust = can(me, "warehouse.adjust");
+  const canBrowseCatalog = can(me, "catalog.view");
+  const { data: stock, loading: stockLoading, error: loadError, reload } = useApi<StockItem[]>("/stock/");
+  const { data: products } = useApi<Product[]>(canAdjust && canBrowseCatalog ? "/products/" : null);
 
   // фильтры
   const [search, setSearch] = useState("");
@@ -174,17 +174,18 @@ function WarehousePageInner() {
     setPackaging("");
   }
 
-  const addButton = canAdjust ? (
-    <Button
-      size="sm"
-      aria-label="Добавить товар на склад"
-      onClick={openAdd}
-      disabled={products !== null && availableProducts.length === 0}
-      title={products !== null && availableProducts.length === 0 ? "Все товары уже добавлены на склад" : undefined}
-    >
-      <Plus className="size-4" /> <span className="hidden sm:inline">Добавить товар</span>
-    </Button>
-  ) : undefined;
+  const addButton =
+    canAdjust && canBrowseCatalog ? (
+      <Button
+        size="sm"
+        aria-label="Добавить товар на склад"
+        onClick={openAdd}
+        disabled={products !== null && availableProducts.length === 0}
+        title={products !== null && availableProducts.length === 0 ? "Все товары уже добавлены на склад" : undefined}
+      >
+        <Plus className="size-4" /> <span className="hidden sm:inline">Добавить товар</span>
+      </Button>
+    ) : undefined;
 
   if (!stock) {
     return (
@@ -601,94 +602,14 @@ function WarehousePageInner() {
 }
 
 function StockActionMenu({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
-  const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState({ top: 0, left: 0 });
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const closeOutside = (event: MouseEvent | TouchEvent) => {
-      const target = event.target as Node;
-      if (!buttonRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    const closeOnViewportChange = () => setOpen(false);
-    document.addEventListener("mousedown", closeOutside);
-    document.addEventListener("touchstart", closeOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    window.addEventListener("resize", closeOnViewportChange);
-    window.addEventListener("scroll", closeOnViewportChange, true);
-    return () => {
-      document.removeEventListener("mousedown", closeOutside);
-      document.removeEventListener("touchstart", closeOutside);
-      document.removeEventListener("keydown", closeOnEscape);
-      window.removeEventListener("resize", closeOnViewportChange);
-      window.removeEventListener("scroll", closeOnViewportChange, true);
-    };
-  }, [open]);
-
-  function toggleMenu() {
-    if (!open && buttonRef.current) {
-      const rect = buttonRef.current.getBoundingClientRect();
-      const menuWidth = 176;
-      const menuHeight = 82;
-      const left = Math.max(8, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8));
-      const top = window.innerHeight - rect.bottom < menuHeight + 8 ? rect.top - menuHeight - 4 : rect.bottom + 4;
-      setPosition({ top, left });
-    }
-    setOpen((value) => !value);
-  }
-
   return (
-    <>
-      <button
-        ref={buttonRef}
-        type="button"
-        onClick={toggleMenu}
-        aria-label="Действия с товаром"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className="inline-flex size-8 items-center justify-center rounded-md text-[var(--muted-foreground)] outline-none transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/50"
-      >
-        <MoreHorizontal className="size-4" />
-      </button>
-      {open &&
-        createPortal(
-          <div
-            ref={menuRef}
-            role="menu"
-            style={{ top: position.top, left: position.left }}
-            className="fixed z-[120] w-44 rounded-lg border bg-[var(--card)] p-1 shadow-lg"
-          >
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setOpen(false);
-                onEdit();
-              }}
-              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-[var(--muted)]"
-            >
-              <Pencil className="size-4" /> Изменить
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setOpen(false);
-                onDelete();
-              }}
-              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-[var(--destructive)] hover:bg-[var(--destructive)]/10"
-            >
-              <Trash2 className="size-4" /> Удалить
-            </button>
-          </div>,
-          document.body,
-        )}
-    </>
+    <ActionMenu
+      label="Действия с товаром"
+      items={[
+        { key: "edit", label: "Изменить", icon: Pencil, onSelect: onEdit },
+        { key: "delete", label: "Удалить", icon: Trash2, tone: "destructive", onSelect: onDelete },
+      ]}
+    />
   );
 }
 

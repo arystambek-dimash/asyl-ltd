@@ -1,4 +1,5 @@
 "use client";
+import type { KeyboardEvent } from "react";
 import { cn } from "@/lib/utils";
 
 export interface TabDef {
@@ -39,41 +40,55 @@ export function Tabs({
   variant?: "underline" | "segment";
   className?: string;
 }) {
-  if (variant === "segment") {
-    return (
-      <div className={cn("inline-flex rounded-md border border-[var(--border)] bg-[var(--muted)] p-0.5", className)}>
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            onClick={() => onChange(t.key)}
-            className={cn(
-              "inline-flex h-8 items-center gap-1.5 rounded px-4 text-sm transition-colors",
-              active === t.key
-                ? "bg-[var(--card)] font-medium text-[var(--foreground)] shadow-sm"
-                : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
-            )}
-          >
-            {t.icon && <t.icon className="size-4" />}
-            {t.label}
-            {t.count !== undefined && <TabCount value={t.count} active={active === t.key} />}
-          </button>
-        ))}
-      </div>
-    );
+  function moveFocus(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+    if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = tabs.length - 1;
+    if (nextIndex === null || !tabs[nextIndex]) return;
+
+    event.preventDefault();
+    onChange(tabs[nextIndex].key);
+    event.currentTarget
+      .closest<HTMLElement>('[role="tablist"]')
+      ?.querySelectorAll<HTMLButtonElement>('[role="tab"]')
+      [nextIndex]?.focus();
   }
+
+  const segment = variant === "segment";
   return (
-    <div className={cn("flex gap-6 border-b border-[var(--border)]", className)}>
-      {tabs.map((t) => (
+    <div
+      role="tablist"
+      aria-label="Разделы"
+      className={cn(
+        segment
+          ? "inline-flex rounded-md border border-[var(--border)] bg-[var(--muted)] p-0.5"
+          : "flex gap-6 border-b border-[var(--border)]",
+        className,
+      )}
+    >
+      {tabs.map((t, index) => (
         <button
           key={t.key}
           type="button"
+          role="tab"
+          aria-selected={active === t.key}
+          aria-label={t.count === undefined ? undefined : `${t.label}, ${t.count}`}
+          tabIndex={active === t.key ? 0 : -1}
           onClick={() => onChange(t.key)}
+          onKeyDown={(event) => moveFocus(event, index)}
           className={cn(
-            "-mb-px inline-flex h-11 items-center gap-2 border-b-2 px-1 text-[15px] transition-colors",
-            active === t.key
-              ? "border-[var(--foreground)] font-semibold text-[var(--foreground)]"
-              : "border-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
+            segment
+              ? "inline-flex h-8 items-center gap-1.5 rounded px-4 text-sm transition-colors"
+              : "-mb-px inline-flex h-11 items-center gap-2 border-b-2 px-1 text-[15px] transition-colors",
+            segment && active === t.key
+              ? "bg-[var(--card)] font-medium text-[var(--foreground)] shadow-sm"
+              : segment
+                ? "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                : active === t.key
+                  ? "border-[var(--foreground)] font-semibold text-[var(--foreground)]"
+                  : "border-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
           )}
         >
           {t.icon && <t.icon className="size-4" />}

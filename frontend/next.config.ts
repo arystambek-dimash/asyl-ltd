@@ -16,15 +16,28 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   images: {
     // Bound the self-hosted image cache so attacker-controlled variants cannot
-    // fill the server disk. The app currently uses only local image sources.
+    // fill the server disk. ApiPay is the only approved remote image source.
     maximumDiskCacheSize: 50 * 1024 * 1024,
+    remotePatterns: [
+      {
+        protocol: "https",
+        hostname: "api.apipay.kz",
+        pathname: "/qr/**",
+      },
+    ],
   },
   async redirects() {
-    // Роли слиты в «Сотрудников» вкладкой — старые закладки ведут туда же.
+    // Устаревшие рабочие экраны сохраняют старые закладки без клиентского
+    // промежуточного рендера.
     return [
       {
         source: "/management/roles",
         destination: "/management/employees?tab=roles",
+        permanent: false,
+      },
+      {
+        source: "/train",
+        destination: "/shipping",
         permanent: false,
       },
     ];

@@ -34,5 +34,19 @@ def test_client_prices_are_available_for_order_creation(auth_client, manager):
 
 def test_client_price_api_rejects_unknown_currency(auth_client, manager):
     response = auth_client(manager).get(
-        "/api/client-prices/", {"currency": "EUR"})
+        "/api/client-prices/", {"client": 1, "currency": "EUR"})
     assert response.status_code == 400
+
+
+@pytest.mark.parametrize("client_id", [None, "", "not-a-number", "0", "-1"])
+def test_client_price_api_requires_valid_client(
+    auth_client,
+    manager,
+    client_id,
+):
+    params = {} if client_id is None else {"client": client_id}
+
+    response = auth_client(manager).get("/api/client-prices/", params)
+
+    assert response.status_code == 400
+    assert "client" in response.data["detail"]

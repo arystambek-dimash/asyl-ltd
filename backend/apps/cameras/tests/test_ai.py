@@ -906,6 +906,34 @@ def test_history_returns_final_count_and_local_recording_metadata(
     assert response.data[0]["recording_available_until"] is not None
 
 
+def test_history_post_board_projection_filters_server_side(
+    api_client,
+    user_with_perms,
+):
+    viewer = user_with_perms("board-history", codes=["shipping.view"])
+    client = Client.objects.create(first_name="Board", phone="1")
+    active = Order.objects.create(client=client, status="loading")
+    outside = Order.objects.create(client=client, status="pending")
+    active_session = AiCountingSession.objects.create(
+        order=active,
+        camera="cam1",
+        status=AiCountingSession.CLOSED,
+        final_total=7,
+    )
+    AiCountingSession.objects.create(
+        order=outside,
+        camera="cam2",
+        status=AiCountingSession.CLOSED,
+        final_total=8,
+    )
+    api_client.force_authenticate(viewer)
+
+    response = api_client.get("/api/cameras/ai/history/?post_board=1")
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.data] == [active_session.id]
+
+
 def test_recording_list_is_resolved_on_camera_pc(
     api_client, user_with_perms, loader, loading_order,
 ):

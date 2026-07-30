@@ -153,8 +153,17 @@ class PaymentSerializer(serializers.ModelSerializer):
     def get_available_for_refund(self, obj):
         return money_string(obj.available_for_refund)
 
+    def _request_can(self, code):
+        request = self.context.get("request")
+        # Domain/unit serializers have no HTTP principal. API views must pass
+        # request so capability flags describe both state and authorization.
+        return request is None or request.user.has_perm_code(code)
+
     def get_can_restore(self, obj):
-        if obj.status != "rejected":
+        if (
+            not self._request_can("payments.confirm")
+            or obj.status != "rejected"
+        ):
             return False
         confirmed = sum(
             (
@@ -189,7 +198,8 @@ class PaymentSerializer(serializers.ModelSerializer):
 
     def get_can_issue(self, obj):
         if (
-            obj.status not in Payment.IN_PROGRESS_STATUSES
+            not self._request_can("payments.create")
+            or obj.status not in Payment.IN_PROGRESS_STATUSES
             or obj.method not in ("kaspi", "invoice")
         ):
             return False
@@ -433,10 +443,13 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         return PaymentSerializer(rows, many=True).data
 
     def validate_client(self, client):
-        # Заказ можно создать только для клиента, доступного пользователю.
+        # Управление заказом само по себе даёт доступ только к минимальному
+        # справочнику формы; отдельное clients.view для этого не требуется.
+        # Полный клиентский API и финансовые поля остаются закрыты.
         from apps.clients.querysets import visible_clients
         user = self.context["request"].user
-        if not visible_clients(user).filter(pk=client.pk).exists():
+        required_perm = "orders.edit" if self.instance else "orders.create"
+        if not visible_clients(user, required_perm).filter(pk=client.pk).exists():
             raise serializers.ValidationError("Клиент недоступен")
         return client
 

@@ -1,9 +1,11 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import Image from "next/image";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Button } from "@/components/ui/button";
+import { ActionCard } from "@/components/ui/action-card";
+import { StageCarousel } from "@/components/ui/stage-carousel";
 import { Modal } from "@/components/ui/modal";
 import { PlateBadge } from "@/components/ui/license-plate-input";
 import { CameraStream } from "@/components/camera-stream";
@@ -50,6 +52,15 @@ import { useAiCounter, type AiCounter } from "@/lib/use-ai-counter";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 
 const POLL_MS = 10_000; // борд и счётчики обновляются сами — пост «живой»
+
+function indexFirstBy<T, K>(items: readonly T[], keyOf: (item: T) => K | null | undefined): Map<K, T> {
+  const index = new Map<K, T>();
+  for (const item of items) {
+    const key = keyOf(item);
+    if (key != null && !index.has(key)) index.set(key, item);
+  }
+  return index;
+}
 
 // Новый Windows AI-сервис возвращает machine-readable `online`, а старый
 // сервис возвращал локализованное `онлайн`. Во время плавного обновления
@@ -430,27 +441,26 @@ function BoardCard({
   const clickable = !!onOpen || (!!history && !!onHistory);
   const cameraTotal = history?.final_total ?? history?.last_status?.total;
   return (
-    <div
+    <ActionCard
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
-      onClick={() => {
-        if (onOpen) onOpen(order.id);
-        else if (history && onHistory) onHistory(history);
-      }}
-      onKeyDown={(event) => {
-        if (clickable && (event.key === "Enter" || event.key === " ")) {
-          event.preventDefault();
-          if (onOpen) onOpen(order.id);
-          else if (history && onHistory) onHistory(history);
-        }
-      }}
-      role={clickable ? "button" : undefined}
-      tabIndex={clickable ? 0 : undefined}
+      primaryAction={
+        clickable
+          ? {
+              kind: "button",
+              label: onOpen ? `Открыть заказ #${order.id}` : `Открыть историю погрузки заказа #${order.id}`,
+              onSelect: () => {
+                if (onOpen) onOpen(order.id);
+                else if (history && onHistory) onHistory(history);
+              },
+            }
+          : undefined
+      }
+      primaryActionClassName="focus-visible:ring-blue-500"
       className={cn(
         "group relative flex w-full flex-col gap-2 overflow-hidden rounded-xl border bg-[var(--card)] p-3 text-left shadow-card outline-none transition-all",
-        clickable &&
-          "cursor-pointer hover:-translate-y-px hover:shadow-md focus-visible:ring-2 focus-visible:ring-blue-500",
+        clickable && "cursor-pointer hover:-translate-y-px hover:shadow-md",
         draggable && "cursor-grab active:cursor-grabbing",
         moving && "pointer-events-none scale-[0.98] opacity-50",
       )}
@@ -510,11 +520,7 @@ function BoardCard({
         </div>
       )}
       {onQuickMove && !!quickTargets?.length && (
-        <div
-          className="flex gap-1.5 pt-0.5"
-          onClick={(event) => event.stopPropagation()}
-          onKeyDown={(event) => event.stopPropagation()}
-        >
+        <div className="relative z-10 flex gap-1.5 pt-0.5">
           {quickTargets.includes("waiting") && (
             <Button
               size="sm"
@@ -534,7 +540,7 @@ function BoardCard({
         </div>
       )}
       {stage.key === "done" && history && (
-        <div className="absolute inset-x-0 bottom-0 flex translate-y-[calc(100%-4px)] items-center justify-between gap-3 bg-slate-900/95 px-3 py-2.5 text-white backdrop-blur-sm transition-transform duration-200 group-hover:translate-y-0 group-focus-visible:translate-y-0">
+        <div className="absolute inset-x-0 bottom-0 flex translate-y-[calc(100%-4px)] items-center justify-between gap-3 bg-slate-900/95 px-3 py-2.5 text-white backdrop-blur-sm transition-transform duration-200 group-hover:translate-y-0 group-focus-within:translate-y-0">
           <span className="flex min-w-0 items-center gap-2 text-xs font-semibold">
             <Cctv className="size-4 shrink-0 text-cyan-300" />
             <span className="truncate">Камера насчитала</span>
@@ -545,7 +551,7 @@ function BoardCard({
           </span>
         </div>
       )}
-    </div>
+    </ActionCard>
   );
 }
 
@@ -659,42 +665,6 @@ function StageNav({
   );
 }
 
-/** Карусель этапов: полотно едет к выбранной остановке, высота подстраивается. */
-function StageCarousel({ active, slides }: { active: number; slides: ReactNode[] }) {
-  const panes = useRef<(HTMLDivElement | null)[]>([]);
-  const [height, setHeight] = useState<number>();
-  useEffect(() => {
-    const pane = panes.current[active];
-    if (!pane) return;
-    const update = () => setHeight(pane.offsetHeight);
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(pane);
-    return () => observer.disconnect();
-  }, [active]);
-  return (
-    <div className="overflow-hidden transition-[height] duration-500 ease-in-out" style={{ height }}>
-      <div
-        className="flex items-start transition-transform duration-500 ease-in-out"
-        style={{ transform: `translateX(-${active * 100}%)` }}
-      >
-        {slides.map((slide, index) => (
-          <div
-            key={BOARD_STAGES[index].key}
-            ref={(el) => {
-              panes.current[index] = el;
-            }}
-            aria-hidden={index !== active}
-            className={cn("w-full shrink-0 pb-1", index !== active && "pointer-events-none")}
-          >
-            {slide}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function LiveBoard({
   orders,
   cameras,
@@ -728,15 +698,10 @@ function LiveBoard({
     for (const item of histories) if (!result.has(item.order_id)) result.set(item.order_id, item);
     return result;
   }, [histories]);
-  const cameraBySource = useMemo(
-    () => new Map(cameras.flatMap((camera) => (camera.src ? [[camera.src, camera] as const] : []))),
-    [cameras],
-  );
-  const sessionByOrder = useMemo(
-    () => new Map(sessions.map((session) => [session.order_id, session] as const)),
-    [sessions],
-  );
-  const dragged = orders.find((order) => order.id === draggedId);
+  const cameraBySource = useMemo(() => indexFirstBy(cameras, (camera) => camera.src || null), [cameras]);
+  const sessionByOrder = useMemo(() => indexFirstBy(sessions, (session) => session.order_id), [sessions]);
+  const orderById = useMemo(() => indexFirstBy(orders, (order) => order.id), [orders]);
+  const dragged = draggedId == null ? undefined : orderById.get(draggedId);
   const draggedTargets = dragged ? allowedStages(dragged) : [];
   const stageRows = BOARD_STAGES.map((stage) =>
     orders.filter((order) => (stage.statuses as readonly string[]).includes(order.status)),
@@ -792,6 +757,7 @@ function LiveBoard({
 
         <StageCarousel
           active={activeIndex}
+          slideKeys={BOARD_STAGES.map((stage) => stage.key)}
           slides={BOARD_STAGES.map((stage, index) => {
             const rows = stageRows[index];
             const finished = stage.key === "done";
@@ -1163,6 +1129,9 @@ function ActiveLoadings({
   cameras: CameraFeed[];
   onOpen: (id: number) => void;
 }) {
+  const ordersById = useMemo(() => indexFirstBy(orders, (order) => order.id), [orders]);
+  const camerasBySource = useMemo(() => indexFirstBy(cameras, (camera) => camera.src || null), [cameras]);
+
   return (
     <section className="overflow-hidden rounded-[24px] border border-slate-200/80 bg-[linear-gradient(135deg,#f7faff_0%,#f8fbff_55%,#f4fbf8_100%)] p-4 shadow-[0_14px_40px_rgba(48,70,108,0.06)] sm:p-5">
       <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -1193,8 +1162,8 @@ function ActiveLoadings({
             <ActiveLoadingCard
               key={session.id}
               session={session}
-              order={orders.find((order) => order.id === session.order_id)}
-              camera={cameras.find((camera) => camera.src === session.camera)}
+              order={ordersById.get(session.order_id)}
+              camera={camerasBySource.get(session.camera)}
               onOpen={onOpen}
             />
           ))}
@@ -1214,13 +1183,17 @@ function ShippingPageInner() {
   const canManage = can(me, "rbac.manage");
   const canViewHistory = can(me, "shipping.view");
   const { data: orders, error: loadError, reload } = useApi<Order[]>("/orders/?post_board=1");
-  const { data: cameras, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
-  const { data: sessions, reload: reloadSessions } = useApi<AiCountingSession[]>(
-    canLoad || canViewHistory ? "/cameras/ai/sessions/" : null,
-  );
-  const { data: boardSettings, reload: reloadBoardSettings } = useApi<ShippingBoardSettings>(
-    canViewHistory || canManage ? "/cameras/shipping-settings/" : null,
-  );
+  const { data: cameras, error: camerasError, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
+  const {
+    data: sessions,
+    error: sessionsError,
+    reload: reloadSessions,
+  } = useApi<AiCountingSession[]>(canLoad || canViewHistory ? "/cameras/ai/sessions/" : null);
+  const {
+    data: boardSettings,
+    error: boardSettingsError,
+    reload: reloadBoardSettings,
+  } = useApi<ShippingBoardSettings>(canViewHistory || canManage ? "/cameras/shipping-settings/" : null);
   const board = useMemo(
     () =>
       (orders ?? [])
@@ -1228,16 +1201,8 @@ function ShippingPageInner() {
         .sort((a, b) => a.id - b.id),
     [orders],
   );
-  const historyOrderIds = useMemo(
-    () =>
-      board
-        .filter((order) => order.status === "loaded" || order.status === "shipped")
-        .map((order) => order.id)
-        .join(","),
-    [board],
-  );
-  const historyUrl = canViewHistory && historyOrderIds ? `/cameras/ai/history/?order_ids=${historyOrderIds}` : null;
-  const { data: histories, reload: reloadHistories } = useApi<AiCountingHistory[]>(historyUrl);
+  const historyUrl = canViewHistory ? "/cameras/ai/history/?post_board=1" : null;
+  const { data: histories, error: historiesError, reload: reloadHistories } = useApi<AiCountingHistory[]>(historyUrl);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedHistory, setSelectedHistory] = useState<AiCountingHistory | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1253,42 +1218,45 @@ function ShippingPageInner() {
   // машину с неверным счётом, а откат требует отдельного права.
   const [finishing, setFinishing] = useState<Order | null>(null);
   const bagCounterRef = useRef<BagCounterHandle>(null);
+  const auxiliaryLoadError = camerasError || sessionsError || boardSettingsError || historiesError;
 
   // Инвентарь камер и живой борд восстанавливаются после сетевых сбоев.
   // Каждый цикл сериализован, чтобы медленный ответ не отменял следующий.
   useVisiblePolling(reloadCameras, 30_000);
-  useVisiblePolling(() => Promise.all([reload(), reloadSessions(), reloadHistories()]), POLL_MS);
+  useVisiblePolling(() => Promise.all([reload(), reloadSessions()]), POLL_MS);
+  // Завершённая история неизменяема; действия ниже перезагружают её сразу.
+  // Отдельный редкий polling не повторяет тяжёлый запрос каждые 10 секунд.
+  useVisiblePolling(reloadHistories, 60_000);
 
-  const active = board.filter((o) => ACTIVE_STATUSES.includes(o.status));
-  const selected = selectedId != null ? (active.find((o) => o.id === selectedId) ?? null) : null;
+  const active = useMemo(() => board.filter((order) => ACTIVE_STATUSES.includes(order.status)), [board]);
+  const activeOrdersById = useMemo(() => indexFirstBy(active, (order) => order.id), [active]);
+  const sessionsByOrderId = useMemo(() => indexFirstBy(sessions ?? [], (session) => session.order_id), [sessions]);
+  const camerasBySource = useMemo(() => indexFirstBy(cameras ?? [], (camera) => camera.src || null), [cameras]);
+  const selected = selectedId != null ? (activeOrdersById.get(selectedId) ?? null) : null;
   const isTrain = selected?.transport_type === "train";
-  const rewindSession = rewindDropOrder
-    ? (sessions?.find((item) => item.order_id === rewindDropOrder.id) ?? null)
-    : null;
+  const rewindSession = rewindDropOrder ? (sessionsByOrderId.get(rewindDropOrder.id) ?? null) : null;
 
   // Пост работает только с играбельными камерами; locked — тема дашборда.
   const playable = useMemo(() => playableCameras(cameras), [cameras]);
+  const playableBySource = useMemo(() => indexFirstBy(playable, (camera) => camera.src), [playable]);
   const aiCam = useMemo(() => {
     if (!selected?.loading_camera) return null;
     // Назначенная камера не должна молча подменяться другой, даже если
     // временно пропала из живого инвентаря.
-    return playable.find((c) => c.src === selected.loading_camera) ?? null;
-  }, [playable, selected?.loading_camera]);
+    return playableBySource.get(selected.loading_camera) ?? null;
+  }, [playableBySource, selected?.loading_camera]);
   const orderCameras = useMemo(() => {
     if (!selected?.loading_camera) return [];
-    const bound = playable.find((camera) => camera.src === selected.loading_camera);
+    const bound = playableBySource.get(selected.loading_camera);
     return bound ? [bound] : [];
-  }, [playable, selected?.loading_camera]);
-  const boundCamera = useMemo(
-    () =>
-      selected?.loading_camera ? (cameras ?? []).find((camera) => camera.src === selected.loading_camera) : undefined,
-    [cameras, selected?.loading_camera],
-  );
+  }, [playableBySource, selected?.loading_camera]);
+  const boundCamera = selected?.loading_camera ? camerasBySource.get(selected.loading_camera) : undefined;
 
-  const isLoadStep =
+  const loadingInProgress =
     !!selected &&
-    canLoad &&
     (isTrain ? selected.status === "loading" : selected.status === "arrived" || selected.status === "loading");
+  const canControlLoading = isTrain ? canTrain : canLoad;
+  const isLoadStep = loadingInProgress && canLoad;
   const ai = useAiCounter(aiCam?.src ?? null, selected?.id ?? null, isLoadStep);
   const aiLive = ai.running && isAiOnlineStatus(ai.status?.status);
 
@@ -1347,7 +1315,7 @@ function ShippingPageInner() {
 
   const stopOrderAi = useCallback(
     async (order: Order, completeOrder = false) => {
-      const session = sessions?.find((item) => item.order_id === order.id);
+      const session = sessionsByOrderId.get(order.id);
       if (!session) return false;
       await api.delete(`/cameras/${session.camera}/ai/`, {
         params: { order_id: order.id, complete_order: completeOrder ? 1 : 0 },
@@ -1355,7 +1323,7 @@ function ShippingPageInner() {
       });
       return true;
     },
-    [sessions],
+    [sessionsByOrderId],
   );
 
   const completeOrder = useCallback(
@@ -1458,163 +1426,182 @@ function ShippingPageInner() {
     >
       {loadError && !orders ? (
         <ErrorAlert message={loadError} onRetry={reload} />
-      ) : !selected ? (
-        <div className="flex flex-col gap-6">
-          {/* Лайв-статус заказов по этапам */}
-          <LiveBoard
-            orders={board}
-            cameras={cameras ?? []}
-            sessions={sessions ?? []}
-            histories={histories ?? []}
-            completedDays={boardSettings?.completed_orders_days ?? 1}
-            onOpen={openOrder}
-            onHistory={setSelectedHistory}
-            allowedStages={allowedBoardStages}
-            onMove={moveOrder}
-            movingId={movingId}
-            error={moveError}
-          />
-          {canLoad && <ActiveLoadings sessions={sessions} orders={board} cameras={cameras ?? []} onOpen={openOrder} />}
-        </div>
       ) : (
         <div className="flex flex-col gap-4">
-          {/* назад к посту */}
-          <button
-            onClick={() => setSelectedId(null)}
-            className="flex w-fit items-center gap-1.5 text-sm font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-          >
-            <ArrowLeft className="size-4" /> К посту
-          </button>
+          {loadError && <ErrorAlert message={loadError} onRetry={reload} />}
+          {auxiliaryLoadError && (
+            <ErrorAlert
+              message={auxiliaryLoadError}
+              onRetry={() =>
+                void Promise.all([reloadCameras(), reloadSessions(), reloadBoardSettings(), reloadHistories()])
+              }
+            />
+          )}
+          {!selected ? (
+            <div className="flex flex-col gap-6">
+              {/* Лайв-статус заказов по этапам */}
+              <LiveBoard
+                orders={board}
+                cameras={cameras ?? []}
+                sessions={sessions ?? []}
+                histories={histories ?? []}
+                completedDays={boardSettings?.completed_orders_days ?? 1}
+                onOpen={openOrder}
+                onHistory={setSelectedHistory}
+                allowedStages={allowedBoardStages}
+                onMove={moveOrder}
+                movingId={movingId}
+                error={moveError}
+              />
+              {canLoad && (
+                <ActiveLoadings sessions={sessions} orders={board} cameras={cameras ?? []} onOpen={openOrder} />
+              )}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-4">
+              {/* назад к посту */}
+              <button
+                onClick={() => setSelectedId(null)}
+                className="flex w-fit items-center gap-1.5 text-sm font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+              >
+                <ArrowLeft className="size-4" /> К посту
+              </button>
 
-          {/* Рабочая зона выбранного заказа */}
-          <div className="overflow-hidden rounded-2xl border bg-[var(--card)] shadow-card">
-            {/* шапка: номер как госзнак (или вагон) + этапы */}
-            <div className="flex flex-wrap items-center justify-between gap-4 border-b px-5 py-4">
-              <div className="flex flex-wrap items-center gap-4">
-                <TransportBadge order={selected} size="lg" />
-                <div className="leading-tight">
-                  <div className="flex items-center gap-1.5 text-sm font-semibold">
-                    <User className="size-3.5 text-[var(--muted-foreground)]" />
-                    {selected.client_name || "—"}
+              {/* Рабочая зона выбранного заказа */}
+              <div className="overflow-hidden rounded-2xl border bg-[var(--card)] shadow-card">
+                {/* шапка: номер как госзнак (или вагон) + этапы */}
+                <div className="flex flex-wrap items-center justify-between gap-4 border-b px-5 py-4">
+                  <div className="flex flex-wrap items-center gap-4">
+                    <TransportBadge order={selected} size="lg" />
+                    <div className="leading-tight">
+                      <div className="flex items-center gap-1.5 text-sm font-semibold">
+                        <User className="size-3.5 text-[var(--muted-foreground)]" />
+                        {selected.client_name || "—"}
+                      </div>
+                      {selected.client_phone && (
+                        <a
+                          href={`tel:${selected.client_phone}`}
+                          className="mt-0.5 flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]"
+                        >
+                          <Phone className="size-3" /> {selected.client_phone}
+                        </a>
+                      )}
+                    </div>
                   </div>
-                  {selected.client_phone && (
-                    <a
-                      href={`tel:${selected.client_phone}`}
-                      className="mt-0.5 flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]"
+                  {!isTrain && <StageTrack status={selected.status} />}
+                </div>
+
+                {/* груз и вес */}
+                <div className="flex flex-wrap items-center gap-2 border-b bg-[var(--muted)]/30 px-5 py-3">
+                  {selected.items.map((it, i) => (
+                    <span
+                      key={it.id ?? `item-${i}`}
+                      className="flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm"
                     >
-                      <Phone className="size-3" /> {selected.client_phone}
-                    </a>
+                      <Package className="size-3.5 text-[var(--muted-foreground)]" />
+                      {it.product_label ?? "Товар"}
+                      <b className="tabular-nums">× {it.quantity}</b>
+                    </span>
+                  ))}
+                  {selected.weigh_in_kg && (
+                    <span className="flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm">
+                      <Scale className="size-3.5 text-[var(--muted-foreground)]" />
+                      На въезде <b className="tabular-nums">{formatMoney(selected.weigh_in_kg)} кг</b>
+                    </span>
                   )}
                 </div>
-              </div>
-              {!isTrain && <StageTrack status={selected.status} />}
-            </div>
 
-            {/* груз и вес */}
-            <div className="flex flex-wrap items-center gap-2 border-b bg-[var(--muted)]/30 px-5 py-3">
-              {selected.items.map((it, i) => (
-                <span
-                  key={it.id ?? `item-${i}`}
-                  className="flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm"
-                >
-                  <Package className="size-3.5 text-[var(--muted-foreground)]" />
-                  {it.product_label ?? "Товар"}
-                  <b className="tabular-nums">× {it.quantity}</b>
-                </span>
-              ))}
-              {selected.weigh_in_kg && (
-                <span className="flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm">
-                  <Scale className="size-3.5 text-[var(--muted-foreground)]" />
-                  На въезде <b className="tabular-nums">{formatMoney(selected.weigh_in_kg)} кг</b>
-                </span>
-              )}
-            </div>
+                {/* видео + действие шага */}
+                <div className={cn("grid gap-4 p-5", selected.loading_camera && "xl:grid-cols-[1.4fr_1fr]")}>
+                  {selected.loading_camera && (
+                    <PostCamera
+                      cameras={orderCameras}
+                      zoneKeywords={["загруз"]}
+                      preferId={aiCam?.id ?? null}
+                      ai={aiLive && aiCam ? { camId: aiCam.id, src: ai.status?.stream ?? `${aiCam.src}ai` } : null}
+                    />
+                  )}
 
-            {/* видео + действие шага */}
-            <div className={cn("grid gap-4 p-5", selected.loading_camera && "xl:grid-cols-[1.4fr_1fr]")}>
-              {selected.loading_camera && (
-                <PostCamera
-                  cameras={orderCameras}
-                  zoneKeywords={["загруз"]}
-                  preferId={aiCam?.id ?? null}
-                  ai={aiLive && aiCam ? { camId: aiCam.id, src: ai.status?.stream ?? `${aiCam.src}ai` } : null}
-                />
-              )}
+                  <div className="flex flex-col justify-center gap-4 rounded-2xl bg-[var(--muted)]/40 p-5">
+                    {/* ── Вагон: старт → счёт → финиш (без въезда и весов) ── */}
+                    {isTrain && selected.status === "confirmed" && (
+                      <div className="grid gap-3">
+                        <div>
+                          <div className="text-base font-semibold">Вагон готов к загрузке</div>
+                          <p className="mt-1 text-sm leading-relaxed text-[var(--muted-foreground)]">
+                            Запустите загрузку, затем фиксируйте мешки и завершите отгрузку прямо на этом посту.
+                          </p>
+                        </div>
+                        {canTrain ? (
+                          <Button
+                            className="h-12 rounded-xl"
+                            disabled={busy}
+                            onClick={() =>
+                              void act(() =>
+                                api.post(`/orders/${selected.id}/train/`, {
+                                  action: "start",
+                                }),
+                              )
+                            }
+                          >
+                            <TrainFront className="size-5" /> Начать загрузку вагона
+                          </Button>
+                        ) : (
+                          <p className="mt-1 text-sm leading-relaxed text-[var(--muted-foreground)]">
+                            Запуск доступен сотруднику с правом загрузки вагонов.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {/* ── Машина: приём → погрузка → выезд ── */}
+                    {!isTrain && selected.status === "confirmed" && (
+                      <div>
+                        <div className="text-base font-semibold">Ожидает запуска в Моноблоке</div>
+                        <p className="mt-1 text-sm leading-relaxed text-[var(--muted-foreground)]">
+                          Приём машины, выбор камеры и запуск AI выполняются одним действием в «Моноблоке».
+                        </p>
+                      </div>
+                    )}
 
-              <div className="flex flex-col justify-center gap-4 rounded-2xl bg-[var(--muted)]/40 p-5">
-                {/* ── Вагон: старт → счёт → финиш (без въезда и весов) ── */}
-                {isTrain && selected.status === "confirmed" && (
-                  <div>
-                    <div className="text-base font-semibold">Ожидает запуска в Моноблоке</div>
-                    <p className="mt-1 text-sm leading-relaxed text-[var(--muted-foreground)]">
-                      Выберите заказ и свободную камеру в «Моноблоке». Только там создаётся активная отгрузка.
-                    </p>
+                    {loadingInProgress &&
+                      (canControlLoading ? (
+                        <>
+                          {selected.loading_camera && (
+                            <BoundCamera camera={boundCamera} source={selected.loading_camera} />
+                          )}
+                          <BagCounter
+                            ref={bagCounterRef}
+                            key={selected.id}
+                            order={selected}
+                            onSave={saveBags(selected)}
+                          />
+                          {aiCam && (
+                            <AiCounterPanel
+                              ai={ai}
+                              accepted={selected.bags_loaded ?? 0}
+                              onAccept={(bags) => act(() => saveBags(selected)(bags))}
+                            />
+                          )}
+                          <Button
+                            className="h-14 rounded-xl text-base"
+                            disabled={busy}
+                            onClick={() => setFinishing(selected)}
+                          >
+                            <Check className="size-5" /> Завершить отгрузку
+                          </Button>
+                        </>
+                      ) : (
+                        <p className="text-sm text-[var(--muted-foreground)]">
+                          {isTrain ? "Идёт загрузка вагона." : "Идёт погрузка."}
+                        </p>
+                      ))}
+
+                    {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
                   </div>
-                )}
-                {isTrain &&
-                  selected.status === "loading" &&
-                  (canTrain ? (
-                    <>
-                      {selected.loading_camera && <BoundCamera camera={boundCamera} source={selected.loading_camera} />}
-                      <BagCounter ref={bagCounterRef} key={selected.id} order={selected} onSave={saveBags(selected)} />
-                      {aiCam && (
-                        <AiCounterPanel
-                          ai={ai}
-                          accepted={selected.bags_loaded ?? 0}
-                          onAccept={(bags) => act(() => saveBags(selected)(bags))}
-                        />
-                      )}
-                      <Button
-                        className="h-14 rounded-xl text-base"
-                        disabled={busy}
-                        onClick={() => setFinishing(selected)}
-                      >
-                        <Check className="size-5" /> Завершить отгрузку
-                      </Button>
-                    </>
-                  ) : (
-                    <p className="text-sm text-[var(--muted-foreground)]">Идёт загрузка вагона.</p>
-                  ))}
-
-                {/* ── Машина: приём → погрузка → выезд ── */}
-                {!isTrain && selected.status === "confirmed" && (
-                  <div>
-                    <div className="text-base font-semibold">Ожидает запуска в Моноблоке</div>
-                    <p className="mt-1 text-sm leading-relaxed text-[var(--muted-foreground)]">
-                      Приём машины, выбор камеры и запуск AI выполняются одним действием в «Моноблоке».
-                    </p>
-                  </div>
-                )}
-
-                {!isTrain &&
-                  (selected.status === "arrived" || selected.status === "loading") &&
-                  (canLoad ? (
-                    <>
-                      {selected.loading_camera && <BoundCamera camera={boundCamera} source={selected.loading_camera} />}
-                      <BagCounter ref={bagCounterRef} key={selected.id} order={selected} onSave={saveBags(selected)} />
-                      {aiCam && (
-                        <AiCounterPanel
-                          ai={ai}
-                          accepted={selected.bags_loaded ?? 0}
-                          onAccept={(bags) => act(() => saveBags(selected)(bags))}
-                        />
-                      )}
-                      <Button
-                        className="h-14 rounded-xl text-base"
-                        disabled={busy}
-                        onClick={() => setFinishing(selected)}
-                      >
-                        <Check className="size-5" /> Завершить отгрузку
-                      </Button>
-                    </>
-                  ) : (
-                    <p className="text-sm text-[var(--muted-foreground)]">Идёт погрузка.</p>
-                  ))}
-
-                {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
       )}
       <CompletedOrdersSettingsModal
@@ -1705,8 +1692,7 @@ function ShippingPageInner() {
               <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Камера</div>
               <div className="mt-1 truncate text-sm font-bold text-slate-800">
                 {rewindDropOrder?.loading_camera
-                  ? ((cameras ?? []).find((camera) => camera.src === rewindDropOrder.loading_camera)?.name ??
-                    rewindDropOrder.loading_camera)
+                  ? (camerasBySource.get(rewindDropOrder.loading_camera)?.name ?? rewindDropOrder.loading_camera)
                   : "Не назначена"}
               </div>
             </div>
