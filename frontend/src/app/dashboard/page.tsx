@@ -1,341 +1,379 @@
 "use client";
+
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ElementType } from "react";
 import {
   AlertTriangle,
+  ArrowRight,
   ArrowUpRight,
   BarChart3,
   CalendarDays,
-  CheckCircle2,
+  Check,
   ChevronDown,
   ChevronRight,
-  ClipboardList,
-  Clock3,
-  Hourglass,
-  Info,
+  CircleDollarSign,
+  ClipboardCheck,
   RefreshCw,
+  Sparkles,
   Truck,
-  UserRound,
   Video,
   Wallet,
   Warehouse,
-  XCircle,
 } from "lucide-react";
-import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { AppShell } from "@/components/layout/app-shell";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { CameraWall } from "@/components/camera-wall";
-import { ErrorAlert } from "@/components/ui/data-state";
-import { Tabs } from "@/components/ui/tabs";
+import { AppShell } from "@/components/layout/app-shell";
 import { StatusBadge } from "@/components/status-badge";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { formatPlate } from "@/components/ui/license-plate-input";
-import { useDashboardMetrics, type DashboardMetrics } from "@/lib/use-dashboard-metrics";
-import { useAuth } from "@/store/auth";
+import { Tabs } from "@/components/ui/tabs";
 import { can } from "@/lib/can";
-import { ORDER_STATUS_LABELS } from "@/lib/constants";
-import { currencySymbol, formatCompact, formatCompactCurrency, formatCurrency, formatMoney, cn } from "@/lib/utils";
+import { useDashboardMetrics, type DashboardMetrics } from "@/lib/use-dashboard-metrics";
+import { cn, currencySymbol, formatCompact, formatCompactCurrency, formatMoney } from "@/lib/utils";
+import { useAuth } from "@/store/auth";
 
 const TOOLTIP_STYLE = {
-  borderRadius: 8,
+  borderRadius: 12,
   border: "1px solid var(--border)",
   background: "var(--card)",
+  color: "var(--foreground)",
   fontSize: 12,
-  padding: "6px 10px",
-  boxShadow: "0 4px 12px rgba(0,0,0,0.06)",
+  padding: "8px 11px",
+  boxShadow: "0 12px 32px rgba(0,0,0,0.12)",
 } as const;
 
-const DONUT_COLORS = [
-  "var(--chart-1)",
-  "var(--chart-2)",
-  "var(--chart-3)",
-  "var(--chart-4)",
-  "var(--chart-5)",
-  "var(--muted-foreground)",
-];
+type SummaryMetric = {
+  key: string;
+  label: string;
+  value: string;
+  exact: string;
+  unit: string;
+  note: string;
+  href: string;
+  icon: ElementType;
+};
 
-function CardHeader({
-  title,
-  sub,
-  href,
-  hrefLabel,
-}: {
-  title: string;
-  sub?: string;
-  href?: string;
-  hrefLabel?: string;
-}) {
+function SummaryHero({ m }: { m: DashboardMetrics }) {
+  const metrics: SummaryMetric[] = [
+    {
+      key: "shipped",
+      label: "Отгружено сегодня",
+      value: formatCompact(m.shippedToday),
+      exact: formatMoney(m.shippedToday),
+      unit: "мешков",
+      note:
+        m.shippedTodayOrders > 0
+          ? `${m.shippedTodayOrders} отгрузок · вчера ${formatCompact(m.shippedYesterday)}`
+          : `Пока без отгрузок · вчера ${formatCompact(m.shippedYesterday)}`,
+      href: "/orders",
+      icon: Truck,
+    },
+    {
+      key: "received",
+      label: "Поступило сегодня",
+      value: formatCompact(String(m.receivedToday)),
+      exact: formatMoney(String(m.receivedToday)),
+      unit: "₸",
+      note: m.receivedTodayCount > 0 ? `${m.receivedTodayCount} подтверждённых оплат` : "Подтверждённых оплат пока нет",
+      href: "/accounting",
+      icon: Wallet,
+    },
+    {
+      key: "stock",
+      label: "Остаток на складе",
+      value: formatCompact(m.totalBags),
+      exact: formatMoney(m.totalBags),
+      unit: "мешков",
+      note: `${m.stockByProduct.length} товарных позиций`,
+      href: "/warehouse",
+      icon: Warehouse,
+    },
+    {
+      key: "debt",
+      label: m.overdueClients > 0 ? "Просроченный долг" : "Долг клиентов",
+      value: formatCompact(String(m.overdueClients > 0 ? m.overdueTotal : m.debtTotal)),
+      exact: formatMoney(String(m.overdueClients > 0 ? m.overdueTotal : m.debtTotal)),
+      unit: currencySymbol(m.debtCurrency),
+      note: m.overdueClients > 0 ? `${m.overdueClients} клиентов требуют внимания` : "Просроченных оплат нет",
+      href: "/accounting",
+      icon: CircleDollarSign,
+    },
+  ].filter((metric) => {
+    if (metric.key === "shipped") return m.canOrders && m.canEvents;
+    if (metric.key === "received") return m.canFinance && m.canOrders;
+    if (metric.key === "stock") return m.canStock;
+    return m.canFinance;
+  });
+
+  if (metrics.length === 0) return null;
+
+  const [primary, ...secondary] = metrics;
+  const attentionCount =
+    m.overdueClients + m.attention.pendingPayments + m.attention.awaitingReview + m.negativeStock.length;
+
   return (
-    <div className="flex items-center gap-2.5 border-b px-4 py-3">
-      <span className="text-sm font-semibold">{title}</span>
-      {sub && <span className="text-xs text-[var(--muted-foreground)]">{sub}</span>}
-      {href && (
-        <Link
-          href={href}
-          className="ml-auto flex items-center gap-1 rounded-lg border border-[var(--ring)]/25 bg-[var(--ring)]/5 px-2.5 py-1 text-xs font-medium text-[var(--ring)] transition hover:bg-[var(--ring)]/10"
-        >
-          {hrefLabel} <ArrowUpRight className="size-3" />
-        </Link>
-      )}
-    </div>
+    <section className="analytics-hero relative overflow-hidden rounded-[26px] bg-[#17231c] text-white shadow-[0_18px_60px_rgba(23,35,28,0.16)]">
+      <div aria-hidden="true" className="absolute -right-12 -top-20 size-64 rounded-full border border-white/10" />
+      <div aria-hidden="true" className="absolute -right-3 -top-4 size-36 rounded-full border border-white/10" />
+      <div className="relative grid min-h-[300px] lg:grid-cols-[1.15fr_0.85fr]">
+        <div className="flex flex-col justify-between border-white/10 p-6 sm:p-8 lg:border-r lg:p-10">
+          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+            <span className="size-2 rounded-full bg-[#d9f99d] shadow-[0_0_0_5px_rgba(217,249,157,0.12)]" />
+            Сводка за сегодня
+            {attentionCount > 0 && (
+              <span className="ml-2 whitespace-nowrap rounded-full bg-white/10 px-2.5 py-1 normal-case tracking-normal text-white/75">
+                {attentionCount} требуют действия
+              </span>
+            )}
+          </div>
+
+          <div className="py-9 sm:py-12">
+            <div className="text-sm text-white/60">{primary.label}</div>
+            <div className="mt-2 flex flex-wrap items-end gap-x-3 gap-y-1">
+              <span
+                title={primary.exact}
+                className="font-serif text-6xl font-medium leading-none tracking-[-0.055em] tabular-nums sm:text-7xl"
+              >
+                {primary.value}
+              </span>
+              <span className="mb-1 text-base text-white/55 sm:mb-2">{primary.unit}</span>
+            </div>
+            <p className="mt-4 text-sm text-white/60">{primary.note}</p>
+          </div>
+
+          <Link
+            href={primary.href}
+            className="group inline-flex w-fit items-center gap-2 text-sm font-medium text-[#d9f99d] transition hover:text-white"
+          >
+            Открыть детали
+            <ArrowRight className="size-4 transition-transform group-hover:translate-x-1" />
+          </Link>
+        </div>
+
+        <div className="relative flex flex-col justify-center px-6 pb-6 sm:px-8 sm:pb-8 lg:p-10">
+          <div className="divide-y divide-white/10 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.045] backdrop-blur">
+            {secondary.map((metric) => {
+              const Icon = metric.icon;
+              return (
+                <Link
+                  key={metric.key}
+                  href={metric.href}
+                  className="group flex items-center gap-4 px-4 py-4 transition hover:bg-white/[0.055]"
+                >
+                  <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-white/10 text-white/75">
+                    <Icon className="size-[18px]" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs text-white/50">{metric.label}</div>
+                    <div className="mt-0.5 flex items-baseline gap-1.5">
+                      <span title={metric.exact} className="text-xl font-semibold tracking-tight tabular-nums">
+                        {metric.value}
+                      </span>
+                      <span className="text-xs text-white/45">{metric.unit}</span>
+                    </div>
+                    <div className="mt-0.5 truncate text-[11px] text-white/45">{metric.note}</div>
+                  </div>
+                  <ChevronRight className="size-4 text-white/25 transition group-hover:translate-x-0.5 group-hover:text-white/70" />
+                </Link>
+              );
+            })}
+            {secondary.length === 0 && (
+              <div className="flex min-h-44 flex-col items-center justify-center gap-2 px-6 text-center">
+                <Sparkles className="size-5 text-[#d9f99d]" />
+                <p className="text-sm text-white/55">Главный показатель уже перед вами</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
-/* ── Требует действия ────────────────────────────────────────────── */
+type AttentionItem = {
+  key: string;
+  show: boolean;
+  href: string;
+  label: string;
+  hint: string;
+  value: string;
+  icon: ElementType;
+  urgent?: boolean;
+};
 
-/** То, по чему нужно что-то сделать сегодня.
- *
- * Итоговые цифры отвечают на вопрос «как дела», но не говорят, за что
- * браться. Здесь только строки, ведущие на конкретный экран; когда всё
- * закрыто, полоса схлопывается в одну спокойную строку.
- */
-function AttentionBar({ m }: { m: DashboardMetrics }) {
-  const items = [
+function AttentionPanel({ m }: { m: DashboardMetrics }) {
+  const items: AttentionItem[] = [
     {
       key: "overdue",
       show: m.canFinance && m.overdueClients > 0,
       href: "/accounting",
-      icon: AlertTriangle,
-      tone: "destructive" as const,
       label: "Просрочена оплата",
+      hint: formatCompactCurrency(m.overdueTotal, m.debtCurrency),
       value: String(m.overdueClients),
-      hint: `${formatCompactCurrency(m.overdueTotal, m.debtCurrency)} · ${m.overdueClients === 1 ? "клиент" : "клиентов"}`,
+      icon: AlertTriangle,
+      urgent: true,
     },
     {
       key: "payments",
       show: m.canPayments && m.attention.pendingPayments > 0,
       href: "/accounting",
-      icon: Wallet,
-      tone: "warning" as const,
-      label: "Оплаты на подтверждении",
+      label: "Подтвердить оплаты",
+      hint: "Ожидают решения кассы",
       value: String(m.attention.pendingPayments),
-      hint: "ждут кассу",
+      icon: Wallet,
     },
     {
-      key: "review",
+      key: "orders",
       show: m.canOrders && m.attention.awaitingReview > 0,
       href: "/orders",
-      icon: ClipboardList,
-      tone: "warning" as const,
-      label: "Заказы на рассмотрении",
+      label: "Рассмотреть заказы",
+      hint: "Клиенты ждут ответа",
       value: String(m.attention.awaitingReview),
-      hint: "нужен ответ",
+      icon: ClipboardCheck,
     },
     {
-      key: "loading",
-      show: m.canOrders && m.attention.stuckInLoading > 0,
-      href: "/shipping",
-      icon: Truck,
-      tone: "info" as const,
-      label: "Идёт погрузка",
-      value: String(m.attention.stuckInLoading),
-      hint: "на посту",
+      key: "stock",
+      show: m.canStock && m.negativeStock.length > 0,
+      href: "/warehouse",
+      label: "Исправить остатки",
+      hint: "Обнаружен минус на складе",
+      value: String(m.negativeStock.length),
+      icon: Warehouse,
+      urgent: true,
     },
   ].filter((item) => item.show);
 
-  // Пока данные не пришли, счётчики нулевые. Зелёное «ничего срочного» на
-  // ещё не загруженном экране — обещание, которого система не давала.
-  if (m.loading) {
-    return (
-      <section className="flex items-center gap-2 rounded-xl border bg-[var(--card)] px-4 py-3 text-sm">
-        <span className="size-4 shrink-0 animate-pulse rounded-full bg-[var(--muted)]" />
-        <span className="text-[var(--muted-foreground)]">Проверяем, что требует внимания…</span>
-      </section>
-    );
-  }
-
-  if (items.length === 0) {
-    return (
-      <section className="flex items-center gap-2 rounded-xl border border-[var(--success)]/25 bg-[var(--success)]/5 px-4 py-3 text-sm">
-        <CheckCircle2 className="size-4 shrink-0 text-[var(--success)]" />
-        <span className="text-[var(--muted-foreground)]">Ничего срочного — просрочек и незакрытых оплат нет.</span>
-      </section>
-    );
-  }
-
-  const toneClass = {
-    destructive: "border-[var(--destructive)]/25 bg-[var(--destructive)]/5 text-[var(--destructive)]",
-    warning: "border-[var(--warning)]/25 bg-[var(--warning)]/5 text-[var(--warning)]",
-    info: "border-[var(--ring)]/25 bg-[var(--ring)]/5 text-[var(--ring)]",
-  };
-
   return (
-    <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      {items.map((item) => {
-        const Icon = item.icon;
-        return (
-          <Link
-            key={item.key}
-            href={item.href}
+    <section className="flex min-h-[390px] flex-col rounded-[22px] border bg-[var(--card)] shadow-card">
+      <div className="flex items-start justify-between gap-4 px-5 pb-4 pt-5">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
+            В фокусе
+          </p>
+          <h3 className="mt-1 text-lg font-semibold tracking-tight">Нужно решить</h3>
+        </div>
+        {!m.loading && (
+          <span
             className={cn(
-              "group flex items-center gap-2.5 rounded-xl border px-3 py-3 transition hover:shadow-sm",
-              toneClass[item.tone],
+              "flex size-9 items-center justify-center rounded-full text-sm font-semibold tabular-nums",
+              items.length > 0
+                ? "bg-[var(--warning)]/10 text-[var(--warning)]"
+                : "bg-[var(--success)]/10 text-[var(--success)]",
             )}
           >
-            <Icon className="size-5 shrink-0" />
-            <div className="min-w-0 flex-1">
-              {/* Заголовок и сумма в одну строку каждый: в узкой карточке
-                  перенос ломал и подпись, и «2,5 млн ₸» пополам. */}
-              <div className="truncate text-[13px] font-medium text-[var(--foreground)]">{item.label}</div>
-              <div className="truncate text-xs text-[var(--muted-foreground)]">{item.hint}</div>
-            </div>
-            {/* Стрелка появляется только при наведении и не занимает места —
-                иначе заголовок обрезался уже на «Просрочена оп…». */}
-            <div className="shrink-0 whitespace-nowrap text-lg font-semibold tabular-nums">{item.value}</div>
-          </Link>
-        );
-      })}
-    </section>
-  );
-}
+            {items.length}
+          </span>
+        )}
+      </div>
 
-/* ── Сегодня: четыре ответа одним взглядом ──────────────────────── */
-
-function TodayStrip({ m }: { m: DashboardMetrics }) {
-  const cells = [
-    {
-      show: m.canOrders && m.canEvents,
-      label: "Отгружено сегодня",
-      value: formatCompact(m.shippedToday),
-      exact: formatMoney(m.shippedToday),
-      unit: "меш.",
-      // «↘ 1 775» красным читалось как авария. Вчерашняя цифра текстом
-      // отвечает на тот же вопрос без тревоги.
-      hint: `${m.shippedTodayOrders} отгрузок · вчера ${formatCompact(m.shippedYesterday)}`,
-      info: "Мешки в отгруженных сегодня заказах.",
-      icon: Truck,
-      tone: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-    },
-    {
-      show: m.canFinance && m.canOrders,
-      label: "Поступило сегодня",
-      value: formatCompact(String(m.receivedToday)),
-      exact: formatMoney(String(m.receivedToday)),
-      unit: "₸",
-      hint: m.receivedTodayCount > 0 ? `${m.receivedTodayCount} подтверждённых оплат` : "оплат пока не было",
-      info: "Подтверждённые сегодня оплаты в тенге.",
-      icon: Wallet,
-      tone: "bg-violet-500/10 text-violet-600 dark:text-violet-400",
-    },
-    {
-      show: m.canFinance,
-      label: "Долг клиентов",
-      value: formatCompact(String(m.debtTotal)),
-      exact: formatMoney(String(m.debtTotal)),
-      unit: currencySymbol(m.debtCurrency),
-      hint:
-        m.overdueClients > 0
-          ? `просрочено ${formatCompactCurrency(m.overdueTotal, m.debtCurrency)} · ${m.overdueClients} кл.`
-          : "просрочки нет",
-      info: "Непогашенный остаток по отгруженным в долг заказам.",
-      icon: UserRound,
-      tone: "bg-orange-500/10 text-orange-600 dark:text-orange-400",
-      alert: m.overdueClients > 0,
-    },
-    {
-      show: m.canStock,
-      label: "На складе",
-      value: formatCompact(m.totalBags),
-      exact: formatMoney(m.totalBags),
-      unit: "меш.",
-      hint: `${m.stockByProduct.length} продуктов`,
-      info: "Сумма остатков по всем продуктам склада.",
-      icon: Warehouse,
-      tone: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-    },
-  ] as const;
-  const visible = cells.filter((c) => c.show);
-  if (visible.length === 0) return null;
-  return (
-    <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      {visible.map((c) => {
-        const Icon = c.icon;
-        return (
-          <div
-            key={c.label}
-            className="relative flex items-start gap-3 rounded-xl border bg-[var(--card)] p-4 shadow-sm"
-          >
-            <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-xl", c.tone)}>
-              <Icon className="size-5" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[13px] text-[var(--muted-foreground)]">{c.label}</div>
-              <div className="mt-1 flex flex-wrap items-baseline gap-1.5">
+      {m.loading ? (
+        <div className="flex flex-1 flex-col gap-3 px-5 py-3">
+          {[0, 1, 2].map((row) => (
+            <div key={row} className="h-[68px] animate-pulse rounded-2xl bg-[var(--muted)]" />
+          ))}
+        </div>
+      ) : items.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center px-6 pb-10 text-center">
+          <span className="flex size-14 items-center justify-center rounded-full bg-[var(--success)]/10 text-[var(--success)]">
+            <Check className="size-6" strokeWidth={2.4} />
+          </span>
+          <h4 className="mt-4 font-semibold">Всё спокойно</h4>
+          <p className="mt-1 max-w-[220px] text-sm text-[var(--muted-foreground)]">
+            Нет просрочек, неподтверждённых оплат и ошибок склада.
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-1 flex-col gap-2 px-3 pb-3">
+          {items.map((item) => {
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.key}
+                href={item.href}
+                className="group flex items-center gap-3 rounded-2xl px-3 py-3 transition hover:bg-[var(--muted)]/70"
+              >
                 <span
-                  title={`${c.exact}${c.unit ? ` ${c.unit}` : ""}`}
                   className={cn(
-                    "text-2xl font-semibold tabular-nums tracking-tight",
-                    "alert" in c && c.alert && "text-[var(--destructive)]",
+                    "flex size-10 shrink-0 items-center justify-center rounded-xl",
+                    item.urgent
+                      ? "bg-[var(--destructive)]/10 text-[var(--destructive)]"
+                      : "bg-[var(--warning)]/10 text-[var(--warning)]",
                   )}
                 >
-                  {c.value}
+                  <Icon className="size-[18px]" />
                 </span>
-                {c.unit && <span className="text-sm text-[var(--muted-foreground)]">{c.unit}</span>}
-              </div>
-              <div className="mt-0.5 truncate text-xs text-[var(--muted-foreground)]">{c.hint}</div>
-            </div>
-            <span title={c.info} className="absolute right-3 top-3 cursor-help text-[var(--muted-foreground)]/50">
-              <Info className="size-3.5" />
-            </span>
-          </div>
-        );
-      })}
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{item.label}</div>
+                  <div className="truncate text-xs text-[var(--muted-foreground)]">{item.hint}</div>
+                </div>
+                <span className="text-lg font-semibold tabular-nums">{item.value}</span>
+                <ArrowUpRight className="size-4 text-[var(--muted-foreground)] opacity-0 transition group-hover:opacity-100" />
+              </Link>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
 
-/* ── Динамика: один крупный график с переключателем ─────────────── */
+type TrendMode = "bags" | "money";
 
-const AXIS_TICK = { fontSize: 11, fill: "var(--muted-foreground)" } as const;
-
-function TrendCard({ m, days }: { m: DashboardMetrics; days: number }) {
+function TrendPanel({ m, days }: { m: DashboardMetrics; days: number }) {
   const modes = [
-    ...(m.canOrders && m.canEvents ? [{ key: "bags", label: "Отгрузки" }] : []),
-    ...(m.canFinance && m.canOrders ? [{ key: "money", label: "Деньги" }] : []),
+    ...(m.canOrders && m.canEvents ? [{ key: "bags" as const, label: "Отгрузки" }] : []),
+    ...(m.canFinance && m.canOrders ? [{ key: "money" as const, label: "Деньги" }] : []),
   ];
-  const [mode, setMode] = useState(modes[0]?.key ?? "bags");
+  const [mode, setMode] = useState<TrendMode>(modes[0]?.key ?? "bags");
   if (modes.length === 0) return null;
-  const active = modes.some((item) => item.key === mode) ? mode : modes[0].key;
 
-  const totalBags = m.shippedByDay.reduce((s, d) => s + d.bags, 0);
-  const activeDays = m.shippedByDay.filter((d) => d.bags > 0).length;
+  const active = modes.some((item) => item.key === mode) ? mode : modes[0].key;
+  const positiveBags = m.shippedByDay
+    .map((day) => day.bags)
+    .filter((value) => value > 0)
+    .sort((a, b) => b - a);
+  const largest = positiveBags[0] ?? 0;
+  const secondLargest = positiveBags[1] ?? 0;
+  const hasOutlier = secondLargest > 0 && largest > secondLargest * 4;
+  const chartCap = hasOutlier ? Math.ceil(secondLargest * 2.5) : Math.max(largest, 1);
+  const bagChart = m.shippedByDay.map((day) => ({
+    ...day,
+    visibleBags: Math.min(day.bags, chartCap),
+  }));
+  const totalBags = m.shippedByDay.reduce((sum, day) => sum + day.bags, 0);
+  const activeDays = positiveBags.length;
+
   const summary =
     active === "bags"
       ? [
-          { label: "Всего", value: `${formatCompact(totalBags)} меш.`, exact: formatMoney(totalBags) },
-          {
-            label: "В среднем",
-            value: `${formatCompact(activeDays ? Math.round(totalBags / activeDays) : 0)} меш./день`,
-            exact: "по дням с отгрузками",
-          },
+          { label: "За период", value: `${formatCompact(totalBags)} меш.` },
+          { label: "Рабочих дней", value: `${activeDays} из ${days}` },
         ]
       : [
-          {
-            label: "Выручка",
-            value: `${formatCompact(String(m.periodRevenue))} ₸`,
-            exact: formatMoney(String(m.periodRevenue)),
-          },
-          {
-            label: "Поступило",
-            value: `${formatCompact(String(m.periodReceived))} ₸`,
-            exact: formatMoney(String(m.periodReceived)),
-          },
+          { label: "Выручка", value: `${formatCompact(String(m.periodRevenue))} ₸` },
+          { label: "Поступило", value: `${formatCompact(String(m.periodReceived))} ₸` },
         ];
 
   return (
-    <section className="rounded-xl border bg-[var(--card)] shadow-sm">
-      <div className="flex flex-wrap items-center gap-2.5 border-b px-4 py-3">
-        <span className="text-sm font-semibold">Динамика</span>
-        <span className="text-xs text-[var(--muted-foreground)]">{days} дней</span>
+    <section className="min-h-[390px] rounded-[22px] border bg-[var(--card)] shadow-card">
+      <div className="flex flex-wrap items-start justify-between gap-4 px-5 pb-2 pt-5 sm:px-6 sm:pt-6">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
+            Последние {days} дней
+          </p>
+          <h3 className="mt-1 text-lg font-semibold tracking-tight">Динамика бизнеса</h3>
+        </div>
         {modes.length > 1 && (
-          <div className="ml-auto flex rounded-lg border bg-[var(--muted)]/50 p-0.5">
+          <div className="flex rounded-xl bg-[var(--muted)] p-1">
             {modes.map((item) => (
               <button
                 key={item.key}
                 type="button"
                 onClick={() => setMode(item.key)}
                 className={cn(
-                  "rounded-md px-3 py-1 text-xs font-medium transition",
+                  "rounded-lg px-3 py-1.5 text-xs font-medium transition",
                   active === item.key
-                    ? "bg-[var(--card)] shadow-sm"
+                    ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
                     : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
                 )}
               >
@@ -345,305 +383,140 @@ function TrendCard({ m, days }: { m: DashboardMetrics; days: number }) {
           </div>
         )}
       </div>
-      <div className="p-4">
-        {/* Итоги словами над графиком: цифры читают, график угадывают. */}
-        <div className="mb-3 flex flex-wrap gap-x-6 gap-y-1">
-          {summary.map((item) => (
-            <div key={item.label} className="flex items-baseline gap-1.5">
-              <span className="text-xs text-[var(--muted-foreground)]">{item.label}</span>
-              <span title={item.exact} className="text-sm font-semibold tabular-nums">
-                {item.value}
-              </span>
-            </div>
-          ))}
-        </div>
-        <div className="h-[240px] w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            {active === "bags" ? (
-              <BarChart data={m.shippedByDay} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="var(--border)" />
-                <XAxis
-                  dataKey="label"
-                  tickLine={false}
-                  axisLine={false}
-                  tick={AXIS_TICK}
-                  interval={days > 14 ? 3 : 1}
-                />
-                {/* Ширины 60 хватает на «1,5 млрд»: узкая ось резала подписи
-                    до бессмысленных «0 тыс» и двух одинаковых «5 млрд». */}
-                <YAxis
-                  width={60}
-                  tickCount={5}
-                  tickLine={false}
-                  axisLine={false}
-                  tick={AXIS_TICK}
-                  tickFormatter={(v: number) => formatCompact(v)}
-                />
-                <Tooltip
-                  cursor={{ fill: "var(--muted)" }}
-                  contentStyle={TOOLTIP_STYLE}
-                  formatter={(v: number) => [`${formatMoney(v)} меш.`, "Отгружено"]}
-                  labelFormatter={(l) => `День ${l}`}
-                />
-                <Bar dataKey="bags" fill="var(--ring)" radius={[3, 3, 0, 0]} maxBarSize={28} />
-              </BarChart>
-            ) : (
-              <AreaChart data={m.spark} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="dash-rev" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="var(--ring)" stopOpacity={0.25} />
-                    <stop offset="100%" stopColor="var(--ring)" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="var(--border)" />
-                <XAxis
-                  dataKey="label"
-                  tickLine={false}
-                  axisLine={false}
-                  tick={AXIS_TICK}
-                  interval={days > 14 ? 3 : 1}
-                />
-                <YAxis
-                  width={60}
-                  tickCount={5}
-                  tickLine={false}
-                  axisLine={false}
-                  tick={AXIS_TICK}
-                  tickFormatter={(v: number) => formatCompact(v)}
-                />
-                <Tooltip
-                  contentStyle={TOOLTIP_STYLE}
-                  formatter={(v: number, name: string) => [
-                    `${formatMoney(String(v))} ₸`,
-                    name === "revenue" ? "Выручка" : "Поступления",
-                  ]}
-                  labelFormatter={(l) => `День ${l}`}
-                />
-                <Area type="monotone" dataKey="revenue" stroke="var(--ring)" strokeWidth={1.75} fill="url(#dash-rev)" />
-                <Area type="monotone" dataKey="received" stroke="var(--success)" strokeWidth={1.5} fillOpacity={0} />
-              </AreaChart>
-            )}
-          </ResponsiveContainer>
-        </div>
-        {active === "money" && (
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--muted-foreground)]">
-            <span className="flex items-center gap-1.5">
-              <span className="h-0.5 w-3 rounded bg-[var(--ring)]" /> выручка
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-0.5 w-3 rounded bg-[var(--success)]" /> поступления
-            </span>
+
+      <div className="flex flex-wrap gap-x-7 gap-y-2 px-5 py-3 sm:px-6">
+        {summary.map((item) => (
+          <div key={item.label}>
+            <div className="text-[11px] text-[var(--muted-foreground)]">{item.label}</div>
+            <div className="mt-0.5 text-sm font-semibold tabular-nums">{item.value}</div>
           </div>
-        )}
+        ))}
       </div>
-    </section>
-  );
-}
 
-/* ── Склад по продуктам ──────────────────────────────────────────── */
-
-function StockCard({ m }: { m: DashboardMetrics }) {
-  const total = m.stockByProduct.reduce((s, x) => s + x.bags, 0);
-  return (
-    <section className="flex flex-col rounded-xl border bg-[var(--card)] shadow-sm">
-      <CardHeader title="Склад" sub={`${formatCompact(total)} меш.`} href="/warehouse" hrefLabel="Перейти к складу" />
-      <div className="flex-1 p-4">
-        {total === 0 ? (
-          <div className="py-8 text-center text-sm text-[var(--muted-foreground)]">Склад пуст</div>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {m.stockByProduct.map((p, i) => {
-              const share = total > 0 ? (p.bags / total) * 100 : 0;
-              return (
-                <div key={p.name}>
-                  <div className="flex items-baseline justify-between gap-2 text-sm">
-                    <span title={p.name} className="min-w-0 truncate">
-                      {p.name}
-                    </span>
-                    <span title={formatMoney(p.bags)} className="shrink-0 font-medium tabular-nums">
-                      {formatCompact(p.bags)}
-                      <span className="ml-1.5 text-xs font-normal text-[var(--muted-foreground)]">
-                        {share < 1 ? "<1" : Math.round(share)}%
-                      </span>
-                    </span>
-                  </div>
-                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
-                    <div
-                      className="h-full rounded-full"
-                      style={{
-                        width: `${Math.max(share, 1.5)}%`,
-                        background: DONUT_COLORS[i % DONUT_COLORS.length],
-                      }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        {m.negativeStock.length > 0 && (
-          <Link
-            href="/warehouse"
-            className="mt-4 flex items-center gap-2 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/5 px-3 py-2 text-xs text-[var(--warning)] transition hover:bg-[var(--warning)]/10"
-          >
-            <AlertTriangle className="size-3.5 shrink-0" />
-            <span className="min-w-0 truncate">
-              Минус на складе: {m.negativeStock.map((row) => `${row.name} ${formatMoney(row.bags)}`).join(", ")}
-            </span>
-            <ChevronRight className="ml-auto size-3.5 shrink-0" />
-          </Link>
-        )}
+      <div className="h-[235px] w-full px-2 pb-3 sm:px-4">
+        <ResponsiveContainer width="100%" height="100%">
+          {active === "bags" ? (
+            <BarChart data={bagChart} margin={{ top: 18, right: 8, left: 8, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 7" vertical={false} stroke="var(--border)" />
+              <XAxis
+                dataKey="label"
+                tickLine={false}
+                axisLine={false}
+                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                interval={days > 14 ? 3 : 1}
+                dy={8}
+              />
+              <Tooltip
+                cursor={{ fill: "var(--muted)", opacity: 0.55 }}
+                contentStyle={TOOLTIP_STYLE}
+                formatter={(_value, _name, item) => [
+                  `${formatMoney(Number((item.payload as { bags: number }).bags))} меш.`,
+                  "Отгружено",
+                ]}
+                labelFormatter={(label) => `День ${label}`}
+              />
+              <Bar dataKey="visibleBags" radius={[6, 6, 2, 2]} maxBarSize={32}>
+                {bagChart.map((point) => (
+                  <Cell
+                    key={point.label}
+                    fill={point.bags > chartCap ? "#d6a327" : "var(--ring)"}
+                    opacity={point.bags === 0 ? 0.18 : 0.9}
+                  />
+                ))}
+              </Bar>
+            </BarChart>
+          ) : (
+            <AreaChart data={m.spark} margin={{ top: 18, right: 8, left: 8, bottom: 0 }}>
+              <defs>
+                <linearGradient id="analytics-revenue-fill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--ring)" stopOpacity={0.22} />
+                  <stop offset="100%" stopColor="var(--ring)" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 7" vertical={false} stroke="var(--border)" />
+              <XAxis
+                dataKey="label"
+                tickLine={false}
+                axisLine={false}
+                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                interval={days > 14 ? 3 : 1}
+                dy={8}
+              />
+              <Tooltip
+                contentStyle={TOOLTIP_STYLE}
+                formatter={(value: number, name: string) => [
+                  `${formatMoney(String(value))} ₸`,
+                  name === "revenue" ? "Выручка" : "Поступления",
+                ]}
+                labelFormatter={(label) => `День ${label}`}
+              />
+              <Area
+                type="monotone"
+                dataKey="revenue"
+                stroke="var(--ring)"
+                strokeWidth={2.25}
+                fill="url(#analytics-revenue-fill)"
+              />
+              <Area type="monotone" dataKey="received" stroke="var(--success)" strokeWidth={2} fillOpacity={0} />
+            </AreaChart>
+          )}
+        </ResponsiveContainer>
       </div>
-    </section>
-  );
-}
 
-/* ── Заказы по четырём пользовательским статусам ────────────────── */
-
-const PIPELINE_ICONS: Record<string, React.ElementType> = {
-  pending: Clock3,
-  loading: Hourglass,
-  shipped: Truck,
-  cancelled: XCircle,
-};
-
-function PipelineCard({ m }: { m: DashboardMetrics }) {
-  const total = m.pipeline.reduce((s, x) => s + x.count, 0);
-  const max = Math.max(...m.pipeline.map((x) => x.count), 1);
-  return (
-    <section className="flex flex-col rounded-xl border bg-[var(--card)] shadow-sm">
-      <CardHeader title="Заказы по статусам" sub={`${total} всего`} />
-      <div className="flex flex-1 flex-col gap-3.5 p-4">
-        {m.pipeline.map((row) => {
-          const Icon = PIPELINE_ICONS[row.status] ?? Clock3;
-          return (
-            <div key={row.status} className="flex items-center gap-3">
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[var(--muted)]/70 text-[var(--muted-foreground)]">
-                <Icon className="size-4" />
-              </span>
-              <span className="w-28 shrink-0 truncate text-xs text-[var(--muted-foreground)]">
-                {ORDER_STATUS_LABELS[row.status] ?? row.status}
-              </span>
-              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--muted)]">
-                <div
-                  className="h-full rounded-full bg-[var(--ring)] transition-all"
-                  style={{ width: `${(row.count / max) * 100}%`, opacity: row.count === 0 ? 0 : 1 }}
-                />
-              </div>
-              <span className="w-8 shrink-0 text-right text-sm font-semibold tabular-nums">{row.count}</span>
-            </div>
-          );
-        })}
-      </div>
-      <Link
-        href="/orders"
-        className="flex items-center gap-1 border-t px-4 py-2.5 text-xs font-medium text-[var(--ring)] hover:underline"
-      >
-        Перейти к заказам <ArrowUpRight className="size-3" />
-      </Link>
-    </section>
-  );
-}
-
-/* ── Топ должников ───────────────────────────────────────────────── */
-
-function DebtorsCard({ m }: { m: DashboardMetrics }) {
-  return (
-    <section className="flex flex-col rounded-xl border bg-[var(--card)] shadow-sm">
-      <CardHeader title="Должники" sub="топ-5 по сумме" href="/accounting" hrefLabel="Перейти к должникам" />
-      {m.topDebtors.length === 0 ? (
-        <div className="flex-1 px-4 py-8 text-center text-sm text-[var(--muted-foreground)]">Долгов нет</div>
-      ) : (
-        <div className="flex-1 divide-y">
-          {m.topDebtors.map((d, i) => (
-            <div key={d.client_id} className="flex items-center gap-3 px-4 py-2.5">
-              <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-[var(--muted)] text-[11px] font-semibold tabular-nums text-[var(--muted-foreground)]">
-                {i + 1}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm">{d.client_name}</div>
-                <div className="text-[11px] text-[var(--muted-foreground)]">
-                  {d.orders_count} зак.
-                  {d.overdue_count > 0 && (
-                    <span className="text-[var(--destructive)]"> · {d.overdue_count} просрочено</span>
-                  )}
-                </div>
-              </div>
-              {/* Валюта у каждого своя: долг в долларах нельзя подписать «₸». */}
-              <span
-                title={formatCurrency(d.debt_total, d.debt_currency)}
-                className="shrink-0 text-sm font-semibold tabular-nums text-[var(--destructive)]"
-              >
-                {formatCompactCurrency(d.debt_total, d.debt_currency)}
-              </span>
-            </div>
-          ))}
+      {active === "bags" && hasOutlier && (
+        <div className="mx-5 mb-4 flex items-center gap-2 rounded-xl bg-[var(--warning)]/10 px-3 py-2 text-xs text-[var(--warning)] sm:mx-6">
+          <span className="size-2 shrink-0 rounded-full bg-[#d6a327]" />
+          Пик {formatCompact(largest)} меш. выделен. Шкала ограничена, чтобы остальные дни не пропали.
         </div>
       )}
-      <Link
-        href="/accounting"
-        className="flex items-center gap-1 border-t px-4 py-2.5 text-xs font-medium text-[var(--ring)] hover:underline"
-      >
-        Смотреть всех должников <ArrowUpRight className="size-3" />
-      </Link>
     </section>
   );
 }
 
-/* ── Очередь отгрузки ────────────────────────────────────────────── */
+function LiveQueue({ m }: { m: DashboardMetrics }) {
+  if (m.queue.length === 0) return null;
 
-function QueueBoard({ m }: { m: DashboardMetrics }) {
-  const queue = m.queue;
   return (
-    <section className="rounded-xl border bg-[var(--card)] shadow-sm">
-      <div className="flex items-center gap-2.5 border-b px-4 py-3">
-        <Truck className="size-4 text-[var(--muted-foreground)]" />
-        <span className="text-sm font-semibold">Очередь отгрузки</span>
-        <span className="text-xs text-[var(--muted-foreground)]">{queue.length} в работе</span>
+    <section className="overflow-hidden rounded-[22px] border bg-[var(--card)] shadow-card">
+      <div className="flex items-center gap-3 border-b px-5 py-4 sm:px-6">
+        <span className="relative flex size-9 items-center justify-center rounded-xl bg-[var(--ring)]/10 text-[var(--ring)]">
+          <Truck className="size-[18px]" />
+          <span className="absolute -right-0.5 -top-0.5 size-2.5 rounded-full border-2 border-[var(--card)] bg-[#62a86a]" />
+        </span>
+        <div>
+          <h3 className="text-sm font-semibold">Сейчас на погрузке</h3>
+          <p className="text-xs text-[var(--muted-foreground)]">{m.queue.length} машин в работе</p>
+        </div>
         <Link
           href="/shipping"
-          className="ml-auto flex items-center gap-1 text-xs font-medium text-[var(--ring)] hover:underline"
+          className="ml-auto inline-flex items-center gap-1.5 text-xs font-medium text-[var(--ring)] hover:underline"
         >
-          Пост отгрузки <ArrowUpRight className="size-3" />
+          Открыть пост <ArrowUpRight className="size-3.5" />
         </Link>
       </div>
-      {queue.length === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-1.5 px-4 py-10 text-center">
-          <div className="text-sm font-medium">Нет машин в работе</div>
-          <div className="text-xs text-[var(--muted-foreground)]">Машины появятся здесь после въезда на весы</div>
-        </div>
-      ) : (
-        <div className="divide-y">
-          {queue.map((o) => (
-            <Link
-              key={o.id}
-              href={`/orders/${o.id}`}
-              className="group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-[var(--accent)]"
-            >
-              <span
-                className={cn(
-                  "size-2 shrink-0 rounded-full",
-                  o.status === "loading" ? "bg-[var(--warning)]" : "bg-[var(--ring)]",
-                )}
-              />
-              <span className="w-28 shrink-0 text-sm font-semibold tabular-nums">
-                {o.truck_number ? formatPlate(o.truck_number) : `#${o.id}`}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm">{o.client_name || "—"}</div>
+      <div className="grid divide-y sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-4">
+        {m.queue.slice(0, 4).map((order) => (
+          <Link
+            key={order.id}
+            href={`/orders/${order.id}`}
+            className="group flex items-center gap-3 px-5 py-4 transition hover:bg-[var(--muted)]/60"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold tabular-nums">
+                {order.truck_number ? formatPlate(order.truck_number) : `Заказ #${order.id}`}
               </div>
-              <span className="text-xs tabular-nums text-[var(--muted-foreground)]">#{o.id}</span>
-              <StatusBadge status={o.status} dot />
-              <ChevronRight className="size-4 text-[var(--muted-foreground)] opacity-0 transition-opacity group-hover:opacity-100" />
-            </Link>
-          ))}
-        </div>
-      )}
+              <div className="mt-0.5 truncate text-xs text-[var(--muted-foreground)]">
+                {order.client_name || "Клиент не указан"}
+              </div>
+            </div>
+            <StatusBadge status={order.status} dot />
+            <ChevronRight className="size-4 shrink-0 text-[var(--muted-foreground)] opacity-0 transition group-hover:opacity-100" />
+          </Link>
+        ))}
+      </div>
     </section>
   );
 }
-
-/* ── Переключатель разделов ──────────────────────────────────────── */
 
 const DASHBOARD_VIEWS = [
   { key: "analytics", label: "Аналитика", icon: BarChart3 },
@@ -652,100 +525,110 @@ const DASHBOARD_VIEWS = [
 type DashboardView = (typeof DASHBOARD_VIEWS)[number]["key"];
 const VIEW_STORAGE_KEY = "dashboard:view";
 
-function ViewSwitch({ view, onChange }: { view: DashboardView; onChange: (v: DashboardView) => void }) {
-  const tabs = DASHBOARD_VIEWS.map((v) => ({ key: v.key, label: v.label, icon: v.icon }));
-  return <Tabs tabs={tabs} active={view} onChange={(k) => onChange(k as DashboardView)} />;
+function ViewSwitch({ view, onChange }: { view: DashboardView; onChange: (view: DashboardView) => void }) {
+  const tabs = DASHBOARD_VIEWS.map((item) => ({ key: item.key, label: item.label, icon: item.icon }));
+  return <Tabs tabs={tabs} active={view} onChange={(key) => onChange(key as DashboardView)} />;
 }
 
 const PERIODS = [7, 14, 30] as const;
 const PERIOD_STORAGE_KEY = "dashboard:period";
 
 function AnalyticsView() {
-  // Период общий для графиков и «Выручки»: 7 — оперативно, 30 — тренд.
   const [days, setDays] = useState(14);
   useEffect(() => {
     const saved = Number(localStorage.getItem(PERIOD_STORAGE_KEY));
     if (PERIODS.includes(saved as (typeof PERIODS)[number])) setDays(saved);
   }, []);
+
   const changeDays = (value: number) => {
     setDays(value);
     localStorage.setItem(PERIOD_STORAGE_KEY, String(value));
   };
   const m = useDashboardMetrics(days);
   const hasAnyData = m.canOrders || m.canStock || m.canFinance;
+
   return (
-    <>
+    <div className="mx-auto max-w-[1480px] space-y-5">
       {hasAnyData && (
-        <div className="-mb-1 flex items-center justify-end gap-2">
-          <div className="relative">
-            <CalendarDays className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[var(--muted-foreground)]" />
-            <select
-              aria-label="Период аналитики"
-              value={days}
-              onChange={(event) => changeDays(Number(event.target.value))}
-              className="h-8 appearance-none rounded-lg border bg-[var(--card)] pl-8 pr-7 text-[13px] font-medium outline-none transition focus:ring-2 focus:ring-[var(--ring)]/25"
-            >
-              {PERIODS.map((value) => (
-                <option key={value} value={value}>
-                  {value} дней
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3.5 -translate-y-1/2 text-[var(--muted-foreground)]" />
+        <div className="flex flex-wrap items-end justify-between gap-4 pb-1">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--muted-foreground)]">
+              Оперативная аналитика
+            </p>
+            <h2 className="mt-1 text-2xl font-semibold tracking-[-0.025em] sm:text-3xl">Что происходит сегодня</h2>
+            <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+              Коротко: результат, отклонения и работа в моменте.
+            </p>
           </div>
-          <button
-            type="button"
-            aria-label="Обновить данные"
-            title="Обновить данные"
-            onClick={m.reload}
-            className="flex size-8 items-center justify-center rounded-lg border bg-[var(--card)] text-[var(--muted-foreground)] transition hover:text-[var(--foreground)]"
-          >
-            <RefreshCw className="size-3.5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+              <select
+                aria-label="Период аналитики"
+                value={days}
+                onChange={(event) => changeDays(Number(event.target.value))}
+                className="h-10 appearance-none rounded-xl border bg-[var(--card)] pl-9 pr-9 text-sm font-medium outline-none transition focus:ring-2 focus:ring-[var(--ring)]/25"
+              >
+                {PERIODS.map((value) => (
+                  <option key={value} value={value}>
+                    {value} дней
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+            </div>
+            <button
+              type="button"
+              aria-label="Обновить данные"
+              title="Обновить данные"
+              onClick={m.reload}
+              className="flex size-10 items-center justify-center rounded-xl border bg-[var(--card)] text-[var(--muted-foreground)] transition hover:border-[var(--input)] hover:text-[var(--foreground)]"
+            >
+              <RefreshCw className="size-4" />
+            </button>
+          </div>
         </div>
       )}
+
       {m.loadError && <ErrorAlert message={m.loadError} onRetry={m.reload} />}
-      {(m.canOrders || m.canFinance || m.canPayments) && <AttentionBar m={m} />}
-      <TodayStrip m={m} />
-      <TrendCard m={m} days={days} />
-      {(m.canStock || m.canOrders || m.canFinance) && (
-        <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2 xl:grid-cols-3">
-          {m.canStock && <StockCard m={m} />}
-          {m.canOrders && <PipelineCard m={m} />}
-          {m.canFinance && <DebtorsCard m={m} />}
+      <SummaryHero m={m} />
+
+      {(m.canOrders || m.canFinance || m.canStock) && (
+        <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <TrendPanel m={m} days={days} />
+          <AttentionPanel m={m} />
         </div>
       )}
-      {m.canOrders && <QueueBoard m={m} />}
-      {!m.canOrders && !m.canStock && !m.canFinance && (
-        // Роль без аналитических прав (например, «Загрузчик»): вместо колонки
-        // 403-ошибок — спокойное объяснение и дорога к своим разделам.
-        <section className="flex min-h-64 flex-col items-center justify-center gap-2 rounded-xl border border-dashed text-center">
+
+      {m.canOrders && <LiveQueue m={m} />}
+
+      {!hasAnyData && (
+        <section className="flex min-h-72 flex-col items-center justify-center gap-2 rounded-[22px] border border-dashed text-center">
           <BarChart3 className="size-8 text-[var(--muted-foreground)]/40" />
           <p className="font-semibold">Сводка здесь появится, когда роль получит доступы</p>
           <p className="max-w-md text-sm text-[var(--muted-foreground)]">
-            Ваши рабочие разделы — в меню слева. Если чего-то не хватает, попросите администратора расширить права роли.
+            Ваши рабочие разделы находятся в меню. Если чего-то не хватает, попросите администратора расширить права
+            роли.
           </p>
         </section>
       )}
-    </>
+    </div>
   );
 }
 
 export default function DashboardPage() {
   const { me } = useAuth();
-  // Камеры открываются по shipping.view — без него вкладка вела бы в 403.
   const showCameras = can(me, "shipping.view") || !!me?.is_superuser;
-  // null до чтения localStorage: иначе AnalyticsView успевает смонтироваться
-  // и выстрелить своими запросами даже у тех, кто живёт на камерах.
-  // (Читать в инициализаторе useState нельзя — SSR-разметка разойдётся с клиентом.)
   const [view, setView] = useState<DashboardView | null>(null);
+
   useEffect(() => {
     const saved = localStorage.getItem(VIEW_STORAGE_KEY);
     setView(saved === "cameras" ? "cameras" : "analytics");
   }, []);
-  const changeView = (v: DashboardView) => {
-    setView(v);
-    localStorage.setItem(VIEW_STORAGE_KEY, v);
+
+  const changeView = (nextView: DashboardView) => {
+    setView(nextView);
+    localStorage.setItem(VIEW_STORAGE_KEY, nextView);
   };
   const activeView = showCameras ? view : "analytics";
 
