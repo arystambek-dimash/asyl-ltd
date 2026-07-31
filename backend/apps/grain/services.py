@@ -14,7 +14,7 @@ from apps.eventlog.services import log_event
 from . import statuses as st
 from .models import (
     GrainMovement, GrainSettings, GrainSupply, LabCheck, Silo, SiloAllocation,
-    SiloReservation, Wagon, WeighingRecord,
+    SiloReservation, SiloType, Wagon, WeighingRecord,
 )
 
 
@@ -212,11 +212,11 @@ def record_lab_check(wagon: Wagon, decision: str, user, **fields) -> LabCheck:
 # ── Силосы: подбор и резерв ────────────────────────────────────────────────
 
 def suggest_silos(wagon: Wagon):
-    """Подходящие силосы: культура/класс/место/статус/линия."""
+    """Подходящие силосы; настроенный маршрут прихода идёт первым."""
     culture = wagon.supply.culture if wagon.supply else ""
     grain_class = wagon.supply.grain_class if wagon.supply else ""
     need = wagon.planned_weight_kg or 0
-    silos = Silo.objects.filter(status="active")
+    silos = Silo.objects.filter(status="active").select_related("silo_type")
     if wagon.status == st.QUARANTINE:
         silos = silos.filter(is_quarantine=True)
     else:
@@ -232,7 +232,21 @@ def suggest_silos(wagon: Wagon):
         if silo.free_capacity_kg < need:
             continue
         suitable.append(silo)
-    return suitable
+    default_ids = set(
+        SiloType.objects.filter(
+            grain_culture=culture,
+            grain_class=grain_class,
+            default_silo__isnull=False,
+        ).values_list("default_silo_id", flat=True)
+    )
+    return sorted(
+        suitable,
+        key=lambda silo: (
+            silo.pk not in default_ids,
+            -silo.free_capacity_kg,
+            silo.name,
+        ),
+    )
 
 
 def assign_silo(wagon: Wagon, silo: Silo, user,

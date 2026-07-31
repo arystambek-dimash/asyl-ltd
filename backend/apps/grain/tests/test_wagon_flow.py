@@ -4,7 +4,7 @@ import pytest
 from apps.grain import services
 from apps.grain import statuses as st
 from apps.grain.models import (
-    GrainMovement, GrainSettings, GrainSupply, Silo, Wagon,
+    GrainMovement, GrainSettings, GrainSupply, Silo, SiloType, Wagon,
 )
 
 pytestmark = pytest.mark.django_db
@@ -170,6 +170,50 @@ def test_two_wagons_reserve_same_silo(grain_user):
     with pytest.raises(Exception) as err:
         services.assign_silo(second, silo, grain_user)
     assert "insufficient_capacity" in str(err.value)
+
+
+def test_configured_incoming_route_is_suggested_first(grain_user):
+    silo_type = SiloType.objects.create(
+        name="Пшеница 3 класс",
+        grain_culture="пшеница",
+        grain_class="3",
+    )
+    ordinary = _silo(name="Резервный")
+    preferred = _silo(name="Основной", silo_type=silo_type)
+    silo_type.default_silo = preferred
+    silo_type.save(update_fields=["default_silo"])
+    wagon = _wagon(_supply(), expected_weight_kg=60_000)
+
+    suggestions = services.suggest_silos(wagon)
+
+    assert [silo.pk for silo in suggestions] == [
+        preferred.pk, ordinary.pk]
+
+
+def test_admin_can_create_silo_type_with_default_route(
+    auth_client, grain_user,
+):
+    silo = _silo(name="Маршрутный", grain_culture="", grain_class="")
+
+    response = auth_client(grain_user).post(
+        "/api/grain/silo-types/",
+        {
+            "name": "Ячмень",
+            "grain_culture": "ячмень",
+            "grain_class": "2",
+            "color": "#B7792B",
+            "default_silo": silo.pk,
+        },
+        format="json",
+    )
+
+    assert response.status_code == 201
+    assert response.data["default_silo_name"] == "Маршрутный"
+    assert response.data["silo_count"] == 1
+    silo.refresh_from_db()
+    assert silo.silo_type_id == response.data["id"]
+    assert silo.grain_culture == "ячмень"
+    assert silo.grain_class == "2"
 
 
 # 8. Смена силоса во время разгрузки сохраняет историю и пере-резервирует.

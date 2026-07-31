@@ -475,3 +475,30 @@ def test_transaction_status_counts_and_filter(auth_client, accountant):
     assert [row["status"] for row in filtered["results"]] == ["rejected"]
     # Пилюли не должны схлопываться после выбора фильтра.
     assert filtered["status_counts"]["confirmed"] == 2
+
+
+def test_awaiting_customer_is_counted_and_filtered_as_requested(
+    auth_client, accountant,
+):
+    client = Client.objects.create(
+        first_name="Ожидающий", last_name="Клиент", phone="87007778899")
+    order = Order.objects.create(client=client, status="shipped")
+    provider_payment = Payment.objects.create(
+        order=order, amount="100.00", method="invoice", status="received")
+    ApiPayInvoice.objects.create(
+        payment=provider_payment,
+        idempotency_key=f"awaiting-customer-{provider_payment.id}",
+        status="pending",
+    )
+    Payment.objects.create(
+        order=order, amount="50.00", method="cash", status="received")
+
+    data = auth_client(accountant).get(
+        "/api/payment-transactions/").data
+    assert data["status_counts"]["requested"] == 1
+    assert data["status_counts"]["received"] == 1
+
+    waiting = auth_client(accountant).get(
+        "/api/payment-transactions/?status=requested").data
+    assert waiting["count"] == 1
+    assert waiting["results"][0]["effective_status"] == "awaiting_customer"

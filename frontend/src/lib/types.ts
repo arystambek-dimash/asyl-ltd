@@ -736,6 +736,10 @@ export interface GrainSilo {
   id: number;
   name: string;
   total_capacity_kg: number;
+  silo_type: number | null;
+  silo_type_name: string | null;
+  silo_type_color: string | null;
+  is_default_route: boolean;
   grain_culture: string;
   grain_class: string;
   allow_mixing: boolean;
@@ -749,6 +753,19 @@ export interface GrainSilo {
   fill_percent: number;
   active_wagons: { id: number; number: string; status: string }[];
   sensor_difference_kg: number | null;
+}
+
+export interface GrainSiloType {
+  id: number;
+  name: string;
+  grain_culture: string;
+  grain_class: string;
+  color: string;
+  description: string;
+  default_silo: number | null;
+  default_silo_name: string | null;
+  silo_count: number;
+  created_at: string;
 }
 
 export interface GrainMovement {

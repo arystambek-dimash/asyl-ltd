@@ -297,12 +297,31 @@ class PaymentTransactionListView(APIView):
         # Счётчики статусов считаются ДО статус-фильтра: пилюли должны
         # показывать, сколько операций стоит за каждым статусом при текущем
         # поиске, а не только за выбранным.
-        status_counts = {
-            row["status"]: row["n"]
-            for row in qs.order_by().values("status").annotate(n=Count("id"))
+        # Публичные группы отличаются от внутренних статусов. Провайдерская
+        # операция со статусом received всё ещё ожидает клиента и должна быть
+        # в «Ожидает», а не в ручной кассовой очереди «В кассе».
+        public_status_filters = {
+            "requested": (
+                Q(status="requested")
+                | Q(status="received", apipay_invoice__isnull=False)
+            ),
+            "received": Q(status="received", apipay_invoice__isnull=True),
+            "confirmed": Q(status="confirmed"),
+            "rejected": Q(status="rejected"),
         }
+        status_counts = {}
+        for key, condition in public_status_filters.items():
+            group_count = qs.filter(condition).count()
+            if group_count:
+                status_counts[key] = group_count
         if status:
-            qs = qs.filter(status=status)
+            condition = public_status_filters.get(status)
+            if condition is None:
+                raise ValidationError({
+                    "detail": "Неизвестная группа статусов.",
+                    "code": "invalid_payment_status",
+                })
+            qs = qs.filter(condition)
         try:
             page = max(1, int(request.query_params.get("page") or 1))
             page_size = min(

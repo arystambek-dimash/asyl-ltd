@@ -30,11 +30,36 @@ class GrainSettings(models.Model):
         return row if row is not None else cls.objects.create()
 
 
+class SiloType(models.Model):
+    """Назначение силоса и маршрут прихода для конкретного вида зерна."""
+
+    name = models.CharField(max_length=100, unique=True)
+    grain_culture = models.CharField(max_length=100, blank=True, default="")
+    grain_class = models.CharField(max_length=50, blank=True, default="")
+    color = models.CharField(max_length=7, default="#C58A35")
+    description = models.CharField(max_length=300, blank=True, default="")
+    default_silo = models.ForeignKey(
+        "Silo", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="default_for_types",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+
+    def __str__(self):
+        return self.name
+
+
 class Silo(models.Model):
     STATUSES = ["active", "blocked", "maintenance"]
 
     name = models.CharField(max_length=100, unique=True)
     total_capacity_kg = models.PositiveBigIntegerField()
+    silo_type = models.ForeignKey(
+        SiloType, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="silos",
+    )
     grain_culture = models.CharField(max_length=100, blank=True, default="")
     grain_class = models.CharField(max_length=50, blank=True, default="")
     allow_mixing = models.BooleanField(default=False)

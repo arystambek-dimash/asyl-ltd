@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from .models import (
-    GrainMovement, GrainSupply, LabCheck, Silo, SiloAllocation, Wagon,
+    GrainMovement, GrainSupply, LabCheck, Silo, SiloAllocation, SiloType, Wagon,
     WeighingRecord,
 )
 from .statuses import WAGON_STATUS_LABELS
@@ -14,16 +14,31 @@ class SiloSerializer(serializers.ModelSerializer):
     fill_percent = serializers.SerializerMethodField()
     active_wagons = serializers.SerializerMethodField()
     sensor_difference_kg = serializers.SerializerMethodField()
+    silo_type_name = serializers.CharField(
+        source="silo_type.name", default=None, read_only=True)
+    silo_type_color = serializers.CharField(
+        source="silo_type.color", default=None, read_only=True)
+    is_default_route = serializers.SerializerMethodField()
 
     class Meta:
         model = Silo
         fields = [
-            "id", "name", "total_capacity_kg", "grain_culture", "grain_class",
+            "id", "name", "total_capacity_kg", "silo_type", "silo_type_name",
+            "silo_type_color", "is_default_route",
+            "grain_culture", "grain_class",
             "allow_mixing", "is_quarantine", "status", "unloading_line",
             "sensor_estimated_kg", "current_balance_kg", "reserved_kg",
             "free_capacity_kg", "fill_percent", "active_wagons",
             "sensor_difference_kg",
         ]
+
+    def validate(self, attrs):
+        silo_type = attrs.get(
+            "silo_type", getattr(self.instance, "silo_type", None))
+        if silo_type:
+            attrs.setdefault("grain_culture", silo_type.grain_culture)
+            attrs.setdefault("grain_class", silo_type.grain_class)
+        return attrs
 
     def get_fill_percent(self, silo: Silo) -> int:
         if not silo.total_capacity_kg:
@@ -41,6 +56,65 @@ class SiloSerializer(serializers.ModelSerializer):
         if silo.sensor_estimated_kg is None:
             return None
         return silo.sensor_estimated_kg - silo.current_balance_kg
+
+    def get_is_default_route(self, silo: Silo) -> bool:
+        return silo.default_for_types.exists()
+
+
+class SiloTypeSerializer(serializers.ModelSerializer):
+    default_silo_name = serializers.CharField(
+        source="default_silo.name", default=None, read_only=True)
+    silo_count = serializers.IntegerField(source="silos.count", read_only=True)
+
+    class Meta:
+        model = SiloType
+        fields = [
+            "id", "name", "grain_culture", "grain_class", "color",
+            "description", "default_silo", "default_silo_name", "silo_count",
+            "created_at",
+        ]
+        read_only_fields = ["created_at"]
+
+    def validate_color(self, value):
+        import re
+
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", value):
+            raise serializers.ValidationError(
+                "Укажите цвет в формате #RRGGBB")
+        return value.upper()
+
+    def validate(self, attrs):
+        default_silo = attrs.get(
+            "default_silo", getattr(self.instance, "default_silo", None))
+        if default_silo and default_silo.silo_type_id not in (
+            None, getattr(self.instance, "pk", None)
+        ):
+            raise serializers.ValidationError({
+                "default_silo":
+                    "Этот силос уже относится к другому типу.",
+            })
+        return attrs
+
+    def _sync_default_silo(self, instance):
+        silo = instance.default_silo
+        if silo and silo.silo_type_id != instance.pk:
+            silo.silo_type = instance
+            if not silo.grain_culture:
+                silo.grain_culture = instance.grain_culture
+            if not silo.grain_class:
+                silo.grain_class = instance.grain_class
+            silo.save(update_fields=[
+                "silo_type", "grain_culture", "grain_class"])
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        self._sync_default_silo(instance)
+        return instance
+
+    def update(self, instance, validated_data):
+        instance = super().update(instance, validated_data)
+        self._sync_default_silo(instance)
+        return instance
 
 
 class WeighingRecordSerializer(serializers.ModelSerializer):

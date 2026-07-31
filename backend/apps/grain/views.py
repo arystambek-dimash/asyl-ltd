@@ -9,9 +9,10 @@ from apps.eventlog.models import EventLog
 
 from . import services
 from . import statuses as st
-from .models import GrainSupply, Silo, Wagon
+from .models import GrainSupply, Silo, SiloType, Wagon
 from .serializers import (
     GrainMovementSerializer, GrainSupplySerializer, SiloSerializer,
+    SiloTypeSerializer,
     WagonBriefSerializer, WagonSerializer,
 )
 
@@ -258,7 +259,8 @@ class WagonViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
 
 
 class SiloViewSet(PermViewSetMixin, viewsets.ModelViewSet):
-    queryset = Silo.objects.all()
+    queryset = Silo.objects.select_related("silo_type").prefetch_related(
+        "default_for_types")
     serializer_class = SiloSerializer
     pagination_class = OptInPageNumberPagination
     required_perms = {
@@ -295,3 +297,24 @@ class SiloViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             request.data.get("movement_type") or "adjustment",
             request.data.get("note") or "", request.user)
         return Response(GrainMovementSerializer(movement).data, status=201)
+
+
+class SiloTypeViewSet(PermViewSetMixin, viewsets.ModelViewSet):
+    queryset = SiloType.objects.select_related("default_silo").prefetch_related(
+        "silos")
+    serializer_class = SiloTypeSerializer
+    pagination_class = OptInPageNumberPagination
+    required_perms = {
+        "list": "grain.view", "retrieve": "grain.view",
+        "create": "grain.admin", "update": "grain.admin",
+        "partial_update": "grain.admin", "destroy": "grain.admin",
+    }
+
+    def perform_destroy(self, instance):
+        if instance.silos.exists():
+            raise ValidationError({
+                "detail":
+                    "Тип используется силосами — сначала измените их тип.",
+                "code": "silo_type_in_use",
+            })
+        instance.delete()

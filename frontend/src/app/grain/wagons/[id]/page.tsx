@@ -81,6 +81,8 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
     wagon.status === "waiting_for_approval" ? "/grain/supplies/?status=expected" : null,
   );
 
+  const selectedSiloId = siloId || (silos?.[0] ? String(silos[0].id) : "");
+
   async function act(path: string, body: Record<string, unknown> = {}) {
     setBusy(true);
     setError("");
@@ -171,10 +173,11 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
       <>
         <div className="flex flex-col gap-1.5">
           <Label>Подходящие силосы</Label>
-          <Select value={siloId} onChange={(e) => setSiloId(e.target.value)}>
+          <Select value={selectedSiloId} onChange={(e) => setSiloId(e.target.value)}>
             <option value="">Выберите силос</option>
             {(silos ?? []).map((silo) => (
               <option key={silo.id} value={silo.id}>
+                {silo.is_default_route ? "★ " : ""}
                 {silo.name} · свободно {formatKg(silo.free_capacity_kg)}
               </option>
             ))}
@@ -185,7 +188,15 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
             Подходящих силосов нет: проверьте культуру, класс и свободное место.
           </p>
         )}
-        <Button disabled={busy || !siloId} onClick={() => void act("assign-silo", { silo: Number(siloId) })}>
+        {silos?.[0]?.is_default_route && (
+          <p className="text-xs text-[var(--muted-foreground)]">
+            Основной маршрут для этого типа зерна выбран автоматически: «{silos[0].name}».
+          </p>
+        )}
+        <Button
+          disabled={busy || !selectedSiloId}
+          onClick={() => void act("assign-silo", { silo: Number(selectedSiloId) })}
+        >
           Назначить силос
         </Button>
       </>
