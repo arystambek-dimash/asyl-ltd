@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Download, ExternalLink, QrCode, RefreshCcw, RotateCcw, Search, Send, Undo2, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { DataGate } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
+import { LoadMore } from "@/components/ui/load-more";
 import { Modal } from "@/components/ui/modal";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { api, apiError } from "@/lib/api";
@@ -194,6 +195,37 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
   } = useApi<TransactionPage>(
     `/payment-transactions/?page=${page}&page_size=50&search=${encodeURIComponent(debouncedQuery)}`,
   );
+  // Единый стиль пагинации: страницы накапливаются под «Показать ещё»,
+  // а не листаются взад-вперёд. Итоги в конверте всегда по всей выборке.
+  const [rows, setRows] = useState<Payment[]>([]);
+  // Конверт держим отдельно от data: useApi зануляет data на время запроса,
+  // а кнопка «Показать ещё» не должна пропадать, пока грузится страница.
+  const [meta, setMeta] = useState<{ page: number; pages: number; count: number } | null>(null);
+  useEffect(() => {
+    if (!data) return;
+    setMeta({ page: data.page, pages: data.pages, count: data.count });
+    setRows((current) => {
+      if (data.page <= 1) return data.results;
+      // Смещение страниц может сдвинуться из-за новых оплат — дубликаты
+      // строк (и React-ключей) отфильтровываем по id.
+      const seen = new Set(current.map((row) => row.id));
+      return [...current, ...data.results.filter((row) => !seen.has(row.id))];
+    });
+  }, [data]);
+  useEffect(() => {
+    // Новый поиск — новый список: старые накопленные строки не должны
+    // выглядеть результатом свежего запроса.
+    setRows([]);
+    setMeta(null);
+  }, [debouncedQuery]);
+
+  // После действий (подтвердить/возврат/восстановить) лента начинается с
+  // первой страницы — иначе накопленные строки разъедутся с сервером.
+  const refreshFromStart = useCallback(() => {
+    if (page === 1) return reload();
+    setPage(1);
+    return Promise.resolve();
+  }, [page, reload]);
   const [refundFor, setRefundFor] = useState<Payment | null>(null);
   const [statusFor, setStatusFor] = useState<Payment | null>(null);
   const [rejectFor, setRejectFor] = useState<Payment | null>(null);
@@ -204,7 +236,6 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const rows = data?.results ?? [];
 
   async function receipt(payment: Payment) {
     setError("");
@@ -231,7 +262,7 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
       setRefundFor(null);
       setAmount("");
       setReason("");
-      await reload();
+      await refreshFromStart();
     } catch (e) {
       setError(apiError(e));
     } finally {
@@ -249,7 +280,7 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
       });
       setRejectFor(null);
       setRejectReason("");
-      await reload();
+      await refreshFromStart();
     } catch (e) {
       setError(apiError(e));
     } finally {
@@ -265,7 +296,7 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
       const response = await api.post<Payment>(`/payment-transactions/${restoreFor.id}/restore/`);
       setRestoreFor(null);
       if (response.data.provider?.channel === "qr") setQrFor(response.data);
-      await reload();
+      await refreshFromStart();
     } catch (e) {
       setError(apiError(e));
     } finally {
@@ -279,7 +310,7 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
     try {
       const response = await api.post<Payment>(`/payment-transactions/${payment.id}/issue/`);
       if (response.data.provider?.channel === "qr") setQrFor(response.data);
-      await reload();
+      await refreshFromStart();
     } catch (e) {
       setError(apiError(e));
     } finally {
@@ -335,7 +366,7 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
       <Card>
         <CardHeader className="flex-row items-center justify-between gap-3">
           <CardTitle>Все платежи, возвраты и чеки</CardTitle>
-          <Button variant="outline" size="sm" onClick={() => void reload()}>
+          <Button variant="outline" size="sm" onClick={() => void refreshFromStart()}>
             <RefreshCcw className="size-4" /> Обновить
           </Button>
         </CardHeader>
@@ -352,7 +383,11 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
               }}
             />
           </div>
-          {(loading || loadError) && <DataGate loading={loading} error={loadError} onRetry={reload} />}
+          {/* Спиннер на весь блок — только пока нет ни одной строки: догрузка
+              следующих страниц не должна прятать уже показанное. */}
+          {((loading && rows.length === 0) || loadError) && (
+            <DataGate loading={loading && rows.length === 0} error={loadError} onRetry={reload} />
+          )}
           {!loading && !loadError && rows.length === 0 && (
             <p className="py-8 text-center text-sm text-[var(--muted-foreground)]">Транзакций пока нет.</p>
           )}
@@ -503,29 +538,13 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
                   })}
                 </TBody>
               </Table>
-              <div className="mt-4 flex items-center justify-between border-t pt-4">
-                <span className="text-xs text-[var(--muted-foreground)]">
-                  Страница {data?.page ?? 1} из {data?.pages ?? 1}
-                </span>
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={(data?.page ?? 1) <= 1}
-                    onClick={() => setPage((value) => value - 1)}
-                  >
-                    Назад
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={(data?.page ?? 1) >= (data?.pages ?? 1)}
-                    onClick={() => setPage((value) => value + 1)}
-                  >
-                    Далее
-                  </Button>
-                </div>
-              </div>
+              <LoadMore
+                shown={rows.length}
+                total={meta?.count ?? rows.length}
+                hasMore={(meta?.page ?? 1) < (meta?.pages ?? 1)}
+                loading={loading && page > 1}
+                onClick={() => setPage((value) => value + 1)}
+              />
             </>
           )}
         </CardContent>

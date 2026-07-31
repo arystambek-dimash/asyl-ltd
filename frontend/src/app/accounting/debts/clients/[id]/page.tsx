@@ -1,5 +1,5 @@
 "use client";
-import { use, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, use, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
@@ -8,15 +8,15 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { StatCard } from "@/components/ui/stat-card";
 import { Modal } from "@/components/ui/modal";
-import { ProgressBar } from "@/components/ui/progress-bar";
 import { Tabs } from "@/components/ui/tabs";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { DataGate, ErrorAlert } from "@/components/ui/data-state";
+import { LoadMore } from "@/components/ui/load-more";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select-ui";
 import { useApi } from "@/lib/use-api";
-import { api, apiError } from "@/lib/api";
+import { api, apiError, blobApiError } from "@/lib/api";
+import { downloadBlob } from "@/lib/download";
 import { amountForCurrency, otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
 import { cn, formatCompactCurrency, formatCurrency, formatDateTime } from "@/lib/utils";
 import { can } from "@/lib/can";
@@ -32,8 +32,6 @@ import {
 } from "@/lib/constants";
 import {
   ArrowLeft,
-  Building2,
-  Calendar,
   ChevronDown,
   Clock,
   ExternalLink,
@@ -42,7 +40,6 @@ import {
   Plus,
   ShieldCheck,
   Trash2,
-  Truck,
   Wallet,
 } from "lucide-react";
 import type { Client, Order, Payment } from "@/lib/types";
@@ -211,148 +208,158 @@ function WriteOffList({ order }: { order: Order }) {
 }
 
 /* ── Карточка заказа в долге ────────────────────────────────────────────── */
-function OrderDebtCard({
-  order,
+/* Детали раскрытой строки: резерв, позиции счёта и списание. */
+function DebtOrderDetails({ order }: { order: Order }) {
+  const [tab, setTab] = useState("invoice");
+  const pending = pendingSum(order);
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--muted-foreground)]">
+        {order.department && <span>{order.department_name ?? order.department}</span>}
+        {order.truck_number && <span className="tabular-nums">{order.truck_number}</span>}
+        <span>
+          Сумма заказа: <b className="tabular-nums">{money(order.total_amount, order.currency)}</b>
+        </span>
+        <PaidMethodBreakdown order={order} className="text-xs" />
+      </div>
+      {pending > 0 && (
+        <div className="flex items-center justify-between rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2 text-sm">
+          <span className="flex items-center gap-1.5 text-[var(--warning)]">
+            <Info className="size-4" />
+            Уже зарезервировано и ожидает оплаты либо подтверждения
+          </span>
+          <span className="tabular-nums font-semibold text-[var(--warning)]">{money(pending, order.currency)}</span>
+        </div>
+      )}
+      <Tabs
+        tabs={[
+          { key: "invoice", label: "Счёт" },
+          { key: "writeoff", label: "Списание" },
+        ]}
+        active={tab}
+        onChange={setTab}
+      />
+      <div>{tab === "invoice" ? <InvoiceTable order={order} /> : <WriteOffList order={order} />}</div>
+    </div>
+  );
+}
+
+/* Заказы в долге — простая таблица: строка раскрывается в детали. */
+function DebtOrdersTable({
+  orders,
   canPay,
   canViewOrder,
   onPay,
 }: {
-  order: Order;
+  orders: Order[];
   canPay: boolean;
   canViewOrder: boolean;
-  onPay: () => void;
+  onPay: (id: number) => void;
 }) {
-  const [tab, setTab] = useState("invoice");
-  const [expanded, setExpanded] = useState(false);
-  const status = order.payment_status ?? "unpaid";
-  const pct = Math.min(100, Math.round((Number(order.paid_total) / Math.max(1, Number(order.total_amount))) * 100));
-  const pending = pendingSum(order);
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  // Единый стиль ленивых списков: длинный долг не разворачивается простынёй.
+  const [limit, setLimit] = useState(25);
+  const visible = orders.slice(0, limit);
+
+  function toggle(id: number) {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-4 p-4 sm:pt-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-[var(--destructive)]/10 text-[var(--destructive)]">
-              <FileText className="size-5" />
-            </div>
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-base font-bold tracking-tight">Заказ #{order.id}</span>
-                <Badge tone={PAYMENT_STATUS_TONE[status] ?? "muted"} dot>
-                  {PAYMENT_STATUS_LABELS[status] ?? status}
-                </Badge>
-              </div>
-              <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--muted-foreground)]">
-                <span className="flex items-center gap-1.5">
-                  <Calendar className="size-3.5" /> Создан: {formatDateTime(order.created_at)}
-                </span>
-                {order.shipped_at && (
-                  <span className="flex items-center gap-1.5">
-                    <Truck className="size-3.5" /> Отгружен: {formatDateTime(order.shipped_at)}
-                  </span>
+    <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-card">
+      <Table>
+        <THead>
+          <TR>
+            <TH>Заказ</TH>
+            <TH>Создан</TH>
+            <TH>Отгружен</TH>
+            <TH>Статус</TH>
+            <TH className="text-right">Оплачено</TH>
+            <TH className="text-right">Остаток</TH>
+            <TH />
+          </TR>
+        </THead>
+        <TBody>
+          {visible.map((order) => {
+            const open = expanded.has(order.id);
+            const status = order.payment_status ?? "unpaid";
+            return (
+              <Fragment key={order.id}>
+                <TR
+                  className="cursor-pointer transition-colors hover:bg-[var(--muted)]/40"
+                  onClick={() => toggle(order.id)}
+                >
+                  <TD>
+                    <button
+                      type="button"
+                      aria-expanded={open}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggle(order.id);
+                      }}
+                      className="flex items-center gap-1.5 font-medium"
+                    >
+                      <ChevronDown
+                        className={cn(
+                          "size-4 shrink-0 -rotate-90 text-[var(--muted-foreground)] transition-transform",
+                          open && "rotate-0",
+                        )}
+                      />
+                      #{order.id}
+                    </button>
+                  </TD>
+                  <TD className="tabular-nums">{formatDateTime(order.created_at)}</TD>
+                  <TD className="tabular-nums">{order.shipped_at ? formatDateTime(order.shipped_at) : "—"}</TD>
+                  <TD>
+                    <Badge tone={PAYMENT_STATUS_TONE[status] ?? "muted"} dot>
+                      {PAYMENT_STATUS_LABELS[status] ?? status}
+                    </Badge>
+                  </TD>
+                  <TD className="text-right tabular-nums text-[var(--success)]">
+                    {money(order.paid_total, order.currency)}
+                  </TD>
+                  <TD className="text-right tabular-nums font-semibold text-[var(--destructive)]">
+                    {money(remainingOf(order), order.currency)}
+                  </TD>
+                  <TD onClick={(event) => event.stopPropagation()}>
+                    <div className="flex justify-end gap-2">
+                      {canViewOrder && (
+                        <Link href={`/orders/${order.id}`} className={buttonVariants({ size: "sm", variant: "ghost" })}>
+                          Открыть <ExternalLink className="size-3.5" />
+                        </Link>
+                      )}
+                      {canPay && remainingOf(order) > 0 && (
+                        <Button size="sm" onClick={() => onPay(order.id)}>
+                          Оплатить
+                        </Button>
+                      )}
+                    </div>
+                  </TD>
+                </TR>
+                {open && (
+                  <TR className="bg-[var(--muted)]/30">
+                    <TD colSpan={7} className="p-4">
+                      <DebtOrderDetails order={order} />
+                    </TD>
+                  </TR>
                 )}
-                {order.department && (
-                  <span className="flex items-center gap-1.5">
-                    <Building2 className="size-3.5" /> {order.department_name ?? order.department}
-                  </span>
-                )}
-                {order.truck_number && <span className="tabular-nums">{order.truck_number}</span>}
-              </div>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <div className="text-right">
-              <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Остаток</div>
-              <div className="tabular-nums text-base font-bold text-[var(--destructive)]">
-                {money(remainingOf(order), order.currency)}
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setExpanded((value) => !value)}
-              aria-expanded={expanded}
-              aria-label={expanded ? "Свернуть заказ" : "Развернуть заказ"}
-              className="flex size-10 items-center justify-center rounded-xl border text-[var(--muted-foreground)] transition hover:bg-[var(--accent)]"
-            >
-              <ChevronDown className={cn("size-4 transition-transform", expanded && "rotate-180")} />
-            </button>
-          </div>
-        </div>
-
-        {expanded && (
-          <>
-            <div className="grid grid-cols-2 gap-4 border-t pt-4 sm:grid-cols-4 sm:divide-x sm:[&>div+div]:pl-4">
-              <div>
-                <div className="text-xs text-[var(--muted-foreground)]">Сумма заказа</div>
-                <div className="mt-0.5 tabular-nums font-semibold">{money(order.total_amount, order.currency)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-[var(--muted-foreground)]">Оплачено</div>
-                <div className="mt-0.5 tabular-nums font-semibold text-[var(--success)]">
-                  {money(order.paid_total, order.currency)}
-                </div>
-                <PaidMethodBreakdown order={order} className="mt-0.5 text-[11px]" />
-              </div>
-              <div>
-                <div className="text-xs text-[var(--muted-foreground)]">Остаток долга</div>
-                <div className="mt-0.5 tabular-nums font-semibold text-[var(--destructive)]">
-                  {money(remainingOf(order), order.currency)}
-                </div>
-              </div>
-              <div>
-                <div className="flex items-center justify-between text-xs text-[var(--muted-foreground)]">
-                  <span>Прогресс оплаты</span>
-                  <span className="tabular-nums">{pct}%</span>
-                </div>
-                <ProgressBar pct={pct} className="mt-2.5" />
-              </div>
-            </div>
-
-            {pending > 0 && (
-              <div className="flex items-center justify-between rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2 text-sm">
-                <span className="flex items-center gap-1.5 text-[var(--warning)]">
-                  <Info className="size-4" />
-                  Уже зарезервировано и ожидает оплаты либо подтверждения
-                </span>
-                <span className="tabular-nums font-semibold text-[var(--warning)]">
-                  {money(pending, order.currency)}
-                </span>
-              </div>
-            )}
-
-            <div className="border-t pt-1">
-              <Tabs
-                tabs={[
-                  { key: "invoice", label: "Счёт" },
-                  { key: "writeoff", label: "Списание" },
-                ]}
-                active={tab}
-                onChange={setTab}
-              />
-              <div className="pt-3">
-                {tab === "invoice" ? <InvoiceTable order={order} /> : <WriteOffList order={order} />}
-              </div>
-            </div>
-          </>
-        )}
-
-        <div className="flex flex-col gap-2 border-t pt-3 sm:flex-row sm:justify-end">
-          {canViewOrder && (
-            <Link
-              href={`/orders/${order.id}`}
-              className={buttonVariants({ size: "sm", variant: "outline", className: "w-full sm:w-auto" })}
-            >
-              Открыть заказ <ExternalLink className="size-3.5" />
-            </Link>
-          )}
-          {canPay && remainingOf(order) > 0 && (
-            <Button size="sm" onClick={onPay} className="w-full sm:w-auto">
-              <Wallet className="size-4" /> Внести оплату
-            </Button>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+              </Fragment>
+            );
+          })}
+        </TBody>
+      </Table>
+      <LoadMore
+        shown={visible.length}
+        total={orders.length}
+        hasMore={orders.length > visible.length}
+        onClick={() => setLimit((current) => current + 25)}
+      />
+    </div>
   );
 }
 
@@ -425,7 +432,15 @@ function PaymentHistoryTable({
 }
 
 /* ── Панель «Внести оплату» ─────────────────────────────────────────────── */
-type PaymentPart = { id: number; method: string; amount: string; phone_number?: string };
+/** Куда выставлять счёт: клиенту онлайн или нашим PDF-документом. */
+type InvoiceChannel = "remote" | "document";
+type PaymentPart = {
+  id: number;
+  method: string;
+  amount: string;
+  phone_number?: string;
+  channel?: InvoiceChannel;
+};
 
 function PaymentModal({
   open,
@@ -482,12 +497,15 @@ function PaymentModal({
     parts.every((part) => {
       const amount = Number(part.amount);
       const phoneDigits = (part.phone_number ?? order.client_phone ?? "").replace(/\D/g, "");
+      // Телефон нужен только онлайн-счёту; наш PDF-документ живёт без него.
+      const invoiceOk =
+        part.method !== "invoice" || (part.channel ?? "remote") === "document" || [10, 11].includes(phoneDigits.length);
       return (
         Number.isFinite(amount) &&
         amount > 0 &&
         Math.abs(amount * 100 - Math.round(amount * 100)) <= 1e-7 &&
         allowedMethods.includes(part.method) &&
-        (part.method !== "invoice" || [10, 11].includes(phoneDigits.length))
+        invoiceOk
       );
     });
   const blockingStore = blockedFor(order);
@@ -521,14 +539,39 @@ function PaymentModal({
     setPayError("");
     onError("");
     try {
-      const payload = parts.map(({ method, amount, phone_number }) => ({ method, amount, phone_number }));
+      const payload = parts.map(({ method, amount, phone_number, channel }) => ({
+        method,
+        amount,
+        phone_number,
+        channel: method === "invoice" ? (channel ?? "remote") : undefined,
+      }));
       const created = await api.post<Payment[]>(`/orders/${order.id}/payments/`, { parts: payload, note });
+      const documentInvoice = payload.some((part) => part.channel === "document");
+      let documentDownloaded = false;
+      if (documentInvoice) {
+        // Сразу отдаём кассиру документ на печать; оплата уже создана, поэтому
+        // сбой скачивания не должен выглядеть как сбой оплаты.
+        try {
+          const file = await api.get<Blob>(`/orders/${order.id}/invoice-pdf/`, { responseType: "blob" });
+          downloadBlob(file.data, `schet_na_oplatu_${order.id}.pdf`);
+          documentDownloaded = true;
+        } catch (e) {
+          const message = `Оплата создана, но счёт не скачался: ${await blobApiError(e)}`;
+          // Ошибку показываем и в модалке: страница лежит под оверлеем.
+          setPayError(message);
+          onError(message);
+        }
+      }
       const kaspi = created.data.find((payment) => payment.method === "kaspi");
       const invoice = created.data.find((payment) => payment.method === "invoice");
       if (kaspi) setKaspiQr(kaspi.provider ?? null);
       const notice = [
         kaspi ? `QR по заказу #${order.id} создан.` : "",
-        invoice ? "Счёт на оплату отправлен клиенту." : "",
+        invoice && documentInvoice && documentDownloaded ? "PDF-счёт скачан — распечатайте и передайте клиенту." : "",
+        invoice && documentInvoice && !documentDownloaded
+          ? "Счёт-часть создана, но PDF не скачался — проверьте реквизиты клиента."
+          : "",
+        invoice && !documentInvoice ? "Счёт на оплату отправлен клиенту." : "",
         payload.some((part) => part.method === "cash") ? "Наличная часть добавлена на подтверждение кассиру." : "",
       ]
         .filter(Boolean)
@@ -676,6 +719,7 @@ function PaymentModal({
                           onValueChange={(method) =>
                             updatePart(part.id, {
                               method,
+                              channel: method === "invoice" ? (part.channel ?? "remote") : undefined,
                               phone_number:
                                 method === "invoice" ? (part.phone_number ?? order.client_phone ?? "") : undefined,
                             })
@@ -717,14 +761,57 @@ function PaymentModal({
                         </button>
                       </div>
                       {part.method === "invoice" && (
-                        <Input
-                          className="mt-2"
-                          inputMode="tel"
-                          aria-label="Телефон для счёта на оплату"
-                          placeholder="Телефон клиента для счёта"
-                          value={part.phone_number ?? order.client_phone ?? ""}
-                          onChange={(event) => updatePart(part.id, { phone_number: event.target.value })}
-                        />
+                        <div className="mt-2 flex flex-col gap-2">
+                          {/* Две выборки счёта: клиенту онлайн или наш документ. */}
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              aria-pressed={(part.channel ?? "remote") === "remote"}
+                              onClick={() =>
+                                updatePart(part.id, {
+                                  channel: "remote",
+                                  phone_number: part.phone_number ?? order.client_phone ?? "",
+                                })
+                              }
+                              className={cn(
+                                "rounded-lg border px-3 py-2 text-left transition-colors",
+                                (part.channel ?? "remote") === "remote"
+                                  ? "border-[var(--foreground)] bg-[var(--muted)]"
+                                  : "border-[var(--border)] hover:border-[var(--foreground)]/40",
+                              )}
+                            >
+                              <div className="text-sm font-medium">Счёт клиенту</div>
+                              <div className="text-[11px] text-[var(--muted-foreground)]">
+                                Придёт на телефон, подтвердится сам
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              aria-pressed={part.channel === "document"}
+                              onClick={() => updatePart(part.id, { channel: "document" })}
+                              className={cn(
+                                "rounded-lg border px-3 py-2 text-left transition-colors",
+                                part.channel === "document"
+                                  ? "border-[var(--foreground)] bg-[var(--muted)]"
+                                  : "border-[var(--border)] hover:border-[var(--foreground)]/40",
+                              )}
+                            >
+                              <div className="text-sm font-medium">Наш PDF-счёт</div>
+                              <div className="text-[11px] text-[var(--muted-foreground)]">
+                                Скачается для печати, подтверждает касса
+                              </div>
+                            </button>
+                          </div>
+                          {(part.channel ?? "remote") === "remote" && (
+                            <Input
+                              inputMode="tel"
+                              aria-label="Телефон для счёта на оплату"
+                              placeholder="Телефон клиента для счёта"
+                              value={part.phone_number ?? order.client_phone ?? ""}
+                              onChange={(event) => updatePart(part.id, { phone_number: event.target.value })}
+                            />
+                          )}
+                        </div>
                       )}
                     </div>
                   ))}
@@ -864,43 +951,50 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
         </div>
       }
     >
-      <section className="mb-5 grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
-        <StatCard
-          label="Текущий долг"
-          tone="destructive"
-          caption="к погашению"
-          value={<span title={money(debtTotal, debtCurrency)}>{compactMoney(debtTotal, debtCurrency)}</span>}
-        >
+      {/* Одна денежная полоса вместо четырёх карточек: долг → просрочка →
+          оплачено → всего. Зашёл — сразу видно главное. */}
+      <Card className="mb-5 flex flex-wrap items-start gap-x-10 gap-y-3 p-4">
+        <div className="min-w-0">
+          <div className="text-xs text-[var(--muted-foreground)]">Текущий долг</div>
+          <div
+            title={money(debtTotal, debtCurrency)}
+            className="mt-1 truncate text-lg font-semibold leading-none tabular-nums text-[var(--destructive)]"
+          >
+            {compactMoney(debtTotal, debtCurrency)}
+          </div>
           <CurrencyRows totals={debtByCurrency} primary={debtCurrency} />
-        </StatCard>
-        <StatCard
-          label="Общая задолженность"
-          caption="всего за всё время"
-          value={
-            <span title={money(lifetimeTotal, lifetimeCurrency)}>{compactMoney(lifetimeTotal, lifetimeCurrency)}</span>
-          }
-        >
-          <CurrencyRows totals={lifetimeTotalByCurrency} primary={lifetimeCurrency} />
-        </StatCard>
-        <StatCard
-          label="Оплачено"
-          tone="success"
-          caption="всего оплачено"
-          value={<span title={money(lifetimePaid, paidCurrency)}>{compactMoney(lifetimePaid, paidCurrency)}</span>}
-        >
-          <CurrencyRows totals={lifetimePaidByCurrency} primary={paidCurrency} />
-        </StatCard>
-        <StatCard
-          label="Просрочено"
-          tone="destructive"
-          caption="просроченные суммы"
-          value={
-            <span title={money(overdueTotal, overdueCurrency)}>{compactMoney(overdueTotal, overdueCurrency)}</span>
-          }
-        >
+        </div>
+        <div className="min-w-0">
+          <div className="text-xs text-[var(--muted-foreground)]">Просрочено</div>
+          <div
+            title={money(overdueTotal, overdueCurrency)}
+            className="mt-1 truncate text-lg font-semibold leading-none tabular-nums text-[var(--destructive)]"
+          >
+            {compactMoney(overdueTotal, overdueCurrency)}
+          </div>
           <CurrencyRows totals={overdueByCurrency} primary={overdueCurrency} />
-        </StatCard>
-      </section>
+        </div>
+        <div className="min-w-0">
+          <div className="text-xs text-[var(--muted-foreground)]">Оплачено за всё время</div>
+          <div
+            title={money(lifetimePaid, paidCurrency)}
+            className="mt-1 truncate text-lg font-semibold leading-none tabular-nums text-[var(--success)]"
+          >
+            {compactMoney(lifetimePaid, paidCurrency)}
+          </div>
+          <CurrencyRows totals={lifetimePaidByCurrency} primary={paidCurrency} />
+        </div>
+        <div className="min-w-0">
+          <div className="text-xs text-[var(--muted-foreground)]">Задолженность за всё время</div>
+          <div
+            title={money(lifetimeTotal, lifetimeCurrency)}
+            className="mt-1 truncate text-lg font-semibold leading-none tabular-nums"
+          >
+            {compactMoney(lifetimeTotal, lifetimeCurrency)}
+          </div>
+          <CurrencyRows totals={lifetimeTotalByCurrency} primary={lifetimeCurrency} />
+        </div>
+      </Card>
 
       {error && <p className="mb-4 text-sm text-[var(--destructive)]">{error}</p>}
       {notice && (
@@ -932,18 +1026,15 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                 </CardContent>
               </Card>
             ) : (
-              data.orders.map((order) => (
-                <OrderDebtCard
-                  key={order.id}
-                  order={order}
-                  canPay={isAccountant}
-                  canViewOrder={canViewOrders}
-                  onPay={() => {
-                    setSelectedId(order.id);
-                    setPaymentOpen(true);
-                  }}
-                />
-              ))
+              <DebtOrdersTable
+                orders={data.orders}
+                canPay={isAccountant}
+                canViewOrder={canViewOrders}
+                onPay={(id) => {
+                  setSelectedId(id);
+                  setPaymentOpen(true);
+                }}
+              />
             ))}
           {tab === "history" && (
             <PaymentHistoryTable rows={payments} emptyText="Платежей пока нет." canViewOrders={canViewOrders} />

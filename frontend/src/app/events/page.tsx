@@ -8,7 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { ErrorAlert } from "@/components/ui/data-state";
-import { useApi } from "@/lib/use-api";
+import { LoadMore } from "@/components/ui/load-more";
+import { usePagedApi } from "@/lib/use-paged-api";
 import { useDebounced } from "@/lib/use-debounced";
 import { useLocalDay } from "@/lib/use-local-day";
 import { translateOrderStatusMessage } from "@/lib/constants";
@@ -25,7 +26,7 @@ import {
   Scale,
   Activity,
 } from "lucide-react";
-import type { EventLog, EventLogPage } from "@/lib/types";
+import type { EventLog } from "@/lib/types";
 
 type EventMeta = {
   label: string;
@@ -80,30 +81,37 @@ function EventsPageInner() {
   const [search, setSearch] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
-  const [page, setPage] = useState(1);
   // Свободный ввод не должен дёргать API на каждую букву.
   const debouncedSearch = useDebounced(search);
   const debouncedOrder = useDebounced(order);
 
+  // Смена фильтров меняет URL — хук сам начинает ленту с первой страницы.
   const url = useMemo(() => {
     const q = new URLSearchParams();
-    q.set("page", String(page));
-    q.set("page_size", String(EVENTS_PER_PAGE));
     if (type) q.set("event_type", type);
     if (debouncedOrder) q.set("order", debouncedOrder);
     if (debouncedSearch) q.set("search", debouncedSearch);
     if (dateFrom) q.set("date_from", dateFrom);
     if (dateTo) q.set("date_to", dateTo);
-    return `/events/?${q.toString()}`;
-  }, [page, type, debouncedOrder, debouncedSearch, dateFrom, dateTo]);
+    const qs = q.toString();
+    return `/events/${qs ? `?${qs}` : ""}`;
+  }, [type, debouncedOrder, debouncedSearch, dateFrom, dateTo]);
 
-  const { data: eventPage, loading, error, reload } = useApi<EventLogPage>(url);
-  const events = eventPage?.results;
+  const {
+    items: events,
+    count,
+    hasMore,
+    loading,
+    loadingMore,
+    error,
+    reload,
+    loadMore,
+  } = usePagedApi<EventLog>(url, EVENTS_PER_PAGE);
 
   // Группируем события по календарному дню (сохраняя порядок ленты).
   const groups = useMemo(() => {
     const out: { key: string; label: string; items: EventLog[] }[] = [];
-    for (const e of events ?? []) {
+    for (const e of events) {
       const d = new Date(e.created_at);
       const key = d.toDateString();
       let g = out[out.length - 1];
@@ -117,9 +125,6 @@ function EventsPageInner() {
   }, [currentDay, events]);
 
   const hasFilters = Boolean(type || order || search || dateFrom || dateTo);
-  const totalPages = Math.max(1, Math.ceil((eventPage?.count ?? 0) / EVENTS_PER_PAGE));
-  const firstVisible = (page - 1) * EVENTS_PER_PAGE + 1;
-  const lastVisible = Math.min(page * EVENTS_PER_PAGE, eventPage?.count ?? 0);
 
   function reset() {
     setType("");
@@ -127,7 +132,6 @@ function EventsPageInner() {
     setSearch("");
     setDateFrom("");
     setDateTo("");
-    setPage(1);
   }
 
   return (
@@ -146,7 +150,6 @@ function EventsPageInner() {
                 value={type}
                 onChange={(e) => {
                   setType(e.target.value);
-                  setPage(1);
                 }}
               >
                 <option value="">Все типы</option>
@@ -166,7 +169,6 @@ function EventsPageInner() {
                 value={order}
                 onChange={(e) => {
                   setOrder(e.target.value);
-                  setPage(1);
                 }}
               />
             </div>
@@ -178,7 +180,6 @@ function EventsPageInner() {
                 value={dateFrom}
                 onChange={(e) => {
                   setDateFrom(e.target.value);
-                  setPage(1);
                 }}
               />
             </div>
@@ -190,7 +191,6 @@ function EventsPageInner() {
                 value={dateTo}
                 onChange={(e) => {
                   setDateTo(e.target.value);
-                  setPage(1);
                 }}
               />
             </div>
@@ -205,7 +205,6 @@ function EventsPageInner() {
                   value={search}
                   onChange={(e) => {
                     setSearch(e.target.value);
-                    setPage(1);
                   }}
                 />
               </div>
@@ -225,7 +224,7 @@ function EventsPageInner() {
         <CardContent className="pt-6">
           {loading ? (
             <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
-          ) : error && !eventPage ? (
+          ) : error && events.length === 0 ? (
             <ErrorAlert message={error} onRetry={reload} />
           ) : groups.length === 0 ? (
             <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">
@@ -279,31 +278,10 @@ function EventsPageInner() {
               ))}
             </div>
           )}
-          {eventPage && eventPage.count > 0 && (
-            <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] pt-4">
-              <p className="text-xs text-[var(--muted-foreground)]" aria-live="polite">
-                События {firstVisible}–{lastVisible} из {eventPage.count} · страница {page} из {totalPages}
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!eventPage.previous}
-                  onClick={() => setPage((value) => Math.max(1, value - 1))}
-                >
-                  Назад
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!eventPage.next}
-                  onClick={() => setPage((value) => value + 1)}
-                >
-                  Далее
-                </Button>
-              </div>
-            </div>
-          )}
+          {/* Ошибка доклейки не должна быть немой: лента уже на экране,
+              поэтому пустое состояние сверху её не покажет. */}
+          {error && events.length > 0 && <ErrorAlert message={error} onRetry={loadMore} />}
+          <LoadMore shown={events.length} total={count} hasMore={hasMore} loading={loadingMore} onClick={loadMore} />
         </CardContent>
       </Card>
     </AppShell>

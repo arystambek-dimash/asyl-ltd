@@ -224,14 +224,19 @@ def _register_fonts() -> None:
     pdfmetrics.registerFont(TTFont("InvoiceSans-Bold", bold))
 
 
-def build_invoice_pdf(order: Order) -> bytes:
-    """Сформировать PDF-счёт по подтверждённым ценам заказа."""
+def build_invoice_pdf(order: Order, amount: Decimal | None = None) -> bytes:
+    """Сформировать PDF-счёт по подтверждённым ценам заказа.
+
+    ``amount`` — сумма к оплате по этому счёту (частичная оплата из кассы);
+    без него счёт выставляется на весь заказ, как в клиентском портале.
+    """
     _register_fonts()
     supplier = settings.INVOICE_SUPPLIER
     issued_on = timezone.localdate()
     total = order.total_amount.quantize(Decimal("0.01"))
+    due = (amount if amount is not None else total).quantize(Decimal("0.01"))
     vat_rate = Decimal(str(supplier["vat_rate"]))
-    vat = (total * vat_rate / (Decimal("100") + vat_rate)).quantize(
+    vat = (due * vat_rate / (Decimal("100") + vat_rate)).quantize(
         Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     buffer = BytesIO()
@@ -334,18 +339,25 @@ def build_invoice_pdf(order: Order) -> bytes:
         ("LEFTPADDING", (0, 0), (-1, -1), 2), ("RIGHTPADDING", (0, 0), (-1, -1), 2),
         ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
-    totals = Table([
+    totals_rows = [
         [Paragraph("Итого:", right_bold),
          Paragraph(_escape_paragraph_text(f"{total:,.2f}"), right_bold)],
+    ]
+    if due != total:
+        # Частичный счёт: позиции — справочно по заказу, к оплате — сумма части.
+        totals_rows.append(
+            [Paragraph("К оплате по счёту:", right_bold),
+             Paragraph(_escape_paragraph_text(f"{due:,.2f}"), right_bold)])
+    totals_rows.append(
         [Paragraph("В том числе НДС:", right_bold),
-         Paragraph(_escape_paragraph_text(f"{vat:,.2f}"), right_bold)],
-    ], colWidths=[151 * mm, 27 * mm])
+         Paragraph(_escape_paragraph_text(f"{vat:,.2f}"), right_bold)])
+    totals = Table(totals_rows, colWidths=[151 * mm, 27 * mm])
     totals.setStyle(TableStyle([
         ("LEFTPADDING", (0, 0), (-1, -1), 1), ("RIGHTPADDING", (0, 0), (-1, -1), 1),
         ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
     ]))
     currency_code = order.currency
-    words = amount_in_words(total, currency_code)
+    words = amount_in_words(due, currency_code)
     ending = KeepTogether([
         totals,
         Spacer(1, 2 * mm),

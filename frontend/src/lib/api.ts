@@ -175,6 +175,21 @@ export function apiError(e: unknown): string {
   return errorDetail(e);
 }
 
+/** apiError для запросов с responseType:"blob": тело ошибки приходит Blob-ом,
+ * и без распаковки текст «detail» от сервера терялся в общей формулировке. */
+export async function blobApiError(e: unknown): Promise<string> {
+  const response = (e as AxiosError).response;
+  if (response && response.data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await response.data.text());
+      return apiError({ ...(e as object), response: { ...response, data: parsed } });
+    } catch {
+      // Не JSON — падаем в обычную обработку по статусу.
+    }
+  }
+  return apiError(e);
+}
+
 export function isCanceledRequest(error: unknown): boolean {
   return axios.isCancel(error) || (error as AxiosError | undefined)?.code === "ERR_CANCELED";
 }

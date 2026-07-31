@@ -21,7 +21,7 @@ export function LoadMore({
       <Button type="button" variant="outline" size="sm" disabled={loading} onClick={onClick}>
         {loading ? "Загружаем…" : "Показать ещё"}
       </Button>
-      <span className="text-xs tabular-nums text-[var(--muted-foreground)]">
+      <span aria-live="polite" className="text-xs tabular-nums text-[var(--muted-foreground)]">
         {shown} из {total}
       </span>
     </div>

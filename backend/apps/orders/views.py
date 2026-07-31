@@ -20,6 +20,7 @@ from apps.common.query_params import (
 )
 from apps.clients.models import Department
 from apps.eventlog.models import EventLog
+from apps.eventlog.services import log_event
 from apps.shipments.services import (
     finish_train_loading, record_count, set_loading_camera, start_train_loading)
 from apps.shipments.serializers import LoadSerializer
@@ -29,7 +30,7 @@ from .apipay import (
     create_cash_refund, create_invoice, create_refund,
     MONEY_RECEIVED_INVOICE_STATUSES, normalize_phone,
 )
-from .invoices import build_payment_receipt_pdf
+from .invoices import build_invoice_pdf, build_payment_receipt_pdf
 from .debt import as_money_strings, primary_currency
 from .querysets import (
     for_post_board,
@@ -131,7 +132,10 @@ def _issue_mixed_provider_payments(payments, parts, user):
         for part in parts if isinstance(part, dict)
     }
     online = sorted(
-        (payment for payment in payments if payment.method in PROVIDER_METHOD_CHANNELS),
+        (payment for payment in payments
+         if payment.method in PROVIDER_METHOD_CHANNELS
+         # Счёт «нашим документом» провайдеру не выставляется.
+         and part_by_method.get(payment.method, {}).get("channel") != "document"),
         key=lambda payment: 1 if payment.method == "kaspi" else 0,
     )
     issued = []
@@ -582,6 +586,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "dashboard_operational": "orders.view",
         "repeat": "orders.create",
         "form_options": ("orders.create", "orders.edit"),
+        "invoice_pdf": ("payments.create", "payments.view"),
     }
 
     def get_permissions(self):
@@ -792,8 +797,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         stages = [stage] if stage in Payment.STATUSES else Payment.IN_PROGRESS_STATUSES
         qs = with_payment_api_relations(
             Payment.objects.filter(
+                # Наличные и «наш PDF-счёт» подтверждаются кассой вручную;
+                # счёт без записи провайдера — как раз документный.
+                Q(method="cash")
+                | Q(method="invoice", apipay_invoice__isnull=True),
                 status__in=stages,
-                method="cash",
                 order__in=Order.objects.all(),
             ),
             order_context=True,
@@ -1011,9 +1019,14 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 for raw_part in parts:
                     part = dict(raw_part) if isinstance(raw_part, dict) else raw_part
                     if isinstance(part, dict) and part.get("method") == "invoice":
-                        part["phone_number"] = normalize_phone(
-                            part.get("phone_number") or order.client.phone
-                        )
+                        if part.get("channel") == "document":
+                            # Наш PDF-счёт: провайдер не участвует, телефон
+                            # не нужен — кассир подтверждает оплату вручную.
+                            part.pop("phone_number", None)
+                        else:
+                            part["phone_number"] = normalize_phone(
+                                part.get("phone_number") or order.client.phone
+                            )
                     normalized_parts.append(part)
                 parts = normalized_parts
             payments = add_mixed_payments(
@@ -1023,8 +1036,12 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 payment.refresh_from_db()
             return Response(PaymentSerializer(payments, many=True).data, status=201)
         method = request.data.get("method") or "cash"
+        # Канал счёта един для обоих путей API: document — наш PDF без провайдера.
+        document_invoice = (
+            method == "invoice" and request.data.get("channel") == "document"
+        )
         phone_number = request.data.get("phone_number")
-        if method == "invoice":
+        if method == "invoice" and not document_invoice:
             phone_number = normalize_phone(
                 phone_number or order.client.phone
             )
@@ -1033,7 +1050,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             method=method,
             stage=request.data.get("stage") or "received",
             note=request.data.get("note") or "")
-        if method in PROVIDER_METHOD_CHANNELS:
+        if method in PROVIDER_METHOD_CHANNELS and not document_invoice:
             try:
                 _issue_provider_payment(
                     payment, phone_number=phone_number
@@ -1043,6 +1060,48 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 raise _provider_error(exc) from exc
             payment.refresh_from_db()
         return Response(PaymentSerializer(payment).data, status=201)
+
+    @action(detail=True, methods=["get"], url_path="invoice-pdf")
+    def invoice_pdf(self, request, pk=None):
+        """PDF «Счёт на оплату» для кассы — то же, что видит клиент в портале.
+
+        Документ имеет смысл только когда счёт-часть уже создана: сумма и
+        реквизиты берутся из заказа, а факт формирования пишется в журнал.
+        """
+        order = self.get_object()
+        missing = []
+        if not order.client.iin.strip():
+            missing.append("ИИН/БИН")
+        if not (order.client.company_name.strip() or order.client.name):
+            missing.append("название ТОО / ИП")
+        if missing:
+            raise ValidationError({
+                "detail": "Для счета заполните реквизиты клиента: "
+                          + ", ".join(missing),
+                "code": "client_requisites_missing",
+            })
+        payment = order.payments.filter(
+            method="invoice", status__in=("requested", "received", "confirmed")
+        ).order_by("-paid_at").first()
+        if payment is None:
+            raise ValidationError({
+                "detail": "Сначала добавьте способ «Счёт на оплату»",
+                "code": "invoice_payment_missing",
+            })
+        # Счёт — на сумму созданной части, а не всего заказа: касса может
+        # выставлять частичные счета.
+        pdf = build_invoice_pdf(order, amount=payment.amount)
+        log_event(
+            "payment", f"Счет на оплату №{order.id} сформирован кассой",
+            user=request.user, order=order,
+            payload={"payment_id": payment.id, "method": "invoice",
+                     "action": "invoice_generated"},
+        )
+        filename = (
+            f"schet_na_oplatu_{order.id}_ot_{timezone.localdate():%d.%m.%Y}.pdf"
+        )
+        return FileResponse(BytesIO(pdf), content_type="application/pdf",
+                            as_attachment=True, filename=filename)
 
     @action(detail=True, methods=["post"], url_path=r"payments/(?P<pid>\d+)/receive")
     def receive_payment(self, request, pk=None, pid=None):
