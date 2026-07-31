@@ -21,7 +21,7 @@ from cv_service.processor import (
 )
 from cv_service.runtime import MediaMtxClient, select_h264_encoder, validate_classes
 from cv_service.settings import Settings, parse_camera, parse_line
-from cv_service.state import AlwaysOnStateStore
+from cv_service.state import AlwaysOnStateStore, CameraRoleStateStore
 
 
 KEY = "backend-only-secret"
@@ -197,7 +197,14 @@ def auth():
 
 
 @pytest.mark.parametrize(
-    "path", ["/health", "/cameras", "/processors", "/always-on", "/processors/cam2"]
+    "path", [
+        "/health",
+        "/cameras",
+        "/processors",
+        "/always-on",
+        "/camera-roles/wagon-number",
+        "/processors/cam2",
+    ]
 )
 def test_every_endpoint_requires_header_and_query_key_is_ignored(service, path):
     _manager, client = service
@@ -361,6 +368,57 @@ def test_always_on_state_restores_after_service_restart(tmp_path):
     assert all(item["running"] for item in restored["processors"])
     assert all(item["recording"] is False for item in restored["processors"])
     manager.close()
+
+
+def test_wagon_number_camera_role_is_single_and_survives_restart(tmp_path):
+    store = CameraRoleStateStore(tmp_path / "camera-roles.json")
+    manager = ProcessorManager(
+        make_settings(), FakeModel(), FakeMediaMtx(), "libx264",
+        processor_factory=FakeProcessor, role_state_store=store,
+    )
+    with TestClient(create_app(manager)) as client:
+        configured = client.put(
+            "/camera-roles/wagon-number",
+            headers=auth(),
+            json={"camera": "cam2", "source": "main"},
+        )
+        assert configured.status_code == 200
+        assert configured.json() == {
+            "camera": "cam2",
+            "source": "main",
+            "stream": "cam2",
+            "assigned": True,
+            "mode": "wagon_number_24_7",
+        }
+    assert store.load_wagon_number() == ("cam2", "main")
+
+    restored = ProcessorManager(
+        make_settings(), FakeModel(), FakeMediaMtx(), "libx264",
+        processor_factory=FakeProcessor, role_state_store=store,
+    )
+    assert restored.restore_camera_roles()["camera"] == "cam2"
+    restored.close()
+
+
+def test_wagon_number_camera_role_can_be_reassigned_and_cleared(service):
+    manager, client = service
+    assigned = client.put(
+        "/camera-roles/wagon-number",
+        headers=auth(),
+        json={"camera": "cam3"},
+    )
+    assert assigned.status_code == 200
+    assert assigned.json()["camera"] == "cam3"
+    assert manager.processors == {}
+
+    cleared = client.put(
+        "/camera-roles/wagon-number",
+        headers=auth(),
+        json={"camera": None},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["assigned"] is False
+    assert cleared.json()["camera"] is None
 
 
 def test_only_configured_capacity_can_run_always_on(service):

@@ -497,6 +497,22 @@ export interface AlwaysOnCameraSettings {
   detail: string;
   updated_at: string | null;
 }
+export interface WagonNumberCameraStatus {
+  camera: string | null;
+  source: "sub" | "main";
+  stream: string | null;
+  assigned: boolean;
+  mode: "wagon_number_24_7";
+}
+export interface WagonNumberCameraSettings {
+  camera_source: string | null;
+  source: "main";
+  live: WagonNumberCameraStatus | null;
+  service_available: boolean;
+  sync_status: "synced" | "pending";
+  detail: string;
+  updated_at: string | null;
+}
 export interface AlwaysOnColorAnalytics {
   color: string;
   total: number;

@@ -131,6 +131,25 @@ def test_always_on_client_normalizes_status_and_falls_back_for_old_agent():
     assert result["cameras"] == ["cam3"]
 
 
+def test_wagon_number_client_assigns_single_main_stream_camera():
+    upstream = {
+        "camera": "cam1",
+        "source": "main",
+        "stream": "cam1",
+        "assigned": True,
+        "mode": "wagon_number_24_7",
+    }
+    with patch.object(ai, "_call", return_value=upstream) as call:
+        result = ai.configure_wagon_number("1")
+
+    call.assert_called_once_with(
+        "PUT",
+        "/camera-roles/wagon-number",
+        {"camera": "cam1", "source": "main"},
+    )
+    assert result == upstream
+
+
 def test_monoblock_starts_confirmed_train_without_arrival_step(api_client, loader):
     client = Client.objects.create(first_name="AI", last_name="Train", phone="11")
     order = Order.objects.create(

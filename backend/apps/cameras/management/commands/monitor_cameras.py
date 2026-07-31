@@ -39,6 +39,11 @@ class Command(BaseCommand):
                             "camera-ai always-on="
                             + ",".join(always_on.get("cameras", []))
                         )
+                        wagon_number = continuous.reconcile_wagon_number()
+                        self.stdout.write(
+                            "camera-ai wagon-number="
+                            + str(wagon_number.get("camera") or "unassigned")
+                        )
                     except Exception:
                         # Camera health and the durable desired configuration
                         # remain valid while a restarted Windows service comes

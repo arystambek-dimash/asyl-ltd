@@ -32,3 +32,12 @@ def reconcile() -> dict:
         current = ai.configure_always_on(desired, "sub")
     analytics.record_snapshot(current)
     return current
+
+
+def reconcile_wagon_number() -> dict:
+    """Keep the durable wagon-number camera role in sync after restarts."""
+    desired = MonoblockCameraSettings.wagon_number_source() or None
+    current = ai.wagon_number_status()
+    if current.get("camera") != desired or current.get("source") != "main":
+        current = ai.configure_wagon_number(desired, "main")
+    return current

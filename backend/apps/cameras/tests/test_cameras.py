@@ -382,6 +382,92 @@ def test_always_on_choice_survives_camera_pc_outage(
     assert MonoblockCameraSettings.always_on_sources() == ["cam3"]
 
 
+def test_wagon_number_camera_assignment_is_superuser_only_and_uses_main_stream(
+    auth_client, superuser, boss, operator, client_user, monkeypatch,
+):
+    for user in (boss, operator, client_user):
+        response = auth_client(user).get("/api/cameras/wagon-number-settings/")
+        assert response.status_code == 403
+
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    live = {
+        "camera": "cam1",
+        "source": "main",
+        "stream": "cam1",
+        "assigned": True,
+        "mode": "wagon_number_24_7",
+    }
+    with patch.object(ai, "configure_wagon_number", return_value=live) as configure:
+        response = auth_client(superuser).put(
+            "/api/cameras/wagon-number-settings/",
+            {"camera_source": "1"},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    assert response.data["camera_source"] == "cam1"
+    assert response.data["source"] == "main"
+    assert response.data["sync_status"] == "synced"
+    configure.assert_called_once_with("cam1", "main")
+    row = MonoblockCameraSettings.objects.get(singleton=True)
+    assert row.wagon_number_camera_source == "cam1"
+    assert row.updated_by == superuser
+
+
+def test_wagon_number_camera_assignment_survives_camera_pc_outage(
+    auth_client, superuser, monkeypatch,
+):
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    with patch.object(
+        ai, "configure_wagon_number", side_effect=ai.AiUnavailable("offline"),
+    ):
+        response = auth_client(superuser).put(
+            "/api/cameras/wagon-number-settings/",
+            {"camera_source": "cam3"},
+            format="json",
+        )
+
+    assert response.status_code == 202
+    assert response.data["camera_source"] == "cam3"
+    assert response.data["sync_status"] == "pending"
+    assert MonoblockCameraSettings.wagon_number_source() == "cam3"
+
+    with patch.object(
+        ai, "wagon_number_status_cached", side_effect=ai.AiUnavailable("offline"),
+    ):
+        follow_up = auth_client(superuser).get(
+            "/api/cameras/wagon-number-settings/"
+        )
+    assert follow_up.data["camera_source"] == "cam3"
+
+
+def test_superuser_can_clear_wagon_number_camera_assignment(
+    auth_client, superuser, monkeypatch,
+):
+    MonoblockCameraSettings.objects.create(
+        wagon_number_camera_source="cam2"
+    )
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    live = {
+        "camera": None,
+        "source": "main",
+        "stream": None,
+        "assigned": False,
+        "mode": "wagon_number_24_7",
+    }
+    with patch.object(ai, "configure_wagon_number", return_value=live) as configure:
+        response = auth_client(superuser).put(
+            "/api/cameras/wagon-number-settings/",
+            {"camera_source": None},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    assert response.data["camera_source"] is None
+    configure.assert_called_once_with(None, "main")
+    assert MonoblockCameraSettings.wagon_number_source() == ""
+
+
 def test_superuser_cannot_exceed_camera_pc_processor_capacity(
     auth_client, superuser, monkeypatch,
 ):

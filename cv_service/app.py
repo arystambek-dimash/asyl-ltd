@@ -5,7 +5,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .contracts import AlwaysOnOptions, ProcessorOptions, RecordingDeleteOptions
+from .contracts import (
+    AlwaysOnOptions, ProcessorOptions, RecordingDeleteOptions, WagonNumberOptions,
+)
 from .processor import ProcessorManager
 from .security import valid_api_key
 from .settings import parse_camera
@@ -92,6 +94,14 @@ def create_app(manager: ProcessorManager) -> FastAPI:
     @app.put("/always-on")
     def configure_always_on(options: AlwaysOnOptions):
         return manager.configure_always_on(options.cameras, options.source)
+
+    @app.get("/camera-roles/wagon-number")
+    def wagon_number():
+        return manager.wagon_number_status()
+
+    @app.put("/camera-roles/wagon-number")
+    def configure_wagon_number(options: WagonNumberOptions):
+        return manager.configure_wagon_number(options.camera, options.source)
 
     @app.delete("/recordings")
     def delete_recordings(options: RecordingDeleteOptions):

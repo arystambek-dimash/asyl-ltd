@@ -12,7 +12,7 @@ from cv_service.contracts import ProcessorOptions
 from cv_service.processor import ProcessorManager
 from cv_service.runtime import build_runtime
 from cv_service.settings import Settings
-from cv_service.state import AlwaysOnStateStore
+from cv_service.state import AlwaysOnStateStore, CameraRoleStateStore
 
 
 def build_service(settings: Settings) -> tuple[ProcessorManager, object]:
@@ -23,9 +23,11 @@ def build_service(settings: Settings) -> tuple[ProcessorManager, object]:
         mediamtx,
         encoder,
         state_store=AlwaysOnStateStore(settings.always_on_state_path),
+        role_state_store=CameraRoleStateStore(settings.camera_roles_state_path),
     )
     try:
         manager.restore_always_on()
+        manager.restore_camera_roles()
         for camera in settings.prewarm_cameras:
             if camera in manager.always_on_cameras:
                 continue

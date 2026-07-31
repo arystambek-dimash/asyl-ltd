@@ -46,6 +46,8 @@ MAX_ERROR_JSON_RESPONSE_BYTES = 64 * 1024
 # «живыми», но частый опрос перестаёт быть сетевым вызовом на каждый запрос.
 ALWAYS_ON_CACHE_KEY = "cameras:always-on-status:v1"
 ALWAYS_ON_TTL = 5
+WAGON_NUMBER_CACHE_KEY = "cameras:wagon-number-status:v1"
+WAGON_NUMBER_TTL = 5
 
 # Контракт AI-сервиса допускает только NVR ID cam<N>. Строгая локальная
 # проверка не позволяет передать произвольный path в URL camera-PC.
@@ -332,6 +334,52 @@ def configure_always_on(cameras: list[str], source: str = "sub") -> dict:
     # taken before it. Store the authoritative response as the new snapshot.
     cache.set(ALWAYS_ON_CACHE_KEY, status, ALWAYS_ON_TTL)
     return status
+
+
+def wagon_number_status() -> dict:
+    payload = _call("GET", "/camera-roles/wagon-number")
+    return payload or {
+        "camera": None,
+        "source": "main",
+        "stream": None,
+        "assigned": False,
+        "mode": "wagon_number_24_7",
+    }
+
+
+def wagon_number_status_cached() -> dict:
+    cached = cache.get(WAGON_NUMBER_CACHE_KEY)
+    if isinstance(cached, Exception):
+        raise cached
+    if cached is not None:
+        return cached
+    try:
+        result = wagon_number_status()
+    except (AiUnavailable, AiError) as outage:
+        cache.set(WAGON_NUMBER_CACHE_KEY, outage, WAGON_NUMBER_TTL)
+        raise
+    cache.set(WAGON_NUMBER_CACHE_KEY, result, WAGON_NUMBER_TTL)
+    return result
+
+
+def configure_wagon_number(camera: str | None, source: str = "main") -> dict:
+    normalized = normalize(camera) if camera is not None else None
+    if source not in {"sub", "main"}:
+        raise AiError(400, "Неизвестный источник камеры")
+    payload = _call(
+        "PUT",
+        "/camera-roles/wagon-number",
+        {"camera": normalized, "source": source},
+    )
+    result = payload or {
+        "camera": normalized,
+        "source": source,
+        "stream": None,
+        "assigned": normalized is not None,
+        "mode": "wagon_number_24_7",
+    }
+    cache.set(WAGON_NUMBER_CACHE_KEY, result, WAGON_NUMBER_TTL)
+    return result
 
 
 def delete_recordings(stream: str, starts: list[str]) -> dict:

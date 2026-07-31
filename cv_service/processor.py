@@ -576,6 +576,7 @@ class ProcessorManager:
         processor_factory: Callable[..., CameraProcessor] = CameraProcessor,
         publisher_factory: Callable[..., FfmpegPublisher] = FfmpegPublisher,
         state_store=None,
+        role_state_store=None,
     ):
         self.settings = settings
         self.model = model
@@ -584,9 +585,12 @@ class ProcessorManager:
         self.processor_factory = processor_factory
         self.publisher_factory = publisher_factory
         self.state_store = state_store
+        self.role_state_store = role_state_store
         self.processors: dict[str, CameraProcessor] = {}
         self.always_on_cameras: set[str] = set()
         self.always_on_source = "sub"
+        self.wagon_number_camera: str | None = None
+        self.wagon_number_source = "main"
         self.queue = DroppingFrameQueue(settings.queue_size)
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -751,6 +755,45 @@ class ProcessorManager:
             "source": self.always_on_source,
             "capacity": self.settings.max_active_processors,
             "processors": statuses,
+        }
+
+    def configure_wagon_number(
+        self,
+        camera: str | None,
+        source: str = "main",
+        *,
+        persist: bool = True,
+    ) -> dict:
+        normalized = parse_camera(camera) if camera is not None else None
+        if source not in {"sub", "main"}:
+            raise ValueError("source must be sub or main")
+        if normalized is not None:
+            self.mediamtx.validate_source(
+                normalized, self.settings.source_stream(normalized, source)
+            )
+        if persist and self.role_state_store is not None:
+            self.role_state_store.save_wagon_number(normalized, source)
+        self.wagon_number_camera = normalized
+        self.wagon_number_source = source
+        return self.wagon_number_status()
+
+    def restore_camera_roles(self) -> dict:
+        if self.role_state_store is None:
+            return self.wagon_number_status()
+        camera, source = self.role_state_store.load_wagon_number()
+        return self.configure_wagon_number(camera, source, persist=False)
+
+    def wagon_number_status(self) -> dict:
+        camera = self.wagon_number_camera
+        return {
+            "camera": camera,
+            "source": self.wagon_number_source,
+            "stream": (
+                self.settings.source_stream(camera, self.wagon_number_source)
+                if camera is not None else None
+            ),
+            "assigned": camera is not None,
+            "mode": "wagon_number_24_7",
         }
 
     def get(self, camera: str) -> CameraProcessor:

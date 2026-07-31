@@ -77,6 +77,11 @@ class MonoblockCameraSettings(models.Model):
     # Камеры, чьи модели работают 24/7 без публикации/записи видео.
     # Настройка доступна только Django superuser.
     always_on_camera_sources = models.JSONField(default=list, blank=True)
+    # Одна камера высокого разрешения, закреплённая за будущим контуром
+    # круглосуточного распознавания номеров вагонов.
+    wagon_number_camera_source = models.CharField(
+        max_length=32, blank=True, default=""
+    )
     camera_names = models.JSONField(default=dict, blank=True)
     # Сколько календарных дней держать завершённые заказы на живом борде.
     # 1 означает «только сегодня».
@@ -126,6 +131,14 @@ class MonoblockCameraSettings(models.Model):
             source for source in sources
             if isinstance(source, str) and source
         ]
+
+    @classmethod
+    def wagon_number_source(cls) -> str:
+        row = cls.objects.filter(singleton=True).only(
+            "wagon_number_camera_source"
+        ).first()
+        source = row.wagon_number_camera_source if row else ""
+        return source if isinstance(source, str) else ""
 
 
 class MonoblockDevice(models.Model):

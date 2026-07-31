@@ -30,6 +30,18 @@ class AlwaysOnOptions(BaseModel):
     source: Literal["sub", "main"] = "sub"
 
 
+class WagonNumberOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    camera: str | None = None
+    source: Literal["sub", "main"] = "main"
+
+    @field_validator("camera")
+    @classmethod
+    def validate_camera(cls, value: str | None) -> str | None:
+        return parse_camera(value) if value is not None else None
+
+
 class RecordingDeleteOptions(BaseModel):
     """Exact MediaMTX segments approved for deletion by the CRM."""
     model_config = ConfigDict(extra="forbid")

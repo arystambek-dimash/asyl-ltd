@@ -538,6 +538,83 @@ class AlwaysOnCameraSettingsView(APIView):
             ), status=status.HTTP_202_ACCEPTED)
 
 
+class WagonNumberCameraSettingsView(APIView):
+    """Superuser-only assignment of the 24/7 wagon-number camera."""
+
+    permission_classes = [IsSuperUser]
+
+    @staticmethod
+    def _payload(row=None, live=None, sync_status="synced", detail=""):
+        row = row or MonoblockCameraSettings.objects.filter(singleton=True).first()
+        desired = row.wagon_number_camera_source if row else ""
+        return {
+            "camera_source": desired or None,
+            "source": "main",
+            "live": live,
+            "service_available": live is not None,
+            "sync_status": sync_status,
+            "detail": detail,
+            "updated_at": row.updated_at if row else None,
+        }
+
+    def get(self, request):
+        row = MonoblockCameraSettings.objects.filter(singleton=True).first()
+        if not ai.enabled():
+            return Response(self._payload(
+                row, sync_status="pending", detail="AI-сервис не настроен",
+            ))
+        try:
+            live = ai.wagon_number_status_cached()
+            desired = row.wagon_number_camera_source if row else ""
+            synced = (live.get("camera") or "") == desired
+            return Response(self._payload(
+                row,
+                live,
+                "synced" if synced else "pending",
+                "" if synced else "Назначение ожидает синхронизации",
+            ))
+        except (ai.AiUnavailable, ai.AiError) as exc:
+            return Response(self._payload(
+                row, sync_status="pending", detail=str(exc),
+            ))
+
+    def put(self, request):
+        raw_source = request.data.get("camera_source")
+        if raw_source in (None, ""):
+            normalized = ""
+        elif not isinstance(raw_source, str):
+            raise ValidationError({
+                "camera_source": "Передайте камеру или null",
+                "code": "bad_camera_source",
+            })
+        else:
+            try:
+                normalized = ai.normalize(raw_source)
+            except ai.AiError:
+                raise ValidationError({
+                    "camera_source": f"Неизвестная камера: {raw_source}",
+                    "code": "bad_camera_source",
+                })
+
+        row, _ = MonoblockCameraSettings.objects.get_or_create(singleton=True)
+        row.wagon_number_camera_source = normalized
+        row.updated_by = request.user
+        row.save(update_fields=[
+            "wagon_number_camera_source", "updated_by", "updated_at",
+        ])
+        if not ai.enabled():
+            return Response(self._payload(
+                row, sync_status="pending", detail="AI-сервис не настроен",
+            ), status=status.HTTP_202_ACCEPTED)
+        try:
+            live = ai.configure_wagon_number(normalized or None, "main")
+            return Response(self._payload(row, live))
+        except (ai.AiUnavailable, ai.AiError) as exc:
+            return Response(self._payload(
+                row, sync_status="pending", detail=str(exc),
+            ), status=status.HTTP_202_ACCEPTED)
+
+
 class AlwaysOnAnalyticsView(APIView):
     """Сегодняшний накопленный 24/7-счёт; доступен только суперпользователю."""
 

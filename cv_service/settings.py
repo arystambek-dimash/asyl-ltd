@@ -74,6 +74,7 @@ class Settings:
     prewarm_cameras: tuple[str, ...] = ()
     prewarm_source: str = "sub"
     always_on_state_path: Path = Path("data/always-on.json")
+    camera_roles_state_path: Path = Path("data/camera-roles.json")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -119,6 +120,12 @@ class Settings:
                 os.getenv(
                     "AI_ALWAYS_ON_STATE_PATH",
                     str(base / "data" / "always-on.json"),
+                )
+            ),
+            camera_roles_state_path=Path(
+                os.getenv(
+                    "AI_CAMERA_ROLES_STATE_PATH",
+                    str(base / "data" / "camera-roles.json"),
                 )
             ),
         )

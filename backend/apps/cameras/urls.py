@@ -7,6 +7,7 @@ from .views import (
     AlwaysOnAnalyticsSubtractView, AlwaysOnAnalyticsView,
     AlwaysOnCameraSettingsView, MonoblockCameraSettingsView, ShippingBoardSettingsView,
     MonoblockDeviceDetailView, MonoblockDeviceListView,
+    WagonNumberCameraSettingsView,
 )
 
 urlpatterns = [
@@ -18,6 +19,10 @@ urlpatterns = [
     path("cameras/monoblock-devices/", MonoblockDeviceListView.as_view()),
     path("cameras/monoblock-devices/<int:pk>/", MonoblockDeviceDetailView.as_view()),
     path("cameras/always-on-settings/", AlwaysOnCameraSettingsView.as_view()),
+    path(
+        "cameras/wagon-number-settings/",
+        WagonNumberCameraSettingsView.as_view(),
+    ),
     path("cameras/always-on-analytics/", AlwaysOnAnalyticsView.as_view()),
     path(
         "cameras/always-on-analytics/<str:cam>/subtract/",
