@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     "apps.notifications",
     "apps.cameras",
     "apps.tasks",
+    "apps.grain",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

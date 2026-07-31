@@ -336,6 +336,9 @@ function ClientsPageInner() {
   const [delItem, setDelItem] = useState<Client | null>(null);
   const [delError, setDelError] = useState("");
   const [delBusy, setDelBusy] = useState(false);
+  const [purgeItem, setPurgeItem] = useState<Client | null>(null);
+  const [purgeError, setPurgeError] = useState("");
+  const [purgeBusy, setPurgeBusy] = useState(false);
   const [statementOpen, setStatementOpen] = useState(false);
 
   async function confirmDelete() {
@@ -350,6 +353,21 @@ function ClientsPageInner() {
       setDelError(apiError(e));
     } finally {
       setDelBusy(false);
+    }
+  }
+
+  async function confirmPurge() {
+    if (!purgeItem) return;
+    setPurgeBusy(true);
+    setPurgeError("");
+    try {
+      await api.post(`/clients/${purgeItem.id}/purge/`);
+      setPurgeItem(null);
+      reload();
+    } catch (e) {
+      setPurgeError(apiError(e));
+    } finally {
+      setPurgeBusy(false);
     }
   }
 
@@ -437,6 +455,21 @@ function ClientsPageInner() {
             onSelect: () => {
               setDelError("");
               setDelItem(c);
+            },
+          },
+        ]
+      : []),
+    // Зачистка тестовых учёток: обычное удаление блокируют заказы (PROTECT).
+    ...(me?.is_superuser
+      ? [
+          {
+            key: "purge",
+            label: "Удалить с историей",
+            icon: Trash2,
+            tone: "destructive" as const,
+            onSelect: () => {
+              setPurgeError("");
+              setPurgeItem(c);
             },
           },
         ]
@@ -705,6 +738,20 @@ function ClientsPageInner() {
         busy={delBusy}
         error={delError}
         onConfirm={confirmDelete}
+      />
+      <ConfirmDialog
+        open={!!purgeItem}
+        onClose={() => setPurgeItem(null)}
+        title="Удалить клиента со всей историей?"
+        description={
+          purgeItem
+            ? `«${purgeItem.name}» будет удалён вместе со всеми заказами, оплатами и счетами. Записи журнала останутся. Действие безвозвратно — используйте только для тестовых учёток.`
+            : ""
+        }
+        confirmLabel="Удалить с историей"
+        busy={purgeBusy}
+        error={purgeError}
+        onConfirm={confirmPurge}
       />
       <StatementExportModal
         open={statementOpen}

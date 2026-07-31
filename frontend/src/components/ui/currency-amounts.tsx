@@ -54,8 +54,18 @@ export function CurrencyAmounts({
 
   return (
     <span className={cn("inline-flex flex-col items-end gap-0.5", className)}>
-      {ordered.map(([currency, amount]) => (
-        <span key={currency} className={cn("whitespace-nowrap", amountClassName)}>
+      {ordered.map(([currency, amount], index) => (
+        <span
+          key={currency}
+          className={cn(
+            "whitespace-nowrap",
+            // Две валюты — не одна сумма: вторую показываем мельче и
+            // приглушённо, чтобы ₸ и $ не выглядели двумя большими итогами.
+            index > 0 && "text-xs font-normal text-[var(--muted-foreground)]",
+            amountClassName,
+          )}
+        >
+          {index > 0 && "+ "}
           {formatCurrency(amount, currency)}
         </span>
       ))}

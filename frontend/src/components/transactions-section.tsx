@@ -17,7 +17,7 @@ import { downloadBlob } from "@/lib/download";
 import { useApi } from "@/lib/use-api";
 import { useDebounced } from "@/lib/use-debounced";
 import { cn, formatCurrency, formatDateTime, formatMoney, currencySymbol } from "@/lib/utils";
-import { PAYMENT_METHOD_LABELS, paymentStage } from "@/lib/constants";
+import { PAYMENT_METHOD_LABELS, PAYMENT_STAGE_LABELS, paymentStage } from "@/lib/constants";
 import type { Payment } from "@/lib/types";
 
 interface TransactionPage {
@@ -25,6 +25,8 @@ interface TransactionPage {
   count: number;
   page: number;
   pages: number;
+  /** Счётчики по статусам при текущем поиске (до статус-фильтра). */
+  status_counts?: Record<string, number>;
   summary: {
     paid_by_currency: { KZT: string; USD: string };
     refunded_by_currency: { KZT: string; USD: string };
@@ -181,19 +183,29 @@ function PaymentQrPreview({ payment, onClose }: { payment: Payment; onClose: () 
   );
 }
 
+/** Пилюли статус-фильтра: подписи из общего словаря этапов оплат. */
+const STATUS_FILTERS = [
+  { key: "requested", label: PAYMENT_STAGE_LABELS.requested ?? "Ожидает" },
+  { key: "received", label: PAYMENT_STAGE_LABELS.received ?? "Принята" },
+  { key: "confirmed", label: PAYMENT_STAGE_LABELS.confirmed ?? "Подтверждена" },
+  { key: "rejected", label: PAYMENT_STAGE_LABELS.rejected ?? "Отклонена" },
+];
+
 /* ── Вкладка «Транзакции»: все платежи, возвраты и чеки ─────────────────── */
 export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boolean; canCreate: boolean }) {
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
   const debouncedQuery = useDebounced(query.trim());
-  useEffect(() => setPage(1), [debouncedQuery]);
+  useEffect(() => setPage(1), [debouncedQuery, statusFilter]);
   const {
     data,
     loading,
     error: loadError,
     reload,
   } = useApi<TransactionPage>(
-    `/payment-transactions/?page=${page}&page_size=50&search=${encodeURIComponent(debouncedQuery)}`,
+    `/payment-transactions/?page=${page}&page_size=50&search=${encodeURIComponent(debouncedQuery)}` +
+      (statusFilter !== "all" ? `&status=${statusFilter}` : ""),
   );
   // Единый стиль пагинации: страницы накапливаются под «Показать ещё»,
   // а не листаются взад-вперёд. Итоги в конверте всегда по всей выборке.
@@ -213,11 +225,17 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
     });
   }, [data]);
   useEffect(() => {
-    // Новый поиск — новый список: старые накопленные строки не должны
-    // выглядеть результатом свежего запроса.
+    // Новый поиск или статус — новый список: старые накопленные строки не
+    // должны выглядеть результатом свежего запроса.
     setRows([]);
     setMeta(null);
-  }, [debouncedQuery]);
+  }, [debouncedQuery, statusFilter]);
+  // Счётчики статусов приходят до статус-фильтра и живут между запросами,
+  // чтобы пилюли не мигали на каждую загрузку.
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
+  useEffect(() => {
+    if (data?.status_counts) setStatusCounts(data.status_counts);
+  }, [data]);
 
   // После действий (подтвердить/возврат/восстановить) лента начинается с
   // первой страницы — иначе накопленные строки разъедутся с сервером.
@@ -371,17 +389,42 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
           </Button>
         </CardHeader>
         <CardContent>
-          <div className="relative mb-4 max-w-sm">
-            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-            <Input
-              className="pl-9"
-              placeholder="Клиент, заказ или операция"
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setPage(1);
-              }}
-            />
+          <div className="mb-4 flex flex-wrap items-center gap-3">
+            <div className="relative max-w-sm flex-1 basis-64">
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+              <Input
+                className="pl-9"
+                placeholder="Клиент, заказ или операция"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setPage(1);
+                }}
+              />
+            </div>
+            {/* Мини-отчёт по статусам: пилюля = фильтр, цифра = сколько таких. */}
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { key: "all", label: "Все", count: Object.values(statusCounts).reduce((s, n) => s + n, 0) },
+                ...STATUS_FILTERS.map((item) => ({ ...item, count: statusCounts[item.key] ?? 0 })),
+              ].map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => setStatusFilter(item.key)}
+                  aria-pressed={statusFilter === item.key}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                    statusFilter === item.key
+                      ? "border-[var(--foreground)] bg-[var(--muted)]"
+                      : "border-[var(--border)] text-[var(--muted-foreground)] hover:border-[var(--foreground)]/40",
+                  )}
+                >
+                  {item.label}
+                  <span className="tabular-nums">{item.count}</span>
+                </button>
+              ))}
+            </div>
           </div>
           {/* Спиннер на весь блок — только пока нет ни одной строки: догрузка
               следующих страниц не должна прятать уже показанное. */}

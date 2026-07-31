@@ -8,7 +8,7 @@ from django.http import HttpResponse
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import HasPerm, IsStaff, PermViewSetMixin
 from apps.common.money import money_string
@@ -101,6 +101,8 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "all_statement": "reports.export",
         "prices": "clients.set_price",
         "picker": "clients.view",
+        # Жёсткая зачистка дополнительно требует is_superuser внутри экшена.
+        "purge": "clients.delete",
     }
 
     def get_queryset(self):
@@ -133,6 +135,40 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 status="shipped", settlement_intent="debt",
             ).prefetch_related("items", "payments"),
         ))
+
+    @action(detail=True, methods=["post"], url_path="purge")
+    def purge(self, request, pk=None):
+        """Полное удаление клиента с историей — инструмент суперадмина.
+
+        Нужен, чтобы вычищать тестовые учётки с заказами и оплатами: обычное
+        удаление защищено PROTECT-связью заказов. Событие пишется в журнал
+        до удаления (EventLog неизменяем и переживает каскад через SET_NULL).
+        """
+        if not request.user.is_superuser:
+            raise PermissionDenied("Удаление с историей доступно только суперадмину.")
+        client = self.get_object()
+        from apps.cameras.models import AiCountingSession
+        from apps.orders.models import Order as OrderModel
+
+        orders = OrderModel.all_objects.filter(client=client)
+        orders_count = orders.count()
+        log_event(
+            "client",
+            f"Клиент «{client.name}» удалён с историей ({orders_count} заказов)",
+            user=request.user,
+            payload={
+                "client_id": client.pk,
+                "client_name": client.name,
+                "orders": orders_count,
+                "action": "client_purged",
+            },
+        )
+        with transaction.atomic():
+            # AI-сессии защищают заказ PROTECT-ом — тестовые артефакты удаляем явно.
+            AiCountingSession.objects.filter(order__in=orders).delete()
+            orders.delete()
+            client.delete()
+        return Response(status=204)
 
     @action(detail=True, methods=["get"], url_path="history")
     def history(self, request, pk=None):

@@ -453,3 +453,25 @@ def test_summary_splits_paid_total_by_payment_method(auth_client, accountant):
     }
     # Разбивка обязана сходиться с итогом, иначе кассир увидит два разных числа.
     assert summary["paid_by_currency"]["KZT"] == "650000.00"
+
+
+def test_transaction_status_counts_and_filter(auth_client, accountant):
+    client = Client.objects.create(
+        first_name="Статусный", last_name="Клиент", phone="87001112233")
+    order = Order.objects.create(client=client, status="shipped")
+    for status, n in (("confirmed", 2), ("rejected", 1), ("received", 3)):
+        for _ in range(n):
+            Payment.objects.create(
+                order=order, amount="10.00", method="cash", status=status)
+
+    data = auth_client(accountant).get("/api/payment-transactions/").data
+    # Счётчики — по всем статусам, независимо от выбранного фильтра.
+    assert data["status_counts"] == {
+        "confirmed": 2, "rejected": 1, "received": 3}
+
+    filtered = auth_client(accountant).get(
+        "/api/payment-transactions/?status=rejected").data
+    assert filtered["count"] == 1
+    assert [row["status"] for row in filtered["results"]] == ["rejected"]
+    # Пилюли не должны схлопываться после выбора фильтра.
+    assert filtered["status_counts"]["confirmed"] == 2

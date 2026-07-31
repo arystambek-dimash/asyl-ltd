@@ -648,3 +648,129 @@ export interface TaskAssignee {
   name: string;
   position: string;
 }
+
+/* ── Приход зерна ─────────────────────────────────────────────────────── */
+
+export interface GrainWeighing {
+  id: number;
+  kind: "gross" | "tare";
+  weight_kg: number;
+  scale_number: string;
+  source: "auto" | "manual";
+  manual_reason: string;
+  previous_weight_kg: number | null;
+  operator_name: string | null;
+  created_at: string;
+}
+
+export interface GrainLabCheck {
+  id: number;
+  moisture: string | null;
+  impurity: string | null;
+  nature: string | null;
+  grain_class: string;
+  infestation: boolean;
+  damage: string;
+  note: string;
+  decision: "accepted" | "accepted_with_restrictions" | "rejected" | "quarantine";
+  checked_by_name: string | null;
+  created_at: string;
+}
+
+export interface GrainAllocation {
+  id: number;
+  silo: number;
+  silo_name: string;
+  amount_kg: number;
+  measurement_source: string;
+  created_at: string;
+}
+
+export interface GrainWagon {
+  id: number;
+  supply: number | null;
+  number: string;
+  status: string;
+  status_label: string;
+  unplanned: boolean;
+  supplier: string;
+  culture: string;
+  grain_class: string;
+  document_weight_kg: number | null;
+  expected_weight_kg: number | null;
+  arrived_at: string | null;
+  gross_weight_kg: number | null;
+  tare_weight_kg: number | null;
+  net_weight_kg: number | null;
+  assigned_silo: number | null;
+  assigned_silo_name: string | null;
+  unloading_point?: string;
+  unloading_started_at?: string | null;
+  unloading_finished_at?: string | null;
+  unloading_paused?: boolean;
+  exited_at: string | null;
+  note?: string;
+  created_at: string;
+  weighings?: GrainWeighing[];
+  lab_checks?: GrainLabCheck[];
+  allocations?: GrainAllocation[];
+}
+
+export interface GrainSupply {
+  id: number;
+  supplier: string;
+  contract: string;
+  culture: string;
+  grain_class: string;
+  expected_date: string | null;
+  expected_total_kg: number | null;
+  document_weight_kg: number | null;
+  wagons_expected: number | null;
+  note: string;
+  status: "draft" | "expected" | "closed" | "cancelled";
+  created_at: string;
+  wagons: GrainWagon[];
+}
+
+export interface GrainSilo {
+  id: number;
+  name: string;
+  total_capacity_kg: number;
+  grain_culture: string;
+  grain_class: string;
+  allow_mixing: boolean;
+  is_quarantine: boolean;
+  status: "active" | "blocked" | "maintenance";
+  unloading_line: string;
+  sensor_estimated_kg: number | null;
+  current_balance_kg: number;
+  reserved_kg: number;
+  free_capacity_kg: number;
+  fill_percent: number;
+  active_wagons: { id: number; number: string; status: string }[];
+  sensor_difference_kg: number | null;
+}
+
+export interface GrainMovement {
+  id: number;
+  silo: number;
+  silo_name: string;
+  movement_type: string;
+  delta_kg: number;
+  balance_after_kg: number;
+  wagon: number | null;
+  wagon_number: string | null;
+  batch_number: string;
+  note: string;
+  created_by_name: string | null;
+  created_at: string;
+}
+
+export interface GrainTimelineEvent {
+  id: number;
+  event_type: string;
+  message: string;
+  user_name: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+}

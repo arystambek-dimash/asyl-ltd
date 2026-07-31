@@ -19,6 +19,7 @@ import {
   Store,
   HandCoins,
   ScanLine,
+  Wheat,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { can } from "@/lib/can";
@@ -67,6 +68,8 @@ function staffSections(): NavSection[] {
         { href: "/shipping", label: "Пост погрузки", icon: Truck, perm: ["shipping.view", "train.view"] },
         { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "shipping.load" },
         { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },
+        // Приход зерна вагонами: заявки, вагоны на территории, силосы.
+        { href: "/grain", label: "Зерно", icon: Wheat, perm: "grain.view" },
         { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
         { href: "/stores", label: "Магазины", icon: Store, perm: "clients.view" },
         { href: "/catalog/products", label: "Товары", icon: Package, perm: "catalog.view" },

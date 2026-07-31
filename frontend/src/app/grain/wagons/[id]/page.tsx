@@ -1,0 +1,437 @@
+"use client";
+import { use, useState } from "react";
+import Link from "next/link";
+import { ArrowLeft } from "lucide-react";
+import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DataGate } from "@/components/ui/data-state";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
+import { api, apiError } from "@/lib/api";
+import { can } from "@/lib/can";
+import { GRAIN_STATUS_TONE, formatKg } from "@/lib/grain";
+import { useApi } from "@/lib/use-api";
+import { cn, formatDateTime } from "@/lib/utils";
+import { useAuth } from "@/store/auth";
+import type { GrainSilo, GrainSupply, GrainTimelineEvent, GrainWagon } from "@/lib/types";
+
+function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 border-b border-[var(--border)]/60 py-2 text-sm last:border-0">
+      <span className="text-[var(--muted-foreground)]">{label}</span>
+      <span className="text-right font-medium">{children}</span>
+    </div>
+  );
+}
+
+function WeightField({
+  label,
+  value,
+  onChange,
+  reason,
+  onReason,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  reason: string;
+  onReason: (value: string) => void;
+}) {
+  return (
+    <>
+      <div className="flex flex-col gap-1.5">
+        <Label>{label}</Label>
+        <Input
+          type="number"
+          min="1"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="в килограммах"
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label>Причина ручного ввода *</Label>
+        <Input value={reason} onChange={(e) => onReason(e.target.value)} placeholder="например: весы без связи" />
+      </div>
+    </>
+  );
+}
+
+/** Крупное действие текущего этапа — оператору не нужно искать кнопки. */
+function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () => void }) {
+  const { me } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [weight, setWeight] = useState("");
+  const [reason, setReason] = useState("");
+  const [decision, setDecision] = useState("accepted");
+  const [moisture, setMoisture] = useState("");
+  const [impurity, setImpurity] = useState("");
+  const [labNote, setLabNote] = useState("");
+  const [siloId, setSiloId] = useState("");
+  const [supplyId, setSupplyId] = useState("");
+
+  const needSilos = ["unloading_allowed", "quarantine", "insufficient_capacity"].includes(wagon.status);
+  const { data: silos } = useApi<GrainSilo[]>(needSilos ? `/grain/wagons/${wagon.id}/suggest-silos/` : null);
+  const { data: supplies } = useApi<GrainSupply[]>(
+    wagon.status === "waiting_for_approval" ? "/grain/supplies/?status=expected" : null,
+  );
+
+  async function act(path: string, body: Record<string, unknown> = {}) {
+    setBusy(true);
+    setError("");
+    try {
+      await api.post(`/grain/wagons/${wagon.id}/${path}/`, body);
+      onChanged();
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const weighBody = () => ({ weight_kg: Number(weight), source: "manual", manual_reason: reason });
+
+  let body: React.ReactNode = null;
+  if (wagon.status === "waiting_for_approval" && can(me, "grain.dispatch")) {
+    body = (
+      <>
+        <div className="flex flex-col gap-1.5">
+          <Label>Привязать к поставке</Label>
+          <Select value={supplyId} onChange={(e) => setSupplyId(e.target.value)}>
+            <option value="">Без поставки</option>
+            {(supplies ?? []).map((item) => (
+              <option key={item.id} value={item.id}>
+                #{item.id} · {item.supplier} · {item.culture}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <Button disabled={busy} onClick={() => void act("approve", { supply: supplyId || null })}>
+          Подтвердить вагон
+        </Button>
+      </>
+    );
+  } else if (wagon.status === "arrived" && can(me, "grain.weigh")) {
+    body = (
+      <>
+        <WeightField label="Брутто, кг" value={weight} onChange={setWeight} reason={reason} onReason={setReason} />
+        <Button disabled={busy || !weight || !reason} onClick={() => void act("gross", weighBody())}>
+          Зафиксировать брутто
+        </Button>
+      </>
+    );
+  } else if (wagon.status === "lab_pending" && can(me, "grain.lab")) {
+    body = (
+      <>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label>Влажность, %</Label>
+            <Input type="number" value={moisture} onChange={(e) => setMoisture(e.target.value)} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Сорность, %</Label>
+            <Input type="number" value={impurity} onChange={(e) => setImpurity(e.target.value)} />
+          </div>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label>Решение</Label>
+          <Select value={decision} onChange={(e) => setDecision(e.target.value)}>
+            <option value="accepted">Принято</option>
+            <option value="accepted_with_restrictions">Принято с ограничениями</option>
+            <option value="rejected">Отклонено</option>
+            <option value="quarantine">Карантин</option>
+          </Select>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label>Комментарий лаборатории</Label>
+          <Input value={labNote} onChange={(e) => setLabNote(e.target.value)} />
+        </div>
+        <Button
+          disabled={busy}
+          onClick={() =>
+            void act("lab", {
+              decision,
+              moisture: moisture || null,
+              impurity: impurity || null,
+              note: labNote,
+            })
+          }
+        >
+          Сохранить решение
+        </Button>
+      </>
+    );
+  } else if (needSilos && can(me, "grain.dispatch")) {
+    body = (
+      <>
+        <div className="flex flex-col gap-1.5">
+          <Label>Подходящие силосы</Label>
+          <Select value={siloId} onChange={(e) => setSiloId(e.target.value)}>
+            <option value="">Выберите силос</option>
+            {(silos ?? []).map((silo) => (
+              <option key={silo.id} value={silo.id}>
+                {silo.name} · свободно {formatKg(silo.free_capacity_kg)}
+              </option>
+            ))}
+          </Select>
+        </div>
+        {(silos ?? []).length === 0 && (
+          <p className="text-sm text-[var(--warning)]">
+            Подходящих силосов нет: проверьте культуру, класс и свободное место.
+          </p>
+        )}
+        <Button disabled={busy || !siloId} onClick={() => void act("assign-silo", { silo: Number(siloId) })}>
+          Назначить силос
+        </Button>
+      </>
+    );
+  } else if (wagon.status === "silo_assigned" && can(me, "grain.unload")) {
+    body = (
+      <Button disabled={busy} onClick={() => void act("start-unloading")}>
+        Начать разгрузку в «{wagon.assigned_silo_name}»
+      </Button>
+    );
+  } else if (wagon.status === "unloading" && can(me, "grain.unload")) {
+    body = (
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => void act("pause-unloading", { paused: !wagon.unloading_paused })}
+        >
+          {wagon.unloading_paused ? "Продолжить" : "Приостановить"}
+        </Button>
+        <Button disabled={busy} onClick={() => void act("finish-unloading")}>
+          Завершить разгрузку
+        </Button>
+      </div>
+    );
+  } else if (
+    (wagon.status === "unloading_completed" || wagon.status === "reweighing_required") &&
+    can(me, "grain.weigh")
+  ) {
+    body = (
+      <>
+        <WeightField label="Тара, кг" value={weight} onChange={setWeight} reason={reason} onReason={setReason} />
+        <Button disabled={busy || !weight || !reason} onClick={() => void act("tare", weighBody())}>
+          Зафиксировать тару
+        </Button>
+      </>
+    );
+  } else if (wagon.status === "weight_discrepancy" && can(me, "grain.inventory")) {
+    body = (
+      <>
+        <div className="flex flex-col gap-1.5">
+          <Label>Обоснование подтверждения</Label>
+          <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="акт сверки, номер документа" />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() => void act("resolve-discrepancy", { action: "reweigh" })}
+          >
+            Перевесить
+          </Button>
+          <Button
+            disabled={busy || !reason}
+            onClick={() => void act("resolve-discrepancy", { action: "confirm", reason })}
+          >
+            Подтвердить фактический вес
+          </Button>
+        </div>
+      </>
+    );
+  } else if (wagon.status === "tare_weighed" && can(me, "grain.inventory")) {
+    body = (
+      <Button disabled={busy} onClick={() => void act("inventory")}>
+        Оприходовать {formatKg(wagon.net_weight_kg)} в «{wagon.assigned_silo_name}»
+      </Button>
+    );
+  } else if (wagon.status === "exit_allowed" && can(me, "grain.exit")) {
+    body = (
+      <Button disabled={busy} onClick={() => void act("exit")}>
+        Выпустить вагон
+      </Button>
+    );
+  }
+
+  if (!body) return null;
+  return (
+    <Card>
+      <CardHeader className="p-4 pb-2">
+        <CardTitle>Действие сейчас</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3 p-4 pt-2">
+        {body}
+        {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const { data: wagon, loading, error, reload } = useApi<GrainWagon>(`/grain/wagons/${id}/`);
+  const { data: timeline, reload: reloadTimeline } = useApi<GrainTimelineEvent[]>(`/grain/wagons/${id}/timeline/`);
+
+  if (!wagon) {
+    return (
+      <AppShell title="Приход зерна" section="Работа">
+        <DataGate loading={loading} error={error} onRetry={reload} />
+      </AppShell>
+    );
+  }
+
+  function refresh() {
+    void reload();
+    void reloadTimeline();
+  }
+
+  return (
+    <AppShell title="Приход зерна" section="Работа">
+      <div className="mb-5 flex flex-wrap items-center gap-3">
+        <Link
+          href="/grain"
+          aria-label="К вагонам"
+          className="flex size-9 shrink-0 items-center justify-center rounded-lg border text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)]/60"
+        >
+          <ArrowLeft className="size-4" />
+        </Link>
+        <h2 className="text-xl font-semibold tracking-tight">Вагон {wagon.number || `#${wagon.id}`}</h2>
+        <Badge tone={GRAIN_STATUS_TONE[wagon.status] ?? "muted"} dot>
+          {wagon.status_label}
+        </Badge>
+        {wagon.unplanned && <Badge tone="warning">внеплановый</Badge>}
+      </div>
+
+      <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="flex min-w-0 flex-col gap-4">
+          {/* Ключевые числа одной полосой. */}
+          <Card className="flex flex-wrap items-center gap-x-10 gap-y-3 p-4">
+            {[
+              { label: "Брутто", value: formatKg(wagon.gross_weight_kg) },
+              { label: "Тара", value: formatKg(wagon.tare_weight_kg) },
+              { label: "Нетто", value: formatKg(wagon.net_weight_kg), strong: true },
+              { label: "По документам", value: formatKg(wagon.document_weight_kg ?? wagon.expected_weight_kg) },
+            ].map((item) => (
+              <div key={item.label} className="min-w-0">
+                <div className="text-xs text-[var(--muted-foreground)]">{item.label}</div>
+                <div
+                  className={cn(
+                    "mt-1 text-lg font-semibold leading-none tabular-nums",
+                    item.strong && "text-[var(--success)]",
+                  )}
+                >
+                  {item.value}
+                </div>
+              </div>
+            ))}
+          </Card>
+
+          <StageAction wagon={wagon} onChanged={refresh} />
+
+          <Card>
+            <CardHeader className="p-4 pb-2">
+              <CardTitle>Реквизиты</CardTitle>
+            </CardHeader>
+            <CardContent className="p-4 pt-0">
+              <InfoRow label="Поставщик">{wagon.supplier || "—"}</InfoRow>
+              <InfoRow label="Культура">
+                {wagon.culture || "—"}
+                {wagon.grain_class ? ` · ${wagon.grain_class} класс` : ""}
+              </InfoRow>
+              <InfoRow label="Прибыл">{wagon.arrived_at ? formatDateTime(wagon.arrived_at) : "—"}</InfoRow>
+              <InfoRow label="Силос">{wagon.assigned_silo_name ?? "не назначен"}</InfoRow>
+              <InfoRow label="Точка разгрузки">{wagon.unloading_point || "—"}</InfoRow>
+              {wagon.exited_at && <InfoRow label="Выехал">{formatDateTime(wagon.exited_at)}</InfoRow>}
+            </CardContent>
+          </Card>
+
+          {(wagon.allocations ?? []).length > 0 && (
+            <Card>
+              <CardHeader className="p-4 pb-2">
+                <CardTitle>Распределение по силосам</CardTitle>
+              </CardHeader>
+              <CardContent className="p-4 pt-0">
+                {(wagon.allocations ?? []).map((allocation) => (
+                  <InfoRow key={allocation.id} label={allocation.silo_name}>
+                    {formatKg(allocation.amount_kg)}
+                  </InfoRow>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+
+        <aside className="flex flex-col gap-4 self-start">
+          <Card>
+            <CardHeader className="p-4 pb-3">
+              <CardTitle>История вагона</CardTitle>
+            </CardHeader>
+            <CardContent className="p-4 pt-0">
+              <div className="relative space-y-3 before:absolute before:bottom-2 before:left-[5px] before:top-2 before:w-px before:bg-[var(--border)]">
+                {(timeline ?? []).length === 0 ? (
+                  <p className="text-sm text-[var(--muted-foreground)]">Событий пока нет.</p>
+                ) : (
+                  (timeline ?? []).map((event, index) => (
+                    <div key={event.id} className="relative flex gap-3 text-xs">
+                      <span
+                        className={cn(
+                          "relative z-10 mt-1 size-2.5 shrink-0 rounded-full ring-4 ring-[var(--card)]",
+                          index === (timeline ?? []).length - 1
+                            ? "bg-[var(--success)]"
+                            : "bg-[var(--muted-foreground)]/45",
+                        )}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium">{event.message}</div>
+                        <div className="mt-0.5 text-[10px] text-[var(--muted-foreground)]">
+                          {formatDateTime(event.created_at)}
+                          {event.user_name ? ` · ${event.user_name}` : ""}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          {(wagon.weighings ?? []).length > 0 && (
+            <Card>
+              <CardHeader className="p-4 pb-3">
+                <CardTitle>Взвешивания</CardTitle>
+              </CardHeader>
+              <CardContent className="p-4 pt-0 text-sm">
+                {(wagon.weighings ?? []).map((row) => (
+                  <InfoRow key={row.id} label={row.kind === "gross" ? "Брутто" : "Тара"}>
+                    <span className="tabular-nums">{formatKg(row.weight_kg)}</span>
+                    <span className="block text-[10px] font-normal text-[var(--muted-foreground)]">
+                      {formatDateTime(row.created_at)}
+                      {row.operator_name ? ` · ${row.operator_name}` : ""}
+                      {row.manual_reason ? ` · ${row.manual_reason}` : ""}
+                    </span>
+                  </InfoRow>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+        </aside>
+      </div>
+    </AppShell>
+  );
+}
+
+export default function GrainWagonPage(props: { params: Promise<{ id: string }> }) {
+  return (
+    <RequirePerm perm="grain.view" title="Приход зерна">
+      <WagonPageInner {...props} />
+    </RequirePerm>
+  );
+}

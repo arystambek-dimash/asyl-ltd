@@ -10,7 +10,7 @@ from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal
 import re
-from django.db.models import Q, Sum
+from django.db.models import Count, Q, Sum
 from django.utils import timezone
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import HasPerm, PermViewSetMixin
@@ -277,8 +277,6 @@ class PaymentTransactionListView(APIView):
         status = request.query_params.get("status")
         method = request.query_params.get("method")
         search = request.query_params.get("search")
-        if status:
-            qs = qs.filter(status=status)
         if method:
             qs = qs.filter(method=method)
         if search:
@@ -296,6 +294,15 @@ class PaymentTransactionListView(APIView):
                 operation_id = int(operation_match.group(1))
                 search_query |= Q(order_id=operation_id) | Q(id=operation_id)
             qs = qs.filter(search_query)
+        # Счётчики статусов считаются ДО статус-фильтра: пилюли должны
+        # показывать, сколько операций стоит за каждым статусом при текущем
+        # поиске, а не только за выбранным.
+        status_counts = {
+            row["status"]: row["n"]
+            for row in qs.order_by().values("status").annotate(n=Count("id"))
+        }
+        if status:
+            qs = qs.filter(status=status)
         try:
             page = max(1, int(request.query_params.get("page") or 1))
             page_size = min(
@@ -355,6 +362,7 @@ class PaymentTransactionListView(APIView):
             "count": count,
             "page": page,
             "pages": pages,
+            "status_counts": status_counts,
             "summary": {
                 "paid_by_currency": {
                     currency: money_string(amount)
