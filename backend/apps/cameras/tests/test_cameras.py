@@ -5,7 +5,11 @@ from django.core import signing
 from django.core.cache import cache
 
 from apps.cameras import ai, services
-from apps.cameras.models import AiCountingSession, MonoblockCameraSettings, MonoblockDevice
+from apps.cameras.models import (
+    AiCountingSession,
+    MonoblockCameraSettings,
+    MonoblockDevice,
+)
 from apps.cameras.views import (
     CAM_COOKIE,
     CAM_TOKEN_AUDIENCE,
@@ -53,23 +57,51 @@ def _authorize_stream(api_client, token, uri=STREAM_URI):
 
 def fake_probe(statuses):
     """Мок _probe_path: camNsub → statuses[N-1], дальше absent."""
+
     def _probe(path):
         n = int(path.removeprefix("cam").removesuffix("sub"))
         return statuses[n - 1] if n <= len(statuses) else "absent"
+
     return _probe
 
 
 INVENTORY = {
     "updated": "2026-07-09 18:23:30",
     "devices": [
-        {"kind": "nvr-channel", "path": "cam10", "sub": "cam10sub", "channel": 10,
-         "mac": "08:3b:c1:5e:8c:29", "model": None, "online": True},
-        {"kind": "nvr-channel", "path": "cam2", "sub": "cam2sub", "channel": 2,
-         "mac": "08:3b:c1:5e:8c:26", "model": "DS-2CD1643G2-LIZU", "online": True},
-        {"kind": "nvr-channel", "path": "cam1", "sub": "cam1sub", "channel": 1,
-         "mac": "08:3b:c1:5e:8c:27", "model": None, "online": False},
-        {"kind": "direct", "path": "cam_8c28", "mac": "08:3b:c1:5e:8c:28",
-         "model": "DS-2CD2043", "online": True},
+        {
+            "kind": "nvr-channel",
+            "path": "cam10",
+            "sub": "cam10sub",
+            "channel": 10,
+            "mac": "08:3b:c1:5e:8c:29",
+            "model": None,
+            "online": True,
+        },
+        {
+            "kind": "nvr-channel",
+            "path": "cam2",
+            "sub": "cam2sub",
+            "channel": 2,
+            "mac": "08:3b:c1:5e:8c:26",
+            "model": "DS-2CD1643G2-LIZU",
+            "online": True,
+        },
+        {
+            "kind": "nvr-channel",
+            "path": "cam1",
+            "sub": "cam1sub",
+            "channel": 1,
+            "mac": "08:3b:c1:5e:8c:27",
+            "model": None,
+            "online": False,
+        },
+        {
+            "kind": "direct",
+            "path": "cam_8c28",
+            "mac": "08:3b:c1:5e:8c:28",
+            "model": "DS-2CD2043",
+            "online": True,
+        },
         {"kind": "locked", "ip": "192.168.0.2", "note": "RTSP есть, ISAPI 401"},
     ],
     "line_configs": {
@@ -86,14 +118,19 @@ INVENTORY = {
 
 def test_discover_prefers_inventory(monkeypatch):
     monkeypatch.setattr(ai, "AI_KEY", "k")
-    with patch.object(ai, "inventory", return_value=INVENTORY), \
-         patch.object(services, "_probe_path") as probe:
+    with (
+        patch.object(ai, "inventory", return_value=INVENTORY),
+        patch.object(services, "_probe_path") as probe,
+    ):
         cams = services.discover_cameras()
     probe.assert_not_called()
     # натуральный порядок: cam10 после cam2, не между cam1 и cam2
     assert [c["id"] for c in cams] == [
-        "nvr:08:3b:c1:5e:8c:27", "nvr:08:3b:c1:5e:8c:26", "nvr:08:3b:c1:5e:8c:29",
-        "direct:08:3b:c1:5e:8c:28", "locked:192.168.0.2",
+        "nvr:08:3b:c1:5e:8c:27",
+        "nvr:08:3b:c1:5e:8c:26",
+        "nvr:08:3b:c1:5e:8c:29",
+        "direct:08:3b:c1:5e:8c:28",
+        "locked:192.168.0.2",
     ]
     cam1, cam2, _cam10, direct, locked = cams
     assert (cam1["zone"], cam1["online"]) == ("Въезд / весы", False)
@@ -108,34 +145,44 @@ def test_discover_prefers_inventory(monkeypatch):
 def test_discover_syncs_dynamic_streams_to_go2rtc(monkeypatch):
     monkeypatch.setattr(ai, "AI_KEY", "k")
     monkeypatch.setattr(services, "GO2RTC_API", "http://go2rtc:1984")
-    with patch.object(ai, "inventory", return_value=INVENTORY), \
-         patch.object(services, "_go2rtc_put") as put:
+    with (
+        patch.object(ai, "inventory", return_value=INVENTORY),
+        patch.object(services, "_go2rtc_put") as put,
+    ):
         services.discover_cameras()
     # cam1/cam2 — статик-слоты go2rtc.yaml; заявляется только direct-камера:
     # нативный сабпоток + ffmpeg-запаска (транскод лишь при чужом кодеке)
     assert [c.args for c in put.call_args_list] == [
-        ("cam_8c28",
-         f"rtsp://{services.CAMERA_USER}:{services.CAMERA_PASS}"
-         f"@{services.CAMERA_HOST}:{services.CAMERA_PORT}/cam_8c28",
-         "ffmpeg:cam_8c28#video=h264"),
-        ("cam_8c28ai",
-         f"rtsp://{services.CAMERA_USER}:{services.CAMERA_PASS}"
-         f"@{services.CAMERA_HOST}:{services.CAMERA_PORT}/cam_8c28ai"),
+        (
+            "cam_8c28",
+            f"rtsp://{services.CAMERA_USER}:{services.CAMERA_PASS}"
+            f"@{services.CAMERA_HOST}:{services.CAMERA_PORT}/cam_8c28",
+            "ffmpeg:cam_8c28#video=h264",
+        ),
+        (
+            "cam_8c28ai",
+            f"rtsp://{services.CAMERA_USER}:{services.CAMERA_PASS}"
+            f"@{services.CAMERA_HOST}:{services.CAMERA_PORT}/cam_8c28ai",
+        ),
     ]
 
 
 def test_discover_falls_back_to_probe_when_ai_down(monkeypatch):
     monkeypatch.setattr(ai, "AI_KEY", "k")
     monkeypatch.setattr(services, "CAMERA_PASS", "x")
-    with patch.object(ai, "inventory", side_effect=ai.AiUnavailable("boom")), \
-         patch.object(services, "_probe_path", side_effect=fake_probe(["online"])):
+    with (
+        patch.object(ai, "inventory", side_effect=ai.AiUnavailable("boom")),
+        patch.object(services, "_probe_path", side_effect=fake_probe(["online"])),
+    ):
         cams = services.discover_cameras()
     assert [c["id"] for c in cams] == ["nvr:cam1"]
 
 
 def test_discover_probe_returns_configured_cameras(monkeypatch):
     monkeypatch.setattr(services, "CAMERA_PASS", "x")
-    with patch.object(services, "_probe_path", side_effect=fake_probe(["online", "offline", "online"])):
+    with patch.object(
+        services, "_probe_path", side_effect=fake_probe(["online", "offline", "online"])
+    ):
         cams = services.discover_cameras()
     assert [c["id"] for c in cams] == ["nvr:cam1", "nvr:cam2", "nvr:cam3"]
     assert cams[0]["src"] == "cam1"
@@ -167,13 +214,17 @@ def test_discover_without_password_is_empty(monkeypatch):
 
 def test_discover_preserves_last_good_topology_during_total_outage(monkeypatch):
     monkeypatch.setattr(services, "CAMERA_PASS", "x")
-    with patch.object(services, "_probe_path", side_effect=fake_probe(["online", "online"])):
+    with patch.object(
+        services, "_probe_path", side_effect=fake_probe(["online", "online"])
+    ):
         first = services.discover_cameras()
     cache.delete(services.CACHE_KEY)
     with patch.object(services, "_probe_path", return_value="absent"):
         during_outage = services.discover_cameras()
 
-    assert [camera["id"] for camera in during_outage] == [camera["id"] for camera in first]
+    assert [camera["id"] for camera in during_outage] == [
+        camera["id"] for camera in first
+    ]
     assert all(camera["online"] is False for camera in during_outage)
     assert all("переподключ" in camera["note"].lower() for camera in during_outage)
 
@@ -191,9 +242,17 @@ def test_empty_discovery_uses_short_cache_ttl(monkeypatch):
 
 def test_camera_list_for_staff(auth_client, operator):
     line_config = INVENTORY["line_configs"]["cam2"]
-    payload = [{"id": "nvr:cam1", "name": "Камера 1", "zone": "Въезд / весы",
-                "src": "cam1", "kind": "nvr-channel", "online": True,
-                "line_config": line_config}]
+    payload = [
+        {
+            "id": "nvr:cam1",
+            "name": "Камера 1",
+            "zone": "Въезд / весы",
+            "src": "cam1",
+            "kind": "nvr-channel",
+            "online": True,
+            "line_config": line_config,
+        }
+    ]
     with patch.object(services, "discover_cameras", return_value=payload):
         resp = auth_client(operator).get("/api/cameras/")
     assert resp.status_code == 200
@@ -202,8 +261,16 @@ def test_camera_list_for_staff(auth_client, operator):
 
 
 def test_admin_camera_name_is_returned_everywhere(auth_client, boss, operator):
-    payload = [{"id": "nvr:cam1", "name": "Камера 1", "zone": "Въезд / весы",
-                "src": "cam1", "kind": "nvr-channel", "online": True}]
+    payload = [
+        {
+            "id": "nvr:cam1",
+            "name": "Камера 1",
+            "zone": "Въезд / весы",
+            "src": "cam1",
+            "kind": "nvr-channel",
+            "online": True,
+        }
+    ]
     with patch.object(services, "discover_cameras", return_value=payload):
         response = auth_client(boss).patch(
             "/api/cameras/",
@@ -325,7 +392,12 @@ def test_operator_cannot_change_monoblock_camera_allowlist(auth_client, operator
 
 
 def test_always_on_settings_are_superuser_only(
-    auth_client, superuser, boss, operator, client_user, monkeypatch,
+    auth_client,
+    superuser,
+    boss,
+    operator,
+    client_user,
+    monkeypatch,
 ):
     for user in (boss, operator, client_user):
         response = auth_client(user).get("/api/cameras/always-on-settings/")
@@ -336,14 +408,29 @@ def test_always_on_settings_are_superuser_only(
         "cameras": ["cam2"],
         "source": "sub",
         "capacity": 2,
-        "processors": [{
-            "cam": "cam2", "running": True, "mode": "always_on",
-            "recording": False, "total": 14,
-        }],
+        "processors": [
+            {
+                "cam": "cam2",
+                "running": True,
+                "mode": "always_on",
+                "recording": False,
+                "total": 14,
+            }
+        ],
     }
-    with patch.object(ai, "always_on_status", return_value={
-        "cameras": [], "source": "sub", "capacity": 2, "processors": [],
-    }), patch.object(ai, "configure_always_on", return_value=live) as configure:
+    with (
+        patch.object(
+            ai,
+            "always_on_status",
+            return_value={
+                "cameras": [],
+                "source": "sub",
+                "capacity": 2,
+                "processors": [],
+            },
+        ),
+        patch.object(ai, "configure_always_on", return_value=live) as configure,
+    ):
         response = auth_client(superuser).put(
             "/api/cameras/always-on-settings/",
             {"camera_sources": ["2", "cam2"]},
@@ -363,13 +450,22 @@ def test_always_on_settings_are_superuser_only(
 
 
 def test_always_on_choice_survives_camera_pc_outage(
-    auth_client, superuser, monkeypatch,
+    auth_client,
+    superuser,
+    monkeypatch,
 ):
     monkeypatch.setattr(ai, "AI_KEY", "k")
-    with patch.object(
-        ai, "always_on_status", side_effect=ai.AiUnavailable("offline"),
-    ), patch.object(
-        ai, "configure_always_on", side_effect=ai.AiUnavailable("offline"),
+    with (
+        patch.object(
+            ai,
+            "always_on_status",
+            side_effect=ai.AiUnavailable("offline"),
+        ),
+        patch.object(
+            ai,
+            "configure_always_on",
+            side_effect=ai.AiUnavailable("offline"),
+        ),
     ):
         response = auth_client(superuser).put(
             "/api/cameras/always-on-settings/",
@@ -383,11 +479,33 @@ def test_always_on_choice_survives_camera_pc_outage(
 
 
 def test_wagon_number_camera_assignment_is_superuser_only_and_uses_main_stream(
-    auth_client, superuser, boss, operator, client_user, monkeypatch,
+    auth_client,
+    superuser,
+    boss,
+    operator,
+    client_user,
+    user_with_perms,
+    monkeypatch,
 ):
     for user in (boss, operator, client_user):
         response = auth_client(user).get("/api/cameras/wagon-number-settings/")
         assert response.status_code == 403
+
+    grain_viewer = user_with_perms("grain-camera-viewer", codes=["grain.view"])
+    assert (
+        auth_client(grain_viewer).get("/api/cameras/wagon-number-settings/").status_code
+        == 200
+    )
+    assert (
+        auth_client(grain_viewer)
+        .put(
+            "/api/cameras/wagon-number-settings/",
+            {"camera_source": "cam1"},
+            format="json",
+        )
+        .status_code
+        == 403
+    )
 
     monkeypatch.setattr(ai, "AI_KEY", "k")
     live = {
@@ -415,11 +533,15 @@ def test_wagon_number_camera_assignment_is_superuser_only_and_uses_main_stream(
 
 
 def test_wagon_number_camera_assignment_survives_camera_pc_outage(
-    auth_client, superuser, monkeypatch,
+    auth_client,
+    superuser,
+    monkeypatch,
 ):
     monkeypatch.setattr(ai, "AI_KEY", "k")
     with patch.object(
-        ai, "configure_wagon_number", side_effect=ai.AiUnavailable("offline"),
+        ai,
+        "configure_wagon_number",
+        side_effect=ai.AiUnavailable("offline"),
     ):
         response = auth_client(superuser).put(
             "/api/cameras/wagon-number-settings/",
@@ -433,20 +555,20 @@ def test_wagon_number_camera_assignment_survives_camera_pc_outage(
     assert MonoblockCameraSettings.wagon_number_source() == "cam3"
 
     with patch.object(
-        ai, "wagon_number_status_cached", side_effect=ai.AiUnavailable("offline"),
+        ai,
+        "wagon_number_status_cached",
+        side_effect=ai.AiUnavailable("offline"),
     ):
-        follow_up = auth_client(superuser).get(
-            "/api/cameras/wagon-number-settings/"
-        )
+        follow_up = auth_client(superuser).get("/api/cameras/wagon-number-settings/")
     assert follow_up.data["camera_source"] == "cam3"
 
 
 def test_superuser_can_clear_wagon_number_camera_assignment(
-    auth_client, superuser, monkeypatch,
+    auth_client,
+    superuser,
+    monkeypatch,
 ):
-    MonoblockCameraSettings.objects.create(
-        wagon_number_camera_source="cam2"
-    )
+    MonoblockCameraSettings.objects.create(wagon_number_camera_source="cam2")
     monkeypatch.setattr(ai, "AI_KEY", "k")
     live = {
         "camera": None,
@@ -469,14 +591,26 @@ def test_superuser_can_clear_wagon_number_camera_assignment(
 
 
 def test_superuser_cannot_exceed_camera_pc_processor_capacity(
-    auth_client, superuser, monkeypatch,
+    auth_client,
+    superuser,
+    monkeypatch,
 ):
     monkeypatch.setattr(ai, "AI_KEY", "k")
     # Проверка лимита читает только готовый снимок, чтобы сохранение не платило
     # второй сетевой таймаут, когда ПК цеха недоступен.
-    with patch.object(ai, "cached_always_on_status", return_value={
-        "cameras": [], "source": "sub", "capacity": 1, "processors": [],
-    }), patch.object(ai, "configure_always_on") as configure:
+    with (
+        patch.object(
+            ai,
+            "cached_always_on_status",
+            return_value={
+                "cameras": [],
+                "source": "sub",
+                "capacity": 1,
+                "processors": [],
+            },
+        ),
+        patch.object(ai, "configure_always_on") as configure,
+    ):
         response = auth_client(superuser).put(
             "/api/cameras/always-on-settings/",
             {"camera_sources": ["cam2", "cam3"]},
@@ -551,9 +685,14 @@ def test_auth_rejects_malformed_structured_cookie(api_client, operator):
         assert _authorize_stream(api_client, token).status_code == 403
 
 
-@pytest.mark.parametrize("account_change", ["inactive", "deleted", "password", "client"])
+@pytest.mark.parametrize(
+    "account_change", ["inactive", "deleted", "password", "client"]
+)
 def test_auth_reloads_and_revalidates_current_user(
-    api_client, auth_client, operator, account_change,
+    api_client,
+    auth_client,
+    operator,
+    account_change,
 ):
     token = _stream_token(auth_client, operator)
     if account_change == "deleted":
@@ -584,7 +723,10 @@ def stream_device(django_user_model):
 
 @pytest.mark.parametrize("source", ["cam2", "cam2ai"])
 def test_monoblock_stream_cookie_allows_own_base_and_ai_stream(
-    api_client, auth_client, stream_device, source,
+    api_client,
+    auth_client,
+    stream_device,
+    source,
 ):
     token = _stream_token(auth_client, stream_device.user)
     response = _authorize_stream(
@@ -596,7 +738,9 @@ def test_monoblock_stream_cookie_allows_own_base_and_ai_stream(
 
 
 def test_monoblock_stream_cookie_rejects_cross_camera(
-    api_client, auth_client, stream_device,
+    api_client,
+    auth_client,
+    stream_device,
 ):
     token = _stream_token(auth_client, stream_device.user)
     response = _authorize_stream(
@@ -608,7 +752,9 @@ def test_monoblock_stream_cookie_rejects_cross_camera(
 
 
 def test_inactive_monoblock_device_stream_cookie_is_rejected(
-    api_client, auth_client, stream_device,
+    api_client,
+    auth_client,
+    stream_device,
 ):
     token = _stream_token(auth_client, stream_device.user)
     stream_device.is_active = False
@@ -616,22 +762,28 @@ def test_inactive_monoblock_device_stream_cookie_is_rejected(
     assert _authorize_stream(api_client, token).status_code == 403
 
 
-@pytest.mark.parametrize("original_uri", [
-    None,
-    "",
-    "/go2rtc/api/ws",
-    "/go2rtc/api/ws?src=",
-    "/go2rtc/api/ws?src=cam2&src=cam2",
-    "/go2rtc/api/ws?src=cam2&extra=1",
-    "/go2rtc/api/ws?src=../cam2",
-    "/go2rtc/api/ws?src=cam2%00",
-    "/go2rtc/api/ws?src=2",
-    "/go2rtc/api/ws/?src=cam2",
-    "/go2rtc/api/ws?src=cam2#fragment",
-    "https://example.test/go2rtc/api/ws?src=cam2",
-])
+@pytest.mark.parametrize(
+    "original_uri",
+    [
+        None,
+        "",
+        "/go2rtc/api/ws",
+        "/go2rtc/api/ws?src=",
+        "/go2rtc/api/ws?src=cam2&src=cam2",
+        "/go2rtc/api/ws?src=cam2&extra=1",
+        "/go2rtc/api/ws?src=../cam2",
+        "/go2rtc/api/ws?src=cam2%00",
+        "/go2rtc/api/ws?src=2",
+        "/go2rtc/api/ws/?src=cam2",
+        "/go2rtc/api/ws?src=cam2#fragment",
+        "https://example.test/go2rtc/api/ws?src=cam2",
+    ],
+)
 def test_auth_rejects_malformed_original_uri(
-    api_client, auth_client, operator, original_uri,
+    api_client,
+    auth_client,
+    operator,
+    original_uri,
 ):
     token = _stream_token(auth_client, operator)
     assert _authorize_stream(api_client, token, original_uri).status_code == 403
@@ -660,8 +812,10 @@ def test_known_topology_answers_without_waiting_for_the_network(monkeypatch):
         def start(self):
             pass  # обнаружение НЕ должно выполняться внутри запроса
 
-    with patch.object(services.threading, "Thread", ImmediateThread), \
-         patch.object(services, "_probe_path") as probe:
+    with (
+        patch.object(services.threading, "Thread", ImmediateThread),
+        patch.object(services, "_probe_path") as probe,
+    ):
         cameras = services.discover_cameras()
 
     assert probe.call_count == 0, "запрос не должен ходить по сети"
@@ -689,7 +843,9 @@ def test_always_on_status_is_not_refetched_on_every_poll(monkeypatch):
 
 
 def test_always_on_choice_survives_an_unreachable_camera_pc(
-    auth_client, superuser, monkeypatch,
+    auth_client,
+    superuser,
+    monkeypatch,
 ):
     """A camera-PC timeout must not discard the administrator's selection.
 
@@ -701,8 +857,10 @@ def test_always_on_choice_survives_an_unreachable_camera_pc(
     cache.delete(ai.ALWAYS_ON_CACHE_KEY)
     timeout = ai.AiUnavailable("<urlopen error timed out>")
 
-    with patch.object(ai, "configure_always_on", side_effect=timeout), \
-         patch.object(ai, "always_on_status") as blocking_status:
+    with (
+        patch.object(ai, "configure_always_on", side_effect=timeout),
+        patch.object(ai, "always_on_status") as blocking_status,
+    ):
         response = auth_client(superuser).put(
             "/api/cameras/always-on-settings/",
             {"camera_sources": ["cam3"]},

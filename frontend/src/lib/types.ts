@@ -12,6 +12,27 @@ export interface Me {
   sales_department: Pick<Department, "id" | "code" | "name" | "color"> | null;
 }
 
+export type FactoryZoneKind = "gate" | "scale" | "warehouse" | "silos" | "production" | "lab" | "rail" | "utility";
+
+export interface FactoryZone {
+  id: string;
+  name: string;
+  kind: FactoryZoneKind;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  note: string;
+}
+
+export interface FactoryMap {
+  title: string;
+  zones: FactoryZone[];
+  updated_at: string | null;
+  updated_by_name: string | null;
+}
+
 export interface Product {
   id: number;
   name: string;
@@ -706,22 +727,31 @@ export interface GrainWagon {
   id: number;
   supply: number | null;
   number: string;
+  number_source: "camera" | "manual";
+  number_camera_source?: string;
+  workflow: "simple" | "legacy";
   status: string;
   status_label: string;
   unplanned: boolean;
   supplier: string;
   culture: string;
   grain_class: string;
+  grain_type: number | null;
+  grain_type_name: string;
   document_weight_kg: number | null;
   expected_weight_kg: number | null;
   arrived_at: string | null;
   gross_weight_kg: number | null;
   tare_weight_kg: number | null;
   net_weight_kg: number | null;
+  weight_difference_kg: number | null;
+  weight_difference_percent: number | null;
+  weight_matches: boolean | null;
   assigned_silo: number | null;
   assigned_silo_name: string | null;
   unloading_point?: string;
   unloading_started_at?: string | null;
+  silo_arrived_at: string | null;
   unloading_finished_at?: string | null;
   unloading_paused?: boolean;
   exited_at: string | null;
@@ -735,6 +765,12 @@ export interface GrainWagon {
 export interface GrainSupply {
   id: number;
   supplier: string;
+  grain_type: number | null;
+  grain_type_name: string;
+  grain_type_color: string | null;
+  assigned_silo: number | null;
+  assigned_silo_name: string | null;
+  simple_flow: boolean;
   contract: string;
   culture: string;
   grain_class: string;
@@ -783,6 +819,8 @@ export interface GrainSiloType {
   silo_count: number;
   created_at: string;
 }
+
+export type GrainType = GrainSiloType;
 
 export interface GrainMovement {
   id: number;

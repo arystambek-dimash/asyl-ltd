@@ -287,7 +287,7 @@ function CameraPanel({
   );
 }
 
-export function WagonNumberCameraWorkspace() {
+export function WagonNumberCameraWorkspace({ canManage = false }: { canManage?: boolean }) {
   const { data: cameraRows, error: camerasError, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
   const {
     data: settings,
@@ -317,19 +317,21 @@ export function WagonNumberCameraWorkspace() {
             Номер вагона фиксируется на входе и при выходе с территории.
           </p>
         </div>
-        <Button
-          variant="outline"
-          className="h-10 rounded-xl border-amber-200 bg-amber-50/80 text-amber-800 hover:bg-amber-100"
-          onClick={() => setSettingsOpen(true)}
-        >
-          <Settings2 className="size-4" /> Назначить камеру
-          <span className="rounded-full bg-white px-2 py-0.5 text-[11px] text-amber-700 shadow-sm">
-            {settings?.camera_source ? "1" : "0"}
-          </span>
-        </Button>
+        {canManage && (
+          <Button
+            variant="outline"
+            className="h-10 rounded-xl border-amber-200 bg-amber-50/80 text-amber-800 hover:bg-amber-100"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <Settings2 className="size-4" /> Назначить камеру
+            <span className="rounded-full bg-white px-2 py-0.5 text-[11px] text-amber-700 shadow-sm">
+              {settings?.camera_source ? "1" : "0"}
+            </span>
+          </Button>
+        )}
       </div>
       <CameraPanel camera={selectedCamera} settings={settings} />
-      {settingsOpen && (
+      {canManage && settingsOpen && (
         <AssignmentModal
           cameras={cameras}
           settings={settings}

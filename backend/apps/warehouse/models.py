@@ -45,6 +45,103 @@ class StockMovement(models.Model):
         ordering = ["-created_at", "-id"]
         indexes = [
             # История движений только растёт и читается «сверху».
-            models.Index(fields=["-created_at", "-id"],
-                         name="stockmovement_recent_idx"),
+            models.Index(
+                fields=["-created_at", "-id"], name="stockmovement_recent_idx"
+            ),
         ]
+
+
+def default_factory_zones():
+    """Стартовая схема, которую суперадмин может полностью заменить."""
+    return [
+        {
+            "id": "gate",
+            "name": "Проходная",
+            "kind": "gate",
+            "x": 64,
+            "y": 286,
+            "width": 150,
+            "height": 104,
+            "color": "#C58A35",
+            "note": "Въезд и выезд вагонов",
+        },
+        {
+            "id": "rail-scale",
+            "name": "Ж/д весы",
+            "kind": "scale",
+            "x": 280,
+            "y": 286,
+            "width": 190,
+            "height": 104,
+            "color": "#3D7187",
+            "note": "Взвешивание вагонов",
+        },
+        {
+            "id": "silo-park",
+            "name": "Силосный парк",
+            "kind": "silos",
+            "x": 540,
+            "y": 88,
+            "width": 300,
+            "height": 220,
+            "color": "#A66A20",
+            "note": "Хранение зерна",
+        },
+        {
+            "id": "mill",
+            "name": "Мельница",
+            "kind": "production",
+            "x": 520,
+            "y": 390,
+            "width": 300,
+            "height": 220,
+            "color": "#315D74",
+            "note": "Производственный корпус",
+        },
+        {
+            "id": "warehouse",
+            "name": "Склад готовой продукции",
+            "kind": "warehouse",
+            "x": 890,
+            "y": 390,
+            "width": 250,
+            "height": 220,
+            "color": "#4E6B55",
+            "note": "Хранение готовой продукции",
+        },
+        {
+            "id": "laboratory",
+            "name": "Лаборатория",
+            "kind": "lab",
+            "x": 890,
+            "y": 88,
+            "width": 250,
+            "height": 150,
+            "color": "#6E5B84",
+            "note": "Контроль качества зерна",
+        },
+    ]
+
+
+class FactoryMap(models.Model):
+    """Единая сохраняемая схема физических участков завода."""
+
+    singleton = models.BooleanField(default=True, unique=True, editable=False)
+    title = models.CharField(max_length=100, default="Схема завода")
+    zones = models.JSONField(default=default_factory_zones, blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="factory_map_updates",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Схема завода"
+
+    @classmethod
+    def get(cls):
+        row, _ = cls.objects.get_or_create(singleton=True)
+        return row

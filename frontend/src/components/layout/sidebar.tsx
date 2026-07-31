@@ -33,6 +33,7 @@ interface NavItem {
   label: string;
   icon: React.ElementType;
   perm?: Perm;
+  activePrefix?: string;
 }
 interface NavSection {
   title: string;
@@ -45,8 +46,7 @@ function hasNavPerm(me: Me, perm?: Perm): boolean {
   return (Array.isArray(perm) ? perm : [perm]).some((c) => can(me, c));
 }
 
-function staffSections(me: Me): NavSection[] {
-  const factoryHref = can(me, "warehouse.view") ? "/warehouse" : "/warehouse/silos";
+function staffSections(): NavSection[] {
   return [
     {
       title: "Обзор",
@@ -70,10 +70,11 @@ function staffSections(me: Me): NavSection[] {
         { href: "/shipping", label: "Пост погрузки", icon: Truck, perm: ["shipping.view", "train.view"] },
         { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "shipping.load" },
         {
-          href: factoryHref,
+          href: "/warehouse/map",
           label: "Завод",
           icon: Factory,
           perm: ["warehouse.view", "grain.view"],
+          activePrefix: "/warehouse",
         },
         // Проходная вагонов: заявки, приход, взвешивание и выход.
         { href: "/grain", label: "Приход и проход", icon: Wheat, perm: "grain.view" },
@@ -117,9 +118,9 @@ const PORTAL_SECTIONS: NavSection[] = [
 // /portal/orders/new горели бы и «Новый заказ», и «Мои заказы» (/portal/orders).
 function findActiveHref(sections: NavSection[], pathname: string): string | undefined {
   return sections
-    .flatMap((section) => section.items.map((item) => item.href))
-    .filter((href) => pathname === href || pathname.startsWith(href + "/"))
-    .sort((a, b) => b.length - a.length)[0];
+    .flatMap((section) => section.items.map((item) => ({ href: item.href, match: item.activePrefix ?? item.href })))
+    .filter(({ match }) => pathname === match || pathname.startsWith(match + "/"))
+    .sort((a, b) => b.match.length - a.match.length)[0]?.href;
 }
 
 function NavLeaf({
@@ -157,7 +158,7 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
     ? PORTAL_SECTIONS
     : me.is_monoblock
       ? [{ title: "Работа", items: [{ href: "/monoblock", label: "Моноблок", icon: ScanLine }] }]
-      : staffSections(me);
+      : staffSections();
   const visible = sections
     .map((s) => ({
       ...s,

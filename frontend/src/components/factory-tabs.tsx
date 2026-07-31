@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Boxes, Factory, Warehouse } from "lucide-react";
+import { Boxes, Map, Warehouse } from "lucide-react";
 import { can } from "@/lib/can";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
@@ -10,7 +10,18 @@ import { useAuth } from "@/store/auth";
 export function FactoryTabs() {
   const { me } = useAuth();
   const pathname = usePathname();
+  const canSeeFactory = can(me, "warehouse.view") || can(me, "grain.view");
   const tabs = [
+    ...(canSeeFactory
+      ? [
+          {
+            href: "/warehouse/map",
+            label: "Схема",
+            icon: Map,
+            active: pathname.startsWith("/warehouse/map"),
+          },
+        ]
+      : []),
     ...(can(me, "warehouse.view")
       ? [{ href: "/warehouse", label: "Склад", icon: Boxes, active: pathname === "/warehouse" }]
       : []),
@@ -27,10 +38,7 @@ export function FactoryTabs() {
   ];
 
   return (
-    <div className="flex h-12 items-center gap-1 sm:h-full" aria-label="Участки завода">
-      <span className="mr-1 hidden items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.14em] text-[var(--muted-foreground)] xl:flex">
-        <Factory className="size-3.5" /> Участки
-      </span>
+    <div className="flex h-12 items-center gap-1 sm:h-full" aria-label="Разделы завода">
       {tabs.map(({ href, label, icon: Icon, active }) => (
         <Link
           key={href}

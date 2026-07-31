@@ -1,7 +1,7 @@
 "use client";
 import { use, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Camera, Check, Scale, TrainFront, Warehouse } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Badge } from "@/components/ui/badge";
@@ -99,7 +99,77 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
   const weighBody = () => ({ weight_kg: Number(weight), source: "manual", manual_reason: reason });
 
   let body: React.ReactNode = null;
-  if (wagon.status === "waiting_for_approval" && can(me, "grain.dispatch")) {
+  if (wagon.workflow === "simple" && wagon.status === "arrived" && can(me, "grain.weigh")) {
+    body = (
+      <>
+        <div className="rounded-xl border border-sky-100 bg-sky-50 p-3 text-sm text-sky-950">
+          Зафиксируйте полный входной вес. После этого система покажет маршрут к силосу «{wagon.assigned_silo_name}».
+        </div>
+        <WeightField
+          label="Входной общий вес, кг"
+          value={weight}
+          onChange={setWeight}
+          reason={reason}
+          onReason={setReason}
+        />
+        <Button disabled={busy || !weight || !reason} onClick={() => void act("entry-weight", weighBody())}>
+          Сохранить и направить к силосу
+        </Button>
+      </>
+    );
+  } else if (wagon.workflow === "simple" && wagon.status === "at_silo" && can(me, "grain.weigh")) {
+    body = (
+      <>
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+          Поезд находится у силоса «{wagon.assigned_silo_name}». Он может оставаться здесь несколько дней — при выезде
+          внесите контрольный вес.
+        </div>
+        <WeightField
+          label="Выходной вес после разгрузки, кг"
+          value={weight}
+          onChange={setWeight}
+          reason={reason}
+          onReason={setReason}
+        />
+        <Button disabled={busy || !weight || !reason} onClick={() => void act("exit-weight", weighBody())}>
+          Рассчитать нетто и завершить
+        </Button>
+      </>
+    );
+  } else if (wagon.workflow === "simple" && wagon.status === "weight_discrepancy" && can(me, "grain.inventory")) {
+    body = (
+      <>
+        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-950">
+          Фактическое нетто {formatKg(wagon.net_weight_kg)} отличается от ожидаемого{" "}
+          {formatKg(wagon.expected_weight_kg)}
+          {wagon.weight_difference_percent != null ? ` на ${wagon.weight_difference_percent}%` : ""}.
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label>Причина подтверждения</Label>
+          <Input
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="номер акта или пояснение"
+          />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() => void act("resolve-simple-discrepancy", { action: "reweigh" })}
+          >
+            Повторно взвесить
+          </Button>
+          <Button
+            disabled={busy || !reason}
+            onClick={() => void act("resolve-simple-discrepancy", { action: "confirm", reason })}
+          >
+            Подтвердить фактическое нетто
+          </Button>
+        </div>
+      </>
+    );
+  } else if (wagon.status === "waiting_for_approval" && can(me, "grain.dispatch")) {
     body = (
       <>
         <div className="flex flex-col gap-1.5">
@@ -286,6 +356,55 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
   );
 }
 
+function SimpleFlowProgress({ wagon }: { wagon: GrainWagon }) {
+  if (wagon.workflow !== "simple") return null;
+  const statusIndex =
+    wagon.status === "expected"
+      ? 0
+      : wagon.status === "arrived"
+        ? 1
+        : wagon.status === "at_silo" || wagon.status === "weight_discrepancy"
+          ? 2
+          : 3;
+  const steps = [
+    { label: "Номер камеры", icon: Camera },
+    { label: "Входной вес", icon: Scale },
+    { label: "Назначенный силос", icon: Warehouse },
+    { label: "Выходной вес и нетто", icon: TrainFront },
+  ];
+  return (
+    <Card className="overflow-hidden border-slate-200">
+      <div className="grid grid-cols-2 gap-px bg-slate-200 lg:grid-cols-4">
+        {steps.map((step, index) => {
+          const Icon = step.icon;
+          const done = index < statusIndex || wagon.status === "completed";
+          const active = index === statusIndex && wagon.status !== "completed";
+          return (
+            <div key={step.label} className={cn("flex items-center gap-3 bg-white p-4", active && "bg-amber-50")}>
+              <span
+                className={cn(
+                  "flex size-9 shrink-0 items-center justify-center rounded-xl",
+                  done
+                    ? "bg-emerald-100 text-emerald-700"
+                    : active
+                      ? "bg-amber-500 text-white"
+                      : "bg-slate-100 text-slate-400",
+                )}
+              >
+                {done ? <Check className="size-4" /> : <Icon className="size-4" />}
+              </span>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Этап {index + 1}</p>
+                <p className="mt-0.5 text-xs font-bold text-slate-800">{step.label}</p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
 function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { data: wagon, loading, error, reload } = useApi<GrainWagon>(`/grain/wagons/${id}/`);
@@ -323,13 +442,14 @@ function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
 
       <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="flex min-w-0 flex-col gap-4">
+          <SimpleFlowProgress wagon={wagon} />
           {/* Ключевые числа одной полосой. */}
           <Card className="flex flex-wrap items-center gap-x-10 gap-y-3 p-4">
             {[
               { label: "Брутто", value: formatKg(wagon.gross_weight_kg) },
               { label: "Тара", value: formatKg(wagon.tare_weight_kg) },
               { label: "Нетто", value: formatKg(wagon.net_weight_kg), strong: true },
-              { label: "По документам", value: formatKg(wagon.document_weight_kg ?? wagon.expected_weight_kg) },
+              { label: "Ожидаемый вес", value: formatKg(wagon.document_weight_kg ?? wagon.expected_weight_kg) },
             ].map((item) => (
               <div key={item.label} className="min-w-0">
                 <div className="text-xs text-[var(--muted-foreground)]">{item.label}</div>
@@ -353,9 +473,11 @@ function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
             </CardHeader>
             <CardContent className="p-4 pt-0">
               <InfoRow label="Поставщик">{wagon.supplier || "—"}</InfoRow>
-              <InfoRow label="Культура">
-                {wagon.culture || "—"}
-                {wagon.grain_class ? ` · ${wagon.grain_class} класс` : ""}
+              <InfoRow label="Тип зерна">{wagon.grain_type_name || wagon.culture || "—"}</InfoRow>
+              <InfoRow label="Источник номера">
+                {wagon.number_source === "camera"
+                  ? `Камера ${wagon.number_camera_source || "проходной"}`
+                  : "Ручной ввод"}
               </InfoRow>
               <InfoRow label="Прибыл">{wagon.arrived_at ? formatDateTime(wagon.arrived_at) : "—"}</InfoRow>
               <InfoRow label="Силос">{wagon.assigned_silo_name ?? "не назначен"}</InfoRow>

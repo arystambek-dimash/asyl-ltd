@@ -6,6 +6,7 @@
 - резерв места — отдельные записи ``SiloReservation`` (сумма активных);
 - движения после проведения неизменяемы: правка — обратной операцией.
 """
+
 from django.conf import settings
 from django.db import models
 from django.db.models import Sum
@@ -17,9 +18,11 @@ class GrainSettings(models.Model):
     """Единственная строка настроек модуля (порог расхождения и датчиков)."""
 
     allowed_discrepancy_percent = models.DecimalField(
-        max_digits=5, decimal_places=2, default=1)
+        max_digits=5, decimal_places=2, default=1
+    )
     sensor_warning_percent = models.DecimalField(
-        max_digits=5, decimal_places=2, default=5)
+        max_digits=5, decimal_places=2, default=5
+    )
 
     class Meta:
         verbose_name = "Настройки зерна"
@@ -39,7 +42,10 @@ class SiloType(models.Model):
     color = models.CharField(max_length=7, default="#C58A35")
     description = models.CharField(max_length=300, blank=True, default="")
     default_silo = models.ForeignKey(
-        "Silo", null=True, blank=True, on_delete=models.SET_NULL,
+        "Silo",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
         related_name="default_for_types",
     )
     created_at = models.DateTimeField(auto_now_add=True)
@@ -57,7 +63,10 @@ class Silo(models.Model):
     name = models.CharField(max_length=100, unique=True)
     total_capacity_kg = models.PositiveBigIntegerField()
     silo_type = models.ForeignKey(
-        SiloType, null=True, blank=True, on_delete=models.PROTECT,
+        SiloType,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
         related_name="silos",
     )
     grain_culture = models.CharField(max_length=100, blank=True, default="")
@@ -83,8 +92,12 @@ class Silo(models.Model):
 
     @property
     def reserved_kg(self) -> int:
-        return (self.reservations.filter(active=True)
-                .aggregate(total=Sum("amount_kg"))["total"] or 0)
+        return (
+            self.reservations.filter(active=True).aggregate(total=Sum("amount_kg"))[
+                "total"
+            ]
+            or 0
+        )
 
     @property
     def free_capacity_kg(self) -> int:
@@ -95,6 +108,21 @@ class GrainSupply(models.Model):
     STATUSES = ["draft", "expected", "closed", "cancelled"]
 
     supplier = models.CharField(max_length=200)
+    grain_type = models.ForeignKey(
+        SiloType,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="supplies",
+    )
+    assigned_silo = models.ForeignKey(
+        Silo,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="planned_supplies",
+    )
+    simple_flow = models.BooleanField(default=False)
     contract = models.CharField(max_length=200, blank=True, default="")
     culture = models.CharField(max_length=100)
     grain_class = models.CharField(max_length=50, blank=True, default="")
@@ -105,8 +133,12 @@ class GrainSupply(models.Model):
     note = models.TextField(blank=True, default="")
     status = models.CharField(max_length=20, default="draft")
     created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="grain_supplies")
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="grain_supplies",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -120,9 +152,16 @@ class Wagon(models.Model):
     WEIGHT_SOURCES = ["auto", "manual"]
 
     supply = models.ForeignKey(
-        GrainSupply, null=True, blank=True, on_delete=models.PROTECT,
-        related_name="wagons")
+        GrainSupply,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="wagons",
+    )
     number = models.CharField(max_length=30, blank=True, default="")
+    workflow = models.CharField(max_length=20, default="legacy")
+    number_source = models.CharField(max_length=20, default="manual")
+    number_camera_source = models.CharField(max_length=32, blank=True, default="")
     status = models.CharField(max_length=30, default=EXPECTED)
     unplanned = models.BooleanField(default=False)
     # Вес по документам на конкретный вагон (для проверки расхождений).
@@ -131,18 +170,27 @@ class Wagon(models.Model):
 
     arrived_at = models.DateTimeField(null=True, blank=True)
     arrived_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="+")
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
 
     gross_weight_kg = models.PositiveBigIntegerField(null=True, blank=True)
     tare_weight_kg = models.PositiveBigIntegerField(null=True, blank=True)
     net_weight_kg = models.PositiveBigIntegerField(null=True, blank=True)
 
     assigned_silo = models.ForeignKey(
-        Silo, null=True, blank=True, on_delete=models.PROTECT,
-        related_name="assigned_wagons")
+        Silo,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="assigned_wagons",
+    )
     unloading_point = models.CharField(max_length=100, blank=True, default="")
     unloading_started_at = models.DateTimeField(null=True, blank=True)
+    silo_arrived_at = models.DateTimeField(null=True, blank=True)
     unloading_finished_at = models.DateTimeField(null=True, blank=True)
     unloading_paused = models.BooleanField(default=False)
 
@@ -175,8 +223,7 @@ class WeighingRecord(models.Model):
 
     KINDS = ["gross", "tare"]
 
-    wagon = models.ForeignKey(
-        Wagon, on_delete=models.CASCADE, related_name="weighings")
+    wagon = models.ForeignKey(Wagon, on_delete=models.CASCADE, related_name="weighings")
     kind = models.CharField(max_length=10)
     weight_kg = models.PositiveBigIntegerField()
     scale_number = models.CharField(max_length=50, blank=True, default="")
@@ -184,8 +231,12 @@ class WeighingRecord(models.Model):
     manual_reason = models.CharField(max_length=300, blank=True, default="")
     previous_weight_kg = models.PositiveBigIntegerField(null=True, blank=True)
     operator = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="+")
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -194,25 +245,34 @@ class WeighingRecord(models.Model):
 
 class LabCheck(models.Model):
     DECISIONS = [
-        "accepted", "accepted_with_restrictions", "rejected", "quarantine",
+        "accepted",
+        "accepted_with_restrictions",
+        "rejected",
+        "quarantine",
     ]
 
     wagon = models.ForeignKey(
-        Wagon, on_delete=models.CASCADE, related_name="lab_checks")
+        Wagon, on_delete=models.CASCADE, related_name="lab_checks"
+    )
     moisture = models.DecimalField(
-        max_digits=5, decimal_places=2, null=True, blank=True)
+        max_digits=5, decimal_places=2, null=True, blank=True
+    )
     impurity = models.DecimalField(
-        max_digits=5, decimal_places=2, null=True, blank=True)
-    nature = models.DecimalField(
-        max_digits=6, decimal_places=2, null=True, blank=True)
+        max_digits=5, decimal_places=2, null=True, blank=True
+    )
+    nature = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     grain_class = models.CharField(max_length=50, blank=True, default="")
     infestation = models.BooleanField(default=False)
     damage = models.CharField(max_length=300, blank=True, default="")
     note = models.TextField(blank=True, default="")
     decision = models.CharField(max_length=30)
     checked_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="+")
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -223,9 +283,11 @@ class SiloReservation(models.Model):
     """Резерв места под конкретный вагон, снимается при оприходовании."""
 
     wagon = models.OneToOneField(
-        Wagon, on_delete=models.CASCADE, related_name="reservation")
+        Wagon, on_delete=models.CASCADE, related_name="reservation"
+    )
     silo = models.ForeignKey(
-        Silo, on_delete=models.PROTECT, related_name="reservations")
+        Silo, on_delete=models.PROTECT, related_name="reservations"
+    )
     amount_kg = models.PositiveBigIntegerField()
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -235,19 +297,26 @@ class SiloAllocation(models.Model):
     """Часть разгрузки вагона в конкретный силос (поддержка нескольких)."""
 
     MEASUREMENT_SOURCES = [
-        "intermediate_weighing", "conveyor_scale", "flow_meter",
-        "weighing_hopper", "manual",
+        "intermediate_weighing",
+        "conveyor_scale",
+        "flow_meter",
+        "weighing_hopper",
+        "manual",
     ]
 
     wagon = models.ForeignKey(
-        Wagon, on_delete=models.CASCADE, related_name="allocations")
-    silo = models.ForeignKey(
-        Silo, on_delete=models.PROTECT, related_name="allocations")
+        Wagon, on_delete=models.CASCADE, related_name="allocations"
+    )
+    silo = models.ForeignKey(Silo, on_delete=models.PROTECT, related_name="allocations")
     amount_kg = models.PositiveBigIntegerField()
     measurement_source = models.CharField(max_length=30, default="manual")
     operator = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="+")
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -255,26 +324,37 @@ class GrainMovement(models.Model):
     """Неизменяемый леджер движений зерна по силосам (аналог StockMovement)."""
 
     TYPES = [
-        "income", "expense", "transfer_in", "transfer_out",
-        "adjustment", "inventory_correction",
+        "income",
+        "expense",
+        "transfer_in",
+        "transfer_out",
+        "adjustment",
+        "inventory_correction",
     ]
 
-    silo = models.ForeignKey(
-        Silo, on_delete=models.PROTECT, related_name="movements")
+    silo = models.ForeignKey(Silo, on_delete=models.PROTECT, related_name="movements")
     movement_type = models.CharField(max_length=25)
     delta_kg = models.BigIntegerField()
     balance_after_kg = models.BigIntegerField()
     wagon = models.ForeignKey(
-        Wagon, null=True, blank=True, on_delete=models.PROTECT,
-        related_name="movements")
+        Wagon, null=True, blank=True, on_delete=models.PROTECT, related_name="movements"
+    )
     supply = models.ForeignKey(
-        GrainSupply, null=True, blank=True, on_delete=models.PROTECT,
-        related_name="movements")
+        GrainSupply,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="movements",
+    )
     batch_number = models.CharField(max_length=60, blank=True, default="")
     note = models.CharField(max_length=300, blank=True, default="")
     created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="+")
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -286,9 +366,9 @@ class GrainMovement(models.Model):
     def save(self, *args, **kwargs):
         if self.pk is not None:
             raise RuntimeError(
-                "Движение зерна неизменяемо: оформите корректирующую операцию")
+                "Движение зерна неизменяемо: оформите корректирующую операцию"
+            )
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        raise RuntimeError(
-            "Движение зерна нельзя удалить: оформите обратную операцию")
+        raise RuntimeError("Движение зерна нельзя удалить: оформите обратную операцию")

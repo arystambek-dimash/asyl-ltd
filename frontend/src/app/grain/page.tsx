@@ -1,28 +1,42 @@
 "use client";
-import { Fragment, useState } from "react";
+
+import { useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { ChevronDown, Plus, ScanLine, TrainFront } from "lucide-react";
+import {
+  ArrowRight,
+  Camera,
+  Check,
+  CircleDot,
+  Clock3,
+  Plus,
+  Route,
+  Scale,
+  ScanLine,
+  TrainFront,
+  Warehouse,
+} from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { WagonNumberCameraWorkspace } from "@/components/grain/wagon-number-camera";
 import { RequirePerm } from "@/components/require-perm";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { ErrorAlert } from "@/components/ui/data-state";
+import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { LoadMore } from "@/components/ui/load-more";
 import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
-import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { Tabs } from "@/components/ui/tabs";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { GRAIN_STATUS_TONE, formatKg } from "@/lib/grain";
+import { formatKg, GRAIN_STATUS_TONE } from "@/lib/grain";
+import type { GrainSilo, GrainSupply, GrainType, GrainWagon } from "@/lib/types";
+import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
-import { cn, formatDateTime, formatIsoDate } from "@/lib/utils";
+import { cn, formatDateTime } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
-import type { GrainSupply, GrainWagon } from "@/lib/types";
+
+type GrainTab = "expected" | "on_site" | "finished" | "camera";
 
 function WagonStatusBadge({ wagon }: { wagon: Pick<GrainWagon, "status" | "status_label"> }) {
   return (
@@ -32,19 +46,10 @@ function WagonStatusBadge({ wagon }: { wagon: Pick<GrainWagon, "status" | "statu
   );
 }
 
-/* ── Новая поставка ─────────────────────────────────────────────────────── */
-function SupplyForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
-  const [supplier, setSupplier] = useState("");
-  const [contract, setContract] = useState("");
-  const [culture, setCulture] = useState("");
-  const [grainClass, setGrainClass] = useState("");
-  const [expectedDate, setExpectedDate] = useState("");
-  const [expectedTons, setExpectedTons] = useState("");
-  const [documentTons, setDocumentTons] = useState("");
-  const [wagonsExpected, setWagonsExpected] = useState("");
-  const [numbers, setNumbers] = useState("");
-  const [note, setNote] = useState("");
-  const [publish, setPublish] = useState(true);
+function GrainTypeCreator({ onCreated, onCancel }: { onCreated: (type: GrainType) => void; onCancel: () => void }) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [color, setColor] = useState("#B78132");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -52,412 +57,522 @@ function SupplyForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
     setBusy(true);
     setError("");
     try {
-      const toKg = (tons: string) => (tons ? Math.round(Number(tons) * 1000) : null);
-      const created = await api.post<GrainSupply>("/grain/supplies/", {
-        supplier,
-        contract,
-        culture,
-        grain_class: grainClass,
-        expected_date: expectedDate || null,
-        expected_total_kg: toKg(expectedTons),
-        document_weight_kg: toKg(documentTons),
-        wagons_expected: wagonsExpected ? Number(wagonsExpected) : null,
-        note,
-        wagon_numbers: numbers
-          .split(/[\n,;]+/)
-          .map((item) => item.trim())
-          .filter(Boolean),
-      });
-      if (publish) await api.post(`/grain/supplies/${created.data.id}/publish/`);
-      onDone();
-    } catch (e) {
-      setError(apiError(e));
+      const { data } = await api.post<GrainType>("/grain/types/", { name, description, color });
+      onCreated(data);
+    } catch (cause) {
+      setError(apiError(cause));
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div className="flex flex-col gap-1.5">
-          <Label>Поставщик *</Label>
-          <Input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="ТОО Колос" />
+    <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-amber-700">Новый справочник</p>
+          <p className="mt-1 text-sm font-bold">Создать тип зерна</p>
         </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Договор</Label>
-          <Input value={contract} onChange={(e) => setContract(e.target.value)} placeholder="№ 12-2026" />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Культура *</Label>
-          <Input value={culture} onChange={(e) => setCulture(e.target.value)} placeholder="пшеница" />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Класс / сорт</Label>
-          <Input value={grainClass} onChange={(e) => setGrainClass(e.target.value)} placeholder="3" />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Ожидаемая дата</Label>
-          <Input type="date" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Вагонов</Label>
+        <button type="button" onClick={onCancel} className="text-xs text-slate-500 hover:text-slate-900">
+          Закрыть
+        </button>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
+        <div>
+          <Label>Название *</Label>
           <Input
-            type="number"
-            min="1"
-            value={wagonsExpected}
-            onChange={(e) => setWagonsExpected(e.target.value)}
-            placeholder="напр. 4"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Пшеница продовольственная"
           />
         </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Ожидаемый вес, т</Label>
+        <div>
+          <Label>Описание</Label>
           <Input
-            type="number"
-            min="0"
-            value={expectedTons}
-            onChange={(e) => setExpectedTons(e.target.value)}
-            placeholder="272"
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="Краткое назначение"
           />
         </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Вес по документам, т</Label>
-          <Input
-            type="number"
-            min="0"
-            value={documentTons}
-            onChange={(e) => setDocumentTons(e.target.value)}
-            placeholder="271.5"
+        <div>
+          <Label>Цвет</Label>
+          <input
+            type="color"
+            value={color}
+            onChange={(event) => setColor(event.target.value.toUpperCase())}
+            className="h-10 w-14 cursor-pointer rounded-md border border-amber-200 bg-white p-1"
           />
         </div>
       </div>
-      <div className="flex flex-col gap-1.5">
-        <Label>Номера вагонов (можно позже)</Label>
-        <Input
-          value={numbers}
-          onChange={(e) => setNumbers(e.target.value)}
-          placeholder="через запятую: 94120001, 94120002"
-        />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label>Комментарий</Label>
-        <Input value={note} onChange={(e) => setNote(e.target.value)} />
-      </div>
-      <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={publish} onChange={(e) => setPublish(e.target.checked)} />
-        Сразу опубликовать (статус «Ожидается»)
-      </label>
-      {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
-      <div className="flex justify-end gap-2 border-t pt-3">
-        <Button variant="outline" disabled={busy} onClick={onCancel}>
-          Отмена
-        </Button>
-        <Button disabled={busy || !supplier.trim() || !culture.trim()} onClick={() => void submit()}>
-          {busy ? "Сохранение…" : "Создать поставку"}
+      {error && <p className="mt-3 text-sm text-[var(--destructive)]">{error}</p>}
+      <div className="mt-3 flex justify-end">
+        <Button size="sm" disabled={busy || !name.trim()} onClick={() => void submit()}>
+          <Plus className="size-4" /> {busy ? "Создание…" : "Создать тип"}
         </Button>
       </div>
     </div>
   );
 }
 
-/* ── Прибытие вагона ────────────────────────────────────────────────────── */
-function ArrivalForm({
-  supplies,
-  onDone,
-  onCancel,
-}: {
-  supplies: GrainSupply[];
-  onDone: (wagon: GrainWagon) => void;
-  onCancel: () => void;
-}) {
-  const [number, setNumber] = useState("");
-  const [supply, setSupply] = useState("");
+function SupplyForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
+  const {
+    data: types,
+    loading: typesLoading,
+    error: typesError,
+    reload: reloadTypes,
+  } = useApi<GrainType[]>("/grain/types/");
+  const {
+    data: silos,
+    loading: silosLoading,
+    error: silosError,
+    reload: reloadSilos,
+  } = useApi<GrainSilo[]>("/grain/silos/");
+  const [supplier, setSupplier] = useState("");
+  const [grainType, setGrainType] = useState("");
+  const [expectedTons, setExpectedTons] = useState("");
+  const [siloId, setSiloId] = useState("");
+  const [note, setNote] = useState("");
+  const [creatingType, setCreatingType] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  const suitableSilos = useMemo(
+    () =>
+      (silos ?? []).filter(
+        (silo) =>
+          silo.status === "active" && (!grainType || silo.silo_type == null || silo.silo_type === Number(grainType)),
+      ),
+    [grainType, silos],
+  );
 
   async function submit() {
     setBusy(true);
     setError("");
     try {
-      const res = await api.post<GrainWagon>("/grain/wagons/arrive/", {
-        number,
-        supply: supply || null,
+      await api.post<GrainSupply>("/grain/supplies/", {
+        supplier: supplier.trim(),
+        grain_type: Number(grainType),
+        assigned_silo: Number(siloId),
+        expected_total_kg: Math.round(Number(expectedTons) * 1000),
+        simple_flow: true,
+        note: note.trim(),
       });
-      onDone(res.data);
-    } catch (e) {
-      setError(apiError(e));
+      onDone();
+    } catch (cause) {
+      setError(apiError(cause));
     } finally {
       setBusy(false);
     }
   }
 
+  if (!types || !silos) {
+    return (
+      <DataGate
+        loading={typesLoading || silosLoading}
+        error={typesError || silosError}
+        onRetry={() => void Promise.all([reloadTypes(), reloadSilos()])}
+      />
+    );
+  }
+
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-col gap-1.5">
-        <Label>Номер вагона *</Label>
-        <Input value={number} onChange={(e) => setNumber(e.target.value)} placeholder="94120001" autoFocus />
+    <div className="space-y-4">
+      <div className="grid grid-cols-4 gap-2">
+        {[
+          ["1", "Поставщик"],
+          ["2", "Тип зерна"],
+          ["3", "Вес"],
+          ["4", "Силос"],
+        ].map(([number, label]) => (
+          <div key={number} className="rounded-xl border border-slate-200 bg-slate-50 px-2 py-2 text-center">
+            <span className="mx-auto flex size-5 items-center justify-center rounded-full bg-slate-900 text-[10px] font-bold text-white">
+              {number}
+            </span>
+            <p className="mt-1 text-[10px] font-semibold text-slate-600">{label}</p>
+          </div>
+        ))}
       </div>
-      <div className="flex flex-col gap-1.5">
-        <Label>Поставка (если номер не был заявлен)</Label>
-        <Select value={supply} onChange={(e) => setSupply(e.target.value)}>
-          <option value="">Определить по номеру</option>
-          {supplies.map((item) => (
-            <option key={item.id} value={item.id}>
-              #{item.id} · {item.supplier} · {item.culture}
+
+      <div>
+        <Label htmlFor="grain-supplier">Название поставщика *</Label>
+        <Input
+          id="grain-supplier"
+          value={supplier}
+          onChange={(event) => setSupplier(event.target.value)}
+          placeholder="ТОО Колос"
+          autoFocus
+        />
+      </div>
+
+      <div>
+        <div className="mb-1.5 flex items-center justify-between gap-3">
+          <Label htmlFor="grain-type" className="mb-0">
+            Тип зерна *
+          </Label>
+          <button
+            type="button"
+            className="text-xs font-semibold text-amber-700 hover:text-amber-900"
+            onClick={() => setCreatingType((current) => !current)}
+          >
+            + Создать новый тип
+          </button>
+        </div>
+        <Select
+          id="grain-type"
+          value={grainType}
+          onChange={(event) => {
+            setGrainType(event.target.value);
+            setSiloId("");
+          }}
+        >
+          <option value="">Выберите тип зерна</option>
+          {types.map((type) => (
+            <option key={type.id} value={type.id}>
+              {type.name}
             </option>
           ))}
         </Select>
       </div>
-      <p className="text-xs text-[var(--muted-foreground)]">
-        Если вагон не найдётся среди ожидаемых, он попадёт в «незапланированные» и будет ждать подтверждения диспетчера.
-      </p>
+
+      {creatingType && (
+        <GrainTypeCreator
+          onCancel={() => setCreatingType(false)}
+          onCreated={(type) => {
+            reloadTypes().then(() => setGrainType(String(type.id)));
+            setCreatingType(false);
+          }}
+        />
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div>
+          <Label htmlFor="grain-expected-weight">Ожидаемый вес, тонн *</Label>
+          <Input
+            id="grain-expected-weight"
+            type="number"
+            min="0.001"
+            step="0.1"
+            value={expectedTons}
+            onChange={(event) => setExpectedTons(event.target.value)}
+            placeholder="68.3"
+          />
+        </div>
+        <div>
+          <Label htmlFor="grain-silo">Силос назначения *</Label>
+          <Select
+            id="grain-silo"
+            value={siloId}
+            onChange={(event) => setSiloId(event.target.value)}
+            disabled={!grainType}
+          >
+            <option value="">{grainType ? "Выберите силос" : "Сначала выберите тип зерна"}</option>
+            {suitableSilos.map((silo) => (
+              <option key={silo.id} value={silo.id}>
+                {silo.name} · свободно {formatKg(silo.free_capacity_kg)}
+              </option>
+            ))}
+          </Select>
+        </div>
+      </div>
+
+      {grainType && suitableSilos.length === 0 && (
+        <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          Для этого типа зерна нет доступного силоса. Назначьте тип силосу или проверьте свободное место.
+        </p>
+      )}
+
+      <div>
+        <Label htmlFor="grain-note">Комментарий</Label>
+        <Input
+          id="grain-note"
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          placeholder="Необязательно"
+        />
+      </div>
+
+      <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-3 text-sm text-emerald-950">
+        <div className="flex items-start gap-2">
+          <Check className="mt-0.5 size-4 shrink-0 text-emerald-700" />
+          После создания приход сразу появится в «Ожидаются». Номер поезда заполнит камера на проходной.
+        </div>
+      </div>
       {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
-      <div className="flex justify-end gap-2 border-t pt-3">
+      <div className="flex justify-end gap-2 border-t pt-4">
         <Button variant="outline" disabled={busy} onClick={onCancel}>
           Отмена
         </Button>
-        <Button disabled={busy || !number.trim()} onClick={() => void submit()}>
-          {busy ? "Регистрация…" : "Зарегистрировать прибытие"}
+        <Button
+          disabled={busy || !supplier.trim() || !grainType || !expectedTons || !siloId}
+          onClick={() => void submit()}
+        >
+          {busy ? "Создание…" : "Создать приход"} <ArrowRight className="size-4" />
         </Button>
       </div>
     </div>
   );
 }
 
-/* ── Ожидаемые поставки ─────────────────────────────────────────────────── */
-function SuppliesTable({
+function ArrivalForm({
   supplies,
-  canSupply,
-  onChanged,
+  initialSupply,
+  onDone,
+  onCancel,
 }: {
   supplies: GrainSupply[];
-  canSupply: boolean;
-  onChanged: () => void;
+  initialSupply?: number | null;
+  onDone: (wagon: GrainWagon) => void;
+  onCancel: () => void;
 }) {
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [number, setNumber] = useState("");
+  const [supply, setSupply] = useState(initialSupply ? String(initialSupply) : "");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  function toggle(id: number) {
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  async function publish(id: number) {
+  async function submit() {
+    setBusy(true);
     setError("");
     try {
-      await api.post(`/grain/supplies/${id}/publish/`);
-      onChanged();
-    } catch (e) {
-      setError(apiError(e));
+      const { data } = await api.post<GrainWagon>("/grain/wagons/arrive/", {
+        number,
+        supply: Number(supply),
+      });
+      onDone(data);
+    } catch (cause) {
+      setError(apiError(cause));
+    } finally {
+      setBusy(false);
     }
   }
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-card">
-      {error && <p className="px-4 pt-3 text-sm text-[var(--destructive)]">{error}</p>}
-      <Table>
-        <THead>
-          <TR>
-            <TH>Поставка</TH>
-            <TH>Культура</TH>
-            <TH>Дата</TH>
-            <TH className="text-right">Ожидаемый вес</TH>
-            <TH className="text-right">Вагоны</TH>
-            <TH>Статус</TH>
-            <TH />
-          </TR>
-        </THead>
-        <TBody>
-          {supplies.length === 0 ? (
-            <TR>
-              <TD colSpan={7} className="py-10 text-center text-sm text-[var(--muted-foreground)]">
-                Ожидаемых поставок нет.
-              </TD>
-            </TR>
-          ) : (
-            supplies.map((supply) => {
-              const open = expanded.has(supply.id);
-              return (
-                <Fragment key={supply.id}>
-                  <TR
-                    className="cursor-pointer transition-colors hover:bg-[var(--muted)]/40"
-                    onClick={() => toggle(supply.id)}
-                  >
-                    <TD>
-                      <button
-                        type="button"
-                        aria-expanded={open}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          toggle(supply.id);
-                        }}
-                        className="flex items-center gap-1.5 font-medium"
-                      >
-                        <ChevronDown
-                          className={cn(
-                            "size-4 shrink-0 -rotate-90 text-[var(--muted-foreground)] transition-transform",
-                            open && "rotate-0",
-                          )}
-                        />
-                        #{supply.id} · {supply.supplier}
-                      </button>
-                      {supply.contract && (
-                        <div className="pl-[22px] text-xs text-[var(--muted-foreground)]">{supply.contract}</div>
-                      )}
-                    </TD>
-                    <TD>
-                      {supply.culture}
-                      {supply.grain_class ? ` · ${supply.grain_class} класс` : ""}
-                    </TD>
-                    <TD className="tabular-nums">{supply.expected_date ? formatIsoDate(supply.expected_date) : "—"}</TD>
-                    <TD className="text-right tabular-nums">{formatKg(supply.expected_total_kg)}</TD>
-                    <TD className="text-right tabular-nums">
-                      {supply.wagons.length}
-                      {supply.wagons_expected ? ` из ${supply.wagons_expected}` : ""}
-                    </TD>
-                    <TD>
-                      {supply.status === "draft" ? (
-                        <Badge tone="warning" dot>
-                          Черновик
-                        </Badge>
-                      ) : (
-                        <Badge tone="primary" dot>
-                          Ожидается
-                        </Badge>
-                      )}
-                    </TD>
-                    <TD onClick={(event) => event.stopPropagation()}>
-                      {supply.status === "draft" && canSupply && (
-                        <Button size="sm" onClick={() => void publish(supply.id)}>
-                          Опубликовать
-                        </Button>
-                      )}
-                    </TD>
-                  </TR>
-                  {open && (
-                    <TR className="bg-[var(--muted)]/30">
-                      <TD colSpan={7} className="p-4">
-                        {supply.wagons.length === 0 ? (
-                          <p className="text-sm text-[var(--muted-foreground)]">
-                            Номера вагонов ещё не заявлены — их можно добавить при прибытии.
-                          </p>
-                        ) : (
-                          <div className="flex flex-col gap-1">
-                            {supply.wagons.map((wagon) => (
-                              <div key={wagon.id} className="flex flex-wrap items-center gap-3 text-sm">
-                                <Link
-                                  href={`/grain/wagons/${wagon.id}`}
-                                  className="font-medium text-[var(--ring)] hover:underline"
-                                >
-                                  {wagon.number || `Вагон #${wagon.id}`}
-                                </Link>
-                                <WagonStatusBadge wagon={wagon} />
-                                {wagon.net_weight_kg != null && (
-                                  <span className="tabular-nums text-[var(--muted-foreground)]">
-                                    нетто {formatKg(wagon.net_weight_kg)}
-                                  </span>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        {supply.note && <p className="mt-2 text-xs text-[var(--muted-foreground)]">{supply.note}</p>}
-                      </TD>
-                    </TR>
-                  )}
-                </Fragment>
-              );
-            })
-          )}
-        </TBody>
-      </Table>
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-sky-200 bg-[#10222a] p-4 text-white">
+        <div className="flex items-center gap-3">
+          <span className="flex size-11 items-center justify-center rounded-xl bg-sky-400/10 text-sky-300">
+            <Camera className="size-5" />
+          </span>
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-sky-300">Основной источник</p>
+            <p className="mt-1 text-sm font-bold">Номер приходит от камеры проходной</p>
+          </div>
+        </div>
+      </div>
+      <div>
+        <Label htmlFor="arrival-supply">Ожидаемый приход *</Label>
+        <Select id="arrival-supply" value={supply} onChange={(event) => setSupply(event.target.value)}>
+          <option value="">Выберите приход</option>
+          {supplies.map((item) => (
+            <option key={item.id} value={item.id}>
+              #{item.id} · {item.supplier} · {item.grain_type_name} → {item.assigned_silo_name}
+            </option>
+          ))}
+        </Select>
+      </div>
+      <div>
+        <Label htmlFor="arrival-number">Номер поезда / вагона *</Label>
+        <Input
+          id="arrival-number"
+          value={number}
+          onChange={(event) => setNumber(event.target.value)}
+          placeholder="Распознанный номер"
+          autoFocus
+        />
+        <p className="mt-1.5 text-xs text-[var(--muted-foreground)]">
+          Ручной ввод — резервный вариант, пока OCR-сервис не передал номер автоматически.
+        </p>
+      </div>
+      {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
+      <div className="flex justify-end gap-2 border-t pt-4">
+        <Button variant="outline" disabled={busy} onClick={onCancel}>
+          Отмена
+        </Button>
+        <Button disabled={busy || !number.trim() || !supply} onClick={() => void submit()}>
+          {busy ? "Регистрация…" : "Передать на входные весы"}
+        </Button>
+      </div>
     </div>
   );
 }
 
-/* ── Вагоны (на территории / к выезду) ──────────────────────────────────── */
-function WagonsTable({
-  wagons,
-  emptyText,
-  showExit,
-  onExit,
+function ExpectedIntakes({
+  supplies,
+  canArrive,
+  onArrival,
 }: {
-  wagons: GrainWagon[];
-  emptyText: string;
-  showExit?: boolean;
-  onExit?: (wagon: GrainWagon) => void;
+  supplies: GrainSupply[];
+  canArrive: boolean;
+  onArrival: (supply: GrainSupply) => void;
 }) {
-  const router = useRouter();
+  if (!supplies.length) {
+    return (
+      <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 py-16 text-center">
+        <Clock3 className="mx-auto size-8 text-slate-300" />
+        <p className="mt-3 text-sm font-semibold text-slate-700">Ожидаемых приходов нет</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-card">
-      <Table>
-        <THead>
-          <TR>
-            <TH>Вагон</TH>
-            <TH>Поставщик</TH>
-            <TH>Культура</TH>
-            <TH>Статус</TH>
-            <TH className="text-right">Брутто</TH>
-            <TH className="text-right">Нетто</TH>
-            <TH>Силос</TH>
-            <TH />
-          </TR>
-        </THead>
-        <TBody>
-          {wagons.length === 0 ? (
-            <TR>
-              <TD colSpan={8} className="py-10 text-center text-sm text-[var(--muted-foreground)]">
-                {emptyText}
-              </TD>
-            </TR>
-          ) : (
-            wagons.map((wagon) => (
-              <TR
-                key={wagon.id}
-                className="cursor-pointer transition-colors hover:bg-[var(--muted)]/40"
-                onClick={() => router.push(`/grain/wagons/${wagon.id}`)}
-              >
-                <TD>
-                  <span className="font-medium">{wagon.number || `#${wagon.id}`}</span>
-                  {wagon.arrived_at && (
-                    <div className="text-xs text-[var(--muted-foreground)]">{formatDateTime(wagon.arrived_at)}</div>
-                  )}
-                </TD>
-                <TD>{wagon.supplier || "—"}</TD>
-                <TD>
-                  {wagon.culture || "—"}
-                  {wagon.grain_class ? ` · ${wagon.grain_class}` : ""}
-                </TD>
-                <TD>
-                  <WagonStatusBadge wagon={wagon} />
-                </TD>
-                <TD className="text-right tabular-nums">{formatKg(wagon.gross_weight_kg)}</TD>
-                <TD className="text-right tabular-nums font-medium">{formatKg(wagon.net_weight_kg)}</TD>
-                <TD>{wagon.assigned_silo_name ?? "—"}</TD>
-                <TD onClick={(event) => event.stopPropagation()}>
-                  <div className="flex justify-end gap-2">
-                    {showExit && onExit && (
-                      <Button size="sm" onClick={() => onExit(wagon)}>
-                        Выпустить
-                      </Button>
-                    )}
-                    <Link
-                      href={`/grain/wagons/${wagon.id}`}
-                      className={buttonVariants({ size: "sm", variant: "ghost" })}
-                    >
-                      Открыть
-                    </Link>
-                  </div>
-                </TD>
-              </TR>
-            ))
-          )}
-        </TBody>
-      </Table>
+    <div className="grid gap-3 xl:grid-cols-2">
+      {supplies.map((supply) => {
+        const wagon = supply.wagons[0];
+        return (
+          <article
+            key={supply.id}
+            className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_32px_rgba(15,23,42,.06)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_38px_rgba(15,23,42,.1)]"
+          >
+            <div
+              className="absolute inset-y-0 left-0 w-1.5"
+              style={{ backgroundColor: supply.grain_type_color || "#B78132" }}
+            />
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Приход #{supply.id}</p>
+                <h3 className="mt-1 truncate text-lg font-bold tracking-tight text-slate-900">{supply.supplier}</h3>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <Badge tone="warning" dot>
+                    Ожидает камеру
+                  </Badge>
+                  <span className="text-xs text-slate-500">{supply.grain_type_name}</span>
+                </div>
+              </div>
+              <span className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-amber-50 text-amber-700">
+                <TrainFront className="size-5" />
+              </span>
+            </div>
+            <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3">
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-[10px] uppercase tracking-wide text-slate-400">Ожидаемый вес</p>
+                <p className="mt-1 font-bold tabular-nums">{formatKg(supply.expected_total_kg)}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3 sm:col-span-2">
+                <p className="text-[10px] uppercase tracking-wide text-slate-400">Назначенный силос</p>
+                <p className="mt-1 truncate font-bold">{supply.assigned_silo_name || "—"}</p>
+              </div>
+            </div>
+            <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
+              <span className="flex items-center gap-2 text-xs text-slate-400">
+                <ScanLine className="size-4" /> {wagon?.number || "Номер ещё не получен"}
+              </span>
+              {canArrive && (
+                <Button size="sm" onClick={() => onArrival(supply)}>
+                  Принять поезд <ArrowRight className="size-4" />
+                </Button>
+              )}
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function processStage(wagon: GrainWagon) {
+  if (wagon.status === "arrived") return { label: "Входные весы", icon: Scale, tone: "sky" } as const;
+  if (wagon.status === "at_silo")
+    return { label: `У силоса ${wagon.assigned_silo_name || ""}`, icon: Warehouse, tone: "amber" } as const;
+  if (wagon.status === "weight_discrepancy")
+    return { label: "Проверка расхождения", icon: CircleDot, tone: "red" } as const;
+  return { label: wagon.status_label, icon: Route, tone: "slate" } as const;
+}
+
+function WagonCards({ wagons, emptyText }: { wagons: GrainWagon[]; emptyText: string }) {
+  if (!wagons.length) {
+    return (
+      <div className="rounded-2xl border border-dashed py-14 text-center text-sm text-[var(--muted-foreground)]">
+        {emptyText}
+      </div>
+    );
+  }
+  const tones = {
+    sky: "bg-sky-50 text-sky-700",
+    amber: "bg-amber-50 text-amber-700",
+    red: "bg-red-50 text-red-700",
+    slate: "bg-slate-100 text-slate-600",
+  };
+
+  return (
+    <div className="grid gap-3 xl:grid-cols-2">
+      {wagons.map((wagon) => {
+        const stage = processStage(wagon);
+        const Icon = stage.icon;
+        return (
+          <article
+            key={wagon.id}
+            className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,.06)]"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Поезд / вагон</p>
+                <h3 className="mt-1 text-xl font-black tracking-tight">{wagon.number || `#${wagon.id}`}</h3>
+                <p className="mt-1 truncate text-sm text-slate-500">
+                  {wagon.supplier} · {wagon.grain_type_name || wagon.culture}
+                </p>
+              </div>
+              <span className={cn("flex size-12 shrink-0 items-center justify-center rounded-2xl", tones[stage.tone])}>
+                <Icon className="size-5" />
+              </span>
+            </div>
+            <div className="mt-4 flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-white">
+              <span className="size-2 animate-pulse rounded-full bg-emerald-400" />
+              <span className="text-sm font-bold">{stage.label}</span>
+              {wagon.silo_arrived_at && wagon.status === "at_silo" && (
+                <span className="ml-auto text-[10px] text-white/45">с {formatDateTime(wagon.silo_arrived_at)}</span>
+              )}
+            </div>
+            <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
+              <div>
+                <p className="text-[10px] text-slate-400">Ожидается</p>
+                <p className="mt-1 font-bold tabular-nums">{formatKg(wagon.expected_weight_kg)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] text-slate-400">Входной вес</p>
+                <p className="mt-1 font-bold tabular-nums">{formatKg(wagon.gross_weight_kg)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] text-slate-400">Нетто</p>
+                <p className="mt-1 font-bold tabular-nums">{formatKg(wagon.net_weight_kg)}</p>
+              </div>
+            </div>
+            <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4">
+              <WagonStatusBadge wagon={wagon} />
+              <Link href={`/grain/wagons/${wagon.id}`} className={buttonVariants({ size: "sm", variant: "outline" })}>
+                Открыть этап <ArrowRight className="size-4" />
+              </Link>
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function FlowSummary() {
+  return (
+    <div className="grid grid-cols-2 gap-2 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm lg:grid-cols-4">
+      {[
+        [Camera, "1", "Камера", "получает номер"],
+        [Scale, "2", "Входные весы", "общий вес"],
+        [Warehouse, "3", "Силос", "ожидание и разгрузка"],
+        [TrainFront, "4", "Выходные весы", "нетто и сверка"],
+      ].map(([Icon, number, title, note]) => {
+        const StepIcon = Icon as typeof Camera;
+        return (
+          <div key={String(number)} className="flex items-center gap-3 rounded-xl bg-slate-50 p-3">
+            <span className="relative flex size-10 shrink-0 items-center justify-center rounded-xl bg-slate-900 text-white">
+              <StepIcon className="size-4" />
+              <span className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-amber-500 text-[9px] font-bold">
+                {String(number)}
+              </span>
+            </span>
+            <span className="min-w-0">
+              <span className="block text-xs font-bold">{String(title)}</span>
+              <span className="block truncate text-[10px] text-slate-400">{String(note)}</span>
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -466,90 +581,83 @@ function GrainPageInner() {
   const { me } = useAuth();
   const canSupply = can(me, "grain.supply");
   const canArrive = can(me, "grain.arrive");
-  const canExit = can(me, "grain.exit");
-  const [tab, setTab] = useState<"expected" | "on_site" | "exit_ready" | "finished" | "camera">("on_site");
+  const [tab, setTab] = useState<GrainTab>("on_site");
   const [supplyOpen, setSupplyOpen] = useState(false);
   const [arriveOpen, setArriveOpen] = useState(false);
+  const [arrivalSupply, setArrivalSupply] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
-  const [actionError, setActionError] = useState("");
 
-  const supplies = usePagedApi<GrainSupply>(tab === "expected" ? "/grain/supplies/?status=expected" : null, 50);
-  const drafts = usePagedApi<GrainSupply>(tab === "expected" ? "/grain/supplies/?status=draft" : null, 50);
-  const wagons = usePagedApi<GrainWagon>(
-    tab === "expected" || tab === "camera" ? null : `/grain/wagons/?scope=${tab}`,
+  const supplies = usePagedApi<GrainSupply>(
+    tab === "expected" ? "/grain/supplies/?status=expected&awaiting_arrival=1" : null,
     50,
   );
-  const arrivalSupplies = usePagedApi<GrainSupply>(arriveOpen ? "/grain/supplies/?status=expected" : null, 100);
+  const wagons = usePagedApi<GrainWagon>(
+    tab === "on_site" || tab === "finished" ? `/grain/wagons/?scope=${tab}` : null,
+    50,
+  );
+  const arrivalSupplies = usePagedApi<GrainSupply>(
+    arriveOpen ? "/grain/supplies/?status=expected&awaiting_arrival=1" : null,
+    100,
+  );
 
   function refreshAll() {
     void supplies.reload();
-    void drafts.reload();
     void wagons.reload();
+    void arrivalSupplies.reload();
   }
 
-  async function releaseWagon(wagon: GrainWagon) {
-    setActionError("");
-    try {
-      await api.post(`/grain/wagons/${wagon.id}/exit/`);
-      setNotice(`Вагон ${wagon.number} выехал.`);
-      void wagons.reload();
-    } catch (e) {
-      setActionError(apiError(e));
-    }
+  function openArrival(supply?: GrainSupply) {
+    setArrivalSupply(supply?.id ?? null);
+    setArriveOpen(true);
   }
-
-  const supplyRows = [...drafts.items, ...supplies.items];
 
   return (
     <AppShell
       title="Приход и проход"
       section="Работа"
-      description="Ответственный контур вагонов: заявка, проходная, взвешивание, лаборатория и выезд."
+      description="Короткий маршрут поезда: камера, входной вес, назначенный силос, выходной вес и фактическое нетто."
       actions={
         tab !== "camera" ? (
           <div className="flex items-center gap-2">
             {canArrive && (
-              <Button size="sm" variant="outline" onClick={() => setArriveOpen(true)}>
-                <TrainFront className="size-4" /> Прибытие
+              <Button size="sm" variant="outline" onClick={() => openArrival()}>
+                <TrainFront className="size-4" /> Принять поезд
               </Button>
             )}
             {canSupply && (
               <Button size="sm" onClick={() => setSupplyOpen(true)}>
-                <Plus className="size-4" /> Новая поставка
+                <Plus className="size-4" /> Новый приход
               </Button>
             )}
           </div>
         ) : undefined
       }
     >
-      <div className="flex flex-col gap-4">
+      <div className="space-y-4">
+        <FlowSummary />
         <Tabs
           tabs={[
             { key: "expected", label: "Ожидаются" },
             { key: "on_site", label: "На территории" },
-            { key: "exit_ready", label: "Готовы к выезду" },
             { key: "finished", label: "Завершённые" },
-            ...(me?.is_superuser ? [{ key: "camera", label: "Камера проходной", icon: ScanLine }] : []),
+            { key: "camera", label: "Камера проходной", icon: ScanLine },
           ]}
           active={tab}
-          onChange={(key) => setTab(key as typeof tab)}
+          onChange={(key) => setTab(key as GrainTab)}
         />
 
         {notice && (
-          <p className="rounded-lg border border-[var(--success)]/30 bg-[var(--success)]/10 px-3 py-2 text-sm text-[var(--success)]">
+          <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
             {notice}
           </p>
         )}
-        {actionError && <ErrorAlert message={actionError} onRetry={refreshAll} />}
 
-        {tab === "camera" && me?.is_superuser ? (
-          <WagonNumberCameraWorkspace />
+        {tab === "camera" ? (
+          <WagonNumberCameraWorkspace canManage={Boolean(me?.is_superuser)} />
         ) : tab === "expected" ? (
           <>
-            {(supplies.error || drafts.error) && (
-              <ErrorAlert message={supplies.error || drafts.error} onRetry={refreshAll} />
-            )}
-            <SuppliesTable supplies={supplyRows} canSupply={canSupply} onChanged={refreshAll} />
+            {supplies.error && <ErrorAlert message={supplies.error} onRetry={refreshAll} />}
+            <ExpectedIntakes supplies={supplies.items} canArrive={canArrive} onArrival={openArrival} />
             <LoadMore
               shown={supplies.items.length}
               total={supplies.count}
@@ -561,17 +669,9 @@ function GrainPageInner() {
         ) : (
           <>
             {wagons.error && <ErrorAlert message={wagons.error} onRetry={() => void wagons.reload()} />}
-            <WagonsTable
+            <WagonCards
               wagons={wagons.items}
-              emptyText={
-                tab === "on_site"
-                  ? "Вагонов на территории нет."
-                  : tab === "exit_ready"
-                    ? "Готовых к выезду вагонов нет."
-                    : "Завершённых вагонов пока нет."
-              }
-              showExit={tab === "exit_ready" && canExit}
-              onExit={releaseWagon}
+              emptyText={tab === "on_site" ? "Поездов на территории нет." : "Завершённых приходов пока нет."}
             />
             <LoadMore
               shown={wagons.items.length}
@@ -587,9 +687,9 @@ function GrainPageInner() {
       <Modal
         open={supplyOpen}
         onClose={() => setSupplyOpen(false)}
-        eyebrow="Зерно · Заявка"
-        title="Новая поставка"
-        description="Неизвестные поля можно оставить пустыми и дополнить позже."
+        eyebrow="Приход · 4 поля"
+        title="Новый приход зерна"
+        description="Создайте ожидаемый поезд и сразу задайте его конечный силос."
         className="max-w-2xl"
       >
         {supplyOpen && (
@@ -598,6 +698,7 @@ function GrainPageInner() {
             onDone={() => {
               setSupplyOpen(false);
               setTab("expected");
+              setNotice("Приход создан. Ожидаем номер от камеры проходной.");
               refreshAll();
             }}
           />
@@ -607,21 +708,19 @@ function GrainPageInner() {
       <Modal
         open={arriveOpen}
         onClose={() => setArriveOpen(false)}
-        eyebrow="Зерно · Проходная"
-        title="Прибытие вагона"
-        description="Введите или отсканируйте номер вагона."
+        eyebrow="Проходная · Камера"
+        title="Номер поезда получен"
+        description="Свяжите распознанный номер с ожидаемым приходом."
+        className="max-w-lg"
       >
         {arriveOpen && (
           <ArrivalForm
             supplies={arrivalSupplies.items}
+            initialSupply={arrivalSupply}
             onCancel={() => setArriveOpen(false)}
             onDone={(wagon) => {
               setArriveOpen(false);
-              setNotice(
-                wagon.status === "waiting_for_approval"
-                  ? `Вагон ${wagon.number} не найден в заявках — ждёт подтверждения диспетчера.`
-                  : `Вагон ${wagon.number} зарегистрирован.`,
-              );
+              setNotice(`Поезд ${wagon.number} направлен на входные весы.`);
               setTab("on_site");
               refreshAll();
             }}

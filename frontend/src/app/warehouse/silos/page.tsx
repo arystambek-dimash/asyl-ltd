@@ -5,7 +5,6 @@ import Link from "next/link";
 import {
   Activity,
   ArrowDownToLine,
-  ArrowLeft,
   Boxes,
   Gauge,
   History,
@@ -20,7 +19,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { FactoryTabs } from "@/components/factory-tabs";
 import { RequirePerm } from "@/components/require-perm";
 import { Badge } from "@/components/ui/badge";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
@@ -45,8 +44,7 @@ function clampPercent(value: number) {
 }
 
 function routeLabel(type: GrainSiloType) {
-  const grain = [type.grain_culture, type.grain_class && `${type.grain_class} класс`].filter(Boolean).join(" · ");
-  return grain || "универсальный";
+  return type.default_silo_name ? `Приход → ${type.default_silo_name}` : "Основной силос не назначен";
 }
 
 function SummaryMetric({
@@ -216,22 +214,11 @@ function SiloForm({ types, onDone, onCancel }: { types: GrainSiloType[]; onDone:
   const [name, setName] = useState("");
   const [capacityTons, setCapacityTons] = useState("");
   const [siloType, setSiloType] = useState("");
-  const [culture, setCulture] = useState("");
-  const [grainClass, setGrainClass] = useState("");
   const [line, setLine] = useState("");
   const [allowMixing, setAllowMixing] = useState(false);
   const [isQuarantine, setIsQuarantine] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-
-  function selectType(value: string) {
-    setSiloType(value);
-    const selected = types.find((item) => item.id === Number(value));
-    if (selected) {
-      setCulture(selected.grain_culture);
-      setGrainClass(selected.grain_class);
-    }
-  }
 
   async function submit() {
     setBusy(true);
@@ -241,8 +228,6 @@ function SiloForm({ types, onDone, onCancel }: { types: GrainSiloType[]; onDone:
         name,
         total_capacity_kg: Math.round(Number(capacityTons) * 1000),
         silo_type: siloType ? Number(siloType) : null,
-        grain_culture: culture,
-        grain_class: grainClass,
         unloading_line: line,
         allow_mixing: allowMixing,
         is_quarantine: isQuarantine,
@@ -258,7 +243,7 @@ function SiloForm({ types, onDone, onCancel }: { types: GrainSiloType[]; onDone:
   return (
     <div className="flex flex-col gap-4">
       <div className="rounded-lg border border-[#c58a35]/25 bg-[#c58a35]/8 px-3 py-2.5 text-sm">
-        Тип задаёт культуру и класс, а маршрут прихода настраивается в разделе «Типы и маршруты».
+        Один «Тип зерна» используется в приходе и в силосах. Основной маршрут можно задать в «Типах зерна».
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="flex flex-col gap-1.5">
@@ -270,23 +255,15 @@ function SiloForm({ types, onDone, onCancel }: { types: GrainSiloType[]; onDone:
           <Input type="number" min="1" value={capacityTons} onChange={(e) => setCapacityTons(e.target.value)} />
         </div>
         <div className="flex flex-col gap-1.5 sm:col-span-2">
-          <Label>Тип силоса</Label>
-          <Select value={siloType} onChange={(e) => selectType(e.target.value)}>
-            <option value="">Без типа</option>
+          <Label>Тип зерна</Label>
+          <Select value={siloType} onChange={(e) => setSiloType(e.target.value)}>
+            <option value="">Не назначен</option>
             {types.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.name} · {routeLabel(item)}
+                {item.name}
               </option>
             ))}
           </Select>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Культура</Label>
-          <Input value={culture} onChange={(e) => setCulture(e.target.value)} placeholder="пшеница" />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Класс</Label>
-          <Input value={grainClass} onChange={(e) => setGrainClass(e.target.value)} placeholder="3" />
         </div>
         <div className="flex flex-col gap-1.5 sm:col-span-2">
           <Label>Линия разгрузки</Label>
@@ -295,7 +272,7 @@ function SiloForm({ types, onDone, onCancel }: { types: GrainSiloType[]; onDone:
       </div>
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={allowMixing} onChange={(e) => setAllowMixing(e.target.checked)} />
-        Разрешено смешивание классов
+        Разрешить смешивание разных типов зерна
       </label>
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={isQuarantine} onChange={(e) => setIsQuarantine(e.target.checked)} />
@@ -316,8 +293,6 @@ function SiloForm({ types, onDone, onCancel }: { types: GrainSiloType[]; onDone:
 
 function SiloTypeForm({ silos, onDone }: { silos: GrainSilo[]; onDone: () => void }) {
   const [name, setName] = useState("");
-  const [culture, setCulture] = useState("");
-  const [grainClass, setGrainClass] = useState("");
   const [color, setColor] = useState(DEFAULT_TYPE_COLOR);
   const [description, setDescription] = useState("");
   const [defaultSilo, setDefaultSilo] = useState("");
@@ -330,15 +305,11 @@ function SiloTypeForm({ silos, onDone }: { silos: GrainSilo[]; onDone: () => voi
     try {
       await api.post("/grain/silo-types/", {
         name,
-        grain_culture: culture,
-        grain_class: grainClass,
         color,
         description,
         default_silo: defaultSilo ? Number(defaultSilo) : null,
       });
       setName("");
-      setCulture("");
-      setGrainClass("");
       setDescription("");
       setDefaultSilo("");
       onDone();
@@ -356,8 +327,8 @@ function SiloTypeForm({ silos, onDone }: { silos: GrainSilo[]; onDone: () => voi
           <Plus className="size-4" />
         </div>
         <div>
-          <div className="font-semibold">Новый тип</div>
-          <div className="text-xs text-[var(--muted-foreground)]">Например: «Пшеница · 3 класс»</div>
+          <div className="font-semibold">Новый тип зерна</div>
+          <div className="text-xs text-[var(--muted-foreground)]">Например: «Пшеница 3 класса»</div>
         </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -373,18 +344,10 @@ function SiloTypeForm({ silos, onDone }: { silos: GrainSilo[]; onDone: () => voi
               value={color}
               onChange={(e) => setColor(e.target.value.toUpperCase())}
               className="h-9 w-12 cursor-pointer rounded-md border bg-transparent p-1"
-              aria-label="Цвет типа силоса"
+              aria-label="Цвет типа зерна"
             />
             <Input value={color} onChange={(e) => setColor(e.target.value)} />
           </div>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Культура</Label>
-          <Input value={culture} onChange={(e) => setCulture(e.target.value)} placeholder="пшеница" />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Класс</Label>
-          <Input value={grainClass} onChange={(e) => setGrainClass(e.target.value)} placeholder="3" />
         </div>
         <div className="flex flex-col gap-1.5 sm:col-span-2">
           <Label>Куда направлять приход</Label>
@@ -506,7 +469,7 @@ function SiloTypesModal({
       open
       onClose={onClose}
       eyebrow="Силосный парк · маршрутизация"
-      title="Типы и маршруты прихода"
+      title="Типы зерна"
       description="Для каждого типа зерна укажите основной силос. Диспетчер увидит его первым при назначении вагона."
       className="max-w-4xl"
       footer={<Button onClick={onClose}>Готово</Button>}
@@ -665,9 +628,7 @@ function SiloCard({
   onAdjust: () => void;
   onMovements: () => void;
 }) {
-  const grainDescription = [silo.grain_culture || "любая культура", silo.grain_class && `${silo.grain_class} класс`]
-    .filter(Boolean)
-    .join(" · ");
+  const grainDescription = silo.silo_type_name || "Тип зерна не назначен";
 
   return (
     <Card
@@ -680,9 +641,7 @@ function SiloCard({
         <div className="flex min-w-0 flex-col self-stretch py-2">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#687377]">
-                {silo.silo_type_name || "Тип не назначен"}
-              </div>
+              <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#687377]">Тип зерна</div>
               <h2 className="mt-1 truncate text-2xl font-black tracking-[-0.035em] text-[#253136]">{silo.name}</h2>
               <div className="mt-1 flex items-center gap-1.5 text-sm text-[#6d777a]">
                 <Sprout className="size-4" />
@@ -806,23 +765,16 @@ function SilosPageInner() {
       tabs={<FactoryTabs />}
       actions={
         <div className="flex flex-wrap items-center gap-2">
-          <Link
-            href="/grain"
-            aria-label="К приходу и проходу"
-            className={buttonVariants({ size: "sm", variant: "outline" })}
-          >
-            <ArrowLeft className="size-4" /> <span className="hidden 2xl:inline">К вагонам</span>
-          </Link>
           {canAdmin && (
             <>
               <Button
                 size="sm"
                 variant="outline"
-                aria-label="Типы и маршруты"
-                title="Типы и маршруты"
+                aria-label="Типы зерна"
+                title="Типы зерна"
                 onClick={() => setTypesOpen(true)}
               >
-                <Settings2 className="size-4" /> <span className="hidden 2xl:inline">Типы и маршруты</span>
+                <Settings2 className="size-4" /> <span className="hidden 2xl:inline">Типы зерна</span>
               </Button>
               <Button size="sm" onClick={() => setCreateOpen(true)}>
                 <Plus className="size-4" /> Новый силос

@@ -178,29 +178,37 @@ class CameraListView(APIView):
         raw_source = request.data.get("camera")
         raw_name = request.data.get("name")
         if not isinstance(raw_source, str) or not isinstance(raw_name, str):
-            raise ValidationError({
-                "detail": "Передайте камеру и новое имя",
-                "code": "bad_camera_name",
-            })
+            raise ValidationError(
+                {
+                    "detail": "Передайте камеру и новое имя",
+                    "code": "bad_camera_name",
+                }
+            )
         try:
             source = services.normalize_camera_path(raw_source)
         except ValueError:
-            raise ValidationError({
-                "detail": "Неизвестная камера",
-                "code": "bad_camera",
-            })
+            raise ValidationError(
+                {
+                    "detail": "Неизвестная камера",
+                    "code": "bad_camera",
+                }
+            )
 
         name = " ".join(raw_name.split())
         if not name:
-            raise ValidationError({
-                "detail": "Название камеры не может быть пустым",
-                "code": "empty_camera_name",
-            })
+            raise ValidationError(
+                {
+                    "detail": "Название камеры не может быть пустым",
+                    "code": "empty_camera_name",
+                }
+            )
         if len(name) > 80:
-            raise ValidationError({
-                "detail": "Название камеры не должно превышать 80 символов",
-                "code": "camera_name_too_long",
-            })
+            raise ValidationError(
+                {
+                    "detail": "Название камеры не должно превышать 80 символов",
+                    "code": "camera_name_too_long",
+                }
+            )
 
         row, _ = MonoblockCameraSettings.objects.get_or_create(singleton=True)
         names = row.camera_names if isinstance(row.camera_names, dict) else {}
@@ -237,7 +245,10 @@ class MonoblockCameraSettingsView(APIView):
 
     @staticmethod
     def _payload(settings_row=None, device=None):
-        row = settings_row or MonoblockCameraSettings.objects.filter(singleton=True).first()
+        row = (
+            settings_row
+            or MonoblockCameraSettings.objects.filter(singleton=True).first()
+        )
         if device is not None:
             return {
                 "camera_sources": [device.camera_source],
@@ -260,25 +271,31 @@ class MonoblockCameraSettingsView(APIView):
     def put(self, request):
         raw_sources = request.data.get("camera_sources")
         if not isinstance(raw_sources, list):
-            raise ValidationError({
-                "camera_sources": "Передайте список камер",
-                "code": "bad_camera_sources",
-            })
+            raise ValidationError(
+                {
+                    "camera_sources": "Передайте список камер",
+                    "code": "bad_camera_sources",
+                }
+            )
 
         normalized = []
         for raw in raw_sources:
             if not isinstance(raw, str):
-                raise ValidationError({
-                    "camera_sources": "Каждая камера должна быть строкой",
-                    "code": "bad_camera_source",
-                })
+                raise ValidationError(
+                    {
+                        "camera_sources": "Каждая камера должна быть строкой",
+                        "code": "bad_camera_source",
+                    }
+                )
             try:
                 source = ai.normalize(raw)
             except ai.AiError:
-                raise ValidationError({
-                    "camera_sources": f"Неизвестная камера: {raw}",
-                    "code": "bad_camera_source",
-                })
+                raise ValidationError(
+                    {
+                        "camera_sources": f"Неизвестная камера: {raw}",
+                        "code": "bad_camera_source",
+                    }
+                )
             if source not in normalized:
                 normalized.append(source)
 
@@ -308,28 +325,48 @@ def _device_payload(device, names=None):
 
 def _clean_device_data(data, *, instance=None):
     name = " ".join(str(data.get("name", getattr(instance, "name", ""))).split())
-    username = " ".join(str(data.get(
-        "username", getattr(getattr(instance, "user", None), "username", "")
-    )).split())
+    username = " ".join(
+        str(
+            data.get(
+                "username", getattr(getattr(instance, "user", None), "username", "")
+            )
+        ).split()
+    )
     raw_camera = data.get("camera_source", getattr(instance, "camera_source", ""))
     try:
         camera = ai.normalize(raw_camera)
     except (ai.AiError, TypeError):
-        raise ValidationError({"detail": "Выберите корректную камеру", "code": "bad_camera"})
+        raise ValidationError(
+            {"detail": "Выберите корректную камеру", "code": "bad_camera"}
+        )
     if not name or len(name) > 80:
-        raise ValidationError({"detail": "Название обязательно, максимум 80 символов", "code": "bad_name"})
+        raise ValidationError(
+            {"detail": "Название обязательно, максимум 80 символов", "code": "bad_name"}
+        )
     if not username or len(username) > 150:
-        raise ValidationError({"detail": "Логин обязателен, максимум 150 символов", "code": "bad_username"})
+        raise ValidationError(
+            {
+                "detail": "Логин обязателен, максимум 150 символов",
+                "code": "bad_username",
+            }
+        )
     users = get_user_model().objects.filter(username__iexact=username)
     if instance is not None:
         users = users.exclude(pk=instance.user_id)
     if users.exists():
-        raise ValidationError({"detail": "Такой логин уже используется", "code": "username_busy"})
+        raise ValidationError(
+            {"detail": "Такой логин уже используется", "code": "username_busy"}
+        )
     devices = MonoblockDevice.objects.filter(camera_source=camera)
     if instance is not None:
         devices = devices.exclude(pk=instance.pk)
     if devices.exists():
-        raise ValidationError({"detail": "Камера уже закреплена за другим моноблоком", "code": "camera_busy"})
+        raise ValidationError(
+            {
+                "detail": "Камера уже закреплена за другим моноблоком",
+                "code": "camera_busy",
+            }
+        )
     return name, username, camera
 
 
@@ -349,20 +386,28 @@ class MonoblockDeviceListView(APIView):
         try:
             validate_password(password)
         except DjangoValidationError as exc:
-            raise ValidationError({"detail": "; ".join(exc.messages), "code": "weak_password"})
+            raise ValidationError(
+                {"detail": "; ".join(exc.messages), "code": "weak_password"}
+            )
         User = get_user_model()
         with transaction.atomic():
             user = User.objects.create_user(
-                username=username, password=password, is_client=False,
+                username=username,
+                password=password,
+                is_client=False,
             )
             device = MonoblockDevice.objects.create(
-                user=user, name=name, camera_source=camera,
+                user=user,
+                name=name,
+                camera_source=camera,
                 is_active=request.data.get("is_active", True) is not False,
                 created_by=request.user,
             )
         from apps.eventlog.services import log_event
+
         log_event(
-            "monoblock_device", f"Создан моноблок «{name}»",
+            "monoblock_device",
+            f"Создан моноблок «{name}»",
             user=request.user,
             payload={"device_id": device.pk, "username": username, "camera": camera},
         )
@@ -383,29 +428,44 @@ class MonoblockDeviceDetailView(APIView):
             try:
                 validate_password(password, user=device.user)
             except DjangoValidationError as exc:
-                raise ValidationError({"detail": "; ".join(exc.messages), "code": "weak_password"})
+                raise ValidationError(
+                    {"detail": "; ".join(exc.messages), "code": "weak_password"}
+                )
         before = {
-            "name": device.name, "username": device.user.username,
-            "camera": device.camera_source, "is_active": device.is_active,
+            "name": device.name,
+            "username": device.user.username,
+            "camera": device.camera_source,
+            "is_active": device.is_active,
         }
         with transaction.atomic():
             device.name = name
             device.camera_source = camera
             if "is_active" in request.data:
                 device.is_active = bool(request.data.get("is_active"))
-            device.save(update_fields=["name", "camera_source", "is_active", "updated_at"])
+            device.save(
+                update_fields=["name", "camera_source", "is_active", "updated_at"]
+            )
             device.user.username = username
             device.user.is_active = device.is_active
             if password:
                 device.user.set_password(password)
             device.user.save(update_fields=["username", "is_active", "password"])
         from apps.eventlog.services import log_event
+
         log_event(
-            "monoblock_device", f"Изменён моноблок «{name}»",
+            "monoblock_device",
+            f"Изменён моноблок «{name}»",
             user=request.user,
-            payload={"device_id": device.pk, "before": before,
-                     "after": {"name": name, "username": username,
-                               "camera": camera, "is_active": device.is_active}},
+            payload={
+                "device_id": device.pk,
+                "before": before,
+                "after": {
+                    "name": name,
+                    "username": username,
+                    "camera": camera,
+                    "is_active": device.is_active,
+                },
+            },
         )
         return Response(_device_payload(device))
 
@@ -417,20 +477,25 @@ class MonoblockDeviceDetailView(APIView):
             camera=device.camera_source,
             status__in=AiCountingSession.OPEN_STATUSES,
         ).exists():
-            raise ValidationError({
-                "detail": "Сначала завершите активную отгрузку этого моноблока",
-                "code": "monoblock_busy",
-            })
+            raise ValidationError(
+                {
+                    "detail": "Сначала завершите активную отгрузку этого моноблока",
+                    "code": "monoblock_busy",
+                }
+            )
         snapshot = _device_payload(device)
         name = device.name
         with transaction.atomic():
             device.user.delete()
         from apps.eventlog.services import log_event
+
         log_event(
-            "monoblock_device", f"Удалён моноблок «{name}»",
+            "monoblock_device",
+            f"Удалён моноблок «{name}»",
             user=request.user,
             payload={
-                "device_id": snapshot["id"], "name": snapshot["name"],
+                "device_id": snapshot["id"],
+                "name": snapshot["name"],
                 "username": snapshot["username"],
                 "camera": snapshot["camera_source"],
             },
@@ -461,45 +526,61 @@ class AlwaysOnCameraSettingsView(APIView):
     def get(self, request):
         row = MonoblockCameraSettings.objects.filter(singleton=True).first()
         if not ai.enabled():
-            return Response(self._payload(
-                row, sync_status="pending", detail="AI-сервис не настроен",
-            ))
+            return Response(
+                self._payload(
+                    row,
+                    sync_status="pending",
+                    detail="AI-сервис не настроен",
+                )
+            )
         try:
             live = ai.always_on_status_cached()
             desired = row.always_on_camera_sources if row else []
             synced = sorted(live.get("cameras") or []) == sorted(desired)
-            return Response(self._payload(
-                row,
-                live,
-                "synced" if synced else "pending",
-                "" if synced else "Настройка ожидает синхронизации",
-            ))
+            return Response(
+                self._payload(
+                    row,
+                    live,
+                    "synced" if synced else "pending",
+                    "" if synced else "Настройка ожидает синхронизации",
+                )
+            )
         except (ai.AiUnavailable, ai.AiError) as exc:
-            return Response(self._payload(
-                row, sync_status="pending", detail=str(exc),
-            ))
+            return Response(
+                self._payload(
+                    row,
+                    sync_status="pending",
+                    detail=str(exc),
+                )
+            )
 
     def put(self, request):
         raw_sources = request.data.get("camera_sources")
         if not isinstance(raw_sources, list):
-            raise ValidationError({
-                "camera_sources": "Передайте список камер",
-                "code": "bad_camera_sources",
-            })
+            raise ValidationError(
+                {
+                    "camera_sources": "Передайте список камер",
+                    "code": "bad_camera_sources",
+                }
+            )
         normalized = []
         for raw in raw_sources:
             if not isinstance(raw, str):
-                raise ValidationError({
-                    "camera_sources": "Каждая камера должна быть строкой",
-                    "code": "bad_camera_source",
-                })
+                raise ValidationError(
+                    {
+                        "camera_sources": "Каждая камера должна быть строкой",
+                        "code": "bad_camera_source",
+                    }
+                )
             try:
                 source = ai.normalize(raw)
             except ai.AiError:
-                raise ValidationError({
-                    "camera_sources": f"Неизвестная камера: {raw}",
-                    "code": "bad_camera_source",
-                })
+                raise ValidationError(
+                    {
+                        "camera_sources": f"Неизвестная камера: {raw}",
+                        "code": "bad_camera_source",
+                    }
+                )
             if source not in normalized:
                 normalized.append(source)
 
@@ -511,21 +592,32 @@ class AlwaysOnCameraSettingsView(APIView):
         live_before = ai.cached_always_on_status() if ai.enabled() else None
         capacity = (live_before or {}).get("capacity")
         if isinstance(capacity, int) and len(normalized) > capacity:
-            raise ValidationError({
-                "camera_sources": (
-                    f"ПК камер поддерживает до {capacity} активных процессоров"
-                ),
-                "code": "always_on_capacity_exceeded",
-            })
+            raise ValidationError(
+                {
+                    "camera_sources": (
+                        f"ПК камер поддерживает до {capacity} активных процессоров"
+                    ),
+                    "code": "always_on_capacity_exceeded",
+                }
+            )
         row.always_on_camera_sources = normalized
         row.updated_by = request.user
-        row.save(update_fields=[
-            "always_on_camera_sources", "updated_by", "updated_at",
-        ])
+        row.save(
+            update_fields=[
+                "always_on_camera_sources",
+                "updated_by",
+                "updated_at",
+            ]
+        )
         if not ai.enabled():
-            return Response(self._payload(
-                row, sync_status="pending", detail="AI-сервис не настроен",
-            ), status=status.HTTP_202_ACCEPTED)
+            return Response(
+                self._payload(
+                    row,
+                    sync_status="pending",
+                    detail="AI-сервис не настроен",
+                ),
+                status=status.HTTP_202_ACCEPTED,
+            )
         try:
             live = ai.configure_always_on(normalized, "sub")
             return Response(self._payload(row, live))
@@ -533,15 +625,23 @@ class AlwaysOnCameraSettingsView(APIView):
             # PostgreSQL remains authoritative. The camera-monitor retries,
             # so a temporary camera-PC outage never loses the administrator's
             # desired configuration.
-            return Response(self._payload(
-                row, sync_status="pending", detail=str(exc),
-            ), status=status.HTTP_202_ACCEPTED)
+            return Response(
+                self._payload(
+                    row,
+                    sync_status="pending",
+                    detail=str(exc),
+                ),
+                status=status.HTTP_202_ACCEPTED,
+            )
 
 
 class WagonNumberCameraSettingsView(APIView):
-    """Superuser-only assignment of the 24/7 wagon-number camera."""
+    """Сотрудники зернового контура видят поток; назначает только superuser."""
 
-    permission_classes = [IsSuperUser]
+    def get_permissions(self):
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return [HasPerm("grain.view")]
+        return [IsSuperUser()]
 
     @staticmethod
     def _payload(row=None, live=None, sync_status="synced", detail=""):
@@ -560,59 +660,87 @@ class WagonNumberCameraSettingsView(APIView):
     def get(self, request):
         row = MonoblockCameraSettings.objects.filter(singleton=True).first()
         if not ai.enabled():
-            return Response(self._payload(
-                row, sync_status="pending", detail="AI-сервис не настроен",
-            ))
+            return Response(
+                self._payload(
+                    row,
+                    sync_status="pending",
+                    detail="AI-сервис не настроен",
+                )
+            )
         try:
             live = ai.wagon_number_status_cached()
             desired = row.wagon_number_camera_source if row else ""
             synced = (live.get("camera") or "") == desired
-            return Response(self._payload(
-                row,
-                live,
-                "synced" if synced else "pending",
-                "" if synced else "Назначение ожидает синхронизации",
-            ))
+            return Response(
+                self._payload(
+                    row,
+                    live,
+                    "synced" if synced else "pending",
+                    "" if synced else "Назначение ожидает синхронизации",
+                )
+            )
         except (ai.AiUnavailable, ai.AiError) as exc:
-            return Response(self._payload(
-                row, sync_status="pending", detail=str(exc),
-            ))
+            return Response(
+                self._payload(
+                    row,
+                    sync_status="pending",
+                    detail=str(exc),
+                )
+            )
 
     def put(self, request):
         raw_source = request.data.get("camera_source")
         if raw_source in (None, ""):
             normalized = ""
         elif not isinstance(raw_source, str):
-            raise ValidationError({
-                "camera_source": "Передайте камеру или null",
-                "code": "bad_camera_source",
-            })
+            raise ValidationError(
+                {
+                    "camera_source": "Передайте камеру или null",
+                    "code": "bad_camera_source",
+                }
+            )
         else:
             try:
                 normalized = ai.normalize(raw_source)
             except ai.AiError:
-                raise ValidationError({
-                    "camera_source": f"Неизвестная камера: {raw_source}",
-                    "code": "bad_camera_source",
-                })
+                raise ValidationError(
+                    {
+                        "camera_source": f"Неизвестная камера: {raw_source}",
+                        "code": "bad_camera_source",
+                    }
+                )
 
         row, _ = MonoblockCameraSettings.objects.get_or_create(singleton=True)
         row.wagon_number_camera_source = normalized
         row.updated_by = request.user
-        row.save(update_fields=[
-            "wagon_number_camera_source", "updated_by", "updated_at",
-        ])
+        row.save(
+            update_fields=[
+                "wagon_number_camera_source",
+                "updated_by",
+                "updated_at",
+            ]
+        )
         if not ai.enabled():
-            return Response(self._payload(
-                row, sync_status="pending", detail="AI-сервис не настроен",
-            ), status=status.HTTP_202_ACCEPTED)
+            return Response(
+                self._payload(
+                    row,
+                    sync_status="pending",
+                    detail="AI-сервис не настроен",
+                ),
+                status=status.HTTP_202_ACCEPTED,
+            )
         try:
             live = ai.configure_wagon_number(normalized or None, "main")
             return Response(self._payload(row, live))
         except (ai.AiUnavailable, ai.AiError) as exc:
-            return Response(self._payload(
-                row, sync_status="pending", detail=str(exc),
-            ), status=status.HTTP_202_ACCEPTED)
+            return Response(
+                self._payload(
+                    row,
+                    sync_status="pending",
+                    detail=str(exc),
+                ),
+                status=status.HTTP_202_ACCEPTED,
+            )
 
 
 class AlwaysOnAnalyticsView(APIView):
@@ -636,12 +764,14 @@ class AlwaysOnAnalyticsSubtractView(APIView):
     permission_classes = [IsSuperUser]
 
     def post(self, request, cam: str):
-        return Response(analytics.subtract_today(
-            cam,
-            request.data.get("amount"),
-            request.data.get("reason") or "",
-            request.user,
-        ))
+        return Response(
+            analytics.subtract_today(
+                cam,
+                request.data.get("amount"),
+                request.data.get("reason") or "",
+                request.user,
+            )
+        )
 
 
 class AlwaysOnAnalyticsArchiveView(APIView):
@@ -651,13 +781,18 @@ class AlwaysOnAnalyticsArchiveView(APIView):
 
     def get(self, request, cam: str | None = None):
         # Камера приходит либо из пути, либо из ?camera= для общего списка.
-        return Response(analytics.archives_payload(
-            cam or request.query_params.get("camera")))
+        return Response(
+            analytics.archives_payload(cam or request.query_params.get("camera"))
+        )
 
     def post(self, request, cam: str):
-        return Response(analytics.archive_camera(
-            cam, request.data.get("note") or "", request.user,
-        ))
+        return Response(
+            analytics.archive_camera(
+                cam,
+                request.data.get("note") or "",
+                request.user,
+            )
+        )
 
     def delete(self, request, archive_id: int):
         return Response(analytics.delete_archive(archive_id, request.user))
@@ -690,15 +825,19 @@ class ShippingBoardSettingsView(APIView):
         try:
             value = int(value)
         except (TypeError, ValueError):
-            raise ValidationError({
-                "completed_orders_days": "Укажите количество дней от 1 до 90",
-                "code": "bad_completed_orders_days",
-            })
+            raise ValidationError(
+                {
+                    "completed_orders_days": "Укажите количество дней от 1 до 90",
+                    "code": "bad_completed_orders_days",
+                }
+            )
         if value < 1 or value > 90:
-            raise ValidationError({
-                "completed_orders_days": "Допустимо от 1 до 90 дней",
-                "code": "bad_completed_orders_days",
-            })
+            raise ValidationError(
+                {
+                    "completed_orders_days": "Допустимо от 1 до 90 дней",
+                    "code": "bad_completed_orders_days",
+                }
+            )
         row, _ = MonoblockCameraSettings.objects.update_or_create(
             singleton=True,
             defaults={
@@ -1032,9 +1171,13 @@ class CameraAiView(APIView):
             final = ai.status(camera)
             sessions.commit_final(session, final)
             raw_complete = request.data.get(
-                "complete_order", request.query_params.get("complete_order"),
+                "complete_order",
+                request.query_params.get("complete_order"),
             )
-            complete_order = raw_complete is True or str(raw_complete).lower() in ("1", "true")
+            complete_order = raw_complete is True or str(raw_complete).lower() in (
+                "1",
+                "true",
+            )
             if complete_order:
                 total = final.get("total") if isinstance(final, dict) else None
                 finish_ai_loading(order, total, request.user)
@@ -1048,9 +1191,13 @@ class CameraAiView(APIView):
                 "available": True,
                 "busy": False,
                 "owned_by_order": False,
-                **({"order_status": "shipped", "bags_loaded": total}
-                   if complete_order else {}),
+                **(
+                    {"order_status": "shipped", "bags_loaded": total}
+                    if complete_order
+                    else {}
+                ),
             }
+
         return _ai_response(stop, request.user)
 
 
@@ -1091,8 +1238,7 @@ class CameraAiSessionListView(APIView):
 
     def get(self, request):
         open_sessions = (
-            AiCountingSession.objects
-            .filter(
+            AiCountingSession.objects.filter(
                 status__in=AiCountingSession.OPEN_STATUSES,
                 order__in=Order.objects.all(),
             )
@@ -1102,28 +1248,34 @@ class CameraAiSessionListView(APIView):
         device = _device_for(request.user)
         if device is not None:
             open_sessions = open_sessions.filter(camera=device.camera_source)
-        return Response([
-            {
-                "id": session.pk,
-                "order_id": session.order_id,
-                "order_client_name": session.order.client.name,
-                "order_truck_number": session.order.truck_number,
-                "camera": session.camera,
-                "status": session.status,
-                "started_at": session.started_at,
-                "started_by_id": session.started_by_id,
-                "started_by_name": _started_by_name(session),
-                "can_stop": _can_control(session, request.user),
-                "last_status": session.last_status,
-            }
-            for session in open_sessions
-        ])
+        return Response(
+            [
+                {
+                    "id": session.pk,
+                    "order_id": session.order_id,
+                    "order_client_name": session.order.client.name,
+                    "order_truck_number": session.order.truck_number,
+                    "camera": session.camera,
+                    "status": session.status,
+                    "started_at": session.started_at,
+                    "started_by_id": session.started_by_id,
+                    "started_by_name": _started_by_name(session),
+                    "can_stop": _can_control(session, request.user),
+                    "last_status": session.last_status,
+                }
+                for session in open_sessions
+            ]
+        )
 
 
 def _recording_stream(session: AiCountingSession) -> str:
     if session.recording_stream:
         return session.recording_stream
-    stream = session.last_status.get("stream") if isinstance(session.last_status, dict) else ""
+    stream = (
+        session.last_status.get("stream")
+        if isinstance(session.last_status, dict)
+        else ""
+    )
     return stream if isinstance(stream, str) else ""
 
 
@@ -1156,7 +1308,8 @@ def _history_payload(session: AiCountingSession, names=None) -> dict:
         "recording_available_until": (
             (session.ended_at or timezone.now())
             + timedelta(days=recordings.VIDEO_RETENTION_DAYS)
-            if stream else None
+            if stream
+            else None
         ),
     }
 
@@ -1166,8 +1319,9 @@ def _history_queryset():
         AiCountingSession.objects
         # Метаданные и финальный счёт остаются в БД вместе с заказом. Только
         # тяжёлые видеофайлы удаляются на ПК камер через 14 дней.
-        .filter(order__in=Order.objects.all())
-        .select_related("order__client", "started_by__employee")
+        .filter(order__in=Order.objects.all()).select_related(
+            "order__client", "started_by__employee"
+        )
     )
 
 
@@ -1184,12 +1338,12 @@ class CameraAiSessionHistoryView(APIView):
         if raw_order_id:
             raw_order_ids = raw_order_id
         if request.query_params.get("post_board") == "1":
-            settings = MonoblockCameraSettings.objects.filter(
-                singleton=True
-            ).only("completed_orders_days").first()
-            completed_days = (
-                settings.completed_orders_days if settings else 1
+            settings = (
+                MonoblockCameraSettings.objects.filter(singleton=True)
+                .only("completed_orders_days")
+                .first()
             )
+            completed_days = settings.completed_orders_days if settings else 1
             queryset = queryset.filter(
                 order__in=for_post_board(
                     Order.objects.all(),
@@ -1199,15 +1353,20 @@ class CameraAiSessionHistoryView(APIView):
         elif raw_order_ids:
             parts = [part.strip() for part in raw_order_ids.split(",") if part.strip()]
             if len(parts) > 100:
-                raise ValidationError({"detail": "Слишком много заказов", "code": "too_many_orders"})
+                raise ValidationError(
+                    {"detail": "Слишком много заказов", "code": "too_many_orders"}
+                )
             try:
                 order_ids = [int(part) for part in parts]
             except ValueError:
-                raise ValidationError({"detail": "Некорректный номер заказа", "code": "bad_order_id"})
+                raise ValidationError(
+                    {"detail": "Некорректный номер заказа", "code": "bad_order_id"}
+                )
             queryset = queryset.filter(order_id__in=order_ids)
         names = MonoblockCameraSettings.display_names()
         return Response(
-            [_history_payload(session, names) for session in queryset[:500]])
+            [_history_payload(session, names) for session in queryset[:500]]
+        )
 
 
 def _history_session(pk: int) -> AiCountingSession:
@@ -1229,11 +1388,14 @@ def _session_segments(session: AiCountingSession) -> list[dict]:
 
 
 def _segment_video_url(session: AiCountingSession, segment: dict) -> str:
-    token = signing.dumps({
-        "session": session.pk,
-        "start": segment["start"],
-        "duration": segment["duration"],
-    }, salt=RECORDING_TOKEN_SALT)
+    token = signing.dumps(
+        {
+            "session": session.pk,
+            "start": segment["start"],
+            "duration": segment["duration"],
+        },
+        salt=RECORDING_TOKEN_SALT,
+    )
     return f"/api/cameras/ai/history/{session.pk}/recording/video/?token={token}"
 
 
@@ -1248,22 +1410,27 @@ class CameraAiRecordingView(APIView):
         try:
             segments = _session_segments(session)
         except recordings.RecordingUnavailable:
-            return Response({
-                "available": False,
-                "detail": "Архив на компьютере камер сейчас недоступен",
-                "segments": [],
-            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        return Response({
-            "available": bool(segments),
-            "retention_days": recordings.VIDEO_RETENTION_DAYS,
-            "segments": [
+            return Response(
                 {
-                    **segment,
-                    "video_url": _segment_video_url(session, segment),
-                }
-                for segment in segments
-            ],
-        })
+                    "available": False,
+                    "detail": "Архив на компьютере камер сейчас недоступен",
+                    "segments": [],
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(
+            {
+                "available": bool(segments),
+                "retention_days": recordings.VIDEO_RETENTION_DAYS,
+                "segments": [
+                    {
+                        **segment,
+                        "video_url": _segment_video_url(session, segment),
+                    }
+                    for segment in segments
+                ],
+            }
+        )
 
 
 class CameraAiRecordingVideoView(APIView):
@@ -1286,34 +1453,57 @@ class CameraAiRecordingVideoView(APIView):
                 raise signing.BadSignature("wrong session")
             requested_start = str(token_data["start"])
             requested_duration = float(token_data["duration"])
-        except (signing.BadSignature, signing.SignatureExpired, KeyError, TypeError, ValueError):
-            return Response({
-                "detail": "Ссылка на видео недействительна или устарела",
-                "code": "bad_recording_token",
-            }, status=status.HTTP_403_FORBIDDEN)
+        except (
+            signing.BadSignature,
+            signing.SignatureExpired,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            return Response(
+                {
+                    "detail": "Ссылка на видео недействительна или устарела",
+                    "code": "bad_recording_token",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
         try:
             segments = _session_segments(session)
         except recordings.RecordingUnavailable:
-            return Response({
-                "detail": "Архив на компьютере камер сейчас недоступен",
-                "code": "recording_unavailable",
-            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        segment = next((
-            item for item in segments
-            if item["start"] == requested_start
-            and abs(item["duration"] - requested_duration) < 0.01
-        ), None)
+            return Response(
+                {
+                    "detail": "Архив на компьютере камер сейчас недоступен",
+                    "code": "recording_unavailable",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        segment = next(
+            (
+                item
+                for item in segments
+                if item["start"] == requested_start
+                and abs(item["duration"] - requested_duration) < 0.01
+            ),
+            None,
+        )
         if segment is None:
-            raise ValidationError({"detail": "Фрагмент не найден", "code": "segment_not_found"})
+            raise ValidationError(
+                {"detail": "Фрагмент не найден", "code": "segment_not_found"}
+            )
         try:
             upstream = recordings.open_segment(
-                _recording_stream(session), segment["start"], segment["duration"],
+                _recording_stream(session),
+                segment["start"],
+                segment["duration"],
             )
         except recordings.RecordingUnavailable:
-            return Response({
-                "detail": "Не удалось открыть видео на компьютере камер",
-                "code": "recording_unavailable",
-            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            return Response(
+                {
+                    "detail": "Не удалось открыть видео на компьютере камер",
+                    "code": "recording_unavailable",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         def chunks():
             try:
@@ -1329,6 +1519,8 @@ class CameraAiRecordingVideoView(APIView):
         length = upstream.headers.get("Content-Length")
         if length:
             response["Content-Length"] = length
-        response["Content-Disposition"] = f'inline; filename="loading-{session.order_id}.mp4"'
+        response["Content-Disposition"] = (
+            f'inline; filename="loading-{session.order_id}.mp4"'
+        )
         response["Cache-Control"] = "private, no-store"
         return response

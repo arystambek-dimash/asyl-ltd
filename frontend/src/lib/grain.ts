@@ -6,6 +6,7 @@ type Tone = "muted" | "primary" | "success" | "warning" | "destructive";
 export const GRAIN_STATUS_TONE: Record<string, Tone> = {
   expected: "muted",
   arrived: "primary",
+  at_silo: "warning",
   gross_weighed: "primary",
   lab_pending: "warning",
   unloading_allowed: "success",
