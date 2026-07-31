@@ -26,6 +26,15 @@ const client: Me = {
   sales_department: null,
 };
 
+const factoryUser: Me = {
+  ...client,
+  id: 2,
+  username: "factory",
+  is_client: false,
+  client_id: null,
+  permissions: ["warehouse.view", "grain.view"],
+};
+
 function Harness() {
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
@@ -62,6 +71,24 @@ describe("подсветка активного пункта", () => {
     render(<Sidebar me={client} />);
     expect(screen.getByRole("link", { name: "Мои заказы" })).toHaveClass(activeClass);
     expect(screen.getByRole("link", { name: "Новый заказ" })).not.toHaveClass(activeClass);
+  });
+
+  it("показывает силосы внутри «Завода», а не отдельным пунктом зерна", () => {
+    nav.pathname = "/warehouse/silos";
+    render(<Sidebar me={factoryUser} />);
+
+    const factory = screen.getByRole("link", { name: "Завод" });
+    expect(factory).toHaveAttribute("href", "/warehouse");
+    expect(factory).toHaveClass(activeClass);
+    expect(screen.getByRole("link", { name: "Приход и проход" })).toHaveAttribute("href", "/grain");
+    expect(screen.queryByRole("link", { name: "Силосы" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Зерно" })).not.toBeInTheDocument();
+  });
+
+  it("ведёт сотрудника без доступа к складу сразу в силосный участок завода", () => {
+    render(<Sidebar me={{ ...factoryUser, permissions: ["grain.view"] }} />);
+
+    expect(screen.getByRole("link", { name: "Завод" })).toHaveAttribute("href", "/warehouse/silos");
   });
 });
 

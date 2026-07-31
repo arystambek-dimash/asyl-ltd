@@ -2,8 +2,9 @@
 import { Fragment, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronDown, Plus, TrainFront } from "lucide-react";
+import { ChevronDown, Plus, ScanLine, TrainFront } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
+import { WagonNumberCameraWorkspace } from "@/components/grain/wagon-number-camera";
 import { RequirePerm } from "@/components/require-perm";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -466,7 +467,7 @@ function GrainPageInner() {
   const canSupply = can(me, "grain.supply");
   const canArrive = can(me, "grain.arrive");
   const canExit = can(me, "grain.exit");
-  const [tab, setTab] = useState<"expected" | "on_site" | "exit_ready" | "finished">("on_site");
+  const [tab, setTab] = useState<"expected" | "on_site" | "exit_ready" | "finished" | "camera">("on_site");
   const [supplyOpen, setSupplyOpen] = useState(false);
   const [arriveOpen, setArriveOpen] = useState(false);
   const [notice, setNotice] = useState("");
@@ -474,7 +475,10 @@ function GrainPageInner() {
 
   const supplies = usePagedApi<GrainSupply>(tab === "expected" ? "/grain/supplies/?status=expected" : null, 50);
   const drafts = usePagedApi<GrainSupply>(tab === "expected" ? "/grain/supplies/?status=draft" : null, 50);
-  const wagons = usePagedApi<GrainWagon>(tab === "expected" ? null : `/grain/wagons/?scope=${tab}`, 50);
+  const wagons = usePagedApi<GrainWagon>(
+    tab === "expected" || tab === "camera" ? null : `/grain/wagons/?scope=${tab}`,
+    50,
+  );
   const arrivalSupplies = usePagedApi<GrainSupply>(arriveOpen ? "/grain/supplies/?status=expected" : null, 100);
 
   function refreshAll() {
@@ -498,25 +502,24 @@ function GrainPageInner() {
 
   return (
     <AppShell
-      title="Приход зерна"
+      title="Приход и проход"
       section="Работа"
-      description="Вагоны от заявки до выезда: взвешивание, лаборатория, силосы и оприходование."
+      description="Ответственный контур вагонов: заявка, проходная, взвешивание, лаборатория и выезд."
       actions={
-        <div className="flex items-center gap-2">
-          <Link href="/grain/silos" className={buttonVariants({ size: "sm", variant: "outline" })}>
-            Силосы
-          </Link>
-          {canArrive && (
-            <Button size="sm" variant="outline" onClick={() => setArriveOpen(true)}>
-              <TrainFront className="size-4" /> Прибытие
-            </Button>
-          )}
-          {canSupply && (
-            <Button size="sm" onClick={() => setSupplyOpen(true)}>
-              <Plus className="size-4" /> Новая поставка
-            </Button>
-          )}
-        </div>
+        tab !== "camera" ? (
+          <div className="flex items-center gap-2">
+            {canArrive && (
+              <Button size="sm" variant="outline" onClick={() => setArriveOpen(true)}>
+                <TrainFront className="size-4" /> Прибытие
+              </Button>
+            )}
+            {canSupply && (
+              <Button size="sm" onClick={() => setSupplyOpen(true)}>
+                <Plus className="size-4" /> Новая поставка
+              </Button>
+            )}
+          </div>
+        ) : undefined
       }
     >
       <div className="flex flex-col gap-4">
@@ -526,6 +529,7 @@ function GrainPageInner() {
             { key: "on_site", label: "На территории" },
             { key: "exit_ready", label: "Готовы к выезду" },
             { key: "finished", label: "Завершённые" },
+            ...(me?.is_superuser ? [{ key: "camera", label: "Камера проходной", icon: ScanLine }] : []),
           ]}
           active={tab}
           onChange={(key) => setTab(key as typeof tab)}
@@ -538,7 +542,9 @@ function GrainPageInner() {
         )}
         {actionError && <ErrorAlert message={actionError} onRetry={refreshAll} />}
 
-        {tab === "expected" ? (
+        {tab === "camera" && me?.is_superuser ? (
+          <WagonNumberCameraWorkspace />
+        ) : tab === "expected" ? (
           <>
             {(supplies.error || drafts.error) && (
               <ErrorAlert message={supplies.error || drafts.error} onRetry={refreshAll} />
@@ -628,7 +634,7 @@ function GrainPageInner() {
 
 export default function GrainPage() {
   return (
-    <RequirePerm perm="grain.view" title="Приход зерна">
+    <RequirePerm perm="grain.view" title="Приход и проход">
       <GrainPageInner />
     </RequirePerm>
   );

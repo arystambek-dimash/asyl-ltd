@@ -18,6 +18,7 @@ import {
   X,
   Store,
   HandCoins,
+  Factory,
   ScanLine,
   Wheat,
 } from "lucide-react";
@@ -44,7 +45,8 @@ function hasNavPerm(me: Me, perm?: Perm): boolean {
   return (Array.isArray(perm) ? perm : [perm]).some((c) => can(me, c));
 }
 
-function staffSections(): NavSection[] {
+function staffSections(me: Me): NavSection[] {
+  const factoryHref = can(me, "warehouse.view") ? "/warehouse" : "/warehouse/silos";
   return [
     {
       title: "Обзор",
@@ -67,9 +69,14 @@ function staffSections(): NavSection[] {
         // Единый пост: машины и вагоны вместе — лайв-этапы и моноблок отгрузки.
         { href: "/shipping", label: "Пост погрузки", icon: Truck, perm: ["shipping.view", "train.view"] },
         { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "shipping.load" },
-        { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },
-        // Приход зерна вагонами: заявки, вагоны на территории, силосы.
-        { href: "/grain", label: "Зерно", icon: Wheat, perm: "grain.view" },
+        {
+          href: factoryHref,
+          label: "Завод",
+          icon: Factory,
+          perm: ["warehouse.view", "grain.view"],
+        },
+        // Проходная вагонов: заявки, приход, взвешивание и выход.
+        { href: "/grain", label: "Приход и проход", icon: Wheat, perm: "grain.view" },
         { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
         { href: "/stores", label: "Магазины", icon: Store, perm: "clients.view" },
         { href: "/catalog/products", label: "Товары", icon: Package, perm: "catalog.view" },
@@ -150,7 +157,7 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
     ? PORTAL_SECTIONS
     : me.is_monoblock
       ? [{ title: "Работа", items: [{ href: "/monoblock", label: "Моноблок", icon: ScanLine }] }]
-      : staffSections();
+      : staffSections(me);
   const visible = sections
     .map((s) => ({
       ...s,

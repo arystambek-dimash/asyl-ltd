@@ -18,9 +18,7 @@ import {
   RefreshCw,
   Settings2,
   ShieldCheck,
-  ScanLine,
   Square,
-  TrainFront,
   UserRound,
   Video,
   VideoOff,
@@ -54,7 +52,6 @@ import type {
   MonoblockCameraSettings,
   MonoblockDevice,
   Order,
-  WagonNumberCameraSettings,
 } from "@/lib/types";
 import { dayColorBreakdown, fullDay, shortDay } from "@/lib/day-analytics";
 import { useAiCounter } from "@/lib/use-ai-counter";
@@ -69,7 +66,7 @@ const SESSION_POLL_MS = 3_000;
 // каждые 3 секунды на экране, который висит открытым весь день.
 const SLOW_POLL_MS = 30_000;
 const ALWAYS_ON_MODAL_VIEWS = ["live", "analytics", "archive"] as const;
-const MONOBLOCK_PAGE_TABS = ["shipments", "monoblock", "wagon_numbers"] as const;
+const MONOBLOCK_PAGE_TABS = ["shipments", "monoblock"] as const;
 
 const COLOR_META: Record<string, { label: string; bar: string; dot: string }> = {
   red: { label: "Красный", bar: "bg-[#dc604d]", dot: "bg-[#dc604d]" },
@@ -495,232 +492,6 @@ function MonoblockDevicesButton({
         onConfirm={() => void confirmRemove()}
       />
     </>
-  );
-}
-
-function WagonNumberSettingsButton({
-  cameras,
-  settings,
-  onSaved,
-}: {
-  cameras: (CameraFeed & { src: string })[];
-  settings: WagonNumberCameraSettings | null;
-  onSaved: (next: WagonNumberCameraSettings) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  function show() {
-    setSelected(settings?.camera_source ?? null);
-    setError("");
-    setOpen(true);
-  }
-
-  async function save() {
-    setSaving(true);
-    setError("");
-    try {
-      const { data } = await api.put<WagonNumberCameraSettings>("/cameras/wagon-number-settings/", {
-        camera_source: selected,
-      });
-      onSaved(data);
-      showSuccess(selected ? "Камера номеров назначена" : "Камера номеров отключена");
-      setOpen(false);
-    } catch (cause) {
-      setError(apiError(cause));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <>
-      <Button
-        variant="outline"
-        className="h-10 rounded-xl border-amber-200 bg-amber-50/80 text-amber-800 hover:bg-amber-100"
-        onClick={show}
-      >
-        <ScanLine className="size-4" /> Назначить камеру
-        <span className="rounded-full bg-white px-2 py-0.5 text-[11px] text-amber-700 shadow-sm">
-          {settings?.camera_source ? "1" : "0"}
-        </span>
-      </Button>
-
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        eyebrow="Суперадмин · Wagon OCR 24/7"
-        title="Камера номеров вагонов"
-        description="Выберите одну камеру, которая круглосуточно передаёт основной поток в контур распознавания номеров."
-        className="max-w-3xl"
-        footer={
-          <>
-            {selected && (
-              <Button variant="ghost" className="mr-auto text-slate-500" onClick={() => setSelected(null)}>
-                Отключить назначение
-              </Button>
-            )}
-            <Button variant="ghost" onClick={() => setOpen(false)}>
-              Отмена
-            </Button>
-            <Button disabled={saving} onClick={() => void save()}>
-              <Check className="size-4" /> {saving ? "Сохранение…" : "Закрепить камеру"}
-            </Button>
-          </>
-        }
-      >
-        <div className="mb-5 grid gap-2.5 sm:grid-cols-3">
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
-            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-amber-700">Роль</p>
-            <p className="mt-1 text-sm font-bold text-slate-900">Номер вагона</p>
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-slate-950 p-3 text-white">
-            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-white/45">Поток</p>
-            <p className="mt-1 text-sm font-bold">Основной · 24/7</p>
-          </div>
-          <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
-            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-700">Управление</p>
-            <p className="mt-1 text-sm font-bold text-slate-900">Только суперадмин</p>
-          </div>
-        </div>
-
-        {settings?.sync_status === "pending" && (
-          <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-            <RefreshCw className="mt-0.5 size-4 shrink-0" />
-            <p>{settings.detail || "ПК камер переподключается. Назначение применится автоматически."}</p>
-          </div>
-        )}
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          {cameras.map((camera) => (
-            <CameraChoice
-              key={camera.id}
-              camera={camera}
-              checked={selected === camera.src}
-              onToggle={() => {
-                setSelected(camera.src);
-                setError("");
-              }}
-            />
-          ))}
-        </div>
-        {!cameras.length && (
-          <div className="rounded-xl border border-dashed p-8 text-center text-sm text-slate-400">
-            Подключённые камеры пока не обнаружены.
-          </div>
-        )}
-        {error && <p className="mt-3 text-sm text-[var(--destructive)]">{error}</p>}
-      </Modal>
-    </>
-  );
-}
-
-function WagonNumberPanel({
-  camera,
-  settings,
-}: {
-  camera?: CameraFeed & { src: string };
-  settings: WagonNumberCameraSettings | null;
-}) {
-  const [streamOnline, setStreamOnline] = useState(false);
-
-  if (!settings?.camera_source) {
-    return (
-      <div className="relative flex min-h-72 flex-col items-center justify-center overflow-hidden rounded-[28px] border border-dashed border-amber-200 bg-[#111318] p-8 text-center text-white">
-        <div className="absolute inset-0 opacity-30 [background-image:linear-gradient(rgba(255,255,255,.04)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.04)_1px,transparent_1px)] [background-size:32px_32px]" />
-        <span className="relative flex size-16 items-center justify-center rounded-2xl border border-amber-400/30 bg-amber-400/10 text-amber-300">
-          <ScanLine className="size-8" />
-        </span>
-        <p className="relative mt-4 text-lg font-bold">Камера номера не назначена</p>
-        <p className="relative mt-1 max-w-md text-sm text-white/45">
-          Суперадмин выбирает одну камеру. Назначение хранится в системе и автоматически восстанавливается на ПК камер.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <section className="overflow-hidden rounded-[28px] border border-slate-800 bg-[#111318] text-white shadow-[0_24px_60px_rgba(15,23,42,0.18)]">
-      <div className="grid lg:grid-cols-[1.55fr_0.85fr]">
-        <div className="relative aspect-video min-h-72 overflow-hidden bg-black">
-          <CameraStream
-            src={settings.camera_source}
-            onStateChange={setStreamOnline}
-            className="absolute inset-0 size-full object-cover"
-          />
-          {!streamOnline && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black text-white/40">
-              <VideoOff className="size-7" />
-              <span className="text-xs">Ожидаем видеопоток</span>
-            </div>
-          )}
-          <div className="pointer-events-none absolute inset-x-[8%] top-1/2 h-px animate-pulse bg-amber-300 shadow-[0_0_18px_4px_rgba(251,191,36,0.55)]" />
-          <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent p-4 pb-12">
-            <span className="flex items-center gap-2 rounded-full border border-amber-300/25 bg-black/45 px-3 py-1.5 text-[10px] font-bold tracking-[0.14em] text-amber-200 backdrop-blur-md">
-              <span className={cn("size-1.5 rounded-full", streamOnline ? "bg-emerald-400" : "bg-amber-400")} />
-              WAGON OCR · 24/7
-            </span>
-            <span className="rounded-full bg-black/45 px-3 py-1.5 text-[10px] font-semibold text-white/65 backdrop-blur-md">
-              MAIN STREAM
-            </span>
-          </div>
-          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent p-4 pt-14">
-            <p className="text-lg font-bold">{camera?.zone || settings.camera_source}</p>
-            <p className="mt-0.5 text-xs text-white/50">{camera?.name || settings.camera_source}</p>
-          </div>
-        </div>
-
-        <div className="flex flex-col p-6">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300">Назначение камеры</p>
-              <h2 className="mt-2 text-2xl font-bold tracking-tight">Номера вагонов</h2>
-            </div>
-            <span
-              className={cn(
-                "rounded-full border px-3 py-1 text-[10px] font-bold",
-                settings.sync_status === "synced"
-                  ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-300"
-                  : "border-amber-400/25 bg-amber-400/10 text-amber-200",
-              )}
-            >
-              {settings.sync_status === "synced" ? "СИНХРОНИЗИРОВАНО" : "ОЖИДАЕТ СВЯЗЬ"}
-            </span>
-          </div>
-
-          <div className="mt-7 grid gap-3">
-            <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-              <span className="flex size-10 items-center justify-center rounded-xl bg-amber-400/10 text-amber-300">
-                <TrainFront className="size-5" />
-              </span>
-              <div>
-                <p className="text-[11px] text-white/40">Закреплённая камера</p>
-                <p className="mt-0.5 text-sm font-bold">{camera?.zone || settings.camera_source}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-              <span className="flex size-10 items-center justify-center rounded-xl bg-sky-400/10 text-sky-300">
-                <Video className="size-5" />
-              </span>
-              <div>
-                <p className="text-[11px] text-white/40">Источник изображения</p>
-                <p className="mt-0.5 text-sm font-bold">
-                  Основной поток · {settings.live?.stream || settings.camera_source}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-auto pt-6">
-            <div className="rounded-2xl border border-amber-300/15 bg-amber-300/[0.06] p-4 text-xs leading-5 text-amber-50/65">
-              Поток уже закреплён 24/7. Подключение модели распознавания и журнал найденных номеров — следующий этап.
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
   );
 }
 
@@ -2002,12 +1773,6 @@ function MonoblockPageInner() {
     error: alwaysOnAnalyticsError,
     reload: reloadAlwaysOnAnalytics,
   } = useApi<AlwaysOnDailyAnalytics>(me?.is_superuser ? "/cameras/always-on-analytics/" : null);
-  const {
-    data: wagonNumberSettings,
-    error: wagonNumberSettingsError,
-    reload: reloadWagonNumberSettings,
-    setData: setWagonNumberSettings,
-  } = useApi<WagonNumberCameraSettings>(me?.is_superuser ? "/cameras/wagon-number-settings/" : null);
   const isSuper = !!me?.is_superuser;
   // Страница разделена на вкладки: «Отгрузки» (по умолчанию) — запуск сессий
   // и активные отгрузки, «AI 24/7» — сам моноблок с бесконечным циклом подсчёта.
@@ -2036,7 +1801,7 @@ function MonoblockPageInner() {
         reloadOrders(),
         reloadCameras(),
         reloadCameraSettings(),
-        ...(me?.is_superuser ? [reloadAlwaysOnSettings(), reloadAlwaysOnAnalytics(), reloadWagonNumberSettings()] : []),
+        ...(me?.is_superuser ? [reloadAlwaysOnSettings(), reloadAlwaysOnAnalytics()] : []),
       ]),
     SLOW_POLL_MS,
   );
@@ -2046,8 +1811,7 @@ function MonoblockPageInner() {
     cameraSettingsError ||
     monoblockDevicesError ||
     alwaysOnSettingsError ||
-    alwaysOnAnalyticsError ||
-    wagonNumberSettingsError;
+    alwaysOnAnalyticsError;
   const reloadAll = () =>
     Promise.all([
       reloadOrders(),
@@ -2057,7 +1821,6 @@ function MonoblockPageInner() {
       reloadMonoblockDevices(),
       reloadAlwaysOnSettings(),
       reloadAlwaysOnAnalytics(),
-      reloadWagonNumberSettings(),
     ]);
 
   const sessionOrderIds = new Set((sessions ?? []).map((session) => session.order_id));
@@ -2109,7 +1872,7 @@ function MonoblockPageInner() {
               {isSuper && (
                 <div
                   {...pageTabs.tabListProps}
-                  className="grid w-full min-w-0 grid-cols-3 rounded-2xl border border-slate-200 bg-slate-100 p-1 xl:w-auto xl:grid-flow-col xl:grid-cols-none"
+                  className="grid w-full min-w-0 grid-cols-2 rounded-2xl border border-slate-200 bg-slate-100 p-1 xl:w-auto xl:grid-flow-col xl:grid-cols-none"
                 >
                   <button
                     type="button"
@@ -2151,26 +1914,6 @@ function MonoblockPageInner() {
                       {alwaysOnSettings?.camera_sources.length ?? 0}
                     </span>
                   </button>
-                  <button
-                    type="button"
-                    {...pageTabs.getTabProps("wagon_numbers")}
-                    className={cn(
-                      "flex min-w-0 items-center justify-center gap-2 rounded-xl px-2 py-2.5 text-xs font-semibold transition sm:px-4 sm:text-sm",
-                      activeTab === "wagon_numbers"
-                        ? "bg-[#17191f] text-amber-200 shadow-sm"
-                        : "text-slate-500 hover:text-slate-800",
-                    )}
-                  >
-                    <ScanLine className="size-4" /> Номера вагонов
-                    <span
-                      className={cn(
-                        "rounded-full px-2 py-0.5 text-[11px] tabular-nums",
-                        activeTab === "wagon_numbers" ? "bg-amber-300/15 text-amber-200" : "bg-white/70 text-slate-500",
-                      )}
-                    >
-                      {wagonNumberSettings?.camera_source ? 1 : 0}
-                    </span>
-                  </button>
                 </div>
               )}
               <div className="ml-auto flex items-center gap-2">
@@ -2179,12 +1922,6 @@ function MonoblockPageInner() {
                     cameras={playable}
                     settings={alwaysOnSettings}
                     onSaved={setAlwaysOnSettings}
-                  />
-                ) : isSuper && activeTab === "wagon_numbers" ? (
-                  <WagonNumberSettingsButton
-                    cameras={playable}
-                    settings={wagonNumberSettings}
-                    onSaved={setWagonNumberSettings}
                   />
                 ) : can(me, "rbac.manage") ? (
                   <>
@@ -2266,11 +2003,6 @@ function MonoblockPageInner() {
                   </div>
                 </section>
               )
-            ) : activeTab === "wagon_numbers" ? (
-              <WagonNumberPanel
-                settings={wagonNumberSettings}
-                camera={playable.find((item) => item.src === wagonNumberSettings?.camera_source)}
-              />
             ) : (
               <>
                 <ShipmentLauncher

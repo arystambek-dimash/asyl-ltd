@@ -6,7 +6,8 @@ import type { Permission } from "@/lib/types";
 const PERM_SECTION_LABELS: Record<string, string> = {
   catalog: "Товары",
   clients: "Клиенты",
-  warehouse: "Склад",
+  warehouse: "Завод · Склад",
+  grain: "Приход и проход",
   orders: "Заказы",
   payments: "Оплаты",
   shipping: "Пост отгрузки",
