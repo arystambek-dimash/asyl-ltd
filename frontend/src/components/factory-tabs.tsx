@@ -38,7 +38,7 @@ export function FactoryTabs() {
   ];
 
   return (
-    <div className="flex h-12 items-center gap-1 sm:h-full" aria-label="Разделы завода">
+    <div className="flex h-12 items-center gap-1 sm:h-full" aria-label="Разделы территории">
       {tabs.map(({ href, label, icon: Icon, active }) => (
         <Link
           key={href}

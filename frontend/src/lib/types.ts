@@ -12,7 +12,21 @@ export interface Me {
   sales_department: Pick<Department, "id" | "code" | "name" | "color"> | null;
 }
 
-export type FactoryZoneKind = "gate" | "scale" | "warehouse" | "silos" | "production" | "lab" | "rail" | "utility";
+export type FactoryZoneKind =
+  | "gate"
+  | "scale"
+  | "warehouse"
+  | "silos"
+  | "production"
+  | "lab"
+  | "rail"
+  | "utility"
+  | "parking"
+  | "office"
+  | "canteen"
+  | "dock"
+  | "conveyor"
+  | "camera";
 
 export interface FactoryZone {
   id: string;

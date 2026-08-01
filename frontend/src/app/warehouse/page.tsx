@@ -191,7 +191,7 @@ function WarehousePageInner() {
   if (!stock) {
     return (
       <AppShell
-        title="Завод"
+        title="Территория"
         section="Работа"
         description="Актуальное количество готовой продукции и быстрые операции приёмки и списания."
         tabs={<FactoryTabs />}
@@ -204,7 +204,7 @@ function WarehousePageInner() {
 
   return (
     <AppShell
-      title="Завод"
+      title="Территория"
       section="Работа"
       description="Актуальное количество готовой продукции и быстрые операции приёмки и списания."
       tabs={<FactoryTabs />}
@@ -655,7 +655,7 @@ function EmptyStockState({
 
 export default function WarehousePage() {
   return (
-    <RequirePerm perm="warehouse.view" title="Завод · Склад">
+    <RequirePerm perm="warehouse.view" title="Территория · Склад">
       <WarehousePageInner />
     </RequirePerm>
   );

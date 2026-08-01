@@ -71,7 +71,7 @@ function staffSections(): NavSection[] {
         { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "shipping.load" },
         {
           href: "/warehouse/map",
-          label: "Завод",
+          label: "Территория",
           icon: Factory,
           perm: ["warehouse.view", "grain.view"],
           activePrefix: "/warehouse",

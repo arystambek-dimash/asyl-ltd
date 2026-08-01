@@ -2,19 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import {
-  ArrowRight,
-  Camera,
-  Check,
-  CircleDot,
-  Clock3,
-  Plus,
-  Route,
-  Scale,
-  ScanLine,
-  TrainFront,
-  Warehouse,
-} from "lucide-react";
+import { ArrowRight, Camera, Check, Clock3, Plus, Scale, ScanLine, TrainFront, Warehouse } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { WagonNumberCameraWorkspace } from "@/components/grain/wagon-number-camera";
 import { RequirePerm } from "@/components/require-perm";
@@ -30,7 +18,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { formatKg, GRAIN_STATUS_TONE } from "@/lib/grain";
-import type { GrainSilo, GrainSupply, GrainType, GrainWagon } from "@/lib/types";
+import type { GrainSilo, GrainSupply, GrainType, GrainWagon, Me } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { cn, formatDateTime } from "@/lib/utils";
@@ -405,12 +393,7 @@ function ExpectedIntakes({
   onArrival: (supply: GrainSupply) => void;
 }) {
   if (!supplies.length) {
-    return (
-      <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 py-16 text-center">
-        <Clock3 className="mx-auto size-8 text-slate-300" />
-        <p className="mt-3 text-sm font-semibold text-slate-700">Ожидаемых приходов нет</p>
-      </div>
-    );
+    return <FlowEmptyState text="Ожидаемых приходов нет — создайте «Новый приход»" />;
   }
 
   return (
@@ -468,77 +451,197 @@ function ExpectedIntakes({
   );
 }
 
-function processStage(wagon: GrainWagon) {
-  if (wagon.status === "arrived") return { label: "Входные весы", icon: Scale, tone: "sky" } as const;
-  if (wagon.status === "at_silo")
-    return { label: `У силоса ${wagon.assigned_silo_name || ""}`, icon: Warehouse, tone: "amber" } as const;
-  if (wagon.status === "weight_discrepancy")
-    return { label: "Проверка расхождения", icon: CircleDot, tone: "red" } as const;
-  return { label: wagon.status_label, icon: Route, tone: "slate" } as const;
+/**
+ * Маршрут поезда в 4 шага. Номер шага по статусу; 4 — вагон завершил маршрут.
+ * Неизвестные статусы легаси-потока прижимаются к силосному этапу.
+ */
+const WAGON_STEPS = [
+  { label: "Камера", icon: Camera },
+  { label: "Входные весы", icon: Scale },
+  { label: "Силос", icon: Warehouse },
+  { label: "Выходные весы", icon: TrainFront },
+] as const;
+
+const STEP_BY_STATUS: Record<string, number> = {
+  expected: 0,
+  waiting_for_approval: 0,
+  unplanned: 0,
+  arrived: 1,
+  gross_weighed: 2,
+  lab_pending: 2,
+  unloading_allowed: 2,
+  silo_assigned: 2,
+  at_silo: 2,
+  unloading: 2,
+  quarantine: 2,
+  insufficient_capacity: 2,
+  blocked: 2,
+  rejected: 2,
+  unloading_completed: 3,
+  reweighing_required: 3,
+  tare_weighed: 3,
+  weight_discrepancy: 3,
+  inventoried: 3,
+  exit_allowed: 3,
+  return_to_supplier: 3,
+  exited: 4,
+  completed: 4,
+  cancelled: 4,
+};
+
+const PROBLEM_STATUSES = new Set([
+  "weight_discrepancy",
+  "reweighing_required",
+  "quarantine",
+  "rejected",
+  "blocked",
+  "insufficient_capacity",
+  "return_to_supplier",
+]);
+
+function wagonStepIndex(wagon: GrainWagon) {
+  return STEP_BY_STATUS[wagon.status] ?? 2;
 }
 
-function WagonCards({ wagons, emptyText }: { wagons: GrainWagon[]; emptyText: string }) {
-  if (!wagons.length) {
-    return (
-      <div className="rounded-2xl border border-dashed py-14 text-center text-sm text-[var(--muted-foreground)]">
-        {emptyText}
-      </div>
-    );
+function WagonStepper({ wagon }: { wagon: GrainWagon }) {
+  const activeIndex = wagonStepIndex(wagon);
+  const problem = PROBLEM_STATUSES.has(wagon.status);
+
+  return (
+    <ol className="flex items-start" aria-label="Маршрут поезда">
+      {WAGON_STEPS.map((step, index) => {
+        const Icon = step.icon;
+        const done = index < activeIndex;
+        const current = index === activeIndex;
+        return (
+          <li key={step.label} className={cn("flex items-start", index > 0 && "flex-1")}>
+            {index > 0 && (
+              <span
+                aria-hidden
+                className={cn("mx-1.5 mt-4 h-0.5 flex-1 rounded-full", done || current ? "bg-slate-900" : "bg-slate-200")}
+              />
+            )}
+            <span className="flex w-14 shrink-0 flex-col items-center gap-1 text-center">
+              <span
+                className={cn(
+                  "flex size-8 items-center justify-center rounded-full border-2 transition-colors",
+                  done && "border-slate-900 bg-slate-900 text-white",
+                  current && !problem && "border-amber-500 bg-amber-50 text-amber-700",
+                  current && problem && "border-red-500 bg-red-50 text-red-600",
+                  !done && !current && "border-slate-200 bg-white text-slate-300",
+                )}
+              >
+                {done ? <Check className="size-4" /> : <Icon className="size-3.5" />}
+              </span>
+              <span
+                className={cn(
+                  "text-[9.5px] font-semibold leading-tight",
+                  current ? (problem ? "text-red-600" : "text-amber-700") : done ? "text-slate-600" : "text-slate-300",
+                )}
+              >
+                {step.label}
+              </span>
+            </span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function wagonCta(wagon: GrainWagon, me: Me | null) {
+  if (wagon.workflow === "simple") {
+    if (wagon.status === "arrived" && can(me, "grain.weigh"))
+      return { label: "Внести входной вес", variant: "default" as const };
+    if (wagon.status === "at_silo" && can(me, "grain.weigh"))
+      return { label: "Внести выходной вес", variant: "default" as const };
+    if (wagon.status === "weight_discrepancy" && can(me, "grain.inventory"))
+      return { label: "Разобрать расхождение", variant: "destructive" as const };
   }
-  const tones = {
-    sky: "bg-sky-50 text-sky-700",
-    amber: "bg-amber-50 text-amber-700",
-    red: "bg-red-50 text-red-700",
-    slate: "bg-slate-100 text-slate-600",
-  };
+  if (wagonStepIndex(wagon) >= 4) return { label: "Карточка вагона", variant: "outline" as const };
+  return { label: "Открыть этап", variant: "outline" as const };
+}
+
+function WagonMetric({ label, value, hint }: { label: string; value: string | null; hint: string }) {
+  return (
+    <div className="rounded-xl bg-slate-50 p-3">
+      <p className="text-[10px] uppercase tracking-wide text-slate-400">{label}</p>
+      {value ? (
+        <p className="mt-1 font-bold tabular-nums">{value}</p>
+      ) : (
+        <p className="mt-1 text-xs font-medium leading-5 text-slate-400">{hint}</p>
+      )}
+    </div>
+  );
+}
+
+function WagonCards({ wagons, me, emptyText }: { wagons: GrainWagon[]; me: Me | null; emptyText: string }) {
+  if (!wagons.length) {
+    return <FlowEmptyState text={emptyText} />;
+  }
 
   return (
     <div className="grid gap-3 xl:grid-cols-2">
       {wagons.map((wagon) => {
-        const stage = processStage(wagon);
-        const Icon = stage.icon;
+        const cta = wagonCta(wagon, me);
+        const finished = wagonStepIndex(wagon) >= 4;
+        const timeline = finished
+          ? wagon.exited_at
+            ? `выехал ${formatDateTime(wagon.exited_at)}`
+            : null
+          : wagon.status === "at_silo" && wagon.silo_arrived_at
+            ? `у силоса с ${formatDateTime(wagon.silo_arrived_at)}`
+            : wagon.arrived_at
+              ? `на территории с ${formatDateTime(wagon.arrived_at)}`
+              : null;
         return (
           <article
             key={wagon.id}
-            className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,.06)]"
+            className="flex flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,.06)]"
           >
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Поезд / вагон</p>
-                <h3 className="mt-1 text-xl font-black tracking-tight">{wagon.number || `#${wagon.id}`}</h3>
+                <h3 className="mt-1 truncate text-xl font-black tracking-tight">{wagon.number || `#${wagon.id}`}</h3>
                 <p className="mt-1 truncate text-sm text-slate-500">
-                  {wagon.supplier} · {wagon.grain_type_name || wagon.culture}
+                  {wagon.supplier}
+                  {wagon.grain_type_name || wagon.culture ? ` · ${wagon.grain_type_name || wagon.culture}` : ""}
+                  {wagon.assigned_silo_name ? ` → ${wagon.assigned_silo_name}` : ""}
                 </p>
               </div>
-              <span className={cn("flex size-12 shrink-0 items-center justify-center rounded-2xl", tones[stage.tone])}>
-                <Icon className="size-5" />
-              </span>
-            </div>
-            <div className="mt-4 flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-white">
-              <span className="size-2 animate-pulse rounded-full bg-emerald-400" />
-              <span className="text-sm font-bold">{stage.label}</span>
-              {wagon.silo_arrived_at && wagon.status === "at_silo" && (
-                <span className="ml-auto text-[10px] text-white/45">с {formatDateTime(wagon.silo_arrived_at)}</span>
-              )}
-            </div>
-            <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
-              <div>
-                <p className="text-[10px] text-slate-400">Ожидается</p>
-                <p className="mt-1 font-bold tabular-nums">{formatKg(wagon.expected_weight_kg)}</p>
-              </div>
-              <div>
-                <p className="text-[10px] text-slate-400">Входной вес</p>
-                <p className="mt-1 font-bold tabular-nums">{formatKg(wagon.gross_weight_kg)}</p>
-              </div>
-              <div>
-                <p className="text-[10px] text-slate-400">Нетто</p>
-                <p className="mt-1 font-bold tabular-nums">{formatKg(wagon.net_weight_kg)}</p>
-              </div>
-            </div>
-            <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4">
               <WagonStatusBadge wagon={wagon} />
-              <Link href={`/grain/wagons/${wagon.id}`} className={buttonVariants({ size: "sm", variant: "outline" })}>
-                Открыть этап <ArrowRight className="size-4" />
+            </div>
+
+            <div className="mt-4 rounded-xl border border-slate-100 bg-white px-3 py-3">
+              <WagonStepper wagon={wagon} />
+            </div>
+
+            <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
+              <WagonMetric label="Ожидается" value={wagon.expected_weight_kg != null ? formatKg(wagon.expected_weight_kg) : null} hint="без плана" />
+              <WagonMetric label="Входной вес" value={wagon.gross_weight_kg != null ? formatKg(wagon.gross_weight_kg) : null} hint="после входных весов" />
+              <WagonMetric label="Нетто" value={wagon.net_weight_kg != null ? formatKg(wagon.net_weight_kg) : null} hint="после выходных весов" />
+            </div>
+
+            {wagon.weight_difference_kg != null && wagon.net_weight_kg != null && (
+              <p
+                className={cn(
+                  "mt-2 inline-flex w-fit items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold",
+                  wagon.weight_matches === false ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700",
+                )}
+              >
+                Δ к ожиданию: {wagon.weight_difference_kg > 0 ? "+" : ""}
+                {formatKg(wagon.weight_difference_kg)}
+                {wagon.weight_difference_percent != null ? ` (${wagon.weight_difference_percent}%)` : ""}
+              </p>
+            )}
+
+            <div className="mt-auto flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
+              <span className="truncate text-xs text-slate-400">{timeline}</span>
+              <Link
+                href={`/grain/wagons/${wagon.id}`}
+                className={buttonVariants({ size: "sm", variant: cta.variant })}
+              >
+                {cta.label} <ArrowRight className="size-4" />
               </Link>
             </div>
           </article>
@@ -548,31 +651,28 @@ function WagonCards({ wagons, emptyText }: { wagons: GrainWagon[]; emptyText: st
   );
 }
 
-function FlowSummary() {
+/** Пустое состояние с объяснением маршрута — вместо постоянного баннера. */
+function FlowEmptyState({ text }: { text: string }) {
   return (
-    <div className="grid grid-cols-2 gap-2 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm lg:grid-cols-4">
-      {[
-        [Camera, "1", "Камера", "получает номер"],
-        [Scale, "2", "Входные весы", "общий вес"],
-        [Warehouse, "3", "Силос", "ожидание и разгрузка"],
-        [TrainFront, "4", "Выходные весы", "нетто и сверка"],
-      ].map(([Icon, number, title, note]) => {
-        const StepIcon = Icon as typeof Camera;
-        return (
-          <div key={String(number)} className="flex items-center gap-3 rounded-xl bg-slate-50 p-3">
-            <span className="relative flex size-10 shrink-0 items-center justify-center rounded-xl bg-slate-900 text-white">
-              <StepIcon className="size-4" />
-              <span className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-amber-500 text-[9px] font-bold">
-                {String(number)}
+    <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-6 py-12 text-center">
+      <Clock3 className="mx-auto size-8 text-slate-300" />
+      <p className="mt-3 text-sm font-semibold text-slate-700">{text}</p>
+      <div className="mx-auto mt-6 flex max-w-md items-center justify-between gap-1">
+        {WAGON_STEPS.map((step, index) => {
+          const Icon = step.icon;
+          return (
+            <div key={step.label} className="flex flex-1 items-center">
+              {index > 0 && <span className="mx-1 h-px flex-1 bg-slate-200" aria-hidden />}
+              <span className="flex flex-col items-center gap-1.5">
+                <span className="flex size-9 items-center justify-center rounded-xl bg-white text-slate-500 shadow-sm">
+                  <Icon className="size-4" />
+                </span>
+                <span className="text-[10px] font-semibold text-slate-400">{step.label}</span>
               </span>
-            </span>
-            <span className="min-w-0">
-              <span className="block text-xs font-bold">{String(title)}</span>
-              <span className="block truncate text-[10px] text-slate-400">{String(note)}</span>
-            </span>
-          </div>
-        );
-      })}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -634,7 +734,6 @@ function GrainPageInner() {
       }
     >
       <div className="space-y-4">
-        <FlowSummary />
         <Tabs
           tabs={[
             { key: "expected", label: "Ожидаются" },
@@ -671,7 +770,8 @@ function GrainPageInner() {
             {wagons.error && <ErrorAlert message={wagons.error} onRetry={() => void wagons.reload()} />}
             <WagonCards
               wagons={wagons.items}
-              emptyText={tab === "on_site" ? "Поездов на территории нет." : "Завершённых приходов пока нет."}
+              me={me}
+              emptyText={tab === "on_site" ? "Поездов на территории нет" : "Завершённых приходов пока нет"}
             />
             <LoadMore
               shown={wagons.items.length}

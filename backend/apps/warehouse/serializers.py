@@ -19,6 +19,13 @@ class FactoryZoneSerializer(serializers.Serializer):
             "lab",
             "rail",
             "utility",
+            # Живая карта территории: объекты из эскиза комплекса.
+            "parking",
+            "office",
+            "canteen",
+            "dock",
+            "conveyor",
+            "camera",
         ]
     )
     x = serializers.IntegerField(min_value=0, max_value=FACTORY_MAP_WIDTH)

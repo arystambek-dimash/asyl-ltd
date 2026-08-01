@@ -67,13 +67,13 @@ function SummaryMetric({
     blue: "bg-[#315d74] text-white",
   };
   return (
-    <div className="flex min-w-0 items-center gap-3 rounded-xl border border-white/10 bg-white/[0.055] p-3.5">
-      <div className={cn("flex size-10 shrink-0 items-center justify-center rounded-lg shadow-lg", tones[tone])}>
+    <div className="flex min-w-0 items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className={cn("flex size-10 shrink-0 items-center justify-center rounded-xl", tones[tone])}>
         <Icon className="size-5" />
       </div>
       <div className="min-w-0">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">{label}</div>
-        <div className="mt-0.5 truncate text-xl font-semibold tabular-nums text-white">{value}</div>
+        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">{label}</div>
+        <div className="mt-0.5 truncate text-xl font-bold tabular-nums text-slate-900">{value}</div>
         <div className="truncate text-xs text-slate-400">{note}</div>
       </div>
     </div>
@@ -95,7 +95,7 @@ function SiloTank({ silo }: { silo: GrainSilo }) {
   const inactive = silo.status !== "active";
 
   return (
-    <div className="relative mx-auto w-full max-w-[340px]">
+    <div className="relative mx-auto w-full max-w-[210px]">
       {silo.is_default_route && (
         <div className="absolute left-1/2 top-2 z-10 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-full bg-[#173947] px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-white shadow-lg">
           <ArrowDownToLine className="size-3.5" />
@@ -636,14 +636,13 @@ function SiloCard({
       style={{ animationDelay: `${Math.min(index * 70, 350)}ms` }}
     >
       <div className="absolute inset-0 opacity-[0.22] [background-image:radial-gradient(#657276_0.8px,transparent_0.8px)] [background-size:16px_16px]" />
-      <div className="relative grid min-h-[430px] items-center gap-2 p-4 sm:p-6 lg:grid-cols-[minmax(230px,0.95fr)_minmax(250px,1.05fr)]">
+      <div className="relative grid items-center gap-4 p-4 sm:p-5 md:grid-cols-[200px_minmax(0,1fr)]">
         <SiloTank silo={silo} />
-        <div className="flex min-w-0 flex-col self-stretch py-2">
+        <div className="flex min-w-0 flex-col self-stretch py-1">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#687377]">Тип зерна</div>
-              <h2 className="mt-1 truncate text-2xl font-black tracking-[-0.035em] text-[#253136]">{silo.name}</h2>
-              <div className="mt-1 flex items-center gap-1.5 text-sm text-[#6d777a]">
+              <h2 className="truncate text-lg font-black tracking-[-0.025em] text-[#253136]">{silo.name}</h2>
+              <div className="mt-0.5 flex items-center gap-1.5 text-sm text-[#6d777a]">
                 <Sprout className="size-4" />
                 {grainDescription}
               </div>
@@ -657,48 +656,46 @@ function SiloCard({
             </div>
           </div>
 
-          <div className="my-5 grid grid-cols-2 gap-px overflow-hidden rounded-xl border bg-slate-200">
-            <div className="bg-white/85 p-3">
-              <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">В силосе</div>
-              <div className="mt-1 text-lg font-bold tabular-nums text-slate-900">
+          <div className="my-4 grid grid-cols-2 gap-px overflow-hidden rounded-xl border bg-slate-200">
+            <div className="bg-white/85 p-2.5">
+              <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">В силосе</div>
+              <div className="mt-0.5 text-[15px] font-bold tabular-nums text-slate-900">
                 {formatKg(silo.current_balance_kg)}
               </div>
             </div>
-            <div className="bg-white/85 p-3">
-              <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Вместимость</div>
-              <div className="mt-1 text-lg font-bold tabular-nums text-slate-900">
+            <div className="bg-white/85 p-2.5">
+              <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Вместимость</div>
+              <div className="mt-0.5 text-[15px] font-bold tabular-nums text-slate-900">
                 {formatKg(silo.total_capacity_kg)}
               </div>
             </div>
-            <div className="bg-white/85 p-3">
-              <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Резерв</div>
-              <div className="mt-1 text-lg font-bold tabular-nums text-[#a66a20]">{formatKg(silo.reserved_kg)}</div>
+            <div className="bg-white/85 p-2.5">
+              <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Резерв</div>
+              <div className="mt-0.5 text-[15px] font-bold tabular-nums text-[#a66a20]">
+                {formatKg(silo.reserved_kg)}
+              </div>
             </div>
-            <div className="bg-white/85 p-3">
-              <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Свободно</div>
-              <div className="mt-1 text-lg font-bold tabular-nums text-[#356f48]">
+            <div className="bg-white/85 p-2.5">
+              <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Свободно</div>
+              <div className="mt-0.5 text-[15px] font-bold tabular-nums text-[#356f48]">
                 {formatKg(silo.free_capacity_kg)}
               </div>
             </div>
           </div>
 
-          <div className="space-y-2 text-sm">
-            <div className="flex items-center justify-between gap-3 border-b border-slate-300/70 pb-2">
-              <span className="flex items-center gap-2 text-slate-500">
-                <Route className="size-4" /> Линия
+          <div className="flex flex-wrap gap-1.5 text-xs">
+            {silo.unloading_line && (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-300/70 bg-white/70 px-2.5 py-1 font-medium text-slate-600">
+                <Route className="size-3.5" /> {silo.unloading_line}
               </span>
-              <span className="font-semibold text-slate-800">{silo.unloading_line || "не указана"}</span>
-            </div>
-            <div className="flex items-center justify-between gap-3 border-b border-slate-300/70 pb-2">
-              <span className="flex items-center gap-2 text-slate-500">
-                <Boxes className="size-4" /> Смешивание
-              </span>
-              <span className="font-semibold text-slate-800">{silo.allow_mixing ? "разрешено" : "запрещено"}</span>
-            </div>
+            )}
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-300/70 bg-white/70 px-2.5 py-1 font-medium text-slate-600">
+              <Boxes className="size-3.5" /> смешивание {silo.allow_mixing ? "разрешено" : "запрещено"}
+            </span>
           </div>
 
           {silo.active_wagons.length > 0 && (
-            <div className="mt-4 rounded-xl border border-[#315d74]/20 bg-[#315d74]/7 p-3">
+            <div className="mt-3 rounded-xl border border-[#315d74]/20 bg-[#315d74]/7 p-3">
               <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.12em] text-[#315d74]">
                 <Activity className="size-4" />
                 Вагоны в работе
@@ -717,7 +714,7 @@ function SiloCard({
             </div>
           )}
 
-          <div className="mt-auto flex flex-wrap justify-end gap-2 border-t border-slate-300/70 pt-4">
+          <div className="mt-auto flex flex-wrap justify-end gap-2 border-t border-slate-300/70 pt-3">
             <Button size="sm" variant="ghost" onClick={onMovements}>
               <History className="size-4" /> Движения
             </Button>
@@ -759,7 +756,7 @@ function SilosPageInner() {
 
   return (
     <AppShell
-      title="Завод"
+      title="Территория"
       section="Работа"
       description="Живая схема хранения, резервы под вагоны и маршруты прихода."
       tabs={<FactoryTabs />}
@@ -786,23 +783,8 @@ function SilosPageInner() {
     >
       {(error || typesError) && <ErrorAlert message={error || typesError || ""} onRetry={reloadAll} />}
 
-      <section className="relative mb-5 overflow-hidden rounded-2xl border border-slate-800 bg-[#15272e] p-4 shadow-[0_24px_70px_rgba(15,23,42,0.18)] sm:p-6">
-        <div className="absolute inset-0 opacity-20 [background-image:linear-gradient(rgba(255,255,255,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.08)_1px,transparent_1px)] [background-size:28px_28px]" />
-        <div className="absolute -right-20 -top-24 size-64 rounded-full bg-[#c58a35]/20 blur-3xl" />
-        <div className="relative mb-4 flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.2em] text-[#e2b86d]">
-              <span className="size-2 animate-pulse rounded-full bg-[#68c482]" />
-              Телеметрия хранения
-            </div>
-            <h2 className="mt-1 text-2xl font-black tracking-[-0.035em] text-white sm:text-3xl">Обзор ёмкостей</h2>
-          </div>
-          <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300">
-            <ShieldAlert className="size-4 text-[#e2b86d]" />
-            Остаток рассчитывается по неизменяемому журналу движений
-          </div>
-        </div>
-        <div className="relative grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
+      <section className="mb-5">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <SummaryMetric
             icon={Warehouse}
             label="Общая ёмкость"
@@ -831,9 +813,13 @@ function SilosPageInner() {
             tone="blue"
           />
         </div>
+        <p className="mt-2.5 flex items-center gap-1.5 px-1 text-xs text-[var(--muted-foreground)]">
+          <ShieldAlert className="size-3.5 shrink-0 text-[#a66a20]" />
+          Остаток рассчитывается по неизменяемому журналу движений — правки только через «Корректировку».
+        </p>
       </section>
 
-      <div className="grid grid-cols-1 gap-5 2xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         {siloRows.map((silo, index) => (
           <SiloCard
             key={silo.id}
@@ -845,7 +831,7 @@ function SilosPageInner() {
           />
         ))}
         {siloRows.length === 0 && !error && (
-          <Card className="2xl:col-span-2">
+          <Card className="xl:col-span-2">
             <CardContent className="py-14 text-center">
               <Warehouse className="mx-auto size-12 text-[var(--muted-foreground)]/40" />
               <div className="mt-3 font-semibold">Силосный парк пуст</div>
@@ -898,7 +884,7 @@ function SilosPageInner() {
 
 export default function FactorySilosPage() {
   return (
-    <RequirePerm perm="grain.view" title="Завод · Силосы">
+    <RequirePerm perm="grain.view" title="Территория · Силосы">
       <SilosPageInner />
     </RequirePerm>
   );

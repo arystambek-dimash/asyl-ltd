@@ -73,11 +73,11 @@ describe("подсветка активного пункта", () => {
     expect(screen.getByRole("link", { name: "Новый заказ" })).not.toHaveClass(activeClass);
   });
 
-  it("показывает силосы внутри «Завода», а не отдельным пунктом зерна", () => {
+  it("показывает силосы внутри «Территории», а не отдельным пунктом зерна", () => {
     nav.pathname = "/warehouse/silos";
     render(<Sidebar me={factoryUser} />);
 
-    const factory = screen.getByRole("link", { name: "Завод" });
+    const factory = screen.getByRole("link", { name: "Территория" });
     expect(factory).toHaveAttribute("href", "/warehouse/map");
     expect(factory).toHaveClass(activeClass);
     expect(screen.getByRole("link", { name: "Приход и проход" })).toHaveAttribute("href", "/grain");
@@ -88,7 +88,7 @@ describe("подсветка активного пункта", () => {
   it("ведёт сотрудника без доступа к складу на общую схему завода", () => {
     render(<Sidebar me={{ ...factoryUser, permissions: ["grain.view"] }} />);
 
-    expect(screen.getByRole("link", { name: "Завод" })).toHaveAttribute("href", "/warehouse/map");
+    expect(screen.getByRole("link", { name: "Территория" })).toHaveAttribute("href", "/warehouse/map");
   });
 });
 
