@@ -20,7 +20,14 @@ export function DockAsset({ width, height, name }: { width: number; height: numb
         {/* лента со склада */}
         <path d="M 214 52 H 122" stroke="#9aa5b1" strokeWidth="22" strokeLinecap="round" />
         <path d="M 214 52 H 122" stroke="#39424e" strokeWidth="15" strokeLinecap="round" />
-        <path d="M 214 52 H 122" stroke="#cdd5de" strokeWidth="15" strokeLinecap="round" strokeDasharray="5 12" opacity=".8">
+        <path
+          d="M 214 52 H 122"
+          stroke="#cdd5de"
+          strokeWidth="15"
+          strokeLinecap="round"
+          strokeDasharray="5 12"
+          opacity=".8"
+        >
           <animate attributeName="stroke-dashoffset" from="0" to="102" dur="2s" repeatCount="indefinite" />
         </path>
         <rect x="-9" y="-7" width="18" height="14" rx="4" fill={P.bag} stroke={P.bagStroke}>

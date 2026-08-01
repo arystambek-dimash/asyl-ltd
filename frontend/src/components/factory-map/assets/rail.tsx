@@ -27,8 +27,22 @@ export function RailAsset({ width, height, name }: { width: number; height: numb
           opacity=".7"
         />
       ))}
-      <line x1="0" y1={centerY - railGap / 2} x2={width} y2={centerY - railGap / 2} stroke={P.asphaltDark} strokeWidth="3" />
-      <line x1="0" y1={centerY + railGap / 2} x2={width} y2={centerY + railGap / 2} stroke={P.asphaltDark} strokeWidth="3" />
+      <line
+        x1="0"
+        y1={centerY - railGap / 2}
+        x2={width}
+        y2={centerY - railGap / 2}
+        stroke={P.asphaltDark}
+        strokeWidth="3"
+      />
+      <line
+        x1="0"
+        y1={centerY + railGap / 2}
+        x2={width}
+        y2={centerY + railGap / 2}
+        stroke={P.asphaltDark}
+        strokeWidth="3"
+      />
     </g>
   );
 }

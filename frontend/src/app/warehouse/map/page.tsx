@@ -444,7 +444,9 @@ function TooltipCard({ tip, live }: { tip: TipState; live: FactoryLive }) {
       const silos = live.silos ?? [];
       const totalCap = silos.reduce((sum, silo) => sum + silo.total_capacity_kg, 0);
       const totalBal = silos.reduce((sum, silo) => sum + silo.current_balance_kg, 0);
-      silos.slice(0, 5).forEach((silo) => rows.push([silo.name, `${formatKg(silo.current_balance_kg)} · ${silo.fill_percent}%`]));
+      silos
+        .slice(0, 5)
+        .forEach((silo) => rows.push([silo.name, `${formatKg(silo.current_balance_kg)} · ${silo.fill_percent}%`]));
       if (silos.length) {
         rows.push(["Резерв под вагоны", formatKg(silos.reduce((sum, silo) => sum + silo.reserved_kg, 0))]);
         bar = totalCap ? (totalBal / totalCap) * 100 : 0;
@@ -453,7 +455,11 @@ function TooltipCard({ tip, live }: { tip: TipState; live: FactoryLive }) {
       }
     } else if (zone.kind === "warehouse") {
       const stock = [...(live.stock ?? [])].sort((a, b) => b.bags - a.bags);
-      stock.slice(0, 5).forEach((item) => rows.push([`${item.grade} · ${item.packaging}`, `${item.bags.toLocaleString("ru-RU")} меш.`]));
+      stock
+        .slice(0, 5)
+        .forEach((item) =>
+          rows.push([`${item.grade} · ${item.packaging}`, `${item.bags.toLocaleString("ru-RU")} меш.`]),
+        );
       if (stock.length) {
         rows.push(["Всего", `${stock.reduce((sum, item) => sum + item.bags, 0).toLocaleString("ru-RU")} меш.`]);
       } else {
@@ -860,7 +866,11 @@ function FactoryMapPageInner() {
                   icon={Boxes}
                   label="Мешков на складе"
                   value={totals.bags.toLocaleString("ru-RU")}
-                  sub={totals.topStock ? `больше всего: ${totals.topStock.grade} ${totals.topStock.packaging}` : "остатков нет"}
+                  sub={
+                    totals.topStock
+                      ? `больше всего: ${totals.topStock.grade} ${totals.topStock.packaging}`
+                      : "остатков нет"
+                  }
                 />
               )}
               {live.wagons && (
@@ -946,7 +956,10 @@ function FactoryMapPageInner() {
                 <div className="flex flex-wrap gap-x-4 gap-y-1.5" aria-label="Легенда схемы">
                   {categories.map((category) => (
                     <span key={category} className="flex items-center gap-1.5 text-[11px] text-slate-500">
-                      <span className="size-2.5 rounded-[4px]" style={{ backgroundColor: CATEGORIES[category].color }} />
+                      <span
+                        className="size-2.5 rounded-[4px]"
+                        style={{ backgroundColor: CATEGORIES[category].color }}
+                      />
                       {CATEGORIES[category].label}
                     </span>
                   ))}

@@ -35,7 +35,14 @@ export function BuildingFrame({
 
   return (
     <g>
-      <rect width={width} height={height} rx="14" fill={`url(#${DEFS.roof})`} stroke="#d4d9e0" filter={`url(#${DEFS.soft})`} />
+      <rect
+        width={width}
+        height={height}
+        rx="14"
+        fill={`url(#${DEFS.roof})`}
+        stroke="#d4d9e0"
+        filter={`url(#${DEFS.soft})`}
+      />
       <rect width={width} height={header} rx={header / 2} fill={headerFill} />
       <text
         x={width / 2}

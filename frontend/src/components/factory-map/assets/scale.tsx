@@ -9,7 +9,17 @@ import { DEFS, MAP_PALETTE as P } from "../palette";
 const ART_W = 330;
 const ART_H = 132;
 
-export function ScaleAsset({ width, height, name, note }: { width: number; height: number; name: string; note: string }) {
+export function ScaleAsset({
+  width,
+  height,
+  name,
+  note,
+}: {
+  width: number;
+  height: number;
+  name: string;
+  note: string;
+}) {
   const scale = Math.min(width / ART_W, height / ART_H);
   const offsetX = (width - ART_W * scale) / 2;
   const offsetY = (height - ART_H * scale) / 2;
@@ -22,7 +32,15 @@ export function ScaleAsset({ width, height, name, note }: { width: number; heigh
         <line x1="8" y1="57" x2="192" y2="57" stroke="#ffffff" strokeOpacity=".45" strokeWidth="2" />
         <g transform="translate(216 36)" filter={`url(#${DEFS.soft})`}>
           <rect width="96" height="40" rx="8" fill="#101418" />
-          <text x="48" y="26" textAnchor="middle" fontSize="17" fontWeight="700" fill="#5df08d" fontFamily="ui-monospace, monospace">
+          <text
+            x="48"
+            y="26"
+            textAnchor="middle"
+            fontSize="17"
+            fontWeight="700"
+            fill="#5df08d"
+            fontFamily="ui-monospace, monospace"
+          >
             ––––
           </text>
         </g>

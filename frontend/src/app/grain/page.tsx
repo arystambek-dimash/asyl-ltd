@@ -518,7 +518,10 @@ function WagonStepper({ wagon }: { wagon: GrainWagon }) {
             {index > 0 && (
               <span
                 aria-hidden
-                className={cn("mx-1.5 mt-4 h-0.5 flex-1 rounded-full", done || current ? "bg-slate-900" : "bg-slate-200")}
+                className={cn(
+                  "mx-1.5 mt-4 h-0.5 flex-1 rounded-full",
+                  done || current ? "bg-slate-900" : "bg-slate-200",
+                )}
               />
             )}
             <span className="flex w-14 shrink-0 flex-col items-center gap-1 text-center">
@@ -617,9 +620,21 @@ function WagonCards({ wagons, me, emptyText }: { wagons: GrainWagon[]; me: Me | 
             </div>
 
             <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
-              <WagonMetric label="Ожидается" value={wagon.expected_weight_kg != null ? formatKg(wagon.expected_weight_kg) : null} hint="без плана" />
-              <WagonMetric label="Входной вес" value={wagon.gross_weight_kg != null ? formatKg(wagon.gross_weight_kg) : null} hint="после входных весов" />
-              <WagonMetric label="Нетто" value={wagon.net_weight_kg != null ? formatKg(wagon.net_weight_kg) : null} hint="после выходных весов" />
+              <WagonMetric
+                label="Ожидается"
+                value={wagon.expected_weight_kg != null ? formatKg(wagon.expected_weight_kg) : null}
+                hint="без плана"
+              />
+              <WagonMetric
+                label="Входной вес"
+                value={wagon.gross_weight_kg != null ? formatKg(wagon.gross_weight_kg) : null}
+                hint="после входных весов"
+              />
+              <WagonMetric
+                label="Нетто"
+                value={wagon.net_weight_kg != null ? formatKg(wagon.net_weight_kg) : null}
+                hint="после выходных весов"
+              />
             </div>
 
             {wagon.weight_difference_kg != null && wagon.net_weight_kg != null && (
@@ -637,10 +652,7 @@ function WagonCards({ wagons, me, emptyText }: { wagons: GrainWagon[]; me: Me | 
 
             <div className="mt-auto flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
               <span className="truncate text-xs text-slate-400">{timeline}</span>
-              <Link
-                href={`/grain/wagons/${wagon.id}`}
-                className={buttonVariants({ size: "sm", variant: cta.variant })}
-              >
+              <Link href={`/grain/wagons/${wagon.id}`} className={buttonVariants({ size: "sm", variant: cta.variant })}>
                 {cta.label} <ArrowRight className="size-4" />
               </Link>
             </div>

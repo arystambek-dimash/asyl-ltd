@@ -41,27 +41,61 @@ function Cylinder({
 
   return (
     <g opacity={inactive ? 0.62 : 1}>
-      <path d={`M 4 ${DOME_H - 12} L 32 ${-0} L 60 ${DOME_H - 12} Z`} fill={P.steelDark} filter={`url(#${DEFS.soft})`} />
+      <path
+        d={`M 4 ${DOME_H - 12} L 32 ${-0} L 60 ${DOME_H - 12} Z`}
+        fill={P.steelDark}
+        filter={`url(#${DEFS.soft})`}
+      />
       <g transform={`translate(0 ${DOME_H})`}>
-        <rect width={CYL_W} height={BODY_H} rx="10" fill={`url(#${DEFS.siloBody})`} stroke={quarantine ? "#dc8181" : P.border} />
+        <rect
+          width={CYL_W}
+          height={BODY_H}
+          rx="10"
+          fill={`url(#${DEFS.siloBody})`}
+          stroke={quarantine ? "#dc8181" : P.border}
+        />
         <clipPath id={clipId}>
           <rect width={CYL_W} height={BODY_H} rx="10" />
         </clipPath>
         {silo && pct > 0.01 && (
           <g clipPath={`url(#${clipId})`}>
             <g transform={`translate(0 ${fillTop - DOME_H - 6})`}>
-              <path d={`M -34 8 Q -18 0 -2 8 T 30 8 T 62 8 T 94 8 T 126 8 V ${BODY_H + 40} H -34 Z`} fill={`url(#${DEFS.grain})`}>
-                <animateTransform attributeName="transform" type="translate" values="-32 0;0 0;-32 0" dur={waveDur} repeatCount="indefinite" />
+              <path
+                d={`M -34 8 Q -18 0 -2 8 T 30 8 T 62 8 T 94 8 T 126 8 V ${BODY_H + 40} H -34 Z`}
+                fill={`url(#${DEFS.grain})`}
+              >
+                <animateTransform
+                  attributeName="transform"
+                  type="translate"
+                  values="-32 0;0 0;-32 0"
+                  dur={waveDur}
+                  repeatCount="indefinite"
+                />
               </path>
             </g>
           </g>
         )}
         <rect width={CYL_W} height={BODY_H} rx="10" fill="none" stroke={quarantine ? "#dc8181" : P.border} />
       </g>
-      <text x="32" y={DOME_H + 26} textAnchor="middle" fontSize="14" fontWeight="700" fill={quarantine ? "#b8463b" : "#5b6472"}>
+      <text
+        x="32"
+        y={DOME_H + 26}
+        textAnchor="middle"
+        fontSize="14"
+        fontWeight="700"
+        fill={quarantine ? "#b8463b" : "#5b6472"}
+      >
         {index + 1}
       </text>
-      <text x="32" y={DOME_H + BODY_H + 22} textAnchor="middle" fontSize="15" fontWeight="700" fill={P.text} style={{ fontVariantNumeric: "tabular-nums" }}>
+      <text
+        x="32"
+        y={DOME_H + BODY_H + 22}
+        textAnchor="middle"
+        fontSize="15"
+        fontWeight="700"
+        fill={P.text}
+        style={{ fontVariantNumeric: "tabular-nums" }}
+      >
         {silo ? `${Math.round(pct * 100)}%` : "—"}
       </text>
       <text x="32" y={DOME_H + BODY_H + 37} textAnchor="middle" fontSize="10" fill={P.textMuted}>

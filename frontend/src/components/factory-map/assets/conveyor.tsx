@@ -16,7 +16,15 @@ export function ConveyorAsset({ width, height }: { width: number; height: number
     <g>
       <path d={path} stroke="#9aa5b1" strokeWidth="26" strokeLinecap="round" fill="none" />
       <path d={path} stroke="#39424e" strokeWidth="18" strokeLinecap="round" fill="none" />
-      <path d={path} stroke="#cdd5de" strokeWidth="18" strokeLinecap="round" fill="none" strokeDasharray="6 14" opacity=".8">
+      <path
+        d={path}
+        stroke="#cdd5de"
+        strokeWidth="18"
+        strokeLinecap="round"
+        fill="none"
+        strokeDasharray="6 14"
+        opacity=".8"
+      >
         <animate attributeName="stroke-dashoffset" from="0" to="-100" dur="2.2s" repeatCount="indefinite" />
       </path>
       {[0, 1.1, 2.2].map((begin) => (

@@ -16,7 +16,15 @@ export function WagonArt({ number, statusLabel }: { number: string; statusLabel?
       <rect x="12" y="12" width="176" height="18" rx="3" fill="#00000030" />
       <path d="M 16 24 Q 40 14 66 22 T 120 22 T 172 24 V 30 H 16 Z" fill={`url(#${DEFS.grain})`} opacity=".9" />
       <rect x="108" y="13" width="78" height="16" rx="2" fill="#000000aa" />
-      <text x="147" y="25" textAnchor="middle" fontSize="9" fontWeight="700" fill="#ffffff" fontFamily="ui-monospace, monospace">
+      <text
+        x="147"
+        y="25"
+        textAnchor="middle"
+        fontSize="9"
+        fontWeight="700"
+        fill="#ffffff"
+        fontFamily="ui-monospace, monospace"
+      >
         № {plate}
       </text>
       <circle cx="40" cy="46" r="7" fill="#37474f" />

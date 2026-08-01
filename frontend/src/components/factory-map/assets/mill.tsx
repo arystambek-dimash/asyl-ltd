@@ -9,7 +9,17 @@ import { DEFS, MAP_PALETTE as P } from "../palette";
 const ART_W = 300;
 const ART_H = 220;
 
-export function MillAsset({ width, height, name, note }: { width: number; height: number; name: string; note: string }) {
+export function MillAsset({
+  width,
+  height,
+  name,
+  note,
+}: {
+  width: number;
+  height: number;
+  name: string;
+  note: string;
+}) {
   const scale = Math.min(width / ART_W, height / ART_H);
   const offsetX = (width - ART_W * scale) / 2;
   const offsetY = (height - ART_H * scale) / 2;
@@ -17,7 +27,15 @@ export function MillAsset({ width, height, name, note }: { width: number; height
   return (
     <g>
       <g transform={`translate(${offsetX} ${offsetY}) scale(${scale})`}>
-        <rect y="20" width="300" height="200" rx="14" fill={`url(#${DEFS.mill})`} stroke={P.border} filter={`url(#${DEFS.soft})`} />
+        <rect
+          y="20"
+          width="300"
+          height="200"
+          rx="14"
+          fill={`url(#${DEFS.mill})`}
+          stroke={P.border}
+          filter={`url(#${DEFS.soft})`}
+        />
         <rect y="20" width="300" height="26" rx="13" fill="#bfdccb" />
         <text x="150" y="38" textAnchor="middle" fontSize="13" fontWeight="650" fill="#2e5d43">
           {name.length > 34 ? `${name.slice(0, 33)}…` : name}
@@ -47,12 +65,28 @@ export function MillAsset({ width, height, name, note }: { width: number; height
           <rect x="-16" y="-22" width="32" height="24" rx="6" fill="#ff8a00" />
           <g transform="translate(0 -24)">
             <g>
-              <animateTransform attributeName="transform" type="rotate" values="-146;-210;-146" dur="5.4s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1" />
+              <animateTransform
+                attributeName="transform"
+                type="rotate"
+                values="-146;-210;-146"
+                dur="5.4s"
+                repeatCount="indefinite"
+                calcMode="spline"
+                keySplines=".45 0 .55 1;.45 0 .55 1"
+              />
               <rect x="-8" y="-9" width="62" height="17" rx="8.5" fill="#ff8a00" stroke="#e07000" />
               <circle cx="52" r="7" fill="#3a414b" />
               <g transform="translate(52 0)">
                 <g>
-                  <animateTransform attributeName="transform" type="rotate" values="118;172;118" dur="5.4s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1" />
+                  <animateTransform
+                    attributeName="transform"
+                    type="rotate"
+                    values="118;172;118"
+                    dur="5.4s"
+                    repeatCount="indefinite"
+                    calcMode="spline"
+                    keySplines=".45 0 .55 1;.45 0 .55 1"
+                  />
                   <rect x="-6" y="-7" width="52" height="13" rx="6.5" fill="#ffa033" stroke="#e07000" />
                   <circle cx="44" r="5.5" fill="#22272e" />
                   <rect x="41" y="3" width="4" height="13" rx="2" fill="#22272e" />

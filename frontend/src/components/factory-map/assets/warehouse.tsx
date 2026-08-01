@@ -84,13 +84,23 @@ export function WarehouseAsset({
         {name}
       </text>
       <g transform={`translate(${offsetX} ${offsetY}) scale(${scale})`}>
-        <rect width={ART_W} height={ART_H} rx="16" fill={`url(#${DEFS.roof})`} stroke={P.border} filter={`url(#${DEFS.soft})`} />
+        <rect
+          width={ART_W}
+          height={ART_H}
+          rx="16"
+          fill={`url(#${DEFS.roof})`}
+          stroke={P.border}
+          filter={`url(#${DEFS.soft})`}
+        />
         <line x1={SECTION_W} y1="10" x2={SECTION_W} y2={ART_H - 10} stroke={P.border} strokeWidth="2" />
         <line x1="10" y1={SECTION_H} x2={ART_W - 10} y2={SECTION_H} stroke={P.border} strokeWidth="2" />
         {[0, 1, 2, 3].map((index) => {
           const item = items[index] ?? null;
           return (
-            <g key={item?.id ?? `empty-${index}`} transform={`translate(${(index % 2) * SECTION_W} ${Math.floor(index / 2) * SECTION_H})`}>
+            <g
+              key={item?.id ?? `empty-${index}`}
+              transform={`translate(${(index % 2) * SECTION_W} ${Math.floor(index / 2) * SECTION_H})`}
+            >
               <Section item={item} ratio={item ? item.bags / maxBags : 0} />
             </g>
           );

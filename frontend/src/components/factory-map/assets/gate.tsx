@@ -18,7 +18,14 @@ export function GateAsset({ width, height, name }: { width: number; height: numb
         {name}
       </text>
       <g transform={`translate(${offsetX} ${offsetY}) scale(${scale})`}>
-        <rect width="54" height="44" rx="8" fill={`url(#${DEFS.roof})`} stroke={P.border} filter={`url(#${DEFS.soft})`} />
+        <rect
+          width="54"
+          height="44"
+          rx="8"
+          fill={`url(#${DEFS.roof})`}
+          stroke={P.border}
+          filter={`url(#${DEFS.soft})`}
+        />
         <rect x="10" y="12" width="14" height="12" rx="2" fill="#dbe7fb" />
         <rect x="32" y="12" width="14" height="12" rx="2" fill="#dbe7fb" />
         {/* шлагбаум */}

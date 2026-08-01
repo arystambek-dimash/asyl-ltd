@@ -6,7 +6,17 @@ import { BuildingFrame } from "./building";
  * служебный участок. Замена графики: см. building.tsx. Промпты: ../SVG_PROMPTS.md
  */
 
-export function CanteenAsset({ width, height, name, note }: { width: number; height: number; name: string; note: string }) {
+export function CanteenAsset({
+  width,
+  height,
+  name,
+  note,
+}: {
+  width: number;
+  height: number;
+  name: string;
+  note: string;
+}) {
   return (
     <BuildingFrame width={width} height={height} name={name} headerFill="#f4d9b8" headerText="#8a5a24">
       {note && height >= 96 && (
@@ -18,7 +28,17 @@ export function CanteenAsset({ width, height, name, note }: { width: number; hei
   );
 }
 
-export function OfficeAsset({ width, height, name, note }: { width: number; height: number; name: string; note: string }) {
+export function OfficeAsset({
+  width,
+  height,
+  name,
+  note,
+}: {
+  width: number;
+  height: number;
+  name: string;
+  note: string;
+}) {
   const bullets = note
     .split("·")
     .map((item) => item.trim())
@@ -66,7 +86,17 @@ export function LabAsset({ width, height, name, note }: { width: number; height:
   );
 }
 
-export function UtilityAsset({ width, height, name, note }: { width: number; height: number; name: string; note: string }) {
+export function UtilityAsset({
+  width,
+  height,
+  name,
+  note,
+}: {
+  width: number;
+  height: number;
+  name: string;
+  note: string;
+}) {
   return (
     <BuildingFrame width={width} height={height} name={name} headerFill="#e2e5ea" headerText="#4b5563" windows={2}>
       {note && height >= 96 && (
