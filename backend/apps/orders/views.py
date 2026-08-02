@@ -46,6 +46,7 @@ from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerial
                           StatusChangeRequestSerializer)
 from .services import (add_payment, add_mixed_payments, confirm_order, reject_order,
                        receive_payment, accountant_confirm_payment,
+                       correct_order_prices,
                        reopen_confirmed_payment, reject_payment,
                        restore_rejected_payment, soft_delete_order, restore_order,
                        purge_order,
@@ -594,6 +595,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "restore": "orders.edit",
         "purge": "orders.edit",
         "payments": "payments.create", "confirm": "orders.confirm",
+        "correct_price": "orders.correct_price",
         "set_status": "orders.view",
         "rollback_shipment": "shipping.rollback",
         "status_requests": "orders.view",
@@ -755,6 +757,19 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         return Response(
             OrderSerializer(order, context={"request": request}).data,
             status=201,
+        )
+
+    @action(detail=True, methods=["post"], url_path="correct-price")
+    def correct_price(self, request, pk=None):
+        order = correct_order_prices(
+            self.get_object(),
+            request.user,
+            total_amount=request.data.get("total_amount"),
+            prices=request.data.get("prices"),
+        )
+        order = with_order_api_relations(Order.objects.all()).get(pk=order.pk)
+        return Response(
+            OrderSerializer(order, context={"request": request}).data
         )
 
     @action(detail=False, methods=["get"], url_path="department-summary")

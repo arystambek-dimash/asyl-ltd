@@ -3,6 +3,7 @@ from apps.rbac.perms import ALL_CODES, PRESETS
 
 def test_payments_confirm_exists():
     assert "payments.confirm" in ALL_CODES
+    assert "orders.correct_price" in ALL_CODES
 
 
 def test_payments_confirm_in_presets():

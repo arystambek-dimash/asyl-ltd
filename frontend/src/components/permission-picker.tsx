@@ -31,6 +31,7 @@ const PERM_ACTION_LABELS: Record<string, string> = {
   debt_override: "в долг",
   manage: "управление",
   set_price: "закрепление прайса",
+  correct_price: "корректировка стоимости",
 };
 
 /** Кнопки-переключатели прав, сгруппированные по разделам.

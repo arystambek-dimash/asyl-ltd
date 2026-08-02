@@ -20,6 +20,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ActionMenu, type ActionMenuItem } from "@/components/ui/action-menu";
 import { ActionCard } from "@/components/ui/action-card";
 import { OrderForm } from "@/components/order-form";
+import { OrderPriceCorrectionModal } from "@/components/order-price-correction-modal";
 import { OrderStatusSelect } from "@/components/order-status-select";
 import { ManualOrderStatusModal, type ManualOrderTarget } from "@/components/manual-order-status-modal";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
@@ -710,6 +711,7 @@ function OrdersPageInner() {
   const { me } = useAuth();
   const canCreate = can(me, "orders.create");
   const canEdit = can(me, "orders.edit");
+  const canCorrectPrice = can(me, "orders.correct_price");
   const canExport = can(me, "reports.export");
   const canRollback = can(me, "shipping.rollback");
   const canManageDepartments = can(me, "rbac.manage");
@@ -718,6 +720,7 @@ function OrdersPageInner() {
   const [templateOrder, setTemplateOrder] = useState<Order | null>(null);
   const [statementOpen, setStatementOpen] = useState(false);
   const [editing, setEditing] = useState<Order | null>(null);
+  const [correctingPrice, setCorrectingPrice] = useState<Order | null>(null);
   const [view, setView] = useState<"orders" | "archive">("orders");
   const [delItem, setDelItem] = useState<Order | null>(null);
   const [delBusy, setDelBusy] = useState(false);
@@ -808,24 +811,42 @@ function OrdersPageInner() {
 
   // Карандаш и архив живут в одном меню «⋮» строки заказа.
   const rowActions = (o: Order): ActionMenuItem[] => [
-    {
-      key: "edit",
-      label: "Изменить",
-      icon: Pencil,
-      disabled: !isEditable(o),
-      hint: isEditable(o) ? undefined : "Заказ в этом статусе не редактируется",
-      onSelect: () => setEditing(o),
-    },
-    {
-      key: "archive",
-      label: "В архив",
-      icon: Archive,
-      tone: "destructive" as const,
-      onSelect: () => {
-        setDelError("");
-        setDelItem(o);
-      },
-    },
+    ...(canEdit
+      ? [
+          {
+            key: "edit",
+            label: "Изменить",
+            icon: Pencil,
+            disabled: !isEditable(o),
+            hint: isEditable(o) ? undefined : "Состав заказа в этом статусе не редактируется",
+            onSelect: () => setEditing(o),
+          },
+        ]
+      : []),
+    ...(canCorrectPrice
+      ? [
+          {
+            key: "correct-price",
+            label: "Корректировать стоимость",
+            icon: CircleDollarSign,
+            onSelect: () => setCorrectingPrice(o),
+          },
+        ]
+      : []),
+    ...(canEdit
+      ? [
+          {
+            key: "archive",
+            label: "В архив",
+            icon: Archive,
+            tone: "destructive" as const,
+            onSelect: () => {
+              setDelError("");
+              setDelItem(o);
+            },
+          },
+        ]
+      : []),
   ];
 
   const list = orders ?? [];
@@ -1065,7 +1086,7 @@ function OrdersPageInner() {
                     ) : (
                       <span />
                     )}
-                    {canEdit && (
+                    {(canEdit || canCorrectPrice) && (
                       <div className="relative z-10">
                         <ActionMenu items={rowActions(o)} />
                       </div>
@@ -1115,7 +1136,7 @@ function OrdersPageInner() {
                         dir={sortDir}
                         onClick={toggleSort}
                       />
-                      {canEdit && <TH></TH>}
+                      {(canEdit || canCorrectPrice) && <TH></TH>}
                     </TR>
                   </THead>
                   <TBody>
@@ -1160,7 +1181,7 @@ function OrdersPageInner() {
                             )}
                           </div>
                         </TD>
-                        {canEdit && (
+                        {(canEdit || canCorrectPrice) && (
                           <TD onClick={(e) => e.stopPropagation()}>
                             <div className="flex justify-end">
                               <ActionMenu items={rowActions(o)} />
@@ -1293,6 +1314,15 @@ function OrdersPageInner() {
           />
         )}
       </Modal>
+      <OrderPriceCorrectionModal
+        order={correctingPrice}
+        onClose={() => setCorrectingPrice(null)}
+        onDone={() => {
+          setCorrectingPrice(null);
+          reload();
+          reloadSummary();
+        }}
+      />
       <StatementExportModal
         open={statementOpen}
         onClose={() => setStatementOpen(false)}

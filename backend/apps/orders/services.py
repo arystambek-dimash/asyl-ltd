@@ -813,6 +813,148 @@ def apply_item_prices(order: Order, prices: dict, user) -> None:
     _apply_prices(order, prices, user)
 
 
+@transaction.atomic
+def correct_order_prices(
+    order: Order,
+    user,
+    *,
+    total_amount=None,
+    prices: dict | None = None,
+) -> Order:
+    """Correct contractual prices in an order at any workflow stage.
+
+    This is deliberately separate from editing order contents: after shipment,
+    changing products or bag counts would also require a warehouse reversal.
+    The correction updates only item prices, then recomputes the payment state;
+    confirmed cash movements remain immutable accounting facts.
+    """
+    locked = Order.objects.select_for_update().get(pk=order.pk)
+    items = list(
+        OrderItem.objects.select_for_update()
+        .filter(order=locked)
+        .order_by("id")
+    )
+    if not items:
+        raise ValidationError({
+            "detail": "В заказе нет позиций для корректировки",
+            "code": "items_empty",
+        })
+    if (total_amount is None) == (prices is None):
+        raise ValidationError({
+            "detail": "Укажите либо общую сумму, либо цены по позициям",
+            "code": "correction_mode_required",
+        })
+
+    old_total = locked.total_amount
+    old_prices = {item.id: item.unit_price for item in items}
+
+    if total_amount is not None:
+        requested_total = _positive_money(
+            total_amount,
+            detail="Укажите корректную общую сумму заказа",
+            code="invalid_total_amount",
+        )
+        bags = sum(item.quantity for item in items)
+        unit_price = (requested_total / Decimal(bags)).quantize(Decimal("0.01"))
+        if unit_price * bags != requested_total:
+            raise ValidationError({
+                "detail": (
+                    f"Сумма {requested_total} не делится без остатка на {bags} мешков. "
+                    "Укажите цены отдельно по позициям."
+                ),
+                "code": "total_not_divisible",
+            })
+        new_prices = {item.id: unit_price for item in items}
+        mode = "total"
+    else:
+        if not isinstance(prices, dict):
+            raise ValidationError({
+                "detail": "Передайте цены по позициям заказа",
+                "code": "invalid_prices",
+            })
+        item_ids = {item.id for item in items}
+        supplied_ids = set()
+        new_prices = {}
+        for raw_id, raw_price in prices.items():
+            try:
+                item_id = int(raw_id)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError({
+                    "detail": "Некорректная позиция заказа",
+                    "code": "invalid_item",
+                }) from exc
+            supplied_ids.add(item_id)
+            new_prices[item_id] = _positive_money(
+                raw_price,
+                detail="Цена за мешок должна быть положительной суммой",
+                code="invalid_price",
+            )
+        if supplied_ids != item_ids:
+            raise ValidationError({
+                "detail": "Укажите новую цену для каждой позиции заказа",
+                "code": "prices_incomplete",
+            })
+        mode = "per_item"
+
+    new_total = sum(
+        (item.quantity * new_prices[item.id] for item in items),
+        Decimal("0"),
+    )
+    payments = list(
+        Payment.objects.select_for_update().filter(order=locked)
+    )
+    confirmed = sum(
+        (payment.net_amount for payment in payments if payment.status == "confirmed"),
+        Decimal("0"),
+    )
+    reserved = sum(
+        (payment.amount for payment in payments
+         if payment.status in Payment.IN_PROGRESS_STATUSES),
+        Decimal("0"),
+    )
+    if reserved > 0 and confirmed + reserved > new_total:
+        raise ValidationError({
+            "detail": (
+                "Новая сумма меньше уже оплаченной суммы и активных заявок на оплату. "
+                "Сначала отмените незавершённые оплаты в кассе."
+            ),
+            "code": "active_payments_exceed_total",
+        })
+
+    for item in items:
+        item.unit_price = new_prices[item.id]
+        item.save(update_fields=["unit_price"])
+
+    _apply_payment_status(locked, user)
+    log_event(
+        "order_price_correction",
+        f"Стоимость заказа скорректирована: {old_total} → {new_total} {locked.currency}",
+        user=user,
+        order=locked,
+        payload={
+            "action": "price_correction",
+            "mode": mode,
+            "old_total": str(old_total),
+            "new_total": str(new_total),
+            "currency": locked.currency,
+            "items": [
+                {
+                    "item_id": item.id,
+                    "product": item.product_id,
+                    "quantity": item.quantity,
+                    "old_unit_price": (
+                        str(old_prices[item.id]) if old_prices[item.id] is not None else None
+                    ),
+                    "new_unit_price": str(new_prices[item.id]),
+                }
+                for item in items
+            ],
+        },
+    )
+    locked.refresh_from_db()
+    return locked
+
+
 # Состав заказа можно менять, пока машина не начала грузиться
 # (включая «ожидает загрузки»: машина въехала, но погрузка не стартовала).
 ITEMS_EDITABLE_STATUSES = ("draft", "pending", "confirmed", "arrived")

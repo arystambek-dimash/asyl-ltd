@@ -164,7 +164,7 @@ department_names.
 | Товары | `catalog.view / create / edit / delete` |
 | Клиенты | `clients.view / create / edit / delete` |
 | Склад | `warehouse.view / adjust` |
-| Заказы | `orders.view / create / edit / confirm` |
+| Заказы | `orders.view / create / edit / confirm / correct_price` |
 | Оплаты | `payments.view / create / confirm` |
 | Пост отгрузки | `shipping.view / arrive / load / ship / debt_override` |
 | Вагон | `train.view / load` |

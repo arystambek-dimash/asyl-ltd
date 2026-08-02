@@ -33,6 +33,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { PaymentChain, AddPaymentActions, PaidMethodBreakdown, paymentOpen } from "@/components/payment-chain";
 import { OrderForm } from "@/components/order-form";
+import { OrderPriceCorrectionModal } from "@/components/order-price-correction-modal";
 import { Modal } from "@/components/ui/modal";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
 import {
@@ -40,6 +41,7 @@ import {
   Archive,
   CalendarDays,
   CircleHelp,
+  CircleDollarSign,
   Pencil,
   CopyPlus,
   Printer,
@@ -69,6 +71,7 @@ const EVENT_LABELS: Record<string, string> = {
   shipment: "Заказ отгружен",
   shipment_rollback: "Откат отгрузки",
   order_repeat: "Повтор заказа",
+  order_price_correction: "Стоимость скорректирована",
   debt_override: "Долг подтверждён",
 };
 
@@ -87,6 +90,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [priceCorrectionOpen, setPriceCorrectionOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [delBusy, setDelBusy] = useState(false);
@@ -106,6 +110,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const isManager = can(me, "orders.confirm");
   const canEditStatus = can(me, "orders.edit");
+  const canCorrectPrice = can(me, "orders.correct_price");
   const canRollback = can(me, "shipping.rollback");
   const canViewStatus = can(me, "orders.view");
   const [newStatus, setNewStatus] = useState("");
@@ -223,6 +228,16 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                 : []),
               ...(canEditOrder
                 ? [{ key: "edit", label: "Изменить заказ", icon: Pencil, onSelect: () => setEditOpen(true) }]
+                : []),
+              ...(canCorrectPrice
+                ? [
+                    {
+                      key: "correct-price",
+                      label: "Корректировать стоимость",
+                      icon: CircleDollarSign,
+                      onSelect: () => setPriceCorrectionOpen(true),
+                    },
+                  ]
                 : []),
             ]}
           />
@@ -674,6 +689,15 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
           />
         )}
       </Modal>
+
+      <OrderPriceCorrectionModal
+        order={priceCorrectionOpen ? order : null}
+        onClose={() => setPriceCorrectionOpen(false)}
+        onDone={() => {
+          setPriceCorrectionOpen(false);
+          reload();
+        }}
+      />
 
       <Modal
         open={guideOpen}
