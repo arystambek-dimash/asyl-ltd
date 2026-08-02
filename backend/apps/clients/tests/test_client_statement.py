@@ -5,9 +5,10 @@ import pytest
 from openpyxl import load_workbook
 
 from apps.catalog.models import Product
-from apps.clients.models import Client
+from apps.clients.models import Client, Department
 from apps.eventlog.models import EventLog
 from apps.orders.models import Order, OrderItem, Payment
+from apps.shipments.models import Shipment
 
 pytestmark = pytest.mark.django_db
 
@@ -173,3 +174,123 @@ def test_statement_money_cells_keep_kopecks(auth_client, user_with_perms):
     # показал бы копейку меньше. Decimal доезжает без потери.
     assert str(written) == "99999999.99"
     assert Decimal(str(written)) == Decimal("99999999.99")
+
+
+def test_statement_can_include_multiple_selected_departments(
+    auth_client, user_with_perms,
+):
+    reporter = user_with_perms(
+        "statement-departments", codes=["clients.view", "reports.export"])
+    north = Department.objects.create(code="north", name="Север", color="#315FD5")
+    south = Department.objects.create(code="south", name="Юг", color="#1F9D6A")
+    product = Product.objects.create(name="Мука", color="White", weight_kg="50")
+    first = Client.objects.create(first_name="Клиент", last_name="Север", phone="1")
+    second = Client.objects.create(first_name="Клиент", last_name="Юг", phone="2")
+    north_order = Order.objects.create(
+        client=first, status="shipped", department=north.code,
+        settlement_intent="debt",
+    )
+    south_order = Order.objects.create(
+        client=second, status="shipped", department=south.code,
+        settlement_intent="debt",
+    )
+    OrderItem.objects.create(
+        order=north_order, product=product, quantity=2, unit_price="100")
+    OrderItem.objects.create(
+        order=south_order, product=product, quantity=3, unit_price="100")
+
+    response = auth_client(reporter).get(
+        "/api/clients/statement/?departments=north,south")
+
+    assert response.status_code == 200
+    workbook = load_workbook(BytesIO(response.content), data_only=True)
+    order_departments = {
+        workbook["Заказы"].cell(row=row, column=7).value
+        for row in range(4, workbook["Заказы"].max_row + 1)
+    }
+    assert order_departments == {"Север", "Юг"}
+    summary_departments = {
+        workbook["Сводка"].cell(row=row, column=1).value
+        for row in range(12, workbook["Сводка"].max_row + 1)
+    }
+    assert {"Север", "Юг"}.issubset(summary_departments)
+
+    only_north = auth_client(reporter).get(
+        "/api/clients/statement/?departments=north")
+    north_workbook = load_workbook(BytesIO(only_north.content), data_only=True)
+    assert north_workbook["Заказы"].max_row == 4
+    assert north_workbook["Заказы"]["G4"].value == "Север"
+    assert north_workbook["Клиенты"].max_row == 4
+    assert north_workbook["Клиенты"]["B4"].value == first.name
+
+
+def test_statement_uses_creation_shipping_and_payment_dates_consistently(
+    auth_client, user_with_perms,
+):
+    from datetime import timedelta
+    from django.utils import timezone
+
+    reporter = user_with_perms(
+        "statement-event-dates", codes=["clients.view", "reports.export"])
+    department = Department.objects.create(
+        code="date-dept", name="Отдел дат", color="#315FD5")
+    client = Client.objects.create(first_name="Дата", last_name="Событий", phone="3")
+    product = Product.objects.create(name="Крупа", color="White", weight_kg="25")
+    now = timezone.now()
+    long_ago = now - timedelta(days=30)
+
+    shipped_today = Order.objects.create(
+        client=client, status="shipped", department=department.code,
+        settlement_intent="debt",
+    )
+    Order.objects.filter(pk=shipped_today.pk).update(created_at=long_ago)
+    Shipment.objects.create(order=shipped_today, shipped_at=now)
+    OrderItem.objects.create(
+        order=shipped_today, product=product, quantity=2, unit_price="100")
+
+    created_today = Order.objects.create(
+        client=client, status="shipped", department=department.code,
+        settlement_intent="debt",
+    )
+    Shipment.objects.create(order=created_today, shipped_at=long_ago)
+    OrderItem.objects.create(
+        order=created_today, product=product, quantity=5, unit_price="100")
+
+    today = timezone.localdate().isoformat()
+    response = auth_client(reporter).get(
+        f"/api/clients/statement/?departments={department.code}"
+        f"&date_from={today}&date_to={today}"
+    )
+
+    assert response.status_code == 200
+    workbook = load_workbook(BytesIO(response.content), data_only=True)
+    # Информационный лист заказов — по дате создания.
+    assert workbook["Заказы"].max_row == 4
+    assert workbook["Заказы"]["A4"].value == created_today.id
+    # Финансовая продажа — по фактической дате отгрузки.
+    assert workbook["Операции"].max_row == 4
+    assert workbook["Операции"]["E4"].value == shipped_today.id
+    assert workbook["Сводка"]["B8"].value == 1
+    assert workbook["Сводка"]["C8"].value == 200
+    assert workbook["Сводка"]["G5"].value == (
+        f"{timezone.localdate():%d.%m.%Y} — {timezone.localdate():%d.%m.%Y}"
+    )
+    assert workbook["Сводка"]["F7"].value == "Баланс периода"
+    # Долги обозначены как текущие и не теряются из-за фильтра периода.
+    assert workbook["Долги"].max_row == 5
+
+
+def test_statement_rejects_empty_or_unknown_department_selection(
+    auth_client, user_with_perms,
+):
+    reporter = user_with_perms(
+        "statement-bad-departments", codes=["clients.view", "reports.export"])
+
+    empty = auth_client(reporter).get("/api/clients/statement/?departments=")
+    unknown = auth_client(reporter).get(
+        "/api/clients/statement/?departments=missing")
+
+    assert empty.status_code == 400
+    assert empty.data["code"] == "departments_required"
+    assert unknown.status_code == 400
+    assert unknown.data["code"] == "bad_department"

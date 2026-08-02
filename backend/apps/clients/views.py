@@ -41,6 +41,30 @@ def _money_param(raw, name):
     return value
 
 
+def _statement_departments(params):
+    raw = params.get("departments")
+    if raw is None:
+        raw = params.get("department")
+    if raw is None:
+        return None
+    codes = tuple(dict.fromkeys(
+        code.strip() for code in raw.split(",") if code.strip()
+    ))
+    if not codes:
+        raise ValidationError({
+            "detail": "Выберите хотя бы один отдел",
+            "code": "departments_required",
+        })
+    known = set(Department.objects.filter(code__in=codes).values_list("code", flat=True))
+    unknown = [code for code in codes if code not in known]
+    if unknown:
+        raise ValidationError({
+            "detail": "Неизвестный отдел: " + ", ".join(unknown),
+            "code": "bad_department",
+        })
+    return codes
+
+
 class DepartmentViewSet(viewsets.ModelViewSet):
     """Динамические отделы заказов. Управление встроено в экран заказов."""
     queryset = Department.objects.all()
@@ -192,8 +216,11 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         date_from = parse_iso_date(request.query_params.get("date_from"))
         date_to = parse_iso_date(request.query_params.get("date_to"))
         validate_date_range(date_from, date_to)
+        departments = _statement_departments(request.query_params)
         client = self.get_object()
-        content = build_client_statement(client, date_from, date_to)
+        content = build_client_statement(
+            client, date_from, date_to, departments=departments,
+        )
         response = HttpResponse(
             content,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -206,7 +233,8 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             user=request.user,
             payload={"client_id": client.pk,
                      "date_from": str(date_from) if date_from else None,
-                     "date_to": str(date_to) if date_to else None},
+                     "date_to": str(date_to) if date_to else None,
+                     "departments": list(departments) if departments else None},
         )
         return response
 
@@ -215,7 +243,10 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         date_from = parse_iso_date(request.query_params.get("date_from"))
         date_to = parse_iso_date(request.query_params.get("date_to"))
         validate_date_range(date_from, date_to)
-        content = build_all_clients_statement(date_from, date_to)
+        departments = _statement_departments(request.query_params)
+        content = build_all_clients_statement(
+            date_from, date_to, departments=departments,
+        )
         response = HttpResponse(
             content,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -229,6 +260,7 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             payload={
                 "date_from": str(date_from) if date_from else None,
                 "date_to": str(date_to) if date_to else None,
+                "departments": list(departments) if departments else None,
             },
         )
         return response

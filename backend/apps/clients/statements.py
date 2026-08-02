@@ -69,6 +69,7 @@ def _money(value):
 # периода обязан считать по нему же, иначе деньги, подтверждённые в периоде,
 # в выписку не попадут, а попавшие получат дату вне запрошенного окна.
 PAYMENT_STAMP = Coalesce("confirmed_at", "paid_at")
+SALE_STAMP = Coalesce("shipment__shipped_at", "created_at")
 
 
 def _payments_in_period(queryset, date_from, date_to):
@@ -78,6 +79,75 @@ def _payments_in_period(queryset, date_from, date_to):
     if date_to:
         queryset = queryset.filter(_stamp__date__lte=date_to)
     return queryset.order_by("_stamp", "id")
+
+
+def _orders_in_period(queryset, date_from, date_to, *, sale_date=False):
+    """Filter by the date represented by a statement row.
+
+    Orders/items use creation date. A recognized sale uses shipment time (with
+    creation time only as a fallback for legacy manual shipments).
+    """
+    if sale_date:
+        queryset = queryset.annotate(_statement_stamp=SALE_STAMP)
+        field = "_statement_stamp__date"
+    else:
+        field = "created_at__date"
+    if date_from:
+        queryset = queryset.filter(**{f"{field}__gte": date_from})
+    if date_to:
+        queryset = queryset.filter(**{f"{field}__lte": date_to})
+    return queryset.order_by(field.removesuffix("__date"), "id")
+
+
+def _period_label(date_from, date_to):
+    if not date_from and not date_to:
+        return "за всё время"
+    return (
+        f"{date_from.strftime('%d.%m.%Y') if date_from else 'начала'} — "
+        f"{date_to.strftime('%d.%m.%Y') if date_to else 'сегодня'}"
+    )
+
+
+def _department_context(departments):
+    from .models import Department
+
+    rows = list(Department.objects.all())
+    names = {row.code: row.name for row in rows}
+    if departments is None:
+        return names, "Все отделы"
+    selected = [names.get(code, code) for code in departments]
+    return names, ", ".join(selected)
+
+
+def _department_name(names, code):
+    return names.get(code, code)
+
+
+def _statement_orders(client=None, departments=None):
+    queryset = (
+        Order.objects.select_related(
+            "client", "store", "shipment", "repeated_from", "created_by",
+        )
+        .prefetch_related(
+            "items__product", "payments__recorded_by", "payments__received_by",
+            "payments__confirmed_by",
+        )
+    )
+    if client is not None:
+        queryset = queryset.filter(client=client)
+    if departments is not None:
+        queryset = queryset.filter(department__in=departments)
+    return queryset
+
+
+def _current_debt_orders(queryset):
+    return [
+        order
+        for order in queryset.filter(
+            status="shipped", settlement_intent="debt",
+        ).order_by("created_at", "id")
+        if order.is_debt
+    ]
 
 
 def _neutralize_formula_cells(workbook) -> None:
@@ -141,31 +211,31 @@ def _finish(ws, widths, money_columns=(), date_columns=()):
             cell.number_format = "dd.mm.yyyy hh:mm"
 
 
-def build_client_statement(client, date_from=None, date_to=None) -> bytes:
-    orders = (
-        Order.objects.filter(client=client)
-        .select_related("store", "shipment", "repeated_from", "created_by")
-        .prefetch_related(
-            "items__product", "payments__recorded_by", "payments__received_by",
-            "payments__confirmed_by",
-        )
-        .order_by("created_at", "id")
-    )
-    if date_from:
-        orders = orders.filter(created_at__date__gte=date_from)
-    if date_to:
-        orders = orders.filter(created_at__date__lte=date_to)
-    orders = list(orders)
+def build_client_statement(
+    client, date_from=None, date_to=None, departments=None,
+) -> bytes:
+    base_orders = _statement_orders(client=client, departments=departments)
+    orders = list(_orders_in_period(base_orders, date_from, date_to))
+    sales_orders = list(_orders_in_period(
+        base_orders.filter(status="shipped"),
+        date_from,
+        date_to,
+        sale_date=True,
+    ))
+    debt_orders = _current_debt_orders(base_orders)
     payments = Payment.objects.filter(
         order__client=client, order__deleted_at__isnull=True,
     ).select_related("order", "recorded_by", "received_by", "confirmed_by")
+    if departments is not None:
+        payments = payments.filter(order__department__in=departments)
     payments = list(_payments_in_period(payments, date_from, date_to))
 
-    period = "за всё время"
-    if date_from or date_to:
-        period = f"{date_from.strftime('%d.%m.%Y') if date_from else 'начала'} — " \
-                 f"{date_to.strftime('%d.%m.%Y') if date_to else 'сегодня'}"
-    subtitle = f"{client.name} · {period} · сформировано {timezone.localtime():%d.%m.%Y %H:%M}"
+    period = _period_label(date_from, date_to)
+    department_names, department_scope = _department_context(departments)
+    subtitle = (
+        f"{client.name} · {department_scope} · {period} · "
+        f"сформировано {timezone.localtime():%d.%m.%Y %H:%M}"
+    )
 
     wb = Workbook()
     ws = wb.active
@@ -193,14 +263,13 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
         _empty_currency_totals
     )
     for order in orders:
-        currency_totals = totals[order.currency]
-        currency_totals["orders"] += 1
-        if order.status == "shipped":
-            currency_totals["sales"] += order.total_amount
-            if order.is_debt:
-                currency_totals["debt"] += max(
-                    Decimal("0"), order.remaining_amount
-                )
+        totals[order.currency]["orders"] += 1
+    for order in sales_orders:
+        totals[order.currency]["sales"] += order.total_amount
+    for order in debt_orders:
+        totals[order.currency]["debt"] += max(
+            Decimal("0"), order.remaining_amount
+        )
     for payment in payments:
         if payment.status == "confirmed":
             totals[payment.order.currency]["payments"] += payment.net_amount
@@ -227,16 +296,15 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
 
     # Kaspi-подобная лента: дебет = отгрузка, кредит = подтверждённая оплата.
     ledger = wb.create_sheet("Операции")
-    _title(ledger, "Операции", subtitle, 10)
+    _title(ledger, "Операции", subtitle, 11)
     _headers(ledger, 3, [
         "Дата", "Операция", "Заказ", "Описание", "Способ / статус",
-        "Валюта", "Начислено", "Оплачено", "Баланс", "Автор",
+        "Валюта", "Начислено", "Оплачено", "Баланс периода", "Автор", "Отдел",
     ])
     operations = []
-    for order in orders:
-        if order.status == "shipped":
-            stamp = getattr(getattr(order, "shipment", None), "shipped_at", None) or order.created_at
-            operations.append((stamp, 0, order.currency, order.total_amount, Decimal("0"), order))
+    for order in sales_orders:
+        stamp = getattr(getattr(order, "shipment", None), "shipped_at", None) or order.created_at
+        operations.append((stamp, 0, order.currency, order.total_amount, Decimal("0"), order))
     for payment in payments:
         if payment.status == "confirmed":
             stamp = payment.confirmed_at or payment.paid_at
@@ -254,6 +322,7 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
                 _local(stamp), "Продажа / отгрузка", order.id, description,
                 public_status_label(order.status), currency, _money(debit), 0,
                 _money(balances[currency]), order.created_by.username if order.created_by else "—",
+                _department_name(department_names, order.department),
             ]
         else:
             payment = obj
@@ -262,9 +331,10 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
                 _local(stamp), "Оплата", payment.order_id, payment.note or "Поступление оплаты",
                 _method_label(payment.method), currency, 0,
                 _money(credit), _money(balances[currency]), author.username if author else "—",
+                _department_name(department_names, payment.order.department),
             ]
         ledger.append(values)
-    _finish(ledger, (19, 21, 10, 44, 22, 10, 16, 16, 16, 20), (7, 8, 9), (1,))
+    _finish(ledger, (19, 21, 10, 44, 22, 10, 16, 16, 16, 20, 22), (7, 8, 9), (1,))
 
     orders_ws = wb.create_sheet("Заказы")
     _title(orders_ws, "Заказы", subtitle, 14)
@@ -277,7 +347,8 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
         shipment = getattr(order, "shipment", None)
         orders_ws.append([
             order.id, _local(order.created_at), public_status_label(order.status),
-            _local(shipment.shipped_at) if shipment else None, order.department,
+            _local(shipment.shipped_at) if shipment else None,
+            _department_name(department_names, order.department),
             order.store.name if order.store else "—",
             transport_label(order.transport_type),
             order.truck_number or "—", order.currency, _money(order.total_amount),
@@ -287,9 +358,9 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
     _finish(orders_ws, (9, 19, 20, 19, 18, 22, 12, 16, 10, 16, 16, 16, 15, 35), (10, 11, 12), (2, 4))
 
     items_ws = wb.create_sheet("Позиции")
-    _title(items_ws, "Позиции заказов", subtitle, 8)
+    _title(items_ws, "Позиции заказов", subtitle, 9)
     _headers(items_ws, 3, [
-        "Заказ", "Дата", "Товар", "Класс CV", "Мешков", "Цена / мешок", "Сумма", "Валюта",
+        "Заказ", "Дата", "Товар", "Класс CV", "Мешков", "Цена / мешок", "Сумма", "Валюта", "Отдел",
     ])
     for order in orders:
         for item in order.items.all():
@@ -297,14 +368,14 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
                 order.id, _local(order.created_at), item.product_label,
                 item.product_cv_class or "—", item.quantity,
                 _money(item.unit_price), _money(item.quantity * (item.unit_price or 0)),
-                order.currency,
+                order.currency, _department_name(department_names, order.department),
             ])
-    _finish(items_ws, (10, 19, 40, 16, 12, 18, 18, 10), (6, 7), (2,))
+    _finish(items_ws, (10, 19, 40, 16, 12, 18, 18, 10, 22), (6, 7), (2,))
 
     pay_ws = wb.create_sheet("Платежи")
-    _title(pay_ws, "Платежи", subtitle, 9)
+    _title(pay_ws, "Платежи", subtitle, 10)
     _headers(pay_ws, 3, [
-        "№", "Дата", "Заказ", "Способ", "Статус", "Сумма", "Валюта", "Сотрудник", "Примечание",
+        "№", "Дата", "Заказ", "Способ", "Статус", "Сумма", "Валюта", "Сотрудник", "Примечание", "Отдел",
     ])
     for payment in payments:
         author = payment.confirmed_by or payment.received_by or payment.recorded_by
@@ -313,17 +384,16 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
             _method_label(payment.method),
             payment_status_label(payment.status), _money(payment.amount),
             payment.order.currency, author.username if author else "—", payment.note,
+            _department_name(department_names, payment.order.department),
         ])
-    _finish(pay_ws, (9, 19, 10, 20, 18, 18, 10, 20, 38), (6,), (2,))
+    _finish(pay_ws, (9, 19, 10, 20, 18, 18, 10, 20, 38, 22), (6,), (2,))
 
     debt_ws = wb.create_sheet("Долги")
-    _title(debt_ws, "Текущие долги", subtitle, 9)
+    _title(debt_ws, "Текущие долги", subtitle, 10)
     _headers(debt_ws, 3, [
-        "Заказ", "Отгружен", "Магазин", "Мешков", "Сумма", "Оплачено", "Остаток", "Валюта", "Способ",
+        "Заказ", "Отгружен", "Магазин", "Мешков", "Сумма", "Оплачено", "Остаток", "Валюта", "Способ", "Отдел",
     ])
-    for order in orders:
-        if not order.is_debt:
-            continue
+    for order in debt_orders:
         shipment = getattr(order, "shipment", None)
         debt_ws.append([
             order.id, _local(shipment.shipped_at) if shipment else _local(order.created_at),
@@ -331,8 +401,9 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
             sum(item.quantity for item in order.items.all()), _money(order.total_amount),
             _money(order.paid_total), _money(order.remaining_amount), order.currency,
             order_payment_method_label(order.payment_method),
+            _department_name(department_names, order.department),
         ])
-    _finish(debt_ws, (10, 19, 22, 12, 18, 18, 18, 10, 20), (5, 6, 7), (2,))
+    _finish(debt_ws, (10, 19, 22, 12, 18, 18, 18, 10, 20, 22), (5, 6, 7), (2,))
 
     output = BytesIO()
     _neutralize_formula_cells(wb)
@@ -340,7 +411,9 @@ def build_client_statement(client, date_from=None, date_to=None) -> bytes:
     return output.getvalue()
 
 
-def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
+def build_all_clients_statement(
+    date_from=None, date_to=None, departments=None,
+) -> bytes:
     """Консолидированная выписка по всей клиентской базе.
 
     Финансы разных валют намеренно не пересчитываются по курсу: KZT и USD
@@ -348,34 +421,38 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
     """
     from .models import Client
 
-    clients = list(Client.objects.order_by("first_name", "last_name", "id"))
-    orders_qs = (
-        Order.objects.select_related(
-            "client", "store", "shipment", "repeated_from", "created_by",
-        )
-        .prefetch_related(
-            "items__product", "payments__recorded_by", "payments__received_by",
-            "payments__confirmed_by",
-        )
-        .order_by("created_at", "id")
-    )
-    if date_from:
-        orders_qs = orders_qs.filter(created_at__date__gte=date_from)
-    if date_to:
-        orders_qs = orders_qs.filter(created_at__date__lte=date_to)
-    orders = list(orders_qs)
+    base_orders = _statement_orders(departments=departments)
+    orders = list(_orders_in_period(base_orders, date_from, date_to))
+    sales_orders = list(_orders_in_period(
+        base_orders.filter(status="shipped"),
+        date_from,
+        date_to,
+        sale_date=True,
+    ))
+    debt_orders = _current_debt_orders(base_orders)
 
     payments_qs = Payment.objects.filter(
         order__deleted_at__isnull=True,
     ).select_related("order", "order__client", "recorded_by", "received_by", "confirmed_by")
+    if departments is not None:
+        payments_qs = payments_qs.filter(order__department__in=departments)
     payments = list(_payments_in_period(payments_qs, date_from, date_to))
 
-    period = "за всё время"
-    if date_from or date_to:
-        period = f"{date_from.strftime('%d.%m.%Y') if date_from else 'начала'} — " \
-                 f"{date_to.strftime('%d.%m.%Y') if date_to else 'сегодня'}"
+    period = _period_label(date_from, date_to)
+    department_names, department_scope = _department_context(departments)
+    relevant_client_ids = {
+        *(order.client_id for order in orders),
+        *(order.client_id for order in sales_orders),
+        *(order.client_id for order in debt_orders),
+        *(payment.order.client_id for payment in payments),
+    }
+    if departments is None and not date_from and not date_to:
+        clients = list(Client.objects.order_by("first_name", "last_name", "id"))
+    else:
+        clients = list(Client.objects.filter(id__in=relevant_client_ids).order_by(
+            "first_name", "last_name", "id"))
     subtitle = (
-        f"Все клиенты · {period} · "
+        f"{department_scope} · {period} · "
         f"сформировано {timezone.localtime():%d.%m.%Y %H:%M}"
     )
 
@@ -385,18 +462,28 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
     client_totals: defaultdict[
         int, defaultdict[str, _CurrencyTotals]
     ] = defaultdict(lambda: defaultdict(_empty_currency_totals))
+    department_totals: defaultdict[
+        tuple[str, str], _CurrencyTotals
+    ] = defaultdict(_empty_currency_totals)
     for order in orders:
         for target in (totals[order.currency], client_totals[order.client_id][order.currency]):
             target["orders"] += 1
-            if order.status == "shipped":
-                target["sales"] += order.total_amount
-                if order.is_debt:
-                    target["debt"] += max(Decimal("0"), order.remaining_amount)
+        department_totals[(order.department, order.currency)]["orders"] += 1
+    for order in sales_orders:
+        for target in (totals[order.currency], client_totals[order.client_id][order.currency]):
+            target["sales"] += order.total_amount
+        department_totals[(order.department, order.currency)]["sales"] += order.total_amount
+    for order in debt_orders:
+        remaining = max(Decimal("0"), order.remaining_amount)
+        for target in (totals[order.currency], client_totals[order.client_id][order.currency]):
+            target["debt"] += remaining
+        department_totals[(order.department, order.currency)]["debt"] += remaining
     for payment in payments:
         if payment.status != "confirmed":
             continue
         totals[payment.order.currency]["payments"] += payment.net_amount
         client_totals[payment.order.client_id][payment.order.currency]["payments"] += payment.net_amount
+        department_totals[(payment.order.department, payment.order.currency)]["payments"] += payment.net_amount
 
     wb = Workbook()
     summary = wb.active
@@ -412,15 +499,18 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
     summary["A2"].font = Font(color="6B7280")
     summary.append([])
     summary.append(["Клиентов", len(clients), "Заказов", len(orders), "Платежей", len(payments), "Период"])
-    summary.append(["", "", "", "", "", "", period])
+    summary.append(["Отделы", department_scope, "", "", "", "", period])
     for row in range(4, 6):
         for cell in summary[row]:
             cell.fill = PatternFill("solid", fgColor=LIGHT_GRAY)
             cell.border = Border(bottom=THIN)
-            if row == 4 and cell.column % 2 == 1:
+            if (row == 4 and cell.column % 2 == 1) or (row == 5 and cell.column == 1):
                 cell.font = Font(bold=True, color="64748B")
     summary.append([])
-    summary.append(["Валюта", "Заказов", "Продажи", "Оплачено", "Текущий долг", "Баланс", "Клиентов с долгом"])
+    summary.append([
+        "Валюта", "Заказов", "Продажи", "Оплачено", "Текущий долг",
+        "Баланс периода", "Клиентов с долгом",
+    ])
     for cell in summary[7]:
         cell.font = Font(bold=True, color=WHITE)
         cell.fill = PatternFill("solid", fgColor=BLUE)
@@ -442,6 +532,36 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
         for cell in row:
             cell.border = Border(bottom=THIN)
         for cell in row[2:6]:
+            cell.number_format = '#,##0.00'
+    summary.append([])
+    department_header_row = summary.max_row + 1
+    summary.append([
+        "Отдел", "Валюта", "Заказов", "Продажи", "Оплачено",
+        "Текущий долг", "Баланс периода",
+    ])
+    for cell in summary[department_header_row]:
+        cell.font = Font(bold=True, color=WHITE)
+        cell.fill = PatternFill("solid", fgColor=GREEN)
+    department_codes = list(departments) if departments is not None else list(department_names)
+    for code in department_codes:
+        for currency in ("KZT", "USD"):
+            row_totals = department_totals[(code, currency)]
+            summary.append([
+                _department_name(department_names, code),
+                currency,
+                row_totals["orders"],
+                _money(row_totals["sales"]),
+                _money(row_totals["payments"]),
+                _money(row_totals["debt"]),
+                _money(row_totals["sales"] - row_totals["payments"]),
+            ])
+    for row in summary.iter_rows(
+        min_row=department_header_row + 1,
+        max_row=summary.max_row,
+    ):
+        for cell in row:
+            cell.border = Border(bottom=THIN)
+        for cell in row[3:7]:
             cell.number_format = '#,##0.00'
     for col, width in enumerate((14, 14, 20, 20, 20, 20, 22), 1):
         summary.column_dimensions[get_column_letter(col)].width = width
@@ -469,16 +589,16 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
     )
 
     ledger = wb.create_sheet("Операции")
-    _title(ledger, "Операции", subtitle, 12)
+    _title(ledger, "Операции", subtitle, 13)
     _headers(ledger, 3, [
         "Дата", "Клиент", "Телефон", "Операция", "Заказ", "Описание",
-        "Способ / статус", "Валюта", "Начислено", "Оплачено", "Баланс клиента", "Автор",
+        "Способ / статус", "Валюта", "Начислено", "Оплачено",
+        "Баланс периода", "Автор", "Отдел",
     ])
     operations = []
-    for order in orders:
-        if order.status == "shipped":
-            stamp = getattr(getattr(order, "shipment", None), "shipped_at", None) or order.created_at
-            operations.append((stamp, 0, order.client_id, order.currency, order.total_amount, Decimal("0"), order))
+    for order in sales_orders:
+        stamp = getattr(getattr(order, "shipment", None), "shipped_at", None) or order.created_at
+        operations.append((stamp, 0, order.client_id, order.currency, order.total_amount, Decimal("0"), order))
     for payment in payments:
         if payment.status == "confirmed":
             stamp = payment.confirmed_at or payment.paid_at
@@ -499,6 +619,7 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
                 public_status_label(order.status), currency, _money(debit), 0,
                 _money(balances[balance_key]),
                 order.created_by.username if order.created_by else "—",
+                _department_name(department_names, order.department),
             ]
         else:
             payment = obj
@@ -509,9 +630,10 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
                 _method_label(payment.method), currency, 0,
                 _money(credit), _money(balances[balance_key]),
                 author.username if author else "—",
+                _department_name(department_names, payment.order.department),
             ]
         ledger.append(values)
-    _finish(ledger, (19, 28, 18, 21, 10, 42, 22, 10, 16, 16, 18, 20), (9, 10, 11), (1,))
+    _finish(ledger, (19, 28, 18, 21, 10, 42, 22, 10, 16, 16, 18, 20, 22), (9, 10, 11), (1,))
 
     orders_ws = wb.create_sheet("Заказы")
     _title(orders_ws, "Все заказы", subtitle, 17)
@@ -525,7 +647,8 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
         orders_ws.append([
             order.id, _local(order.created_at), order.client.name, order.client.phone,
             public_status_label(order.status),
-            _local(shipment.shipped_at) if shipment else None, order.department,
+            _local(shipment.shipped_at) if shipment else None,
+            _department_name(department_names, order.department),
             order.store.name if order.store else "—",
             transport_label(order.transport_type),
             order.truck_number or "—", order.currency, _money(order.total_amount),
@@ -540,10 +663,10 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
     )
 
     items_ws = wb.create_sheet("Позиции")
-    _title(items_ws, "Позиции всех заказов", subtitle, 10)
+    _title(items_ws, "Позиции всех заказов", subtitle, 11)
     _headers(items_ws, 3, [
         "Заказ", "Дата", "Клиент", "Телефон", "Товар", "Класс CV",
-        "Мешков", "Цена / мешок", "Сумма", "Валюта",
+        "Мешков", "Цена / мешок", "Сумма", "Валюта", "Отдел",
     ])
     for order in orders:
         for item in order.items.all():
@@ -551,15 +674,15 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
                 order.id, _local(order.created_at), order.client.name, order.client.phone,
                 item.product_label, item.product_cv_class or "—", item.quantity,
                 _money(item.unit_price), _money(item.quantity * (item.unit_price or 0)),
-                order.currency,
+                order.currency, _department_name(department_names, order.department),
             ])
-    _finish(items_ws, (10, 19, 30, 18, 40, 16, 12, 18, 18, 10), (8, 9), (2,))
+    _finish(items_ws, (10, 19, 30, 18, 40, 16, 12, 18, 18, 10, 22), (8, 9), (2,))
 
     pay_ws = wb.create_sheet("Платежи")
-    _title(pay_ws, "Все платежи", subtitle, 11)
+    _title(pay_ws, "Все платежи", subtitle, 12)
     _headers(pay_ws, 3, [
         "№", "Дата", "Клиент", "Телефон", "Заказ", "Способ", "Статус",
-        "Сумма", "Валюта", "Сотрудник", "Примечание",
+        "Сумма", "Валюта", "Сотрудник", "Примечание", "Отдел",
     ])
     for payment in payments:
         author = payment.confirmed_by or payment.received_by or payment.recorded_by
@@ -569,8 +692,9 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
             _method_label(payment.method),
             payment_status_label(payment.status), _money(payment.amount),
             payment.order.currency, author.username if author else "—", payment.note,
+            _department_name(department_names, payment.order.department),
         ])
-    _finish(pay_ws, (9, 19, 30, 18, 10, 20, 18, 18, 10, 20, 38), (8,), (2,))
+    _finish(pay_ws, (9, 19, 30, 18, 10, 20, 18, 18, 10, 20, 38, 22), (8,), (2,))
 
     debt_ws = wb.create_sheet("Долги")
     _title(debt_ws, "Текущие долги", subtitle, 12)
@@ -578,9 +702,7 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
         "Заказ", "Отгружен", "Клиент", "Телефон", "Магазин", "Мешков",
         "Сумма", "Оплачено", "Остаток", "Валюта", "Способ", "Отдел",
     ])
-    for order in orders:
-        if not order.is_debt:
-            continue
+    for order in debt_orders:
         shipment = getattr(order, "shipment", None)
         debt_ws.append([
             order.id, _local(shipment.shipped_at) if shipment else _local(order.created_at),
@@ -588,7 +710,8 @@ def build_all_clients_statement(date_from=None, date_to=None) -> bytes:
             order.store.name if order.store else "—",
             sum(item.quantity for item in order.items.all()), _money(order.total_amount),
             _money(order.paid_total), _money(order.remaining_amount), order.currency,
-            order_payment_method_label(order.payment_method), order.department,
+            order_payment_method_label(order.payment_method),
+            _department_name(department_names, order.department),
         ])
     _finish(debt_ws, (10, 19, 30, 18, 22, 12, 18, 18, 18, 10, 20, 18), (7, 8, 9), (2,))
 
