@@ -12,41 +12,6 @@ export interface Me {
   sales_department: Pick<Department, "id" | "code" | "name" | "color"> | null;
 }
 
-export type FactoryZoneKind =
-  | "gate"
-  | "scale"
-  | "warehouse"
-  | "silos"
-  | "production"
-  | "lab"
-  | "rail"
-  | "utility"
-  | "parking"
-  | "office"
-  | "canteen"
-  | "dock"
-  | "conveyor"
-  | "camera";
-
-export interface FactoryZone {
-  id: string;
-  name: string;
-  kind: FactoryZoneKind;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  color: string;
-  note: string;
-}
-
-export interface FactoryMap {
-  title: string;
-  zones: FactoryZone[];
-  updated_at: string | null;
-  updated_by_name: string | null;
-}
-
 export interface Product {
   id: number;
   name: string;

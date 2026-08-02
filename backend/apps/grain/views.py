@@ -385,13 +385,14 @@ class SiloViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     serializer_class = SiloSerializer
     pagination_class = OptInPageNumberPagination
     required_perms = {
-        "list": "grain.view",
-        "retrieve": "grain.view",
+        # Чтение доступно и вкладке «Силосы» (silos.view), и зерновому процессу.
+        "list": ("grain.view", "silos.view"),
+        "retrieve": ("grain.view", "silos.view"),
         "create": "grain.admin",
         "update": "grain.admin",
         "partial_update": "grain.admin",
         "destroy": "grain.admin",
-        "movements": "grain.view",
+        "movements": ("grain.view", "silos.view"),
         "adjust": "grain.inventory",
     }
 
@@ -438,8 +439,8 @@ class SiloTypeViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     serializer_class = SiloTypeSerializer
     pagination_class = OptInPageNumberPagination
     required_perms = {
-        "list": "grain.view",
-        "retrieve": "grain.view",
+        "list": ("grain.view", "silos.view"),
+        "retrieve": ("grain.view", "silos.view"),
         "create": ("grain.supply", "grain.admin"),
         "update": "grain.admin",
         "partial_update": "grain.admin",

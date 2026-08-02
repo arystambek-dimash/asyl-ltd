@@ -18,8 +18,8 @@ import {
   X,
   Store,
   HandCoins,
-  Factory,
   ScanLine,
+  Warehouse,
   Wheat,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -69,13 +69,10 @@ function staffSections(): NavSection[] {
         // Единый пост: машины и вагоны вместе — лайв-этапы и моноблок отгрузки.
         { href: "/shipping", label: "Пост погрузки", icon: Truck, perm: ["shipping.view", "train.view"] },
         { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "shipping.load" },
-        {
-          href: "/warehouse/map",
-          label: "Территория",
-          icon: Factory,
-          perm: ["warehouse.view", "grain.view"],
-          activePrefix: "/warehouse",
-        },
+        { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },
+        // Силосы — отдельная вкладка со своим правом: доступ раздаётся в ролях
+        // независимо от зернового процесса (grain.*).
+        { href: "/warehouse/silos", label: "Силосы", icon: Warehouse, perm: "silos.view" },
         // Проходная вагонов: заявки, приход, взвешивание и выход.
         { href: "/grain", label: "Приход и проход", icon: Wheat, perm: "grain.view" },
         { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },

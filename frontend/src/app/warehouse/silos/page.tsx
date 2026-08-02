@@ -16,7 +16,6 @@ import {
   Warehouse,
 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
-import { FactoryTabs } from "@/components/factory-tabs";
 import { RequirePerm } from "@/components/require-perm";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -618,12 +617,14 @@ function MovementsModal({ silo, onClose }: { silo: GrainSilo; onClose: () => voi
 function SiloCard({
   silo,
   canAdjust,
+  canOpenWagons,
   index,
   onAdjust,
   onMovements,
 }: {
   silo: GrainSilo;
   canAdjust: boolean;
+  canOpenWagons: boolean;
   index: number;
   onAdjust: () => void;
   onMovements: () => void;
@@ -701,15 +702,24 @@ function SiloCard({
                 Вагоны в работе
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {silo.active_wagons.map((wagon) => (
-                  <Link
-                    key={wagon.id}
-                    href={`/grain/wagons/${wagon.id}`}
-                    className="rounded-full border border-[#315d74]/25 bg-white px-2.5 py-1 text-xs font-semibold text-[#315d74] transition-transform hover:-translate-y-0.5"
-                  >
-                    {wagon.number || `#${wagon.id}`}
-                  </Link>
-                ))}
+                {silo.active_wagons.map((wagon) =>
+                  canOpenWagons ? (
+                    <Link
+                      key={wagon.id}
+                      href={`/grain/wagons/${wagon.id}`}
+                      className="rounded-full border border-[#315d74]/25 bg-white px-2.5 py-1 text-xs font-semibold text-[#315d74] transition-transform hover:-translate-y-0.5"
+                    >
+                      {wagon.number || `#${wagon.id}`}
+                    </Link>
+                  ) : (
+                    <span
+                      key={wagon.id}
+                      className="rounded-full border border-[#315d74]/25 bg-white px-2.5 py-1 text-xs font-semibold text-[#315d74]"
+                    >
+                      {wagon.number || `#${wagon.id}`}
+                    </span>
+                  ),
+                )}
               </div>
             </div>
           )}
@@ -756,10 +766,9 @@ function SilosPageInner() {
 
   return (
     <AppShell
-      title="Территория"
+      title="Силосы"
       section="Работа"
       description="Живая схема хранения, резервы под вагоны и маршруты прихода."
-      tabs={<FactoryTabs />}
       actions={
         <div className="flex flex-wrap items-center gap-2">
           {canAdmin && (
@@ -825,6 +834,7 @@ function SilosPageInner() {
             key={silo.id}
             silo={silo}
             canAdjust={canAdjust}
+            canOpenWagons={can(me, "grain.view")}
             index={index}
             onAdjust={() => setAdjustFor(silo)}
             onMovements={() => setMovementsFor(silo)}
@@ -884,7 +894,7 @@ function SilosPageInner() {
 
 export default function FactorySilosPage() {
   return (
-    <RequirePerm perm="grain.view" title="Территория · Силосы">
+    <RequirePerm perm="silos.view" title="Силосы">
       <SilosPageInner />
     </RequirePerm>
   );

@@ -32,7 +32,7 @@ const factoryUser: Me = {
   username: "factory",
   is_client: false,
   client_id: null,
-  permissions: ["warehouse.view", "grain.view"],
+  permissions: ["warehouse.view", "silos.view", "grain.view"],
 };
 
 function Harness() {
@@ -73,22 +73,25 @@ describe("подсветка активного пункта", () => {
     expect(screen.getByRole("link", { name: "Новый заказ" })).not.toHaveClass(activeClass);
   });
 
-  it("показывает силосы внутри «Территории», а не отдельным пунктом зерна", () => {
+  it("показывает склад и силосы отдельными пунктами, активен самый специфичный", () => {
     nav.pathname = "/warehouse/silos";
     render(<Sidebar me={factoryUser} />);
 
-    const factory = screen.getByRole("link", { name: "Территория" });
-    expect(factory).toHaveAttribute("href", "/warehouse/map");
-    expect(factory).toHaveClass(activeClass);
+    const stock = screen.getByRole("link", { name: "Склад" });
+    expect(stock).toHaveAttribute("href", "/warehouse");
+    expect(stock).not.toHaveClass(activeClass);
+    const silos = screen.getByRole("link", { name: "Силосы" });
+    expect(silos).toHaveAttribute("href", "/warehouse/silos");
+    expect(silos).toHaveClass(activeClass);
     expect(screen.getByRole("link", { name: "Приход и проход" })).toHaveAttribute("href", "/grain");
-    expect(screen.queryByRole("link", { name: "Силосы" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Зерно" })).not.toBeInTheDocument();
   });
 
-  it("ведёт сотрудника без доступа к складу на общую схему завода", () => {
+  it("прячет вкладки склада и силосов без соответствующих прав", () => {
     render(<Sidebar me={{ ...factoryUser, permissions: ["grain.view"] }} />);
 
-    expect(screen.getByRole("link", { name: "Территория" })).toHaveAttribute("href", "/warehouse/map");
+    expect(screen.queryByRole("link", { name: "Склад" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Силосы" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Приход и проход" })).toHaveAttribute("href", "/grain");
   });
 });
 

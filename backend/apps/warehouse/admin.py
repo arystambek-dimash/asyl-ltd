@@ -1,7 +1,7 @@
 from django.contrib import admin
-from .models import FactoryMap, StockItem, StockMovement, StockReceipt
+from .models import StockItem, StockMovement, StockReceipt
 
-admin.site.register([FactoryMap, StockItem, StockReceipt])
+admin.site.register([StockItem, StockReceipt])
 
 
 @admin.register(StockMovement)

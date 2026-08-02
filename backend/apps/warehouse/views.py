@@ -2,48 +2,16 @@ from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
-from rest_framework.views import APIView
 from apps.catalog.models import Product
-from apps.common.permissions import HasPerm, IsSuperUser, PermViewSetMixin
-from apps.eventlog.services import log_event
-from .models import FactoryMap, StockItem, StockMovement
+from apps.common.permissions import PermViewSetMixin
+from .models import StockItem, StockMovement
 from .serializers import (
-    FactoryMapSerializer,
-    FactoryMapUpdateSerializer,
     StockAdjustmentSerializer,
     StockItemSerializer,
     StockMovementSerializer,
     StockReceiptSerializer,
 )
 from .services import adjust_stock, delete_stock_item, receive_stock
-
-
-class FactoryMapView(APIView):
-    """Просмотр схемы сотрудниками; изменение — только Django superuser."""
-
-    def get_permissions(self):
-        if self.request.method in ("GET", "HEAD", "OPTIONS"):
-            return [HasPerm("warehouse.view", "grain.view")]
-        return [IsSuperUser()]
-
-    def get(self, request):
-        return Response(FactoryMapSerializer(FactoryMap.get()).data)
-
-    def put(self, request):
-        serializer = FactoryMapUpdateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        row = FactoryMap.get()
-        row.title = serializer.validated_data["title"]
-        row.zones = serializer.validated_data["zones"]
-        row.updated_by = request.user
-        row.save(update_fields=["title", "zones", "updated_by", "updated_at"])
-        log_event(
-            "factory_map",
-            "Обновлена схема участков завода",
-            user=request.user,
-            payload={"zones": len(row.zones)},
-        )
-        return Response(FactoryMapSerializer(row).data)
 
 
 class StockViewSet(

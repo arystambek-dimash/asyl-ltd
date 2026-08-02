@@ -4,6 +4,9 @@ _SECTIONS = {
     "catalog": ("Товары", ["view", "create", "edit", "delete"]),
     "clients": ("Клиенты", ["view", "create", "edit", "delete", "set_price"]),
     "warehouse": ("Склад", ["view", "adjust"]),
+    # Вкладка «Силосы» отдельно от зернового процесса: право только на просмотр,
+    # операции внутри остаются за grain.inventory / grain.admin.
+    "silos": ("Силосы", ["view"]),
     "orders": ("Заказы", ["view", "create", "edit", "confirm", "correct_price"]),
     "payments": ("Оплаты", ["view", "create", "confirm"]),
     "shipping": ("Пост отгрузки", ["view", "arrive", "load", "ship", "rollback", "debt_override"]),
@@ -76,6 +79,6 @@ PRESETS = {
         "shipping.view", "shipping.arrive", "shipping.load", "shipping.ship",
         "shipping.debt_override", "train", "orders.view", "warehouse.view"),
     "Начальник": _codes("catalog", "clients", "orders", "payments", "warehouse",
-                        "shipping", "train", "employees", "rbac",
+                        "silos", "shipping", "train", "employees", "rbac",
                         "reports", "events.view", "tasks"),
 }

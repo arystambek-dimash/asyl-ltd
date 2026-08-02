@@ -1,7 +1,6 @@
 "use client";
 import { useMemo, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
-import { FactoryTabs } from "@/components/factory-tabs";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -191,10 +190,9 @@ function WarehousePageInner() {
   if (!stock) {
     return (
       <AppShell
-        title="Территория"
+        title="Склад"
         section="Работа"
         description="Актуальное количество готовой продукции и быстрые операции приёмки и списания."
-        tabs={<FactoryTabs />}
         actions={addButton}
       >
         <DataGate loading={stockLoading} error={loadError} onRetry={reload} />
@@ -204,10 +202,9 @@ function WarehousePageInner() {
 
   return (
     <AppShell
-      title="Территория"
+      title="Склад"
       section="Работа"
       description="Актуальное количество готовой продукции и быстрые операции приёмки и списания."
-      tabs={<FactoryTabs />}
       actions={addButton}
     >
       {/* Сводка всегда следует текущему набору фильтров. */}
@@ -655,7 +652,7 @@ function EmptyStockState({
 
 export default function WarehousePage() {
   return (
-    <RequirePerm perm="warehouse.view" title="Территория · Склад">
+    <RequirePerm perm="warehouse.view" title="Склад">
       <WarehousePageInner />
     </RequirePerm>
   );
