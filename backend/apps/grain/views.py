@@ -110,6 +110,7 @@ class WagonViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
         "retrieve": "grain.view",
         "arrive": "grain.arrive",
         "camera_arrive": "grain.arrive",
+        "passage": "grain.arrive",
         "approve": "grain.dispatch",
         "gross": "grain.weigh",
         "tare": "grain.weigh",
@@ -146,6 +147,9 @@ class WagonViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
         status = self.request.query_params.get("status")
         if status:
             qs = qs.filter(status=status)
+        direction = self.request.query_params.get("direction")
+        if direction in Wagon.DIRECTIONS:
+            qs = qs.filter(direction=direction)
         return qs
 
     def _done(self, wagon: Wagon):
@@ -203,10 +207,31 @@ class WagonViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
         )
         return self._done(wagon)
 
+    @action(detail=False, methods=["post"], url_path="passage")
+    def passage(self, request):
+        """Регистрация прохода: машина заехала за отрубями."""
+        wagon = services.create_passage(
+            request.user,
+            number=request.data.get("number") or "",
+            cargo_name=request.data.get("cargo_name") or "",
+            note=request.data.get("note") or "",
+            number_source=request.data.get("number_source") or "manual",
+            number_camera_source=request.data.get("camera_source") or "",
+        )
+        return Response(WagonSerializer(wagon).data, status=201)
+
     @action(detail=True, methods=["post"], url_path="entry-weight")
     def entry_weight(self, request, pk=None):
-        wagon = services.record_simple_entry_weight(
-            self.get_object(),
+        # Один эндпоинт на оба направления: фронту не нужно знать, приход это
+        # или проход — маршрут выбирается по направлению самой записи.
+        wagon = self.get_object()
+        record = (
+            services.record_passage_entry_weight
+            if wagon.is_passage
+            else services.record_simple_entry_weight
+        )
+        wagon = record(
+            wagon,
             request.data.get("weight_kg"),
             request.user,
             scale_number=request.data.get("scale_number") or "",
@@ -303,8 +328,14 @@ class WagonViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="exit-weight")
     def exit_weight(self, request, pk=None):
-        wagon = services.record_simple_exit_weight(
-            self.get_object(),
+        wagon = self.get_object()
+        record = (
+            services.record_passage_exit_weight
+            if wagon.is_passage
+            else services.record_simple_exit_weight
+        )
+        wagon = record(
+            wagon,
             request.data.get("weight_kg"),
             request.user,
             scale_number=request.data.get("scale_number") or "",

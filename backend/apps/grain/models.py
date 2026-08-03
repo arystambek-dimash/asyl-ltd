@@ -151,6 +151,14 @@ class GrainSupply(models.Model):
 class Wagon(models.Model):
     WEIGHT_SOURCES = ["auto", "manual"]
 
+    # Направление рейса. Приход: транспорт въезжает гружёным и оставляет зерно
+    # в силосе, нетто = вход − выход. Проход: въезжает пустым, забирает отруби
+    # и уезжает гружёным, нетто = выход − вход. Это ровно обратная формула,
+    # поэтому направление хранится явно, а не выводится из весов задним числом.
+    INTAKE = "intake"
+    PASSAGE = "passage"
+    DIRECTIONS = [INTAKE, PASSAGE]
+
     supply = models.ForeignKey(
         GrainSupply,
         null=True,
@@ -160,6 +168,10 @@ class Wagon(models.Model):
     )
     number = models.CharField(max_length=30, blank=True, default="")
     workflow = models.CharField(max_length=20, default="legacy")
+    direction = models.CharField(max_length=10, default=INTAKE)
+    # Что вывозят на проходе («Отруби», «Мучка»…). Для прихода поле пустое:
+    # там культура берётся из типа зерна поставки.
+    cargo_name = models.CharField(max_length=100, blank=True, default="")
     number_source = models.CharField(max_length=20, default="manual")
     number_camera_source = models.CharField(max_length=32, blank=True, default="")
     status = models.CharField(max_length=30, default=EXPECTED)
@@ -207,6 +219,10 @@ class Wagon(models.Model):
                 name="wagon_status_valid",
                 condition=models.Q(status__in=WAGON_STATUSES),
             ),
+            models.CheckConstraint(
+                name="wagon_direction_valid",
+                condition=models.Q(direction__in=["intake", "passage"]),
+            ),
         ]
 
     def __str__(self):
@@ -216,6 +232,33 @@ class Wagon(models.Model):
     def planned_weight_kg(self) -> int | None:
         """Вес для резерва/сверки: документы точнее ожиданий."""
         return self.document_weight_kg or self.expected_weight_kg
+
+    @property
+    def is_passage(self) -> bool:
+        return self.direction == self.PASSAGE
+
+    @property
+    def entry_weight_kg(self) -> int | None:
+        """Вес на въезде. У прихода это брутто, у прохода — пустая машина."""
+        return self.gross_weight_kg
+
+    @property
+    def exit_weight_kg(self) -> int | None:
+        """Вес на выезде. У прихода это тара, у прохода — гружёная машина."""
+        return self.tare_weight_kg
+
+    def computed_net_kg(self) -> int | None:
+        """Нетто по двум весам. Направление задаёт знак разности.
+
+        Приход: въехал гружёным, уехал пустым → вход − выход.
+        Проход: въехал пустым, уехал гружёным → выход − вход.
+        Единственное место, где это правило записано; сервисы и сериализаторы
+        обязаны считать нетто только отсюда.
+        """
+        entry, exit_weight = self.entry_weight_kg, self.exit_weight_kg
+        if entry is None or exit_weight is None:
+            return None
+        return exit_weight - entry if self.is_passage else entry - exit_weight
 
 
 class WeighingRecord(models.Model):

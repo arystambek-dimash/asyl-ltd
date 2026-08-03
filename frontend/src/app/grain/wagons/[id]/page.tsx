@@ -99,21 +99,24 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
   const weighBody = () => ({ weight_kg: Number(weight), source: "manual", manual_reason: reason });
 
   let body: React.ReactNode = null;
+  const passage = wagon.direction === "passage";
   if (wagon.workflow === "simple" && wagon.status === "arrived" && can(me, "grain.weigh")) {
     body = (
       <>
         <div className="rounded-xl border border-sky-100 bg-sky-50 p-3 text-sm text-sky-950">
-          Зафиксируйте полный входной вес. После этого система покажет маршрут к силосу «{wagon.assigned_silo_name}».
+          {passage
+            ? `Машина заехала пустой за «${wagon.cargo_name || "грузом"}». Взвесьте её до погрузки — это вес заезда.`
+            : `Зафиксируйте полный входной вес. После этого система покажет маршрут к силосу «${wagon.assigned_silo_name}».`}
         </div>
         <WeightField
-          label="Входной общий вес, кг"
+          label={passage ? "Вес пустой машины, кг" : "Входной общий вес, кг"}
           value={weight}
           onChange={setWeight}
           reason={reason}
           onReason={setReason}
         />
         <Button disabled={busy || !weight || !reason} onClick={() => void act("entry-weight", weighBody())}>
-          Сохранить и направить к силосу
+          {passage ? "Сохранить и отправить на погрузку" : "Сохранить и направить к силосу"}
         </Button>
       </>
     );
@@ -121,18 +124,19 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
     body = (
       <>
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-          Поезд находится у силоса «{wagon.assigned_silo_name}». Он может оставаться здесь несколько дней — при выезде
-          внесите контрольный вес.
+          {passage
+            ? `Машина на погрузке «${wagon.cargo_name || "груза"}». Когда загрузят — взвесьте гружёную: разница и есть вывезенный вес.`
+            : `Поезд находится у силоса «${wagon.assigned_silo_name}». Он может оставаться здесь несколько дней — при выезде внесите контрольный вес.`}
         </div>
         <WeightField
-          label="Выходной вес после разгрузки, кг"
+          label={passage ? "Вес гружёной машины, кг" : "Выходной вес после разгрузки, кг"}
           value={weight}
           onChange={setWeight}
           reason={reason}
           onReason={setReason}
         />
         <Button disabled={busy || !weight || !reason} onClick={() => void act("exit-weight", weighBody())}>
-          Рассчитать нетто и завершить
+          {passage ? "Рассчитать вывезенный вес" : "Рассчитать нетто и завершить"}
         </Button>
       </>
     );
@@ -366,12 +370,20 @@ function SimpleFlowProgress({ wagon }: { wagon: GrainWagon }) {
         : wagon.status === "at_silo" || wagon.status === "weight_discrepancy"
           ? 2
           : 3;
-  const steps = [
-    { label: "Номер камеры", icon: Camera },
-    { label: "Входной вес", icon: Scale },
-    { label: "Назначенный силос", icon: Warehouse },
-    { label: "Выходной вес и нетто", icon: TrainFront },
-  ];
+  const steps =
+    wagon.direction === "passage"
+      ? [
+          { label: "Заезд", icon: Camera },
+          { label: "Вес пустой", icon: Scale },
+          { label: "Погрузка", icon: Warehouse },
+          { label: "Вес гружёной и вывоз", icon: TrainFront },
+        ]
+      : [
+          { label: "Номер камеры", icon: Camera },
+          { label: "Входной вес", icon: Scale },
+          { label: "Назначенный силос", icon: Warehouse },
+          { label: "Выходной вес и нетто", icon: TrainFront },
+        ];
   return (
     <Card className="overflow-hidden border-slate-200">
       <div className="grid grid-cols-2 gap-px bg-slate-200 lg:grid-cols-4">

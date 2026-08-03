@@ -59,6 +59,16 @@ export interface DepartmentSummary {
   revenue: string;
   revenue_currency?: "KZT" | "USD";
   revenue_by_currency?: Record<string, string>;
+  /** Непогашенный остаток отгруженных заказов «в долг». */
+  debt: string;
+  debt_by_currency?: Record<string, string>;
+  /** Сколько из выручки уже получено деньгами. */
+  paid: string;
+  paid_by_currency?: Record<string, string>;
+  paid_orders: number;
+  partial_orders: number;
+  unpaid_orders: number;
+  debt_orders: number;
 }
 
 export interface ReportDay {
@@ -709,6 +719,10 @@ export interface GrainWagon {
   number_source: "camera" | "manual";
   number_camera_source?: string;
   workflow: "simple" | "legacy";
+  /** intake — привозят зерно в силос; passage — забирают отруби и увозят. */
+  direction: "intake" | "passage";
+  /** Что вывозят на проходе. У прихода пустое. */
+  cargo_name: string;
   status: string;
   status_label: string;
   unplanned: boolean;
@@ -723,6 +737,9 @@ export interface GrainWagon {
   gross_weight_kg: number | null;
   tare_weight_kg: number | null;
   net_weight_kg: number | null;
+  /** Весы по направлению: entry — на въезде, exit — на выезде. */
+  entry_weight_kg: number | null;
+  exit_weight_kg: number | null;
   weight_difference_kg: number | null;
   weight_difference_percent: number | null;
   weight_matches: boolean | null;

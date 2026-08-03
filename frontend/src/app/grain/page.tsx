@@ -2,7 +2,19 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Camera, Check, Clock3, Plus, Scale, ScanLine, TrainFront, Warehouse } from "lucide-react";
+import {
+  ArrowRight,
+  Camera,
+  Check,
+  Clock3,
+  PackagePlus,
+  Plus,
+  Scale,
+  ScanLine,
+  TrainFront,
+  Truck,
+  Warehouse,
+} from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { WagonNumberCameraWorkspace } from "@/components/grain/wagon-number-camera";
 import { RequirePerm } from "@/components/require-perm";
@@ -25,6 +37,22 @@ import { cn, formatDateTime } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 
 type GrainTab = "expected" | "on_site" | "finished" | "camera";
+
+/** Приход или вывоз — первое, что должно считываться в карточке. */
+function DirectionTag({ direction }: { direction?: string }) {
+  const passage = direction === "passage";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em]",
+        passage ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-600",
+      )}
+    >
+      {passage ? <Truck className="size-3" /> : <TrainFront className="size-3" />}
+      {passage ? "Вывоз" : "Приход"}
+    </span>
+  );
+}
 
 function WagonStatusBadge({ wagon }: { wagon: Pick<GrainWagon, "status" | "status_label"> }) {
   return (
@@ -301,6 +329,83 @@ function SupplyForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
   );
 }
 
+/**
+ * Регистрация вывоза. Ожидаемый вес не спрашиваем: сколько заберут — решают
+ * на погрузке, факт станет известен только на выездных весах.
+ */
+function PassageForm({ onDone, onCancel }: { onDone: (wagon: GrainWagon) => void; onCancel: () => void }) {
+  const [number, setNumber] = useState("");
+  const [cargo, setCargo] = useState("Отруби");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    setBusy(true);
+    setError("");
+    try {
+      const { data } = await api.post<GrainWagon>("/grain/wagons/passage/", {
+        number,
+        cargo_name: cargo,
+        note,
+      });
+      onDone(data);
+    } catch (cause) {
+      setError(apiError(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--muted)] px-4 py-3">
+        <p className="text-sm font-semibold">Машина заезжает пустой</p>
+        <p className="mt-1 text-xs leading-relaxed text-[var(--muted-foreground)]">
+          Взвесьте её на въезде, затем загрузите и взвесьте на выезде. Вывезенный вес система посчитает сама — заранее
+          указывать его не нужно.
+        </p>
+      </div>
+      <div>
+        <Label htmlFor="passage-cargo">Что вывозят *</Label>
+        <Input
+          id="passage-cargo"
+          value={cargo}
+          onChange={(event) => setCargo(event.target.value)}
+          placeholder="Отруби"
+        />
+      </div>
+      <div>
+        <Label htmlFor="passage-number">Номер машины</Label>
+        <Input
+          id="passage-number"
+          value={number}
+          onChange={(event) => setNumber(event.target.value)}
+          placeholder="123 ABC 02"
+        />
+      </div>
+      <div>
+        <Label htmlFor="passage-note">Примечание</Label>
+        <Input
+          id="passage-note"
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          placeholder="Кому отгружаем, номер заявки"
+        />
+      </div>
+      {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" onClick={onCancel} disabled={busy}>
+          Отмена
+        </Button>
+        <Button disabled={busy || !cargo.trim()} onClick={() => void submit()}>
+          {busy ? "Оформление…" : "Оформить вывоз"} <ArrowRight className="size-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function ArrivalForm({
   supplies,
   initialSupply,
@@ -456,11 +561,23 @@ function ExpectedIntakes({
  * Неизвестные статусы легаси-потока прижимаются к силосному этапу.
  */
 const WAGON_STEPS = [
-  { label: "Камера", icon: Camera },
-  { label: "Входные весы", icon: Scale },
-  { label: "Силос", icon: Warehouse },
-  { label: "Выходные весы", icon: TrainFront },
+  { label: "Заезд", icon: Camera },
+  { label: "Весы на въезде", icon: Scale },
+  { label: "Разгрузка", icon: Warehouse },
+  { label: "Весы на выезде", icon: TrainFront },
 ] as const;
+
+/** Проход: машина заезжает пустой, грузится и уезжает — разгрузки нет. */
+const PASSAGE_STEPS = [
+  { label: "Заезд", icon: Camera },
+  { label: "Весы пустого", icon: Scale },
+  { label: "Погрузка", icon: PackagePlus },
+  { label: "Весы гружёного", icon: Truck },
+] as const;
+
+function stepsFor(wagon: GrainWagon) {
+  return wagon.direction === "passage" ? PASSAGE_STEPS : WAGON_STEPS;
+}
 
 const STEP_BY_STATUS: Record<string, number> = {
   expected: 0,
@@ -508,8 +625,8 @@ function WagonStepper({ wagon }: { wagon: GrainWagon }) {
   const problem = PROBLEM_STATUSES.has(wagon.status);
 
   return (
-    <ol className="flex items-start" aria-label="Маршрут поезда">
-      {WAGON_STEPS.map((step, index) => {
+    <ol className="flex items-start" aria-label={wagon.direction === "passage" ? "Маршрут вывоза" : "Маршрут прихода"}>
+      {stepsFor(wagon).map((step, index) => {
         const Icon = step.icon;
         const done = index < activeIndex;
         const current = index === activeIndex;
@@ -553,27 +670,62 @@ function WagonStepper({ wagon }: { wagon: GrainWagon }) {
 }
 
 function wagonCta(wagon: GrainWagon, me: Me | null) {
+  const passage = wagon.direction === "passage";
   if (wagon.workflow === "simple") {
     if (wagon.status === "arrived" && can(me, "grain.weigh"))
-      return { label: "Внести входной вес", variant: "default" as const };
+      return { label: passage ? "Взвесить пустую" : "Внести вес на въезде", variant: "default" as const };
     if (wagon.status === "at_silo" && can(me, "grain.weigh"))
-      return { label: "Внести выходной вес", variant: "default" as const };
+      return { label: passage ? "Взвесить гружёную" : "Внести вес на выезде", variant: "default" as const };
     if (wagon.status === "weight_discrepancy" && can(me, "grain.inventory"))
       return { label: "Разобрать расхождение", variant: "destructive" as const };
   }
-  if (wagonStepIndex(wagon) >= 4) return { label: "Карточка вагона", variant: "outline" as const };
-  return { label: "Открыть этап", variant: "outline" as const };
+  if (wagonStepIndex(wagon) >= 4) return { label: "Открыть карточку", variant: "outline" as const };
+  return { label: "Открыть карточку", variant: "outline" as const };
 }
 
-function WagonMetric({ label, value, hint }: { label: string; value: string | null; hint: string }) {
+/**
+ * Весы рейса одной строкой: въезд → выезд = нетто.
+ *
+ * Раньше здесь стояли три равнозначные плитки, включая «Ожидается», которая
+ * у большинства рейсов пустая («без плана») и занимала треть карточки.
+ * Теперь показываются только фактические весы, а план — подписью под нетто,
+ * и только когда он есть.
+ */
+function WeightTrack({ wagon }: { wagon: GrainWagon }) {
+  const passage = wagon.direction === "passage";
+  const entry = wagon.entry_weight_kg ?? wagon.gross_weight_kg;
+  const exit = wagon.exit_weight_kg ?? wagon.tare_weight_kg;
+  const cells: { label: string; value: number | null | undefined; pending: string }[] = [
+    { label: passage ? "Заехал пустым" : "Заехал", value: entry, pending: "ждёт весов" },
+    { label: passage ? "Уехал гружёным" : "Уехал", value: exit, pending: "ждёт весов" },
+  ];
+
   return (
-    <div className="rounded-xl bg-slate-50 p-3">
-      <p className="text-[10px] uppercase tracking-wide text-slate-400">{label}</p>
-      {value ? (
-        <p className="mt-1 font-bold tabular-nums">{value}</p>
-      ) : (
-        <p className="mt-1 text-xs font-medium leading-5 text-slate-400">{hint}</p>
-      )}
+    <div className="mt-3 rounded-xl border border-[var(--border)]">
+      <div className="grid grid-cols-2 divide-x divide-[var(--border)]">
+        {cells.map((cell) => (
+          <div key={cell.label} className="px-3 py-2.5">
+            <p className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">{cell.label}</p>
+            {cell.value != null ? (
+              <p className="mt-0.5 font-semibold tabular-nums">{formatKg(cell.value)}</p>
+            ) : (
+              <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">{cell.pending}</p>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="flex items-baseline justify-between gap-3 border-t border-[var(--border)] bg-[var(--muted)] px-3 py-2.5">
+        <span className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">
+          {passage ? "Вывезено" : "Принято"}
+        </span>
+        {wagon.net_weight_kg != null ? (
+          <span className="text-lg font-bold tabular-nums">{formatKg(wagon.net_weight_kg)}</span>
+        ) : (
+          <span className="text-xs text-[var(--muted-foreground)]">
+            {passage ? "после весов на выезде" : "после выходных весов"}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -604,12 +756,18 @@ function WagonCards({ wagons, me, emptyText }: { wagons: GrainWagon[]; me: Me | 
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Поезд / вагон</p>
+                <DirectionTag direction={wagon.direction} />
                 <h3 className="mt-1 truncate text-xl font-black tracking-tight">{wagon.number || `#${wagon.id}`}</h3>
                 <p className="mt-1 truncate text-sm text-slate-500">
-                  {wagon.supplier}
-                  {wagon.grain_type_name || wagon.culture ? ` · ${wagon.grain_type_name || wagon.culture}` : ""}
-                  {wagon.assigned_silo_name ? ` → ${wagon.assigned_silo_name}` : ""}
+                  {wagon.direction === "passage"
+                    ? wagon.cargo_name || "Вывоз"
+                    : [
+                        wagon.supplier,
+                        wagon.grain_type_name || wagon.culture,
+                        wagon.assigned_silo_name && `→ ${wagon.assigned_silo_name}`,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
                 </p>
               </div>
               <WagonStatusBadge wagon={wagon} />
@@ -619,23 +777,7 @@ function WagonCards({ wagons, me, emptyText }: { wagons: GrainWagon[]; me: Me | 
               <WagonStepper wagon={wagon} />
             </div>
 
-            <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
-              <WagonMetric
-                label="Ожидается"
-                value={wagon.expected_weight_kg != null ? formatKg(wagon.expected_weight_kg) : null}
-                hint="без плана"
-              />
-              <WagonMetric
-                label="Входной вес"
-                value={wagon.gross_weight_kg != null ? formatKg(wagon.gross_weight_kg) : null}
-                hint="после входных весов"
-              />
-              <WagonMetric
-                label="Нетто"
-                value={wagon.net_weight_kg != null ? formatKg(wagon.net_weight_kg) : null}
-                hint="после выходных весов"
-              />
-            </div>
+            <WeightTrack wagon={wagon} />
 
             {wagon.weight_difference_kg != null && wagon.net_weight_kg != null && (
               <p
@@ -696,6 +838,7 @@ function GrainPageInner() {
   const [tab, setTab] = useState<GrainTab>("on_site");
   const [supplyOpen, setSupplyOpen] = useState(false);
   const [arriveOpen, setArriveOpen] = useState(false);
+  const [passageOpen, setPassageOpen] = useState(false);
   const [arrivalSupply, setArrivalSupply] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
 
@@ -727,10 +870,15 @@ function GrainPageInner() {
     <AppShell
       title="Приход и проход"
       section="Работа"
-      description="Короткий маршрут поезда: камера, входной вес, назначенный силос, выходной вес и фактическое нетто."
+      description="Приход — привозят зерно в силос. Проход — забирают отруби и увозят. Оба рейса взвешиваются на въезде и на выезде."
       actions={
         tab !== "camera" ? (
           <div className="flex items-center gap-2">
+            {canArrive && (
+              <Button size="sm" variant="outline" onClick={() => setPassageOpen(true)}>
+                <Truck className="size-4" /> Оформить вывоз
+              </Button>
+            )}
             {canArrive && (
               <Button size="sm" variant="outline" onClick={() => openArrival()}>
                 <TrainFront className="size-4" /> Принять поезд
@@ -833,6 +981,27 @@ function GrainPageInner() {
             onDone={(wagon) => {
               setArriveOpen(false);
               setNotice(`Поезд ${wagon.number} направлен на входные весы.`);
+              setTab("on_site");
+              refreshAll();
+            }}
+          />
+        )}
+      </Modal>
+
+      <Modal
+        open={passageOpen}
+        onClose={() => setPassageOpen(false)}
+        eyebrow="Проходная · Вывоз"
+        title="Оформить вывоз"
+        description="Машина приехала забрать отруби. Зафиксируем вес на въезде и на выезде."
+        className="max-w-lg"
+      >
+        {passageOpen && (
+          <PassageForm
+            onCancel={() => setPassageOpen(false)}
+            onDone={(wagon) => {
+              setPassageOpen(false);
+              setNotice(`Вывоз ${wagon.number || `#${wagon.id}`} оформлен — взвесьте пустую машину на въезде.`);
               setTab("on_site");
               refreshAll();
             }}

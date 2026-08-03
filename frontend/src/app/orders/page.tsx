@@ -411,6 +411,76 @@ function DepartmentManager({ onChanged }: { onChanged: () => void }) {
   );
 }
 
+/**
+ * Разбивка выручки отдела: сколько получено, сколько висит долгом и в каком
+ * состоянии расчёты по заказам.
+ *
+ * Полоса показывает долю полученных денег в выручке — она отвечает на вопрос
+ * «оборот большой, а деньги где». Доли считаются только по основной валюте:
+ * складывать ₸ и $ в один процент нельзя.
+ */
+function PaymentBreakdown({ row, fallbackCurrency }: { row: DepartmentSummary; fallbackCurrency?: string | null }) {
+  const currency = row.revenue_currency ?? fallbackCurrency ?? "KZT";
+  const revenue = Number(row.revenue ?? 0);
+  const paid = Number(row.paid ?? 0);
+  const debt = Number(row.debt ?? 0);
+  const settled = row.paid_orders + row.partial_orders + row.unpaid_orders;
+  if (!settled && revenue <= 0) return null;
+
+  const paidShare = revenue > 0 ? Math.min(100, Math.round((paid / revenue) * 100)) : 0;
+  const counters = [
+    { label: "оплачено", value: row.paid_orders, tone: "bg-[var(--success)]" },
+    { label: "частично", value: row.partial_orders, tone: "bg-[var(--warning)]" },
+    { label: "не оплачено", value: row.unpaid_orders, tone: "bg-[var(--destructive)]" },
+  ].filter((counter) => counter.value > 0);
+
+  return (
+    <div className="mt-3 border-t pt-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Получено</span>
+        <span className="truncate text-xs font-bold tabular-nums">
+          {formatMoney(row.paid)} {currencySymbol(currency)}
+          {revenue > 0 && <span className="ml-1 font-medium text-[var(--muted-foreground)]">· {paidShare}%</span>}
+        </span>
+      </div>
+      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
+        <div className="h-full rounded-full bg-[var(--success)]" style={{ width: `${paidShare}%` }} />
+      </div>
+
+      {debt > 0 && (
+        <div className="mt-2 flex items-baseline justify-between gap-2">
+          <span className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">
+            Долг · {row.debt_orders} зак.
+          </span>
+          <span className="truncate text-xs font-bold tabular-nums text-[var(--destructive)]">
+            {formatMoney(row.debt)} {currencySymbol(currency)}
+          </span>
+        </div>
+      )}
+      {/* Долги во второй валюте — отдельной строкой, без сложения с основной. */}
+      {Object.entries(row.debt_by_currency ?? {})
+        .filter(([code]) => code !== currency && Number(row.debt_by_currency?.[code] ?? 0) > 0)
+        .map(([code, amount]) => (
+          <div key={code} className="mt-0.5 text-right text-[11px] tabular-nums text-[var(--muted-foreground)]">
+            {formatMoney(amount)} {currencySymbol(code)}
+          </div>
+        ))}
+
+      {counters.length > 0 && (
+        <div className="mt-2.5 flex flex-wrap gap-x-3 gap-y-1">
+          {counters.map((counter) => (
+            <span key={counter.label} className="flex items-center gap-1.5 text-[11px] text-[var(--muted-foreground)]">
+              <span className={cn("size-1.5 rounded-full", counter.tone)} />
+              <span className="font-semibold tabular-nums text-[var(--foreground)]">{counter.value}</span>
+              {counter.label}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function OrdersAnalytics({
   rows,
   active,
@@ -543,7 +613,7 @@ function OrdersAnalytics({
                     </div>
                     <span className="text-2xl font-black tabular-nums">{row.orders}</span>
                   </div>
-                  <div className="mt-6 grid grid-cols-2 gap-3 border-t pt-3">
+                  <div className="mt-5 grid grid-cols-2 gap-3 border-t pt-3">
                     <div>
                       <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">
                         Отгружено
@@ -569,6 +639,10 @@ function OrdersAnalytics({
                         ))}
                     </div>
                   </div>
+
+                  {/* Из чего состоит выручка: сколько уже получено и сколько
+                      висит долгом. Одной цифры оборота для этого мало. */}
+                  <PaymentBreakdown row={row} fallbackCurrency={oneCurrency} />
                 </button>
               ))}
             </div>

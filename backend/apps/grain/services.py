@@ -891,3 +891,102 @@ def adjust_silo(
         },
     )
     return movement
+
+
+# ── Проход: вывоз отрубей ───────────────────────────────────────────────────
+# Машина въезжает пустой, грузится и уезжает. Ни силоса, ни лаборатории, ни
+# ожидаемого веса: сколько увезут — заранее неизвестно. Фиксируются ровно два
+# факта — вес на въезде и вес на выезде, нетто считает Wagon.computed_net_kg.
+
+
+@transaction.atomic
+def create_passage(user, *, number="", cargo_name="", note="", **kwargs) -> Wagon:
+    """Зарегистрировать проход: машина уже на территории, ждёт входных весов."""
+    cargo_name = (cargo_name or "").strip()
+    if not cargo_name:
+        raise _error("Укажите, что вывозят", "cargo_required")
+    wagon = Wagon.objects.create(
+        supply=None,
+        number=(number or "").strip(),
+        direction=Wagon.PASSAGE,
+        workflow="simple",
+        cargo_name=cargo_name,
+        status=st.ARRIVED,
+        arrived_at=timezone.now(),
+        arrived_by=user,
+        number_source=kwargs.get("number_source") or "manual",
+        number_camera_source=kwargs.get("number_camera_source") or "",
+        note=note or "",
+    )
+    _log(
+        wagon,
+        "passage",
+        f"Проход {wagon.number or f'#{wagon.pk}'}: заезд за «{cargo_name}»",
+        user,
+        cargo_name=cargo_name,
+    )
+    return wagon
+
+
+@transaction.atomic
+def record_passage_entry_weight(wagon: Wagon, weight_kg: int, user, **kwargs) -> Wagon:
+    """Весы на въезде: машина пустая. Дальше её грузят."""
+    if not wagon.is_passage:
+        raise _error("Это приход, а не проход", "not_passage")
+    ensure_transition(wagon, st.AT_SILO)
+    wagon.gross_weight_kg = _record_weighing(wagon, "gross", weight_kg, user, **kwargs)
+    wagon.silo_arrived_at = timezone.now()
+    wagon.unloading_started_at = wagon.silo_arrived_at
+    wagon.save(
+        update_fields=["gross_weight_kg", "silo_arrived_at", "unloading_started_at"]
+    )
+    _set_status(
+        wagon,
+        st.AT_SILO,
+        user,
+        f"Проход {wagon.number or f'#{wagon.pk}'}: заезд {wagon.gross_weight_kg} кг, "
+        f"загрузка «{wagon.cargo_name}»",
+        entry_weight_kg=wagon.gross_weight_kg,
+    )
+    return wagon
+
+
+@transaction.atomic
+def record_passage_exit_weight(wagon: Wagon, weight_kg: int, user, **kwargs) -> Wagon:
+    """Весы на выезде: машина гружёная. Нетто = выезд − заезд, цикл закрыт."""
+    if not wagon.is_passage:
+        raise _error("Это приход, а не проход", "not_passage")
+    ensure_transition(wagon, st.TARE_WEIGHED)
+    if wagon.gross_weight_kg is None:
+        raise _error("Сначала зафиксируйте вес на въезде", "entry_weight_required")
+    exit_weight = _record_weighing(wagon, "tare", weight_kg, user, **kwargs)
+    # Обратная приходу проверка: гружёная машина обязана быть тяжелее пустой.
+    if exit_weight <= wagon.gross_weight_kg:
+        raise _error(
+            "Вес на выезде должен быть больше веса на въезде: "
+            "машина уезжает гружёной",
+            "bad_exit_weight",
+        )
+    wagon.tare_weight_kg = exit_weight
+    wagon.net_weight_kg = wagon.computed_net_kg()
+    wagon.save(update_fields=["tare_weight_kg", "net_weight_kg"])
+    _set_status(
+        wagon,
+        st.TARE_WEIGHED,
+        user,
+        f"Проход {wagon.number or f'#{wagon.pk}'}: выезд {exit_weight} кг, "
+        f"вывезено {wagon.net_weight_kg} кг «{wagon.cargo_name}»",
+        entry_weight_kg=wagon.gross_weight_kg,
+        exit_weight_kg=exit_weight,
+        net_weight_kg=wagon.net_weight_kg,
+    )
+    # Проход не оприходуется в силос: груз уезжает, остатки не трогаем.
+    # Статусная цепочка та же, поэтому INVENTORIED проставляем явно.
+    _set_status(
+        wagon,
+        st.INVENTORIED,
+        user,
+        f"Проход {wagon.number or f'#{wagon.pk}'}: вывоз зафиксирован",
+    )
+    _set_status(wagon, st.EXIT_ALLOWED, user, "Выезд разрешён")
+    return register_exit(wagon, user, note="Выезд после загрузки")

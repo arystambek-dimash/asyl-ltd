@@ -32,7 +32,7 @@ from .apipay import (
     MONEY_RECEIVED_INVOICE_STATUSES, normalize_phone,
 )
 from .invoices import build_invoice_pdf, build_payment_receipt_pdf
-from .debt import as_money_strings, primary_currency
+from .debt import as_money_strings, order_remaining, primary_currency
 from .querysets import (
     for_post_board,
     with_order_api_relations,
@@ -795,7 +795,9 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         # Нужны только статус/отдел/сумма — полный план загрузки здесь лишний.
         # Выручка складывается из quantity/unit_price позиции — сам товар в
         # сводке не читается, поэтому джоин к каталогу здесь лишний.
-        qs = Order.objects.prefetch_related("items")
+        # Платежи нужны для разбивки «оплачено / частично / не оплачено»:
+        # paid_total читает их у каждого заказа, без prefetch это N+1.
+        qs = Order.objects.prefetch_related("items", "payments")
         date_from, date_to = parse_date_range(params)
         qs = filter_date_range(qs, "created_at", date_from, date_to)
         group = params.get("status_group")
@@ -818,6 +820,14 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             # Валюты не складываются: у отдела могут быть заказы и в тенге,
             # и в долларах, а «выручка» одним числом смешала бы их.
             "revenue_by_currency": defaultdict(lambda: Decimal("0")),
+            "debt_by_currency": defaultdict(lambda: Decimal("0")),
+            "paid_by_currency": defaultdict(lambda: Decimal("0")),
+            # Счётчики по расчётам. Считаются только по финансовым заказам:
+            # черновик и «на рассмотрении» ещё ничего не должны.
+            "paid_orders": 0,
+            "partial_orders": 0,
+            "unpaid_orders": 0,
+            "debt_orders": 0,
         } for department in Department.objects.all()}
         for order in qs:
             row = rows.get(order.department)
@@ -830,13 +840,31 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 row["active"] += 1
             # В выручку идут только финансовые заказы: черновик и «на
             # рассмотрении» ещё не подтверждены и оборотом не являются.
-            if is_financial(order.status):
-                row["revenue_by_currency"][order.currency or "KZT"] += order.total_amount
+            if not is_financial(order.status):
+                continue
+            currency = order.currency or "KZT"
+            total, paid = order.total_amount, order.paid_total
+            row["revenue_by_currency"][currency] += total
+            row["paid_by_currency"][currency] += paid
+            # Дебиторка — по тому же правилу, что и везде (Order.is_debt),
+            # иначе цифра в дашборде разойдётся с «Кассой» и выпиской.
+            if order.is_debt:
+                row["debt_orders"] += 1
+                row["debt_by_currency"][currency] += order_remaining(order)
+            if total <= 0:
+                continue
+            if paid <= 0:
+                row["unpaid_orders"] += 1
+            elif paid >= total:
+                row["paid_orders"] += 1
+            else:
+                row["partial_orders"] += 1
         result = []
         for row in rows.values():
             if not (row["is_active"] or row["orders"]):
                 continue
             totals = dict(row["revenue_by_currency"])
+            debts = dict(row["debt_by_currency"])
             currency = primary_currency(totals)
             result.append({
                 **row,
@@ -845,6 +873,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 "revenue": money_string(totals.get(currency, Decimal("0"))),
                 "revenue_currency": currency,
                 "revenue_by_currency": as_money_strings(totals),
+                "debt": money_string(debts.get(currency, Decimal("0"))),
+                "debt_by_currency": as_money_strings(debts),
+                "paid": money_string(
+                    dict(row["paid_by_currency"]).get(currency, Decimal("0"))),
+                "paid_by_currency": as_money_strings(dict(row["paid_by_currency"])),
             })
         return Response(result)
 
