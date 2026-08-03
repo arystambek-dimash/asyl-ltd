@@ -56,7 +56,17 @@ from .services import (add_payment, add_mixed_payments, confirm_order, reject_or
 from apps.shipments.services import rollback_shipment
 
 
-PROVIDER_METHOD_CHANNELS = {"kaspi": "qr", "invoice": "phone"}
+# Способы, по которым КАССА выставляет счёт платёжному сервису.
+#
+# QR сюда не входит намеренно. В CRM оператор выбирает «QR» уже ПОСЛЕ того,
+# как деньги прошли через POS-терминал, — это отметка о факте оплаты, а не
+# запрос на выставление счёта. Сгенерировать здесь Kaspi QR значило бы
+# попросить клиента заплатить второй раз.
+#
+# Клиентский портал платит сам и живёт по своим правилам: он вызывает
+# провайдера напрямую (apps/portal/views.py) и настоящий QR по-прежнему
+# создаёт и показывает.
+PROVIDER_METHOD_CHANNELS = {"invoice": "phone"}
 PROVIDER_CLOSED_STATUSES = {"cancelled", "expired", "error", "superseded"}
 
 
@@ -502,25 +512,6 @@ class PaymentRefundView(APIView):
         return Response(response_data, status=201)
 
 
-class PaymentKaspiQrView(APIView):
-    def get_permissions(self):
-        return [HasPerm("payments.create")]
-
-    def post(self, request, payment_id):
-        payment = get_object_or_404(
-            Payment.objects.select_related("order__client"), pk=payment_id,
-            method="kaspi",
-            status__in=Payment.IN_PROGRESS_STATUSES,
-            order__deleted_at__isnull=True,
-        )
-        try:
-            _issue_provider_payment(payment)
-        except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
-            raise _provider_error(exc) from exc
-        payment.refresh_from_db()
-        return Response(PaymentSerializer(payment).data, status=201)
-
-
 class PaymentProviderIssueView(APIView):
     """Повторно выдать отсутствующий QR или счёт для активной операции."""
 
@@ -888,10 +879,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         stages = [stage] if stage in Payment.STATUSES else Payment.IN_PROGRESS_STATUSES
         qs = with_payment_api_relations(
             Payment.objects.filter(
-                # Наличные и «наш PDF-счёт» подтверждаются кассой вручную;
-                # счёт без записи провайдера — как раз документный.
+                # Кассой вручную закрывается всё, за что платёжный сервис не
+                # отвечает: наличные, «наш PDF-счёт» и QR, отмеченный после
+                # POS-терминала. Признак один — нет счёта провайдера.
                 Q(method="cash")
-                | Q(method="invoice", apipay_invoice__isnull=True),
+                | Q(method__in=("invoice", "kaspi"), apipay_invoice__isnull=True),
                 status__in=stages,
                 order__in=Order.objects.all(),
             ),

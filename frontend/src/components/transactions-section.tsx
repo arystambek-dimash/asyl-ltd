@@ -513,7 +513,7 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
                                 size="sm"
                                 variant="outline"
                                 disabled={busy}
-                                title={row.method === "kaspi" ? "Создать QR" : "Отправить счёт клиенту"}
+                                title="Отправить счёт клиенту"
                                 onClick={() => void issue(row)}
                               >
                                 <Send className="size-4" />
@@ -797,9 +797,7 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
         description={
           restoreFor?.method === "invoice"
             ? "Операция снова зарезервирует сумму заказа, после чего новый счёт будет отправлен клиенту."
-            : restoreFor?.method === "kaspi"
-              ? "Операция снова зарезервирует сумму заказа, после чего будет создан новый Kaspi QR."
-              : "Операция вернётся в очередь кассира. Восстановление доступно только в пределах свободного остатка заказа."
+            : "Операция вернётся в очередь кассира. Восстановление доступно только в пределах свободного остатка заказа."
         }
         confirmLabel="Восстановить"
         confirmVariant="default"

@@ -72,20 +72,17 @@ def _order(*, total="100.00", client_user=None, currency="KZT"):
 
 
 @patch("apps.orders.apipay.urllib.request.urlopen")
-def test_staff_mixed_payment_issues_phone_and_qr_invoices_server_side(
+def test_staff_mixed_payment_issues_only_the_phone_invoice(
     urlopen, auth_client, accountant, settings,
 ):
+    """Касса выставляет провайдеру только счёт на оплату, но не QR.
+
+    QR в CRM отмечается уже после POS-терминала: деньги получены, и запрос
+    к платёжному сервису попросил бы клиента заплатить второй раз.
+    """
     settings.APIPAY_API_KEY = "test-key"
     settings.APIPAY_BASE_URL = "https://api.apipay.kz/api/v1"
-    urlopen.side_effect = [
-        ProviderResponse({"id": 701, "status": "processing"}),
-        ProviderResponse({
-            "id": 702,
-            "status": "pending",
-            "qr_token_url": "https://qr.kaspi.kz/regression",
-            "qr_image_url": "https://api.apipay.kz/qr/regression.png",
-        }),
-    ]
+    urlopen.side_effect = [ProviderResponse({"id": 701, "status": "processing"})]
     order = _order()
 
     response = auth_client(accountant).post(
@@ -100,7 +97,7 @@ def test_staff_mixed_payment_issues_phone_and_qr_invoices_server_side(
                 },
                 {"method": "kaspi", "amount": "50.00"},
             ],
-            "note": "сервер выдаёт оба счёта",
+            "note": "сервер выдаёт только счёт",
         },
         format="json",
     )
@@ -110,47 +107,58 @@ def test_staff_mixed_payment_issues_phone_and_qr_invoices_server_side(
     assert rows["cash"]["provider"] is None
     assert rows["invoice"]["provider"]["invoice_id"] == 701
     assert rows["invoice"]["provider"]["channel"] == "phone"
-    assert rows["kaspi"]["provider"]["invoice_id"] == 702
-    assert rows["kaspi"]["provider"]["channel"] == "qr"
-    assert rows["kaspi"]["provider"]["qr_token_url"] == (
-        "https://qr.kaspi.kz/regression"
-    )
+    # QR остаётся обычной оплатой без счёта — подтвердит касса вручную.
+    assert rows["kaspi"]["provider"] is None
+    assert rows["kaspi"]["confirmation_mode"] == "manual"
 
-    assert urlopen.call_count == 2
+    assert urlopen.call_count == 1, "к провайдеру ушёл только телефонный счёт"
     phone_request = urlopen.call_args_list[0].args[0]
-    qr_request = urlopen.call_args_list[1].args[0]
     assert phone_request.full_url.endswith("/invoices")
     assert json.loads(phone_request.data)["phone_number"] == "87762838451"
-    assert qr_request.full_url.endswith("/invoices/qr")
-    assert "phone_number" not in json.loads(qr_request.data)
 
 
-def test_mixed_provider_failure_rejects_parts_after_confirmed_compensation(
+def test_cashier_qr_never_calls_the_payment_provider(auth_client, accountant):
+    """Одиночный QR из кассы — отметка о POS-терминале, а не онлайн-счёт."""
+    order = _order()
+
+    response = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/",
+        {"method": "kaspi", "amount": "50.00"},
+        format="json",
+    )
+
+    assert response.status_code == 201, response.data
+    assert response.data["provider"] is None
+    assert response.data["confirmation_mode"] == "manual"
+    assert response.data["can_issue"] is False, "выдавать QR по нему нельзя"
+    assert not ApiPayInvoice.objects.exists()
+
+
+def test_cashier_qr_waits_in_the_manual_confirmation_queue(
     auth_client, accountant,
 ):
+    """Без счёта провайдера QR обязан попасть в очередь кассы, иначе зависнет."""
+    order = _order()
+    created = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/",
+        {"method": "kaspi", "amount": "50.00"},
+        format="json",
+    )
+
+    queue = auth_client(accountant).get("/api/orders/payments-queue/")
+
+    assert queue.status_code == 200
+    assert created.data["id"] in [row["id"] for row in queue.data]
+
+
+def test_mixed_provider_failure_rejects_every_part(auth_client, accountant):
+    """Сбой провайдера откатывает всю смешанную оплату, а не половину."""
     order = _order()
 
     def issue(payment, *, channel, phone_number=None):
-        if channel == "phone":
-            return ApiPayInvoice.objects.create(
-                payment=payment,
-                invoice_id=703,
-                idempotency_key=f"asyl-payment-{payment.id}",
-                channel="phone",
-                phone_number=phone_number or "",
-                status="pending",
-            )
         raise ApiPayAPIError(503, "provider_unavailable", "Временно недоступно", {})
 
-    def cancel(record):
-        record.status = "cancelled"
-        record.save(update_fields=["status", "updated_at"])
-        return record
-
-    with (
-        patch("apps.orders.views.create_invoice", side_effect=issue),
-        patch("apps.orders.views.cancel_invoice", side_effect=cancel) as cancel_mock,
-    ):
+    with patch("apps.orders.views.create_invoice", side_effect=issue):
         response = auth_client(accountant).post(
             f"/api/orders/{order.id}/payments/",
             {
@@ -170,62 +178,29 @@ def test_mixed_provider_failure_rejects_parts_after_confirmed_compensation(
     assert response.status_code == 400
     assert response.data["code"] == "provider_unavailable"
     assert set(order.payments.values_list("status", flat=True)) == {"rejected"}
-    invoice = ApiPayInvoice.objects.get(invoice_id=703)
-    assert invoice.status == "cancelled"
-    cancel_mock.assert_called_once_with(invoice)
 
 
-def test_mixed_provider_failure_keeps_uncertain_phone_invoice_reserved(
-    auth_client, accountant,
-):
+def test_single_invoice_failure_rejects_the_payment(auth_client, accountant):
+    """Не выставился счёт — оплата не остаётся висеть в очереди кассы."""
     order = _order()
 
-    def issue(payment, *, channel, phone_number=None):
-        if channel == "phone":
-            return ApiPayInvoice.objects.create(
-                payment=payment,
-                invoice_id=704,
-                idempotency_key=f"asyl-payment-{payment.id}",
-                channel="phone",
-                phone_number=phone_number or "",
-                status="pending",
-            )
-        raise ApiPayAPIError(503, "provider_unavailable", "Временно недоступно", {})
-
-    with (
-        patch("apps.orders.views.create_invoice", side_effect=issue),
-        patch(
-            "apps.orders.views.cancel_invoice",
-            side_effect=ApiPayAPIError(
-                503, "cancel_unknown", "Статус отмены неизвестен", {}
-            ),
-        ),
+    with patch(
+        "apps.orders.views.create_invoice",
+        side_effect=ApiPayAPIError(503, "provider_unavailable", "Недоступно", {}),
     ):
         response = auth_client(accountant).post(
             f"/api/orders/{order.id}/payments/",
             {
-                "parts": [
-                    {"method": "cash", "amount": "20.00"},
-                    {
-                        "method": "invoice",
-                        "amount": "30.00",
-                        "phone_number": "87762838451",
-                    },
-                    {"method": "kaspi", "amount": "50.00"},
-                ],
+                "method": "invoice",
+                "amount": "30.00",
+                "phone_number": "87762838451",
             },
             format="json",
         )
 
     assert response.status_code == 400
     assert response.data["code"] == "provider_unavailable"
-    statuses = dict(order.payments.values_list("method", "status"))
-    assert statuses == {
-        "cash": "rejected",
-        "invoice": "received",
-        "kaspi": "rejected",
-    }
-    assert order.payments.get(method="invoice").apipay_invoice.status == "pending"
+    assert set(order.payments.values_list("status", flat=True)) == {"rejected"}
 
 
 def test_rejected_payment_restore_cannot_overbook_remaining_balance(
@@ -995,38 +970,30 @@ def test_refund_amount_mismatch_keeps_mapping_and_original_reservation(
     assert payment.pending_refund_amount == Decimal("10.00")
 
 
-@pytest.mark.parametrize(
-    ("payment_status", "invoice_status"),
-    [("rejected", "expired"), ("confirmed", "paid")],
-)
-def test_legacy_kaspi_qr_endpoint_only_serves_active_payment(
-    auth_client,
-    accountant,
-    payment_status,
-    invoice_status,
-):
+def test_crm_has_no_way_to_issue_a_qr(auth_client, accountant):
+    """Выдать QR из CRM нельзя ни одной ручкой.
+
+    Раньше для этого был отдельный эндпоинт `kaspi-qr`, а общая выдача счёта
+    принимала метод «kaspi». Оба входа закрыты: QR в кассе означает уже
+    прошедший POS-терминал, и счёт по нему выставлять нечего.
+    """
     order = _order()
     payment = Payment.objects.create(
         order=order,
         amount="100.00",
         method="kaspi",
-        status=payment_status,
+        status="received",
         recorded_by=accountant,
     )
-    ApiPayInvoice.objects.create(
-        payment=payment,
-        invoice_id=725,
-        idempotency_key=f"asyl-payment-{payment.id}",
-        channel="qr",
-        status=invoice_status,
-        qr_token_url="https://qr.kaspi.kz/stale",
-    )
 
-    response = auth_client(accountant).post(
-        f"/api/payment-transactions/{payment.id}/kaspi-qr/"
-    )
+    legacy = auth_client(accountant).post(
+        f"/api/payment-transactions/{payment.id}/kaspi-qr/")
+    issue = auth_client(accountant).post(
+        f"/api/payment-transactions/{payment.id}/issue/")
 
-    assert response.status_code == 404
+    assert legacy.status_code == 404, "старая ручка выдачи QR удалена"
+    assert issue.status_code == 404, "общая выдача счёта метод «kaspi» не обслуживает"
+    assert not ApiPayInvoice.objects.filter(payment=payment).exists()
 
 
 @patch("apps.orders.apipay.api_request")

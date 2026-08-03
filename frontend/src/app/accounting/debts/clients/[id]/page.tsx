@@ -1,6 +1,5 @@
 "use client";
 import { Fragment, use, useEffect, useMemo, useRef, useState } from "react";
-import Image from "next/image";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
@@ -30,18 +29,7 @@ import {
   PAYMENT_STAGE_TONE,
   PAYMENT_METHOD_LABELS,
 } from "@/lib/constants";
-import {
-  ArrowLeft,
-  ChevronDown,
-  Clock,
-  ExternalLink,
-  FileText,
-  Info,
-  Plus,
-  ShieldCheck,
-  Trash2,
-  Wallet,
-} from "lucide-react";
+import { ArrowLeft, ChevronDown, Clock, ExternalLink, Info, Plus, ShieldCheck, Trash2, Wallet } from "lucide-react";
 import type { Client, Order, Payment } from "@/lib/types";
 import { formatPaymentSchedule } from "@/app/stores/schedule-validation";
 
@@ -466,8 +454,6 @@ function PaymentModal({
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [payError, setPayError] = useState("");
-  const [kaspiQr, setKaspiQr] = useState<Payment["provider"] | null>(null);
-  const [qrImageFailed, setQrImageFailed] = useState(false);
   const ordersRef = useRef(orders);
   ordersRef.current = orders;
 
@@ -480,8 +466,6 @@ function PaymentModal({
       : 0;
     setParts([{ id: Date.now(), method: "cash", amount: String(currentAvailable) }]);
     setNote("");
-    setKaspiQr(null);
-    setQrImageFailed(false);
   }, [open, selectedId]);
 
   if (!order) return null;
@@ -564,9 +548,10 @@ function PaymentModal({
       }
       const kaspi = created.data.find((payment) => payment.method === "kaspi");
       const invoice = created.data.find((payment) => payment.method === "invoice");
-      if (kaspi) setKaspiQr(kaspi.provider ?? null);
       const notice = [
-        kaspi ? `QR по заказу #${order.id} создан.` : "",
+        // QR в кассе — отметка об уже прошедшем POS-терминале, поэтому
+        // подтверждает её кассир вручную, как наличные.
+        kaspi ? "Оплата через QR добавлена на подтверждение кассиру." : "",
         invoice && documentInvoice && documentDownloaded ? "PDF-счёт скачан — распечатайте и передайте клиенту." : "",
         invoice && documentInvoice && !documentDownloaded
           ? "Счёт-часть создана, но PDF не скачался — проверьте реквизиты клиента."
@@ -576,11 +561,8 @@ function PaymentModal({
       ]
         .filter(Boolean)
         .join(" ");
-      // Keep the just-created QR visible until the operator explicitly closes
-      // the modal. A successful refresh can remove a fully paid order from
-      // this debt list and would otherwise unmount the QR immediately.
-      await onPaid(notice, !kaspi);
-      if (!kaspi) onClose();
+      await onPaid(notice, true);
+      onClose();
     } catch (e) {
       // Показ в модалке обязателен: страница с onError лежит под оверлеем,
       // и кассир видел не ошибку, а «кнопка не работает».
@@ -601,264 +583,227 @@ function PaymentModal({
       className="max-w-xl"
       mobileFullscreen
       footer={
-        kaspiQr ? (
-          <Button onClick={onClose}>Готово</Button>
-        ) : (
-          <>
-            {payError && (
-              <p role="alert" className="mr-auto max-w-sm self-center text-sm text-[var(--destructive)]">
-                {payError}
-              </p>
-            )}
-            <Button variant="outline" disabled={busy} onClick={onClose}>
-              Отмена
-            </Button>
-            <Button
-              disabled={busy || !!blockingStore || !allPartsValid || allocatedCents > availableCents}
-              onClick={() => void pay()}
-            >
-              {busy ? "Создание…" : `Внести оплату · ${money(allocated, order.currency)}`}
-            </Button>
-          </>
-        )
+        <>
+          {payError && (
+            <p role="alert" className="mr-auto max-w-sm self-center text-sm text-[var(--destructive)]">
+              {payError}
+            </p>
+          )}
+          <Button variant="outline" disabled={busy} onClick={onClose}>
+            Отмена
+          </Button>
+          <Button
+            disabled={busy || !!blockingStore || !allPartsValid || allocatedCents > availableCents}
+            onClick={() => void pay()}
+          >
+            {busy ? "Создание…" : `Внести оплату · ${money(allocated, order.currency)}`}
+          </Button>
+        </>
       }
     >
       <div className="flex flex-col gap-5">
-        {kaspiQr ? (
-          <div className="text-center">
-            <div className="text-lg font-semibold">Kaspi QR готов</div>
-            <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-              Покажите QR клиенту или откройте оплату на его устройстве.
-            </p>
-            {kaspiQr.qr_image_url && !qrImageFailed ? (
-              <Image
-                src={kaspiQr.qr_image_url}
-                alt="Kaspi QR"
-                width={256}
-                height={256}
-                unoptimized
-                onError={() => setQrImageFailed(true)}
-                className="mx-auto mt-4 size-64 rounded-2xl bg-white p-2 shadow-sm"
-              />
-            ) : (
-              <div className="mx-auto mt-4 flex size-64 flex-col items-center justify-center rounded-2xl border border-dashed bg-[var(--muted)]/35 p-6">
-                <FileText className="size-10 text-[var(--muted-foreground)]" />
-                <p className="mt-3 text-sm text-[var(--muted-foreground)]">
-                  Изображение QR недоступно. Откройте оплату кнопкой ниже.
-                </p>
+        <>
+          {orders.length > 1 && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-sm text-[var(--muted-foreground)]">Заказ</span>
+              <Select value={String(order.id)} onValueChange={(v) => onSelect(Number(v))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {orders.map((o) => (
+                    <SelectItem key={o.id} value={String(o.id)}>
+                      Заказ #{o.id} — остаток {money(remainingOf(o), o.currency)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <div className="text-sm text-[var(--muted-foreground)]">Остаток к оплате</div>
+              <div className="mt-1 text-[28px] font-bold leading-none tracking-tight tabular-nums text-[var(--destructive)]">
+                {money(available, order.currency)}
               </div>
-            )}
-            {kaspiQr.qr_token_url && (
-              <Button className="mt-4 w-full" onClick={() => window.open(kaspiQr.qr_token_url!, "_blank", "noopener")}>
-                Открыть Kaspi
+              {reserved > 0 && (
+                <div className="mt-1 text-xs text-[var(--muted-foreground)]">
+                  Ещё {money(reserved, order.currency)} уже ожидает подтверждения
+                </div>
+              )}
+            </div>
+            {!blockingStore && (
+              <Button type="button" variant="outline" size="sm" onClick={() => setQuickTotal(available)}>
+                Весь долг
               </Button>
             )}
           </div>
-        ) : (
-          <>
-            {orders.length > 1 && (
-              <div className="flex flex-col gap-1.5">
-                <span className="text-sm text-[var(--muted-foreground)]">Заказ</span>
-                <Select value={String(order.id)} onValueChange={(v) => onSelect(Number(v))}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {orders.map((o) => (
-                      <SelectItem key={o.id} value={String(o.id)}>
-                        Заказ #{o.id} — остаток {money(remainingOf(o), o.currency)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
 
-            <div className="flex flex-wrap items-end justify-between gap-3">
-              <div>
-                <div className="text-sm text-[var(--muted-foreground)]">Остаток к оплате</div>
-                <div className="mt-1 text-[28px] font-bold leading-none tracking-tight tabular-nums text-[var(--destructive)]">
-                  {money(available, order.currency)}
+          {blockingStore ? (
+            <div className="flex items-start gap-2 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2.5 text-sm text-[var(--warning)]">
+              <Clock className="mt-0.5 size-4 shrink-0" />
+              <span>
+                Оплата заблокирована: магазин «{blockingStore.name}» платит только по расписанию (
+                {formatPaymentSchedule(blockingStore, "payment")}).
+              </span>
+            </div>
+          ) : (
+            <>
+              {/* Распределение — строгая таблица «Способ | Сумма»: одна строка
+                    на способ, без карточек и подсказок на каждый пункт. */}
+              <div className="flex flex-col">
+                <div className="grid grid-cols-[minmax(0,1fr)_minmax(110px,.7fr)_36px] gap-2 border-b pb-1.5 text-[11px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
+                  <span>Способ</span>
+                  <span>Сумма</span>
+                  <span />
                 </div>
-                {reserved > 0 && (
-                  <div className="mt-1 text-xs text-[var(--muted-foreground)]">
-                    Ещё {money(reserved, order.currency)} уже ожидает подтверждения
+                {parts.map((part, index) => (
+                  <div key={part.id} className="border-b border-[var(--border)]/60 py-2">
+                    <div className="grid grid-cols-[minmax(0,1fr)_minmax(110px,.7fr)_36px] items-center gap-2">
+                      <Select
+                        value={part.method}
+                        onValueChange={(method) =>
+                          updatePart(part.id, {
+                            method,
+                            channel: method === "invoice" ? (part.channel ?? "remote") : undefined,
+                            phone_number:
+                              method === "invoice" ? (part.phone_number ?? order.client_phone ?? "") : undefined,
+                          })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {allowedMethods
+                            .filter((method) => method === part.method || !parts.some((item) => item.method === method))
+                            .map((method) => (
+                              <SelectItem key={method} value={method}>
+                                {PAYMENT_METHOD_LABELS[method]}
+                              </SelectItem>
+                            ))}
+                        </SelectContent>
+                      </Select>
+                      <Input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        inputMode="decimal"
+                        aria-label={`Сумма части ${index + 1}`}
+                        placeholder="0"
+                        value={part.amount}
+                        onChange={(event) => updatePart(part.id, { amount: event.target.value })}
+                      />
+                      <button
+                        type="button"
+                        disabled={parts.length === 1}
+                        onClick={() => setParts((current) => current.filter((item) => item.id !== part.id))}
+                        className="flex size-9 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:text-[var(--destructive)] disabled:opacity-30"
+                        aria-label="Удалить способ оплаты"
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </div>
+                    {part.method === "invoice" && (
+                      <div className="mt-2 flex flex-col gap-2">
+                        {/* Две выборки счёта: клиенту онлайн или наш документ. */}
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            aria-pressed={(part.channel ?? "remote") === "remote"}
+                            onClick={() =>
+                              updatePart(part.id, {
+                                channel: "remote",
+                                phone_number: part.phone_number ?? order.client_phone ?? "",
+                              })
+                            }
+                            className={cn(
+                              "rounded-lg border px-3 py-2 text-left transition-colors",
+                              (part.channel ?? "remote") === "remote"
+                                ? "border-[var(--foreground)] bg-[var(--muted)]"
+                                : "border-[var(--border)] hover:border-[var(--foreground)]/40",
+                            )}
+                          >
+                            <div className="text-sm font-medium">Счёт клиенту</div>
+                            <div className="text-[11px] text-[var(--muted-foreground)]">
+                              Придёт на телефон, подтвердится сам
+                            </div>
+                          </button>
+                          <button
+                            type="button"
+                            aria-pressed={part.channel === "document"}
+                            onClick={() => updatePart(part.id, { channel: "document" })}
+                            className={cn(
+                              "rounded-lg border px-3 py-2 text-left transition-colors",
+                              part.channel === "document"
+                                ? "border-[var(--foreground)] bg-[var(--muted)]"
+                                : "border-[var(--border)] hover:border-[var(--foreground)]/40",
+                            )}
+                          >
+                            <div className="text-sm font-medium">Наш PDF-счёт</div>
+                            <div className="text-[11px] text-[var(--muted-foreground)]">
+                              Скачается для печати, подтверждает касса
+                            </div>
+                          </button>
+                        </div>
+                        {(part.channel ?? "remote") === "remote" && (
+                          <Input
+                            inputMode="tel"
+                            aria-label="Телефон для счёта на оплату"
+                            placeholder="Телефон клиента для счёта"
+                            value={part.phone_number ?? order.client_phone ?? ""}
+                            onChange={(event) => updatePart(part.id, { phone_number: event.target.value })}
+                          />
+                        )}
+                      </div>
+                    )}
                   </div>
+                ))}
+                <div className="flex items-center justify-between gap-3 py-2">
+                  {parts.length < allowedMethods.length ? (
+                    <Button type="button" size="sm" variant="ghost" onClick={addPart}>
+                      <Plus className="size-4" /> Добавить способ
+                    </Button>
+                  ) : (
+                    <span />
+                  )}
+                  <span
+                    className={cn(
+                      "text-sm font-semibold tabular-nums",
+                      allocatedCents > availableCents ? "text-[var(--destructive)]" : "",
+                    )}
+                  >
+                    Итого: {money(allocated, order.currency)}
+                  </span>
+                </div>
+                {allocatedCents > availableCents && (
+                  <p className="text-xs text-[var(--destructive)]">Распределение превышает доступный остаток.</p>
+                )}
+                {!allPartsValid && (
+                  <p className="text-xs text-[var(--warning)]">
+                    Укажите положительную сумму с точностью до тиына для каждого добавленного способа.
+                  </p>
                 )}
               </div>
-              {!blockingStore && (
-                <Button type="button" variant="outline" size="sm" onClick={() => setQuickTotal(available)}>
-                  Весь долг
-                </Button>
-              )}
-            </div>
 
-            {blockingStore ? (
-              <div className="flex items-start gap-2 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2.5 text-sm text-[var(--warning)]">
-                <Clock className="mt-0.5 size-4 shrink-0" />
-                <span>
-                  Оплата заблокирована: магазин «{blockingStore.name}» платит только по расписанию (
-                  {formatPaymentSchedule(blockingStore, "payment")}).
-                </span>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-sm text-[var(--muted-foreground)]">Примечание</span>
+                <Input
+                  placeholder="Введите примечание (необязательно)"
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                />
               </div>
-            ) : (
-              <>
-                {/* Распределение — строгая таблица «Способ | Сумма»: одна строка
-                    на способ, без карточек и подсказок на каждый пункт. */}
-                <div className="flex flex-col">
-                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(110px,.7fr)_36px] gap-2 border-b pb-1.5 text-[11px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
-                    <span>Способ</span>
-                    <span>Сумма</span>
-                    <span />
-                  </div>
-                  {parts.map((part, index) => (
-                    <div key={part.id} className="border-b border-[var(--border)]/60 py-2">
-                      <div className="grid grid-cols-[minmax(0,1fr)_minmax(110px,.7fr)_36px] items-center gap-2">
-                        <Select
-                          value={part.method}
-                          onValueChange={(method) =>
-                            updatePart(part.id, {
-                              method,
-                              channel: method === "invoice" ? (part.channel ?? "remote") : undefined,
-                              phone_number:
-                                method === "invoice" ? (part.phone_number ?? order.client_phone ?? "") : undefined,
-                            })
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {allowedMethods
-                              .filter(
-                                (method) => method === part.method || !parts.some((item) => item.method === method),
-                              )
-                              .map((method) => (
-                                <SelectItem key={method} value={method}>
-                                  {PAYMENT_METHOD_LABELS[method]}
-                                </SelectItem>
-                              ))}
-                          </SelectContent>
-                        </Select>
-                        <Input
-                          type="number"
-                          min="0.01"
-                          step="0.01"
-                          inputMode="decimal"
-                          aria-label={`Сумма части ${index + 1}`}
-                          placeholder="0"
-                          value={part.amount}
-                          onChange={(event) => updatePart(part.id, { amount: event.target.value })}
-                        />
-                        <button
-                          type="button"
-                          disabled={parts.length === 1}
-                          onClick={() => setParts((current) => current.filter((item) => item.id !== part.id))}
-                          className="flex size-9 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:text-[var(--destructive)] disabled:opacity-30"
-                          aria-label="Удалить способ оплаты"
-                        >
-                          <Trash2 className="size-4" />
-                        </button>
-                      </div>
-                      {part.method === "invoice" && (
-                        <div className="mt-2 flex flex-col gap-2">
-                          {/* Две выборки счёта: клиенту онлайн или наш документ. */}
-                          <div className="grid grid-cols-2 gap-2">
-                            <button
-                              type="button"
-                              aria-pressed={(part.channel ?? "remote") === "remote"}
-                              onClick={() =>
-                                updatePart(part.id, {
-                                  channel: "remote",
-                                  phone_number: part.phone_number ?? order.client_phone ?? "",
-                                })
-                              }
-                              className={cn(
-                                "rounded-lg border px-3 py-2 text-left transition-colors",
-                                (part.channel ?? "remote") === "remote"
-                                  ? "border-[var(--foreground)] bg-[var(--muted)]"
-                                  : "border-[var(--border)] hover:border-[var(--foreground)]/40",
-                              )}
-                            >
-                              <div className="text-sm font-medium">Счёт клиенту</div>
-                              <div className="text-[11px] text-[var(--muted-foreground)]">
-                                Придёт на телефон, подтвердится сам
-                              </div>
-                            </button>
-                            <button
-                              type="button"
-                              aria-pressed={part.channel === "document"}
-                              onClick={() => updatePart(part.id, { channel: "document" })}
-                              className={cn(
-                                "rounded-lg border px-3 py-2 text-left transition-colors",
-                                part.channel === "document"
-                                  ? "border-[var(--foreground)] bg-[var(--muted)]"
-                                  : "border-[var(--border)] hover:border-[var(--foreground)]/40",
-                              )}
-                            >
-                              <div className="text-sm font-medium">Наш PDF-счёт</div>
-                              <div className="text-[11px] text-[var(--muted-foreground)]">
-                                Скачается для печати, подтверждает касса
-                              </div>
-                            </button>
-                          </div>
-                          {(part.channel ?? "remote") === "remote" && (
-                            <Input
-                              inputMode="tel"
-                              aria-label="Телефон для счёта на оплату"
-                              placeholder="Телефон клиента для счёта"
-                              value={part.phone_number ?? order.client_phone ?? ""}
-                              onChange={(event) => updatePart(part.id, { phone_number: event.target.value })}
-                            />
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                  <div className="flex items-center justify-between gap-3 py-2">
-                    {parts.length < allowedMethods.length ? (
-                      <Button type="button" size="sm" variant="ghost" onClick={addPart}>
-                        <Plus className="size-4" /> Добавить способ
-                      </Button>
-                    ) : (
-                      <span />
-                    )}
-                    <span
-                      className={cn(
-                        "text-sm font-semibold tabular-nums",
-                        allocatedCents > availableCents ? "text-[var(--destructive)]" : "",
-                      )}
-                    >
-                      Итого: {money(allocated, order.currency)}
-                    </span>
-                  </div>
-                  {allocatedCents > availableCents && (
-                    <p className="text-xs text-[var(--destructive)]">Распределение превышает доступный остаток.</p>
-                  )}
-                  {!allPartsValid && (
-                    <p className="text-xs text-[var(--warning)]">
-                      Укажите положительную сумму с точностью до тиына для каждого добавленного способа.
-                    </p>
-                  )}
-                </div>
+            </>
+          )}
 
-                <div className="flex flex-col gap-1.5">
-                  <span className="text-sm text-[var(--muted-foreground)]">Примечание</span>
-                  <Input
-                    placeholder="Введите примечание (необязательно)"
-                    value={note}
-                    onChange={(e) => setNote(e.target.value)}
-                  />
-                </div>
-              </>
-            )}
-
-            <p className="flex items-start gap-2 border-t pt-3 text-xs text-[var(--muted-foreground)]">
-              <ShieldCheck className="mt-0.5 size-4 shrink-0" />
-              Наличные уменьшат долг после подтверждения кассиром. QR и счёт — автоматически после оплаты клиентом.
-            </p>
-          </>
-        )}
+          <p className="flex items-start gap-2 border-t pt-3 text-xs text-[var(--muted-foreground)]">
+            <ShieldCheck className="mt-0.5 size-4 shrink-0" />
+            Наличные и QR уменьшат долг после подтверждения кассиром: деньги уже получены на месте. Счёт на оплату —
+            автоматически, когда клиент оплатит его сам.
+          </p>
+        </>
       </div>
     </Modal>
   );

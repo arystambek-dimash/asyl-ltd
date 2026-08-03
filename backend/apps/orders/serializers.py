@@ -197,10 +197,14 @@ class PaymentSerializer(serializers.ModelSerializer):
         )
 
     def get_can_issue(self, obj):
+        # Выдать счёт сервисом можно только по «Счёту на оплату». QR в кассе
+        # означает уже прошедший POS-терминал: выставлять по нему счёт значило
+        # бы просить клиента заплатить второй раз. Портальный QR сюда не
+        # попадает — там счёт создаётся сразу и повторная выдача не нужна.
         if (
             not self._request_can("payments.create")
             or obj.status not in Payment.IN_PROGRESS_STATUSES
-            or obj.method not in ("kaspi", "invoice")
+            or obj.method != "invoice"
         ):
             return False
         try:
@@ -216,7 +220,19 @@ class PaymentSerializer(serializers.ModelSerializer):
         )
 
     def get_confirmation_mode(self, obj):
-        return "automatic" if obj.method in ("kaspi", "invoice") else "manual"
+        """Кто закроет оплату: платёжный сервис или кассир руками.
+
+        Признак — наличие счёта у провайдера, а не способ оплаты. QR,
+        отмеченный кассой после POS-терминала, счёта не имеет и ждёт ручного
+        подтверждения, как наличные; QR, выставленный клиенту в портале,
+        подтвердится сам. Оба записаны методом «kaspi», поэтому различить их
+        по названию способа нельзя.
+        """
+        try:
+            obj.apipay_invoice
+        except ObjectDoesNotExist:
+            return "manual"
+        return "automatic"
 
     def get_refunds(self, obj):
         return [
