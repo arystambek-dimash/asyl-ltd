@@ -21,6 +21,7 @@ from apps.common.query_params import (
 from apps.clients.models import Department
 from apps.eventlog.models import EventLog
 from apps.eventlog.services import log_event
+from apps.notifications.services import notify
 from apps.shipments.services import (
     finish_train_loading, record_count, set_loading_camera, start_train_loading)
 from apps.shipments.serializers import LoadSerializer
@@ -68,6 +69,21 @@ def _provider_error(exc):
     if isinstance(exc, ApiPayAPIError):
         return ValidationError({"detail": exc.message, "code": exc.error_code})
     return exc
+
+
+def _notify_document_invoice(order, payment: Payment) -> None:
+    """Сказать клиенту в портале, что выставлен наш PDF-счёт.
+
+    Только для документа: у счёта «клиенту онлайн» провайдер сам шлёт
+    уведомление на телефон, и второе сообщение в портале дублировало бы его.
+    Клиент скачивает PDF там же, в карточке заказа портала.
+    """
+    notify(
+        order.client,
+        f"Вам выставлен счёт на оплату №{order.id} на сумму "
+        f"{money_string(payment.amount)} {order.currency}. "
+        f"Скачайте счёт в карточке заказа.",
+    )
 
 
 def _issue_provider_payment(payment: Payment, *, phone_number=None):
@@ -1076,6 +1092,16 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             _issue_mixed_provider_payments(payments, parts, request.user)
             for payment in payments:
                 payment.refresh_from_db()
+            # Части и оплаты идут одним списком в одном порядке, поэтому
+            # документный счёт узнаётся по своей части, а не по способу:
+            # в смешанной оплате счетов может быть несколько с разными каналами.
+            for part, payment in zip(parts, payments):
+                if (
+                    isinstance(part, dict)
+                    and part.get("method") == "invoice"
+                    and part.get("channel") == "document"
+                ):
+                    _notify_document_invoice(order, payment)
             return Response(PaymentSerializer(payments, many=True).data, status=201)
         method = request.data.get("method") or "cash"
         # Канал счёта един для обоих путей API: document — наш PDF без провайдера.
@@ -1101,6 +1127,10 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 _reject_created_payments([payment], request.user)
                 raise _provider_error(exc) from exc
             payment.refresh_from_db()
+        elif document_invoice:
+            # Уведомляем только после успешного создания оплаты: при ошибке
+            # выше клиент не должен получить сообщение о несуществующем счёте.
+            _notify_document_invoice(order, payment)
         return Response(PaymentSerializer(payment).data, status=201)
 
     @action(detail=True, methods=["get"], url_path="invoice-pdf")

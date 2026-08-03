@@ -23,15 +23,31 @@ def _method_label(method: str) -> str:
     return payment_method_label(method, archived_hint=True)
 
 
-NAVY = "17233B"
-BLUE = "3367D6"
-LIGHT_BLUE = "EAF1FF"
-LIGHT_GRAY = "F4F6F9"
-GREEN = "1F9D6A"
-RED = "D94C3D"
-WHITE = "FFFFFF"
-THIN = Side(style="thin", color="D9E0EA")
 FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+# ── Оформление выписки ────────────────────────────────────────────────────
+# Документ, а не дашборд: тёмный текст на белом, одна акцентная линия и
+# серая заливка итогов. Цветом отмечены только знак суммы и итоговые строки,
+# поэтому лист остаётся читаемым и в печати, и в ч/б.
+INK = "101828"          # основной текст
+MUTED = "667085"        # подписи, вторичные значения
+HAIRLINE = "E4E7EC"     # линии таблицы
+BAND = "F9FAFB"         # чередование строк
+PANEL = "F2F4F7"        # заливка блока сверки
+ACCENT = "17233B"       # шапка листа
+DEBIT = "B42318"        # начисление (долг растёт)
+CREDIT = "067647"       # оплата (долг гасится)
+
+RULE = Side(style="thin", color=HAIRLINE)
+STRONG_RULE = Side(style="medium", color=ACCENT)
+
+# Знак суммы в ленте: отгрузка наращивает долг клиента (+), оплата гасит (−).
+# Выбор в пользу «баланс = сколько клиент должен» — положительное число,
+# как это читают менеджеры. Kaspi показывает зеркальную картину (взгляд
+# со стороны владельца счёта), но здесь владелец отчёта — продавец.
+MONEY_FORMAT = '#,##0.00'
+SIGNED_FORMAT = '+#,##0.00;-#,##0.00;0.00'
+BASE_CURRENCIES = ("KZT", "USD")
 
 
 class _CurrencyTotals(TypedDict):
@@ -81,6 +97,28 @@ def _payments_in_period(queryset, date_from, date_to):
     return queryset.order_by("_stamp", "id")
 
 
+def _payments_before(queryset, date_from):
+    """Подтверждённые оплаты строго до начала периода.
+
+    Признание — по тому же штампу, что и в ленте (:data:`PAYMENT_STAMP`).
+    Иначе входящий остаток и лента считали бы по разным датам, и блок
+    сверки «вх. остаток + начислено − оплачено = исх. остаток» не сошёлся бы.
+    """
+    return (
+        queryset.annotate(_stamp=PAYMENT_STAMP)
+        .filter(_stamp__date__lt=date_from, status="confirmed")
+    )
+
+
+def _sales_before(queryset, date_from):
+    """Отгрузки, признанные выручкой строго до начала периода."""
+    return (
+        queryset.filter(status="shipped")
+        .annotate(_statement_stamp=SALE_STAMP)
+        .filter(_statement_stamp__date__lt=date_from)
+    )
+
+
 def _orders_in_period(queryset, date_from, date_to, *, sale_date=False):
     """Filter by the date represented by a statement row.
 
@@ -97,6 +135,39 @@ def _orders_in_period(queryset, date_from, date_to, *, sale_date=False):
     if date_to:
         queryset = queryset.filter(**{f"{field}__lte": date_to})
     return queryset.order_by(field.removesuffix("__date"), "id")
+
+
+def _opening_balances(orders_queryset, payments_queryset, date_from) -> dict[str, Decimal]:
+    """Долг клиента на начало периода, разложенный по валютам.
+
+    Знак совпадает с лентой операций: отгрузка увеличивает долг, оплата
+    уменьшает. Значение НЕ клампится в ноль — переплата на начало периода
+    обязана переехать в период минусом, иначе следующая отгрузка покажет
+    долг, которого нет, и сверка разъедется на сумму переплаты.
+
+    Без ``date_from`` период открыт слева: вся история уже внутри ленты,
+    поэтому входящий остаток равен нулю по определению.
+    """
+    balances: defaultdict[str, Decimal] = defaultdict(Decimal)
+    if not date_from:
+        return balances
+    for order in _sales_before(orders_queryset, date_from):
+        balances[order.currency] += order.total_amount
+    for payment in _payments_before(payments_queryset, date_from):
+        balances[payment.order.currency] -= payment.net_amount
+    return balances
+
+
+def _ledger_currencies(*sources) -> list[str]:
+    """Валюты выписки: базовые всегда, остальные — если реально встречались.
+
+    KZT и USD показываем даже нулевыми (бухгалтерия читает их как строки
+    отчёта), а экзотическую валюту — только когда по ней есть движение.
+    """
+    seen: set[str] = set()
+    for source in sources:
+        seen.update(currency for currency, value in source.items() if value)
+    return [*BASE_CURRENCIES, *sorted(seen - set(BASE_CURRENCIES))]
 
 
 def _period_label(date_from, date_to):
@@ -170,49 +241,211 @@ def _neutralize_formula_cells(workbook) -> None:
 
 
 def _title(ws, title, subtitle, columns):
+    """Шапка листа: название, период и тонкая акцентная линия под ними.
+
+    Заголовок печатается на каждой странице (как «Приложение к справке»
+    в банковской выписке), поэтому многостраничная печать остаётся читаемой.
+    """
     ws.sheet_view.showGridLines = False
+    last = get_column_letter(columns)
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=columns)
     cell = ws.cell(1, 1, title)
-    cell.font = Font(size=18, bold=True, color=WHITE)
-    cell.fill = PatternFill("solid", fgColor=NAVY)
+    cell.font = Font(name="Calibri", size=20, bold=True, color=INK)
     cell.alignment = Alignment(vertical="center")
-    ws.row_dimensions[1].height = 34
+    ws.row_dimensions[1].height = 32
+
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=columns)
-    ws.cell(2, 1, subtitle).font = Font(size=10, color="6B7280")
-    ws.row_dimensions[2].height = 24
+    note = ws.cell(2, 1, subtitle)
+    note.font = Font(size=9, color=MUTED)
+    note.alignment = Alignment(vertical="center")
+    ws.row_dimensions[2].height = 18
+    for col in range(1, columns + 1):
+        ws.cell(2, col).border = Border(bottom=STRONG_RULE)
+
+    ws.print_title_rows = "1:3"
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_options.horizontalCentered = True
+    ws.oddFooter.right.text = "Стр. &P из &N"
+    ws.oddFooter.right.size = 8
+    ws.oddFooter.right.color = MUTED
+    ws.oddFooter.left.text = title
+    ws.oddFooter.left.size = 8
+    ws.oddFooter.left.color = MUTED
+    return last
 
 
 def _headers(ws, row, values):
     for col, value in enumerate(values, 1):
         cell = ws.cell(row, col, value)
-        cell.font = Font(bold=True, color=WHITE)
-        cell.fill = PatternFill("solid", fgColor=BLUE)
-        cell.alignment = Alignment(vertical="center")
-        cell.border = Border(bottom=THIN)
-    ws.row_dimensions[row].height = 24
+        cell.font = Font(bold=True, size=9, color=MUTED)
+        cell.alignment = Alignment(vertical="bottom", wrap_text=True)
+        cell.border = Border(bottom=STRONG_RULE)
+    ws.row_dimensions[row].height = 26
     ws.freeze_panes = f"A{row + 1}"
     ws.auto_filter.ref = f"A{row}:{get_column_letter(len(values))}{row}"
 
 
-def _finish(ws, widths, money_columns=(), date_columns=()):
+def _summary_block(ws, row, title, lines, *, width=2, total_label=None):
+    """Блок «Краткое содержание операций» в стиле банковской выписки.
+
+    ``lines`` — последовательность ``(подпись, значение, роль)``, где роль
+    управляет только цветом: ``"debit"``/``"credit"``/``None``. Последняя
+    строка при заданном ``total_label`` отбивается заливкой и рамкой — это
+    исходящий остаток, к которому обязана сходиться арифметика блока.
+    """
+    header = ws.cell(row, 1, title)
+    header.font = Font(bold=True, size=10, color=INK)
+    header.alignment = Alignment(vertical="center")
+    ws.cell(row, 1).border = Border(bottom=RULE)
+    for col in range(2, width + 1):
+        ws.cell(row, col).border = Border(bottom=RULE)
+    ws.row_dimensions[row].height = 22
+
+    cursor = row + 1
+    for label, value, role in lines:
+        name = ws.cell(cursor, 1, label)
+        name.font = Font(size=10, color=INK)
+        name.alignment = Alignment(vertical="center", indent=1)
+        amount = ws.cell(cursor, width, value)
+        amount.number_format = SIGNED_FORMAT if role else MONEY_FORMAT
+        amount.alignment = Alignment(vertical="center", horizontal="right")
+        colors = {"debit": DEBIT, "credit": CREDIT}
+        amount.font = Font(size=10, color=colors.get(role, INK))
+        for col in range(1, width + 1):
+            ws.cell(cursor, col).border = Border(bottom=RULE)
+        ws.row_dimensions[cursor].height = 19
+        cursor += 1
+
+    if total_label is not None:
+        for col in range(1, width + 1):
+            cell = ws.cell(cursor - 1, col)
+            cell.fill = PatternFill("solid", fgColor=PANEL)
+            cell.border = Border(top=RULE, bottom=STRONG_RULE)
+            cell.font = Font(
+                size=10, bold=True,
+                color=cell.font.color.rgb if cell.font.color else INK,
+            )
+        ws.cell(cursor - 1, 1).font = Font(size=10, bold=True, color=INK)
+    return cursor
+
+
+def _finish(
+    ws, widths, money_columns=(), date_columns=(), *,
+    first_row=4, signed_columns=(), total_row=None,
+):
+    """Отделка таблицы: ширины, полосы, форматы чисел и дат.
+
+    ``first_row`` сдвигается, когда над таблицей стоит блок сверки.
+    ``signed_columns`` печатаются со знаком и подкрашиваются: начисление
+    красным, погашение зелёным — как в ленте банковской выписки.
+    """
     for idx, width in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(idx)].width = width
-    for row in ws.iter_rows(min_row=4):
+    for row in ws.iter_rows(min_row=first_row):
         for cell in row:
-            cell.border = Border(bottom=THIN)
-            cell.alignment = Alignment(vertical="top", wrap_text=True)
-            if cell.row % 2 == 1:
-                cell.fill = PatternFill("solid", fgColor="FAFBFD")
+            cell.border = Border(bottom=RULE)
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+            cell.font = Font(size=10, color=INK)
+            if (cell.row - first_row) % 2 == 1:
+                cell.fill = PatternFill("solid", fgColor=BAND)
     for col in money_columns:
-        for cell in ws[get_column_letter(col)][3:]:
-            cell.number_format = '#,##0.00'
+        for cell in ws[get_column_letter(col)][first_row - 1:]:
+            cell.number_format = MONEY_FORMAT
+            cell.alignment = Alignment(vertical="center", horizontal="right")
+    for col in signed_columns:
+        for cell in ws[get_column_letter(col)][first_row - 1:]:
+            cell.number_format = SIGNED_FORMAT
+            cell.alignment = Alignment(vertical="center", horizontal="right")
+            value = cell.value
+            if isinstance(value, Decimal) and value:
+                cell.font = Font(
+                    size=10, color=DEBIT if value > 0 else CREDIT)
     for col in date_columns:
-        for cell in ws[get_column_letter(col)][3:]:
+        for cell in ws[get_column_letter(col)][first_row - 1:]:
             cell.number_format = "dd.mm.yyyy hh:mm"
+    if total_row is not None:
+        for cell in ws[total_row]:
+            cell.fill = PatternFill("solid", fgColor=PANEL)
+            cell.border = Border(top=RULE, bottom=STRONG_RULE)
+            cell.font = Font(size=10, bold=True, color=INK)
+
+
+def _sale_stamp(order):
+    """Момент признания продажи: отгрузка, для старых записей — создание."""
+    return getattr(getattr(order, "shipment", None), "shipped_at", None) or order.created_at
+
+
+def _payment_stamp(payment):
+    return payment.confirmed_at or payment.paid_at
+
+
+def _operations(sales_orders, payments):
+    """Единая лента операций: продажи и подтверждённые оплаты по времени.
+
+    Возвращает кортежи ``(момент, вид, объект)``, где вид 0 — продажа,
+    1 — оплата. При совпадении момента продажа идёт раньше оплаты: сначала
+    возникает обязательство, потом гасится. Обратный порядок давал бы
+    отрицательный промежуточный баланс на оплате «день в день».
+    """
+    operations = [(_sale_stamp(order), 0, order) for order in sales_orders]
+    operations += [
+        (_payment_stamp(payment), 1, payment)
+        for payment in payments if payment.status == "confirmed"
+    ]
+    operations.sort(key=lambda item: (item[0], item[1], getattr(item[2], "id", 0)))
+    return operations
+
+
+def _operation_amount(kind, obj) -> Decimal:
+    """Знаковая сумма операции: продажа наращивает долг, оплата гасит."""
+    return obj.total_amount if kind == 0 else -obj.net_amount
+
+
+def _reconciliation(opening: Decimal, charged: Decimal, paid: Decimal, currency: str):
+    """Строки блока сверки. Замыкающая строка обязана равняться сумме трёх."""
+    return [
+        (f"Остаток на начало периода, {currency}", _money(opening), None),
+        ("Начислено (отгрузки)", _money(charged), "debit"),
+        ("Оплачено (поступления)", _money(-paid), "credit"),
+        ("Остаток на конец периода", _money(opening + charged - paid), None),
+    ]
+
+
+# ── Выбор разделов выписки ────────────────────────────────────────────────
+# Ключ раздела приходит из UI и валидируется во views. Порядок листов в
+# книге определяется этим кортежем, а не порядком выбора пользователя,
+# чтобы выписка всегда читалась одинаково.
+CLIENT_SECTIONS = ("summary", "ledger", "orders", "items", "payments", "debts")
+ALL_CLIENT_SECTIONS = ("summary", "clients", "ledger", "orders", "items", "payments", "debts")
+
+SECTION_LABELS = {
+    "summary": "Сводка",
+    "clients": "Клиенты",
+    "ledger": "Операции",
+    "orders": "Заказы",
+    "items": "Позиции",
+    "payments": "Платежи",
+    "debts": "Долги",
+}
+
+
+def _selected_sections(sections, available) -> tuple[str, ...]:
+    """Разделы к выгрузке в каноническом порядке.
+
+    ``None`` — раздел не выбирали, отдаём всё. Пустой выбор до сюда не
+    доходит: его отбивает валидация во views, иначе получилась бы книга
+    без единого листа, которую Excel не открывает.
+    """
+    if sections is None:
+        return available
+    chosen = set(sections)
+    return tuple(key for key in available if key in chosen)
 
 
 def build_client_statement(
-    client, date_from=None, date_to=None, departments=None,
+    client, date_from=None, date_to=None, departments=None, sections=None,
 ) -> bytes:
     base_orders = _statement_orders(client=client, departments=departments)
     orders = list(_orders_in_period(base_orders, date_from, date_to))
@@ -223,12 +456,13 @@ def build_client_statement(
         sale_date=True,
     ))
     debt_orders = _current_debt_orders(base_orders)
-    payments = Payment.objects.filter(
+    payments_qs = Payment.objects.filter(
         order__client=client, order__deleted_at__isnull=True,
     ).select_related("order", "recorded_by", "received_by", "confirmed_by")
     if departments is not None:
-        payments = payments.filter(order__department__in=departments)
-    payments = list(_payments_in_period(payments, date_from, date_to))
+        payments_qs = payments_qs.filter(order__department__in=departments)
+    payments = list(_payments_in_period(payments_qs, date_from, date_to))
+    opening = _opening_balances(base_orders, payments_qs, date_from)
 
     period = _period_label(date_from, date_to)
     department_names, department_scope = _department_context(departments)
@@ -236,28 +470,7 @@ def build_client_statement(
         f"{client.name} · {department_scope} · {period} · "
         f"сформировано {timezone.localtime():%d.%m.%Y %H:%M}"
     )
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Сводка"
-    ws.sheet_view.showGridLines = False
-    ws.merge_cells("A1:F1")
-    ws["A1"] = "Выписка клиента"
-    ws["A1"].font = Font(size=20, bold=True, color=WHITE)
-    ws["A1"].fill = PatternFill("solid", fgColor=NAVY)
-    ws.row_dimensions[1].height = 38
-    ws.merge_cells("A2:F2")
-    ws["A2"] = subtitle
-    ws["A2"].font = Font(color="6B7280")
-    ws.append([])
-    ws.append(["Клиент", client.name, "Телефон", client.phone, "Страна", client.country])
-    ws.append(["Период", period, "ИИН / БИН", client.iin or "—", "Банк", client.bank or "—"])
-    for row in range(4, 6):
-        for cell in ws[row]:
-            cell.fill = PatternFill("solid", fgColor=LIGHT_GRAY)
-            cell.border = Border(bottom=THIN)
-            if cell.column % 2 == 1:
-                cell.font = Font(bold=True, color="64748B")
+    chosen = _selected_sections(sections, CLIENT_SECTIONS)
 
     totals: defaultdict[str, _CurrencyTotals] = defaultdict(
         _empty_currency_totals
@@ -274,136 +487,198 @@ def build_client_statement(
         if payment.status == "confirmed":
             totals[payment.order.currency]["payments"] += payment.net_amount
 
-    ws.append([])
-    ws.append(["Валюта", "Заказов", "Продажи", "Оплачено", "Текущий долг", "Баланс выписки"])
-    for cell in ws[7]:
-        cell.font = Font(bold=True, color=WHITE)
-        cell.fill = PatternFill("solid", fgColor=BLUE)
-    for currency in ("KZT", "USD"):
-        currency_totals = totals[currency]
-        ws.append([
-            currency, currency_totals["orders"], _money(currency_totals["sales"]),
-            _money(currency_totals["payments"]), _money(currency_totals["debt"]),
-            _money(currency_totals["sales"] - currency_totals["payments"]),
+    currencies = _ledger_currencies(
+        opening,
+        {code: value["sales"] for code, value in totals.items()},
+        {code: value["payments"] for code, value in totals.items()},
+        {code: value["debt"] for code, value in totals.items()},
+    )
+
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    if "summary" in chosen:
+        ws = wb.create_sheet("Сводка")
+        _title(ws, "Выписка по клиенту", subtitle, 6)
+        ws["A4"] = "Клиент"
+        ws["B4"] = client.name
+        ws["A5"] = "Телефон"
+        ws["B5"] = client.phone
+        ws["A6"] = "ИИН / БИН"
+        ws["B6"] = client.iin or "—"
+        ws["A7"] = "Страна"
+        ws["B7"] = client.country or "—"
+        ws["A8"] = "Банк"
+        ws["B8"] = client.bank or "—"
+        ws["A9"] = "Отделы"
+        ws["B9"] = department_scope
+        ws["A10"] = "Период"
+        ws["B10"] = period
+        for row in range(4, 11):
+            ws.cell(row, 1).font = Font(size=10, color=MUTED)
+            ws.cell(row, 2).font = Font(size=10, bold=True, color=INK)
+            ws.row_dimensions[row].height = 18
+
+        # Блок сверки по каждой валюте: вх. остаток + начислено − оплачено.
+        cursor = 12
+        for currency in currencies:
+            cursor = _summary_block(
+                ws, cursor,
+                f"Краткое содержание операций · {currency}",
+                _reconciliation(
+                    opening[currency], totals[currency]["sales"],
+                    totals[currency]["payments"], currency,
+                ),
+                width=2, total_label="Остаток на конец периода",
+            ) + 1
+
+        table_row = cursor
+        _headers(ws, table_row, [
+            "Валюта", "Заказов", "Продажи", "Оплачено",
+            "Остаток на начало", "Остаток на конец", "Текущий долг",
         ])
-    for row in ws.iter_rows(min_row=8, max_row=9):
-        for cell in row:
-            cell.border = Border(bottom=THIN)
-        for cell in row[2:]:
-            cell.number_format = '#,##0.00'
-    for col, width in enumerate((16, 16, 20, 20, 20, 22), 1):
-        ws.column_dimensions[get_column_letter(col)].width = width
-
-    # Kaspi-подобная лента: дебет = отгрузка, кредит = подтверждённая оплата.
-    ledger = wb.create_sheet("Операции")
-    _title(ledger, "Операции", subtitle, 11)
-    _headers(ledger, 3, [
-        "Дата", "Операция", "Заказ", "Описание", "Способ / статус",
-        "Валюта", "Начислено", "Оплачено", "Баланс периода", "Автор", "Отдел",
-    ])
-    operations = []
-    for order in sales_orders:
-        stamp = getattr(getattr(order, "shipment", None), "shipped_at", None) or order.created_at
-        operations.append((stamp, 0, order.currency, order.total_amount, Decimal("0"), order))
-    for payment in payments:
-        if payment.status == "confirmed":
-            stamp = payment.confirmed_at or payment.paid_at
-            operations.append((stamp, 1, payment.order.currency, Decimal("0"), payment.net_amount, payment))
-    operations.sort(key=lambda item: (item[0], item[1], getattr(item[5], "id", 0)))
-    balances: defaultdict[str, Decimal] = defaultdict(Decimal)
-    for stamp, kind, currency, debit, credit, obj in operations:
-        balances[currency] += debit - credit
-        if kind == 0:
-            order = obj
-            description = ", ".join(
-                f"{item.product_label} × {item.quantity}" for item in order.items.all()
-            )
-            values = [
-                _local(stamp), "Продажа / отгрузка", order.id, description,
-                public_status_label(order.status), currency, _money(debit), 0,
-                _money(balances[currency]), order.created_by.username if order.created_by else "—",
-                _department_name(department_names, order.department),
-            ]
-        else:
-            payment = obj
-            author = payment.confirmed_by or payment.received_by or payment.recorded_by
-            values = [
-                _local(stamp), "Оплата", payment.order_id, payment.note or "Поступление оплаты",
-                _method_label(payment.method), currency, 0,
-                _money(credit), _money(balances[currency]), author.username if author else "—",
-                _department_name(department_names, payment.order.department),
-            ]
-        ledger.append(values)
-    _finish(ledger, (19, 21, 10, 44, 22, 10, 16, 16, 16, 20, 22), (7, 8, 9), (1,))
-
-    orders_ws = wb.create_sheet("Заказы")
-    _title(orders_ws, "Заказы", subtitle, 14)
-    _headers(orders_ws, 3, [
-        "№", "Создан", "Статус", "Отгружен", "Отдел", "Магазин",
-        "Транспорт", "Номер", "Валюта", "Сумма", "Оплачено", "Долг",
-        "Повтор заказа", "Примечание",
-    ])
-    for order in orders:
-        shipment = getattr(order, "shipment", None)
-        orders_ws.append([
-            order.id, _local(order.created_at), public_status_label(order.status),
-            _local(shipment.shipped_at) if shipment else None,
-            _department_name(department_names, order.department),
-            order.store.name if order.store else "—",
-            transport_label(order.transport_type),
-            order.truck_number or "—", order.currency, _money(order.total_amount),
-            _money(order.paid_total), _money(max(Decimal("0"), order.remaining_amount)),
-            order.repeated_from_id, order.notes,
-        ])
-    _finish(orders_ws, (9, 19, 20, 19, 18, 22, 12, 16, 10, 16, 16, 16, 15, 35), (10, 11, 12), (2, 4))
-
-    items_ws = wb.create_sheet("Позиции")
-    _title(items_ws, "Позиции заказов", subtitle, 9)
-    _headers(items_ws, 3, [
-        "Заказ", "Дата", "Товар", "Класс CV", "Мешков", "Цена / мешок", "Сумма", "Валюта", "Отдел",
-    ])
-    for order in orders:
-        for item in order.items.all():
-            items_ws.append([
-                order.id, _local(order.created_at), item.product_label,
-                item.product_cv_class or "—", item.quantity,
-                _money(item.unit_price), _money(item.quantity * (item.unit_price or 0)),
-                order.currency, _department_name(department_names, order.department),
+        for currency in currencies:
+            currency_totals = totals[currency]
+            ws.append([
+                currency, currency_totals["orders"],
+                _money(currency_totals["sales"]),
+                _money(currency_totals["payments"]),
+                _money(opening[currency]),
+                _money(
+                    opening[currency] + currency_totals["sales"]
+                    - currency_totals["payments"]
+                ),
+                _money(currency_totals["debt"]),
             ])
-    _finish(items_ws, (10, 19, 40, 16, 12, 18, 18, 10, 22), (6, 7), (2,))
+        _finish(
+            ws, (26, 16, 18, 18, 20, 20, 18),
+            (3, 4, 5, 6, 7), first_row=table_row + 1,
+        )
+        ws.freeze_panes = "A4"
 
-    pay_ws = wb.create_sheet("Платежи")
-    _title(pay_ws, "Платежи", subtitle, 10)
-    _headers(pay_ws, 3, [
-        "№", "Дата", "Заказ", "Способ", "Статус", "Сумма", "Валюта", "Сотрудник", "Примечание", "Отдел",
-    ])
-    for payment in payments:
-        author = payment.confirmed_by or payment.received_by or payment.recorded_by
-        pay_ws.append([
-            payment.id, _local(payment.confirmed_at or payment.paid_at), payment.order_id,
-            _method_label(payment.method),
-            payment_status_label(payment.status), _money(payment.amount),
-            payment.order.currency, author.username if author else "—", payment.note,
-            _department_name(department_names, payment.order.department),
+    if "ledger" in chosen:
+        # Лента в стиле банковской выписки: одна знаковая сумма и текущий
+        # остаток после каждой операции.
+        ledger = wb.create_sheet("Операции")
+        _title(ledger, "Операции", subtitle, 10)
+        header_row = 4
+        opening_rows = [
+            (f"Остаток на начало периода · {currency}", _money(opening[currency]), None)
+            for currency in currencies
+        ]
+        if opening_rows:
+            header_row = _summary_block(
+                ledger, 4, "Входящий остаток", opening_rows, width=2,
+            ) + 1
+        _headers(ledger, header_row, [
+            "Дата", "Операция", "Заказ", "Описание", "Способ / статус",
+            "Валюта", "Сумма", "Остаток", "Автор", "Отдел",
         ])
-    _finish(pay_ws, (9, 19, 10, 20, 18, 18, 10, 20, 38, 22), (6,), (2,))
+        balances: defaultdict[str, Decimal] = defaultdict(Decimal)
+        balances.update(opening)
+        for stamp, kind, obj in _operations(sales_orders, payments):
+            amount = _operation_amount(kind, obj)
+            order = obj if kind == 0 else obj.order
+            balances[order.currency] += amount
+            if kind == 0:
+                description = ", ".join(
+                    f"{item.product_label} × {item.quantity}"
+                    for item in order.items.all()
+                )
+                author = order.created_by
+                values = [
+                    _local(stamp), "Продажа / отгрузка", order.id, description,
+                    public_status_label(order.status),
+                ]
+            else:
+                author = obj.confirmed_by or obj.received_by or obj.recorded_by
+                values = [
+                    _local(stamp), "Оплата", obj.order_id,
+                    obj.note or "Поступление оплаты", _method_label(obj.method),
+                ]
+            ledger.append(values + [
+                order.currency, _money(amount), _money(balances[order.currency]),
+                author.username if author else "—",
+                _department_name(department_names, order.department),
+            ])
+        _finish(
+            ledger, (19, 21, 10, 44, 22, 10, 18, 18, 20, 22),
+            money_columns=(8,), date_columns=(1,),
+            first_row=header_row + 1, signed_columns=(7,),
+        )
 
-    debt_ws = wb.create_sheet("Долги")
-    _title(debt_ws, "Текущие долги", subtitle, 10)
-    _headers(debt_ws, 3, [
-        "Заказ", "Отгружен", "Магазин", "Мешков", "Сумма", "Оплачено", "Остаток", "Валюта", "Способ", "Отдел",
-    ])
-    for order in debt_orders:
-        shipment = getattr(order, "shipment", None)
-        debt_ws.append([
-            order.id, _local(shipment.shipped_at) if shipment else _local(order.created_at),
-            order.store.name if order.store else "—",
-            sum(item.quantity for item in order.items.all()), _money(order.total_amount),
-            _money(order.paid_total), _money(order.remaining_amount), order.currency,
-            order_payment_method_label(order.payment_method),
-            _department_name(department_names, order.department),
+    if "orders" in chosen:
+        orders_ws = wb.create_sheet("Заказы")
+        _title(orders_ws, "Заказы", subtitle, 14)
+        _headers(orders_ws, 3, [
+            "№", "Создан", "Статус", "Отгружен", "Отдел", "Магазин",
+            "Транспорт", "Номер", "Валюта", "Сумма", "Оплачено", "Долг",
+            "Повтор заказа", "Примечание",
         ])
-    _finish(debt_ws, (10, 19, 22, 12, 18, 18, 18, 10, 20, 22), (5, 6, 7), (2,))
+        for order in orders:
+            shipment = getattr(order, "shipment", None)
+            orders_ws.append([
+                order.id, _local(order.created_at), public_status_label(order.status),
+                _local(shipment.shipped_at) if shipment else None,
+                _department_name(department_names, order.department),
+                order.store.name if order.store else "—",
+                transport_label(order.transport_type),
+                order.truck_number or "—", order.currency, _money(order.total_amount),
+                _money(order.paid_total), _money(max(Decimal("0"), order.remaining_amount)),
+                order.repeated_from_id, order.notes,
+            ])
+        _finish(orders_ws, (9, 19, 20, 19, 18, 22, 12, 16, 10, 16, 16, 16, 15, 35), (10, 11, 12), (2, 4))
+
+    if "items" in chosen:
+        items_ws = wb.create_sheet("Позиции")
+        _title(items_ws, "Позиции заказов", subtitle, 9)
+        _headers(items_ws, 3, [
+            "Заказ", "Дата", "Товар", "Класс CV", "Мешков", "Цена / мешок", "Сумма", "Валюта", "Отдел",
+        ])
+        for order in orders:
+            for item in order.items.all():
+                items_ws.append([
+                    order.id, _local(order.created_at), item.product_label,
+                    item.product_cv_class or "—", item.quantity,
+                    _money(item.unit_price), _money(item.quantity * (item.unit_price or 0)),
+                    order.currency, _department_name(department_names, order.department),
+                ])
+        _finish(items_ws, (10, 19, 40, 16, 12, 18, 18, 10, 22), (6, 7), (2,))
+
+    if "payments" in chosen:
+        pay_ws = wb.create_sheet("Платежи")
+        _title(pay_ws, "Платежи", subtitle, 10)
+        _headers(pay_ws, 3, [
+            "№", "Дата", "Заказ", "Способ", "Статус", "Сумма", "Валюта", "Сотрудник", "Примечание", "Отдел",
+        ])
+        for payment in payments:
+            author = payment.confirmed_by or payment.received_by or payment.recorded_by
+            pay_ws.append([
+                payment.id, _local(payment.confirmed_at or payment.paid_at), payment.order_id,
+                _method_label(payment.method),
+                payment_status_label(payment.status), _money(payment.amount),
+                payment.order.currency, author.username if author else "—", payment.note,
+                _department_name(department_names, payment.order.department),
+            ])
+        _finish(pay_ws, (9, 19, 10, 20, 18, 18, 10, 20, 38, 22), (6,), (2,))
+
+    if "debts" in chosen:
+        debt_ws = wb.create_sheet("Долги")
+        _title(debt_ws, "Текущие долги", subtitle, 10)
+        _headers(debt_ws, 3, [
+            "Заказ", "Отгружен", "Магазин", "Мешков", "Сумма", "Оплачено", "Остаток", "Валюта", "Способ", "Отдел",
+        ])
+        for order in debt_orders:
+            shipment = getattr(order, "shipment", None)
+            debt_ws.append([
+                order.id, _local(shipment.shipped_at) if shipment else _local(order.created_at),
+                order.store.name if order.store else "—",
+                sum(item.quantity for item in order.items.all()), _money(order.total_amount),
+                _money(order.paid_total), _money(order.remaining_amount), order.currency,
+                order_payment_method_label(order.payment_method),
+                _department_name(department_names, order.department),
+            ])
+        _finish(debt_ws, (10, 19, 22, 12, 18, 18, 18, 10, 20, 22), (5, 6, 7), (2,))
 
     output = BytesIO()
     _neutralize_formula_cells(wb)
@@ -411,8 +686,27 @@ def build_client_statement(
     return output.getvalue()
 
 
+def _client_opening_balances(orders_queryset, payments_queryset, date_from):
+    """Входящий остаток в разрезе (клиент, валюта).
+
+    Нужен отдельно от общего: в сводной ленте баланс ведётся по каждому
+    клиенту, и сложение их остатков в один счётчик смешало бы долги разных
+    контрагентов.
+    """
+    balances: defaultdict[tuple[int, str], Decimal] = defaultdict(Decimal)
+    if not date_from:
+        return balances
+    for order in _sales_before(orders_queryset, date_from):
+        balances[(order.client_id, order.currency)] += order.total_amount
+    for payment in _payments_before(payments_queryset, date_from):
+        balances[
+            (payment.order.client_id, payment.order.currency)
+        ] -= payment.net_amount
+    return balances
+
+
 def build_all_clients_statement(
-    date_from=None, date_to=None, departments=None,
+    date_from=None, date_to=None, departments=None, sections=None,
 ) -> bytes:
     """Консолидированная выписка по всей клиентской базе.
 
@@ -485,235 +779,284 @@ def build_all_clients_statement(
         client_totals[payment.order.client_id][payment.order.currency]["payments"] += payment.net_amount
         department_totals[(payment.order.department, payment.order.currency)]["payments"] += payment.net_amount
 
+    client_opening = _client_opening_balances(base_orders, payments_qs, date_from)
+    opening: defaultdict[str, Decimal] = defaultdict(Decimal)
+    for (_, currency), value in client_opening.items():
+        opening[currency] += value
+    currencies = _ledger_currencies(
+        opening,
+        {code: value["sales"] for code, value in totals.items()},
+        {code: value["payments"] for code, value in totals.items()},
+        {code: value["debt"] for code, value in totals.items()},
+    )
+    chosen = _selected_sections(sections, ALL_CLIENT_SECTIONS)
+
     wb = Workbook()
-    summary = wb.active
-    summary.title = "Сводка"
-    summary.sheet_view.showGridLines = False
-    summary.merge_cells("A1:G1")
-    summary["A1"] = "Общая выписка по клиентам"
-    summary["A1"].font = Font(size=20, bold=True, color=WHITE)
-    summary["A1"].fill = PatternFill("solid", fgColor=NAVY)
-    summary.row_dimensions[1].height = 38
-    summary.merge_cells("A2:G2")
-    summary["A2"] = subtitle
-    summary["A2"].font = Font(color="6B7280")
-    summary.append([])
-    summary.append(["Клиентов", len(clients), "Заказов", len(orders), "Платежей", len(payments), "Период"])
-    summary.append(["Отделы", department_scope, "", "", "", "", period])
-    for row in range(4, 6):
-        for cell in summary[row]:
-            cell.fill = PatternFill("solid", fgColor=LIGHT_GRAY)
-            cell.border = Border(bottom=THIN)
-            if (row == 4 and cell.column % 2 == 1) or (row == 5 and cell.column == 1):
-                cell.font = Font(bold=True, color="64748B")
-    summary.append([])
-    summary.append([
-        "Валюта", "Заказов", "Продажи", "Оплачено", "Текущий долг",
-        "Баланс периода", "Клиентов с долгом",
-    ])
-    for cell in summary[7]:
-        cell.font = Font(bold=True, color=WHITE)
-        cell.fill = PatternFill("solid", fgColor=BLUE)
-    for currency in ("KZT", "USD"):
-        currency_totals = totals[currency]
-        clients_with_debt = sum(
-            1 for client in clients
-            if client_totals[client.id][currency]["debt"] > 0
-        )
-        summary.append([
-            currency, currency_totals["orders"],
-            _money(currency_totals["sales"]),
-            _money(currency_totals["payments"]),
-            _money(currency_totals["debt"]),
-            _money(currency_totals["sales"] - currency_totals["payments"]),
-            clients_with_debt,
-        ])
-    for row in summary.iter_rows(min_row=8, max_row=9):
-        for cell in row:
-            cell.border = Border(bottom=THIN)
-        for cell in row[2:6]:
-            cell.number_format = '#,##0.00'
-    summary.append([])
-    department_header_row = summary.max_row + 1
-    summary.append([
-        "Отдел", "Валюта", "Заказов", "Продажи", "Оплачено",
-        "Текущий долг", "Баланс периода",
-    ])
-    for cell in summary[department_header_row]:
-        cell.font = Font(bold=True, color=WHITE)
-        cell.fill = PatternFill("solid", fgColor=GREEN)
-    department_codes = list(departments) if departments is not None else list(department_names)
-    for code in department_codes:
-        for currency in ("KZT", "USD"):
-            row_totals = department_totals[(code, currency)]
-            summary.append([
-                _department_name(department_names, code),
-                currency,
-                row_totals["orders"],
-                _money(row_totals["sales"]),
-                _money(row_totals["payments"]),
-                _money(row_totals["debt"]),
-                _money(row_totals["sales"] - row_totals["payments"]),
-            ])
-    for row in summary.iter_rows(
-        min_row=department_header_row + 1,
-        max_row=summary.max_row,
-    ):
-        for cell in row:
-            cell.border = Border(bottom=THIN)
-        for cell in row[3:7]:
-            cell.number_format = '#,##0.00'
-    for col, width in enumerate((14, 14, 20, 20, 20, 20, 22), 1):
-        summary.column_dimensions[get_column_letter(col)].width = width
+    wb.remove(wb.active)
 
-    clients_ws = wb.create_sheet("Клиенты")
-    _title(clients_ws, "Клиенты", subtitle, 15)
-    _headers(clients_ws, 3, [
-        "ID", "Клиент", "Компания", "Телефон", "ИИН / БИН", "Страна",
-        "Валюта прайса", "Заказов KZT", "Продажи KZT", "Оплачено KZT",
-        "Долг KZT", "Заказов USD", "Продажи USD", "Оплачено USD", "Долг USD",
-    ])
-    for client in clients:
-        kzt = client_totals[client.id]["KZT"]
-        usd = client_totals[client.id]["USD"]
-        clients_ws.append([
-            client.id, client.name, client.company_name or "—", client.phone,
-            client.iin or "—", client.country or "—", client.currency,
-            kzt["orders"], _money(kzt["sales"]), _money(kzt["payments"]), _money(kzt["debt"]),
-            usd["orders"], _money(usd["sales"]), _money(usd["payments"]), _money(usd["debt"]),
-        ])
-    _finish(
-        clients_ws,
-        (8, 30, 28, 19, 16, 18, 15, 14, 18, 18, 18, 14, 18, 18, 18),
-        (9, 10, 11, 13, 14, 15),
-    )
+    if "summary" in chosen:
+        summary = wb.create_sheet("Сводка")
+        _title(summary, "Общая выписка по клиентам", subtitle, 7)
+        summary["A4"] = "Клиентов"
+        summary["B4"] = len(clients)
+        summary["A5"] = "Заказов"
+        summary["B5"] = len(orders)
+        summary["A6"] = "Платежей"
+        summary["B6"] = len(payments)
+        summary["A7"] = "Отделы"
+        summary["B7"] = department_scope
+        summary["A8"] = "Период"
+        summary["B8"] = period
+        for row in range(4, 9):
+            summary.cell(row, 1).font = Font(size=10, color=MUTED)
+            summary.cell(row, 2).font = Font(size=10, bold=True, color=INK)
+            summary.row_dimensions[row].height = 18
 
-    ledger = wb.create_sheet("Операции")
-    _title(ledger, "Операции", subtitle, 13)
-    _headers(ledger, 3, [
-        "Дата", "Клиент", "Телефон", "Операция", "Заказ", "Описание",
-        "Способ / статус", "Валюта", "Начислено", "Оплачено",
-        "Баланс периода", "Автор", "Отдел",
-    ])
-    operations = []
-    for order in sales_orders:
-        stamp = getattr(getattr(order, "shipment", None), "shipped_at", None) or order.created_at
-        operations.append((stamp, 0, order.client_id, order.currency, order.total_amount, Decimal("0"), order))
-    for payment in payments:
-        if payment.status == "confirmed":
-            stamp = payment.confirmed_at or payment.paid_at
-            operations.append((stamp, 1, payment.order.client_id, payment.order.currency, Decimal("0"), payment.net_amount, payment))
-    operations.sort(key=lambda item: (item[0], item[1], getattr(item[6], "id", 0)))
-    balances: defaultdict[tuple[int, str], Decimal] = defaultdict(Decimal)
-    for stamp, kind, client_id, currency, debit, credit, obj in operations:
-        balance_key = (client_id, currency)
-        balances[balance_key] += debit - credit
-        if kind == 0:
-            order = obj
-            description = ", ".join(
-                f"{item.product_label} × {item.quantity}" for item in order.items.all()
+        cursor = 10
+        for currency in currencies:
+            cursor = _summary_block(
+                summary, cursor,
+                f"Краткое содержание операций · {currency}",
+                _reconciliation(
+                    opening[currency], totals[currency]["sales"],
+                    totals[currency]["payments"], currency,
+                ),
+                width=2, total_label="Остаток на конец периода",
+            ) + 1
+
+        currency_row = cursor
+        _headers(summary, currency_row, [
+            "Валюта", "Заказов", "Продажи", "Оплачено",
+            "Остаток на начало", "Остаток на конец", "Клиентов с долгом",
+        ])
+        for currency in currencies:
+            currency_totals = totals[currency]
+            clients_with_debt = sum(
+                1 for client in clients
+                if client_totals[client.id][currency]["debt"] > 0
             )
-            values = [
-                _local(stamp), order.client.name, order.client.phone,
-                "Продажа / отгрузка", order.id, description,
-                public_status_label(order.status), currency, _money(debit), 0,
-                _money(balances[balance_key]),
-                order.created_by.username if order.created_by else "—",
-                _department_name(department_names, order.department),
-            ]
-        else:
-            payment = obj
-            author = payment.confirmed_by or payment.received_by or payment.recorded_by
-            values = [
-                _local(stamp), payment.order.client.name, payment.order.client.phone,
-                "Оплата", payment.order_id, payment.note or "Поступление оплаты",
-                _method_label(payment.method), currency, 0,
-                _money(credit), _money(balances[balance_key]),
-                author.username if author else "—",
-                _department_name(department_names, payment.order.department),
-            ]
-        ledger.append(values)
-    _finish(ledger, (19, 28, 18, 21, 10, 42, 22, 10, 16, 16, 18, 20, 22), (9, 10, 11), (1,))
-
-    orders_ws = wb.create_sheet("Заказы")
-    _title(orders_ws, "Все заказы", subtitle, 17)
-    _headers(orders_ws, 3, [
-        "№", "Создан", "Клиент", "Телефон", "Статус", "Отгружен", "Отдел",
-        "Магазин", "Транспорт", "Номер", "Валюта", "Сумма", "Оплачено",
-        "Долг", "Мешков", "Шаблон заказа", "Примечание",
-    ])
-    for order in orders:
-        shipment = getattr(order, "shipment", None)
-        orders_ws.append([
-            order.id, _local(order.created_at), order.client.name, order.client.phone,
-            public_status_label(order.status),
-            _local(shipment.shipped_at) if shipment else None,
-            _department_name(department_names, order.department),
-            order.store.name if order.store else "—",
-            transport_label(order.transport_type),
-            order.truck_number or "—", order.currency, _money(order.total_amount),
-            _money(order.paid_total), _money(max(Decimal("0"), order.remaining_amount)),
-            sum(item.quantity for item in order.items.all()), order.repeated_from_id,
-            order.notes,
-        ])
-    _finish(
-        orders_ws,
-        (9, 19, 30, 18, 20, 19, 18, 22, 12, 16, 10, 16, 16, 16, 12, 16, 35),
-        (12, 13, 14), (2, 6),
-    )
-
-    items_ws = wb.create_sheet("Позиции")
-    _title(items_ws, "Позиции всех заказов", subtitle, 11)
-    _headers(items_ws, 3, [
-        "Заказ", "Дата", "Клиент", "Телефон", "Товар", "Класс CV",
-        "Мешков", "Цена / мешок", "Сумма", "Валюта", "Отдел",
-    ])
-    for order in orders:
-        for item in order.items.all():
-            items_ws.append([
-                order.id, _local(order.created_at), order.client.name, order.client.phone,
-                item.product_label, item.product_cv_class or "—", item.quantity,
-                _money(item.unit_price), _money(item.quantity * (item.unit_price or 0)),
-                order.currency, _department_name(department_names, order.department),
+            summary.append([
+                currency, currency_totals["orders"],
+                _money(currency_totals["sales"]),
+                _money(currency_totals["payments"]),
+                _money(opening[currency]),
+                _money(
+                    opening[currency] + currency_totals["sales"]
+                    - currency_totals["payments"]
+                ),
+                clients_with_debt,
             ])
-    _finish(items_ws, (10, 19, 30, 18, 40, 16, 12, 18, 18, 10, 22), (8, 9), (2,))
-
-    pay_ws = wb.create_sheet("Платежи")
-    _title(pay_ws, "Все платежи", subtitle, 12)
-    _headers(pay_ws, 3, [
-        "№", "Дата", "Клиент", "Телефон", "Заказ", "Способ", "Статус",
-        "Сумма", "Валюта", "Сотрудник", "Примечание", "Отдел",
-    ])
-    for payment in payments:
-        author = payment.confirmed_by or payment.received_by or payment.recorded_by
-        pay_ws.append([
-            payment.id, _local(payment.confirmed_at or payment.paid_at),
-            payment.order.client.name, payment.order.client.phone, payment.order_id,
-            _method_label(payment.method),
-            payment_status_label(payment.status), _money(payment.amount),
-            payment.order.currency, author.username if author else "—", payment.note,
-            _department_name(department_names, payment.order.department),
+        for row in summary.iter_rows(
+            min_row=currency_row + 1, max_row=summary.max_row,
+        ):
+            for cell in row:
+                cell.border = Border(bottom=RULE)
+                cell.font = Font(size=10, color=INK)
+            for cell in row[2:6]:
+                cell.number_format = MONEY_FORMAT
+                cell.alignment = Alignment(horizontal="right")
+        # +2: пустая строка-разделитель между таблицей валют и разрезом по
+        # отделам. append([]) здесь не годится — пустая строка не двигает
+        # max_row, и шапка приклеивалась бы к предыдущей таблице.
+        department_header_row = summary.max_row + 2
+        # «Движение за период» = продажи − оплаты внутри периода, без
+        # входящего остатка: разложить его по отделам нельзя, отдел заказа
+        # не обязан совпадать с отделом старой отгрузки. Название столбца
+        # отличается от «Остатка на конец» в таблице валют намеренно —
+        # это разные величины, и одинаковая подпись вводила бы в заблуждение.
+        _headers(summary, department_header_row, [
+            "Отдел", "Валюта", "Заказов", "Продажи", "Оплачено",
+            "Текущий долг", "Движение за период",
         ])
-    _finish(pay_ws, (9, 19, 30, 18, 10, 20, 18, 18, 10, 20, 38, 22), (8,), (2,))
+        department_codes = list(departments) if departments is not None else list(department_names)
+        for code in department_codes:
+            for currency in currencies:
+                row_totals = department_totals[(code, currency)]
+                summary.append([
+                    _department_name(department_names, code),
+                    currency,
+                    row_totals["orders"],
+                    _money(row_totals["sales"]),
+                    _money(row_totals["payments"]),
+                    _money(row_totals["debt"]),
+                    _money(row_totals["sales"] - row_totals["payments"]),
+                ])
+        for row in summary.iter_rows(
+            min_row=department_header_row + 1,
+            max_row=summary.max_row,
+        ):
+            for cell in row:
+                cell.border = Border(bottom=RULE)
+                cell.font = Font(size=10, color=INK)
+            for cell in row[3:7]:
+                cell.number_format = MONEY_FORMAT
+                cell.alignment = Alignment(horizontal="right")
+        for col, width in enumerate((26, 14, 16, 20, 20, 20, 22), 1):
+            summary.column_dimensions[get_column_letter(col)].width = width
+        # Заголовок таблицы уже зафиксирован _headers; закрепляем только шапку.
+        summary.freeze_panes = "A4"
 
-    debt_ws = wb.create_sheet("Долги")
-    _title(debt_ws, "Текущие долги", subtitle, 12)
-    _headers(debt_ws, 3, [
-        "Заказ", "Отгружен", "Клиент", "Телефон", "Магазин", "Мешков",
-        "Сумма", "Оплачено", "Остаток", "Валюта", "Способ", "Отдел",
-    ])
-    for order in debt_orders:
-        shipment = getattr(order, "shipment", None)
-        debt_ws.append([
-            order.id, _local(shipment.shipped_at) if shipment else _local(order.created_at),
-            order.client.name, order.client.phone,
-            order.store.name if order.store else "—",
-            sum(item.quantity for item in order.items.all()), _money(order.total_amount),
-            _money(order.paid_total), _money(order.remaining_amount), order.currency,
-            order_payment_method_label(order.payment_method),
-            _department_name(department_names, order.department),
+    if "clients" in chosen:
+        clients_ws = wb.create_sheet("Клиенты")
+        _title(clients_ws, "Клиенты", subtitle, 15)
+        _headers(clients_ws, 3, [
+            "ID", "Клиент", "Компания", "Телефон", "ИИН / БИН", "Страна",
+            "Валюта прайса", "Заказов KZT", "Продажи KZT", "Оплачено KZT",
+            "Долг KZT", "Заказов USD", "Продажи USD", "Оплачено USD", "Долг USD",
         ])
-    _finish(debt_ws, (10, 19, 30, 18, 22, 12, 18, 18, 18, 10, 20, 18), (7, 8, 9), (2,))
+        for client in clients:
+            kzt = client_totals[client.id]["KZT"]
+            usd = client_totals[client.id]["USD"]
+            clients_ws.append([
+                client.id, client.name, client.company_name or "—", client.phone,
+                client.iin or "—", client.country or "—", client.currency,
+                kzt["orders"], _money(kzt["sales"]), _money(kzt["payments"]), _money(kzt["debt"]),
+                usd["orders"], _money(usd["sales"]), _money(usd["payments"]), _money(usd["debt"]),
+            ])
+        _finish(
+            clients_ws,
+            (8, 30, 28, 19, 16, 18, 15, 14, 18, 18, 18, 14, 18, 18, 18),
+            (9, 10, 11, 13, 14, 15),
+        )
+
+    if "ledger" in chosen:
+        ledger = wb.create_sheet("Операции")
+        _title(ledger, "Операции", subtitle, 12)
+        header_row = 4
+        opening_rows = [
+            (f"Остаток на начало периода · {currency}", _money(opening[currency]), None)
+            for currency in currencies
+        ]
+        if opening_rows:
+            header_row = _summary_block(
+                ledger, 4, "Входящий остаток", opening_rows, width=2,
+            ) + 1
+        _headers(ledger, header_row, [
+            "Дата", "Клиент", "Телефон", "Операция", "Заказ", "Описание",
+            "Способ / статус", "Валюта", "Сумма", "Остаток клиента",
+            "Автор", "Отдел",
+        ])
+        # Баланс ведётся по паре (клиент, валюта): это выписка по каждому
+        # контрагенту, сведённая в один лист, а не общий счёт компании.
+        balances: defaultdict[tuple[int, str], Decimal] = defaultdict(Decimal)
+        balances.update(client_opening)
+        for stamp, kind, obj in _operations(sales_orders, payments):
+            amount = _operation_amount(kind, obj)
+            order = obj if kind == 0 else obj.order
+            key = (order.client_id, order.currency)
+            balances[key] += amount
+            if kind == 0:
+                description = ", ".join(
+                    f"{item.product_label} × {item.quantity}"
+                    for item in order.items.all()
+                )
+                author = order.created_by
+                values = [
+                    _local(stamp), order.client.name, order.client.phone,
+                    "Продажа / отгрузка", order.id, description,
+                    public_status_label(order.status),
+                ]
+            else:
+                author = obj.confirmed_by or obj.received_by or obj.recorded_by
+                values = [
+                    _local(stamp), order.client.name, order.client.phone,
+                    "Оплата", obj.order_id, obj.note or "Поступление оплаты",
+                    _method_label(obj.method),
+                ]
+            ledger.append(values + [
+                order.currency, _money(amount), _money(balances[key]),
+                author.username if author else "—",
+                _department_name(department_names, order.department),
+            ])
+        _finish(
+            ledger, (19, 28, 18, 21, 10, 42, 22, 10, 18, 20, 20, 22),
+            money_columns=(10,), date_columns=(1,),
+            first_row=header_row + 1, signed_columns=(9,),
+        )
+
+    if "orders" in chosen:
+        orders_ws = wb.create_sheet("Заказы")
+        _title(orders_ws, "Все заказы", subtitle, 17)
+        _headers(orders_ws, 3, [
+            "№", "Создан", "Клиент", "Телефон", "Статус", "Отгружен", "Отдел",
+            "Магазин", "Транспорт", "Номер", "Валюта", "Сумма", "Оплачено",
+            "Долг", "Мешков", "Шаблон заказа", "Примечание",
+        ])
+        for order in orders:
+            shipment = getattr(order, "shipment", None)
+            orders_ws.append([
+                order.id, _local(order.created_at), order.client.name, order.client.phone,
+                public_status_label(order.status),
+                _local(shipment.shipped_at) if shipment else None,
+                _department_name(department_names, order.department),
+                order.store.name if order.store else "—",
+                transport_label(order.transport_type),
+                order.truck_number or "—", order.currency, _money(order.total_amount),
+                _money(order.paid_total), _money(max(Decimal("0"), order.remaining_amount)),
+                sum(item.quantity for item in order.items.all()), order.repeated_from_id,
+                order.notes,
+            ])
+        _finish(
+            orders_ws,
+            (9, 19, 30, 18, 20, 19, 18, 22, 12, 16, 10, 16, 16, 16, 12, 16, 35),
+            (12, 13, 14), (2, 6),
+        )
+
+    if "items" in chosen:
+        items_ws = wb.create_sheet("Позиции")
+        _title(items_ws, "Позиции всех заказов", subtitle, 11)
+        _headers(items_ws, 3, [
+            "Заказ", "Дата", "Клиент", "Телефон", "Товар", "Класс CV",
+            "Мешков", "Цена / мешок", "Сумма", "Валюта", "Отдел",
+        ])
+        for order in orders:
+            for item in order.items.all():
+                items_ws.append([
+                    order.id, _local(order.created_at), order.client.name, order.client.phone,
+                    item.product_label, item.product_cv_class or "—", item.quantity,
+                    _money(item.unit_price), _money(item.quantity * (item.unit_price or 0)),
+                    order.currency, _department_name(department_names, order.department),
+                ])
+        _finish(items_ws, (10, 19, 30, 18, 40, 16, 12, 18, 18, 10, 22), (8, 9), (2,))
+
+    if "payments" in chosen:
+        pay_ws = wb.create_sheet("Платежи")
+        _title(pay_ws, "Все платежи", subtitle, 12)
+        _headers(pay_ws, 3, [
+            "№", "Дата", "Клиент", "Телефон", "Заказ", "Способ", "Статус",
+            "Сумма", "Валюта", "Сотрудник", "Примечание", "Отдел",
+        ])
+        for payment in payments:
+            author = payment.confirmed_by or payment.received_by or payment.recorded_by
+            pay_ws.append([
+                payment.id, _local(payment.confirmed_at or payment.paid_at),
+                payment.order.client.name, payment.order.client.phone, payment.order_id,
+                _method_label(payment.method),
+                payment_status_label(payment.status), _money(payment.amount),
+                payment.order.currency, author.username if author else "—", payment.note,
+                _department_name(department_names, payment.order.department),
+            ])
+        _finish(pay_ws, (9, 19, 30, 18, 10, 20, 18, 18, 10, 20, 38, 22), (8,), (2,))
+
+    if "debts" in chosen:
+        debt_ws = wb.create_sheet("Долги")
+        _title(debt_ws, "Текущие долги", subtitle, 12)
+        _headers(debt_ws, 3, [
+            "Заказ", "Отгружен", "Клиент", "Телефон", "Магазин", "Мешков",
+            "Сумма", "Оплачено", "Остаток", "Валюта", "Способ", "Отдел",
+        ])
+        for order in debt_orders:
+            shipment = getattr(order, "shipment", None)
+            debt_ws.append([
+                order.id, _local(shipment.shipped_at) if shipment else _local(order.created_at),
+                order.client.name, order.client.phone,
+                order.store.name if order.store else "—",
+                sum(item.quantity for item in order.items.all()), _money(order.total_amount),
+                _money(order.paid_total), _money(order.remaining_amount), order.currency,
+                order_payment_method_label(order.payment_method),
+                _department_name(department_names, order.department),
+            ])
+        _finish(debt_ws, (10, 19, 30, 18, 22, 12, 18, 18, 18, 10, 20, 18), (7, 8, 9), (2,))
 
     output = BytesIO()
     _neutralize_formula_cells(wb)

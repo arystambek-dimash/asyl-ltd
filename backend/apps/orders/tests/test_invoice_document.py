@@ -143,3 +143,76 @@ def test_invoice_pdf_requires_client_requisites(auth_client, accountant):
     )
     resp = auth_client(accountant).get(f"/api/orders/{order.id}/invoice-pdf/")
     assert resp.status_code == 400
+
+
+# ── Уведомление клиента о выставленном PDF-счёте ──────────────────────────
+# Наш документ провайдер не отправляет: клиент узнаёт о счёте только из
+# портала, поэтому уведомление — обязательная часть этого канала.
+
+
+def _notifications(order):
+    from apps.notifications.models import Notification
+
+    return Notification.objects.filter(client=order.client)
+
+
+def test_document_invoice_notifies_client_in_portal(auth_client, accountant):
+    order = _order()
+
+    resp = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/",
+        {"method": "invoice", "amount": "500.00", "channel": "document"},
+        format="json",
+    )
+
+    assert resp.status_code == 201
+    notification = _notifications(order).get()
+    assert str(order.id) in notification.text
+    assert "500.00" in notification.text
+    assert not notification.is_read
+
+
+def test_remote_invoice_does_not_notify_in_portal(auth_client, accountant):
+    """Счёт «клиенту онлайн» уходит провайдером на телефон — дубля не шлём."""
+    order = _order()
+
+    auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/",
+        {"method": "invoice", "amount": "500.00", "channel": "remote"},
+        format="json",
+    )
+
+    assert not _notifications(order).exists()
+
+
+def test_cash_payment_does_not_notify_in_portal(auth_client, accountant):
+    order = _order()
+
+    auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/",
+        {"method": "cash", "amount": "500.00"},
+        format="json",
+    )
+
+    assert not _notifications(order).exists()
+
+
+def test_mixed_payment_notifies_only_for_document_invoice(
+    auth_client, accountant,
+):
+    """В смешанной оплате уведомление привязано к своей части, а не к способу."""
+    order = _order()
+
+    resp = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/",
+        {"parts": [
+            {"method": "cash", "amount": "100.00"},
+            {"method": "invoice", "amount": "150.00", "channel": "document"},
+        ]},
+        format="json",
+    )
+
+    assert resp.status_code == 201
+    notification = _notifications(order).get()
+    assert "150.00" in notification.text, (
+        "уведомление должно называть сумму счёта, а не всей оплаты")

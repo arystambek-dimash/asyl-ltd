@@ -25,7 +25,10 @@ from apps.eventlog.services import log_event
 from .models import Client, Department, Store
 from .serializers import ClientSerializer, DepartmentSerializer, StoreSerializer
 from .services import detect_overdue, is_payment_window_open, client_history
-from .statements import build_all_clients_statement, build_client_statement
+from .statements import (
+    ALL_CLIENT_SECTIONS, CLIENT_SECTIONS, build_all_clients_statement,
+    build_client_statement,
+)
 
 def _money_param(raw, name):
     if raw in (None, ""):
@@ -63,6 +66,34 @@ def _statement_departments(params):
             "code": "bad_department",
         })
     return codes
+
+
+def _statement_sections(params, available):
+    """Разделы (листы) выписки из query-параметра ``sections``.
+
+    ``None`` — параметр не передан, выгружаются все листы: старые ссылки и
+    интеграции продолжают получать полную выписку. Пустой или неизвестный
+    выбор отбивается здесь, потому что книга без листов не открывается
+    в Excel, а молча подставленный полный набор скрыл бы ошибку клиента.
+    """
+    raw = params.get("sections")
+    if raw is None:
+        return None
+    keys = tuple(dict.fromkeys(
+        key.strip() for key in raw.split(",") if key.strip()
+    ))
+    if not keys:
+        raise ValidationError({
+            "detail": "Выберите хотя бы один раздел выписки",
+            "code": "sections_required",
+        })
+    unknown = [key for key in keys if key not in available]
+    if unknown:
+        raise ValidationError({
+            "detail": "Неизвестный раздел: " + ", ".join(unknown),
+            "code": "bad_section",
+        })
+    return keys
 
 
 class DepartmentViewSet(viewsets.ModelViewSet):
@@ -217,9 +248,11 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         date_to = parse_iso_date(request.query_params.get("date_to"))
         validate_date_range(date_from, date_to)
         departments = _statement_departments(request.query_params)
+        sections = _statement_sections(request.query_params, CLIENT_SECTIONS)
         client = self.get_object()
         content = build_client_statement(
             client, date_from, date_to, departments=departments,
+            sections=sections,
         )
         response = HttpResponse(
             content,
@@ -234,7 +267,8 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             payload={"client_id": client.pk,
                      "date_from": str(date_from) if date_from else None,
                      "date_to": str(date_to) if date_to else None,
-                     "departments": list(departments) if departments else None},
+                     "departments": list(departments) if departments else None,
+                     "sections": list(sections) if sections else None},
         )
         return response
 
@@ -244,8 +278,9 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         date_to = parse_iso_date(request.query_params.get("date_to"))
         validate_date_range(date_from, date_to)
         departments = _statement_departments(request.query_params)
+        sections = _statement_sections(request.query_params, ALL_CLIENT_SECTIONS)
         content = build_all_clients_statement(
-            date_from, date_to, departments=departments,
+            date_from, date_to, departments=departments, sections=sections,
         )
         response = HttpResponse(
             content,
@@ -261,6 +296,7 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 "date_from": str(date_from) if date_from else None,
                 "date_to": str(date_to) if date_to else None,
                 "departments": list(departments) if departments else None,
+                "sections": list(sections) if sections else None,
             },
         )
         return response

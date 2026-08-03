@@ -30,7 +30,10 @@ import { BarChart3, FileSpreadsheet, Pencil, Phone, Plus, Search, Tags, Trash2 }
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { StatementExportModal } from "@/components/statement-export-modal";
+import {
+  ALL_CLIENTS_STATEMENT_SECTIONS,
+  StatementExportModal,
+} from "@/components/statement-export-modal";
 import type { Client, ReportSummary } from "@/lib/types";
 
 const schema = z.object({
@@ -761,7 +764,7 @@ function ClientsPageInner() {
         title="Общая выписка по клиентам"
         description="Единый Excel-файл по всей клиентской базе, заказам, продажам, оплатам и задолженности."
         scopeLabel="Все клиенты и все финансовые движения"
-        sheetsLabel="7 листов: сводка, клиенты, операции, заказы, позиции, платежи и текущие долги."
+        sections={ALL_CLIENTS_STATEMENT_SECTIONS}
       />
     </AppShell>
   );

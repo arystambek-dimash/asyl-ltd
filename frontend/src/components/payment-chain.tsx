@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { formatCurrency, formatDateTime } from "@/lib/utils";
+import { cn, formatCurrency, formatDateTime } from "@/lib/utils";
 import {
   CASHIER_PAYMENT_METHODS,
   PAYMENT_METHOD_LABELS,
@@ -187,6 +187,10 @@ export function AddPaymentActions({
   const [stage, setStage] = useState<"requested" | "received" | null>(null);
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState("cash");
+  // Канал счёта: remote — онлайн-счёт провайдера на телефон, document — наш
+  // PDF, который клиент скачивает в портале, а подтверждает касса вручную.
+  const [channel, setChannel] = useState<"remote" | "document">("remote");
+  const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -194,10 +198,15 @@ export function AddPaymentActions({
   const remaining = Number(order.remaining_amount ?? Number(order.total_amount) - Number(order.paid_total));
   if (remaining <= 0) return null;
 
+  const isInvoice = method === "invoice";
+  const isRemoteInvoice = isInvoice && channel === "remote";
+
   function open(s: "requested" | "received") {
     setStage(s);
     setAmount(String(remaining));
     setMethod("cash");
+    setChannel("remote");
+    setPhone(order.client_phone ?? "");
     setError("");
   }
 
@@ -206,7 +215,15 @@ export function AddPaymentActions({
     setBusy(true);
     setError("");
     try {
-      await api.post(`/orders/${order.id}/payments/`, { amount, method, stage });
+      await api.post(`/orders/${order.id}/payments/`, {
+        amount,
+        method,
+        stage,
+        // Канал имеет смысл только для счёта: для наличных и QR бэкенд его
+        // игнорирует, и лишнее поле только запутало бы журнал.
+        ...(isInvoice ? { channel } : {}),
+        ...(isRemoteInvoice ? { phone_number: phone } : {}),
+      });
       setStage(null);
       onChanged();
     } catch (err) {
@@ -240,7 +257,7 @@ export function AddPaymentActions({
             ? "Клиенту выставлен счёт. После поступления кассир вручную подтвердит получение."
             : "Оплата добавится в очередь и будет учтена только после ручного подтверждения кассиром."
         }
-        className="max-w-sm"
+        className={isInvoice ? "max-w-md" : "max-w-sm"}
       >
         <form onSubmit={submit} className="flex flex-col gap-4">
           <div className="grid gap-2">
@@ -269,6 +286,58 @@ export function AddPaymentActions({
               ))}
             </Select>
           </div>
+          {isInvoice && (
+            <div className="grid gap-2">
+              <Label>Как выставить счёт</Label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  aria-pressed={channel === "remote"}
+                  onClick={() => setChannel("remote")}
+                  className={cn(
+                    "rounded-lg border px-3 py-2 text-left transition-colors",
+                    channel === "remote"
+                      ? "border-[var(--foreground)] bg-[var(--muted)]"
+                      : "border-[var(--border)] hover:border-[var(--foreground)]/40",
+                  )}
+                >
+                  <div className="text-sm font-medium">Счёт клиенту</div>
+                  <div className="text-[11px] text-[var(--muted-foreground)]">
+                    Придёт на телефон, подтвердится сам
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={channel === "document"}
+                  onClick={() => setChannel("document")}
+                  className={cn(
+                    "rounded-lg border px-3 py-2 text-left transition-colors",
+                    channel === "document"
+                      ? "border-[var(--foreground)] bg-[var(--muted)]"
+                      : "border-[var(--border)] hover:border-[var(--foreground)]/40",
+                  )}
+                >
+                  <div className="text-sm font-medium">Наш PDF-счёт</div>
+                  <div className="text-[11px] text-[var(--muted-foreground)]">
+                    Клиент скачает в портале, подтвердит касса
+                  </div>
+                </button>
+              </div>
+              {isRemoteInvoice ? (
+                <Input
+                  inputMode="tel"
+                  aria-label="Телефон для счёта на оплату"
+                  placeholder="Телефон клиента для счёта"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                />
+              ) : (
+                <p className="text-xs text-[var(--muted-foreground)]">
+                  Клиенту придёт уведомление в портале со ссылкой на счёт.
+                </p>
+              )}
+            </div>
+          )}
           {error && (
             <p role="alert" className="text-sm text-[var(--destructive)]">
               {error}

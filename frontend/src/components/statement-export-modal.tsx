@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Building2, CalendarRange, Check, Download, FileSpreadsheet } from "lucide-react";
+import { Building2, Check, Download, Layers, Minus } from "lucide-react";
 import { api, apiError } from "@/lib/api";
 import { downloadBlob } from "@/lib/download";
 import { monthStartLocalIsoDate, todayLocalIsoDate } from "@/lib/utils";
@@ -11,6 +11,30 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 
+/** Раздел выписки. Ключ совпадает с backend (`CLIENT_SECTIONS`). */
+export type StatementSection = {
+  key: string;
+  name: string;
+  hint: string;
+};
+
+/** Разделы выписки по одному клиенту. Порядок — как листы в книге. */
+export const CLIENT_STATEMENT_SECTIONS: StatementSection[] = [
+  { key: "summary", name: "Сводка", hint: "Реквизиты и блок сверки остатков" },
+  { key: "ledger", name: "Операции", hint: "Лента отгрузок и оплат с остатком" },
+  { key: "orders", name: "Заказы", hint: "Заказы периода по дате создания" },
+  { key: "items", name: "Позиции", hint: "Товары, мешки и цены построчно" },
+  { key: "payments", name: "Платежи", hint: "Поступления со статусом и способом" },
+  { key: "debts", name: "Долги", hint: "Непогашенные остатки на момент выгрузки" },
+];
+
+/** Разделы общей выписки: добавляется разрез по клиентам. */
+export const ALL_CLIENTS_STATEMENT_SECTIONS: StatementSection[] = [
+  CLIENT_STATEMENT_SECTIONS[0],
+  { key: "clients", name: "Клиенты", hint: "Итоги по каждому контрагенту" },
+  ...CLIENT_STATEMENT_SECTIONS.slice(1),
+];
+
 type Props = {
   open: boolean;
   onClose: () => void;
@@ -19,7 +43,7 @@ type Props = {
   title: string;
   description: string;
   scopeLabel: string;
-  sheetsLabel: string;
+  sections?: StatementSection[];
   initialFrom?: string;
   initialTo?: string;
 };
@@ -32,7 +56,7 @@ export function StatementExportModal({
   title,
   description,
   scopeLabel,
-  sheetsLabel,
+  sections = CLIENT_STATEMENT_SECTIONS,
   initialFrom = "",
   initialTo = "",
 }: Props) {
@@ -41,6 +65,9 @@ export function StatementExportModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [selectedDepartments, setSelectedDepartments] = useState<Set<string>>(new Set());
+  const [selectedSections, setSelectedSections] = useState<Set<string>>(
+    () => new Set(sections.map((section) => section.key)),
+  );
   const {
     data: departments,
     loading: departmentsLoading,
@@ -48,6 +75,7 @@ export function StatementExportModal({
     reload: reloadDepartments,
   } = useApi<Department[]>(open ? "/departments/?all=1" : null);
   const departmentKey = departments?.map((department) => department.code).join("|") ?? "";
+  const sectionKey = sections.map((section) => section.key).join("|");
 
   useEffect(() => {
     if (!open) return;
@@ -60,6 +88,14 @@ export function StatementExportModal({
     if (!open || !departments) return;
     setSelectedDepartments(new Set(departments.map((department) => department.code)));
   }, [open, departments, departmentKey]);
+
+  // Список разделов зависит от экрана (карточка клиента / общая выписка):
+  // при смене набора выбор сбрасывается, иначе в запрос уехал бы ключ,
+  // которого нет в этом эндпоинте, и бэкенд ответил бы 400.
+  useEffect(() => {
+    if (!open) return;
+    setSelectedSections(new Set(sections.map((section) => section.key)));
+  }, [open, sectionKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectedRows = useMemo(
     () => departments?.filter((department) => selectedDepartments.has(department.code)) ?? [],
@@ -76,6 +112,16 @@ export function StatementExportModal({
     setError("");
   }
 
+  function toggleSection(key: string) {
+    setSelectedSections((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+    setError("");
+  }
+
   function datedFilename() {
     const stem = filename.replace(/\.xlsx$/i, "");
     const period =
@@ -85,9 +131,15 @@ export function StatementExportModal({
     return `${stem}_${period}.xlsx`;
   }
 
+  const allSectionsChosen = selectedSections.size === sections.length;
+
   async function download() {
     if (!selectedDepartments.size) {
       setError("Выберите хотя бы один отдел для выписки.");
+      return;
+    }
+    if (!selectedSections.size) {
+      setError("Выберите хотя бы один раздел выписки.");
       return;
     }
     setBusy(true);
@@ -98,6 +150,16 @@ export function StatementExportModal({
           ...(dateFrom ? { date_from: dateFrom } : {}),
           ...(dateTo ? { date_to: dateTo } : {}),
           departments: Array.from(selectedDepartments).join(","),
+          // Полный набор не отправляем: пустой параметр — «вся выписка»,
+          // и ссылка остаётся такой же, как до появления выбора разделов.
+          ...(allSectionsChosen
+            ? {}
+            : {
+                sections: sections
+                  .filter((section) => selectedSections.has(section.key))
+                  .map((section) => section.key)
+                  .join(","),
+              }),
         },
         responseType: "blob",
       });
@@ -110,6 +172,31 @@ export function StatementExportModal({
     }
   }
 
+  const periodPresets: { label: string; apply: () => void }[] = [
+    {
+      label: "Всё время",
+      apply: () => {
+        setDateFrom("");
+        setDateTo("");
+      },
+    },
+    {
+      label: "Этот месяц",
+      apply: () => {
+        setDateFrom(monthStartLocalIsoDate());
+        setDateTo(todayLocalIsoDate());
+      },
+    },
+    {
+      label: "Сегодня",
+      apply: () => {
+        const value = todayLocalIsoDate();
+        setDateFrom(value);
+        setDateTo(value);
+      },
+    },
+  ];
+
   return (
     <Modal
       open={open}
@@ -118,62 +205,76 @@ export function StatementExportModal({
       title={title}
       description={description}
       className="max-w-2xl"
+      mobileFullscreen
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
             Отмена
           </Button>
-          <Button onClick={() => void download()} disabled={busy || departmentsLoading || !selectedDepartments.size}>
+          <Button
+            onClick={() => void download()}
+            disabled={busy || departmentsLoading || !selectedDepartments.size || !selectedSections.size}
+          >
             <Download className="size-4" /> {busy ? "Формирование…" : "Скачать .xlsx"}
           </Button>
         </>
       }
     >
-      <div className="space-y-4">
-        <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-4">
-          <div className="flex items-start gap-3">
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm">
-              <FileSpreadsheet className="size-5" />
-            </span>
-            <div>
-              <div className="text-sm font-bold text-slate-900">{scopeLabel}</div>
-              <div className="mt-1 text-xs leading-relaxed text-slate-500">
-                {sheetsLabel} Выбрано отделов: {selectedRows.length}.
-              </div>
-            </div>
+      <div className="space-y-5">
+        {/* Итог сверху: что именно уедет в файл, одной строкой. */}
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--muted)] px-4 py-3">
+          <div className="text-sm font-semibold text-[var(--foreground)]">{scopeLabel}</div>
+          <div className="mt-1 text-xs text-[var(--muted-foreground)]">
+            {selectedSections.size} из {sections.length} разделов · отделов: {selectedRows.length}
           </div>
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
-                <Building2 className="size-4 text-emerald-600" /> Отделы в выписке
-              </div>
-              <p className="mt-1 text-xs text-slate-500">Оставьте только те отделы, которые должны попасть в Excel.</p>
-            </div>
-            {!!departments?.length && (
-              <div className="flex gap-1">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setSelectedDepartments(new Set(departments.map((department) => department.code)))}
-                >
-                  Все
-                </Button>
-                <Button type="button" size="sm" variant="ghost" onClick={() => setSelectedDepartments(new Set())}>
-                  Снять
-                </Button>
-              </div>
-            )}
+        <Section
+          icon={<Layers className="size-3.5" />}
+          title="Разделы выписки"
+          note="Каждый раздел — отдельный лист книги."
+          action={
+            <SelectAll
+              allChosen={allSectionsChosen}
+              scope="разделы"
+              onAll={() => setSelectedSections(new Set(sections.map((section) => section.key)))}
+              onNone={() => setSelectedSections(new Set())}
+            />
+          }
+        >
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            {sections.map((section) => (
+              <CheckRow
+                key={section.key}
+                selected={selectedSections.has(section.key)}
+                label={section.name}
+                hint={section.hint}
+                onClick={() => toggleSection(section.key)}
+              />
+            ))}
           </div>
+        </Section>
 
+        <Section
+          icon={<Building2 className="size-3.5" />}
+          title="Отделы"
+          note="Заказы, оплаты и долги фильтруются по выбранным отделам."
+          action={
+            !!departments?.length && (
+              <SelectAll
+                allChosen={selectedDepartments.size === departments.length}
+                scope="отделы"
+                onAll={() => setSelectedDepartments(new Set(departments.map((d) => d.code)))}
+                onNone={() => setSelectedDepartments(new Set())}
+              />
+            )
+          }
+        >
           {departmentsLoading && !departments && (
-            <p className="rounded-xl bg-slate-50 px-3 py-3 text-sm text-slate-500">Загружаем список отделов…</p>
+            <p className="text-sm text-[var(--muted-foreground)]">Загружаем список отделов…</p>
           )}
           {departmentsError && (
-            <div className="flex items-center justify-between gap-3 rounded-xl border border-red-100 bg-red-50 px-3 py-2.5 text-sm text-red-800">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--destructive)]/25 bg-[var(--destructive)]/5 px-3 py-2.5 text-sm text-[var(--destructive)]">
               <span>{departmentsError}</span>
               <Button type="button" size="sm" variant="outline" onClick={() => void reloadDepartments()}>
                 Повторить
@@ -181,85 +282,45 @@ export function StatementExportModal({
             </div>
           )}
           {!!departments?.length && (
-            <div className="grid gap-2 sm:grid-cols-2">
-              {departments.map((department) => {
-                const selected = selectedDepartments.has(department.code);
-                return (
-                  <button
-                    key={department.code}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() => toggleDepartment(department.code)}
-                    className={`flex min-h-12 items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition ${
-                      selected
-                        ? "border-emerald-300 bg-emerald-50 text-emerald-950 shadow-sm"
-                        : "border-slate-200 bg-slate-50/60 text-slate-500 hover:border-slate-300"
-                    }`}
-                  >
-                    <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: department.color }} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-semibold">{department.name}</span>
-                      {!department.is_active && <span className="block text-[10px]">Архивный отдел</span>}
-                    </span>
-                    <span
-                      className={`flex size-5 shrink-0 items-center justify-center rounded-md border ${
-                        selected ? "border-emerald-500 bg-emerald-600 text-white" : "border-slate-300 bg-white"
-                      }`}
-                    >
-                      {selected && <Check className="size-3.5" />}
-                    </span>
-                  </button>
-                );
-              })}
+            <div className="grid gap-1.5 sm:grid-cols-2">
+              {departments.map((department) => (
+                <CheckRow
+                  key={department.code}
+                  selected={selectedDepartments.has(department.code)}
+                  label={department.name}
+                  hint={department.is_active ? undefined : "Архивный отдел"}
+                  dot={department.color}
+                  onClick={() => toggleDepartment(department.code)}
+                />
+              ))}
             </div>
           )}
           {!departmentsLoading && departments?.length === 0 && (
-            <p className="rounded-xl bg-amber-50 px-3 py-3 text-sm text-amber-900">
+            <p className="rounded-lg bg-[var(--warning)]/10 px-3 py-2.5 text-sm text-[var(--foreground)]">
               Нет отделов для формирования выписки.
             </p>
           )}
-        </div>
+        </Section>
 
-        <div className="grid grid-cols-3 gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => {
-              setDateFrom("");
-              setDateTo("");
-            }}
-          >
-            Всё время
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => {
-              setDateFrom(monthStartLocalIsoDate());
-              setDateTo(todayLocalIsoDate());
-            }}
-          >
-            Этот месяц
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => {
-              const value = todayLocalIsoDate();
-              setDateFrom(value);
-              setDateTo(value);
-            }}
-          >
-            Сегодня
-          </Button>
-        </div>
-
-        <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-          <div className="mb-3 flex items-center gap-2 text-sm font-bold text-slate-800">
-            <CalendarRange className="size-4 text-blue-600" /> Период выписки
+        <Section
+          icon={<Minus className="size-3.5 rotate-90" />}
+          title="Период"
+          note="Продажи — по дате отгрузки, оплаты — по дате подтверждения кассой."
+        >
+          <div className="mb-3 flex flex-wrap gap-1.5">
+            {periodPresets.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={preset.apply}
+                className="rounded-lg border border-[var(--border)] px-2.5 py-1.5 text-xs font-medium text-[var(--foreground)] transition hover:bg-[var(--muted)]"
+              >
+                {preset.label}
+              </button>
+            ))}
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <label className="grid gap-1.5 text-sm font-medium">
+            <label className="grid gap-1.5 text-xs font-medium text-[var(--muted-foreground)]">
               С даты
               <Input
                 type="date"
@@ -268,7 +329,7 @@ export function StatementExportModal({
                 onChange={(event) => setDateFrom(event.target.value)}
               />
             </label>
-            <label className="grid gap-1.5 text-sm font-medium">
+            <label className="grid gap-1.5 text-xs font-medium text-[var(--muted-foreground)]">
               По дату
               <Input
                 type="date"
@@ -278,18 +339,123 @@ export function StatementExportModal({
               />
             </label>
           </div>
-          <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
-            Заказы отбираются по дате создания, продажи — по дате отгрузки, оплаты — по дате подтверждения кассой. Лист
-            «Долги» показывает текущий остаток выбранных отделов на момент выгрузки.
+          <p className="mt-2.5 text-[11px] leading-relaxed text-[var(--muted-foreground)]">
+            Долг, накопленный до начала периода, попадает в блок сверки как остаток на начало. Лист «Долги» показывает
+            текущий остаток на момент выгрузки.
           </p>
-        </div>
+        </Section>
 
         {error && (
-          <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-[var(--destructive)]">
+          <p className="rounded-lg border border-[var(--destructive)]/25 bg-[var(--destructive)]/5 px-3 py-2.5 text-sm font-medium text-[var(--destructive)]">
             {error}
           </p>
         )}
       </div>
     </Modal>
+  );
+}
+
+function Section({
+  icon,
+  title,
+  note,
+  action,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  note: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section>
+      <div className="mb-2.5 flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h3 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+            {icon}
+            {title}
+          </h3>
+          <p className="mt-1 text-xs text-[var(--muted-foreground)]">{note}</p>
+        </div>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function SelectAll({
+  allChosen,
+  scope,
+  onAll,
+  onNone,
+}: {
+  allChosen: boolean;
+  /** Что переключаем — попадает в доступное имя, иначе на экране две
+   *  одинаковые кнопки «Снять все» и скринридер их не различает. */
+  scope: string;
+  onAll: () => void;
+  onNone: () => void;
+}) {
+  const label = allChosen ? "Снять все" : "Выбрать все";
+  return (
+    <button
+      type="button"
+      onClick={allChosen ? onNone : onAll}
+      aria-label={`${label}: ${scope}`}
+      className="text-xs font-medium text-[var(--muted-foreground)] underline-offset-4 transition hover:text-[var(--foreground)] hover:underline"
+    >
+      {label}
+    </button>
+  );
+}
+
+function CheckRow({
+  selected,
+  label,
+  hint,
+  dot,
+  onClick,
+}: {
+  selected: boolean;
+  label: string;
+  hint?: string;
+  dot?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onClick}
+      className={`flex min-h-11 items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition ${
+        selected
+          ? "border-[var(--foreground)]/20 bg-[var(--muted)]"
+          : "border-[var(--border)] bg-transparent hover:border-[var(--foreground)]/20"
+      }`}
+    >
+      <span
+        aria-hidden
+        className={`flex size-4 shrink-0 items-center justify-center rounded border transition ${
+          selected
+            ? "border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)]"
+            : "border-[var(--input)]"
+        }`}
+      >
+        {selected && <Check className="size-3" strokeWidth={3} />}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5">
+          {dot && <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: dot }} />}
+          <span
+            className={`truncate text-sm ${selected ? "font-semibold text-[var(--foreground)]" : "text-[var(--muted-foreground)]"}`}
+          >
+            {label}
+          </span>
+        </span>
+        {hint && <span className="mt-0.5 block truncate text-[11px] text-[var(--muted-foreground)]">{hint}</span>}
+      </span>
+    </button>
   );
 }

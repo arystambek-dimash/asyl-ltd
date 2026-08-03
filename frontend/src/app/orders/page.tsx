@@ -24,7 +24,10 @@ import { OrderPriceCorrectionModal } from "@/components/order-price-correction-m
 import { OrderStatusSelect } from "@/components/order-status-select";
 import { ManualOrderStatusModal, type ManualOrderTarget } from "@/components/manual-order-status-modal";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
-import { StatementExportModal } from "@/components/statement-export-modal";
+import {
+  ALL_CLIENTS_STATEMENT_SECTIONS,
+  StatementExportModal,
+} from "@/components/statement-export-modal";
 import { ArchiveDock } from "@/components/orders/archive-dock";
 import {
   ORDER_PUBLIC_STATUSES,
@@ -1331,7 +1334,7 @@ function OrdersPageInner() {
         title="Общая выписка по заказам"
         description="Подробный Excel по всем клиентам, заказам, позициям, продажам, платежам и задолженности."
         scopeLabel="Все клиенты и все заказы"
-        sheetsLabel="7 листов: сводка, клиенты, операции, заказы, позиции, платежи и текущие долги."
+        sections={ALL_CLIENTS_STATEMENT_SECTIONS}
         initialFrom={dateFrom}
         initialTo={dateTo}
       />

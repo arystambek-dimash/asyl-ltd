@@ -800,7 +800,6 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
         title="Выписка клиента"
         description="Полная финансовая история выбранного клиента по отдельным листам Excel."
         scopeLabel={`${client.name}: все заказы и движения`}
-        sheetsLabel="6 листов: сводка, операции, заказы, позиции, платежи и текущие долги."
       />
     </AppShell>
   );
