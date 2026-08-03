@@ -1,11 +1,24 @@
 "use client";
 
-import { Fragment } from "react";
+import { Fragment, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Camera, Check, Clock3, PackagePlus, Scale, TrainFront, Truck, Warehouse } from "lucide-react";
+import {
+  ArrowRight,
+  Camera,
+  Check,
+  Clock3,
+  PackagePlus,
+  Scale,
+  TrainFront,
+  Trash2,
+  Truck,
+  Warehouse,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
+import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { formatKg, GRAIN_STATUS_TONE } from "@/lib/grain";
 import type { GrainWagon, Me } from "@/lib/types";
@@ -146,7 +159,38 @@ const GROUP_META = {
  * зерно, у вывоза — увезённый груз. Раньше каждая строка была карточкой со
  * степпером, и десяток рейсов не помещался на экран.
  */
-export function WagonTable({ wagons, me, emptyText }: { wagons: GrainWagon[]; me: Me | null; emptyText: string }) {
+export function WagonTable({
+  wagons,
+  me,
+  emptyText,
+  onDeleted,
+}: {
+  wagons: GrainWagon[];
+  me: Me | null;
+  emptyText: string;
+  /** Задан — в завершённых рейсах появляется удаление (нужно grain.delete). */
+  onDeleted?: () => void;
+}) {
+  const [pendingDelete, setPendingDelete] = useState<GrainWagon | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const canDelete = Boolean(onDeleted) && can(me, "grain.delete");
+
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api.delete(`/grain/wagons/${pendingDelete.id}/delete/`);
+      setPendingDelete(null);
+      onDeleted?.();
+    } catch (cause) {
+      setError(apiError(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!wagons.length) {
     return <FlowEmptyState text={emptyText} />;
   }
@@ -250,12 +294,29 @@ export function WagonTable({ wagons, me, emptyText }: { wagons: GrainWagon[]; me
                       <span className="text-[12px] text-[var(--muted-foreground)]">{since || "—"}</span>
                     </TD>
                     <TD className="text-right">
-                      <Link
-                        href={`/grain/wagons/${wagon.id}`}
-                        className={buttonVariants({ size: "sm", variant: cta.variant })}
-                      >
-                        {cta.label} <ArrowRight className="size-4" />
-                      </Link>
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Link
+                          href={`/grain/wagons/${wagon.id}`}
+                          className={buttonVariants({ size: "sm", variant: cta.variant })}
+                        >
+                          {cta.label} <ArrowRight className="size-4" />
+                        </Link>
+                        {/* Удаление доступно только у завершённого рейса:
+                            машину, стоящую на территории, стирать нельзя. */}
+                        {canDelete && finished && (
+                          <button
+                            type="button"
+                            aria-label={`Удалить рейс ${wagon.number || `#${wagon.id}`}`}
+                            onClick={() => {
+                              setError("");
+                              setPendingDelete(wagon);
+                            }}
+                            className="flex size-8 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/10 hover:text-[var(--destructive)]"
+                          >
+                            <Trash2 className="size-4" />
+                          </button>
+                        )}
+                      </div>
                     </TD>
                   </TR>
                 );
@@ -264,6 +325,25 @@ export function WagonTable({ wagons, me, emptyText }: { wagons: GrainWagon[]; me
           ))}
         </TBody>
       </Table>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onClose={() => setPendingDelete(null)}
+        title={`Удалить рейс ${pendingDelete?.number || `#${pendingDelete?.id ?? ""}`}?`}
+        description={
+          pendingDelete?.direction === "passage"
+            ? "Запись о вывозе будет удалена без возможности восстановления. Остатки склада не изменятся."
+            : `Запись будет удалена без возможности восстановления.${
+                pendingDelete?.net_weight_kg != null
+                  ? ` Принятые ${formatKg(pendingDelete.net_weight_kg)} вернутся из силоса, чтобы остаток сошёлся.`
+                  : ""
+              }`
+        }
+        confirmLabel="Удалить рейс"
+        busy={busy}
+        error={error}
+        onConfirm={() => void confirmDelete()}
+      />
     </div>
   );
 }

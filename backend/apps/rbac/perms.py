@@ -22,7 +22,7 @@ _SECTIONS = {
     # диспетчер, разгрузка, склад, администрирование силосов.
     "grain": ("Приход зерна", [
         "view", "supply", "arrive", "weigh", "lab", "dispatch", "unload",
-        "inventory", "exit", "admin",
+        "inventory", "exit", "delete", "admin",
     ]),
 }
 

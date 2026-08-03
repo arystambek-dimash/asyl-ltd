@@ -990,3 +990,73 @@ def record_passage_exit_weight(wagon: Wagon, weight_kg: int, user, **kwargs) -> 
     )
     _set_status(wagon, st.EXIT_ALLOWED, user, "Выезд разрешён")
     return register_exit(wagon, user, note="Выезд после загрузки")
+
+
+# ── Удаление завершённого рейса ────────────────────────────────────────────
+
+
+@transaction.atomic
+def delete_finished_wagon(wagon: Wagon, user, reason: str = "") -> dict:
+    """Удалить завершённый рейс, вернув силос к честному остатку.
+
+    Удалять можно только рейс, который уже никуда не едет: незакрытый вагон
+    стоит сначала довести или отменить, иначе пропадёт запись о технике,
+    физически находящейся на территории.
+
+    Оприходованное зерно не исчезает молча: на каждое движение прихода
+    пишется компенсирующий расход, поэтому остаток силоса сходится с
+    журналом и после удаления. Сам леджер неизменяем — старые записи
+    остаются, у них лишь отвязывается удаляемый вагон (FK стоит PROTECT).
+
+    Проход силоса не касается, откатывать там нечего.
+    """
+    if wagon.status not in st.TERMINAL_STATUSES and wagon.status != st.EXITED:
+        raise _error(
+            "Удалить можно только завершённый рейс. "
+            "Сначала завершите или отмените его.",
+            "wagon_not_finished",
+        )
+
+    label = wagon.number or f"#{wagon.pk}"
+    reverted_kg = 0
+    for movement in wagon.movements.filter(movement_type="income"):
+        adjust_silo(
+            movement.silo,
+            -movement.delta_kg,
+            "expense",
+            note=(
+                f"Откат прихода рейса {label}"
+                + (f": {reason}" if reason else "")
+            ),
+            user=user,
+        )
+        reverted_kg += movement.delta_kg
+
+    # Леджер переживает удалённый рейс: обнуляем ссылку, а не запись.
+    wagon.movements.update(wagon=None)
+    SiloReservation.objects.filter(wagon=wagon).delete()
+    WeighingRecord.objects.filter(wagon=wagon).delete()
+    LabCheck.objects.filter(wagon=wagon).delete()
+    SiloAllocation.objects.filter(wagon=wagon).delete()
+
+    log_event(
+        "grain_wagon_deleted",
+        f"Рейс {label} удалён"
+        + (f", возвращено из силоса {reverted_kg} кг" if reverted_kg else ""),
+        user=user,
+        payload={
+            "wagon_id": wagon.pk,
+            "number": wagon.number,
+            "direction": wagon.direction,
+            "net_weight_kg": wagon.net_weight_kg,
+            "reverted_kg": reverted_kg,
+            "reason": reason,
+        },
+    )
+    supply = wagon.supply
+    wagon.delete()
+    # Поставка без вагонов больше ничего не ждёт.
+    if supply and not supply.wagons.exists():
+        supply.status = "closed"
+        supply.save(update_fields=["status"])
+    return {"reverted_kg": reverted_kg}

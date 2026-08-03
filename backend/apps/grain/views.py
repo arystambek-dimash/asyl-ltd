@@ -111,6 +111,7 @@ class WagonViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
         "arrive": "grain.arrive",
         "camera_arrive": "grain.arrive",
         "passage": "grain.arrive",
+        "delete_wagon": "grain.delete",
         "approve": "grain.dispatch",
         "gross": "grain.weigh",
         "tare": "grain.weigh",
@@ -206,6 +207,16 @@ class WagonViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
             manual_reason=request.data.get("manual_reason") or "",
         )
         return self._done(wagon)
+
+    @action(detail=True, methods=["delete"], url_path="delete")
+    def delete_wagon(self, request, pk=None):
+        """Удалить завершённый рейс, откатив приход из силоса."""
+        result = services.delete_finished_wagon(
+            self.get_object(),
+            request.user,
+            reason=request.query_params.get("reason") or "",
+        )
+        return Response(result)
 
     @action(detail=False, methods=["post"], url_path="passage")
     def passage(self, request):

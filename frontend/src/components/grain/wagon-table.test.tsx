@@ -1,7 +1,15 @@
-import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WagonTable } from "./wagon-table";
 import type { GrainWagon, Me } from "@/lib/types";
+
+const deleteMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/api", () => ({
+  api: { delete: deleteMock },
+  apiError: () => "Ошибка удаления",
+}));
 
 const me = {
   id: 1,
@@ -9,6 +17,22 @@ const me = {
   permissions: ["grain.weigh"],
   is_superuser: false,
 } as unknown as Me;
+
+const admin = {
+  id: 2,
+  username: "boss",
+  permissions: ["grain.weigh", "grain.delete"],
+  is_superuser: false,
+} as unknown as Me;
+
+const finishedIntake = {
+  id: 9,
+  number: "Поезд-9",
+  supplier: "ТОО Колос",
+  status: "completed",
+  status_label: "Завершён",
+  net_weight_kg: 50_000,
+} as const;
 
 function wagon(overrides: Partial<GrainWagon>): GrainWagon {
   return {
@@ -113,5 +137,75 @@ describe("WagonTable", () => {
     renderTable([]);
 
     expect(screen.getByText("Пусто")).toBeInTheDocument();
+  });
+});
+
+describe("WagonTable — удаление завершённого рейса", () => {
+  beforeEach(() => {
+    deleteMock.mockReset();
+    deleteMock.mockResolvedValue({ data: { reverted_kg: 50_000 } });
+  });
+
+  function renderDeletable(wagons: GrainWagon[], user: Me = admin) {
+    const onDeleted = vi.fn();
+    render(<WagonTable wagons={wagons} me={user} emptyText="Пусто" onDeleted={onDeleted} />);
+    return onDeleted;
+  }
+
+  it("hides delete without the grain.delete permission", () => {
+    renderDeletable([wagon(finishedIntake)], me);
+
+    expect(screen.queryByRole("button", { name: /Удалить рейс/ })).not.toBeInTheDocument();
+  });
+
+  it("hides delete while the trip is still on site", () => {
+    renderDeletable([wagon({ id: 1, number: "Поезд-1", status: "at_silo", status_label: "У силоса" })]);
+
+    expect(screen.queryByRole("button", { name: /Удалить рейс/ })).not.toBeInTheDocument();
+  });
+
+  it("warns that intake grain returns to the silo, then deletes", async () => {
+    const user = userEvent.setup();
+    const onDeleted = renderDeletable([wagon(finishedIntake)]);
+
+    await user.click(screen.getByRole("button", { name: "Удалить рейс Поезд-9" }));
+    // Оператор должен видеть последствие для остатка до подтверждения.
+    expect(screen.getByText(/вернутся из силоса/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Удалить рейс" }));
+
+    expect(deleteMock).toHaveBeenCalledWith("/grain/wagons/9/delete/");
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledOnce());
+  });
+
+  it("tells the operator that a passage leaves stock untouched", async () => {
+    const user = userEvent.setup();
+    renderDeletable([
+      wagon({
+        id: 5,
+        number: "777 AAA",
+        direction: "passage",
+        cargo_name: "Отруби",
+        status: "completed",
+        status_label: "Завершён",
+        net_weight_kg: 18_000,
+      }),
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "Удалить рейс 777 AAA" }));
+
+    expect(screen.getByText(/Остатки склада не изменятся/)).toBeInTheDocument();
+  });
+
+  it("keeps the row and shows the error when deletion fails", async () => {
+    deleteMock.mockRejectedValue(new Error("boom"));
+    const user = userEvent.setup();
+    const onDeleted = renderDeletable([wagon(finishedIntake)]);
+
+    await user.click(screen.getByRole("button", { name: "Удалить рейс Поезд-9" }));
+    await user.click(screen.getByRole("button", { name: "Удалить рейс" }));
+
+    expect(await screen.findByText("Ошибка удаления")).toBeInTheDocument();
+    expect(onDeleted).not.toHaveBeenCalled();
   });
 });
