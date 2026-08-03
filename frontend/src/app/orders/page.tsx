@@ -24,10 +24,7 @@ import { OrderPriceCorrectionModal } from "@/components/order-price-correction-m
 import { OrderStatusSelect } from "@/components/order-status-select";
 import { ManualOrderStatusModal, type ManualOrderTarget } from "@/components/manual-order-status-modal";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
-import {
-  ALL_CLIENTS_STATEMENT_SECTIONS,
-  StatementExportModal,
-} from "@/components/statement-export-modal";
+import { ALL_CLIENTS_STATEMENT_SECTIONS, StatementExportModal } from "@/components/statement-export-modal";
 import { ArchiveDock } from "@/components/orders/archive-dock";
 import {
   ORDER_PUBLIC_STATUSES,

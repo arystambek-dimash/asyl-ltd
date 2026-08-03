@@ -30,10 +30,7 @@ import { BarChart3, FileSpreadsheet, Pencil, Phone, Plus, Search, Tags, Trash2 }
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import {
-  ALL_CLIENTS_STATEMENT_SECTIONS,
-  StatementExportModal,
-} from "@/components/statement-export-modal";
+import { ALL_CLIENTS_STATEMENT_SECTIONS, StatementExportModal } from "@/components/statement-export-modal";
 import type { Client, ReportSummary } from "@/lib/types";
 
 const schema = z.object({

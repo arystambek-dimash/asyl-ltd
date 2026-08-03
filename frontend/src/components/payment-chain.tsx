@@ -302,9 +302,7 @@ export function AddPaymentActions({
                   )}
                 >
                   <div className="text-sm font-medium">Счёт клиенту</div>
-                  <div className="text-[11px] text-[var(--muted-foreground)]">
-                    Придёт на телефон, подтвердится сам
-                  </div>
+                  <div className="text-[11px] text-[var(--muted-foreground)]">Придёт на телефон, подтвердится сам</div>
                 </button>
                 <button
                   type="button"

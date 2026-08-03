@@ -1,10 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  ALL_CLIENTS_STATEMENT_SECTIONS,
-  StatementExportModal,
-} from "@/components/statement-export-modal";
+import { ALL_CLIENTS_STATEMENT_SECTIONS, StatementExportModal } from "@/components/statement-export-modal";
 import { monthStartLocalIsoDate, todayLocalIsoDate } from "@/lib/utils";
 
 const getMock = vi.hoisted(() => vi.fn());
@@ -136,9 +133,7 @@ describe("StatementExportModal", () => {
     await user.click(screen.getByRole("button", { name: /Платежи/ }));
     await user.click(screen.getByRole("button", { name: "Скачать .xlsx" }));
 
-    expect(getMock.mock.calls[0][1].params.sections).toBe(
-      "summary,clients,ledger,orders,debts",
-    );
+    expect(getMock.mock.calls[0][1].params.sections).toBe("summary,clients,ledger,orders,debts");
   });
 
   it("blocks the download when no section is selected", async () => {
