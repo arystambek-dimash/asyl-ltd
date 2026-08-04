@@ -17,6 +17,7 @@ import {
   Radio,
   RefreshCw,
   Settings2,
+  ScanLine,
   ShieldCheck,
   Square,
   UserRound,
@@ -31,6 +32,7 @@ import {
 import { AppShell } from "@/components/layout/app-shell";
 import { playableCameras, type CameraFeed } from "@/components/camera-wall";
 import { CameraStream } from "@/components/camera-stream";
+import { DetectionOverlay } from "@/components/detection-overlay";
 import { RequirePerm } from "@/components/require-perm";
 import { ShipmentLauncher } from "@/components/shipping/shipment-launcher";
 import { Button } from "@/components/ui/button";
@@ -687,6 +689,8 @@ function AlwaysOnCard({
   const [deleteArchiveError, setDeleteArchiveError] = useState("");
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [streamOnline, setStreamOnline] = useState(false);
+  // Рамки модели можно скрыть: иногда оператору нужно посмотреть на сам кадр.
+  const [showDetections, setShowDetections] = useState(true);
   const [liveProcessor, setLiveProcessor] = useState(processor);
   const [liveDaily, setLiveDaily] = useState<AlwaysOnDailyCameraAnalytics | undefined>(daily);
   const [liveDetail, setLiveDetail] = useState(detail || "");
@@ -950,6 +954,9 @@ function AlwaysOnCard({
                   className="absolute inset-0 size-full object-contain"
                 />
               ) : null}
+              {/* Всегда-включённый поток идёт без вжатых рамок, поэтому
+                  показываем работу модели оверлеем поверх видео. */}
+              {streamOnline && showDetections && <DetectionOverlay detections={current.detections} />}
               {!streamOnline && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950 text-white/45">
                   <VideoOff className="size-8" />
@@ -962,6 +969,25 @@ function AlwaysOnCard({
                 />
                 {streamOnline ? "ПРЯМОЙ ЭФИР" : "ПОДКЛЮЧЕНИЕ"}
               </div>
+              {streamOnline && (
+                <button
+                  type="button"
+                  onClick={() => setShowDetections((current) => !current)}
+                  aria-pressed={showDetections}
+                  className={cn(
+                    "absolute right-2.5 top-2.5 flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold backdrop-blur-md transition sm:right-4 sm:top-4 sm:px-3 sm:py-1.5 sm:text-xs",
+                    showDetections
+                      ? "border-emerald-400/40 bg-emerald-500/20 text-emerald-100"
+                      : "border-white/15 bg-black/45 text-white/60 hover:text-white",
+                  )}
+                >
+                  <ScanLine className="size-3.5" />
+                  {showDetections ? "Рамки модели" : "Рамки скрыты"}
+                  {showDetections && current.detections?.length ? (
+                    <span className="tabular-nums">· {current.detections.length}</span>
+                  ) : null}
+                </button>
+              )}
             </div>
 
             <aside className="flex flex-col justify-between border-t border-white/10 bg-slate-900 p-4 text-white sm:p-5 lg:border-l lg:border-t-0">

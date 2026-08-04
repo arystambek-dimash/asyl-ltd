@@ -266,6 +266,10 @@ class CameraProcessor:
         self.inference_times: deque[float] = deque(maxlen=240)
         self.frame_latencies: deque[float] = deque(maxlen=240)
         self.latest_detections: list[Detection] = []
+        # Кадр, к которому относятся latest_detections, и id засчитанных на
+        # нём рамок. Нужны только для оверлея в браузере.
+        self.latest_frame_shape: tuple[int, int] | None = None
+        self.latest_counted: frozenset[int] = frozenset()
         self._last_inference_submit = 0.0
         self._source_generation = 0
         self._last_frame_generation = -1
@@ -383,7 +387,11 @@ class CameraProcessor:
                 return
             self._last_inference_generation = source_generation
             self.latest_detections = detections
+            # Размер кадра нужен, чтобы отдать координаты в долях: браузер
+            # рисует рамки поверх видео произвольного размера.
+            self.latest_frame_shape = frame.shape[:2]
             if not self.running:
+                self.latest_counted = frozenset()
                 return
             counted = self.tracker.update(
                 detections,
@@ -391,10 +399,42 @@ class CameraProcessor:
                 self.options.direction,
                 frame.shape,
             )
+            # Какие именно рамки этого кадра попали в счётчик — по ним оверлей
+            # отличает засчитанный мешок от просто замеченного.
+            self.latest_counted = frozenset(id(detection) for detection in counted)
             for detection in counted:
                 self.total += 1
                 self.per_color[detection.label] += 1
                 self.confidence_sums[detection.label] += detection.confidence
+
+    def _detection_overlay(self) -> list[dict]:
+        """Рамки последнего кадра в долях кадра — для отрисовки в браузере.
+
+        Координаты нормализуются (0..1), поэтому оверлею не нужно знать
+        разрешение камеры: оно меняется при переключении sub/main, а видео в
+        интерфейсе масштабируется под размер карточки.
+
+        Вызывается под уже захваченным ``self._lock`` из :meth:`status`.
+        """
+        shape = self.latest_frame_shape
+        if not shape:
+            return []
+        height, width = shape
+        if not height or not width:
+            return []
+        counted = self.latest_counted
+        return [
+            {
+                "x": round(item.x1 / width, 4),
+                "y": round(item.y1 / height, 4),
+                "w": round((item.x2 - item.x1) / width, 4),
+                "h": round((item.y2 - item.y1) / height, 4),
+                "label": item.label,
+                "confidence": round(item.confidence, 3),
+                "counted": id(item) in counted,
+            }
+            for item in self.latest_detections
+        ]
 
     def _annotate(self, frame: Any) -> Any:
         try:
@@ -505,6 +545,7 @@ class CameraProcessor:
                 "line": self.options.line or self.settings.default_line,
                 "direction": self.options.direction,
                 "total": self.total,
+                "detections": self._detection_overlay(),
                 "per_color": dict(self.per_color),
                 "confidence_sums": {key: round(value, 3) for key, value in self.confidence_sums.items()},
                 "last_frame_at": self.last_frame_at,

@@ -486,12 +486,25 @@ export interface MonoblockDevice {
   created_at: string;
   updated_at: string;
 }
+/** Рамка мешка на последнем кадре. Координаты — доли кадра (0..1). */
+export interface AlwaysOnDetection {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  label: string;
+  confidence: number;
+  /** Мешок пересёк линию и попал в счётчик. */
+  counted: boolean;
+}
+
 export interface AlwaysOnProcessorStatus {
   cam: string;
   running: boolean;
   mode: "always_on" | "session" | "idle";
   recording: boolean;
   total: number;
+  detections?: AlwaysOnDetection[];
   per_color?: Record<string, number>;
   last_frame_at?: string | null;
   error?: string | null;

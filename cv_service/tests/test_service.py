@@ -4,7 +4,7 @@ import hashlib
 import subprocess
 import threading
 import time
-from collections import deque
+from collections import defaultdict, deque
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -562,3 +562,92 @@ def test_settings_reject_plaintext_key_and_parsers_are_strict(monkeypatch):
     validate_classes(["Red_50", "White_25"])
     with pytest.raises(RuntimeError, match="color/weight"):
         validate_classes(["bag"])
+
+
+# ── Рамки детекций для оверлея в браузере ─────────────────────────────────
+# Всегда-включённый режим не публикует аннотированное видео, поэтому рамки
+# отдаются координатами, а рисует их интерфейс поверх обычного потока.
+
+
+def _overlay_processor(*, running=True):
+    processor = CameraProcessor.__new__(CameraProcessor)
+    processor._lock = threading.RLock()
+    processor._source_generation = 1
+    processor._last_inference_generation = -1
+    processor.inferences = 0
+    processor.inference_times = deque(maxlen=10)
+    processor.frame_latencies = deque(maxlen=10)
+    processor.latest_detections = []
+    processor.latest_frame_shape = None
+    processor.latest_counted = frozenset()
+    processor.dropped_frames = 0
+    processor.running = running
+    processor.tracker = LineTracker()
+    processor.options = ProcessorOptions()
+    processor.settings = make_settings()
+    processor.total = 0
+    processor.per_color = defaultdict(int)
+    processor.confidence_sums = defaultdict(float)
+    return processor
+
+
+def test_detection_overlay_uses_fractions_of_the_frame():
+    """Координаты в долях: разрешение камеры меняется, а вёрстка — нет."""
+    processor = _overlay_processor()
+    frame = SimpleNamespace(shape=(200, 400, 3))
+    detection = Detection(40, 30, 120, 80, 0.912, "Red_50")
+
+    processor.apply_inference(frame, time.monotonic(), [detection], 1.0, 1)
+    overlay = processor._detection_overlay()
+
+    assert overlay == [{
+        "x": 0.1, "y": 0.15, "w": 0.2, "h": 0.25,
+        "label": "Red_50", "confidence": 0.912, "counted": False,
+    }]
+
+
+def test_detection_overlay_marks_the_bag_that_was_counted():
+    """Засчитанный мешок помечен — по нему видно работу счётчика."""
+    processor = _overlay_processor()
+    frame = SimpleNamespace(shape=(100, 100, 3))
+    processor.options = ProcessorOptions(line="0,0.5,1,0.5", direction="any")
+
+    processor.apply_inference(
+        frame, time.monotonic(), [Detection(40, 30, 60, 45, 0.9, "Red_50")], 1.0, 1)
+    assert processor._detection_overlay()[0]["counted"] is False
+
+    crossed = Detection(40, 55, 60, 70, 0.9, "Red_50")
+    processor.apply_inference(frame, time.monotonic(), [crossed], 1.0, 1)
+
+    assert processor.total == 1
+    assert processor._detection_overlay()[0]["counted"] is True
+
+
+def test_detection_overlay_is_empty_before_the_first_frame():
+    assert _overlay_processor()._detection_overlay() == []
+
+
+def test_paused_processor_still_reports_boxes_but_counts_nothing():
+    """Модель видно и на паузе: рамки есть, счёт не идёт."""
+    processor = _overlay_processor(running=False)
+    frame = SimpleNamespace(shape=(100, 100, 3))
+
+    processor.apply_inference(
+        frame, time.monotonic(), [Detection(10, 10, 30, 30, 0.8, "Red_50")], 1.0, 1)
+    overlay = processor._detection_overlay()
+
+    assert len(overlay) == 1
+    assert overlay[0]["counted"] is False
+    assert processor.total == 0
+
+
+def test_stale_frame_leaves_the_overlay_untouched():
+    """Кадр от прошлого источника не должен подменить рамки нового."""
+    processor = _overlay_processor()
+    processor._source_generation = 2
+    frame = SimpleNamespace(shape=(100, 100, 3))
+
+    processor.apply_inference(
+        frame, time.monotonic(), [Detection(10, 10, 30, 30, 0.8, "Red_50")], 1.0, 1)
+
+    assert processor._detection_overlay() == []
