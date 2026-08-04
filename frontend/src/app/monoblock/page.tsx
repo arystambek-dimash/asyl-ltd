@@ -988,6 +988,15 @@ function AlwaysOnCard({
                   ) : null}
                 </button>
               )}
+              {/* Старая версия ПК цеха не присылает координаты рамок. Молчать
+                  нельзя: оператор видит включённую кнопку и пустое видео и
+                  считает, что сломалась модель, хотя счёт при этом идёт. */}
+              {streamOnline && showDetections && current.running && current.detections === undefined && (
+                <div className="absolute bottom-2.5 left-2.5 right-2.5 rounded-lg border border-amber-400/30 bg-black/70 px-3 py-2 text-[11px] text-amber-100 backdrop-blur-md sm:bottom-4 sm:left-4 sm:right-auto sm:max-w-md">
+                  Рамки недоступны: на ПК цеха стоит версия AI-сервиса без их передачи. Счёт мешков при этом работает —
+                  обновите сервис, чтобы увидеть распознавание.
+                </div>
+              )}
             </div>
 
             <aside className="flex flex-col justify-between border-t border-white/10 bg-slate-900 p-4 text-white sm:p-5 lg:border-l lg:border-t-0">
