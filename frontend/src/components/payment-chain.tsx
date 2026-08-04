@@ -200,6 +200,8 @@ export function AddPaymentActions({
 
   const isInvoice = method === "invoice";
   const isRemoteInvoice = isInvoice && channel === "remote";
+  // У кассы оплата закрывается сразу: подтверждать самой себе нечего.
+  const confirmsOwnPayments = can(me, "payments.confirm");
 
   function open(s: "requested" | "received") {
     setStage(s);
@@ -252,10 +254,16 @@ export function AddPaymentActions({
         onClose={() => setStage(null)}
         eyebrow={`Заказ #${order.id} · ${order.client_name ?? ""}`}
         title={stage === "requested" ? "Запросить оплату" : "Принять оплату"}
+        // Текст описывает то, что произойдёт именно у этого пользователя:
+        // касса подтверждает оплату сразу, остальные отправляют её в очередь.
         description={
           stage === "requested"
             ? "Клиенту выставлен счёт. После поступления кассир вручную подтвердит получение."
-            : "Оплата добавится в очередь и будет учтена только после ручного подтверждения кассиром."
+            : isInvoice
+              ? "Счёт будет учтён как оплата, когда деньги поступят и кассир их подтвердит."
+              : confirmsOwnPayments
+                ? "Деньги получены — оплата сразу уменьшит долг заказа."
+                : "Оплата добавится в очередь и будет учтена только после ручного подтверждения кассиром."
         }
         className={isInvoice ? "max-w-md" : "max-w-sm"}
       >

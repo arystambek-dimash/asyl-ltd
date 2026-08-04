@@ -19,14 +19,21 @@ def _order(status="confirmed", price="100.00", qty=5):
 
 
 def _pay_through_chain(auth_client, accountant, order, amount):
-    """Оплата через API: приём → подтверждение бухгалтером-кассой (деньги учтены)."""
+    """Оплата через API до состояния «деньги учтены».
+
+    Касса вносит оплату уже подтверждённой — подтверждать самой себе нечего.
+    Хелпер это учитывает: второй шаг нужен, только если оплату внёс тот, у
+    кого права подтверждения нет.
+    """
     resp = auth_client(accountant).post(
         f"/api/orders/{order.id}/payments/", {"amount": amount}, format="json"
     )
     assert resp.status_code == 201
     pid = resp.data["id"]
-    r = auth_client(accountant).post(f"/api/orders/{order.id}/payments/{pid}/confirm/")
-    assert r.status_code == 200
+    if resp.data["status"] != "confirmed":
+        r = auth_client(accountant).post(
+            f"/api/orders/{order.id}/payments/{pid}/confirm/")
+        assert r.status_code == 200
     return pid
 
 
@@ -72,9 +79,12 @@ def test_confirmed_payment_can_be_reopened_with_audit_log(auth_client, accountan
     assert event.user == accountant
 
 
-def test_only_confirmed_payment_can_be_reopened(auth_client, accountant):
+def test_only_confirmed_payment_can_be_reopened(
+    auth_client, accountant, payment_recorder,
+):
     order = _order(status="shipped")
-    created = auth_client(accountant).post(
+    # Вносит тот, кто не подтверждает: нужна именно неподтверждённая оплата.
+    created = auth_client(payment_recorder).post(
         f"/api/orders/{order.id}/payments/", {"amount": "100.00"}, format="json")
 
     response = auth_client(accountant).post(
@@ -117,12 +127,13 @@ def test_cashier_log_marks_only_current_confirmation_as_reopenable(
 
 
 def test_rejected_payment_can_be_restored_from_cashier_log(
-        auth_client, accountant):
+        auth_client, accountant, payment_recorder):
     from apps.eventlog.models import EventLog
     from apps.orders.models import Payment
 
     order = _order(status="shipped")
-    created = auth_client(accountant).post(
+    # Отклонять имеет смысл ещё не подтверждённую оплату.
+    created = auth_client(payment_recorder).post(
         f"/api/orders/{order.id}/payments/",
         {"amount": "100.00", "method": "cash"},
         format="json",
@@ -193,10 +204,10 @@ def test_cashier_log_hides_provider_name_in_historical_messages(
     assert "(счёт на оплату)" in row["message"]
 
 
-def test_payment_not_counted_before_confirm(auth_client, accountant):
+def test_payment_not_counted_before_confirm(auth_client, payment_recorder):
     """До подтверждения бухгалтером-кассой оплата не учтена."""
     o = _order(status="shipped")  # total 500
-    resp = auth_client(accountant).post(
+    resp = auth_client(payment_recorder).post(
         f"/api/orders/{o.id}/payments/", {"amount": "500.00"}, format="json"
     )
     assert resp.status_code == 201
@@ -239,7 +250,11 @@ def test_mixed_payment_is_created_atomically(
 
     assert response.status_code == 201
     assert {row["method"] for row in response.data} == {"cash", "kaspi", "invoice"}
-    assert all(row["status"] == "received" for row in response.data)
+    # Касса вносит всё разом: полученные деньги закрываются сразу, а счёт
+    # остаётся обязательством клиента и ждёт поступления.
+    assert {row["method"]: row["status"] for row in response.data} == {
+        "cash": "confirmed", "kaspi": "confirmed", "invoice": "received",
+    }
     assert order.payments.count() == 3
     assert {payment.note for payment in order.payments.all()} == {"смешанная оплата"}
     issue_provider_payments.assert_called_once()
@@ -285,10 +300,11 @@ def test_mixed_payment_rejects_duplicate_method_without_partial_write(
 
 
 def test_cash_is_counted_only_after_manual_confirmation(
-        auth_client, accountant):
+        auth_client, accountant, payment_recorder):
+    """Наличные от менеджера ждут кассу: деньги проверяет второй человек."""
     order = _order(status="shipped")
 
-    created = auth_client(accountant).post(
+    created = auth_client(payment_recorder).post(
         f"/api/orders/{order.id}/payments/",
         {"amount": "100.00", "method": "cash"}, format="json",
     )

@@ -14,7 +14,8 @@ vi.mock("@/lib/api", () => ({
 const me = {
   id: 1,
   username: "cashier",
-  permissions: ["payments.create"],
+  // Кассир: вносит и подтверждает — его оплата закрывается сразу.
+  permissions: ["payments.create", "payments.confirm"],
   is_superuser: false,
 } as unknown as Me;
 
@@ -97,6 +98,21 @@ describe("AddPaymentActions — счёт на оплату", () => {
       channel: "remote",
       phone_number: "87001234567",
     });
+  });
+
+  it("tells a cashier the payment lands immediately", async () => {
+    await openReceiveModal();
+
+    expect(screen.getByText(/сразу уменьшит долг/)).toBeInTheDocument();
+  });
+
+  it("tells a manager without the perm that the cashier confirms", async () => {
+    const user = userEvent.setup();
+    const recorder = { ...me, permissions: ["payments.create"] } as unknown as Me;
+    render(<AddPaymentActions order={order} me={recorder} onChanged={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
+
+    expect(screen.getByText(/после ручного подтверждения кассиром/)).toBeInTheDocument();
   });
 
   it("omits channel entirely for cash", async () => {

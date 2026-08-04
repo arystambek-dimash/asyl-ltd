@@ -548,16 +548,17 @@ function PaymentModal({
       }
       const kaspi = created.data.find((payment) => payment.method === "kaspi");
       const invoice = created.data.find((payment) => payment.method === "invoice");
+      // Оплату вносит касса, поэтому полученные деньги закрываются сразу —
+      // подтверждать самой себе нечего. Счёт остаётся обязательством клиента.
+      const cash = payload.some((part) => part.method === "cash");
+      const settled = [cash && "наличные", kaspi && "QR"].filter(Boolean).join(" и ");
       const notice = [
-        // QR в кассе — отметка об уже прошедшем POS-терминале, поэтому
-        // подтверждает её кассир вручную, как наличные.
-        kaspi ? "Оплата через QR добавлена на подтверждение кассиру." : "",
+        settled ? `Долг уменьшен: ${settled}.` : "",
         invoice && documentInvoice && documentDownloaded ? "PDF-счёт скачан — распечатайте и передайте клиенту." : "",
         invoice && documentInvoice && !documentDownloaded
           ? "Счёт-часть создана, но PDF не скачался — проверьте реквизиты клиента."
           : "",
-        invoice && !documentInvoice ? "Счёт на оплату отправлен клиенту." : "",
-        payload.some((part) => part.method === "cash") ? "Наличная часть добавлена на подтверждение кассиру." : "",
+        invoice ? "Счёт уменьшит долг, когда деньги поступят." : "",
       ]
         .filter(Boolean)
         .join(" ");
@@ -800,8 +801,8 @@ function PaymentModal({
 
           <p className="flex items-start gap-2 border-t pt-3 text-xs text-[var(--muted-foreground)]">
             <ShieldCheck className="mt-0.5 size-4 shrink-0" />
-            Наличные и QR уменьшат долг после подтверждения кассиром: деньги уже получены на месте. Счёт на оплату —
-            автоматически, когда клиент оплатит его сам.
+            Наличные и QR уменьшат долг сразу — деньги получены на месте. Счёт на оплату уменьшит его позже, когда
+            клиент заплатит.
           </p>
         </>
       </div>

@@ -59,6 +59,19 @@ def accountant(user_with_perms):
 
 
 @pytest.fixture
+def payment_recorder(user_with_perms):
+    """Вносит оплату, но не подтверждает её.
+
+    Оплата, внесённая пользователем с ``payments.confirm``, закрывается
+    сразу — подтверждать самому себе нечего. Поэтому двухшаговую цепочку
+    (очередь → подтверждение кассой) проверяют от лица того, кто права
+    подтверждения не имеет.
+    """
+    return user_with_perms("payment-recorder", codes=[
+        "payments.view", "payments.create", "orders.view", "orders.edit"])
+
+
+@pytest.fixture
 def operator(user_with_perms):
     return user_with_perms("operator", codes=[
         "shipping.view", "shipping.arrive", "shipping.load", "shipping.ship",

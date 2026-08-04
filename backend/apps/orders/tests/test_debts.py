@@ -46,9 +46,11 @@ def test_debts_endpoint_lists_unsettled_shipped(boss):
     assert settled.client_id not in client_ids
 
 
-def test_payments_history_in_order(accountant, settle_payment):
+def test_payments_history_in_order(accountant, payment_recorder, settle_payment):
     o = _shipped_order()
-    r = _api(accountant).post(
+    # Вносит менеджер: оплата кассира подтверждается сразу и в «ожидающих»
+    # не появилась бы вовсе.
+    r = _api(payment_recorder).post(
         f"/api/orders/{o.id}/payments/", {"amount": "50"}, format="json"
     )
     # До подтверждения кассой оплата в истории «полученных» не отображается.

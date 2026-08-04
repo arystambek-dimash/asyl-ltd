@@ -134,12 +134,16 @@ def test_cashier_qr_never_calls_the_payment_provider(auth_client, accountant):
     assert not ApiPayInvoice.objects.exists()
 
 
-def test_cashier_qr_waits_in_the_manual_confirmation_queue(
-    auth_client, accountant,
+def test_qr_from_a_non_confirmer_waits_in_the_manual_queue(
+    auth_client, accountant, payment_recorder,
 ):
-    """Без счёта провайдера QR обязан попасть в очередь кассы, иначе зависнет."""
+    """QR без счёта провайдера закрывает касса — он не должен зависнуть.
+
+    Внесённый самим кассиром, он подтверждается сразу; внесённый менеджером
+    без права подтверждения — обязан дойти до очереди, иначе деньги повиснут.
+    """
     order = _order()
-    created = auth_client(accountant).post(
+    created = auth_client(payment_recorder).post(
         f"/api/orders/{order.id}/payments/",
         {"method": "kaspi", "amount": "50.00"},
         format="json",
@@ -148,6 +152,7 @@ def test_cashier_qr_waits_in_the_manual_confirmation_queue(
     queue = auth_client(accountant).get("/api/orders/payments-queue/")
 
     assert queue.status_code == 200
+    assert created.data["status"] == "received"
     assert created.data["id"] in [row["id"] for row in queue.data]
 
 

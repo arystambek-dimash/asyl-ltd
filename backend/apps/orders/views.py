@@ -81,6 +81,40 @@ def _provider_error(exc):
     return exc
 
 
+def _autoconfirm_own_payments(payments, user) -> None:
+    """Сразу закрыть оплаты, которые внёс тот, кто и так их подтверждает.
+
+    Очередь кассы существует, чтобы деньги проверял второй человек. Когда
+    оплату вносит сам кассир, очередь превращается в подтверждение самому
+    себе: лишний клик, за которым нет проверки.
+
+    Автоподтверждение получает только пользователь с правом ``payments.confirm``
+    — менеджер без него по-прежнему отправляет оплату в кассу, и контроль
+    «двух рук» сохраняется.
+
+    Подтверждаются только фактически полученные деньги: наличные и QR с
+    POS-терминала. Счёт на оплату — любой — это выставленное обязательство,
+    а не касса: закрыть его здесь значило бы погасить долг раньше, чем
+    клиент заплатит. Онлайн-счёт ждёт уведомления сервиса, наш PDF —
+    подтверждения кассой по факту поступления.
+
+    Ошибку подтверждения гасим: оплата уже создана и корректно ждёт в
+    очереди, ронять из-за неё весь запрос нельзя.
+    """
+    if not user.has_perm_code("payments.confirm"):
+        return
+    for payment in payments:
+        if payment.status != "received" or payment.method == "invoice":
+            continue
+        if getattr(payment, "apipay_invoice", None) is not None:
+            continue
+        try:
+            accountant_confirm_payment(payment, user)
+        except ValidationError:
+            continue
+        payment.refresh_from_db()
+
+
 def _notify_document_invoice(order, payment: Payment) -> None:
     """Сказать клиенту в портале, что выставлен наш PDF-счёт.
 
@@ -1127,6 +1161,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                     and part.get("channel") == "document"
                 ):
                     _notify_document_invoice(order, payment)
+            _autoconfirm_own_payments(payments, request.user)
             return Response(PaymentSerializer(payments, many=True).data, status=201)
         method = request.data.get("method") or "cash"
         # Канал счёта един для обоих путей API: document — наш PDF без провайдера.
@@ -1156,6 +1191,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             # Уведомляем только после успешного создания оплаты: при ошибке
             # выше клиент не должен получить сообщение о несуществующем счёте.
             _notify_document_invoice(order, payment)
+        _autoconfirm_own_payments([payment], request.user)
         return Response(PaymentSerializer(payment).data, status=201)
 
     @action(detail=True, methods=["get"], url_path="invoice-pdf")
