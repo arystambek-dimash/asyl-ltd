@@ -570,3 +570,98 @@ def test_statement_rejects_empty_or_unknown_sections(auth_client, user_with_perm
     assert unknown.data["code"] == "bad_section"
     assert foreign.status_code == 400
     assert foreign.data["code"] == "bad_section"
+
+
+# ── PDF-версия выписки ────────────────────────────────────────────────────
+# Тот же набор данных и те же разделы, что в Excel, но свёрстанные под лист
+# A4: печать и отправка клиенту.
+
+
+def test_statement_can_be_downloaded_as_pdf(auth_client, user_with_perms):
+    reporter = user_with_perms(
+        "statement-pdf", codes=["clients.view", "reports.export"])
+    client = Client.objects.create(first_name="Пи", last_name="ДиЭф", phone="70")
+    product = Product.objects.create(name="Мука", color="Red", weight_kg="50")
+    order = Order.objects.create(client=client, status="shipped")
+    OrderItem.objects.create(order=order, product=product, quantity=2, unit_price="500")
+
+    response = auth_client(reporter).get(
+        f"/api/clients/{client.pk}/statement/?export=pdf")
+
+    assert response.status_code == 200
+    assert response["Content-Type"] == "application/pdf"
+    assert response["Content-Disposition"].endswith('statement.pdf"')
+    assert response.content.startswith(b"%PDF")
+
+
+def test_all_clients_statement_pdf_renders(auth_client, user_with_perms):
+    reporter = user_with_perms(
+        "all-statement-pdf", codes=["clients.view", "reports.export"])
+    client = Client.objects.create(first_name="Об", last_name="Щий", phone="71")
+    product = Product.objects.create(name="Крупа", color="Blue", weight_kg="25")
+    order = Order.objects.create(client=client, status="shipped")
+    OrderItem.objects.create(order=order, product=product, quantity=3, unit_price="100")
+    Payment.objects.create(
+        order=order, amount="100", method="cash", status="confirmed")
+
+    response = auth_client(reporter).get("/api/clients/statement/?export=pdf")
+
+    assert response.status_code == 200
+    assert response["Content-Type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF")
+
+
+def test_statement_defaults_to_excel_without_the_format_param(
+    auth_client, user_with_perms,
+):
+    """Старые ссылки без параметра продолжают отдавать Excel."""
+    reporter = user_with_perms(
+        "statement-default", codes=["clients.view", "reports.export"])
+    client = Client.objects.create(first_name="Дэ", last_name="Фолт", phone="72")
+
+    response = auth_client(reporter).get(f"/api/clients/{client.pk}/statement/")
+
+    assert response.status_code == 200
+    assert response["Content-Type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+def test_pdf_statement_honours_the_selected_sections(auth_client, user_with_perms):
+    """Разделы общие для обоих форматов — выбор один, файлов два."""
+    reporter = user_with_perms(
+        "statement-pdf-sections", codes=["clients.view", "reports.export"])
+    client = Client.objects.create(first_name="Раз", last_name="Дел", phone="73")
+
+    full = auth_client(reporter).get(
+        f"/api/clients/{client.pk}/statement/?export=pdf")
+    single = auth_client(reporter).get(
+        f"/api/clients/{client.pk}/statement/?export=pdf&sections=summary")
+
+    assert full.status_code == 200 and single.status_code == 200
+    # Урезанная выписка не может весить больше полной.
+    assert len(single.content) < len(full.content)
+
+
+def test_statement_rejects_an_unknown_format(auth_client, user_with_perms):
+    reporter = user_with_perms(
+        "statement-bad-format", codes=["clients.view", "reports.export"])
+    client = Client.objects.create(first_name="Пло", last_name="Хой", phone="74")
+
+    response = auth_client(reporter).get(
+        f"/api/clients/{client.pk}/statement/?export=docx")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "bad_statement_format"
+
+
+def test_pdf_statement_rejects_an_unknown_section(auth_client, user_with_perms):
+    """Валидация разделов общая: PDF не должен обходить её стороной."""
+    reporter = user_with_perms(
+        "statement-pdf-bad", codes=["clients.view", "reports.export"])
+    client = Client.objects.create(first_name="Не", last_name="Тот", phone="75")
+
+    response = auth_client(reporter).get(
+        f"/api/clients/{client.pk}/statement/?export=pdf&sections=missing")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "bad_section"

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Building2, Check, Download, Layers, Minus } from "lucide-react";
+import { Building2, Check, Download, FileDown, Layers, Minus } from "lucide-react";
 import { api, apiError } from "@/lib/api";
 import { downloadBlob } from "@/lib/download";
 import { monthStartLocalIsoDate, todayLocalIsoDate } from "@/lib/utils";
@@ -17,6 +17,11 @@ export type StatementSection = {
   name: string;
   hint: string;
 };
+
+const FORMATS = [
+  { key: "xlsx" as const, name: "Excel (.xlsx)", hint: "Листы с формулами, для работы с данными" },
+  { key: "pdf" as const, name: "PDF (.pdf)", hint: "Готов к печати и отправке клиенту" },
+];
 
 /** Разделы выписки по одному клиенту. Порядок — как листы в книге. */
 export const CLIENT_STATEMENT_SECTIONS: StatementSection[] = [
@@ -62,6 +67,9 @@ export function StatementExportModal({
 }: Props) {
   const [dateFrom, setDateFrom] = useState(initialFrom);
   const [dateTo, setDateTo] = useState(initialTo);
+  // Excel — для работы с данными, PDF — на печать и отправку клиенту.
+  // Разделы и отделы общие: выбор один, форматов два.
+  const [format, setFormat] = useState<"xlsx" | "pdf">("xlsx");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [selectedDepartments, setSelectedDepartments] = useState<Set<string>>(new Set());
@@ -123,12 +131,12 @@ export function StatementExportModal({
   }
 
   function datedFilename() {
-    const stem = filename.replace(/\.xlsx$/i, "");
+    const stem = filename.replace(/\.(xlsx|pdf)$/i, "");
     const period =
       dateFrom || dateTo
         ? `${dateFrom || "start"}_${dateTo || todayLocalIsoDate()}`
         : `all-time_${todayLocalIsoDate()}`;
-    return `${stem}_${period}.xlsx`;
+    return `${stem}_${period}.${format}`;
   }
 
   const allSectionsChosen = selectedSections.size === sections.length;
@@ -150,6 +158,9 @@ export function StatementExportModal({
           ...(dateFrom ? { date_from: dateFrom } : {}),
           ...(dateTo ? { date_to: dateTo } : {}),
           departments: Array.from(selectedDepartments).join(","),
+          // Параметр называется export, а не format: последнее зарезервировано
+          // DRF под согласование типа ответа и до вью не доходит.
+          ...(format === "pdf" ? { export: "pdf" } : {}),
           // Полный набор не отправляем: пустой параметр — «вся выписка»,
           // и ссылка остаётся такой же, как до появления выбора разделов.
           ...(allSectionsChosen
@@ -201,7 +212,7 @@ export function StatementExportModal({
     <Modal
       open={open}
       onClose={onClose}
-      eyebrow="Финансы · Excel"
+      eyebrow="Финансы · Выписка"
       title={title}
       description={description}
       className="max-w-2xl"
@@ -215,7 +226,7 @@ export function StatementExportModal({
             onClick={() => void download()}
             disabled={busy || departmentsLoading || !selectedDepartments.size || !selectedSections.size}
           >
-            <Download className="size-4" /> {busy ? "Формирование…" : "Скачать .xlsx"}
+            <Download className="size-4" /> {busy ? "Формирование…" : `Скачать .${format}`}
           </Button>
         </>
       }
@@ -228,6 +239,27 @@ export function StatementExportModal({
             {selectedSections.size} из {sections.length} разделов · отделов: {selectedRows.length}
           </div>
         </div>
+
+        <Section
+          icon={<FileDown className="size-3.5" />}
+          title="Формат файла"
+          note="Разделы и период общие — меняется только то, во что они лягут."
+        >
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            {FORMATS.map((option) => (
+              <CheckRow
+                key={option.key}
+                selected={format === option.key}
+                label={option.name}
+                hint={option.hint}
+                onClick={() => {
+                  setFormat(option.key);
+                  setError("");
+                }}
+              />
+            ))}
+          </div>
+        </Section>
 
         <Section
           icon={<Layers className="size-3.5" />}

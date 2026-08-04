@@ -145,4 +145,43 @@ describe("StatementExportModal", () => {
     expect(screen.getByRole("button", { name: "Скачать .xlsx" })).toBeDisabled();
     expect(getMock).not.toHaveBeenCalled();
   });
+
+  it("downloads Excel by default without an export param", async () => {
+    getMock.mockResolvedValue({ data: new Blob(["xlsx"]) });
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.click(screen.getByRole("button", { name: "Скачать .xlsx" }));
+
+    // Прежние ссылки не должны меняться от появления второго формата.
+    expect(getMock.mock.calls[0][1].params).not.toHaveProperty("export");
+    expect(downloadMock.mock.calls[0][1]).toMatch(/\.xlsx$/);
+  });
+
+  it("switches to PDF and names the file accordingly", async () => {
+    getMock.mockResolvedValue({ data: new Blob(["pdf"]) });
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.click(screen.getByRole("button", { name: /PDF/ }));
+    await user.click(screen.getByRole("button", { name: "Скачать .pdf" }));
+
+    // Параметр называется export: format зарезервирован DRF.
+    expect(getMock.mock.calls[0][1].params.export).toBe("pdf");
+    expect(downloadMock.mock.calls[0][1]).toMatch(/\.pdf$/);
+  });
+
+  it("keeps the section choice when the format changes", async () => {
+    getMock.mockResolvedValue({ data: new Blob(["pdf"]) });
+    const user = userEvent.setup();
+    renderModal();
+
+    await user.click(screen.getByRole("button", { name: /Позиции/ }));
+    await user.click(screen.getByRole("button", { name: /PDF/ }));
+    await user.click(screen.getByRole("button", { name: "Скачать .pdf" }));
+
+    const params = getMock.mock.calls[0][1].params;
+    expect(params.export).toBe("pdf");
+    expect(params.sections).toBe("summary,clients,ledger,orders,payments,debts");
+  });
 });

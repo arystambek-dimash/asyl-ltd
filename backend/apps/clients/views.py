@@ -25,6 +25,9 @@ from apps.eventlog.services import log_event
 from .models import Client, Department, Store
 from .serializers import ClientSerializer, DepartmentSerializer, StoreSerializer
 from .services import detect_overdue, is_payment_window_open, client_history
+from .statement_pdf import (
+    build_all_clients_statement_pdf, build_client_statement_pdf,
+)
 from .statements import (
     ALL_CLIENT_SECTIONS, CLIENT_SECTIONS, build_all_clients_statement,
     build_client_statement,
@@ -66,6 +69,27 @@ def _statement_departments(params):
             "code": "bad_department",
         })
     return codes
+
+
+STATEMENT_CONTENT_TYPES = {
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pdf": "application/pdf",
+}
+
+
+def _statement_format(params) -> str:
+    """Формат выгрузки: ``xlsx`` по умолчанию, ``pdf`` — на печать клиенту.
+
+    Значение по умолчанию сохраняет прежние ссылки: кто звал выписку без
+    параметра, продолжает получать Excel.
+    """
+    value = (params.get("export") or "xlsx").strip().lower()
+    if value not in STATEMENT_CONTENT_TYPES:
+        raise ValidationError({
+            "detail": "Формат выписки: xlsx или pdf",
+            "code": "bad_statement_format",
+        })
+    return value
 
 
 def _statement_sections(params, available):
@@ -249,26 +273,29 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         validate_date_range(date_from, date_to)
         departments = _statement_departments(request.query_params)
         sections = _statement_sections(request.query_params, CLIENT_SECTIONS)
+        export = _statement_format(request.query_params)
         client = self.get_object()
-        content = build_client_statement(
+        builder = (
+            build_client_statement_pdf if export == "pdf" else build_client_statement
+        )
+        content = builder(
             client, date_from, date_to, departments=departments,
             sections=sections,
         )
-        response = HttpResponse(
-            content,
-            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        response = HttpResponse(content, content_type=STATEMENT_CONTENT_TYPES[export])
         response["Content-Disposition"] = (
-            f'attachment; filename="client-{client.pk}-statement.xlsx"'
+            f'attachment; filename="client-{client.pk}-statement.{export}"'
         )
         log_event(
-            "client_statement", f"Сформирована Excel-выписка клиента «{client.name}»",
+            "client_statement",
+            f"Сформирована {export.upper()}-выписка клиента «{client.name}»",
             user=request.user,
             payload={"client_id": client.pk,
                      "date_from": str(date_from) if date_from else None,
                      "date_to": str(date_to) if date_to else None,
                      "departments": list(departments) if departments else None,
-                     "sections": list(sections) if sections else None},
+                     "sections": list(sections) if sections else None,
+                     "format": export},
         )
         return response
 
@@ -279,24 +306,28 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         validate_date_range(date_from, date_to)
         departments = _statement_departments(request.query_params)
         sections = _statement_sections(request.query_params, ALL_CLIENT_SECTIONS)
-        content = build_all_clients_statement(
+        export = _statement_format(request.query_params)
+        builder = (
+            build_all_clients_statement_pdf if export == "pdf"
+            else build_all_clients_statement
+        )
+        content = builder(
             date_from, date_to, departments=departments, sections=sections,
         )
-        response = HttpResponse(
-            content,
-            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        response = HttpResponse(content, content_type=STATEMENT_CONTENT_TYPES[export])
         response["Content-Disposition"] = (
-            'attachment; filename="clients-full-statement.xlsx"'
+            f'attachment; filename="clients-full-statement.{export}"'
         )
         log_event(
-            "clients_statement", "Сформирована общая Excel-выписка по клиентам",
+            "clients_statement",
+            f"Сформирована общая {export.upper()}-выписка по клиентам",
             user=request.user,
             payload={
                 "date_from": str(date_from) if date_from else None,
                 "date_to": str(date_to) if date_to else None,
                 "departments": list(departments) if departments else None,
                 "sections": list(sections) if sections else None,
+                "format": export,
             },
         )
         return response
