@@ -46,6 +46,13 @@ MAX_ERROR_JSON_RESPONSE_BYTES = 64 * 1024
 # «живыми», но частый опрос перестаёт быть сетевым вызовом на каждый запрос.
 ALWAYS_ON_CACHE_KEY = "cameras:always-on-status:v1"
 ALWAYS_ON_TTL = 5
+# Рамки живут отдельно от общего снимка: мешок проезжает кадр за секунды, и
+# пятисекундный снимок рисовал рамку там, где мешка уже нет. Здесь TTL короче
+# ровно настолько, чтобы рамка держалась мешка, а сам вызов к ПК цеха остался
+# кэшированным — иначе каждый опрос снова платил бы полный TIMEOUT при
+# выключенном цехе.
+DETECTIONS_CACHE_KEY = "cameras:always-on-detections:v1"
+DETECTIONS_TTL = 1
 WAGON_NUMBER_CACHE_KEY = "cameras:wagon-number-status:v1"
 WAGON_NUMBER_TTL = 5
 
@@ -293,6 +300,44 @@ def always_on_status_cached() -> dict:
         raise
     cache.set(ALWAYS_ON_CACHE_KEY, status, ALWAYS_ON_TTL)
     return status
+
+
+def always_on_detections_cached() -> dict:
+    """Только рамки процессоров — лёгкий ответ для частого опроса монитора.
+
+    Отдаётся тем же вызовом ``/always-on``, но со своим коротким TTL: экран
+    тянет рамки раз в секунду, а тяжёлые настройки и аналитика продолжают
+    жить на общем пятисекундном снимке.
+
+    Отрицательный результат кэшируется так же, как в общем снимке: при
+    выключенном ПК цеха частый опрос иначе копил бы полные ``TIMEOUT``.
+    """
+    cached = cache.get(DETECTIONS_CACHE_KEY)
+    if isinstance(cached, Exception):
+        raise cached
+    if cached is not None:
+        return cached
+    try:
+        status = always_on_status()
+    except (AiUnavailable, AiError) as outage:
+        cache.set(DETECTIONS_CACHE_KEY, outage, DETECTIONS_TTL)
+        raise
+    payload = {
+        "processors": [
+            {
+                "cam": row.get("cam"),
+                "running": row.get("running"),
+                "total": row.get("total"),
+                "detections": row.get("detections") or [],
+                "detection_frame": row.get("detection_frame"),
+                "last_frame_at": row.get("last_frame_at"),
+            }
+            for row in status.get("processors", [])
+            if isinstance(row, dict)
+        ],
+    }
+    cache.set(DETECTIONS_CACHE_KEY, payload, DETECTIONS_TTL)
+    return payload
 
 
 def cached_always_on_status() -> dict | None:

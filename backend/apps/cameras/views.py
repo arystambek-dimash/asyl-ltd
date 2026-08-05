@@ -503,6 +503,25 @@ class MonoblockDeviceDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class AlwaysOnDetectionsView(APIView):
+    """Рамки распознанных мешков — отдельный лёгкий опрос для монитора.
+
+    Мешок пересекает кадр за секунды, поэтому рамки нужны заметно чаще, чем
+    настройки и аналитика. Свой эндпоинт с коротким кэшем позволяет тянуть их
+    раз в секунду, не заставляя экран каждый раз перечитывать тяжёлый снимок.
+    """
+
+    permission_classes = [IsSuperUser]
+
+    def get(self, request):
+        try:
+            return Response(ai.always_on_detections_cached())
+        except (ai.AiUnavailable, ai.AiError):
+            # ПК цеха недоступен — рамок нет, но экран не должен падать:
+            # видео и счётчики продолжают работать сами по себе.
+            return Response({"processors": []})
+
+
 class AlwaysOnCameraSettingsView(APIView):
     """Superuser-only control plane for inference-only 24/7 processors."""
 

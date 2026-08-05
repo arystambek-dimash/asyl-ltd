@@ -50,6 +50,7 @@ import type {
   AlwaysOnCountArchive,
   AlwaysOnDailyAnalytics,
   AlwaysOnDailyCameraAnalytics,
+  AlwaysOnDetection,
   AlwaysOnProcessorStatus,
   MonoblockCameraSettings,
   MonoblockDevice,
@@ -64,6 +65,12 @@ import { cn, formatDateTime } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 
 const SESSION_POLL_MS = 3_000;
+// Рамки тянем чаще остального: мешок пересекает кадр за секунды, и на общем
+// трёхсекундном опросе рамка заметно отставала от него.
+const DETECTIONS_POLL_MS = 1_000;
+// Рамка старше этого времени описывает уже уехавший мешок — гасим её, чтобы
+// она не висела на пустом месте при обрыве связи или остановке модели.
+const DETECTIONS_STALE_MS = 2_500;
 // Заказы/камеры/настройки меняются редко — не гоняем полный список заказов
 // каждые 3 секунды на экране, который висит открытым весь день.
 const SLOW_POLL_MS = 30_000;
@@ -691,6 +698,13 @@ function AlwaysOnCard({
   const [streamOnline, setStreamOnline] = useState(false);
   // Рамки модели можно скрыть: иногда оператору нужно посмотреть на сам кадр.
   const [showDetections, setShowDetections] = useState(true);
+  // Рамки живут отдельно от остального состояния: их опрашиваем чаще, чтобы
+  // они держались мешка, и помечаем временем — устаревшие гасим.
+  const [liveBoxes, setLiveBoxes] = useState<{
+    detections?: AlwaysOnDetection[];
+    frame?: { width?: number; height?: number } | null;
+    at: number;
+  } | null>(null);
   const [liveProcessor, setLiveProcessor] = useState(processor);
   const [liveDaily, setLiveDaily] = useState<AlwaysOnDailyCameraAnalytics | undefined>(daily);
   const [liveDetail, setLiveDetail] = useState(detail || "");
@@ -756,6 +770,40 @@ function AlwaysOnCard({
       if (timer) clearTimeout(timer);
     };
   }, [open, processor.cam]);
+
+  // Быстрый опрос только рамок. Отдельно от тяжёлого снимка: аналитику и
+  // настройки незачем перечитывать раз в секунду, а рамка на общем интервале
+  // отставала от мешка и висела после его ухода.
+  useEffect(() => {
+    if (!open || modalView !== "live" || !showDetections) {
+      setLiveBoxes(null);
+      return;
+    }
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const pull = async () => {
+      try {
+        const { data } = await api.get<{ processors: AlwaysOnProcessorStatus[] }>("/cameras/always-on-detections/");
+        if (disposed) return;
+        const row = data.processors.find((item) => item.cam === processor.cam);
+        setLiveBoxes({
+          detections: row?.detections,
+          frame: row?.detection_frame,
+          at: Date.now(),
+        });
+      } catch {
+        // Обрыв связи — не повод оставлять рамку на экране: она уже неверна.
+        if (!disposed) setLiveBoxes(null);
+      } finally {
+        if (!disposed) timer = setTimeout(() => void pull(), DETECTIONS_POLL_MS);
+      }
+    };
+    void pull();
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [open, modalView, showDetections, processor.cam]);
 
   function showStream() {
     setStreamOnline(false);
@@ -957,7 +1005,12 @@ function AlwaysOnCard({
               {/* Всегда-включённый поток идёт без вжатых рамок, поэтому
                   показываем работу модели оверлеем поверх видео. */}
               {streamOnline && showDetections && (
-                <DetectionOverlay detections={current.detections} frame={current.detection_frame} />
+                <DetectionOverlay
+                  detections={liveBoxes?.detections ?? current.detections}
+                  frame={liveBoxes?.frame ?? current.detection_frame}
+                  staleAfterMs={DETECTIONS_STALE_MS}
+                  updatedAt={liveBoxes?.at}
+                />
               )}
               {!streamOnline && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950 text-white/45">

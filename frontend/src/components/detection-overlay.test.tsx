@@ -221,3 +221,31 @@ describe("normalizeDetections — форматы AI-сервиса", () => {
     ).toEqual([]);
   });
 });
+
+describe("DetectionOverlay — устаревшие рамки", () => {
+  /**
+   * Мешок уезжает из кадра за секунды. Если связь оборвалась или модель
+   * встала, последняя рамка иначе висит на пустом месте и врёт оператору.
+   */
+
+  it("hides boxes once their frame is older than the threshold", () => {
+    const { container } = render(
+      <DetectionOverlay detections={[box()]} updatedAt={Date.now() - 5_000} staleAfterMs={2_500} />,
+    );
+
+    expect(container.querySelectorAll("span")).toHaveLength(0);
+  });
+
+  it("keeps a fresh box on screen", () => {
+    render(<DetectionOverlay detections={[box()]} updatedAt={Date.now()} staleAfterMs={2_500} />);
+
+    expect(screen.getByText(/Red_50/)).toBeInTheDocument();
+  });
+
+  it("never expires when no threshold is given", () => {
+    // Старое поведение — рамка держится до следующего ответа.
+    render(<DetectionOverlay detections={[box()]} updatedAt={Date.now() - 60_000} />);
+
+    expect(screen.getByText(/Red_50/)).toBeInTheDocument();
+  });
+});

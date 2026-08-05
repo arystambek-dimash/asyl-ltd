@@ -100,6 +100,28 @@ export function normalizeDetections(
 }
 
 /**
+ * Устарел ли последний список рамок.
+ *
+ * Обрыв связи или остановка модели оставляли последнюю рамку висеть на пустом
+ * месте: новых данных нет, а старые никто не убирает. Поэтому истечение
+ * отсчитывается таймером, а не только приходом следующего ответа.
+ */
+function useStale(updatedAt: number | undefined, staleAfterMs: number | undefined): boolean {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!updatedAt || !staleAfterMs) return;
+    setNow(Date.now());
+    const remaining = updatedAt + staleAfterMs - Date.now();
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, remaining));
+    return () => clearTimeout(timer);
+  }, [updatedAt, staleAfterMs]);
+
+  if (!updatedAt || !staleAfterMs) return false;
+  return now - updatedAt >= staleAfterMs;
+}
+
+/**
  * Область, которую реально занимает кадр внутри контейнера.
  *
  * Видео рисуется с `object-contain`: при несовпадении пропорций сверху/снизу
@@ -166,16 +188,23 @@ function useVideoBox(container: HTMLElement | null) {
 export function DetectionOverlay({
   detections,
   frame,
+  updatedAt,
+  staleAfterMs,
   className,
 }: {
   detections: AlwaysOnDetection[] | undefined;
   /** Размер кадра модели: нужен, когда сервис отдаёт рамки в пикселях. */
   frame?: { width?: number; height?: number } | null;
+  /** Когда пришёл этот список рамок (`Date.now()`). */
+  updatedAt?: number;
+  /** Через сколько рамка считается устаревшей и гаснет. */
+  staleAfterMs?: number;
   className?: string;
 }) {
   const [container, setContainer] = useState<HTMLElement | null>(null);
   const box = useVideoBox(container);
-  const drawable = normalizeDetections(detections, frame);
+  const stale = useStale(updatedAt, staleAfterMs);
+  const drawable = stale ? [] : normalizeDetections(detections, frame);
 
   return (
     <div
@@ -192,8 +221,13 @@ export function DetectionOverlay({
         <>
           {drawable.map((box, index) => (
             <div
-              key={`${box.label}-${index}-${box.x}-${box.y}`}
-              className="absolute rounded-[3px] transition-[left,top,width,height] duration-150 ease-out"
+              // Ключ без координат: с ними React считал сдвинувшуюся рамку
+              // новым элементом, пересоздавал её и анимация не запускалась —
+              // рамка прыгала вместо того, чтобы ехать за мешком.
+              key={`${box.label}-${index}`}
+              // Плавный переход длиной с интервал опроса: рамка догоняет
+              // мешок непрерывно, а не прыгает на его новое место рывком.
+              className="absolute rounded-[3px] transition-[left,top,width,height,opacity] duration-1000 ease-linear"
               style={{
                 left: `${box.x * 100}%`,
                 top: `${box.y * 100}%`,
