@@ -28,6 +28,77 @@ export function bagColor(label: string | undefined | null): string {
   return BAG_COLORS[String(label ?? "").split("_")[0]] ?? FALLBACK_COLOR;
 }
 
+/** Рамка, готовая к отрисовке: доли кадра плюс оформление. */
+type DrawableBox = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  label: string;
+  color: string;
+  counted: boolean;
+  confidence: number | null;
+};
+
+/**
+ * Привести рамки к долям кадра, поняв любой формат AI-сервиса.
+ *
+ * ПК цеха обновляется вручную и живёт своей версией, поэтому в ответе
+ * встречаются оба вида:
+ *
+ * - нормализованный — `{x, y, w, h, label}`, доли кадра (0..1);
+ * - пиксельный — `{bbox: [x1, y1, x2, y2], class_name}`, точки кадра.
+ *
+ * Пиксели делим на размер кадра из `detection_frame`. Без него масштаб
+ * неизвестен: нарисовать «на глаз» значило бы показать рамку не на том
+ * мешке, поэтому такие записи отбрасываем.
+ *
+ * Запись без пригодных координат тоже отбрасывается целиком — рамка на
+ * `NaN%` уехала бы по экрану вместо того, чтобы просто не появиться.
+ */
+export function normalizeDetections(
+  detections: AlwaysOnDetection[] | undefined,
+  frame?: { width?: number; height?: number } | null,
+): DrawableBox[] {
+  const frameWidth = Number(frame?.width);
+  const frameHeight = Number(frame?.height);
+  const canScale = Number.isFinite(frameWidth) && Number.isFinite(frameHeight) && frameWidth > 0 && frameHeight > 0;
+
+  return (detections ?? []).flatMap((item) => {
+    const raw = item as AlwaysOnDetection & {
+      bbox?: unknown;
+      class_name?: unknown;
+    };
+    let coords: number[];
+
+    if (Array.isArray(raw?.bbox)) {
+      if (!canScale) return [];
+      const [x1, y1, x2, y2] = raw.bbox.map(Number);
+      if (![x1, y1, x2, y2].every(Number.isFinite)) return [];
+      coords = [x1 / frameWidth, y1 / frameHeight, (x2 - x1) / frameWidth, (y2 - y1) / frameHeight];
+    } else {
+      coords = [raw?.x, raw?.y, raw?.w, raw?.h].map(Number);
+    }
+
+    if (!coords.every(Number.isFinite)) return [];
+    const [x, y, w, h] = coords;
+    const label = raw?.label ?? (typeof raw?.class_name === "string" ? raw.class_name : undefined);
+    const confidence = Number(raw?.confidence);
+    return [
+      {
+        x,
+        y,
+        w,
+        h,
+        label: String(label ?? ""),
+        color: bagColor(label),
+        counted: Boolean(raw?.counted),
+        confidence: Number.isFinite(confidence) ? confidence : null,
+      },
+    ];
+  });
+}
+
 /**
  * Область, которую реально занимает кадр внутри контейнера.
  *
@@ -94,33 +165,17 @@ function useVideoBox(container: HTMLElement | null) {
  */
 export function DetectionOverlay({
   detections,
+  frame,
   className,
 }: {
   detections: AlwaysOnDetection[] | undefined;
+  /** Размер кадра модели: нужен, когда сервис отдаёт рамки в пикселях. */
+  frame?: { width?: number; height?: number } | null;
   className?: string;
 }) {
   const [container, setContainer] = useState<HTMLElement | null>(null);
   const box = useVideoBox(container);
-  // Рамка без координат нарисовалась бы как NaN% и уехала бы по экрану,
-  // поэтому такие записи отбрасываем целиком, а не показываем сломанными.
-  const drawable = (detections ?? []).flatMap((item) => {
-    const coords = [item?.x, item?.y, item?.w, item?.h].map(Number);
-    if (coords.some((value) => !Number.isFinite(value))) return [];
-    const [x, y, w, h] = coords;
-    const confidence = Number(item?.confidence);
-    return [
-      {
-        x,
-        y,
-        w,
-        h,
-        label: String(item?.label ?? ""),
-        color: bagColor(item?.label),
-        counted: Boolean(item?.counted),
-        confidence: Number.isFinite(confidence) ? confidence : null,
-      },
-    ];
-  });
+  const drawable = normalizeDetections(detections, frame);
 
   return (
     <div

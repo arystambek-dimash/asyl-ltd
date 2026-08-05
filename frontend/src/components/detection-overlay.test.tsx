@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { DetectionOverlay, bagColor } from "./detection-overlay";
+import { DetectionOverlay, bagColor, normalizeDetections } from "./detection-overlay";
 import type { AlwaysOnDetection } from "@/lib/types";
 
 function box(overrides: Partial<AlwaysOnDetection> = {}): AlwaysOnDetection {
@@ -164,5 +164,60 @@ describe("DetectionOverlay — привязка к видео", () => {
 
   it("still renders when there is no video element at all", () => {
     expect(() => render(<DetectionOverlay detections={[box()]} />)).not.toThrow();
+  });
+});
+
+describe("normalizeDetections — форматы AI-сервиса", () => {
+  /**
+   * ПК цеха обновляется вручную и живёт своей версией, поэтому в ответе
+   * встречаются оба формата рамок. Именно из-за этого счётчик показывал
+   * «Рамки модели · 1», а на экране не было ничего: пиксельный bbox не
+   * попадал в поля x/y/w/h и запись отбрасывалась.
+   */
+
+  it("converts a pixel bbox into fractions of the frame", () => {
+    const [drawn] = normalizeDetections(
+      [{ bbox: [192, 108, 576, 540], class_name: "Red_50", confidence: 0.9 }] as never,
+      { width: 1920, height: 1080 },
+    );
+
+    expect(drawn.x).toBeCloseTo(0.1);
+    expect(drawn.y).toBeCloseTo(0.1);
+    expect(drawn.w).toBeCloseTo(0.2);
+    expect(drawn.h).toBeCloseTo(0.4);
+    expect(drawn.label).toBe("Red_50");
+    expect(drawn.color).toBe("#F04438");
+  });
+
+  it("keeps understanding the normalized format", () => {
+    const [drawn] = normalizeDetections([box({ label: "Blue_50" })], { width: 1920, height: 1080 });
+
+    expect(drawn.x).toBeCloseTo(0.1);
+    expect(drawn.label).toBe("Blue_50");
+  });
+
+  it("drops a pixel bbox when the frame size is unknown", () => {
+    // Без масштаба рамка легла бы не на тот мешок — лучше не рисовать.
+    expect(normalizeDetections([{ bbox: [10, 10, 20, 20], class_name: "Red_50" }] as never, null)).toEqual([]);
+    expect(normalizeDetections([{ bbox: [10, 10, 20, 20] }] as never, { width: 0, height: 0 })).toEqual([]);
+  });
+
+  it("reads class_name when label is absent", () => {
+    const [drawn] = normalizeDetections([{ bbox: [0, 0, 96, 108], class_name: "Green_25" }] as never, {
+      width: 960,
+      height: 1080,
+    });
+
+    expect(drawn.label).toBe("Green_25");
+    expect(drawn.color).toBe("#17B26A");
+  });
+
+  it("still drops a malformed bbox", () => {
+    expect(
+      normalizeDetections([{ bbox: ["a", null, 5, 5], class_name: "Red_50" }] as never, {
+        width: 100,
+        height: 100,
+      }),
+    ).toEqual([]);
   });
 });

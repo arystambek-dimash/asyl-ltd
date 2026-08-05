@@ -486,16 +486,26 @@ export interface MonoblockDevice {
   created_at: string;
   updated_at: string;
 }
-/** Рамка мешка на последнем кадре. Координаты — доли кадра (0..1). */
+/**
+ * Рамка мешка на последнем кадре.
+ *
+ * Поля необязательные: ПК цеха обновляется вручную и отдаёт то нормализованные
+ * доли кадра (`x/y/w/h`, `label`), то пиксели (`bbox`, `class_name`). Оба
+ * варианта приводит к общему виду `normalizeDetections`.
+ */
 export interface AlwaysOnDetection {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  label: string;
-  confidence: number;
+  /** Доли кадра (0..1) — современный формат. */
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+  /** Пиксели кадра `[x1, y1, x2, y2]` — формат постарше. */
+  bbox?: [number, number, number, number];
+  label?: string;
+  class_name?: string;
+  confidence?: number;
   /** Мешок пересёк линию и попал в счётчик. */
-  counted: boolean;
+  counted?: boolean;
 }
 
 export interface AlwaysOnProcessorStatus {
@@ -505,6 +515,8 @@ export interface AlwaysOnProcessorStatus {
   recording: boolean;
   total: number;
   detections?: AlwaysOnDetection[];
+  /** Размер кадра модели — по нему пиксельные рамки переводятся в доли. */
+  detection_frame?: { width?: number; height?: number } | null;
   per_color?: Record<string, number>;
   last_frame_at?: string | null;
   error?: string | null;

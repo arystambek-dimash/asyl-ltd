@@ -956,7 +956,9 @@ function AlwaysOnCard({
               ) : null}
               {/* Всегда-включённый поток идёт без вжатых рамок, поэтому
                   показываем работу модели оверлеем поверх видео. */}
-              {streamOnline && showDetections && <DetectionOverlay detections={current.detections} />}
+              {streamOnline && showDetections && (
+                <DetectionOverlay detections={current.detections} frame={current.detection_frame} />
+              )}
               {!streamOnline && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950 text-white/45">
                   <VideoOff className="size-8" />

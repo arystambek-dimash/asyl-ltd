@@ -546,6 +546,14 @@ class CameraProcessor:
                 "direction": self.options.direction,
                 "total": self.total,
                 "detections": self._detection_overlay(),
+                # Размер кадра, к которому относятся рамки. Сами координаты уже
+                # нормализованы, но CRM держит и клиентов постарше, отдающих
+                # пиксели, — по этому полю она приводит их к долям.
+                "detection_frame": (
+                    {"width": self.latest_frame_shape[1],
+                     "height": self.latest_frame_shape[0]}
+                    if self.latest_frame_shape else None
+                ),
                 "per_color": dict(self.per_color),
                 "confidence_sums": {key: round(value, 3) for key, value in self.confidence_sums.items()},
                 "last_frame_at": self.last_frame_at,
