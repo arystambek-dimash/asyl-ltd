@@ -1092,12 +1092,37 @@ def _open_camera_wagon() -> Wagon | None:
 
 
 @transaction.atomic
-def register_detected_arrival(user=None, *, camera_source: str = "") -> Wagon | None:
+def register_detected_arrival(
+    user=None, *, camera_source: str = "", number: str = "",
+) -> Wagon | None:
     """Открыть приход по табличке вагона. Повторную детекцию игнорирует.
 
-    Возвращает созданный рейс либо ``None``, если открывать нечего: состав уже
-    на территории или его табличка была видна только что.
+    ``number`` — номер, которому OCR доверился сам (``accepted``). По нему
+    приезд связывается с ожидаемой поставкой: диспетчер завёл её заранее, и
+    камера должна занять готовый рейс, а не плодить рядом безымянный дубль.
+    Нераспознанный номер оставляет рейс пустым — его допишет оператор.
+
+    Возвращает рейс либо ``None``, если открывать нечего: состав уже на
+    территории или его табличка была видна только что.
     """
+    number = (number or "").strip()
+
+    if number:
+        # Номер известен: занимаем ожидаемый рейс, если он заведён заранее.
+        expected = (
+            Wagon.objects.select_for_update()
+            .filter(number=number, status=st.EXPECTED)
+            .order_by("id")
+            .first()
+        )
+        if expected is not None:
+            return _arrive_expected_wagon(expected, user, camera_source)
+        if Wagon.objects.filter(
+            number=number, status__in=st.ON_SITE_STATUSES,
+        ).exists():
+            # Этот вагон уже на территории — повторная детекция его таблички.
+            return None
+
     if _open_camera_wagon() is not None:
         return None
 
@@ -1116,7 +1141,7 @@ def register_detected_arrival(user=None, *, camera_source: str = "") -> Wagon | 
 
     wagon = Wagon.objects.create(
         supply=None,
-        number="",
+        number=number,
         direction=Wagon.INTAKE,
         workflow="simple",
         status=st.ARRIVED,
@@ -1128,9 +1153,32 @@ def register_detected_arrival(user=None, *, camera_source: str = "") -> Wagon | 
     _log(
         wagon,
         "arrival",
-        f"Камера зафиксировала прибытие состава (рейс #{wagon.pk}). "
-        "Номер не распознан — укажите его вручную.",
+        f"Камера зафиксировала прибытие состава (рейс #{wagon.pk})"
+        + (f": вагон {number}" if number
+           else ". Номер не распознан — укажите его вручную."),
         user,
+        camera_source=camera_source,
+        number=number,
+        auto=True,
+    )
+    return wagon
+
+
+def _arrive_expected_wagon(wagon: Wagon, user, camera_source: str) -> Wagon:
+    """Ожидаемый рейс встал на территорию: заказ и поставка уже привязаны."""
+    ensure_transition(wagon, st.ARRIVED)
+    wagon.arrived_at = timezone.now()
+    wagon.arrived_by = user
+    wagon.number_source = "camera"
+    wagon.number_camera_source = camera_source or ""
+    wagon.save(update_fields=[
+        "arrived_at", "arrived_by", "number_source", "number_camera_source",
+    ])
+    _set_status(
+        wagon,
+        st.ARRIVED,
+        user,
+        f"Камера распознала вагон {wagon.number}: прибытие по ожидаемому приходу",
         camera_source=camera_source,
         auto=True,
     )

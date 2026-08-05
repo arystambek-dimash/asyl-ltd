@@ -490,12 +490,31 @@ def detect_wagon_plate(frame: bytes) -> dict:
         response.close()
 
 
-def wagon_plate_seen(stream: str) -> bool | None:
-    """Видна ли табличка вагона прямо сейчас.
+def accepted_plate_number(payload: Mapping) -> str:
+    """Номер, которому сервис доверяет сам. Иначе — пустая строка.
+
+    OCR отдаёт по каждой табличке флаг ``accepted``: он сводит длину, контроль
+    и уверенность в одно решение. Брать номер мимо него нельзя — в учёт попал
+    бы неверно прочитанный вагон, а это хуже, чем незаполненное поле.
+    """
+    for detection in payload.get("detections") or []:
+        if not isinstance(detection, Mapping):
+            continue
+        ocr = detection.get("ocr")
+        if not isinstance(ocr, Mapping) or ocr.get("accepted") is not True:
+            continue
+        number = str(ocr.get("number") or payload.get("number") or "").strip()
+        if number:
+            return number
+    return ""
+
+
+def wagon_plate_scan(stream: str) -> dict | None:
+    """Табличка вагона в кадре: есть ли она и распознан ли номер.
 
     ``None`` — ответить нельзя (нет кадра или сервис недоступен). Это не то же
-    самое, что ``False``: отсутствие ответа не должно читаться как «поезда
-    нет», иначе пауза без связи выглядела бы как уехавший состав.
+    самое, что «таблички нет»: отсутствие ответа не должно читаться как
+    уехавший состав.
     """
     frame = camera_frame_jpeg(stream)
     if frame is None:
@@ -505,4 +524,12 @@ def wagon_plate_seen(stream: str) -> bool | None:
     except (AiUnavailable, AiError):
         return None
     detections = payload.get("detections")
-    return bool(detections) if isinstance(detections, list) else None
+    if not isinstance(detections, list):
+        return None
+    return {"seen": bool(detections), "number": accepted_plate_number(payload)}
+
+
+def wagon_plate_seen(stream: str) -> bool | None:
+    """Только факт таблички — совместимость с прежними вызовами."""
+    scan = wagon_plate_scan(stream)
+    return None if scan is None else scan["seen"]

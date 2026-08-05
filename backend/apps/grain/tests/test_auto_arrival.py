@@ -1,8 +1,8 @@
 """Автоматический приход по табличке вагона.
 
-Датчика прибытия поезда на территории нет — его роль играет камера. Модель
-находит табличку, но цифры не читает, поэтому рейс заводится без номера:
-важны факт и время заезда, а номер допишет оператор или будущий OCR.
+Датчика прибытия поезда на территории нет — его роль играет камера. Табличка
+в кадре означает, что состав встал под разгрузку; распознанный OCR номер
+связывает приезд с заранее заведённой поставкой.
 
 Главный риск здесь — дубли: состав стоит под разгрузкой долго, и каждая
 следующая детекция не должна плодить новые рейсы.
@@ -101,7 +101,10 @@ def test_poll_opens_an_intake_when_the_plate_is_seen():
     from django.core.cache import cache
 
     cache.delete(continuous.WAGON_PLATE_STATE_KEY)
-    with _settings(), patch.object(continuous.ai, "wagon_plate_seen", return_value=True):
+    with _settings(), patch.object(
+        continuous.ai, "wagon_plate_scan",
+        return_value={"seen": True, "number": ""},
+    ):
         result = continuous.poll_wagon_plate()
 
     assert result["created"] is not None
@@ -122,7 +125,7 @@ def test_poll_treats_an_unreachable_service_as_unknown():
     from django.core.cache import cache
 
     cache.delete(continuous.WAGON_PLATE_STATE_KEY)
-    with _settings(), patch.object(continuous.ai, "wagon_plate_seen", return_value=None):
+    with _settings(), patch.object(continuous.ai, "wagon_plate_scan", return_value=None):
         result = continuous.poll_wagon_plate()
 
     assert result == {"seen": None}
@@ -135,10 +138,106 @@ def test_poll_respects_its_own_period():
 
     cache.delete(continuous.WAGON_PLATE_STATE_KEY)
     with _settings(), patch.object(
-        continuous.ai, "wagon_plate_seen", return_value=False,
+        continuous.ai, "wagon_plate_scan",
+        return_value={"seen": False, "number": ""},
     ) as probe:
         continuous.poll_wagon_plate()
         second = continuous.poll_wagon_plate()
 
     assert second == {"skipped": "too_soon"}
     assert probe.call_count == 1
+
+# ── Номер из OCR ──────────────────────────────────────────────────────────
+
+
+def _supply_with_expected_wagon(number="12345678"):
+    """Диспетчер завёл приход заранее: поставка и рейс уже ждут вагон."""
+    from apps.grain.models import GrainSupply, Silo, SiloType
+
+    grain_type = SiloType.objects.create(name=f"Тип-{SiloType.objects.count() + 1}")
+    silo = Silo.objects.create(
+        name=f"Силос-{Silo.objects.count() + 1}",
+        total_capacity_kg=500_000,
+        silo_type=grain_type,
+    )
+    supply = GrainSupply.objects.create(
+        supplier="ТОО Колос", grain_type=grain_type,
+        assigned_silo=silo, expected_total_kg=60_000, status="expected",
+    )
+    wagon = Wagon.objects.create(
+        supply=supply, number=number, direction=Wagon.INTAKE,
+        workflow="simple", status=st.EXPECTED, assigned_silo=silo,
+    )
+    return supply, wagon
+
+
+def test_a_recognised_number_takes_the_expected_trip():
+    """Главное ради чего OCR: приезд ложится на заказ, а не рядом с ним."""
+    supply, expected = _supply_with_expected_wagon("12345678")
+
+    wagon = register_detected_arrival(camera_source="cam3", number="12345678")
+
+    assert wagon is not None and wagon.pk == expected.pk
+    assert wagon.status == st.ARRIVED
+    assert wagon.supply_id == supply.pk, "рейс связан с поставкой диспетчера"
+    assert wagon.number_source == "camera"
+    assert Wagon.objects.count() == 1, "безымянный дубль рядом не создан"
+
+
+def test_an_unknown_number_still_opens_a_trip():
+    """Вагона нет в плане — приезд фиксируем, разберётся оператор."""
+    wagon = register_detected_arrival(camera_source="cam3", number="99999999")
+
+    assert wagon is not None
+    assert wagon.number == "99999999"
+    assert wagon.supply_id is None
+
+
+def test_the_same_wagon_is_not_admitted_twice():
+    """Табличка того же вагона в следующем кадре — не второй приезд."""
+    _supply_with_expected_wagon("12345678")
+    first = register_detected_arrival(camera_source="cam3", number="12345678")
+
+    assert register_detected_arrival(camera_source="cam3", number="12345678") is None
+    assert Wagon.objects.count() == 1
+    assert Wagon.objects.get().pk == first.pk
+
+
+def test_poll_passes_the_recognised_number_through():
+    from django.core.cache import cache
+
+    _supply_with_expected_wagon("12345678")
+    cache.delete(continuous.WAGON_PLATE_STATE_KEY)
+    with _settings(), patch.object(
+        continuous.ai, "wagon_plate_scan",
+        return_value={"seen": True, "number": "12345678"},
+    ):
+        result = continuous.poll_wagon_plate()
+
+    assert result["number"] == "12345678"
+    assert Wagon.objects.get(pk=result["created"]).number == "12345678"
+
+
+def test_only_an_accepted_number_reaches_the_ledger():
+    """Неуверенный OCR не пишет номер: чужой вагон в учёте хуже пустого поля."""
+    from apps.cameras import ai
+
+    rejected = {
+        "number": "12345678",
+        "detections": [{"ocr": {"number": "12345678", "accepted": False}}],
+    }
+    accepted = {
+        "number": "12345678",
+        "detections": [{"ocr": {"number": "12345678", "accepted": True}}],
+    }
+
+    assert ai.accepted_plate_number(rejected) == ""
+    assert ai.accepted_plate_number(accepted) == "12345678"
+
+
+def test_a_plate_without_ocr_reads_as_no_number():
+    """Старый сервис без OCR не должен ломать разбор ответа."""
+    from apps.cameras import ai
+
+    assert ai.accepted_plate_number({"detections": [{"bbox": [1, 2, 3, 4]}]}) == ""
+    assert ai.accepted_plate_number({"number": None, "detections": []}) == ""

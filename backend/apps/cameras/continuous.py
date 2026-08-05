@@ -75,17 +75,23 @@ def poll_wagon_plate() -> dict:
         return {"skipped": "too_soon"}
     cache.set(WAGON_PLATE_STATE_KEY, now, int(WAGON_PLATE_PERIOD.total_seconds()) * 4)
 
-    seen = ai.wagon_plate_seen(camera)
-    if seen is None:
+    scan = ai.wagon_plate_scan(camera)
+    if scan is None:
         # Нет кадра или сервис молчит. Это «неизвестно», а не «поезда нет»:
         # молча закрывать по такому ответу ничего нельзя.
         return {"seen": None}
-    if not seen:
+    if not scan["seen"]:
         return {"seen": False}
 
-    wagon = grain_services.register_detected_arrival(camera_source=camera)
+    number = scan.get("number") or ""
+    wagon = grain_services.register_detected_arrival(
+        camera_source=camera, number=number,
+    )
     if wagon is None:
         # Тот же состав всё ещё под камерой — рейс уже заведён.
-        return {"seen": True, "created": None}
-    log.info("Камера %s зафиксировала прибытие состава: рейс #%s", camera, wagon.pk)
-    return {"seen": True, "created": wagon.pk}
+        return {"seen": True, "number": number, "created": None}
+    log.info(
+        "Камера %s зафиксировала прибытие состава: рейс #%s, вагон %s",
+        camera, wagon.pk, wagon.number or "не распознан",
+    )
+    return {"seen": True, "number": number, "created": wagon.pk}
