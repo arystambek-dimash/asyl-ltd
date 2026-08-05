@@ -44,6 +44,13 @@ class Command(BaseCommand):
                             "camera-ai wagon-number="
                             + str(wagon_number.get("camera") or "unassigned")
                         )
+                        # Камера вместо датчика прибытия: увидела табличку —
+                        # приход открывается сам. Свой период опроса внутри.
+                        plate = continuous.poll_wagon_plate()
+                        if plate.get("created"):
+                            self.stdout.write(
+                                f"camera-ai wagon-arrival=#{plate['created']}"
+                            )
                     except Exception:
                         # Camera health and the durable desired configuration
                         # remain valid while a restarted Windows service comes

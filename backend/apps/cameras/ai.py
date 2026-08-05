@@ -14,13 +14,14 @@ import math
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Mapping, Sequence
 from numbers import Real
 
 from django.core.cache import cache
 
-from .services import CAMERA_HOST
+from .services import CAMERA_HOST, GO2RTC_API
 
 AI_URL = (
     os.environ.get("AI_SERVICE_URL")
@@ -430,3 +431,78 @@ def configure_wagon_number(camera: str | None, source: str = "main") -> dict:
 def delete_recordings(stream: str, starts: list[str]) -> dict:
     """Delete exact recording segments on the camera PC through its secured API."""
     return _call("DELETE", "/recordings", {"stream": stream, "starts": starts}) or {}
+
+
+# ── Детектор таблички вагона ───────────────────────────────────────────────
+# Датчика прибытия поезда нет: его роль играет камера. Модель находит табличку
+# вагона, но цифры не читает — распознавание номера появится отдельной OCR.
+# Backend'у здесь достаточно факта «табличка в кадре».
+
+WAGON_PLATE_TIMEOUT = 15
+WAGON_PLATE_MAX_BYTES = 12 * 1024 * 1024
+
+
+def camera_frame_jpeg(stream: str) -> bytes | None:
+    """Свежий кадр камеры из go2rtc. ``None`` — кадра нет, это не ошибка.
+
+    Периодическая проверка не должна падать из-за недоступной камеры: цикл
+    мониторинга просто пропустит итерацию и попробует снова.
+    """
+    if not GO2RTC_API:
+        return None
+    query = urllib.parse.urlencode({"src": stream})
+    request = urllib.request.Request(
+        f"{GO2RTC_API}/api/frame.jpeg?{query}", method="GET"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=WAGON_PLATE_TIMEOUT) as response:
+            if response.status != 200:
+                return None
+            frame = response.read(WAGON_PLATE_MAX_BYTES + 1)
+    except (OSError, TimeoutError, urllib.error.URLError):
+        return None
+    if len(frame) > WAGON_PLATE_MAX_BYTES or not frame.startswith(b"\xff\xd8\xff"):
+        # Не JPEG или больше лимита сервиса — отправлять такое бессмысленно.
+        return None
+    return frame
+
+
+def detect_wagon_plate(frame: bytes) -> dict:
+    """Найти табличку вагона на кадре. OCR здесь нет — только координаты."""
+    request = urllib.request.Request(
+        f"{AI_URL}/wagon-number/detect",
+        method="POST",
+        data=frame,
+        headers={"X-Api-Key": AI_KEY, "Content-Type": "image/jpeg"},
+    )
+    try:
+        response = urllib.request.urlopen(request, timeout=WAGON_PLATE_TIMEOUT)
+    except urllib.error.HTTPError as exc:
+        try:
+            raise AiError(exc.code, f"AI-сервис: ошибка {exc.code}") from exc
+        finally:
+            exc.close()
+    except (http.client.HTTPException, TimeoutError, OSError) as exc:
+        raise AiUnavailable(str(exc)) from exc
+    try:
+        return _read_json_object(response, MAX_JSON_RESPONSE_BYTES)
+    finally:
+        response.close()
+
+
+def wagon_plate_seen(stream: str) -> bool | None:
+    """Видна ли табличка вагона прямо сейчас.
+
+    ``None`` — ответить нельзя (нет кадра или сервис недоступен). Это не то же
+    самое, что ``False``: отсутствие ответа не должно читаться как «поезда
+    нет», иначе пауза без связи выглядела бы как уехавший состав.
+    """
+    frame = camera_frame_jpeg(stream)
+    if frame is None:
+        return None
+    try:
+        payload = detect_wagon_plate(frame)
+    except (AiUnavailable, AiError):
+        return None
+    detections = payload.get("detections")
+    return bool(detections) if isinstance(detections, list) else None

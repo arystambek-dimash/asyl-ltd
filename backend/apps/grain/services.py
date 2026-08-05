@@ -4,6 +4,7 @@
 резервом и оприходованием — два вагона не займут одно и то же место.
 """
 
+from datetime import timedelta
 from decimal import Decimal
 
 from django.db import transaction
@@ -1060,3 +1061,77 @@ def delete_finished_wagon(wagon: Wagon, user, reason: str = "") -> dict:
         supply.status = "closed"
         supply.save(update_fields=["status"])
     return {"reverted_kg": reverted_kg}
+
+
+# ── Автоматический приход по камере ────────────────────────────────────────
+# Датчика прибытия поезда на территории нет. Его роль играет детектор таблички
+# вагона: табличка в кадре означает, что состав встал под разгрузку.
+#
+# Модель находит табличку, но НЕ читает цифры — OCR появится отдельно. Поэтому
+# рейс заводится без номера: важен сам факт и время заезда, а номер допишет
+# оператор или будущий OCR.
+
+# Пауза без детекций, после которой следующая табличка считается новым
+# составом. Пока табличка видна раз за разом — это один и тот же поезд,
+# и второй рейс на него заводить нельзя.
+AUTO_ARRIVAL_GAP = timedelta(minutes=15)
+
+
+def _open_camera_wagon() -> Wagon | None:
+    """Незакрытый приход, заведённый камерой. Их не может быть двух сразу."""
+    return (
+        Wagon.objects.filter(
+            direction=Wagon.INTAKE,
+            number_source="camera",
+            number="",
+            status__in=st.ON_SITE_STATUSES,
+        )
+        .order_by("-id")
+        .first()
+    )
+
+
+@transaction.atomic
+def register_detected_arrival(user=None, *, camera_source: str = "") -> Wagon | None:
+    """Открыть приход по табличке вагона. Повторную детекцию игнорирует.
+
+    Возвращает созданный рейс либо ``None``, если открывать нечего: состав уже
+    на территории или его табличка была видна только что.
+    """
+    if _open_camera_wagon() is not None:
+        return None
+
+    recent = (
+        Wagon.objects.filter(
+            direction=Wagon.INTAKE,
+            number_source="camera",
+            arrived_at__gte=timezone.now() - AUTO_ARRIVAL_GAP,
+        )
+        .order_by("-arrived_at")
+        .first()
+    )
+    if recent is not None:
+        # Тот же состав всё ещё под камерой — новый рейс это не значит.
+        return None
+
+    wagon = Wagon.objects.create(
+        supply=None,
+        number="",
+        direction=Wagon.INTAKE,
+        workflow="simple",
+        status=st.ARRIVED,
+        arrived_at=timezone.now(),
+        arrived_by=user,
+        number_source="camera",
+        number_camera_source=camera_source or "",
+    )
+    _log(
+        wagon,
+        "arrival",
+        f"Камера зафиксировала прибытие состава (рейс #{wagon.pk}). "
+        "Номер не распознан — укажите его вручную.",
+        user,
+        camera_source=camera_source,
+        auto=True,
+    )
+    return wagon
