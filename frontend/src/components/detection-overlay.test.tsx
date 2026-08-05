@@ -73,3 +73,44 @@ describe("DetectionOverlay", () => {
     expect(container.querySelectorAll("span")).toHaveLength(0);
   });
 });
+
+describe("DetectionOverlay — данные от старого ПК цеха", () => {
+  // Сервис на ПК цеха обновляется вручную и может быть сильно старее CRM,
+  // поэтому поля рамки нельзя считать гарантированными.
+
+  it("survives a box that has no label at all", () => {
+    // Реальный краш: label.split уронил всю страницу монитора.
+    const broken = [{ x: 0.1, y: 0.1, w: 0.2, h: 0.2, counted: false }] as never;
+
+    expect(() => render(<DetectionOverlay detections={broken} />)).not.toThrow();
+  });
+
+  it("drops a box with missing coordinates instead of drawing NaN", () => {
+    const broken = [{ label: "Red_50", confidence: 0.9, counted: false }] as never;
+    const { container } = render(<DetectionOverlay detections={broken} />);
+
+    expect(container.innerHTML).not.toContain("NaN");
+    expect(container.querySelectorAll("span")).toHaveLength(0);
+  });
+
+  it("keeps the good boxes when one row is broken", () => {
+    const mixed = [{ label: "Red_50", confidence: 0.9, counted: false }, box({ label: "Blue_50" })] as never;
+    render(<DetectionOverlay detections={mixed} />);
+
+    // Одна битая запись не должна прятать остальные.
+    expect(screen.getByText(/Blue_50/)).toBeInTheDocument();
+    expect(screen.queryByText(/Red_50/)).not.toBeInTheDocument();
+  });
+
+  it("omits the percentage when confidence is missing", () => {
+    const noConfidence = [{ x: 0.1, y: 0.1, w: 0.2, h: 0.2, label: "Red_50" }] as never;
+    render(<DetectionOverlay detections={noConfidence} />);
+
+    expect(screen.getByText(/Red_50/).textContent).not.toContain("%");
+  });
+
+  it("colours a labelless box with the fallback rather than crashing", () => {
+    expect(bagColor(undefined)).toBe("#F79009");
+    expect(bagColor(null)).toBe("#F79009");
+  });
+});

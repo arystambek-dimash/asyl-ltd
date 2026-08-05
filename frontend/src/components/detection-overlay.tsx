@@ -19,8 +19,13 @@ const BAG_COLORS: Record<string, string> = {
 
 const FALLBACK_COLOR = "#F79009";
 
-export function bagColor(label: string): string {
-  return BAG_COLORS[label.split("_")[0]] ?? FALLBACK_COLOR;
+/**
+ * Данные приходят от AI-сервиса на ПК цеха, а он обновляется вручную и может
+ * быть сильно старее CRM. Считать поля гарантированными нельзя: отсутствующая
+ * метка роняла всю страницу монитора на `label.split`, а не просто одну рамку.
+ */
+export function bagColor(label: string | undefined | null): string {
+  return BAG_COLORS[String(label ?? "").split("_")[0]] ?? FALLBACK_COLOR;
 }
 
 /**
@@ -88,6 +93,26 @@ export function DetectionOverlay({
 }) {
   const [container, setContainer] = useState<HTMLElement | null>(null);
   const box = useVideoBox(container);
+  // Рамка без координат нарисовалась бы как NaN% и уехала бы по экрану,
+  // поэтому такие записи отбрасываем целиком, а не показываем сломанными.
+  const drawable = (detections ?? []).flatMap((item) => {
+    const coords = [item?.x, item?.y, item?.w, item?.h].map(Number);
+    if (coords.some((value) => !Number.isFinite(value))) return [];
+    const [x, y, w, h] = coords;
+    const confidence = Number(item?.confidence);
+    return [
+      {
+        x,
+        y,
+        w,
+        h,
+        label: String(item?.label ?? ""),
+        color: bagColor(item?.label),
+        counted: Boolean(item?.counted),
+        confidence: Number.isFinite(confidence) ? confidence : null,
+      },
+    ];
+  });
 
   return (
     <div
@@ -100,37 +125,35 @@ export function DetectionOverlay({
           : undefined
       }
     >
-      {!detections?.length ? null : (
+      {!drawable.length ? null : (
         <>
-          {detections.map((box, index) => {
-            const color = bagColor(box.label);
-            return (
-              <div
-                key={`${box.label}-${index}-${box.x}-${box.y}`}
-                className="absolute rounded-[3px] transition-[left,top,width,height] duration-150 ease-out"
-                style={{
-                  left: `${box.x * 100}%`,
-                  top: `${box.y * 100}%`,
-                  width: `${box.w * 100}%`,
-                  height: `${box.h * 100}%`,
-                  borderColor: color,
-                  // Засчитанный мешок выделяется толщиной и свечением — видно
-                  // не только что модель его нашла, но и что счётчик его принял.
-                  borderWidth: box.counted ? 3 : 1.5,
-                  borderStyle: "solid",
-                  boxShadow: box.counted ? `0 0 0 1px #fff, 0 0 12px ${color}` : undefined,
-                }}
+          {drawable.map((box, index) => (
+            <div
+              key={`${box.label}-${index}-${box.x}-${box.y}`}
+              className="absolute rounded-[3px] transition-[left,top,width,height] duration-150 ease-out"
+              style={{
+                left: `${box.x * 100}%`,
+                top: `${box.y * 100}%`,
+                width: `${box.w * 100}%`,
+                height: `${box.h * 100}%`,
+                borderColor: box.color,
+                // Засчитанный мешок выделяется толщиной и свечением — видно
+                // не только что модель его нашла, но и что счётчик его принял.
+                borderWidth: box.counted ? 3 : 1.5,
+                borderStyle: "solid",
+                boxShadow: box.counted ? `0 0 0 1px #fff, 0 0 12px ${box.color}` : undefined,
+              }}
+            >
+              <span
+                className="absolute -top-[18px] left-0 whitespace-nowrap rounded-[3px] px-1 text-[10px] font-bold leading-4 text-white"
+                style={{ backgroundColor: box.color }}
               >
-                <span
-                  className="absolute -top-[18px] left-0 whitespace-nowrap rounded-[3px] px-1 text-[10px] font-bold leading-4 text-white"
-                  style={{ backgroundColor: color }}
-                >
-                  {box.counted && "✓ "}
-                  {box.label} {Math.round(box.confidence * 100)}%
-                </span>
-              </div>
-            );
-          })}
+                {box.counted && "✓ "}
+                {box.label}
+                {box.confidence === null ? "" : ` ${Math.round(box.confidence * 100)}%`}
+              </span>
+            </div>
+          ))}
         </>
       )}
     </div>
