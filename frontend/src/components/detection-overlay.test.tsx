@@ -114,3 +114,55 @@ describe("DetectionOverlay — данные от старого ПК цеха", 
     expect(bagColor(null)).toBe("#F79009");
   });
 });
+
+describe("DetectionOverlay — привязка к видео", () => {
+  /**
+   * Видео и оверлей — соседи в общем relative-боксе карточки, а не
+   * вложенные друг в друга. Поиск видео внутри самого оверлея молча ничего
+   * не находил: координаты приходили, счётчик на кнопке рос, а рамок на
+   * экране не было.
+   */
+  function renderBesideVideo() {
+    // jsdom не проигрывает видео и не раскладывает элементы, поэтому размеры
+    // кадра и контейнера задаём вручную — иначе measure() нечего считать.
+    Object.defineProperty(HTMLVideoElement.prototype, "videoWidth", {
+      configurable: true,
+      value: 1920,
+    });
+    Object.defineProperty(HTMLVideoElement.prototype, "videoHeight", {
+      configurable: true,
+      value: 1080,
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      value: 800,
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      value: 600,
+    });
+    const result = render(
+      <div style={{ position: "relative" }}>
+        <video />
+        <DetectionOverlay detections={[box()]} />
+      </div>,
+    );
+    return result.container;
+  }
+
+  it("measures the video that sits next to it, not inside it", () => {
+    const container = renderBesideVideo();
+    const overlay = container.querySelector("[aria-hidden]") as HTMLElement;
+
+    // Найдя видео, оверлей задаёт себе явную геометрию кадра. Пока видео
+    // искали внутри себя, эффект выходил раньше и стили оставались пустыми —
+    // рамки существовали, но были привязаны не к кадру.
+    expect(overlay.style.width).not.toBe("");
+    expect(overlay.style.height).not.toBe("");
+    expect(overlay.querySelector("video")).toBeNull();
+  });
+
+  it("still renders when there is no video element at all", () => {
+    expect(() => render(<DetectionOverlay detections={[box()]} />)).not.toThrow();
+  });
+});

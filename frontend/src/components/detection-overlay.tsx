@@ -40,12 +40,16 @@ function useVideoBox(container: HTMLElement | null) {
 
   useEffect(() => {
     if (!container) return;
-    const video = container.querySelector("video");
-    if (!video) return;
+    // Видео — сосед оверлея, а не его потомок: оба лежат в общем relative-боксе
+    // карточки. Искать его внутри себя бессмысленно — так рамки не рисовались
+    // вообще, хотя координаты приходили.
+    const parent = container.parentElement;
+    const video = parent?.querySelector("video");
+    if (!parent || !video) return;
 
     const measure = () => {
       const { videoWidth, videoHeight } = video;
-      const { clientWidth, clientHeight } = container;
+      const { clientWidth, clientHeight } = parent;
       if (!videoWidth || !videoHeight || !clientWidth || !clientHeight) return setBox(null);
       const scale = Math.min(clientWidth / videoWidth, clientHeight / videoHeight);
       const width = videoWidth * scale;
@@ -61,12 +65,16 @@ function useVideoBox(container: HTMLElement | null) {
     measure();
     video.addEventListener("loadedmetadata", measure);
     video.addEventListener("resize", measure);
-    const observer = new ResizeObserver(measure);
-    observer.observe(container);
+    // Наблюдаем за родителем: размеры самого оверлея мы же и задаём, и
+    // подписка на него дала бы петлю измерение → resize → измерение.
+    // ResizeObserver есть не везде — без него рамки просто не подстроятся
+    // под смену размера окна, но отрисуются.
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(parent);
     return () => {
       video.removeEventListener("loadedmetadata", measure);
       video.removeEventListener("resize", measure);
-      observer.disconnect();
+      observer?.disconnect();
     };
   }, [container]);
 
