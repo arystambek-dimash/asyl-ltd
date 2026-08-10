@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from rest_framework import serializers
+
 from .models import ClientPrice, Product
 
 
@@ -17,7 +18,6 @@ class ProductSerializer(serializers.ModelSerializer):
                   "label", "cv_class", "available_bags"]
 
     def get_available_bags(self, obj):
-        # Остаток склада: заказ доступен только по товару в наличии.
         stock = getattr(obj, "stock", None)
         return stock.bags if stock else 0
 
@@ -40,8 +40,6 @@ class ProductSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         if not self._can_view_color():
-            # Цвет — рабочая классификация для сотрудников, создающих заказы.
-            # У остальных он не должен утекать ни отдельным полем, ни CV-классом.
             data.pop("color", None)
             data.pop("color_label", None)
             data.pop("cv_class", None)

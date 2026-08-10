@@ -2,10 +2,11 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from rest_framework import serializers, generics
+from rest_framework import generics, serializers
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
+
 from apps.clients.models import Client
 from config.throttles import RegisterRateThrottle
 
@@ -56,10 +57,19 @@ class RegisterSerializer(serializers.Serializer):
     @transaction.atomic
     def create(self, data):
         user = User.objects.create_user(
-            username=data["username"], password=data["password"], is_client=True)
-        Client.objects.create(
-            user=user, first_name=data["first_name"], last_name=data.get("last_name", ""),
-            company_name=data["company_name"], phone=data["phone"], iin=data["iin"])
+            username=data["username"],
+            password=data["password"],
+            first_name=data["first_name"],
+            last_name=data.get("last_name", ""),
+            is_client=True,
+            must_change_password=False,
+        )
+        Client.objects.create_with_user(
+            user=user,
+            company_name=data["company_name"],
+            phone=data["phone"],
+            iin=data["iin"],
+        )
         return user
 
 

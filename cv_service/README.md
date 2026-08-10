@@ -21,11 +21,14 @@ CORS и интерактивная документация отключены.
 |---|---|---|
 | GET | `/health` | модель, MediaMTX, processors и последние кадры |
 | GET | `/cameras` | инвентарь MediaMTX и AI-состояния |
+| GET | `/cameras/cam2/line` | сохранённая линия подсчёта камеры |
+| PUT | `/cameras/cam2/line` | атомарно сохранить и применить линию |
 | GET | `/processors` | тёплые processors |
 | GET | `/always-on` | выбранные фоновые processors и их состояние |
 | PUT | `/always-on` | атомарно заменить постоянный список камер |
 | GET | `/camera-roles/wagon-number` | назначенная камера номера вагона |
 | PUT | `/camera-roles/wagon-number` | закрепить одну камеру за Wagon OCR 24/7 |
+| POST | `/wagon-number/detect` | найти табличку на JPEG-кадре |
 | DELETE | `/recordings` | удалить перечисленные сегменты записи с ПК камер |
 | GET | `/processors/cam2` | состояние одной камеры |
 | POST | `/processors/cam2/prewarm` | прогреть decoder/inference в `IDLE` без записи |
@@ -51,6 +54,11 @@ FFmpeg publisher в обоих случаях закрывается.
 Он создаёт отдельный venv, копирует checkpoint, выполняет model warm-up,
 проверяет MediaMTX и H.264 encoder, защищает файлы ACL, открывает порт 8890
 только для Tailscale-IP backend и регистрирует boot-задачу `SYSTEM`.
+Рабочее состояние хранится в соседней папке `state`, а не в заменяемом пакете
+`cv_service`. При первом обновлении installer переносит известный старый
+`cv_service/data/camera-roles.json` до удаления пакета. Если старый и новый
+файлы уже существуют и различаются, установка останавливается без
+перезаписи — оператор должен сначала сверить их вручную.
 
 На camera-PC сохраняется только `AI_SERVICE_API_KEY_SHA256`. Plaintext ключ
 остаётся в `AI_SERVICE_API_KEY` production backend. Получить digest можно локально:
@@ -77,6 +85,20 @@ python -c "import hashlib,os; print(hashlib.sha256(os.environ['AI_SERVICE_API_KE
 камеры и выполняют inference, но не публикуют `cam<N>ai`, поэтому MediaMTX не
 создаёт фоновые видеозаписи.
 
+Линии из `PUT /cameras/cam<N>/line` хранятся отдельно в
+`AI_COUNTING_LINES_STATE_PATH`. Обновление работающего processor сбрасывает
+только его краткоживущие tracks, но не уже накопленный итог. Новый processor
+автоматически получает сохранённую линию; `GET /cameras` возвращает те же
+настройки в `line_configs` для стены камер.
+
+Первый переход с отдельного production build требует ручной миграции: до
+переустановки экспортировать `line_configs` из авторизованного `GET /cameras`,
+после установки повторить каждый config через `PUT /cameras/cam<N>/line` и
+сверить новый `GET /cameras`. Путь старого локального хранилища неизвестен,
+поэтому installer намеренно не угадывает и не удаляет его. Обычный deploy
+backend не обновляет camera-PC; этот шаг нужен только перед ручным запуском
+`install-ai-service.ps1`.
+
 При `POST /processors/cam<N>` прогретый процессор переключается в режим
 отгрузочной сессии, обнуляет её счётчик и начинает публикацию/запись. `DELETE`
 закрывает публикацию и сразу возвращает выбранную камеру в режим 24/7.
@@ -94,6 +116,16 @@ python -c "import hashlib,os; print(hashlib.sha256(os.environ['AI_SERVICE_API_KE
 проверяет, что поток существует в MediaMTX. Это отдельная роль камеры: она не
 запускает модель подсчёта мешков и не занимает её processor. OCR-worker будет
 подключён к этому назначению отдельным этапом.
+
+Канонический `POST /wagon-number/detect` принимает только JPEG не больше
+`AI_WAGON_FRAME_MAX_BYTES`. Детектор табличек является отдельной capability:
+его нельзя подменять общей моделью мешков, иначе любой мешок мог бы открыть
+ложный приход. Наблюдаемая production-реализация использует отдельные
+`wagon-number.pt` и Paddle OCR, но их runtime и веса в этот репозиторий не
+входят. Поэтому текущий канонический build честно отвечает HTTP 503, а
+`/health` сообщает `capabilities.wagon_plate.available=false`, пока отдельный
+проверенный detector adapter не передан в `ProcessorManager`. Это намеренный
+fail-closed режим, а не эквивалент production OCR.
 
 ## Финализация
 

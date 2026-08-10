@@ -13,7 +13,7 @@ const me: Me = {
   monoblock_name: null,
   monoblock_camera: null,
   permissions: [],
-  role_name: "Оператор",
+  position: "Оператор",
   client_id: null,
   sales_department: null,
 };

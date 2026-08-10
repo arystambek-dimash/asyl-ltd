@@ -142,7 +142,7 @@ export function VoiceRecorder({ onChange, disabled, maxSeconds = 300 }: VoiceRec
 
         try {
           const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
-          // Расширение по типу: бэкенд принимает файл по content-type, но имя
+          // Расширение по типу: бэкенд проверит сигнатуру содержимого, а имя
           // должно оставаться узнаваемым в списке вложений.
           const ext = (recorder.mimeType || "audio/webm").includes("ogg") ? "ogg" : "webm";
           const file = new File([blob], `golos-${Date.now()}.${ext}`, { type: blob.type });

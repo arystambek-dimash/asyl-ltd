@@ -788,7 +788,7 @@ function OrdersPageInner() {
   const canCorrectPrice = can(me, "orders.correct_price");
   const canExport = can(me, "reports.export");
   const canRollback = can(me, "shipping.rollback");
-  const canManageDepartments = can(me, "rbac.manage");
+  const canManageDepartments = can(me, "sys_permissions.manage");
   const showDept = (departments?.length ?? 0) > 1;
   const [open, setOpen] = useState(false);
   const [templateOrder, setTemplateOrder] = useState<Order | null>(null);

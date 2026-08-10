@@ -13,8 +13,10 @@ pytestmark = pytest.mark.django_db
 def _client_with_history():
     product = Product.objects.create(
         name="Мука", color="Red", weight_kg="50", price="1000")
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Тест", last_name="Клиент", phone="x")
+    client.user.is_active = True
+    client.user.save(update_fields=["is_active"])
     order = Order.objects.create(client=client, status="shipped")
     OrderItem.objects.create(
         order=order, product=product, quantity=1, unit_price=Decimal("1000"))
@@ -25,6 +27,7 @@ def _client_with_history():
 
 def test_superadmin_purges_client_with_orders(auth_client, make_user):
     client = _client_with_history()
+    portal_user = client.user
     root = make_user(username="root")
     root.is_superuser = True
     root.save(update_fields=["is_superuser"])
@@ -35,6 +38,8 @@ def test_superadmin_purges_client_with_orders(auth_client, make_user):
     assert not Client.objects.filter(pk=client.pk).exists()
     assert not Order.all_objects.filter(client_id=client.pk).exists()
     assert not Payment.objects.filter(order__client_id=client.pk).exists()
+    portal_user.refresh_from_db()
+    assert portal_user.is_active is False
 
 
 def test_purge_denied_for_non_superadmin(auth_client, user_with_perms):

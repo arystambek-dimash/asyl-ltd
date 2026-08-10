@@ -43,6 +43,28 @@ Assert-True ($aiInstallerText -match "taskName = 'ASYL-AI-Service'") 'AI boot ta
 Assert-True ($aiInstallerText -match 'New-ScheduledTaskTrigger -AtStartup') 'AI service AtStartup trigger is missing.'
 Assert-True ($aiInstallerText -match 'AI_SERVICE_API_KEY_SHA256') 'AI service digest is not installed.'
 Assert-True ($aiInstallerText -match 'AI_ALWAYS_ON_STATE_PATH') 'Durable always-on AI state path is not installed.'
+Assert-True ($aiInstallerText -match 'AI_CAMERA_ROLES_STATE_PATH') 'Durable camera-role state path is not installed.'
+Assert-True ($aiInstallerText -match 'AI_COUNTING_LINES_STATE_PATH') 'Durable counting-line state path is not installed.'
+Assert-True ($aiInstallerText -match 'data\\camera-roles\.json') 'Known legacy camera-role state is not migrated.'
+Assert-True (
+    $aiInstallerText -match 'Get-FileHash' -and
+    $aiInstallerText -match 'Refusing to overwrite differing camera-role states'
+) 'Differing legacy/durable camera-role state is not rejected.'
+$legacyRoleMoveIndex = $aiInstallerText.IndexOf('[IO.File]::Move($migrationTemporary, $cameraRolesStatePath)')
+$installedPackageRemovalIndex = $aiInstallerText.IndexOf('Remove-Item -LiteralPath $installedPackage -Recurse -Force')
+$aiStopIndex = $aiInstallerText.IndexOf('Stop-ScheduledTask -TaskName $taskName')
+$aiQuiesceGuardIndex = $aiInstallerText.IndexOf('Existing AI service did not quiesce before state migration')
+Assert-True (
+    $aiStopIndex -ge 0 -and
+    $aiQuiesceGuardIndex -gt $aiStopIndex -and
+    $legacyRoleMoveIndex -gt $aiQuiesceGuardIndex -and
+    $legacyRoleMoveIndex -ge 0 -and
+    $installedPackageRemovalIndex -gt $legacyRoleMoveIndex
+) 'AI service must quiesce before legacy state moves and the old package is deleted.'
+Assert-True (
+    $aiInstallerText -match 'aiQuiesceDeadline' -and
+    $aiInstallerText -match 'Get-NetTCPConnection -State Listen -LocalPort 8890'
+) 'AI service quiesce guard must be bounded and verify its listener is closed.'
 Assert-True ($aiInstallerText -match "'state.py'") 'Always-on state module is not validated before install.'
 Assert-True ($aiInstallerText -notmatch 'AI_SERVICE_API_KEY\s*=') 'AI installer stores a plaintext API key.'
 Assert-True ($aiRunnerText -match "Plaintext AI_SERVICE_API_KEY is forbidden") 'AI runner does not reject plaintext secrets.'

@@ -1,5 +1,3 @@
-"""PDF-счёт для заказа клиентского портала."""
-
 from __future__ import annotations
 
 from decimal import Decimal, ROUND_HALF_UP
@@ -22,7 +20,6 @@ from reportlab.platypus import (
 
 from .labels import payment_method_label
 from .models import Order, Payment
-
 
 ONES = ["", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"]
 ONES_F = ["", "одна", "две", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять"]
@@ -47,7 +44,9 @@ def build_payment_receipt_pdf(payment: Payment) -> bytes:
     """Build an ASYL LTD payment statement for a confirmed payment."""
     _register_fonts()
     supplier = settings.INVOICE_SUPPLIER
-    payment = Payment.objects.select_related("order__client", "recorded_by").get(
+    payment = Payment.objects.select_related(
+        "order__client__user", "recorded_by"
+    ).get(
         pk=payment.pk
     )
     buffer = BytesIO()

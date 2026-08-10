@@ -1180,7 +1180,7 @@ function ShippingPageInner() {
   const canTrain = can(me, "train.load");
   const canEditStatus = can(me, "orders.edit");
   const canRollback = can(me, "shipping.rollback");
-  const canManage = can(me, "rbac.manage");
+  const canManage = can(me, "sys_permissions.manage");
   const canViewHistory = can(me, "shipping.view");
   const { data: orders, error: loadError, reload } = useApi<Order[]>("/orders/?post_board=1");
   const { data: cameras, error: camerasError, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");

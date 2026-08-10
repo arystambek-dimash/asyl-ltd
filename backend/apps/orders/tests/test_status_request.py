@@ -16,7 +16,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _order():
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     return Order.objects.create(client=c, status="confirmed")
 
 

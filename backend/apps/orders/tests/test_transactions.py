@@ -20,7 +20,7 @@ def test_transaction_capabilities_include_employee_permissions(
     auth_client,
     user_with_perms,
 ):
-    client = Client.objects.create(first_name="Только", last_name="Просмотр")
+    client = Client.objects.create_with_user(first_name="Только", last_name="Просмотр")
     order = Order.objects.create(client=client, status="shipped")
     OrderItem.objects.create(order=order, quantity=2, unit_price="100.00")
     rejected = Payment.objects.create(
@@ -48,7 +48,7 @@ def test_transaction_capabilities_include_employee_permissions(
 def test_transaction_history_is_paginated_with_complete_currency_totals(
     auth_client, accountant,
 ):
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Транзакционный", last_name="Клиент", phone="87001234567"
     )
     kzt_order = Order.objects.create(
@@ -117,7 +117,7 @@ def test_paid_qr_refund_is_reserved_in_apipay_until_provider_confirmation(
             "reason": "Тестовый платёж",
         }
     }
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Возврат", phone="87770000000"
     )
     order = Order.objects.create(
@@ -177,7 +177,7 @@ def test_paid_qr_refund_is_reserved_in_apipay_until_provider_confirmation(
 def test_manual_refund_requires_reason_and_cannot_exceed_available(
     auth_client, accountant,
 ):
-    client = Client.objects.create(first_name="Лимит", phone="87770000006")
+    client = Client.objects.create_with_user(first_name="Лимит", phone="87770000006")
     order = Order.objects.create(client=client, status="shipped")
     payment = Payment.objects.create(
         order=order, amount="10.00", method="cash", status="confirmed"
@@ -224,7 +224,7 @@ def test_phone_refund_is_reserved_until_provider_webhook(
             "status": "processing",
         }
     }
-    client = Client.objects.create(first_name="Телефон", phone="87770000007")
+    client = Client.objects.create_with_user(first_name="Телефон", phone="87770000007")
     order = Order.objects.create(client=client, status="shipped")
     payment = Payment.objects.create(
         order=order, amount="10.00", method="kaspi", status="confirmed"
@@ -253,10 +253,10 @@ def test_phone_refund_is_reserved_until_provider_webhook(
 
 
 def test_transaction_search_runs_across_full_history(auth_client, accountant):
-    matching = Client.objects.create(
+    matching = Client.objects.create_with_user(
         first_name="Айдана", last_name="Особенная", phone="87770000001"
     )
-    other = Client.objects.create(
+    other = Client.objects.create_with_user(
         first_name="Другой", last_name="Клиент", phone="87770000002"
     )
     for client in (matching, other):
@@ -279,7 +279,7 @@ def test_transaction_search_runs_across_full_history(auth_client, accountant):
 def test_cashier_can_reject_pending_transaction_with_reason(
     auth_client, accountant,
 ):
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Клиент", phone="87770000003"
     )
     order = Order.objects.create(
@@ -309,7 +309,7 @@ def test_phone_kaspi_rejection_waits_for_provider_confirmation(
         "message": "Invoice cancellation queued",
         "invoice_id": 991,
     }
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Kaspi", phone="87770000004"
     )
     order = Order.objects.create(
@@ -338,7 +338,7 @@ def test_phone_kaspi_rejection_waits_for_provider_confirmation(
 
 
 def test_active_qr_transaction_cannot_be_rejected(auth_client, accountant):
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="QR", phone="87770000005"
     )
     order = Order.objects.create(
@@ -376,7 +376,7 @@ def test_transaction_history_query_count_is_independent_of_row_count(
     import django.db
     from django.test.utils import CaptureQueriesContext
 
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Нагрузочный", last_name="Клиент", phone="87009990000"
     )
 
@@ -425,7 +425,7 @@ def test_summary_splits_paid_total_by_payment_method(auth_client, accountant):
     is exactly what the cashier cannot act on. The split has to reconcile with
     the total, so a refund reduces its own method's share.
     """
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Смешанный", last_name="Клиент", phone="87005550000"
     )
     order = Order.objects.create(
@@ -456,7 +456,7 @@ def test_summary_splits_paid_total_by_payment_method(auth_client, accountant):
 
 
 def test_transaction_status_counts_and_filter(auth_client, accountant):
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Статусный", last_name="Клиент", phone="87001112233")
     order = Order.objects.create(client=client, status="shipped")
     for status, n in (("confirmed", 2), ("rejected", 1), ("received", 3)):
@@ -480,7 +480,7 @@ def test_transaction_status_counts_and_filter(auth_client, accountant):
 def test_awaiting_customer_is_counted_and_filtered_as_requested(
     auth_client, accountant,
 ):
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Ожидающий", last_name="Клиент", phone="87007778899")
     order = Order.objects.create(client=client, status="shipped")
     provider_payment = Payment.objects.create(

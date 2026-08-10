@@ -1,11 +1,10 @@
-from apps.common.permissions import HasPerm, PermViewSetMixin
+from apps.common.permissions import PermViewSetMixin, PermAPIViewMixin
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
-from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.clients.querysets import visible_clients
 from .models import Product, ClientPrice
 from .serializers import ProductSerializer
 from .services import archive_product, restore_product
@@ -48,11 +47,10 @@ class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         return Response(ProductSerializer(product, context={"request": request}).data)
 
 
-class ClientPricesView(APIView):
-    """Текущие цены клиента: {product_id: price} — для предзаполнения формы заказа."""
-
-    def get_permissions(self):
-        return [HasPerm("orders.create", "orders.edit")]
+class ClientPricesView(PermAPIViewMixin, APIView):
+    required_perms = {
+        "get": ["orders.create", "orders.edit"],
+    }
 
     def get(self, request):
         raw_client_id = request.query_params.get("client")
@@ -67,19 +65,16 @@ class ClientPricesView(APIView):
         currency = (request.query_params.get("currency") or "").upper()
         if currency and currency not in dict(ClientPrice.CURRENCIES):
             raise ValidationError({"currency": "Выберите KZT или USD."})
-        # Договорные цены относятся к клиентским данным: id чужого клиента
-        # не должен обходить разграничение по отделам.
-        reference_perm = (
-            "orders.create"
-            if request.user.has_perm_code("orders.create")
-            else "orders.edit"
-        )
-        qs = ClientPrice.objects.filter(
-            client__in=visible_clients(request.user, reference_perm)
-        )
-        qs = qs.filter(client_id=client_id)
+        qs = ClientPrice.objects.filter(client_id=client_id)
+
         if not currency:
-            currency = (qs.values_list("client__currency", flat=True).first()
-                        or "KZT")
+            currency = (
+                    qs.values_list("client__currency", flat=True).first()
+                    or "KZT"
+            )
+
         qs = qs.filter(currency=currency)
-        return Response({str(cp.product_id): str(cp.price) for cp in qs})
+        return Response({
+            str(price.product_id): str(price.price)
+            for price in qs
+        })

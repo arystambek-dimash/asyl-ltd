@@ -15,7 +15,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _sessions(count):
-    client = Client.objects.create(first_name="A", last_name="B", phone="p")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="p")
     MonoblockCameraSettings.objects.create(
         singleton=True, camera_names={"cam1": "Ворота"})
     for _ in range(count):

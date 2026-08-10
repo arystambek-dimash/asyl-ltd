@@ -10,7 +10,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _client(**kwargs):
-    return Client.objects.create(
+    return Client.objects.create_with_user(
         first_name="Личный", last_name="Прайс", phone="1", **kwargs)
 
 

@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
+import type { AxiosError } from "axios";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
@@ -12,10 +13,13 @@ import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/ui/password-input";
 
 export default function LoginPage() {
-  const { login, me, loadMe } = useAuth();
+  const { login, completeInitialPasswordChange, me, loadMe } = useAuth();
   const router = useRouter();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -31,9 +35,21 @@ export default function LoginPage() {
     setBusy(true);
     setError("");
     try {
-      const m = await login(username, password);
+      if (passwordChangeRequired && newPassword !== confirmPassword) {
+        setError("Новые пароли не совпадают.");
+        return;
+      }
+      const m = passwordChangeRequired
+        ? await completeInitialPasswordChange(username, password, newPassword)
+        : await login(username, password);
       router.replace(homeFor(m));
     } catch (err) {
+      const code = (err as AxiosError<{ code?: string }>).response?.data?.code;
+      if (code === "password_change_required") {
+        setPasswordChangeRequired(true);
+        setError("Установите личный пароль перед первым входом.");
+        return;
+      }
       setError(apiError(err));
     } finally {
       setBusy(false);
@@ -65,7 +81,14 @@ export default function LoginPage() {
                 value={username}
                 autoFocus
                 autoComplete="username"
-                onChange={(e) => setUsername(e.target.value)}
+                onChange={(e) => {
+                  setUsername(e.target.value);
+                  setPassword("");
+                  setPasswordChangeRequired(false);
+                  setNewPassword("");
+                  setConfirmPassword("");
+                  setError("");
+                }}
                 required
               />
             </div>
@@ -79,13 +102,46 @@ export default function LoginPage() {
                 required
               />
             </div>
+            {passwordChangeRequired && (
+              <>
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  Временный пароль принят. Придумайте личный пароль — только после этого откроется кабинет.
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="new-password">Новый пароль</Label>
+                  <PasswordInput
+                    id="new-password"
+                    value={newPassword}
+                    autoComplete="new-password"
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="confirm-password">Повторите новый пароль</Label>
+                  <PasswordInput
+                    id="confirm-password"
+                    value={confirmPassword}
+                    autoComplete="new-password"
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    required
+                  />
+                </div>
+              </>
+            )}
             {error && (
               <p className="rounded-md bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
                 {error}
               </p>
             )}
             <Button type="submit" disabled={busy} className="mt-1">
-              {busy ? "Вход…" : "Войти"}
+              {busy
+                ? passwordChangeRequired
+                  ? "Смена пароля…"
+                  : "Вход…"
+                : passwordChangeRequired
+                  ? "Сохранить пароль и войти"
+                  : "Войти"}
             </Button>
           </form>
           <Link href="/register" className="mt-4 block text-center text-sm text-[var(--muted-foreground)] underline">

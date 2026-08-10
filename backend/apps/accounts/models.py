@@ -1,14 +1,12 @@
+from functools import cached_property
+
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
 
 class User(AbstractUser):
     is_client = models.BooleanField(default=False)
-
-    # Права = права роли ∪ личные права сотрудника: правка роли действует сразу.
-    @property
-    def _employee(self):
-        return getattr(self, "employee", None)
+    must_change_password = models.BooleanField(default=False)
 
     @property
     def active_monoblock_device(self):
@@ -19,26 +17,22 @@ class User(AbstractUser):
     def is_monoblock(self) -> bool:
         return self.active_monoblock_device is not None
 
-    @property
+    @cached_property
     def perm_codes(self) -> set:
         if self.is_superuser:
-            from apps.rbac.perms import ALL_CODES
+            from apps.sys_permissions.perms import ALL_CODES
             return set(ALL_CODES)
         if self.is_monoblock:
-            # Это системная учётная запись устройства, не сотрудник и не роль.
-            # Минимальный набор позволяет видеть очередь и вести погрузку.
             return {"orders.view", "shipping.load"}
-        emp = self._employee
-        # Деактивированный сотрудник теряет все права, даже если роль осталась.
+        emp = getattr(self, "employee", None)
+
         if emp is None or not emp.is_active:
             return set()
-        return emp.effective_perm_codes
+        return {permission.code for permission in emp.permissions.all()}
 
     def has_perm_code(self, code: str) -> bool:
         if self.is_superuser:
             return True
         if self.is_monoblock:
             return code in {"orders.view", "shipping.load"}
-        emp = self._employee
-        return (emp is not None and emp.is_active
-                and code in emp.effective_perm_codes)
+        return code in self.perm_codes

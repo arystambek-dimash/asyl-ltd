@@ -184,7 +184,7 @@ export function CameraWall() {
   const [cameraName, setCameraName] = useState("");
   const [savingName, setSavingName] = useState(false);
   const [renameError, setRenameError] = useState("");
-  const canRename = can(me, "rbac.manage");
+  const canRename = can(me, "sys_permissions.manage");
   const canConfigureLine = !!me?.is_superuser;
   const lineRequestId = useRef(0);
   const [lineCamera, setLineCamera] = useState<(CameraFeed & { src: string }) | null>(null);

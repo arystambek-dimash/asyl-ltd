@@ -2,7 +2,7 @@
 
 Внутренняя система учёта цеха «Асыл-LTD»: заказы и оплаты (в т.ч. долги),
 склад, пост погрузки с камерами и AI-подсчётом мешков, клиентский портал,
-разграничение доступа по ролям и отделам.
+разграничение доступа по персональным системным правам и отделам.
 
 - **Бэкенд** (`backend/`): Django + DRF + PostgreSQL + Redis, JWT (simplejwt).
 - **Фронтенд** (`frontend/`): Next.js 15 (App Router) + React 19 + Tailwind 4,
@@ -19,7 +19,7 @@
 1. [Запуск](#запуск)
 2. [Структура репозитория](#структура-репозитория)
 3. [Архитектура](#архитектура)
-4. [Доступы: пользователи, RBAC, отделы](#доступы-пользователи-rbac-отделы)
+4. [Доступы: пользователи, системные права, отделы](#доступы-пользователи-системные-права-отделы)
 5. [Бизнес-логика по приложениям](#бизнес-логика-по-приложениям)
    - [orders — заказы и оплаты](#orders--заказы-и-оплаты)
    - [shipments — отгрузка](#shipments--отгрузка)
@@ -60,7 +60,7 @@ python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 python manage.py migrate
 python manage.py runserver
-pytest                      # 340 тестов
+pytest
 
 # Фронтенд
 cd frontend
@@ -79,9 +79,10 @@ backend/
   apps/
     common/          # общие DRF-права (IsStaff, HasPerm, PermViewSetMixin…)
     accounts/        # User (is_client, perm_codes), /auth/login|refresh|me
-    rbac/            # Permission, Role, коды прав, scoping по отделам
-    employees/       # Employee: связка User + Role + личные права
-    clients/         # Client, Store, Department; долги, аналитика
+    sys_permissions/ # Permission и единый каталог кодов системных прав
+    employees/       # Employee: профиль User + персональные права
+    clients/         # Client, Store; долги, аналитика
+    sales/           # Department: динамические отделы продаж
     catalog/         # Product (+архив), ClientPrice
     orders/          # Order, OrderItem, Payment, StatusChangeRequest
     shipments/       # Shipment: приезд → погрузка → выезд, вагон
@@ -122,28 +123,29 @@ camera-monitor (отдельный контейнер) — непрерывны�
 
 - **Каждое значимое действие логируется** в `eventlog` через `log_event(...)`
   (оплаты, статусы, погрузка, склад, архив товаров, долги).
-- **Права** — собственный RBAC по строковым кодам (`orders.confirm`),
+- **Права** — прямые системные permissions по строковым кодам (`orders.confirm`),
   а не Django-группы. Проверка на бэке (`HasPerm`) и на фронте (`can()`).
-- **Отделы** (`main` = Отдел 1, `field` = Отдел 2 «Сити») жёстко разделяют
-  данные: queryset'ы фильтруются `scope_by_department`.
+- **Отделы продаж** — динамический справочник: сотрудника можно закрепить за
+  отделом, а его код фиксируется в заказе для фильтров и отчётов. Сам отдел
+  не выдаёт permissions и не ограничивает доступ к данным.
 - **Мягкое удаление**: заказы — в корзину (`deleted_at`), товары — в архив
   (`is_active=False`). Удалённое автоматически исчезает из списков и отчётов.
 
 ---
 
-## Доступы: пользователи, RBAC, отделы
+## Доступы: пользователи, системные права, отделы
 
 ### accounts
 
 `User` наследует `AbstractUser` + флаг **`is_client`** (клиент портала).
 
-- `perm_codes` — set кодов прав: суперюзер → все; сотрудник → права роли ∪
-  личные права; клиент → пусто.
+- `perm_codes` — set кодов прав: суперюзер → все; сотрудник → его прямые
+  permissions; клиент → пусто.
 - `has_perm_code(code)` — точечная проверка.
 
 Эндпоинты: `POST /api/auth/login/` (throttle 10/мин), `POST /api/auth/refresh/`,
-`GET /api/auth/me/` → id, username, permissions, role_name, client_id,
-department_names.
+`GET /api/auth/me/` → id, username, permissions, position, client_id,
+sales_department.
 
 ### common/permissions.py — общие DRF-права
 
@@ -151,46 +153,34 @@ department_names.
 |---|---|
 | `IsStaff` | авторизованный сотрудник (не клиент) |
 | `IsClientUser` | авторизованный клиент портала |
-| `IsSuperuser` | только суперадмин |
+| `IsSuperUser` | только суперадмин |
 | `HasPerm(*codes)` | сотрудник хотя бы с одним из кодов |
-| `PermViewSetMixin` | миксин: `required_perms = {action: код или кортеж}` → `HasPerm`; для action без записи — просто `IsAuthenticated` |
+| `PermViewSetMixin` | миксин: `required_perms = {action: код или кортеж}` → `HasPerm`; неизвестный action закрывается через `DenyAll` |
 
-### rbac — коды прав
+### sys_permissions — коды прав
 
-Модели: `Permission(code, section, action, label)`, `Role(name, permissions M2M, is_system)`.
+Модель: `Permission(code, section, action, label)`. Права назначаются сотрудникам напрямую.
 
 | Раздел | Коды |
 |---|---|
 | Товары | `catalog.view / create / edit / delete` |
-| Клиенты | `clients.view / create / edit / delete` |
+| Клиенты | `clients.view / create / edit / delete / set_price / manage_access` |
 | Склад | `warehouse.view / adjust` |
 | Заказы | `orders.view / create / edit / confirm / correct_price` |
 | Оплаты | `payments.view / create / confirm` |
 | Пост отгрузки | `shipping.view / arrive / load / ship / debt_override` |
 | Вагон | `train.view / load` |
-| Отдел 2 «Сити» | `dept2.view` (только свои), `dept2.view_all`, `dept2.create` |
 | Журнал / Отчёты | `events.view`, `reports.view` |
-| Сотрудники / Доступы | `employees.view / manage`, `rbac.view / manage` |
+| Сотрудники / Системные права | `employees.view / manage`, `sys_permissions.view / manage` |
 
-Системные роли-пресеты (`rbac/perms.py`): **Менеджер**, **Касса**, **Оператор**,
-**Загрузчик**, **Контролёр**, **Менеджер Сити**, **Начальник**.
-Роль нельзя удалить, пока на ней есть сотрудники.
-
-### Скоупинг по отделам (`rbac/scoping.py`)
-
-`scope_by_department(qs, user, base_view_perm, dept_field, owner_field)`:
-
-- базовое право раздела (например `clients.view`) → видит отдел `main`;
-- `dept2.view_all` → весь отдел `field` (руководитель, касса);
-- `dept2.view` → только записи `field`, где user — менеджер-владелец;
-- клиент портала / аноним → ничего; суперюзер → всё.
-
-`sees_all_departments(user)` — для сводных колонок «Отдел» в отчётах.
+Ролей и наследования прав нет: итоговый доступ сотрудника равен его прямому
+набору `Employee.permissions`. Отдел хранит организационную принадлежность и
+не добавляет permissions автоматически.
 
 ### employees
 
-`Employee(user OneToOne, role FK, permissions M2M, is_active)` —
-`effective_perm_codes` = коды роли ∪ личные коды. Создание сотрудника —
+`Employee(user OneToOne, permissions M2M, is_active)` хранит прямые права.
+Создание сотрудника —
 одна транзакция: `User` + `Employee` + права по кодам (`permission_codes`).
 
 ---
@@ -250,7 +240,7 @@ requested (счёт выставлен) → received (деньги на рука
 
 | Функция | Что делает |
 |---|---|
-| `_validate_payment_open(order)` | окно оплаты: отдел `main` — только после `shipped` и в платёжный день магазина; отдел `field` — без ограничений |
+| `_validate_payment_open(order)` | для любого отдела оплата доступна после `shipped`; при наличии магазина дополнительно проверяется его платёжный день |
 | `add_payment(order, amount, user, method, stage)` | старт цепочки (`requested` или сразу `received`) |
 | `receive_payment` / `accountant_confirm_payment` / `reject_payment` | шаги цепочки; подтверждение пересчитывает `payment_status` заказа |
 | `create_client_payment(order, method, user)` | оплата из портала (card/kaspi) на весь остаток, `update_or_create` от двойных кликов |
@@ -331,12 +321,15 @@ is_active, ask_truck_weight)`, уникальность `(name, color, weight_kg
 `…/restore`. Фильтр архива — в `get_queryset` (`?archived=1`), а не в
 default-менеджере, чтобы старые заказы и отчёты видели архивные товары.
 
+### sales — отделы продаж
+
+- `Department(code, name, color, is_active, is_default)` — динамический
+  справочник, используемый сотрудниками и заказами; API `/api/departments/`.
+
 ### clients — клиенты и магазины
 
-- `Department(code: main|field, name)` — код фиксирован, название редактируется
-  (только суперадмин).
-- `Client`: ФИО, телефон, реквизиты (ИИН, банк, счёт), `department`,
-  `manager` (менеджер Отдела 2, ведущий клиента), `user` (учётка портала).
+- `Client`: телефон, реквизиты (ИИН, банк, счёт), предпочтительная валюта и
+  обязательная `user`-учётка портала; имя и фамилия хранятся только в `User`.
 - `Store` (магазин клиента): `payment_schedule_type` (`none/monthly/weekly`) +
   `payment_days` (дни месяца или ISO-дни недели) — расписание платежей.
 
@@ -351,11 +344,27 @@ default-менеджере, чтобы старые заказы и отчёты
   последние заказы. Нефинансовые статусы (`draft/pending/rejected/cancelled`)
   в деньгах не участвуют.
 
-Эндпоинты: CRUD клиентов/магазинов, `GET /clients/{id}/analytics`,
+Эндпоинты: CRUD клиентов/магазинов, `POST /clients/{id}/password/` для выдачи
+временного пароля, `GET /clients/{id}/analytics`,
 `GET /clients/debts`, `GET /clients/{id}/debt-detail`,
 `GET /clients/stores/debts`, `POST /clients/stores/check-overdue`.
-Менеджер Отдела 2 (`dept2.create` без `clients.create`) создаёт клиентов
-только в `field` и только на себя.
+Новый клиент получает уникальный логин, отключённую учётку и unusable password.
+Сотрудник с `clients.manage_access` включает доступ действием «Выдать доступ в портал»:
+пароль не логируется, а при первом входе клиент обязан заменить его.
+
+После первой миграции существующих клиентов можно один раз выдать общий
+временный пароль интерактивной командой. Пароль вводится скрыто дважды и не
+попадает в аргументы процесса или shell history:
+
+```bash
+docker compose -f docker-compose.prod.yml exec backend \
+  python manage.py provision_client_accounts --dry-run
+docker compose -f docker-compose.prod.yml exec backend \
+  python manage.py provision_client_accounts
+```
+
+Команда обрабатывает только отключённые клиентские учётки с unusable password,
+блокирует строки транзакционно и безопасна при повторном запуске.
 
 ### portal — клиентский портал
 
@@ -367,7 +376,7 @@ default-менеджере, чтобы старые заказы и отчёты
 - `GET /api/portal/catalog/` — активные товары с остатками.
 - `GET/POST /api/portal/orders/` — свои заказы; создание: позиции,
   `settlement_intent`, `transport_type`, магазин.
-  - `POST …/{id}/pay/` — оплата card/kaspi (реквизиты — `GET /api/portal/payment-info/`);
+  - `POST …/{id}/pay/` — запуск оплаты через ApiPay;
   - `PATCH …/{id}/truck/` — вписать номер машины (только в `confirmed`);
   - `POST …/{id}/request-debt/` — запросить долг (только в `shipped`).
 - **Маскирование денег**: суммы видны клиенту только когда заказ прошёл
@@ -464,7 +473,7 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 | `/shipping` | пост погрузки: очередь машин; рабочая зона выбранной машины — госномер, прогресс этапов, live-видео выбранной камеры (камера закрепляется за заказом), счётчик мешков (+1/+5/−1, дебаунс-сохранение), AI-подсчёт с аннотированным потоком, действия «Принять машину» (вес на въезде) / «Погрузка завершена» / «Отгрузить — выезд». Несколько машин грузятся параллельно на разных камерах |
 | `/train` | устаревшая ссылка; сервер перенаправляет на единый пост `/shipping` |
 | `/reports` | выручка и поступления по валютам, период и фильтр по отделу |
-| `/management/employees` | сотрудники и вкладка ролей; `/management/roles` перенаправляет на неё |
+| `/management/employees` | сотрудники, отделы и персональные системные права |
 | `/events` | журнал событий с фильтрами, группировка по дням |
 | `/portal/catalog`, `/portal/orders`, `…/new`, `…/[id]` | портал клиента: каталог с остатками, свои заказы, оплата card/kaspi, номер машины, запрос долга |
 
@@ -548,15 +557,16 @@ go2rtc rate-limit'ить нельзя (живое видео).
 ## Тесты
 
 ```bash
-cd backend && pytest    # 340 тестов
+cd backend && pytest
 ```
 
-- `conftest.py`: фабрики `make_user`, `user_with_perms(коды)`, преднастроенные
-  фикстуры ролей (manager, accountant, operator, boss, dept2_manager),
+- `apps/conftest.py`: фабрики `make_user`, `user_with_perms(коды)`,
+  преднастроенные сотрудники с прямыми правами (manager, accountant,
+  operator, boss),
   `auth_client` с JWT.
 - Покрыто: цепочки статусов и оплат, окно оплаты и долги, скоупинг отделов,
   склад (гонки, минус), архив товаров, корзина заказов, портал (маскирование
-  денег, регистрация), RBAC, камеры (discover с fallback'ами, атомарность
+  денег, регистрация), системные права, камеры (discover с fallback'ами, атомарность
   AI-сессий, health-дебаунс и алерты).
 - Внешние сервисы (ai_service, go2rtc, RTSP) в тестах мокаются; DRF-троттлинг
   под pytest отключён.

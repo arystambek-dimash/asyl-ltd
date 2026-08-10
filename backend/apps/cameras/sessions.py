@@ -1,7 +1,6 @@
 """Order-bound lifecycle for per-camera AI counting slots."""
 
 from django.db import IntegrityError, transaction
-from django.utils import timezone
 
 from .models import AiCountingSession
 
@@ -63,58 +62,3 @@ def reserve(order, camera: str, user) -> tuple[AiCountingSession, bool]:
                 started_by=user,
             )
         return session, True
-
-
-def activate(session: AiCountingSession, payload: dict) -> AiCountingSession:
-    session.status = AiCountingSession.ACTIVE
-    session.activated_at = session.activated_at or timezone.now()
-    session.last_status = payload
-    stream = payload.get("stream")
-    if isinstance(stream, str) and stream:
-        session.recording_stream = stream[:64]
-    session.error = ""
-    session.save(update_fields=[
-        "status", "activated_at", "recording_stream", "last_status", "error",
-    ])
-    return session
-
-
-def update_status(session: AiCountingSession, payload: dict) -> None:
-    updates: dict[str, object] = {"last_status": payload}
-    stream = payload.get("stream")
-    if isinstance(stream, str) and stream:
-        updates["recording_stream"] = stream[:64]
-    AiCountingSession.objects.filter(pk=session.pk).update(**updates)
-
-
-def commit_final(session: AiCountingSession, payload: dict | None) -> None:
-    """Durably save the worker snapshot before its in-memory session is idled."""
-    payload = payload or {}
-    updates: dict[str, object] = {
-        "last_status": payload,
-        "final_total": payload.get("total"),
-    }
-    stream = payload.get("stream")
-    if isinstance(stream, str) and stream:
-        updates["recording_stream"] = stream[:64]
-    AiCountingSession.objects.filter(pk=session.pk).update(**updates)
-
-
-def finish(session: AiCountingSession, user, payload: dict | None = None) -> None:
-    payload = payload or {}
-    AiCountingSession.objects.filter(pk=session.pk).update(
-        status=AiCountingSession.CLOSED,
-        closed_by=user,
-        ended_at=timezone.now(),
-        final_total=payload.get("total"),
-        last_status=payload,
-        error="",
-    )
-
-
-def fail(session: AiCountingSession, message: str) -> None:
-    AiCountingSession.objects.filter(pk=session.pk).update(
-        status=AiCountingSession.FAILED,
-        ended_at=timezone.now(),
-        error=message[:500],
-    )

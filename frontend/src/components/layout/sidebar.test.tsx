@@ -21,7 +21,7 @@ const client: Me = {
   monoblock_name: null,
   monoblock_camera: null,
   permissions: [],
-  role_name: null,
+  position: null,
   client_id: 1,
   sales_department: null,
 };

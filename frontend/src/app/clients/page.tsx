@@ -10,6 +10,7 @@ import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
@@ -26,7 +27,7 @@ import { api, apiError } from "@/lib/api";
 import { finiteMoney } from "@/lib/currency-map";
 import { cn, currencySymbol, formatPhone, formatMoney, formatDateTime, sumDebtByCurrency } from "@/lib/utils";
 import { COUNTRIES } from "@/lib/countries";
-import { BarChart3, FileSpreadsheet, Pencil, Phone, Plus, Search, Tags, Trash2 } from "lucide-react";
+import { BarChart3, FileSpreadsheet, KeyRound, Pencil, Phone, Plus, Search, Tags, Trash2 } from "lucide-react";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -305,6 +306,92 @@ function ClientForm({
 
 const digits = (s: string) => s.replace(/\D/g, "");
 
+function ClientPortalAccessForm({
+  client,
+  onDone,
+  onCancel,
+}: {
+  client: Client;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError("");
+    if (password !== confirmation) {
+      setError("Пароли не совпадают.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await api.post(`/clients/${client.id}/password/`, { password });
+      setPassword("");
+      setConfirmation("");
+      onDone();
+    } catch (caught) {
+      setError(apiError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-5">
+      <div className="rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
+        <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-blue-500">Логин клиента</div>
+        <div className="mt-1 font-mono text-base font-semibold text-slate-900">{client.username}</div>
+        <p className="mt-2 text-xs leading-relaxed text-slate-500">
+          После первого входа клиент обязательно заменит временный пароль. Старые сессии будут отозваны.
+        </p>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label className="space-y-1.5 text-sm font-medium">
+          <span>Временный пароль</span>
+          <PasswordInput
+            value={password}
+            minLength={8}
+            required
+            autoComplete="new-password"
+            onChange={(event) => setPassword(event.target.value)}
+          />
+        </label>
+        <label className="space-y-1.5 text-sm font-medium">
+          <span>Повторите пароль</span>
+          <PasswordInput
+            value={confirmation}
+            minLength={8}
+            required
+            autoComplete="new-password"
+            onChange={(event) => setConfirmation(event.target.value)}
+          />
+        </label>
+      </div>
+
+      {error && (
+        <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
+          {error}
+        </p>
+      )}
+
+      <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-end">
+        <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>
+          Отмена
+        </Button>
+        <Button type="submit" disabled={busy}>
+          <KeyRound className="size-4" /> {busy ? "Сохранение…" : "Выдать временный пароль"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 function ClientsPageInner() {
   const router = useRouter();
   const { me } = useAuth();
@@ -312,6 +399,7 @@ function ClientsPageInner() {
   const canEdit = can(me, "clients.edit");
   const canDelete = can(me, "clients.delete");
   const canSetPrice = can(me, "clients.set_price");
+  const canManagePortalAccess = can(me, "clients.manage_access");
   const canMoney = can(me, "reports.view"); // финансовая аналитика — под reports.view
   const canExport = can(me, "reports.export");
   const [open, setOpen] = useState(false);
@@ -339,6 +427,7 @@ function ClientsPageInner() {
   const [purgeItem, setPurgeItem] = useState<Client | null>(null);
   const [purgeError, setPurgeError] = useState("");
   const [purgeBusy, setPurgeBusy] = useState(false);
+  const [portalClient, setPortalClient] = useState<Client | null>(null);
   const [statementOpen, setStatementOpen] = useState(false);
 
   async function confirmDelete() {
@@ -442,6 +531,16 @@ function ClientsPageInner() {
               setEditing(c);
               setOpen(true);
             },
+          },
+        ]
+      : []),
+    ...(canManagePortalAccess
+      ? [
+          {
+            key: "portal-access",
+            label: c.portal_access_enabled ? "Сбросить пароль портала" : "Выдать доступ в портал",
+            icon: KeyRound,
+            onSelect: () => setPortalClient(c),
           },
         ]
       : []),
@@ -753,6 +852,25 @@ function ClientsPageInner() {
         error={purgeError}
         onConfirm={confirmPurge}
       />
+      <Modal
+        open={!!portalClient}
+        onClose={() => setPortalClient(null)}
+        eyebrow="Безопасность · Портал"
+        title={portalClient?.portal_access_enabled ? "Сбросить пароль клиента" : "Выдать доступ клиенту"}
+        description={portalClient ? `Личный кабинет для «${portalClient.name}».` : ""}
+        className="max-w-xl"
+      >
+        {portalClient && (
+          <ClientPortalAccessForm
+            client={portalClient}
+            onCancel={() => setPortalClient(null)}
+            onDone={() => {
+              setPortalClient(null);
+              reload();
+            }}
+          />
+        )}
+      </Modal>
       <StatementExportModal
         open={statementOpen}
         onClose={() => setStatementOpen(false)}

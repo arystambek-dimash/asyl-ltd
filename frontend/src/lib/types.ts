@@ -1,13 +1,16 @@
 export interface Me {
   id: number;
   username: string;
+  /** Added to /auth/me without breaking older rolling-deploy responses. */
+  first_name?: string;
+  last_name?: string;
   is_client: boolean;
   is_superuser: boolean;
   is_monoblock: boolean;
   monoblock_name: string | null;
   monoblock_camera: string | null;
   permissions: string[];
-  role_name: string | null;
+  position: string | null;
   client_id: number | null;
   sales_department: Pick<Department, "id" | "code" | "name" | "color"> | null;
 }
@@ -149,6 +152,7 @@ type PaymentMethod = PortalPaymentMethod | "card";
 
 export interface Client {
   id: number;
+  username: string;
   first_name: string;
   last_name: string;
   phone: string;
@@ -159,7 +163,9 @@ export interface Client {
   iin: string;
   bank: string;
   bank_account: string;
-  user: number | null;
+  user: number;
+  portal_access_enabled: boolean;
+  password_change_required: boolean;
   /** Долг в основной валюте клиента (debt_currency). Валюты не складываются. */
   debt_total?: string;
   debt_currency?: "KZT" | "USD";
@@ -618,14 +624,6 @@ export interface Permission {
   action: string;
   label: string;
 }
-export interface Role {
-  id: number;
-  name: string;
-  description: string;
-  is_system: boolean;
-  permissions: Permission[];
-  employee_count: number;
-}
 export interface Employee {
   id: number;
   username: string;
@@ -633,16 +631,11 @@ export interface Employee {
   last_name: string;
   phone: string;
   position: string;
-  role: number | null;
-  role_name: string | null;
   sales_department: number | null;
   sales_department_name: string | null;
   sales_department_color: string | null;
   name: string;
-  /** Личные доступы поверх роли; права роли — в role_permissions. */
   permissions: string[];
-  role_permissions: string[];
-  denied_permissions: string[];
   is_active: boolean;
 }
 export interface EventLog {

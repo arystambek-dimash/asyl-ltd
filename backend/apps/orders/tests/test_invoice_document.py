@@ -18,7 +18,7 @@ pytestmark = pytest.mark.django_db
 def _order(status="shipped", price="100.00", qty=5, **client_kwargs):
     prod = Product.objects.create(
         name="Премиум", color="Red", weight_kg="50", price=price)
-    client = Client.objects.create(**{
+    client = Client.objects.create_with_user(**{
         "first_name": "Гани", "last_name": "Таскен", "phone": "87762838451",
         "iin": "123456789012", "company_name": "ТОО Тест",
         **client_kwargs,

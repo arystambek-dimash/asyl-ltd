@@ -30,7 +30,7 @@ def _order(client, status, qty=10, paid=None, intent="debt"):
 
 
 def test_history_summary():
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     _order(c, "shipped", qty=10, paid="500")  # фин: revenue 1000, paid 500, долг 500
     _order(c, "pending", qty=5)  # не финансовый
     _order(c, "rejected", qty=3)  # отклонён
@@ -42,7 +42,7 @@ def test_history_summary():
 
 
 def test_history_rows():
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     o1 = _order(c, "shipped", qty=10, paid="500")
     o2 = _order(c, "rejected", qty=3)
     h = client_history(c)
@@ -66,7 +66,7 @@ def test_history_rows():
 
 
 def test_history_excludes_service_debt_method():
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     o = _order(c, "shipped", qty=1)
     Payment.objects.create(order=o, amount="100", method="debt", status="confirmed")
     h = client_history(c)
@@ -74,7 +74,7 @@ def test_history_excludes_service_debt_method():
 
 
 def test_history_endpoint(boss):
-    c = Client.objects.create(first_name="A", last_name="B", phone="x", currency="USD")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x", currency="USD")
     _order(c, "shipped", qty=10)
     r = _api(boss).get(f"/api/clients/{c.id}/history/")
     assert r.status_code == 200

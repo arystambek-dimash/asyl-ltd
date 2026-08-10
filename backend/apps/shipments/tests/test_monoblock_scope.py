@@ -30,7 +30,7 @@ def _loading_order(boss, camera="cam3"):
         name="Scope product", color="Blue", weight_kg="50", price="100.00",
     )
     receive_stock(product, 100, boss)
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Scope", last_name="Client", phone="scope",
     )
     order = Order.objects.create(
@@ -105,7 +105,7 @@ def test_monoblock_cannot_release_another_cameras_binding(
     api_client, django_user_model,
 ):
     user = _device_user(django_user_model)
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Bound", last_name="Elsewhere", phone="bound",
     )
     order = Order.objects.create(

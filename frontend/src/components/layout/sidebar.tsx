@@ -70,8 +70,7 @@ function staffSections(): NavSection[] {
         { href: "/shipping", label: "Пост погрузки", icon: Truck, perm: ["shipping.view", "train.view"] },
         { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "shipping.load" },
         { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },
-        // Силосы — отдельная вкладка со своим правом: доступ раздаётся в ролях
-        // независимо от зернового процесса (grain.*).
+        // Силосы имеют отдельное право независимо от зернового процесса.
         { href: "/warehouse/silos", label: "Силосы", icon: Warehouse, perm: "silos.view" },
         // Проходная вагонов: заявки, приход, взвешивание и выход.
         { href: "/grain", label: "Приход и проход", icon: Wheat, perm: "grain.view" },
@@ -87,13 +86,11 @@ function staffSections(): NavSection[] {
       title: "Управление",
       items: [
         { href: "/events", label: "Журнал", icon: ScrollText, perm: "events.view" },
-        // Сотрудники и роли живут на одном экране вкладками — раскрывающаяся
-        // группа «Доступы» ради двух пунктов только прятала их на клик глубже.
         {
           href: "/management/employees",
           label: "Сотрудники",
           icon: Settings,
-          perm: ["employees.view", "rbac.view"],
+          perm: "employees.view",
         },
       ],
     },

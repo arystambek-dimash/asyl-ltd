@@ -12,7 +12,11 @@ from cv_service.contracts import ProcessorOptions
 from cv_service.processor import ProcessorManager
 from cv_service.runtime import build_runtime
 from cv_service.settings import Settings
-from cv_service.state import AlwaysOnStateStore, CameraRoleStateStore
+from cv_service.state import (
+    AlwaysOnStateStore,
+    CameraRoleStateStore,
+    CountingLineStateStore,
+)
 
 
 def build_service(settings: Settings) -> tuple[ProcessorManager, object]:
@@ -24,6 +28,7 @@ def build_service(settings: Settings) -> tuple[ProcessorManager, object]:
         encoder,
         state_store=AlwaysOnStateStore(settings.always_on_state_path),
         role_state_store=CameraRoleStateStore(settings.camera_roles_state_path),
+        line_state_store=CountingLineStateStore(settings.counting_lines_state_path),
     )
     try:
         manager.restore_always_on()

@@ -19,7 +19,7 @@ pytestmark = pytest.mark.django_db
 def _mixed_order():
     heavy = Product.objects.create(name="Тяжёлый", color="Red", weight_kg="50", price="1")
     light = Product.objects.create(name="Лёгкий", color="Blue", weight_kg="25", price="1")
-    client = Client.objects.create(first_name="A", last_name="B", phone="x")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     order = Order.objects.create(client=client, status="shipped", truck_number="01A")
     OrderItem.objects.create(order=order, product=heavy, quantity=30, unit_price="1")
     OrderItem.objects.create(order=order, product=light, quantity=20, unit_price="1")

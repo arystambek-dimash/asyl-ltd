@@ -46,7 +46,7 @@ def with_payment_api_relations(
     )
     if order_context:
         queryset = queryset.select_related(
-            "order__client", "order__store",
+            "order__client__user", "order__store",
             "recorded_by", "received_by", "confirmed_by",
         )
     return queryset
@@ -64,7 +64,7 @@ def with_order_api_relations(queryset: QuerySet[Order]) -> QuerySet[Order]:
     return (
         queryset
         .select_related(
-            "client", "store", "shipment", "debt_override_by", "deleted_by"
+            "client__user", "store", "shipment", "debt_override_by", "deleted_by"
         )
         .prefetch_related(
             "items__product",

@@ -14,11 +14,11 @@ from django.db.models import Count, Q, Sum
 from django.utils import timezone
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import HasPerm, PermViewSetMixin
-from apps.common.money import money_string
+from apps.common.money import as_money_strings, money_string, primary_currency
 from apps.common.query_params import (
     filter_date_range, parse_date_range, parse_store_id,
 )
-from apps.clients.models import Department
+from apps.sales.models import Department
 from apps.eventlog.models import EventLog
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
@@ -32,7 +32,7 @@ from .apipay import (
     MONEY_RECEIVED_INVOICE_STATUSES, normalize_phone,
 )
 from .invoices import build_invoice_pdf, build_payment_receipt_pdf
-from .debt import as_money_strings, order_remaining, primary_currency
+from .debt import order_remaining
 from .querysets import (
     for_post_board,
     with_order_api_relations,
@@ -343,8 +343,8 @@ class PaymentTransactionListView(APIView):
         if search:
             normalized_search = search.strip()
             search_query = (
-                Q(order__client__first_name__icontains=normalized_search)
-                | Q(order__client__last_name__icontains=normalized_search)
+                Q(order__client__user__first_name__icontains=normalized_search)
+                | Q(order__client__user__last_name__icontains=normalized_search)
                 | Q(order__client__company_name__icontains=normalized_search)
                 | Q(order__client__phone__icontains=normalized_search)
             )
@@ -554,7 +554,7 @@ class PaymentProviderIssueView(APIView):
 
     def post(self, request, payment_id):
         payment = get_object_or_404(
-            Payment.objects.select_related("order__client", "apipay_invoice"),
+            Payment.objects.select_related("order__client__user", "apipay_invoice"),
             pk=payment_id,
             status__in=Payment.IN_PROGRESS_STATUSES,
             method__in=PROVIDER_METHOD_CHANNELS,
@@ -578,7 +578,7 @@ class PaymentRestoreView(APIView):
 
     def post(self, request, payment_id):
         payment = get_object_or_404(
-            Payment.objects.select_related("order__client", "apipay_invoice"),
+            Payment.objects.select_related("order__client__user", "apipay_invoice"),
             pk=payment_id,
         )
         payment = _restore_payment_and_provider(payment, request.user)
@@ -951,7 +951,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
         qs = (EventLog.objects
               .filter(event_type="payment", order__in=Order.objects.all())
-              .select_related("user", "order__client", "order__store"))
+              .select_related("user", "order__client__user", "order__store"))
         department = request.query_params.get("department")
         if department:
             qs = qs.filter(order__department=department)

@@ -6,6 +6,7 @@ from rest_framework.response import Response
 
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import PermViewSetMixin
+from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.models import EventLog
 
 from . import services
@@ -98,12 +99,18 @@ class GrainSupplyViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         return Response(WagonBriefSerializer(created, many=True).data, status=201)
 
 
-class WagonViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
+class WagonViewSet(
+    SerializerViewSetMixin,
+    PermViewSetMixin,
+    viewsets.ReadOnlyModelViewSet,
+):
     queryset = (
         Wagon.objects.select_related("supply", "assigned_silo")
         .prefetch_related("weighings", "lab_checks", "allocations__silo")
         .order_by("-id")
     )
+    serializer_class = WagonSerializer
+    serializer_action_classes = {"list": WagonBriefSerializer}
     pagination_class = OptInPageNumberPagination
     required_perms = {
         "list": "grain.view",
@@ -130,9 +137,6 @@ class WagonViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
         "exit": "grain.exit",
         "timeline": "grain.view",
     }
-
-    def get_serializer_class(self):
-        return WagonBriefSerializer if self.action == "list" else WagonSerializer
 
     def get_queryset(self):
         qs = super().get_queryset()

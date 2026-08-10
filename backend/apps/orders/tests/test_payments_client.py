@@ -9,7 +9,7 @@ from apps.orders import services
 
 @pytest.fixture
 def order(db):
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     p = Product.objects.create(
         name="F", color="Red", weight_kg=Decimal("50"), price=Decimal("100")
     )

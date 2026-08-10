@@ -9,7 +9,7 @@ pytestmark = pytest.mark.django_db
 
 def _order():
     prod = Product.objects.create(name="Премиум", color="Red", weight_kg="50", price="100")
-    c = Client.objects.create(first_name="L", last_name="К", phone="x")
+    c = Client.objects.create_with_user(first_name="L", last_name="К", phone="x")
     # Ручное завершение доступно после подтверждения; новый заказ сначала
     # должен пройти проверку цен и остатков.
     o = Order.objects.create(client=c, status="confirmed")

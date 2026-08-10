@@ -15,7 +15,7 @@ pytestmark = pytest.mark.django_db
 def _train_order(boss, status="confirmed", qty=50, stock=100):
     prod = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     receive_stock(prod, stock, boss)
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     o = Order.objects.create(client=c, status=status, transport_type="train")
     OrderItem.objects.create(order=o, product=prod, quantity=qty)
     return o, prod
@@ -45,7 +45,7 @@ def test_train_start_requires_confirmed(boss):
 
 def test_train_service_rejects_truck_order(boss):
     prod = Product.objects.create(name="T", color="Red", weight_kg="50", price="100.00")
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     o = Order.objects.create(client=c, status="confirmed", transport_type="truck")
     OrderItem.objects.create(order=o, product=prod, quantity=1)
     with pytest.raises(ValidationError) as e:

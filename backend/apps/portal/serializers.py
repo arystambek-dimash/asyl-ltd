@@ -4,9 +4,10 @@ from django.db import transaction
 from rest_framework import serializers
 from apps.common.money import money_string
 from apps.catalog.models import ClientPrice, Product
-from apps.clients.models import Department, Store
+from apps.clients.models import Store
 from apps.orders.models import Order, OrderItem, Payment
 from apps.orders.statuses import is_financial
+from apps.sales.models import Department
 
 
 MAX_PORTAL_ORDER_ITEMS = 100

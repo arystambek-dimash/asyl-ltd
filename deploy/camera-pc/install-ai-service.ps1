@@ -85,13 +85,67 @@ function Protect-AiServicePath([string]$Path) {
     }
 }
 
-Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 if ((Test-Path -LiteralPath $InstallRoot) -and (((Get-Item -LiteralPath $InstallRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
     throw "Refusing reparse-point InstallRoot: $InstallRoot"
 }
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 $installedPackage = Join-Path $InstallRoot 'cv_service'
+$stateRoot = Join-Path $InstallRoot 'state'
+$legacyCameraRolesPath = Join-Path $installedPackage 'data\camera-roles.json'
+$cameraRolesStatePath = Join-Path $stateRoot 'camera-roles.json'
+$countingLinesStatePath = Join-Path $stateRoot 'counting-lines.json'
+
+function Assert-CompatibleCameraRoleState {
+    if (
+        (Test-Path -LiteralPath $legacyCameraRolesPath -PathType Leaf) -and
+        (Test-Path -LiteralPath $cameraRolesStatePath -PathType Leaf)
+    ) {
+        $legacyHash = (Get-FileHash -LiteralPath $legacyCameraRolesPath -Algorithm SHA256).Hash
+        $durableHash = (Get-FileHash -LiteralPath $cameraRolesStatePath -Algorithm SHA256).Hash
+        if (-not [String]::Equals($legacyHash, $durableHash, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to overwrite differing camera-role states: legacy=$legacyCameraRolesPath durable=$cameraRolesStatePath"
+        }
+    }
+}
+
+# Older canonical installs kept this state below cv_service/data. Validate a
+# possible conflict before stopping the working task, then copy the known
+# legacy file to the durable sibling directory before deleting the package.
+Assert-CompatibleCameraRoleState
+Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+$aiQuiesceDeadline = [DateTime]::UtcNow.AddSeconds(30)
+$aiTaskStopped = $false
+$aiListenerStopped = $false
+do {
+    $installedTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    $aiTaskStopped = (
+        $null -eq $installedTask -or
+        [string]$installedTask.State -ne 'Running'
+    )
+    $aiListenerStopped = @(
+        Get-NetTCPConnection -State Listen -LocalPort 8890 -ErrorAction SilentlyContinue
+    ).Count -eq 0
+    if ($aiTaskStopped -and $aiListenerStopped) { break }
+    Start-Sleep -Milliseconds 250
+} while ([DateTime]::UtcNow -lt $aiQuiesceDeadline)
+if (-not $aiTaskStopped -or -not $aiListenerStopped) {
+    throw "Existing AI service did not quiesce before state migration: taskStopped=$aiTaskStopped listenerStopped=$aiListenerStopped"
+}
+Assert-CompatibleCameraRoleState
+if (Test-Path -LiteralPath $legacyCameraRolesPath -PathType Leaf) {
+    New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $cameraRolesStatePath -PathType Leaf)) {
+        $migrationTemporary = $cameraRolesStatePath + '.migrating'
+        Remove-Item -LiteralPath $migrationTemporary -Force -ErrorAction SilentlyContinue
+        try {
+            Copy-Item -LiteralPath $legacyCameraRolesPath -Destination $migrationTemporary
+            [IO.File]::Move($migrationTemporary, $cameraRolesStatePath)
+        } finally {
+            Remove-Item -LiteralPath $migrationTemporary -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 if (Test-Path -LiteralPath $installedPackage) {
     Remove-Item -LiteralPath $installedPackage -Recurse -Force
 }
@@ -123,6 +177,8 @@ $serviceEnvironment = [ordered]@{
     AI_PREWARM_SOURCE = $PrewarmSource
     AI_FRAME_QUEUE_SIZE = '2'
     AI_ALWAYS_ON_STATE_PATH = (Join-Path $InstallRoot 'state\always-on.json')
+    AI_CAMERA_ROLES_STATE_PATH = $cameraRolesStatePath
+    AI_COUNTING_LINES_STATE_PATH = $countingLinesStatePath
 }
 [IO.File]::WriteAllText(
     (Join-Path $InstallRoot 'service-env.json'),

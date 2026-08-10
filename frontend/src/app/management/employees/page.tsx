@@ -1,727 +1,610 @@
 "use client";
+
 import { useState } from "react";
-import { useSearchParams } from "next/navigation";
-import { AppShell } from "@/components/layout/app-shell";
-import { RequirePerm } from "@/components/require-perm";
-import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { PasswordInput } from "@/components/ui/password-input";
-import { Select } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
-import { Modal } from "@/components/ui/modal";
-import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
-import { StatCard } from "@/components/ui/stat-card";
-import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
-import { Field } from "@/components/ui/field";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { ErrorAlert } from "@/components/ui/data-state";
-import { PermissionPicker } from "@/components/permission-picker";
-import { RolesSection } from "@/components/roles-section";
-import { Tabs, type TabDef } from "@/components/ui/tabs";
-import { useApi } from "@/lib/use-api";
-import { useAuth } from "@/store/auth";
-import { api, apiError } from "@/lib/api";
-import { can } from "@/lib/can";
-import { cn } from "@/lib/utils";
 import {
   ArrowLeft,
   ArrowRight,
   BriefcaseBusiness,
   Check,
   KeyRound,
+  Pencil,
   Plus,
   Search,
-  Pencil,
-  ShieldCheck,
   Trash2,
   UserRound,
 } from "lucide-react";
-import type { Department, Employee, Permission, Role } from "@/lib/types";
 
-const SALES_REQUIRED = new Set(["orders.view", "orders.create", "clients.view", "catalog.view"]);
+import { AppShell } from "@/components/layout/app-shell";
+import { PermissionPicker } from "@/components/permission-picker";
+import { RequirePerm } from "@/components/require-perm";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ErrorAlert } from "@/components/ui/data-state";
+import { Field } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Modal } from "@/components/ui/modal";
+import { PasswordInput } from "@/components/ui/password-input";
+import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
+import { StatCard } from "@/components/ui/stat-card";
+import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
+import { api, apiError } from "@/lib/api";
+import { can } from "@/lib/can";
+import type { Department, Employee, Permission } from "@/lib/types";
+import { useApi } from "@/lib/use-api";
+import { cn } from "@/lib/utils";
+import { useAuth } from "@/store/auth";
 
-function effectiveAccessCount(employee: Employee) {
-  const denied = new Set(employee.denied_permissions ?? []);
-  const effective = new Set([
-    ...(employee.role_permissions ?? []).filter((code) => !denied.has(code)),
-    ...(employee.permissions ?? []),
-  ]);
-  if (employee.sales_department) {
-    SALES_REQUIRED.forEach((code) => effective.add(code));
-  }
-  return effective.size;
-}
+const emptyForm = {
+  username: "",
+  password: "",
+  first_name: "",
+  last_name: "",
+  phone: "",
+  position: "",
+  sales_department: "",
+  is_active: true,
+};
 
 function EmployeesPageInner() {
-  const searchParams = useSearchParams();
   const { me, refreshMe } = useAuth();
-  const canStaff = can(me, "employees.view");
-  const canRoles = can(me, "rbac.view");
   const canManage = can(me, "employees.manage");
-  const canManageRbac = can(me, "rbac.manage");
-  const canManageAccountSecurity = canManage && canManageRbac;
-  const canCreateOrDelete = canManageAccountSecurity;
-  // Роли слиты сюда с бывшей страницы /management/roles: раздел «Доступы»
-  // из двух пунктов меню стал одним экраном с вкладками.
-  const [tab, setTab] = useState<"staff" | "roles">(
-    searchParams.get("tab") === "roles" && canRoles ? "roles" : canStaff ? "staff" : "roles",
-  );
-  const tabs: TabDef[] = [
-    ...(canStaff ? [{ key: "staff", label: "Сотрудники" }] : []),
-    ...(canRoles ? [{ key: "roles", label: "Роли" }] : []),
-  ];
-  const { data: employees, error: loadError, reload } = useApi<Employee[]>(canStaff ? "/employees/" : null);
-  const { data: roles } = useApi<Role[]>(canRoles ? "/roles/" : null);
-  const { data: perms } = useApi<Permission[]>(canRoles || canManage ? "/permissions/" : null);
-  const empty = {
-    username: "",
-    password: "",
-    first_name: "",
-    last_name: "",
-    phone: "",
-    position: "",
-    role: "",
-    sales_department: "",
-  };
+  const canManageSecurity = canManage && can(me, "sys_permissions.manage");
+  const canCreateOrDelete = canManageSecurity;
+
+  const { data: employees, error: loadError, reload } = useApi<Employee[]>("/employees/");
+  const { data: permissions } = useApi<Permission[]>(canManage ? "/permissions/" : null);
+
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Employee | null>(null);
-  const [form, setForm] = useState(empty);
+  const [form, setForm] = useState(emptyForm);
+  const [selectedPermissions, setSelectedPermissions] = useState<Set<string>>(new Set());
   const [salesEmployee, setSalesEmployee] = useState(false);
-  // Личные доступы поверх роли; права самой роли наследуются автоматически.
-  const [codes, setCodes] = useState<Set<string>>(new Set());
-  const [deniedCodes, setDeniedCodes] = useState<Set<string>>(new Set());
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [employeeStep, setEmployeeStep] = useState<1 | 2 | 3>(1);
-  const [delItem, setDelItem] = useState<Employee | null>(null);
-  const [delError, setDelError] = useState("");
-  const [delBusy, setDelBusy] = useState(false);
-  const { data: departments } = useApi<Department[]>(open && canManageAccountSecurity ? "/departments/?all=1" : null);
+  const [deleteEmployee, setDeleteEmployee] = useState<Employee | null>(null);
+  const [deleteError, setDeleteError] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [query, setQuery] = useState("");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  const canEditSecurity =
+    canManageSecurity &&
+    (!editing ||
+      (editing.username !== me?.username &&
+        (Boolean(me?.is_superuser) || editing.permissions.every((code) => me?.permissions.includes(code)))));
+  const canChangePassword =
+    canManageSecurity &&
+    (!editing ||
+      editing.username === me?.username ||
+      Boolean(me?.is_superuser) ||
+      editing.permissions.every((code) => me?.permissions.includes(code)));
+  const canEditDepartment = editing ? canEditSecurity : canCreateOrDelete;
+  const ungrantablePermissions = new Set(
+    (permissions ?? [])
+      .filter(
+        (permission) =>
+          !me?.is_superuser && !me?.permissions.includes(permission.code) && !selectedPermissions.has(permission.code),
+      )
+      .map((permission) => permission.code),
+  );
+
+  const { data: departments } = useApi<Department[]>(open && canManage ? "/departments/?all=1" : null);
 
   function openNew() {
     if (!canCreateOrDelete) return;
     setEditing(null);
-    setForm(empty);
+    setForm(emptyForm);
+    setSelectedPermissions(new Set());
     setSalesEmployee(false);
-    setCodes(new Set());
-    setDeniedCodes(new Set());
-    setEmployeeStep(1);
+    setStep(1);
     setError("");
     setOpen(true);
   }
-  function openEdit(e: Employee) {
-    setEditing(e);
+
+  function openEdit(employee: Employee) {
+    setEditing(employee);
     setForm({
-      username: e.username,
+      username: employee.username,
       password: "",
-      first_name: e.first_name,
-      last_name: e.last_name,
-      phone: e.phone,
-      position: e.position,
-      role: e.role ? String(e.role) : "",
-      sales_department: e.sales_department ? String(e.sales_department) : "",
+      first_name: employee.first_name,
+      last_name: employee.last_name,
+      phone: employee.phone,
+      position: employee.position,
+      sales_department: employee.sales_department ? String(employee.sales_department) : "",
+      is_active: employee.is_active,
     });
-    setSalesEmployee(!!e.sales_department);
-    const inRole = new Set(e.role_permissions ?? []);
-    setCodes(new Set((e.permissions ?? []).filter((c) => !inRole.has(c))));
-    setDeniedCodes(new Set(e.denied_permissions ?? []));
-    setEmployeeStep(1);
+    setSelectedPermissions(new Set(employee.permissions));
+    setSalesEmployee(Boolean(employee.sales_department));
+    setStep(1);
     setError("");
     setOpen(true);
   }
 
-  function toggleCode(code: string) {
-    const next = new Set(codes);
+  function togglePermission(code: string) {
+    const next = new Set(selectedPermissions);
     if (next.has(code)) next.delete(code);
     else next.add(code);
-    setCodes(next);
+    setSelectedPermissions(next);
   }
 
-  function toggleDeniedCode(code: string) {
-    if (salesEmployee && SALES_REQUIRED.has(code)) return;
-    const next = new Set(deniedCodes);
-    if (next.has(code)) next.delete(code);
-    else next.add(code);
-    setDeniedCodes(next);
-  }
-
-  // Права выбранной роли действуют сами — из личного набора убираем дубли.
-  const selectedRole = (roles ?? []).find((r) => String(r.id) === form.role);
-  const editingRoleIsSelected = !!editing && String(editing.role ?? "") === form.role;
-  const rolePerms = new Set(
-    selectedRole?.permissions.map((permission) => permission.code) ??
-      (editingRoleIsSelected ? editing.role_permissions : []),
-  );
-  const selectedRoleName = selectedRole?.name ?? (editingRoleIsSelected ? editing.role_name : null) ?? "Без роли";
-
-  function pickRole(roleId: string) {
-    if (!canManageAccountSecurity || !canRoles) return;
-    setForm((f) => ({ ...f, role: roleId }));
-    const preset = (roles ?? []).find((r) => String(r.id) === roleId);
-    const inRole = new Set((preset?.permissions ?? []).map((p) => p.code));
-    setCodes((prev) => new Set([...prev].filter((c) => !inRole.has(c))));
-    setDeniedCodes((prev) => new Set([...prev].filter((c) => inRole.has(c))));
-  }
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
     setError("");
-    if (employeeStep === 1) {
+
+    if (step === 1) {
       if (!form.first_name.trim() || !form.last_name.trim() || !form.username.trim()) {
         setError("Заполните имя, фамилию и логин сотрудника.");
         return;
       }
-      if (!editing && form.password.length < 6) {
-        setError("Пароль должен содержать минимум 6 символов.");
+      if (!editing && form.password.length < 8) {
+        setError("Пароль должен содержать минимум 8 символов.");
         return;
       }
-      setEmployeeStep(2);
+      setStep(2);
       return;
     }
-    if (employeeStep === 2) {
+
+    if (step === 2) {
       if (salesEmployee && !form.sales_department) {
         setError("Выберите отдел продаж для сотрудника.");
         return;
       }
-      setEmployeeStep(3);
+      setStep(3);
       return;
     }
+
     setBusy(true);
     try {
-      const body: Record<string, unknown> = {
+      const profile = {
         first_name: form.first_name,
         last_name: form.last_name,
         phone: form.phone,
         position: form.position,
       };
+      const salesDepartment = salesEmployee ? Number(form.sales_department) : null;
 
-      if (!editing && !canCreateOrDelete) {
-        throw new Error("employee_create_forbidden");
-      }
-      if (canManageAccountSecurity) {
-        body.username = form.username;
-        body.role = form.role ? Number(form.role) : null;
-        body.sales_department = salesEmployee ? Number(form.sales_department) : null;
-        body.permission_codes = Array.from(codes);
-        body.denied_permission_codes = Array.from(deniedCodes);
-      }
       if (editing) {
-        if (canManageAccountSecurity && form.password) body.password = form.password; // пустой = не менять
-        await api.patch(`/employees/${editing.id}/`, body);
+        await api.patch(`/employees/${editing.id}/`, profile);
+        if (canEditSecurity) {
+          await api.patch(`/employees/${editing.id}/security/`, {
+            username: form.username,
+            permission_codes: Array.from(selectedPermissions),
+            is_active: form.is_active,
+            sales_department: salesDepartment,
+          });
+        }
+        if (form.password && canChangePassword) {
+          await api.post(`/employees/${editing.id}/password/`, {
+            password: form.password,
+          });
+        }
       } else {
         await api.post("/employees/", {
-          ...body,
+          ...profile,
+          sales_department: salesDepartment,
           username: form.username,
           password: form.password,
+          permission_codes: Array.from(selectedPermissions),
+          is_active: form.is_active,
         });
       }
-      setForm(empty);
+
       setOpen(false);
+      setForm(emptyForm);
       reload();
-      refreshMe(true); // если админ менял свои же доступы — применить сразу
-    } catch (e) {
-      setError(
-        e instanceof Error && e.message === "sales_department_required"
-          ? "Выберите отдел продаж для сотрудника."
-          : e instanceof Error && e.message === "employee_create_forbidden"
-            ? "Для создания сотрудника нужны права управления сотрудниками и ролями."
-            : apiError(e),
-      );
+      refreshMe(true);
+    } catch (caught) {
+      setError(apiError(caught));
     } finally {
       setBusy(false);
     }
   }
 
   async function confirmDelete() {
-    if (!delItem || !canCreateOrDelete) return;
-    setDelBusy(true);
-    setDelError("");
+    if (!deleteEmployee || !canCreateOrDelete) return;
+    setDeleteBusy(true);
+    setDeleteError("");
     try {
-      await api.delete(`/employees/${delItem.id}/`);
-      setDelItem(null);
+      await api.delete(`/employees/${deleteEmployee.id}/`);
+      setDeleteEmployee(null);
       reload();
-    } catch (e) {
-      setDelError(apiError(e));
+    } catch (caught) {
+      setDeleteError(apiError(caught));
     } finally {
-      setDelBusy(false);
+      setDeleteBusy(false);
     }
   }
 
-  const [q, setQ] = useState("");
-  const [sortKey, setSortKey] = useState("name");
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
   const list = employees ?? [];
-  const activeN = list.filter((e) => e.is_active).length;
-  const toggleSort = (k: string) => {
-    if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
-    else {
-      setSortKey(k);
-      setSortDir("asc");
-    }
-  };
-  const filtered = list.filter((e) => {
-    if (!q) return true;
-    return `${e.name} ${e.username} ${e.position ?? ""}`.toLowerCase().includes(q.toLowerCase());
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = list.filter((employee) => {
+    if (!normalizedQuery) return true;
+    return `${employee.name} ${employee.username} ${employee.position}`.toLowerCase().includes(normalizedQuery);
   });
-  const sorted = [...filtered].sort((a, b) => {
-    const av = sortKey === "role" ? (a.role_name ?? "") : a.name;
-    const bv = sortKey === "role" ? (b.role_name ?? "") : b.name;
-    const cmp = String(av).localeCompare(String(bv), "ru");
-    return sortDir === "asc" ? cmp : -cmp;
+  const sorted = [...filtered].sort((left, right) => {
+    const result = left.name.localeCompare(right.name, "ru");
+    return sortDir === "asc" ? result : -result;
   });
 
   return (
     <AppShell
       title="Сотрудники"
       section="Управление"
-      description="Учётные записи, роли и доступы — всё управление людьми на одном экране."
+      description="Учётные записи, должности, отделы и персональные системные права."
       actions={
-        tab === "staff" && canCreateOrDelete ? (
+        canCreateOrDelete ? (
           <Button size="sm" onClick={openNew} aria-label="Добавить сотрудника">
-            <Plus className="size-4" /> <span className="hidden sm:inline">Добавить сотрудника</span>
+            <Plus className="size-4" />
+            <span className="hidden sm:inline">Добавить сотрудника</span>
           </Button>
         ) : undefined
       }
     >
-      {tabs.length > 1 && (
-        <div className="mb-5">
-          <Tabs tabs={tabs} active={tab} onChange={(key) => setTab(key as "staff" | "roles")} />
+      <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <StatCard label="Всего сотрудников" value={String(list.length)} />
+        <StatCard label="Активных" value={String(list.filter((employee) => employee.is_active).length)} accent />
+      </section>
+
+      <div className="mb-4">
+        <div className="relative max-w-md">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+          <Input
+            className="pl-9"
+            placeholder="Поиск по имени, логину, должности"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+      </div>
+
+      {loadError && !employees && (
+        <div className="mb-4">
+          <ErrorAlert message={loadError} onRetry={reload} />
         </div>
       )}
-      {tab === "roles" ? (
-        <RolesSection />
-      ) : (
-        <>
-          <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <StatCard label="Всего сотрудников" value={String(list.length)} />
-            <StatCard label="Активных" value={String(activeN)} accent />
-          </section>
-          <div className="mb-4">
-            <div className="relative max-w-md flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-              <Input
-                className="pl-9"
-                placeholder="Поиск по имени, логину, должности"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-              />
-            </div>
-          </div>
-          {loadError && !employees && (
-            <div className="mb-4">
-              <ErrorAlert message={loadError} onRetry={reload} />
-            </div>
-          )}
-          <Card>
-            <CardContent className="pt-6">
-              <Table>
-                <THead>
-                  <TR>
-                    <SortableHeader label="Имя" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-                    <TH>Логин</TH>
-                    <TH>Должность</TH>
-                    <SortableHeader
-                      label="Роль"
-                      sortKey="role"
-                      activeKey={sortKey}
-                      dir={sortDir}
-                      onClick={toggleSort}
-                    />
-                    <TH>Статус</TH>
-                    <TH></TH>
-                  </TR>
-                </THead>
-                <TBody>
-                  {sorted.map((e) => (
-                    <TR key={e.id}>
-                      <TD className="font-medium">{e.name}</TD>
-                      <TD>{e.username}</TD>
-                      <TD>
-                        <div>{e.position || "—"}</div>
-                        {e.sales_department && (
-                          <div className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
-                            <span
-                              className="size-1.5 rounded-full"
-                              style={{ backgroundColor: e.sales_department_color || "#315FD5" }}
-                            />
-                            {e.sales_department_name}
-                          </div>
-                        )}
-                      </TD>
-                      <TD>
-                        <div>{e.role_name || "—"}</div>
-                        <div className="text-xs text-[var(--muted-foreground)]">
-                          Доступов: {effectiveAccessCount(e)}
-                        </div>
-                      </TD>
-                      <TD>
-                        <Badge tone={e.is_active ? "success" : "muted"}>{e.is_active ? "Активен" : "Отключён"}</Badge>
-                      </TD>
-                      <TD>
-                        {canManage && (
-                          <div className="flex items-center justify-end gap-1">
-                            <Button size="sm" variant="ghost" onClick={() => openEdit(e)} title="Изменить">
-                              <Pencil className="size-4" />
-                            </Button>
-                            {canCreateOrDelete && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                                onClick={() => {
-                                  setDelError("");
-                                  setDelItem(e);
-                                }}
-                                title="Удалить"
-                              >
-                                <Trash2 className="size-4" />
-                              </Button>
-                            )}
-                          </div>
-                        )}
-                      </TD>
-                    </TR>
-                  ))}
-                  {sorted.length === 0 && (
-                    <TR>
-                      <TD colSpan={6} className="py-4 text-center text-[var(--muted-foreground)]">
-                        Сотрудников пока нет.
-                      </TD>
-                    </TR>
-                  )}
-                </TBody>
-              </Table>
-            </CardContent>
-          </Card>
 
-          <Modal
-            open={open}
-            onClose={() => setOpen(false)}
-            eyebrow={editing ? "Команда · Изменение" : "Команда · Сотрудник"}
-            title={editing ? "Изменить сотрудника" : "Новый сотрудник"}
-            description="Данные сотрудника, его роль и точные доступы — по шагам."
-            className="max-w-2xl"
-            mobileFullscreen
-            footer={
-              <>
-                {employeeStep === 1 ? (
-                  <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-                    Отмена
-                  </Button>
-                ) : (
-                  <Button type="button" variant="outline" onClick={() => setEmployeeStep((employeeStep - 1) as 1 | 2)}>
-                    <ArrowLeft className="size-4" /> Назад
-                  </Button>
-                )}
-                <Button type="submit" form="employee-form" disabled={busy}>
-                  {busy ? (
-                    "Сохранение…"
-                  ) : employeeStep < 3 ? (
-                    <>
-                      Далее <ArrowRight className="size-4" />
-                    </>
-                  ) : editing ? (
-                    "Сохранить"
-                  ) : (
-                    "Создать"
-                  )}
-                </Button>
-              </>
-            }
-          >
-            <form id="employee-form" onSubmit={submit} className="flex flex-col gap-5">
-              <div className="relative grid grid-cols-3 gap-2 rounded-2xl border bg-[var(--muted)]/45 p-2">
-                {[
-                  { n: 1, label: "Сотрудник", icon: UserRound },
-                  { n: 2, label: "Роль и отдел", icon: BriefcaseBusiness },
-                  { n: 3, label: "Доступы", icon: KeyRound },
-                ].map((item) => {
-                  const Icon = item.icon;
-                  const active = employeeStep === item.n;
-                  const done = employeeStep > item.n;
-                  return (
-                    <button
-                      key={item.n}
-                      type="button"
-                      onClick={() => done && setEmployeeStep(item.n as 1 | 2 | 3)}
-                      className={cn(
-                        "relative flex min-w-0 items-center justify-center gap-2 rounded-xl px-2 py-2 text-xs font-semibold transition sm:justify-start",
-                        active && "bg-[var(--card)] shadow-sm ring-1 ring-[var(--border)]",
-                        done && "text-[var(--success)]",
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          "flex size-8 shrink-0 items-center justify-center rounded-full border bg-[var(--card)]",
-                          active && "border-[var(--foreground)] bg-[var(--foreground)] text-[var(--background)]",
-                          done && "border-[var(--success)] bg-[var(--success)] text-white",
-                        )}
-                      >
-                        {done ? <Check className="size-4" /> : <Icon className="size-4" />}
-                      </span>
-                      <span className="hidden truncate sm:block">{item.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {employeeStep === 1 && (
-                <>
-                  <section className="space-y-3">
-                    <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Человек</h4>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <Field label="Имя" htmlFor="employee-first-name">
-                        <Input
-                          id="employee-first-name"
-                          value={form.first_name}
-                          required
-                          onChange={(e) => setForm({ ...form, first_name: e.target.value })}
+      <Card>
+        <CardContent className="pt-6">
+          <Table>
+            <THead>
+              <TR>
+                <SortableHeader
+                  label="Имя"
+                  sortKey="name"
+                  activeKey="name"
+                  dir={sortDir}
+                  onClick={() => setSortDir(sortDir === "asc" ? "desc" : "asc")}
+                />
+                <TH>Логин</TH>
+                <TH>Должность и отдел</TH>
+                <TH>Доступы</TH>
+                <TH>Статус</TH>
+                <TH />
+              </TR>
+            </THead>
+            <TBody>
+              {sorted.map((employee) => (
+                <TR key={employee.id}>
+                  <TD className="font-medium">{employee.name}</TD>
+                  <TD>{employee.username}</TD>
+                  <TD>
+                    <div>{employee.position || "—"}</div>
+                    {employee.sales_department && (
+                      <div className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+                        <span
+                          className="size-1.5 rounded-full"
+                          style={{ backgroundColor: employee.sales_department_color || "#315FD5" }}
                         />
-                      </Field>
-                      <Field label="Фамилия" htmlFor="employee-last-name">
-                        <Input
-                          id="employee-last-name"
-                          value={form.last_name}
-                          required
-                          onChange={(e) => setForm({ ...form, last_name: e.target.value })}
-                        />
-                      </Field>
-                      <Field label="Логин" htmlFor="employee-username">
-                        <Input
-                          id="employee-username"
-                          value={form.username}
-                          required
-                          disabled={!!editing && !canManageAccountSecurity}
-                          autoComplete="username"
-                          onChange={(e) => setForm({ ...form, username: e.target.value })}
-                        />
-                      </Field>
-                      <Field
-                        label="Пароль"
-                        htmlFor="employee-password"
-                        hint={editing ? "Оставьте пустым, чтобы не менять." : undefined}
-                      >
-                        <PasswordInput
-                          id="employee-password"
-                          value={form.password}
-                          required={!editing}
-                          minLength={6}
-                          disabled={!!editing && !canManageAccountSecurity}
-                          autoComplete="new-password"
-                          placeholder={editing ? "••••••" : ""}
-                          onChange={(e) => setForm({ ...form, password: e.target.value })}
-                        />
-                      </Field>
-                    </div>
-                  </section>
-
-                  <section className="space-y-3 border-t border-[var(--border)] pt-4">
-                    <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Должность</h4>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <Field label="Телефон" htmlFor="employee-phone">
-                        <Input
-                          id="employee-phone"
-                          type="tel"
-                          autoComplete="tel"
-                          value={form.phone}
-                          onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                        />
-                      </Field>
-                      <Field label="Должность" htmlFor="employee-position">
-                        <Input
-                          id="employee-position"
-                          value={form.position}
-                          onChange={(e) => setForm({ ...form, position: e.target.value })}
-                        />
-                      </Field>
-                    </div>
-                  </section>
-                </>
-              )}
-
-              {employeeStep === 2 && (
-                <>
-                  <section className="space-y-3 border-t border-[var(--border)] pt-4">
-                    <label className="group flex cursor-pointer items-start gap-3 rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-50/80 to-white p-4 transition hover:border-blue-200">
-                      <input
-                        type="checkbox"
-                        checked={salesEmployee}
-                        disabled={!canManageAccountSecurity}
-                        onChange={(event) => {
-                          const checked = event.target.checked;
-                          setSalesEmployee(checked);
-                          if (checked && !form.sales_department) {
-                            const first = (departments ?? []).find((department) => department.is_active);
-                            setForm((current) => ({ ...current, sales_department: first ? String(first.id) : "" }));
-                          }
-                          if (!checked) setForm((current) => ({ ...current, sales_department: "" }));
-                          if (checked) {
-                            setDeniedCodes(
-                              (current) => new Set([...current].filter((code) => !SALES_REQUIRED.has(code))),
-                            );
-                          }
-                        }}
-                        className="peer sr-only"
-                      />
-                      <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-white text-transparent shadow-sm transition peer-checked:border-blue-600 peer-checked:bg-blue-600 peer-checked:text-white">
-                        <Check className="size-4" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-2 text-sm font-bold text-slate-800">
-                          <BriefcaseBusiness className="size-4 text-blue-600" /> Сотрудник отдела продаж
-                        </span>
-                        <span className="mt-1 block text-xs leading-relaxed text-slate-500">
-                          Его отдел будет автоматически закрепляться за новыми заказами. Просмотр клиентов, товаров и
-                          создание заказов включаются обязательно.
-                        </span>
-                      </span>
-                    </label>
-
-                    {salesEmployee && (
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                        <div className="mb-3 flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-sm font-bold text-slate-800">Закреплённый отдел</div>
-                            <div className="mt-0.5 text-xs text-slate-500">
-                              Все новые заказы сотрудника попадут сюда.
-                            </div>
-                          </div>
-                          <ShieldCheck className="size-5 text-emerald-500" />
-                        </div>
-                        <div className="grid gap-2 sm:grid-cols-2">
-                          {canManageAccountSecurity
-                            ? (departments ?? []).map((department) => {
-                                const selected = form.sales_department === String(department.id);
-                                return (
-                                  <button
-                                    key={department.id}
-                                    type="button"
-                                    disabled={!department.is_active}
-                                    onClick={() =>
-                                      setForm((current) => ({
-                                        ...current,
-                                        sales_department: String(department.id),
-                                      }))
-                                    }
-                                    className={`flex min-h-12 items-center gap-2.5 rounded-xl border px-3 py-2 text-left text-sm font-semibold transition ${
-                                      selected
-                                        ? "border-slate-800 bg-slate-900 text-white shadow-md"
-                                        : "border-slate-200 bg-white text-slate-700 hover:-translate-y-0.5 hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-45"
-                                    }`}
-                                  >
-                                    <span
-                                      className="size-2.5 shrink-0 rounded-full ring-4 ring-current/10"
-                                      style={{ backgroundColor: department.color, color: department.color }}
-                                    />
-                                    <span className="truncate">{department.name}</span>
-                                    {!department.is_active && (
-                                      <span className="ml-auto text-[10px] font-normal">отключён</span>
-                                    )}
-                                  </button>
-                                );
-                              })
-                            : editing?.sales_department && (
-                                <div className="flex min-h-12 items-center gap-2.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm font-semibold text-slate-700">
-                                  <span
-                                    className="size-2.5 shrink-0 rounded-full ring-4 ring-current/10"
-                                    style={{
-                                      backgroundColor: editing.sales_department_color || "#315FD5",
-                                      color: editing.sales_department_color || "#315FD5",
-                                    }}
-                                  />
-                                  <span className="truncate">{editing.sales_department_name}</span>
-                                </div>
-                              )}
-                        </div>
-                        {canManageAccountSecurity &&
-                          departments !== null &&
-                          !departments.some((department) => department.is_active) && (
-                            <p className="mt-3 text-xs font-medium text-[var(--destructive)]">
-                              Нет действующих отделов. Сначала создайте отдел на странице заказов.
-                            </p>
-                          )}
+                        {employee.sales_department_name}
                       </div>
                     )}
-                  </section>
+                  </TD>
+                  <TD>{employee.permissions.length}</TD>
+                  <TD>
+                    <Badge tone={employee.is_active ? "success" : "muted"}>
+                      {employee.is_active ? "Активен" : "Отключён"}
+                    </Badge>
+                  </TD>
+                  <TD>
+                    {canManage && (
+                      <div className="flex items-center justify-end gap-1">
+                        <Button size="sm" variant="ghost" onClick={() => openEdit(employee)} title="Изменить">
+                          <Pencil className="size-4" />
+                        </Button>
+                        {canCreateOrDelete && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                            onClick={() => {
+                              setDeleteError("");
+                              setDeleteEmployee(employee);
+                            }}
+                            title="Удалить"
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </TD>
+                </TR>
+              ))}
+              {sorted.length === 0 && (
+                <TR>
+                  <TD colSpan={6} className="py-4 text-center text-[var(--muted-foreground)]">
+                    Сотрудников пока нет.
+                  </TD>
+                </TR>
+              )}
+            </TBody>
+          </Table>
+        </CardContent>
+      </Card>
 
-                  <section className="space-y-3 border-t border-[var(--border)] pt-4">
-                    <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Базовая роль</h4>
-                    <Field
-                      label="Роль"
-                      htmlFor="employee-role"
-                      hint="На следующем шаге любое право роли можно лично отключить или добавить сотруднику."
-                    >
-                      {canManageAccountSecurity && canRoles ? (
-                        <Select id="employee-role" value={form.role} onChange={(e) => pickRole(e.target.value)}>
-                          <option value="">Без роли</option>
-                          {(roles ?? []).map((r) => (
-                            <option key={r.id} value={r.id}>
-                              {r.name}
-                            </option>
-                          ))}
-                        </Select>
-                      ) : (
-                        <Input id="employee-role" value={selectedRoleName} readOnly disabled />
-                      )}
-                    </Field>
-                  </section>
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        eyebrow={editing ? "Команда · Изменение" : "Команда · Сотрудник"}
+        title={editing ? "Изменить сотрудника" : "Новый сотрудник"}
+        description="Данные сотрудника, отдел и персональные доступы."
+        className="max-w-2xl"
+        mobileFullscreen
+        footer={
+          <>
+            {step === 1 ? (
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                Отмена
+              </Button>
+            ) : (
+              <Button type="button" variant="outline" onClick={() => setStep((step - 1) as 1 | 2)}>
+                <ArrowLeft className="size-4" /> Назад
+              </Button>
+            )}
+            <Button type="submit" form="employee-form" disabled={busy}>
+              {busy ? (
+                "Сохранение…"
+              ) : step < 3 ? (
+                <>
+                  Далее <ArrowRight className="size-4" />
                 </>
+              ) : editing ? (
+                "Сохранить"
+              ) : (
+                "Создать"
               )}
+            </Button>
+          </>
+        }
+      >
+        <form id="employee-form" onSubmit={submit} className="flex flex-col gap-5">
+          <div className="relative grid grid-cols-3 gap-2 rounded-2xl border bg-[var(--muted)]/45 p-2">
+            {[
+              { number: 1, label: "Сотрудник", icon: UserRound },
+              { number: 2, label: "Отдел", icon: BriefcaseBusiness },
+              { number: 3, label: "Доступы", icon: KeyRound },
+            ].map((item) => {
+              const Icon = item.icon;
+              const active = step === item.number;
+              const done = step > item.number;
+              return (
+                <button
+                  key={item.number}
+                  type="button"
+                  onClick={() => done && setStep(item.number as 1 | 2 | 3)}
+                  className={cn(
+                    "relative flex min-w-0 items-center justify-center gap-2 rounded-xl px-2 py-2 text-xs font-semibold transition sm:justify-start",
+                    active && "bg-[var(--card)] shadow-sm ring-1 ring-[var(--border)]",
+                    done && "text-[var(--success)]",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "flex size-8 shrink-0 items-center justify-center rounded-full border bg-[var(--card)]",
+                      active && "border-[var(--foreground)] bg-[var(--foreground)] text-[var(--background)]",
+                      done && "border-[var(--success)] bg-[var(--success)] text-white",
+                    )}
+                  >
+                    {done ? <Check className="size-4" /> : <Icon className="size-4" />}
+                  </span>
+                  <span className="hidden truncate sm:block">{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
 
-              {employeeStep === 3 && (
-                <section className="space-y-3 border-t border-[var(--border)] pt-4">
-                  <h4 className="text-[12px] font-medium text-[var(--muted-foreground)]">Доступы</h4>
-                  <div className="rounded-xl border bg-[var(--muted)]/35 px-3 py-2 text-xs text-[var(--muted-foreground)]">
-                    Базовая роль: <span className="font-semibold text-[var(--foreground)]">{selectedRoleName}</span>.
-                    Серые доступы наследуются из роли, перечёркнутые отключены лично.
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium">К чему имеет доступ</span>
-                      <span className="text-xs text-[var(--muted-foreground)]">
-                        {rolePerms.size > 0 ? `Из роли: ${rolePerms.size - deniedCodes.size} · ` : ""}Личных:{" "}
-                        {codes.size}
-                        {deniedCodes.size > 0 ? ` · Запрещено: ${deniedCodes.size}` : ""}
-                      </span>
-                    </div>
-                    <fieldset disabled={!canManageAccountSecurity}>
-                      <PermissionPicker
-                        perms={perms ?? []}
-                        selected={codes}
-                        onToggle={toggleCode}
-                        inherited={rolePerms}
-                        denied={deniedCodes}
-                        onToggleDenied={toggleDeniedCode}
-                        forced={salesEmployee ? SALES_REQUIRED : undefined}
-                      />
-                    </fieldset>
-                  </div>
-                </section>
+          {step === 1 && (
+            <>
+              <section className="space-y-3">
+                <h4 className="text-xs font-medium text-[var(--muted-foreground)]">Учётная запись</h4>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <Field label="Имя" htmlFor="employee-first-name">
+                    <Input
+                      id="employee-first-name"
+                      value={form.first_name}
+                      required
+                      onChange={(event) => setForm({ ...form, first_name: event.target.value })}
+                    />
+                  </Field>
+                  <Field label="Фамилия" htmlFor="employee-last-name">
+                    <Input
+                      id="employee-last-name"
+                      value={form.last_name}
+                      required
+                      onChange={(event) => setForm({ ...form, last_name: event.target.value })}
+                    />
+                  </Field>
+                  <Field label="Логин" htmlFor="employee-username">
+                    <Input
+                      id="employee-username"
+                      value={form.username}
+                      required
+                      disabled={Boolean(editing) && !canEditSecurity}
+                      autoComplete="username"
+                      onChange={(event) => setForm({ ...form, username: event.target.value })}
+                    />
+                  </Field>
+                  <Field
+                    label="Новый пароль"
+                    htmlFor="employee-password"
+                    hint={editing ? "Оставьте пустым, чтобы не менять." : undefined}
+                  >
+                    <PasswordInput
+                      id="employee-password"
+                      value={form.password}
+                      required={!editing}
+                      minLength={8}
+                      disabled={Boolean(editing) && !canChangePassword}
+                      autoComplete="new-password"
+                      placeholder={editing ? "••••••••" : ""}
+                      onChange={(event) => setForm({ ...form, password: event.target.value })}
+                    />
+                  </Field>
+                  <Field label="Телефон" htmlFor="employee-phone">
+                    <Input
+                      id="employee-phone"
+                      type="tel"
+                      value={form.phone}
+                      onChange={(event) => setForm({ ...form, phone: event.target.value })}
+                    />
+                  </Field>
+                  <Field label="Должность" htmlFor="employee-position">
+                    <Input
+                      id="employee-position"
+                      value={form.position}
+                      onChange={(event) => setForm({ ...form, position: event.target.value })}
+                    />
+                  </Field>
+                </div>
+              </section>
+
+              {canEditSecurity && (
+                <label className="flex items-center gap-3 rounded-xl border p-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={form.is_active}
+                    onChange={(event) => setForm({ ...form, is_active: event.target.checked })}
+                  />
+                  Учётная запись активна
+                </label>
               )}
+            </>
+          )}
 
-              {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
-            </form>
-          </Modal>
+          {step === 2 && (
+            <section className="space-y-4">
+              <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
+                <input
+                  type="checkbox"
+                  checked={salesEmployee}
+                  disabled={!canEditDepartment}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setSalesEmployee(checked);
+                    if (!checked) {
+                      setForm((current) => ({ ...current, sales_department: "" }));
+                    } else if (!form.sales_department) {
+                      const firstActive = (departments ?? []).find((department) => department.is_active);
+                      setForm((current) => ({
+                        ...current,
+                        sales_department: firstActive ? String(firstActive.id) : "",
+                      }));
+                    }
+                  }}
+                />
+                <span>
+                  <span className="block text-sm font-bold">Сотрудник отдела продаж</span>
+                  <span className="mt-1 block text-xs text-[var(--muted-foreground)]">
+                    Отдел определяет принадлежность заказов и не выдаёт права автоматически.
+                  </span>
+                </span>
+              </label>
 
-          <ConfirmDialog
-            open={!!delItem}
-            onClose={() => setDelItem(null)}
-            title="Удалить сотрудника?"
-            description={delItem ? `Аккаунт «${delItem.name}» (${delItem.username}) будет удалён.` : ""}
-            busy={delBusy}
-            error={delError}
-            onConfirm={confirmDelete}
-          />
-        </>
-      )}
+              {salesEmployee && (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {(departments ?? []).map((department) => {
+                    const selected = form.sales_department === String(department.id);
+                    return (
+                      <button
+                        key={department.id}
+                        type="button"
+                        disabled={!department.is_active || !canEditDepartment}
+                        onClick={() =>
+                          setForm((current) => ({
+                            ...current,
+                            sales_department: String(department.id),
+                          }))
+                        }
+                        className={`flex min-h-12 items-center gap-2.5 rounded-xl border px-3 py-2 text-left text-sm font-semibold transition ${
+                          selected
+                            ? "border-slate-800 bg-slate-900 text-white"
+                            : "border-slate-200 bg-white text-slate-700 disabled:opacity-45"
+                        }`}
+                      >
+                        <span
+                          className="size-2.5 shrink-0 rounded-full"
+                          style={{ backgroundColor: department.color }}
+                        />
+                        <span className="truncate">{department.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          )}
+
+          {step === 3 && (
+            <section className="space-y-3 border-t border-[var(--border)] pt-4">
+              <div className="flex items-center justify-between gap-3">
+                <h4 className="text-sm font-medium">Персональные системные права</h4>
+                <span className="text-xs text-[var(--muted-foreground)]">Выбрано: {selectedPermissions.size}</span>
+              </div>
+              <fieldset disabled={!canEditSecurity}>
+                <PermissionPicker
+                  perms={permissions ?? []}
+                  selected={selectedPermissions}
+                  onToggle={togglePermission}
+                  disabled={ungrantablePermissions}
+                />
+              </fieldset>
+              {!canEditSecurity && (
+                <p className="text-xs text-[var(--muted-foreground)]">
+                  {canManageSecurity
+                    ? "Нельзя изменять собственные доступы или учётную запись с более широкими правами."
+                    : "Для изменения доступов требуется право управления системными правами."}
+                </p>
+              )}
+            </section>
+          )}
+
+          {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
+        </form>
+      </Modal>
+
+      <ConfirmDialog
+        open={Boolean(deleteEmployee)}
+        onClose={() => setDeleteEmployee(null)}
+        title="Удалить сотрудника?"
+        description={
+          deleteEmployee
+            ? `Профиль «${deleteEmployee.name}» будет удалён, а учётная запись ${deleteEmployee.username} — отключена.`
+            : ""
+        }
+        busy={deleteBusy}
+        error={deleteError}
+        onConfirm={confirmDelete}
+      />
     </AppShell>
   );
 }
 
 export default function EmployeesPage() {
   return (
-    <RequirePerm perm={["employees.view", "rbac.view"]} title="Сотрудники">
+    <RequirePerm perm="employees.view" title="Сотрудники">
       <EmployeesPageInner />
     </RequirePerm>
   );

@@ -1,18 +1,34 @@
 from django.contrib.auth import get_user_model
+from django.core import signing
 from django.db.models import Q
+from django.http import FileResponse
+from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm, IsStaff
 from apps.common.query_params import parse_iso_date
 
-from .models import Task, TaskNotification
-from .serializers import TaskNotificationSerializer, TaskSerializer
+from .attachments import (
+    attachment_id_from_token,
+    detected_media_type,
+)
+from .models import Task, TaskAttachment, TaskNotification
+from .serializers import (
+    TaskAttachmentSerializer,
+    TaskNotificationSerializer,
+    TaskSerializer,
+)
 from .services import (
-    add_attachment, complete_task, create_task, reassign_task, reopen_task,
+    add_attachments,
+    complete_task,
+    create_task,
+    reassign_task,
+    reopen_task,
 )
 
 
@@ -31,8 +47,7 @@ class TaskViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         queryset = (
-            Task.objects.select_related("assignee__employee", "created_by__employee",
-                                        "done_by__employee")
+            Task.objects.select_related("assignee", "created_by", "done_by")
             .prefetch_related("attachments")
         )
         if not (user.is_superuser or user.has_perm_code("tasks.view")):
@@ -112,10 +127,28 @@ class TaskViewSet(viewsets.ModelViewSet):
         uploads = request.FILES.getlist("attachments") or request.FILES.getlist("file")
         if not uploads:
             raise ValidationError({"detail": "Файл не приложен", "code": "no_file"})
-        for upload in uploads:
-            add_attachment(task, upload, request.user)
+        add_attachments(task, uploads, request.user)
         task.refresh_from_db()
         return Response(self.get_serializer(task).data)
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path=r"attachments/(?P<attachment_id>\d+)/url",
+    )
+    def attachment_url(self, request, pk=None, attachment_id=None):
+        """Renew the short-lived download capability for a visible task."""
+
+        task = self.get_object()
+        attachment = get_object_or_404(
+            task.attachments.all(),
+            pk=attachment_id,
+        )
+        serializer = TaskAttachmentSerializer(
+            attachment,
+            context=self.get_serializer_context(),
+        )
+        return Response({"url": serializer.data["url"]})
 
     def perform_update(self, serializer):
         self._require_create()
@@ -157,12 +190,47 @@ class TaskAssigneeListView(APIView):
     def get(self, request):
         from apps.employees.models import Employee
         rows = (Employee.objects.filter(is_active=True)
-                .select_related("user").order_by("first_name", "last_name"))
+                .select_related("user")
+                .order_by("user__first_name", "user__last_name"))
         return Response([
             {
                 "id": row.user_id,
-                "name": f"{row.first_name} {row.last_name}".strip() or row.user.username,
+                "name": row.user.get_full_name() or row.user.username,
                 "position": row.position,
             }
             for row in rows if row.user_id
         ])
+
+
+class TaskAttachmentDownloadView(APIView):
+    """Serve a private task attachment through a short-lived signed URL."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def get(self, request, pk):
+        token = request.query_params.get("token", "")
+        try:
+            signed_id = attachment_id_from_token(token)
+        except signing.BadSignature as exc:
+            raise NotFound("Вложение недоступно или ссылка устарела") from exc
+        if signed_id != pk:
+            raise NotFound("Вложение не найдено")
+
+        attachment = get_object_or_404(TaskAttachment, pk=pk)
+        try:
+            file_handle = attachment.file.open("rb")
+        except OSError as exc:
+            raise NotFound("Файл вложения не найден") from exc
+
+        detected = detected_media_type(file_handle)
+        content_type = detected[1] if detected is not None else "application/octet-stream"
+        response = FileResponse(
+            file_handle,
+            content_type=content_type,
+            as_attachment=detected is None,
+            filename=attachment.original_name or None,
+        )
+        response["Cache-Control"] = "private, no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response

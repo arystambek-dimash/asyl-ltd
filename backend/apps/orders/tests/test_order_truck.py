@@ -14,7 +14,7 @@ def _product():
 
 
 def test_create_order_with_truck_and_date(auth_client, manager):
-    c = Client.objects.create(first_name="И", last_name="П", phone="x")
+    c = Client.objects.create_with_user(first_name="И", last_name="П", phone="x")
     prod = _product()
     resp = auth_client(manager).post("/api/orders/", {
         "client": c.id, "truck_number": "01A777", "arrival_date": "2026-07-01",

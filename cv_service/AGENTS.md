@@ -63,7 +63,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install-ai-service.ps1 `
 
 Метка класса — `Цвет_Вес`, например `Red_50`: `validate_classes` требует
 `.+_[1-9][0-9]*` и роняет запуск на чекпоинте с другими классами. CRM
-разбирает цвет по части до `_`.
+разбирает цвет по части до `_`. Wagon detector — отдельный adapter; общую
+модель мешков нельзя использовать как его fallback.
 
 ## Два режима
 

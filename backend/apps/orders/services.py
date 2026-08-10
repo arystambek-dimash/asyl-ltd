@@ -17,7 +17,7 @@ def _locked_payment_order(order: Order) -> Order:
     """Serialize payment choices and derived totals through the order row."""
     return (
         Order.objects.select_for_update(of=("self",))
-        .select_related("client", "store")
+        .select_related("client__user", "store")
         .prefetch_related("items", "payments")
         .get(pk=order.pk)
     )
@@ -712,7 +712,7 @@ def repeat_order(source: Order, user) -> Order:
 
     source = (
         Order.objects.select_for_update(of=("self",))
-        .select_related("client", "store")
+        .select_related("client__user", "store")
         .prefetch_related("items__product")
         .get(pk=source.pk)
     )

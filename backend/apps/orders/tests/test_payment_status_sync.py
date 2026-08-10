@@ -17,7 +17,7 @@ def _api(user):
 def _fully_paid_but_stale():
     """Заказ полностью оплачен, но payment_status застрял на unpaid (легаси/дрейф)."""
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     o = Order.objects.create(client=c, status="shipped", payment_status="unpaid")
     OrderItem.objects.create(order=o, product=p, quantity=2, unit_price="100.00")  # total 200
     Payment.objects.create(order=o, amount="200", method="cash", status="confirmed")

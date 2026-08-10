@@ -1,26 +1,20 @@
-"""Best-effort external alerts for confirmed camera incidents.
-
-Alert delivery must never stop the monitor.  Destinations are optional and
-configured only through environment variables so credentials never enter the
-repository or incident JSON.
-"""
-
 from __future__ import annotations
 
 import json
 import logging
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
+from django.conf import settings
+
 log = logging.getLogger(__name__)
 
-WEBHOOK_URL = os.environ.get("CAMERA_ALERT_WEBHOOK_URL", "").strip()
-WEBHOOK_TOKEN = os.environ.get("CAMERA_ALERT_WEBHOOK_TOKEN", "").strip()
-TELEGRAM_BOT_TOKEN = os.environ.get("CAMERA_ALERT_TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.environ.get("CAMERA_ALERT_TELEGRAM_CHAT_ID", "").strip()
+WEBHOOK_URL = settings.CAMERA_ALERT_WEBHOOK_URL
+WEBHOOK_TOKEN = settings.CAMERA_ALERT_WEBHOOK_TOKEN
+TELEGRAM_BOT_TOKEN = settings.CAMERA_ALERT_TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID = settings.CAMERA_ALERT_TELEGRAM_CHAT_ID
 TIMEOUT_SECONDS = 8
 
 

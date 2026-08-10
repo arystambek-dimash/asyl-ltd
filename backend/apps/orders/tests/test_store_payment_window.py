@@ -13,7 +13,7 @@ pytestmark = pytest.mark.django_db
 
 def _shipped_store_order():
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     s = Store.objects.create(client=c, name="S",
                              payment_schedule_type="monthly", payment_days=[5])
     o = Order.objects.create(client=c, store=s, status="shipped")

@@ -1,0 +1,305 @@
+"""Administrative camera operations unrelated to one loading session."""
+
+from typing import ClassVar
+
+from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
+from rest_framework import status
+from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from .. import ai, analytics, health, recordings
+from ..models import MonoblockCameraSettings
+from ..serializers import (
+    AlwaysOnAnalyticsArchiveSerializer,
+    AlwaysOnAnalyticsSubtractSerializer,
+    CameraSourcesSerializer,
+    ShippingBoardSettingsSerializer,
+    WagonNumberCameraSettingsSerializer,
+)
+
+
+class AlwaysOnDetectionsView(APIView):
+    """Return lightweight live detection boxes for the administrator screen."""
+
+    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+
+    def get(self, request):
+        try:
+            return Response(ai.always_on_detections_cached())
+        except (ai.AiUnavailable, ai.AiError):
+            return Response({"processors": []})
+
+
+class AlwaysOnCameraSettingsView(APIView):
+    """Store desired 24/7 processors and synchronize them with camera-PC."""
+
+    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+
+    @staticmethod
+    def _payload(row=None, live=None, sync_status="synced", detail=""):
+        row = row or MonoblockCameraSettings.objects.filter(singleton=True).first()
+        desired = row.always_on_camera_sources if row else []
+        return {
+            "camera_sources": desired,
+            "source": "sub",
+            "processors": (live or {}).get("processors", []),
+            "capacity": (live or {}).get("capacity"),
+            "service_available": live is not None,
+            "sync_status": sync_status,
+            "detail": detail,
+            "updated_at": row.updated_at if row else None,
+        }
+
+    def get(self, request):
+        row = MonoblockCameraSettings.objects.filter(singleton=True).first()
+        if not ai.enabled():
+            return Response(
+                self._payload(
+                    row,
+                    sync_status="pending",
+                    detail="AI-сервис не настроен",
+                )
+            )
+        try:
+            live = ai.always_on_status_cached()
+            desired = row.always_on_camera_sources if row else []
+            synced = sorted(live.get("cameras") or []) == sorted(desired)
+            return Response(
+                self._payload(
+                    row,
+                    live,
+                    "synced" if synced else "pending",
+                    "" if synced else "Настройка ожидает синхронизации",
+                )
+            )
+        except (ai.AiUnavailable, ai.AiError) as exc:
+            return Response(
+                self._payload(row, sync_status="pending", detail=str(exc))
+            )
+
+    def put(self, request):
+        serializer = CameraSourcesSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        sources = serializer.validated_data["camera_sources"]
+
+        row, _ = MonoblockCameraSettings.objects.get_or_create(singleton=True)
+        live_before = ai.cached_always_on_status() if ai.enabled() else None
+        capacity = (live_before or {}).get("capacity")
+        if isinstance(capacity, int) and len(sources) > capacity:
+            raise ValidationError(
+                {
+                    "camera_sources": (
+                        f"ПК камер поддерживает до {capacity} активных процессоров"
+                    ),
+                    "code": "always_on_capacity_exceeded",
+                }
+            )
+
+        row.always_on_camera_sources = sources
+        row.updated_by = request.user
+        row.save(
+            update_fields=[
+                "always_on_camera_sources",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+        if not ai.enabled():
+            return Response(
+                self._payload(
+                    row,
+                    sync_status="pending",
+                    detail="AI-сервис не настроен",
+                ),
+                status=status.HTTP_202_ACCEPTED,
+            )
+        try:
+            live = ai.configure_always_on(sources, "sub")
+            return Response(self._payload(row, live))
+        except (ai.AiUnavailable, ai.AiError) as exc:
+            return Response(
+                self._payload(row, sync_status="pending", detail=str(exc)),
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+
+class WagonNumberCameraSettingsView(APIView):
+    """Expose the wagon camera to grain staff; mutation is superuser-only."""
+
+    def get_permissions(self):
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return [HasPerm("grain.view")]
+        return [IsSuperUser()]
+
+    @staticmethod
+    def _payload(row=None, live=None, sync_status="synced", detail=""):
+        row = row or MonoblockCameraSettings.objects.filter(singleton=True).first()
+        desired = row.wagon_number_camera_source if row else ""
+        return {
+            "camera_source": desired or None,
+            "source": "main",
+            "live": live,
+            "service_available": live is not None,
+            "sync_status": sync_status,
+            "detail": detail,
+            "updated_at": row.updated_at if row else None,
+        }
+
+    def get(self, request):
+        row = MonoblockCameraSettings.objects.filter(singleton=True).first()
+        if not ai.enabled():
+            return Response(
+                self._payload(
+                    row,
+                    sync_status="pending",
+                    detail="AI-сервис не настроен",
+                )
+            )
+        try:
+            live = ai.wagon_number_status_cached()
+            desired = row.wagon_number_camera_source if row else ""
+            synced = (live.get("camera") or "") == desired
+            return Response(
+                self._payload(
+                    row,
+                    live,
+                    "synced" if synced else "pending",
+                    "" if synced else "Назначение ожидает синхронизации",
+                )
+            )
+        except (ai.AiUnavailable, ai.AiError) as exc:
+            return Response(
+                self._payload(row, sync_status="pending", detail=str(exc))
+            )
+
+    def put(self, request):
+        serializer = WagonNumberCameraSettingsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        source = serializer.validated_data["camera_source"]
+
+        row, _ = MonoblockCameraSettings.objects.get_or_create(singleton=True)
+        row.wagon_number_camera_source = source
+        row.updated_by = request.user
+        row.save(
+            update_fields=[
+                "wagon_number_camera_source",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+        if not ai.enabled():
+            return Response(
+                self._payload(
+                    row,
+                    sync_status="pending",
+                    detail="AI-сервис не настроен",
+                ),
+                status=status.HTTP_202_ACCEPTED,
+            )
+        try:
+            live = ai.configure_wagon_number(source or None, "main")
+            return Response(self._payload(row, live))
+        except (ai.AiUnavailable, ai.AiError) as exc:
+            return Response(
+                self._payload(row, sync_status="pending", detail=str(exc)),
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+
+class AlwaysOnAnalyticsView(APIView):
+    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+
+    def get(self, request):
+        if ai.enabled():
+            try:
+                analytics.record_snapshot(ai.always_on_status_cached())
+            except (ai.AiUnavailable, ai.AiError):
+                pass
+        return Response(analytics.today_payload())
+
+
+class AlwaysOnAnalyticsSubtractView(APIView):
+    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+
+    def post(self, request, cam: str):
+        serializer = AlwaysOnAnalyticsSubtractSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return Response(
+            analytics.subtract_today(
+                cam,
+                serializer.validated_data["amount"],
+                serializer.validated_data["reason"],
+                request.user,
+            )
+        )
+
+
+class AlwaysOnAnalyticsArchiveView(APIView):
+    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+
+    def get(self, request, cam: str | None = None):
+        return Response(
+            analytics.archives_payload(cam or request.query_params.get("camera"))
+        )
+
+    def post(self, request, cam: str):
+        serializer = AlwaysOnAnalyticsArchiveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return Response(
+            analytics.archive_camera(
+                cam,
+                serializer.validated_data["note"],
+                request.user,
+            )
+        )
+
+    def delete(self, request, archive_id: int):
+        return Response(analytics.delete_archive(archive_id, request.user))
+
+
+class ShippingBoardSettingsView(APIView):
+    def get_permissions(self):
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return [HasPerm("shipping.view", "sys_permissions.manage")]
+        return [HasPerm("sys_permissions.manage")]
+
+    @staticmethod
+    def _payload(row=None):
+        row = row or MonoblockCameraSettings.objects.filter(singleton=True).first()
+        return {
+            "completed_orders_days": row.completed_orders_days if row else 1,
+            "video_retention_days": recordings.VIDEO_RETENTION_DAYS,
+            "updated_at": row.updated_at if row else None,
+        }
+
+    def get(self, request):
+        return Response(self._payload())
+
+    def patch(self, request):
+        serializer = ShippingBoardSettingsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        days = serializer.validated_data["completed_orders_days"]
+        row, _ = MonoblockCameraSettings.objects.update_or_create(
+            singleton=True,
+            defaults={
+                "completed_orders_days": days,
+                "updated_by": request.user,
+            },
+        )
+        return Response(self._payload(row))
+
+    put = patch
+
+
+class CameraHealthView(APIView):
+    permission_classes: ClassVar[list[type]] = [IsStaff]
+
+    def get(self, request):
+        payload = health.state_payload()
+        http_status = (
+            status.HTTP_200_OK
+            if health.exit_code(payload) == 0
+            else status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+        return Response(payload, status=http_status)

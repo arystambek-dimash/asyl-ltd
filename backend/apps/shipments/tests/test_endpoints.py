@@ -18,7 +18,7 @@ pytestmark = pytest.mark.django_db
 def _order(boss, status="confirmed"):
     prod = Product.objects.create(name="Премиум", color="Red", weight_kg="50", price="100.00")
     receive_stock(prod, 100, boss)
-    c = Client.objects.create(first_name="L", last_name="К", phone="x")
+    c = Client.objects.create_with_user(first_name="L", last_name="К", phone="x")
     o = Order.objects.create(client=c, status=status, truck_number="01A123")
     OrderItem.objects.create(order=o, product=prod, quantity=50)
     return o
@@ -87,7 +87,7 @@ def test_ask_truck_weight_flag_exposed_on_order_item(boss):
     prod = Product.objects.create(name="Особый", color="Blue", weight_kg="50",
                                   price="100.00", ask_truck_weight=True)
     receive_stock(prod, 10, boss)
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = Order.objects.create(client=c, status="confirmed", truck_number="02B222")
     OrderItem.objects.create(order=o, product=prod, quantity=5)
     r = _client(boss).get(f"/api/orders/{o.id}/")
@@ -98,7 +98,7 @@ def test_ask_truck_weight_flag_exposed_on_order_item(boss):
 def test_loading_camera_assign_and_clear(operator):
     """Оператор занимает камеру под заказ и освобождает её."""
     prod = Product.objects.create(name="К", color="Red", weight_kg="50", price="100.00")
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = Order.objects.create(client=c, status="arrived", truck_number="03C333")
     OrderItem.objects.create(order=o, product=prod, quantity=2)
     MonoblockCameraSettings.objects.create(camera_sources=["cam3"])
@@ -114,7 +114,7 @@ def test_loading_camera_assign_and_clear(operator):
 
 def test_loading_camera_must_be_allowed_by_admin(operator):
     prod = Product.objects.create(name="К2", color="Red", weight_kg="50", price="100.00")
-    client = Client.objects.create(first_name="A", last_name="C", phone="2")
+    client = Client.objects.create_with_user(first_name="A", last_name="C", phone="2")
     order = Order.objects.create(client=client, status="arrived", truck_number="03C334")
     OrderItem.objects.create(order=order, product=prod, quantity=2)
     MonoblockCameraSettings.objects.create(camera_sources=["cam2"])
@@ -141,7 +141,7 @@ def test_monoblock_cannot_assign_a_different_allowed_camera(django_user_model):
         camera_source="cam2",
     )
     MonoblockCameraSettings.objects.create(camera_sources=["cam2", "cam3"])
-    client = Client.objects.create(first_name="A", last_name="Device", phone="5")
+    client = Client.objects.create_with_user(first_name="A", last_name="Device", phone="5")
     order = Order.objects.create(client=client, status="confirmed")
 
     response = _client(device_user).post(
@@ -158,7 +158,7 @@ def test_monoblock_cannot_assign_a_different_allowed_camera(django_user_model):
 
 def test_loading_camera_cannot_be_bound_to_two_active_orders(operator):
     prod = Product.objects.create(name="К3", color="Blue", weight_kg="50", price="100.00")
-    client = Client.objects.create(first_name="A", last_name="D", phone="3")
+    client = Client.objects.create_with_user(first_name="A", last_name="D", phone="3")
     first = Order.objects.create(
         client=client, status="loading", truck_number="03C335", loading_camera="cam3")
     second = Order.objects.create(client=client, status="arrived", truck_number="03C336")
@@ -185,7 +185,7 @@ def test_loading_camera_cannot_be_bound_to_two_active_orders(operator):
 
 def test_confirmed_order_camera_can_only_be_started_through_monoblock(operator):
     prod = Product.objects.create(name="К4", color="White", weight_kg="50", price="100.00")
-    client = Client.objects.create(first_name="A", last_name="E", phone="4")
+    client = Client.objects.create_with_user(first_name="A", last_name="E", phone="4")
     order = Order.objects.create(client=client, status="confirmed", truck_number="03C337")
     OrderItem.objects.create(order=order, product=prod, quantity=2)
     MonoblockCameraSettings.objects.create(camera_sources=["cam3"])
@@ -205,7 +205,7 @@ def test_confirmed_order_camera_can_only_be_started_through_monoblock(operator):
 
 def test_loading_camera_requires_shipping_load(manager):
     prod = Product.objects.create(name="К", color="Green", weight_kg="50", price="100.00")
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = Order.objects.create(client=c, status="arrived", truck_number="04D444")
     OrderItem.objects.create(order=o, product=prod, quantity=1)
     # manager не имеет shipping.load

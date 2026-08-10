@@ -1,60 +1,30 @@
-from functools import cached_property
-
 from django.conf import settings
 from django.db import models
-
-
-# Сотрудник отдела продаж должен иметь достаточно прав, чтобы открыть форму
-# заказа и реально пройти её до конца. Эти права нельзя снять ролью/запретом.
-SALES_REQUIRED_PERMISSIONS = {
-    "orders.view", "orders.create", "clients.view", "catalog.view",
-}
 
 
 class Employee(models.Model):
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="employee"
     )
-    first_name = models.CharField(max_length=100)
-    last_name = models.CharField(max_length=100)
     phone = models.CharField(max_length=50, blank=True, default="")
     position = models.CharField(max_length=100, blank=True, default="")
     sales_department = models.ForeignKey(
-        "clients.Department",
+        "sales.Department",
         null=True,
         blank=True,
         on_delete=models.PROTECT,
         related_name="sales_employees",
     )
-    # Роль даёт права «вживую»: правка роли сразу действует на всех её сотрудников.
-    role = models.ForeignKey(
-        "rbac.Role", null=True, blank=True, on_delete=models.PROTECT, related_name="employees"
-    )
-    # Личные дополнительные доступы поверх роли.
     permissions = models.ManyToManyField(
-        "rbac.Permission", blank=True, related_name="employees"
-    )
-    # Точечные запреты поверх роли. Это позволяет, например, оставить
-    # сотруднику роль «Менеджер», но отозвать только удаление товаров.
-    denied_permissions = models.ManyToManyField(
-        "rbac.Permission", blank=True, related_name="denied_for_employees"
+        "rbac.Permission",
+        blank=True,
+        related_name="employees"
     )
     is_active = models.BooleanField(default=True)
 
-    @cached_property
-    def effective_perm_codes(self) -> set:
-        """(Права роли − личные запреты) ∪ личные права."""
-        codes = set(self.permissions.values_list("code", flat=True))
-        if self.role_id:
-            denied = set(self.denied_permissions.values_list("code", flat=True))
-            codes |= set(self.role.permissions.values_list("code", flat=True)) - denied
-        if self.sales_department_id:
-            codes |= SALES_REQUIRED_PERMISSIONS
-        return codes
-
     @property
     def name(self) -> str:
-        return f"{self.first_name} {self.last_name}".strip()
+        return self.user.get_full_name() or self.user.username
 
     def __str__(self):
         return self.name

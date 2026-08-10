@@ -7,7 +7,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _order(status="shipped", intent="debt", paid=None):
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name=f"P{status}{intent}{paid}", color="Red", weight_kg="50", price="100.00")
     o = Order.objects.create(client=c, status=status, settlement_intent=intent,
                              payment_status="unpaid")
@@ -45,8 +45,8 @@ def test_fully_paid_is_not_debt():
 def test_client_debt_total_excludes_pending_and_instant():
     # use a staff user with clients.view via fixture-like setup
     # simpler: hit the serializer directly
-    from apps.clients.serializers import ClientSerializer
-    c = Client.objects.create(first_name="Z", last_name="Z", phone="z")
+    from apps.clients.serializers import ClientReadSerializer
+    c = Client.objects.create_with_user(first_name="Z", last_name="Z", phone="z")
     p = Product.objects.create(name="ZP", color="Red", weight_kg="50", price="100.00")
     # pending — not debt
     op = Order.objects.create(client=c, status="pending", settlement_intent="debt")
@@ -54,5 +54,5 @@ def test_client_debt_total_excludes_pending_and_instant():
     # shipped debt — counts (1000)
     os = Order.objects.create(client=c, status="shipped", settlement_intent="debt", payment_status="unpaid")
     OrderItem.objects.create(order=os, product=p, quantity=10, unit_price="100.00")
-    data = ClientSerializer(c).data
+    data = ClientReadSerializer(c).data
     assert data["debt_total"] == "1000.00"

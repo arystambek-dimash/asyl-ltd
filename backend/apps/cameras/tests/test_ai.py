@@ -1,20 +1,20 @@
 """Прокси AI-подсчёта мешков: маппинг ответов ai_service и права доступа."""
-from unittest.mock import patch
 from datetime import timedelta
 from io import BytesIO
+from unittest.mock import patch
 
 import pytest
-from django.core import signing
-from django.utils import timezone
-
 from apps.cameras import ai, recordings
 from apps.cameras.models import AiCountingSession, MonoblockCameraSettings
 from apps.cameras.views import RECORDING_TOKEN_SALT
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
+from apps.shipments.models import Shipment
 from apps.warehouse.models import StockItem
 from apps.warehouse.services import receive_stock
+from django.core import signing
+from django.utils import timezone
 
 pytestmark = pytest.mark.django_db
 
@@ -53,7 +53,7 @@ def superuser(django_user_model):
 
 @pytest.fixture
 def loading_order():
-    client = Client.objects.create(first_name="AI", last_name="One", phone="1")
+    client = Client.objects.create_with_user(first_name="AI", last_name="One", phone="1")
     return Order.objects.create(
         client=client,
         status="arrived",
@@ -64,7 +64,7 @@ def loading_order():
 
 @pytest.fixture
 def second_loading_order():
-    client = Client.objects.create(first_name="AI", last_name="Two", phone="2")
+    client = Client.objects.create_with_user(first_name="AI", last_name="Two", phone="2")
     return Order.objects.create(
         client=client,
         status="arrived",
@@ -76,7 +76,7 @@ def second_loading_order():
 def test_monoblock_start_binds_camera_and_moves_confirmed_order_to_loading(
     api_client, loader,
 ):
-    client = Client.objects.create(first_name="AI", last_name="Waiting", phone="10")
+    client = Client.objects.create_with_user(first_name="AI", last_name="Waiting", phone="10")
     order = Order.objects.create(
         client=client,
         status="confirmed",
@@ -97,7 +97,10 @@ def test_monoblock_start_binds_camera_and_moves_confirmed_order_to_loading(
     assert order.loading_camera == "cam2"
     assert order.shipment.loading_started_at is not None
     assert AiCountingSession.objects.get().order_id == order.pk
-    request.assert_called_once()
+    assert [item.args for item in request.call_args_list] == [
+        ("POST", "/processors/cam2", {}),
+        ("POST", "/processors/cam2/reset", None),
+    ]
 
 
 def test_always_on_client_uses_windows_camera_sources_contract():
@@ -151,7 +154,7 @@ def test_wagon_number_client_assigns_single_main_stream_camera():
 
 
 def test_monoblock_starts_confirmed_train_without_arrival_step(api_client, loader):
-    client = Client.objects.create(first_name="AI", last_name="Train", phone="11")
+    client = Client.objects.create_with_user(first_name="AI", last_name="Train", phone="11")
     order = Order.objects.create(
         client=client,
         status="confirmed",
@@ -178,7 +181,7 @@ def test_monoblock_starts_confirmed_train_without_arrival_step(api_client, loade
 def test_monoblock_rejects_unbound_order_that_is_already_loading(
     api_client, loader,
 ):
-    client = Client.objects.create(first_name="AI", last_name="Already", phone="12")
+    client = Client.objects.create_with_user(first_name="AI", last_name="Already", phone="12")
     order = Order.objects.create(
         client=client,
         status="loading",
@@ -254,6 +257,63 @@ def test_start_attaches_to_same_order_without_reset(api_client, loader, loading_
     assert resp.data["owned_by_order"] is True
 
 
+def test_starting_retry_adopts_live_count_without_reset(api_client, loader):
+    client = Client.objects.create_with_user(
+        first_name="AI", last_name="Retry", phone="retry"
+    )
+    order = Order.objects.create(client=client, status="confirmed")
+    session = AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.STARTING,
+        started_by=loader,
+    )
+    api_client.force_authenticate(loader)
+    counted = {**RUNNING, "total": 7, "mode": "session"}
+
+    with patch.object(ai, "_request", return_value=(200, counted)) as request:
+        response = api_client.post(
+            "/api/cameras/cam2/ai/", {"order_id": order.pk}, format="json"
+        )
+
+    assert response.status_code == 200
+    assert response.data["total"] == 7
+    request.assert_called_once_with("GET", "/processors/cam2", None)
+    session.refresh_from_db()
+    order.refresh_from_db()
+    assert session.status == AiCountingSession.ACTIVE
+    assert order.status == "loading"
+
+
+def test_stale_created_flag_cannot_reset_session_activated_by_parallel_start(
+    api_client, loader, loading_order,
+):
+    """A delayed creator must derive its action from the locked row state."""
+    session = AiCountingSession.objects.create(
+        order=loading_order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
+    api_client.force_authenticate(loader)
+
+    with (
+        patch(
+            "apps.cameras.counting.sessions.reserve",
+            return_value=(session, True),
+        ),
+        patch.object(ai, "_request", return_value=(200, RUNNING)) as request,
+    ):
+        response = api_client.post(
+            "/api/cameras/cam2/ai/",
+            {"order_id": loading_order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    request.assert_called_once_with("GET", "/processors/cam2", None)
+
+
 def test_existing_session_restarts_worker_if_camera_pc_returned_idle(
     api_client, loader, loading_order,
 ):
@@ -307,12 +367,12 @@ def test_open_session_reclaims_always_on_processor_after_windows_restart(
         )
 
     assert response.status_code == 200
-    assert response.data["mode"] == "session"
-    assert response.data["recording"] is True
-    assert calls == [
-        ("GET", "/processors/cam2", None),
-        ("POST", "/processors/cam2", {}),
-    ]
+    assert response.data["mode"] == "always_on"
+    assert response.data["running"] is False
+    assert response.data["code"] == "ai_reconciliation_required"
+    # Поллинг остаётся read-only. Восстановление делает явный POST с правом
+    # shipping.load, поэтому обычный сотрудник не может менять worker через GET.
+    assert calls == [("GET", "/processors/cam2", None)]
 
 
 def test_start_when_idle_posts_directly_to_service(api_client, loader, loading_order):
@@ -321,7 +381,6 @@ def test_start_when_idle_posts_directly_to_service(api_client, loader, loading_o
 
     def fake(method, path, body=None):
         calls.append((method, path, body))
-        assert (method, path) == ("POST", "/processors/cam2")
         return 200, {**RUNNING, "total": 0, "status": "запуск..."}
 
     with patch.object(ai, "_request", side_effect=fake):
@@ -330,7 +389,10 @@ def test_start_when_idle_posts_directly_to_service(api_client, loader, loading_o
     assert resp.data["total"] == 0
     # Empty body makes ai_service use the camera's persisted line. In
     # particular, the removed legacy "0,0.5,1,0.5" is never sent.
-    assert calls == [("POST", "/processors/cam2", {})]
+    assert calls == [
+        ("POST", "/processors/cam2", {}),
+        ("POST", "/processors/cam2/reset", None),
+    ]
     session = AiCountingSession.objects.get()
     assert session.order == loading_order
     assert session.status == AiCountingSession.ACTIVE
@@ -585,7 +647,7 @@ def test_monoblock_stop_saves_ai_total_and_completes_order(
         name="AI final", color="Blue", weight_kg="50", price="100.00",
     )
     receive_stock(product, 100, boss)
-    client = Client.objects.create(first_name="Final", last_name="Count", phone="20")
+    client = Client.objects.create_with_user(first_name="Final", last_name="Count", phone="20")
     order = Order.objects.create(
         client=client, status="confirmed", truck_number="01FINAL",
     )
@@ -648,6 +710,188 @@ def test_delete_commits_final_snapshot_before_worker_is_idled(
     assert observed == [(42, 42)]
 
 
+def test_failed_worker_cleanup_is_retried_before_camera_reuse(
+    api_client, loader, loading_order,
+):
+    session = AiCountingSession.objects.create(
+        order=loading_order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
+    api_client.force_authenticate(loader)
+
+    def unavailable_delete(method, path, body=None):
+        if method == "GET":
+            return 200, RUNNING
+        raise ai.AiUnavailable("camera PC offline")
+
+    with patch.object(ai, "_request", side_effect=unavailable_delete):
+        stopped = api_client.delete(
+            "/api/cameras/cam2/ai/",
+            {"order_id": loading_order.pk},
+            format="json",
+        )
+
+    assert stopped.status_code == 200
+    assert stopped.data["cleanup_pending"] is True
+    session.refresh_from_db()
+    assert session.status == AiCountingSession.CLOSED
+    assert session.error.startswith("AI worker cleanup pending: ")
+
+    next_client = Client.objects.create_with_user(
+        first_name="AI", last_name="Next", phone="next"
+    )
+    next_order = Order.objects.create(client=next_client, status="confirmed")
+    calls = []
+
+    def recovered(method, path, body=None):
+        calls.append((method, path, body))
+        if method == "GET":
+            return 200, RUNNING
+        if method == "DELETE":
+            return 200, {"running": False}
+        return 200, {**RUNNING, "total": 0}
+
+    with patch.object(ai, "_request", side_effect=recovered):
+        started = api_client.post(
+            "/api/cameras/cam2/ai/",
+            {"order_id": next_order.pk},
+            format="json",
+        )
+
+    assert started.status_code == 200
+    assert calls == [
+        ("GET", "/processors/cam2", None),
+        ("DELETE", "/processors/cam2", None),
+        ("POST", "/processors/cam2", {}),
+        ("POST", "/processors/cam2/reset", None),
+    ]
+    session.refresh_from_db()
+    assert session.error == ""
+
+
+def test_starting_session_cannot_be_reported_as_completed_order(
+    api_client, loader,
+):
+    client = Client.objects.create_with_user(
+        first_name="AI", last_name="Pending", phone="pending"
+    )
+    order = Order.objects.create(client=client, status="confirmed")
+    session = AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.STARTING,
+        started_by=loader,
+    )
+    api_client.force_authenticate(loader)
+
+    with patch.object(ai, "_request") as request:
+        response = api_client.delete(
+            "/api/cameras/cam2/ai/?complete_order=1",
+            {"order_id": order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 409
+    request.assert_not_called()
+    session.refresh_from_db()
+    order.refresh_from_db()
+    assert session.status == AiCountingSession.STARTING
+    assert order.status == "confirmed"
+
+
+def test_failed_business_completion_keeps_worker_and_rolls_back_snapshot(
+    api_client, loader,
+):
+    client = Client.objects.create_with_user(
+        first_name="AI", last_name="No shipment", phone="no-shipment"
+    )
+    order = Order.objects.create(
+        client=client,
+        status="loading",
+        loading_camera="cam2",
+    )
+    session = AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+        started_by=loader,
+        last_status={"total": 0},
+    )
+    api_client.force_authenticate(loader)
+
+    with patch.object(ai, "_request", return_value=(200, RUNNING)) as request:
+        response = api_client.delete(
+            "/api/cameras/cam2/ai/?complete_order=1",
+            {"order_id": order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    # GET captured the live total, but DELETE is after the business commit and
+    # therefore never runs when shipment validation fails.
+    request.assert_called_once_with("GET", "/processors/cam2", None)
+    session.refresh_from_db()
+    order.refresh_from_db()
+    assert session.status == AiCountingSession.ACTIVE
+    assert session.final_total is None
+    assert order.status == "loading"
+
+
+def test_stop_never_uses_always_on_total_for_order(
+    api_client, loader,
+):
+    product = Product.objects.create(
+        name="AI fallback",
+        color="Blue",
+        weight_kg="50",
+        price="100.00",
+    )
+    client = Client.objects.create_with_user(
+        first_name="AI", last_name="Always", phone="always"
+    )
+    order = Order.objects.create(
+        client=client,
+        status="loading",
+        loading_camera="cam2",
+    )
+    OrderItem.objects.create(order=order, product=product, quantity=13)
+    Shipment.objects.create(order=order, loading_started_at=timezone.now())
+    session = AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+        started_by=loader,
+        # This is the normal checkpoint written by start. It is useful for the
+        # UI but is not an authoritative final count after the worker changed
+        # back to always-on mode.
+        last_status={"total": 0, "stream": "cam2ai"},
+    )
+    api_client.force_authenticate(loader)
+    always_on = {
+        **RUNNING,
+        "total": 999,
+        "mode": "always_on",
+        "recording": False,
+    }
+
+    with patch.object(ai, "_request", return_value=(200, always_on)) as request:
+        response = api_client.delete(
+            "/api/cameras/cam2/ai/?complete_order=1",
+            {"order_id": order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    assert response.data["bags_loaded"] == 13
+    request.assert_called_once_with("GET", "/processors/cam2", None)
+    session.refresh_from_db()
+    order.refresh_from_db()
+    assert session.final_total == 13
+    assert order.shipment.bags_loaded == 13
+
+
 def test_only_starter_or_admin_can_stop_session(
     api_client, loader, user_with_perms, loading_order,
 ):
@@ -667,7 +911,9 @@ def test_only_starter_or_admin_can_stop_session(
     session.refresh_from_db()
     assert session.status == AiCountingSession.ACTIVE
 
-    admin = user_with_perms("session-admin", codes=["shipping.load", "rbac.manage"])
+    admin = user_with_perms(
+        "session-admin", codes=["shipping.load", "sys_permissions.manage"]
+    )
     api_client.force_authenticate(admin)
     with patch.object(ai, "_request", side_effect=[(200, RUNNING), (200, {})]):
         resp = api_client.delete(
@@ -676,6 +922,30 @@ def test_only_starter_or_admin_can_stop_session(
     assert resp.status_code == 200
     session.refresh_from_db()
     assert session.status == AiCountingSession.CLOSED
+
+
+def test_only_starter_or_admin_can_recover_session(
+    api_client, loader, user_with_perms, loading_order,
+):
+    other_loader = user_with_perms("other-recovery", codes=["shipping.load"])
+    AiCountingSession.objects.create(
+        order=loading_order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
+    api_client.force_authenticate(other_loader)
+
+    with patch.object(ai, "_request") as request:
+        response = api_client.post(
+            "/api/cameras/cam2/ai/",
+            {"order_id": loading_order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 403
+    assert "начавший" in response.data["detail"]
+    request.assert_not_called()
 
 
 def test_open_sessions_list_contains_owner_and_control_flag(
@@ -709,7 +979,7 @@ def test_open_sessions_require_load_permission(api_client, make_user):
 
 
 def test_open_sessions_include_every_department(api_client, loader):
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Field", last_name="Client", phone="3")
     order = Order.objects.create(
         client=client, department="field", status="arrived")
@@ -820,7 +1090,7 @@ def test_current_for_camera_isolates_cameras(loader, loading_order, second_loadi
     assert sessions.current_for_camera("cam9") is None
 
 
-def test_missing_worker_marks_session_failed_and_unlocks(
+def test_missing_worker_status_is_read_only_and_keeps_reservation(
     api_client, loader, loading_order,
 ):
     session = AiCountingSession.objects.create(
@@ -833,12 +1103,12 @@ def test_missing_worker_marks_session_failed_and_unlocks(
     assert resp.status_code == 200
     assert resp.data["code"] == "ai_processor_stopped"
     session.refresh_from_db()
-    assert session.status == AiCountingSession.FAILED
+    assert session.status == AiCountingSession.ACTIVE
     loading_order.refresh_from_db()
-    assert loading_order.loading_camera == ""
+    assert loading_order.loading_camera == "cam2"
 
 
-def test_idle_worker_marks_stale_session_failed_and_unlocks(
+def test_idle_worker_status_is_read_only_and_keeps_reservation(
     api_client, loader, loading_order,
 ):
     session = AiCountingSession.objects.create(
@@ -855,9 +1125,9 @@ def test_idle_worker_marks_stale_session_failed_and_unlocks(
     assert response.status_code == 200
     assert response.data["code"] == "ai_processor_stopped"
     session.refresh_from_db()
-    assert session.status == AiCountingSession.FAILED
+    assert session.status == AiCountingSession.ACTIVE
     loading_order.refresh_from_db()
-    assert loading_order.loading_camera == ""
+    assert loading_order.loading_camera == "cam2"
 
 
 def test_unavailable_maps_to_502(api_client, operator, loading_order):
@@ -930,7 +1200,7 @@ def test_history_post_board_projection_filters_server_side(
     user_with_perms,
 ):
     viewer = user_with_perms("board-history", codes=["shipping.view"])
-    client = Client.objects.create(first_name="Board", phone="1")
+    client = Client.objects.create_with_user(first_name="Board", phone="1")
     active = Order.objects.create(client=client, status="loading")
     outside = Order.objects.create(client=client, status="pending")
     active_session = AiCountingSession.objects.create(

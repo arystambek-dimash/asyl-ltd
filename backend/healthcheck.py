@@ -1,6 +1,7 @@
 """Docker healthcheck бэкенда. Ответ 4xx (в т.ч. 401 без токена) означает, что
 gunicorn/Django живы и принимают запросы. Ответ 5xx (например, потеряна БД),
 отказ соединения или таймаут — контейнер нездоров."""
+
 import sys
 import urllib.error
 import urllib.request

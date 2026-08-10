@@ -6,12 +6,15 @@ import subprocess
 import threading
 import time
 from collections import defaultdict, deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any
 
 from .contracts import Detection, ProcessorOptions
+from .runtime import decode_jpeg
 from .settings import Settings, parse_camera, parse_line
+from .state import LINE_DIRECTIONS, line_payload
 
 
 def utc_now() -> str:
@@ -116,7 +119,7 @@ class FfmpegPublisher:
             if frame is not None:
                 try:
                     self._write_frame(frame)
-                except Exception:
+                except Exception:  # noqa: BLE001 - persistent worker boundary
                     # One malformed frame or subprocess race must not kill the
                     # persistent per-camera publisher thread.
                     self.state = "reconnecting"
@@ -224,7 +227,14 @@ class LineTracker:
             else:
                 available.discard(match.identifier)
                 crossed = match.side != 0 and side != 0 and (match.side > 0) != (side > 0)
-                movement = "positive" if match.side < side else "negative"
+                if direction in {"up", "down"}:
+                    movement = (
+                        "down" if center[1] > match.center[1]
+                        else "up" if center[1] < match.center[1]
+                        else ""
+                    )
+                else:
+                    movement = "positive" if match.side < side else "negative"
                 if crossed and not match.counted and (direction == "any" or direction == movement):
                     match.counted = True
                     counted.append(detection)
@@ -239,7 +249,7 @@ class LineTracker:
 class CameraProcessor:
     def __init__(
         self,
-        manager: "ProcessorManager",
+        manager: ProcessorManager,
         camera: str,
         options: ProcessorOptions,
     ):
@@ -290,6 +300,20 @@ class CameraProcessor:
                 self.source_stream = source_stream
                 self._source_generation += 1
             self.options = options
+
+    def update_counting_line(self, line: str, direction: str) -> None:
+        """Apply an admin edit without resetting the accumulated total."""
+
+        parse_line(line)
+        if direction not in LINE_DIRECTIONS:
+            raise ValueError("invalid counting-line direction")
+        with self._lock:
+            self.options = self.options.model_copy(update={
+                "line": line,
+                "direction": direction,
+            })
+            # Tracks observed against the old line must not cross the new one.
+            self.tracker.reset()
 
     def start_session(self, options: ProcessorOptions) -> None:
         self.configure(options)
@@ -626,6 +650,8 @@ class ProcessorManager:
         publisher_factory: Callable[..., FfmpegPublisher] = FfmpegPublisher,
         state_store=None,
         role_state_store=None,
+        line_state_store=None,
+        wagon_detector=None,
     ):
         self.settings = settings
         self.model = model
@@ -635,6 +661,8 @@ class ProcessorManager:
         self.publisher_factory = publisher_factory
         self.state_store = state_store
         self.role_state_store = role_state_store
+        self.line_state_store = line_state_store
+        self.wagon_detector = wagon_detector
         self.processors: dict[str, CameraProcessor] = {}
         self.always_on_cameras: set[str] = set()
         self.always_on_source = "sub"
@@ -675,15 +703,18 @@ class ProcessorManager:
                     (time.perf_counter() - started) * 1000,
                     source_generation,
                 )
-            except Exception as exc:  # worker must survive one corrupt frame
+            except Exception as exc:  # noqa: BLE001 - persistent worker boundary
                 processor.last_error = f"inference failed: {exc}"
 
     def _ensure(self, camera: str, options: ProcessorOptions) -> CameraProcessor:
         camera = parse_camera(camera)
-        if options.line is None:
-            options = options.model_copy(update={"line": self.settings.default_line})
-        source_stream = self.settings.source_stream(camera, options.source)
         with self._lock:
+            # Reading the durable line and publishing the processor happen in
+            # the same critical section as save_counting_line. Otherwise a
+            # concurrent PUT could save a new line, observe no processor, and
+            # then let this method create one from its stale pre-save snapshot.
+            options = self._resolved_options(camera, options)
+            source_stream = self.settings.source_stream(camera, options.source)
             processor = self.processors.get(camera)
             if processor is None:
                 if len(self.processors) >= self.settings.max_active_processors:
@@ -709,14 +740,18 @@ class ProcessorManager:
         return processor.status()
 
     def start(self, camera: str, options: ProcessorOptions) -> dict:
-        try:
-            existing = self.get(camera)
-        except KeyError:
-            existing = None
-        if existing is not None and existing.running and existing.mode == "session":
-            return existing.status()
-        processor = self._ensure(camera, options)
-        processor.start_session(processor.options)
+        with self._lock:
+            try:
+                existing = self.get(camera)
+            except KeyError:
+                existing = None
+            if existing is not None and existing.running and existing.mode == "session":
+                return existing.status()
+            processor = self._ensure(camera, options)
+            # save_counting_line takes the same manager lock before touching
+            # processor options, so it cannot apply a new line between reading
+            # this argument and start_session.configure(old_options).
+            processor.start_session(processor.options)
         return processor.status()
 
     def reset(self, camera: str) -> dict:
@@ -725,14 +760,18 @@ class ProcessorManager:
         return processor.status()
 
     def idle(self, camera: str) -> dict:
-        processor = self.get(camera)
-        if camera in self.always_on_cameras:
-            processor.start_always_on(
-                ProcessorOptions(source=self.always_on_source),
-                force_session_handoff=True,
-            )
-        else:
-            processor.idle()
+        with self._lock:
+            processor = self.get(camera)
+            if camera in self.always_on_cameras:
+                processor.start_always_on(
+                    self._resolved_options(
+                        camera,
+                        ProcessorOptions(source=self.always_on_source),
+                    ),
+                    force_session_handoff=True,
+                )
+            else:
+                processor.idle()
         return processor.status()
 
     def configure_always_on(
@@ -776,8 +815,9 @@ class ProcessorManager:
             processor.idle()
             processor.close()
         for camera in normalized:
-            processor = self._ensure(camera, ProcessorOptions(source=source))
-            processor.start_always_on(processor.options)
+            with self._lock:
+                processor = self._ensure(camera, ProcessorOptions(source=source))
+                processor.start_always_on(processor.options)
         return self.always_on_status()
 
     def restore_always_on(self) -> dict:
@@ -853,6 +893,141 @@ class ProcessorManager:
             raise KeyError(camera)
         return processor
 
+    def _resolved_options(
+        self, camera: str, options: ProcessorOptions,
+    ) -> ProcessorOptions:
+        if options.line is not None:
+            return options
+        config = (
+            self.line_state_store.get(camera)
+            if self.line_state_store is not None
+            else None
+        )
+        if config is None:
+            return options.model_copy(update={"line": self.settings.default_line})
+        return options.model_copy(update={
+            "line": config["line"],
+            "direction": config["direction"],
+        })
+
+    @staticmethod
+    def _line_response(camera: str, config: dict[str, str]) -> dict:
+        spec = config["line"]
+        return {
+            "cam": camera,
+            "configured": True,
+            "coordinate_space": "normalized",
+            "line": line_payload(spec),
+            "line_spec": spec,
+            "direction": config["direction"],
+            "updated_at": config["updated_at"],
+        }
+
+    def counting_line(self, camera: str) -> dict:
+        camera = parse_camera(camera)
+        self.mediamtx.validate_source(camera, camera)
+        config = (
+            self.line_state_store.get(camera)
+            if self.line_state_store is not None
+            else None
+        )
+        if config is not None:
+            return self._line_response(camera, config)
+        spec = self.settings.default_line
+        return {
+            "cam": camera,
+            "configured": False,
+            "coordinate_space": "normalized",
+            "line": line_payload(spec),
+            "line_spec": spec,
+            "direction": "any",
+            "updated_at": None,
+        }
+
+    def counting_line_configs(self) -> dict[str, dict]:
+        if self.line_state_store is None:
+            return {}
+        return {
+            camera: self._line_response(camera, config)
+            for camera, config in self.line_state_store.load().items()
+        }
+
+    def save_counting_line(
+        self, camera: str, value, direction: str,
+    ) -> tuple[int, dict]:
+        camera = parse_camera(camera)
+        self.mediamtx.validate_source(camera, camera)
+        if self.line_state_store is None:
+            raise RuntimeError("counting-line persistence is not configured")
+        update_error = None
+        with self._lock:
+            # Keep the durable write, processor lookup and live application in
+            # one manager transaction. _ensure takes the same lock while it
+            # resolves a saved line, so a processor cannot appear with a stale
+            # configuration between these steps.
+            config = self.line_state_store.save(camera, value, direction)
+            processor = self.processors.get(camera)
+            if processor is not None:
+                try:
+                    processor.update_counting_line(
+                        config["line"], config["direction"]
+                    )
+                except (RuntimeError, ValueError) as exc:
+                    update_error = exc
+        response = {
+            "ok": True,
+            "saved": True,
+            "applied_to_processor": processor is not None and update_error is None,
+            **self._line_response(camera, config),
+        }
+        if processor is None:
+            return 200, response
+        if update_error is not None:
+            return 503, {
+                **response,
+                "ok": False,
+                "detail": f"saved, live processor update failed: {update_error}",
+            }
+        return 200, response
+
+    def detect_wagon_plate(self, data: bytes) -> dict:
+        if not data.startswith(b"\xff\xd8\xff"):
+            raise ValueError("request body must be a valid JPEG image")
+        if self.wagon_detector is None:
+            raise RuntimeError(
+                "wagon plate detector is not installed in the canonical camera service"
+            )
+        frame = decode_jpeg(data)
+        payload = self.wagon_detector.detect(frame)
+        if not isinstance(payload, dict) or not isinstance(payload.get("detections"), list):
+            raise RuntimeError(  # noqa: TRY004 - dependency failure maps to 503
+                "wagon plate detector returned an invalid response"
+            )
+        if len(payload["detections"]) > 100:
+            raise RuntimeError("wagon plate detector returned too many detections")
+        if any(not isinstance(item, dict) for item in payload["detections"]):
+            raise RuntimeError("wagon plate detector returned an invalid detection")
+        result = dict(payload)
+        result.setdefault(
+            "detection_frame",
+            {"width": frame.shape[1], "height": frame.shape[0]},
+        )
+        return result
+
+    def wagon_plate_capability(self) -> dict:
+        if self.wagon_detector is None:
+            return {
+                "available": False,
+                "provider": None,
+                "ocr": False,
+            }
+        metadata = self.wagon_detector.metadata()
+        return {
+            "available": True,
+            "provider": str(metadata.get("provider") or "external"),
+            "ocr": metadata.get("ocr") is True,
+        }
+
     def statuses(self) -> list[dict]:
         with self._lock:
             processors = list(self.processors.values())
@@ -865,6 +1040,7 @@ class ProcessorManager:
         return {
             "devices": self.mediamtx.device_inventory(),
             "cameras": [inventory[key] for key in sorted(inventory)],
+            "line_configs": self.counting_line_configs(),
         }
 
     def close(self) -> None:

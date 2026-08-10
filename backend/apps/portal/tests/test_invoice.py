@@ -13,7 +13,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _invoice_order(user):
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         user=user, first_name="Иван", last_name="Петров", phone="1",
         company_name='ТОО "Сайрам нан"', iin="190440003203",
     )

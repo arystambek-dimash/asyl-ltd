@@ -20,7 +20,7 @@ def _order(client, status, shipped_at=None):
 
 
 def test_post_board_defaults_to_active_orders_and_todays_completed(auth_client, operator):
-    client = Client.objects.create(first_name="Board", last_name="Client", phone="1")
+    client = Client.objects.create_with_user(first_name="Board", last_name="Client", phone="1")
     active = _order(client, "loading")
     today = _order(client, "shipped", timezone.now())
     old = _order(client, "shipped", timezone.now() - timedelta(days=1))
@@ -35,7 +35,7 @@ def test_post_board_defaults_to_active_orders_and_todays_completed(auth_client, 
 
 def test_post_board_uses_admin_completed_days(auth_client, operator):
     MonoblockCameraSettings.objects.create(completed_orders_days=3)
-    client = Client.objects.create(first_name="Board", last_name="History", phone="2")
+    client = Client.objects.create_with_user(first_name="Board", last_name="History", phone="2")
     recent = _order(client, "shipped", timezone.now() - timedelta(days=2))
     old = _order(client, "shipped", timezone.now() - timedelta(days=3))
 
@@ -53,7 +53,7 @@ def test_post_board_is_available_to_train_loader(
         "board-train-loader",
         codes=["train.view", "train.load"],
     )
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Train", last_name="Loader", phone="3"
     )
     active = _order(client, "confirmed")
@@ -69,7 +69,7 @@ def test_dashboard_operational_returns_authoritative_data(
 ):
     from apps.eventlog.models import EventLog
 
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Dashboard", last_name="Operator", phone="4"
     )
     loading = _order(client, "loading")

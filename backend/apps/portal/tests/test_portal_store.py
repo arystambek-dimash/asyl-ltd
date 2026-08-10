@@ -8,14 +8,14 @@ pytestmark = pytest.mark.django_db
 
 
 def _client_for(user):
-    return Client.objects.create(first_name="Мой", last_name="К", phone="x", user=user)
+    return Client.objects.create_with_user(first_name="Мой", last_name="К", phone="x", user=user)
 
 
 def test_portal_lists_own_stores(auth_client, client_user, make_user):
     c = _client_for(client_user)
     Store.objects.create(client=c, name="Мой магазин")
     other_user = make_user(username="other", client=True)
-    other_c = Client.objects.create(first_name="O", last_name="O", phone="y", user=other_user)
+    other_c = Client.objects.create_with_user(first_name="O", last_name="O", phone="y", user=other_user)
     Store.objects.create(client=other_c, name="Чужой")
 
     r = auth_client(client_user).get("/api/portal/stores/")
@@ -40,7 +40,7 @@ def test_portal_order_with_own_store(auth_client, client_user):
 def test_portal_order_rejects_foreign_store(auth_client, client_user, make_user):
     _client_for(client_user)
     other_user = make_user(username="other", client=True)
-    other_c = Client.objects.create(first_name="O", last_name="O", phone="y", user=other_user)
+    other_c = Client.objects.create_with_user(first_name="O", last_name="O", phone="y", user=other_user)
     foreign = Store.objects.create(client=other_c, name="Чужой")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     StockItem.objects.create(product=p, bags=500)

@@ -21,7 +21,7 @@ def _shipped_order(intent="debt"):
     p = Product.objects.create(
         name=f"P{_counter[0]}", color="Red", weight_kg="50", price="100.00"
     )
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     o = Order.objects.create(
         client=c, status="shipped", payment_status="unpaid", settlement_intent=intent
     )
@@ -68,7 +68,7 @@ def test_payments_history_in_order(accountant, payment_recorder, settle_payment)
 def test_check_overdue_endpoint(boss):
     from apps.clients.models import Store
 
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     Store.objects.create(client=c, name="S", payment_schedule_type="none")
     r = _api(boss).post("/api/stores/check-overdue/")
     assert r.status_code == 200

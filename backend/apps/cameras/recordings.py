@@ -1,23 +1,13 @@
-"""Bridge to recordings stored by MediaMTX on the camera PC.
-
-No video bytes are persisted by Django. MediaMTX owns recording, retention and
-playback; this module only lists a session's local segments and streams one to
-an authenticated staff browser.
-"""
 import http.client
 import json
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
 
-from .services import CAMERA_HOST
+from django.conf import settings
 
-
-PLAYBACK_URL = (
-    os.environ.get("CAMERA_PLAYBACK_URL") or f"http://{CAMERA_HOST}:9996"
-).rstrip("/")
+PLAYBACK_URL = settings.CAMERA_PLAYBACK_URL
 TIMEOUT = 10
 VIDEO_RETENTION_DAYS = 14
 MAX_SEGMENT_LIST_BYTES = 512 * 1024
@@ -38,10 +28,10 @@ def _request(path: str):
         exc.close()
         raise RecordingUnavailable(str(exc)) from exc
     except (
-        http.client.HTTPException,
-        urllib.error.URLError,
-        TimeoutError,
-        OSError,
+            http.client.HTTPException,
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
     ) as exc:
         raise RecordingUnavailable(str(exc)) from exc
 
@@ -75,7 +65,7 @@ def list_segments(stream: str, start: datetime, end: datetime) -> list[dict]:
         if not isinstance(started, str):
             continue
         if isinstance(raw_duration, bool) or not isinstance(
-            raw_duration, (int, float, str)
+                raw_duration, (int, float, str)
         ):
             continue
         try:

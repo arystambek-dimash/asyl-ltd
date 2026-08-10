@@ -15,7 +15,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _client(n):
-    return Client.objects.create(
+    return Client.objects.create_with_user(
         first_name=f"К{n}", last_name="Тест", phone=f"+7{n:010d}")
 
 

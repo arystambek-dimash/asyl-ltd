@@ -7,7 +7,7 @@ pytestmark = pytest.mark.django_db
 
 
 def test_client_lists_and_reads_notifications(client_user):
-    c = Client.objects.create(first_name="A", last_name="B", phone="x", user=client_user)
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x", user=client_user)
     n = notify(c, "Ваш КАМАЗ 01A123 отправляется")
     api = APIClient()
     api.force_authenticate(client_user)

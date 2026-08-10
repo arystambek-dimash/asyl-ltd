@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 import threading
 import time
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,8 +23,11 @@ from cv_service.processor import (
 )
 from cv_service.runtime import MediaMtxClient, select_h264_encoder, validate_classes
 from cv_service.settings import Settings, parse_camera, parse_line
-from cv_service.state import AlwaysOnStateStore, CameraRoleStateStore
-
+from cv_service.state import (
+    AlwaysOnStateStore,
+    CameraRoleStateStore,
+    CountingLineStateStore,
+)
 
 KEY = "backend-only-secret"
 DIGEST = hashlib.sha256(KEY.encode()).hexdigest()
@@ -95,10 +100,17 @@ class FakeProcessor:
         self.total = 0
         self.start_calls = 0
         self.closed = False
+        self.last_detections = []
 
     def configure(self, options):
         self.options = options
         self.source_stream = self.manager.settings.source_stream(self.camera, options.source)
+
+    def update_counting_line(self, line, direction):
+        self.options = self.options.model_copy(update={
+            "line": line,
+            "direction": direction,
+        })
 
     def start_session(self, options):
         self.options = options
@@ -134,8 +146,8 @@ class FakeProcessor:
     def mark_dropped(self):
         pass
 
-    def apply_inference(self, *_args):
-        pass
+    def apply_inference(self, _frame, _captured_at, detections, *_args):
+        self.last_detections = detections
 
     def status(self):
         return {
@@ -147,6 +159,8 @@ class FakeProcessor:
             "warm": not self.running and not self.closed,
             "stream": f"{self.camera}ai",
             "source": self.options.source,
+            "line": self.options.line or self.manager.settings.default_line,
+            "direction": self.options.direction,
             "total": self.total,
             "per_color": {},
             "confidence_sums": {},
@@ -166,22 +180,29 @@ class FakeProcessor:
         }
 
 
-def make_settings(max_processors=2):
-    return Settings(
-        api_key_sha256=DIGEST,
-        model_path=Path("best.pt"),
-        model_device="cpu",
-        max_active_processors=max_processors,
-    )
+def make_settings(max_processors=2, **overrides):
+    values = {
+        "api_key_sha256": DIGEST,
+        "model_path": Path("best.pt"),
+        "model_device": "cpu",
+        "max_active_processors": max_processors,
+    }
+    values.update(overrides)
+    return Settings(**values)
 
 
-def make_manager(max_processors=2):
+def make_manager(
+    max_processors=2, *, settings=None, model=None, line_state_store=None,
+    wagon_detector=None,
+):
     return ProcessorManager(
-        make_settings(max_processors),
-        FakeModel(),
+        settings or make_settings(max_processors),
+        model or FakeModel(),
         FakeMediaMtx(),
         "libx264",
         processor_factory=FakeProcessor,
+        line_state_store=line_state_store,
+        wagon_detector=wagon_detector,
     )
 
 
@@ -200,6 +221,7 @@ def auth():
     "path", [
         "/health",
         "/cameras",
+        "/cameras/cam2/line",
         "/processors",
         "/always-on",
         "/camera-roles/wagon-number",
@@ -221,6 +243,11 @@ def test_health_has_startup_proof_and_no_browser_cors(service):
         "model_reused": True,
         "model_instances": 1,
         "encoder": "libx264",
+    }
+    assert response.json()["capabilities"]["wagon_plate"] == {
+        "available": False,
+        "provider": None,
+        "ocr": False,
     }
     assert "access-control-allow-origin" not in response.headers
 
@@ -249,6 +276,351 @@ def test_camera_inventory_keeps_backend_compatible_devices(service):
     assert payload["devices"][0]["path"] == "cam2"
     assert payload["devices"][0]["sub"] == "cam2sub"
     assert payload["cameras"][0]["cam"] == "cam2"
+    assert payload["line_configs"] == {}
+
+
+def test_counting_line_contract_persists_applies_and_joins_inventory(tmp_path):
+    store = CountingLineStateStore(tmp_path / "state" / "counting-lines.json")
+    manager = make_manager(line_state_store=store)
+    with TestClient(create_app(manager)) as client:
+        initial = client.get("/cameras/cam2/line", headers=auth())
+        assert initial.status_code == 200
+        assert initial.json() == {
+            "cam": "cam2",
+            "configured": False,
+            "coordinate_space": "normalized",
+            "line": {"x1": 0.0, "y1": 0.5, "x2": 1.0, "y2": 0.5},
+            "line_spec": "0,0.5,1,0.5",
+            "direction": "any",
+            "updated_at": None,
+        }
+
+        saved = client.put(
+            "/cameras/cam2/line",
+            headers=auth(),
+            json={
+                "line": {"x1": 0.08, "y1": 0.61, "x2": 0.93, "y2": 0.58},
+                "direction": "down",
+            },
+        )
+        assert saved.status_code == 200
+        assert saved.json()["saved"] is True
+        assert saved.json()["applied_to_processor"] is False
+        assert saved.json()["line_spec"] == "0.08,0.61,0.93,0.58"
+        inventory = client.get("/cameras", headers=auth()).json()
+        assert inventory["line_configs"]["cam2"] == {
+            key: value
+            for key, value in saved.json().items()
+            if key not in {"ok", "saved", "applied_to_processor"}
+        }
+
+        started = client.post("/processors/cam2", headers=auth(), json={})
+        assert started.json()["line"] == "0.08,0.61,0.93,0.58"
+        assert started.json()["direction"] == "down"
+        updated = client.put(
+            "/cameras/cam2/line",
+            headers=auth(),
+            json={"line": [0.1, 0.2, 0.8, 0.9], "direction": "up"},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["applied_to_processor"] is True
+        assert manager.get("cam2").options.line == "0.1,0.2,0.8,0.9"
+        assert manager.get("cam2").options.direction == "up"
+
+    restored = make_manager(line_state_store=store)
+    with TestClient(create_app(restored)) as client:
+        payload = client.get("/cameras/cam2/line", headers=auth()).json()
+        assert payload["configured"] is True
+        assert payload["line"] == {"x1": 0.1, "y1": 0.2, "x2": 0.8, "y2": 0.9}
+        assert payload["direction"] == "up"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"line": [0.1, 0.2, 0.1, 0.2], "direction": "any"},
+        {"line": [0.1, 0.2, 2, 0.9], "direction": "any"},
+        {"line": [0.1, True, 0.8, 0.9], "direction": "any"},
+        {"line": [0.1, 0.2, 0.8, 0.9], "direction": "sideways"},
+        {"line": {"x1": 0.1, "y1": 0.2, "x2": 0.8}, "direction": "any"},
+    ],
+)
+def test_counting_line_rejects_invalid_contract_without_writing(tmp_path, body):
+    path = tmp_path / "counting-lines.json"
+    manager = make_manager(line_state_store=CountingLineStateStore(path))
+    with TestClient(create_app(manager)) as client:
+        response = client.put("/cameras/cam2/line", headers=auth(), json=body)
+        assert response.status_code in {400, 422}
+    assert not path.exists()
+
+
+def test_counting_line_rejects_unknown_camera_without_writing(tmp_path):
+    path = tmp_path / "counting-lines.json"
+    manager = make_manager(line_state_store=CountingLineStateStore(path))
+    with TestClient(create_app(manager)) as client:
+        assert client.put(
+            "/cameras/cam9/line",
+            headers=auth(),
+            json={"line": [0.1, 0.2, 0.8, 0.9], "direction": "any"},
+        ).status_code == 400
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("payload", [None, [], 7, "invalid"])
+def test_counting_line_state_rejects_non_object_root(tmp_path, payload):
+    path = tmp_path / "counting-lines.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="cannot read counting-lines state"):
+        CountingLineStateStore(path).load()
+
+
+def test_saved_line_is_reported_when_live_apply_fails(tmp_path, monkeypatch):
+    store = CountingLineStateStore(tmp_path / "counting-lines.json")
+    manager = make_manager(line_state_store=store)
+    with TestClient(create_app(manager)) as client:
+        client.post("/processors/cam2", headers=auth(), json={})
+        processor = manager.get("cam2")
+
+        def fail_apply(_line, _direction):
+            raise RuntimeError("processor unavailable")
+
+        monkeypatch.setattr(processor, "update_counting_line", fail_apply)
+        response = client.put(
+            "/cameras/cam2/line",
+            headers=auth(),
+            json={"line": [0.1, 0.2, 0.8, 0.9], "direction": "any"},
+        )
+
+        assert response.status_code == 503
+        assert response.json()["saved"] is True
+        assert response.json()["applied_to_processor"] is False
+        persisted = client.get("/cameras/cam2/line", headers=auth()).json()
+        assert persisted["line_spec"] == "0.1,0.2,0.8,0.9"
+
+
+def test_processor_creation_and_line_save_are_serialized():
+    old_config = {
+        "line": "0,0.5,1,0.5",
+        "direction": "any",
+        "updated_at": "2026-08-10T00:00:00.000+00:00",
+    }
+    new_config = {
+        "line": "0.1,0.2,0.8,0.9",
+        "direction": "up",
+        "updated_at": "2026-08-10T00:01:00.000+00:00",
+    }
+
+    class CoordinatedLineStore:
+        def __init__(self):
+            self.config = old_config
+            self.get_entered = threading.Event()
+            self.release_get = threading.Event()
+            self.save_entered = threading.Event()
+
+        def get(self, _camera):
+            # Snapshot before blocking reproduces the dangerous stale read.
+            snapshot = dict(self.config)
+            self.get_entered.set()
+            if not self.release_get.wait(timeout=2):
+                raise RuntimeError("test did not release line-state read")
+            return snapshot
+
+        def save(self, _camera, _value, _direction):
+            self.save_entered.set()
+            self.config = new_config
+            return dict(new_config)
+
+    store = CoordinatedLineStore()
+    manager = make_manager(line_state_store=store)
+    save_started = threading.Event()
+
+    def ensure_processor():
+        return manager._ensure("cam2", ProcessorOptions())
+
+    def save_line():
+        save_started.set()
+        return manager.save_counting_line(
+            "cam2", [0.1, 0.2, 0.8, 0.9], "up"
+        )
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        ensure_future = executor.submit(ensure_processor)
+        assert store.get_entered.wait(timeout=1)
+        save_future = executor.submit(save_line)
+        assert save_started.wait(timeout=1)
+
+        # save() must still be waiting for ProcessorManager._lock while the
+        # creation path owns it and is resolving its durable-line snapshot.
+        save_entered_during_read = store.save_entered.wait(timeout=0.25)
+        store.release_get.set()
+        ensure_future.result(timeout=2)
+        status, payload = save_future.result(timeout=2)
+
+        assert save_entered_during_read is False
+        assert status == 200
+        assert payload["applied_to_processor"] is True
+        assert manager.get("cam2").options.line == new_config["line"]
+        assert manager.get("cam2").options.direction == "up"
+    finally:
+        store.release_get.set()
+        executor.shutdown(wait=True)
+        manager.close()
+
+
+def test_session_start_and_line_save_are_serialized():
+    start_entered = threading.Event()
+    release_start = threading.Event()
+    save_entered = threading.Event()
+    save_started = threading.Event()
+    old_config = {
+        "line": "0,0.5,1,0.5",
+        "direction": "any",
+        "updated_at": "2026-08-10T00:00:00.000+00:00",
+    }
+    new_config = {
+        "line": "0.1,0.2,0.8,0.9",
+        "direction": "down",
+        "updated_at": "2026-08-10T00:01:00.000+00:00",
+    }
+
+    class BlockingStartProcessor(FakeProcessor):
+        def start_session(self, options):
+            start_entered.set()
+            if not release_start.wait(timeout=2):
+                raise RuntimeError("test did not release session start")
+            super().start_session(options)
+
+    class ObservedLineStore:
+        def __init__(self):
+            self.config = old_config
+
+        def get(self, _camera):
+            return dict(self.config)
+
+        def save(self, _camera, _value, _direction):
+            save_entered.set()
+            self.config = new_config
+            return dict(new_config)
+
+    store = ObservedLineStore()
+    manager = ProcessorManager(
+        make_settings(),
+        FakeModel(),
+        FakeMediaMtx(),
+        "libx264",
+        processor_factory=BlockingStartProcessor,
+        line_state_store=store,
+    )
+
+    def save_line():
+        save_started.set()
+        return manager.save_counting_line(
+            "cam2", [0.1, 0.2, 0.8, 0.9], "down"
+        )
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        start_future = executor.submit(
+            manager.start, "cam2", ProcessorOptions()
+        )
+        assert start_entered.wait(timeout=1)
+        save_future = executor.submit(save_line)
+        assert save_started.wait(timeout=1)
+
+        save_entered_during_start = save_entered.wait(timeout=0.25)
+        release_start.set()
+        start_future.result(timeout=2)
+        status, payload = save_future.result(timeout=2)
+
+        assert save_entered_during_start is False
+        assert status == 200
+        assert payload["applied_to_processor"] is True
+        processor = manager.get("cam2")
+        assert processor.options.line == new_config["line"]
+        assert processor.options.direction == "down"
+    finally:
+        release_start.set()
+        executor.shutdown(wait=True)
+        manager.close()
+
+
+def test_wagon_detection_contract_is_bounded_and_fail_closed(monkeypatch):
+    frame = SimpleNamespace(shape=(720, 1280, 3))
+    monkeypatch.setattr("cv_service.processor.decode_jpeg", lambda _data: frame)
+
+    unavailable = make_manager()
+    with TestClient(create_app(unavailable)) as client:
+        response = client.post(
+            "/wagon-number/detect",
+            headers={**auth(), "Content-Type": "image/jpeg"},
+            content=b"\xff\xd8\xffframe",
+        )
+        assert response.status_code == 503
+        assert "not installed" in response.json()["detail"]
+
+    class WagonDetector:
+        def metadata(self):
+            return {"provider": "wagon-number.pt+paddleocr", "ocr": True}
+
+        def detect(self, _frame):
+            return {
+                "number": "12345678",
+                "detections": [{
+                    "bbox": [100.0, 200.0, 400.0, 300.0],
+                    "class_name": "wagon_plate",
+                    "confidence": 0.95,
+                    "ocr": {"number": "12345678", "accepted": True},
+                }],
+            }
+
+    capable = make_manager(wagon_detector=WagonDetector())
+    with TestClient(create_app(capable)) as client:
+        assert client.post(
+            "/wagon-number/detect",
+            headers={"Content-Type": "image/jpeg"},
+            content=b"\xff\xd8\xffframe",
+        ).status_code == 401
+        response = client.post(
+            "/wagon-number/detect",
+            headers={**auth(), "Content-Type": "image/jpeg"},
+            content=b"\xff\xd8\xffframe",
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            "number": "12345678",
+            "detections": [{
+                "bbox": [100.0, 200.0, 400.0, 300.0],
+                "class_name": "wagon_plate",
+                "confidence": 0.95,
+                "ocr": {"number": "12345678", "accepted": True},
+            }],
+            "detection_frame": {"width": 1280, "height": 720},
+        }
+
+
+def test_wagon_detection_rejects_invalid_or_oversized_jpeg(monkeypatch):
+    manager = make_manager(settings=make_settings(wagon_frame_max_bytes=4))
+    with TestClient(create_app(manager)) as client:
+        invalid = client.post(
+            "/wagon-number/detect",
+            headers={**auth(), "Content-Type": "image/jpeg"},
+            content=b"bad",
+        )
+        assert invalid.status_code == 400
+        oversized = client.post(
+            "/wagon-number/detect",
+            headers={**auth(), "Content-Type": "image/jpeg"},
+            content=b"\xff\xd8\xff12",
+        )
+        assert oversized.status_code == 413
+        wrong_type = client.post(
+            "/wagon-number/detect",
+            headers={**auth(), "Content-Type": "application/octet-stream"},
+            content=b"\xff\xd8\xff",
+        )
+        assert wrong_type.status_code == 415
 
 
 def test_mediamtx_inventory_includes_direct_wall_camera_but_not_ai_output(monkeypatch):
@@ -548,6 +920,30 @@ def test_line_tracker_counts_one_crossing_per_track():
     assert tracker.update([before], line, "any", shape) == []
 
 
+@pytest.mark.parametrize(
+    ("direction", "before_y", "after_y", "counted"),
+    [
+        ("up", 65, 35, True),
+        ("up", 35, 65, False),
+        ("down", 35, 65, True),
+        ("down", 65, 35, False),
+    ],
+)
+def test_line_tracker_supports_absolute_vertical_directions(
+    direction, before_y, after_y, counted,
+):
+    tracker = LineTracker()
+    shape = (100, 100, 3)
+    line = (0.0, 0.5, 1.0, 0.5)
+    before = Detection(45, before_y - 5, 55, before_y + 5, 0.9, "Red_50")
+    after = Detection(45, after_y - 5, 55, after_y + 5, 0.9, "Red_50")
+
+    assert tracker.update([before], line, direction, shape) == []
+    result = tracker.update([after], line, direction, shape)
+
+    assert bool(result) is counted
+
+
 def test_settings_reject_plaintext_key_and_parsers_are_strict(monkeypatch):
     monkeypatch.setenv("AI_SERVICE_API_KEY_SHA256", DIGEST)
     monkeypatch.setenv("AI_SERVICE_API_KEY", KEY)
@@ -589,6 +985,75 @@ def _overlay_processor(*, running=True):
     processor.per_color = defaultdict(int)
     processor.confidence_sums = defaultdict(float)
     return processor
+
+
+def test_live_line_update_resets_tracks_but_preserves_count():
+    processor = _overlay_processor()
+    processor.options = ProcessorOptions(line="0,0.5,1,0.5")
+    processor.total = 17
+    processor.tracker.update(
+        [Detection(40, 30, 60, 45, 0.9, "Red_50")],
+        (0.0, 0.5, 1.0, 0.5),
+        "any",
+        (100, 100, 3),
+    )
+    assert processor.tracker.tracks
+
+    processor.update_counting_line("0.1,0.2,0.8,0.9", "down")
+
+    assert processor.total == 17
+    assert processor.tracker.tracks == {}
+    assert processor.options.line == "0.1,0.2,0.8,0.9"
+    assert processor.options.direction == "down"
+
+
+def test_live_line_update_reads_options_under_processor_lock():
+    class TrackingRLock:
+        def __init__(self):
+            self.lock = threading.RLock()
+            self.owner = None
+            self.depth = 0
+
+        def __enter__(self):
+            self.lock.acquire()
+            self.owner = threading.get_ident()
+            self.depth += 1
+            return self
+
+        def __exit__(self, *_args):
+            self.depth -= 1
+            if self.depth == 0:
+                self.owner = None
+            self.lock.release()
+
+        def owned_by_current_thread(self):
+            return self.owner == threading.get_ident()
+
+    class LockAwareOptions:
+        source = "main"
+        line = "0,0.5,1,0.5"
+        direction = "any"
+
+        def __init__(self, lock):
+            self.lock = lock
+
+        def model_copy(self, *, update):
+            assert self.lock.owned_by_current_thread()
+            return ProcessorOptions(
+                source=self.source,
+                line=update["line"],
+                direction=update["direction"],
+            )
+
+    processor = _overlay_processor()
+    tracking_lock = TrackingRLock()
+    processor._lock = tracking_lock
+    processor.options = LockAwareOptions(tracking_lock)
+
+    processor.update_counting_line("0.1,0.2,0.8,0.9", "up")
+
+    assert processor.options.source == "main"
+    assert processor.options.line == "0.1,0.2,0.8,0.9"
 
 
 def test_detection_overlay_uses_fractions_of_the_frame():

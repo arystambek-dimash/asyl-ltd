@@ -45,7 +45,7 @@ class ProviderResponse:
 
 
 def _order(*, total="100.00", client_user=None, currency="KZT"):
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         user=client_user,
         first_name="Платёжный",
         last_name="Клиент",

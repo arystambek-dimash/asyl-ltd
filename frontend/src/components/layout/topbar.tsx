@@ -100,13 +100,13 @@ export function Topbar({
 }) {
   const { logout } = useAuth();
   const router = useRouter();
-  const roleText = me.is_client
+  const accountLabel = me.is_client
     ? "Клиент"
     : me.is_monoblock
       ? `Моноблок · ${me.monoblock_camera ?? "без камеры"}`
       : me.is_superuser
         ? "Администратор"
-        : me.role_name || "Сотрудник";
+        : me.position || "Сотрудник";
 
   return (
     <header className="flex min-h-16 flex-wrap items-center gap-2 border-b px-4 py-2 sm:h-16 sm:flex-nowrap sm:px-8 sm:py-0">
@@ -162,7 +162,7 @@ export function Topbar({
           </div>
           <div className="hidden leading-tight sm:block">
             <div className="max-w-[180px] truncate text-sm font-medium">{me.username}</div>
-            <div className="text-[10px] text-[var(--muted-foreground)]">{roleText}</div>
+            <div className="text-[10px] text-[var(--muted-foreground)]">{accountLabel}</div>
           </div>
           <button
             onClick={() => {

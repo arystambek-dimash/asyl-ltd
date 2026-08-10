@@ -44,7 +44,7 @@ def _order(client, product, qty=2, status="shipped", payment_status="unpaid",
 
 def test_delete_moves_to_trash_not_gone(manager):
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p)
     r = _api(manager).delete(f"/api/orders/{o.id}/")
     assert r.status_code == 204
@@ -58,7 +58,7 @@ def test_delete_moves_to_trash_not_gone(manager):
 
 def test_deleted_order_hidden_from_list(manager):
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o1 = _order(c, p)
     o2 = _order(c, p)
     _api(manager).delete(f"/api/orders/{o2.id}/")
@@ -69,7 +69,7 @@ def test_deleted_order_hidden_from_list(manager):
 
 def test_trash_lists_deleted_and_restore_brings_back(manager):
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p)
     _api(manager).delete(f"/api/orders/{o.id}/")
 
@@ -90,7 +90,7 @@ def test_trash_lists_deleted_and_restore_brings_back(manager):
 
 def test_trash_preview_is_bounded_and_reports_full_count(manager):
     product = _product()
-    client = Client.objects.create(first_name="A", last_name="B", phone="1")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     orders = [_order(client, product, status="draft") for _ in range(6)]
     for order in orders:
         _api(manager).delete(f"/api/orders/{order.id}/")
@@ -105,7 +105,7 @@ def test_trash_preview_is_bounded_and_reports_full_count(manager):
 
 def test_restore_of_live_order_fails(manager):
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p)
     r = _api(manager).post(f"/api/orders/{o.id}/restore/")
     assert r.status_code == 400  # не в корзине
@@ -113,7 +113,7 @@ def test_restore_of_live_order_fails(manager):
 
 def test_editor_purge_deletes_non_financial_draft_from_trash(manager):
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p, status="draft")
 
     # Живой заказ навсегда не удалить — сначала корзина.
@@ -129,7 +129,7 @@ def test_editor_purge_deletes_non_financial_draft_from_trash(manager):
 
 def test_purge_preserves_shipped_financial_records(manager):
     product = _product()
-    client = Client.objects.create(first_name="A", last_name="B", phone="1")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     order = _order(client, product, paid="100.00")
     _api(manager).delete(f"/api/orders/{order.id}/")
 
@@ -143,7 +143,7 @@ def test_purge_preserves_shipped_financial_records(manager):
 
 def test_purge_preserves_ai_history(manager):
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p, status="draft")
     AiCountingSession.objects.create(
         order=o,
@@ -161,7 +161,7 @@ def test_purge_preserves_ai_history(manager):
 
 def test_purge_requires_edit_permission(operator):
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p, status="draft")
     Order.all_objects.filter(pk=o.pk).update(deleted_at="2026-07-16T00:00:00Z")
     assert _api(operator).delete(f"/api/orders/{o.id}/purge/").status_code == 403
@@ -170,7 +170,7 @@ def test_purge_requires_edit_permission(operator):
 @pytest.mark.django_db(transaction=True)
 def test_purge_rechecks_order_after_concurrent_restore(manager):
     product = _product()
-    client = Client.objects.create(first_name="A", last_name="B", phone="race")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="race")
     order = _order(client, product, status="draft")
     order_services.soft_delete_order(order, manager)
     stale_for_purge = Order.all_objects.get(pk=order.pk)
@@ -229,7 +229,7 @@ def test_purge_rechecks_order_after_concurrent_restore(manager):
 
 def test_deleted_order_excluded_from_client_debts(manager, boss):
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     _order(c, p, qty=3)                       # долг 300 — остаётся
     doomed = _order(c, p, qty=5)              # долг 500 — удалим
     _api(manager).delete(f"/api/orders/{doomed.id}/")
@@ -243,7 +243,7 @@ def test_deleted_order_excluded_from_client_debts(manager, boss):
 
 def test_deleted_order_excluded_from_store_debts(manager, boss):
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     store = Store.objects.create(client=c, name="S",
                                  payment_schedule_type="monthly", payment_days=[25])
     _order(c, p, qty=2, store=store)          # 200 остаётся
@@ -258,7 +258,7 @@ def test_deleted_order_excluded_from_store_debts(manager, boss):
 
 def test_deleted_order_excluded_from_client_history(manager, boss):
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     kept = _order(c, p, qty=2, paid="200.00", payment_status="settled")  # выручка 200
     doomed = _order(c, p, qty=5)                                          # 500 удалим
     _api(manager).delete(f"/api/orders/{doomed.id}/")
@@ -274,7 +274,7 @@ def test_deleted_order_excluded_from_client_history(manager, boss):
 
 def test_deleted_order_excluded_from_debts_endpoint(manager, boss):
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     keep = _order(c, p, qty=2)
     doomed = _order(c, p, qty=3)
     _api(manager).delete(f"/api/orders/{doomed.id}/")
@@ -286,7 +286,7 @@ def test_deleted_order_excluded_from_debts_endpoint(manager, boss):
 
 def test_deleted_order_not_in_payments_queue(manager, accountant):
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p)
     Payment.objects.create(order=o, amount="100", status="received")
     _api(manager).delete(f"/api/orders/{o.id}/")
@@ -297,7 +297,7 @@ def test_deleted_order_not_in_payments_queue(manager, accountant):
 def test_deleted_order_not_in_transactions_journal(manager, accountant):
     """Корзина не должна попадать ни в строки журнала, ни в итог кассы."""
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     live = _order(c, p, paid="1000.00")
     trashed = _order(c, p, paid="7777.00")
     _api(manager).delete(f"/api/orders/{trashed.id}/")

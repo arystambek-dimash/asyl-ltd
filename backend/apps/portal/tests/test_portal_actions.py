@@ -11,7 +11,7 @@ from apps.orders.models import Order, OrderItem
 @pytest.fixture
 def client_and_order(db, make_user):
     user = make_user(username="cli", client=True)
-    c = Client.objects.create(
+    c = Client.objects.create_with_user(
         user=user,
         first_name="A",
         last_name="B",
@@ -30,7 +30,7 @@ def client_and_order(db, make_user):
 
 def test_create_order_is_pending(db, make_user, auth_client):
     user = make_user(username="cli", client=True)
-    Client.objects.create(user=user, first_name="A", last_name="B", phone="1")
+    Client.objects.create_with_user(user=user, first_name="A", last_name="B", phone="1")
     p = Product.objects.create(
         name="F", color="Red", weight_kg=Decimal("50"), price=Decimal("100")
     )
@@ -304,9 +304,9 @@ def test_truck_set_when_confirmed(client_and_order, auth_client):
 
 def test_cannot_touch_other_clients_order(db, make_user, auth_client):
     owner = make_user(username="owner", client=True)
-    Client.objects.create(user=owner, first_name="O", last_name="W", phone="1")
+    Client.objects.create_with_user(user=owner, first_name="O", last_name="W", phone="1")
     other = make_user(username="other", client=True)
-    Client.objects.create(user=other, first_name="X", last_name="Y", phone="2")
+    Client.objects.create_with_user(user=other, first_name="X", last_name="Y", phone="2")
     c = Client.objects.get(user=owner)
     o = Order.objects.create(client=c, status="confirmed")
     r = auth_client(other).post(

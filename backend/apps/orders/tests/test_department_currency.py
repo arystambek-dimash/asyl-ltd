@@ -6,7 +6,8 @@
 import pytest
 
 from apps.catalog.models import Product
-from apps.clients.models import Client, Department
+from apps.clients.models import Client
+from apps.sales.models import Department
 from apps.orders.models import Order, OrderItem
 
 pytestmark = pytest.mark.django_db
@@ -29,7 +30,7 @@ def _summary(auth_client, boss):
 
 def test_revenue_is_split_by_currency(boss, auth_client):
     department = Department.objects.create(code="main2", name="Отдел", color="#000")
-    client = Client.objects.create(first_name="A", last_name="B", phone="x")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     _order(client, department, "KZT", "1000")
     _order(client, department, "USD", "5")
 
@@ -43,7 +44,7 @@ def test_revenue_is_split_by_currency(boss, auth_client):
 
 def test_single_currency_department_reports_it_plainly(boss, auth_client):
     department = Department.objects.create(code="usd_only", name="Экспорт", color="#000")
-    client = Client.objects.create(first_name="C", last_name="D", phone="y")
+    client = Client.objects.create_with_user(first_name="C", last_name="D", phone="y")
     _order(client, department, "USD", "500", qty=2)
 
     row = _summary(auth_client, boss)[department.code]
@@ -55,7 +56,7 @@ def test_single_currency_department_reports_it_plainly(boss, auth_client):
 
 def test_drafts_stay_out_of_revenue(boss, auth_client):
     department = Department.objects.create(code="draft_dep", name="Черновики", color="#000")
-    client = Client.objects.create(first_name="E", last_name="F", phone="z")
+    client = Client.objects.create_with_user(first_name="E", last_name="F", phone="z")
     _order(client, department, "KZT", "700", status="draft")
 
     row = _summary(auth_client, boss)[department.code]

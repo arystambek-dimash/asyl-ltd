@@ -43,7 +43,7 @@ function me(id: number, username: string): Me {
     monoblock_name: null,
     monoblock_camera: null,
     permissions: [],
-    role_name: null,
+    position: null,
     client_id: null,
     sales_department: null,
   };
@@ -123,6 +123,28 @@ describe("auth store generations", () => {
     await expect(login).rejects.toMatchObject({ code: "ERR_CANCELED" });
     expect(mocks.setTokens).not.toHaveBeenCalled();
     expect(useAuth.getState().me).toBeNull();
+  });
+
+  it("changes an initial password and adopts the returned session", async () => {
+    const client = { ...me(2, "client-user"), is_client: true };
+    mocks.apiPost.mockResolvedValueOnce({
+      data: { access: "client-access", refresh: "client-refresh" },
+    });
+    mocks.apiGet.mockResolvedValueOnce({ data: client });
+
+    await useAuth.getState().completeInitialPasswordChange("client-user", "temporary-password", "personal-password");
+
+    expect(mocks.apiPost).toHaveBeenCalledWith(
+      "/auth/initial-password/",
+      {
+        username: "client-user",
+        current_password: "temporary-password",
+        new_password: "personal-password",
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(mocks.setTokens).toHaveBeenCalledWith("client-access", "client-refresh");
+    expect(useAuth.getState().me).toEqual(client);
   });
 
   it("adopts registration tokens as a new session even when a user is loaded", async () => {

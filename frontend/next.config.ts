@@ -32,7 +32,7 @@ const nextConfig: NextConfig = {
     return [
       {
         source: "/management/roles",
-        destination: "/management/employees?tab=roles",
+        destination: "/management/employees",
         permanent: false,
       },
       {

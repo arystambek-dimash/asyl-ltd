@@ -1,9 +1,8 @@
 from unittest.mock import patch
 
 import pytest
-
 from apps.cameras import ai, services
-from apps.cameras.models import MonoblockDevice
+from apps.cameras.models import AiCountingSession, MonoblockDevice
 from apps.clients.models import Client
 from apps.orders.models import Order
 
@@ -59,7 +58,7 @@ def test_device_cannot_start_another_camera(auth_client, superuser, monkeypatch)
     monkeypatch.setattr(ai, "AI_KEY", "key")
     device = _create_device(auth_client, superuser)
     order = Order.objects.create(
-        client=Client.objects.create(first_name="A", last_name="B", phone="1"),
+        client=Client.objects.create_with_user(first_name="A", last_name="B", phone="1"),
         status="confirmed",
     )
     response = auth_client(device.user).post(
@@ -72,7 +71,7 @@ def test_device_cannot_start_another_camera(auth_client, superuser, monkeypatch)
 
 def test_device_order_list_is_scoped_to_queue_and_own_camera(auth_client, superuser):
     device = _create_device(auth_client, superuser)
-    client = Client.objects.create(first_name="A", last_name="C", phone="2")
+    client = Client.objects.create_with_user(first_name="A", last_name="C", phone="2")
     waiting = Order.objects.create(client=client, status="confirmed")
     own = Order.objects.create(client=client, status="loading", loading_camera="cam2")
     Order.objects.create(client=client, status="loading", loading_camera="cam3")
@@ -80,3 +79,65 @@ def test_device_order_list_is_scoped_to_queue_and_own_camera(auth_client, superu
     response = auth_client(device.user).get("/api/orders/")
     assert response.status_code == 200
     assert {row["id"] for row in response.data} == {waiting.pk, own.pk}
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"camera_source": "cam3"},
+        {"is_active": False},
+    ],
+)
+def test_active_loading_prevents_moving_or_disabling_device(
+    auth_client, superuser, changes,
+):
+    device = _create_device(auth_client, superuser)
+    order = Order.objects.create(
+        client=Client.objects.create_with_user(
+            first_name="A", last_name="Busy", phone="busy"
+        ),
+        status="loading",
+        loading_camera=device.camera_source,
+    )
+    AiCountingSession.objects.create(
+        order=order,
+        camera=device.camera_source,
+        status=AiCountingSession.ACTIVE,
+        started_by=device.user,
+    )
+
+    response = auth_client(superuser).patch(
+        f"/api/cameras/monoblock-devices/{device.pk}/",
+        changes,
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "monoblock_busy"
+    device.refresh_from_db()
+    device.user.refresh_from_db()
+    assert device.camera_source == "cam2"
+    assert device.is_active is True
+    assert device.user.is_active is True
+
+
+def test_legacy_camera_binding_also_prevents_device_deactivation(
+    auth_client, superuser,
+):
+    device = _create_device(auth_client, superuser)
+    Order.objects.create(
+        client=Client.objects.create_with_user(
+            first_name="A", last_name="Bound", phone="bound"
+        ),
+        status="loading",
+        loading_camera=device.camera_source,
+    )
+
+    response = auth_client(superuser).patch(
+        f"/api/cameras/monoblock-devices/{device.pk}/",
+        {"is_active": False},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "monoblock_busy"

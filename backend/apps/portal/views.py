@@ -1,55 +1,51 @@
-from django.conf import settings
-from django.db.models import Prefetch
-from django.http import FileResponse
-from django.utils import timezone
 from io import BytesIO
-from rest_framework import status, viewsets, mixins
-from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.response import Response
-from rest_framework.exceptions import ValidationError, APIException
-from apps.common.permissions import IsClientUser
+
 from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Client, Store
 from apps.clients.serializers import StoreSerializer
-from apps.orders.models import Order, Payment
-from apps.orders.invoices import build_invoice_pdf, build_payment_receipt_pdf
-from apps.orders.services import (
-    create_client_payment, release_client_payment, request_client_debt,
-    set_truck_number,
-)
+from apps.common.permissions import IsClientUser
+from apps.eventlog.services import log_event
 from apps.orders.apipay import (
     MONEY_RECEIVED_INVOICE_STATUSES,
     ApiPayAPIError, ApiPayConfigurationError, cancel_invoice,
     start_order_payment,
 )
-from apps.eventlog.services import log_event
+from apps.orders.invoices import build_invoice_pdf, build_payment_receipt_pdf
+from apps.orders.models import Order, Payment
+from apps.orders.services import (
+    create_client_payment, release_client_payment, request_client_debt,
+    set_truck_number,
+)
 from config.throttles import PortalOrderCreateRateThrottle
+from django.db.models import Prefetch
+from django.http import FileResponse
+from django.utils import timezone
+from rest_framework import status, viewsets, mixins
+from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
+
+from .exceptions import Conflict, PaymentProviderError
 from .serializers import CatalogProductSerializer, PortalOrderSerializer
 
 
-class PortalStoreViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+class PortalStoreViewSet(
+    mixins.ListModelMixin,
+    viewsets.GenericViewSet
+):
     serializer_class = StoreSerializer
     permission_classes = [IsClientUser]
 
     def get_queryset(self):
-        return Store.objects.filter(client__user=self.request.user)
-
-
-class Conflict(APIException):
-    status_code = 409
-    default_code = "conflict"
-
-
-class PaymentProviderError(APIException):
-    status_code = 502
-    default_code = "payment_provider_error"
+        return Store.objects.filter(
+            client__user=self.request.user
+        ).select_related("client__user")
 
 
 class PortalCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     serializer_class = CatalogProductSerializer
     permission_classes = [IsClientUser]
-    # Клиент видит активные товары, даже если складская карточка ещё не создана.
-    # Остаток в таком случае показываем как 0, а заказ дальше обрабатывается текущим флоу.
+
     def _currency(self):
         requested = (self.request.query_params.get("currency") or "").upper()
         if requested:
@@ -60,15 +56,17 @@ class PortalCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
                 .values_list("currency", flat=True).first() or "KZT")
 
     def get_queryset(self):
-        client_id = (Client.objects.filter(user=self.request.user)
-                     .values_list("id", flat=True).first())
+        client_id = (
+            Client.objects.filter(
+                user=self.request.user)
+            .values_list("id", flat=True).first())
         price_qs = ClientPrice.objects.filter(
             client_id=client_id, currency=self._currency())
         return (Product.objects.filter(is_active=True)
                 .select_related("stock")
                 .prefetch_related(Prefetch(
-                    "client_prices", queryset=price_qs,
-                    to_attr="portal_client_prices"))
+            "client_prices", queryset=price_qs,
+            to_attr="portal_client_prices"))
                 .order_by("name", "color", "weight_kg"))
 
     def get_serializer_context(self):
@@ -89,10 +87,9 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         return throttles
 
     def get_queryset(self):
-        # paid_total и has_pending_payment обходят оплаты — грузим заранее.
         return (
             Order.objects.filter(client__user=self.request.user)
-            .select_related("store", "client")
+            .select_related("store", "client__user")
             .prefetch_related(
                 "items__product",
                 Prefetch(
@@ -132,10 +129,6 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             create_client_payment(
                 order, method, request.user, amount=request.data.get("amount")
             )
-        # get_object() comes from a queryset with prefetched payments.  A
-        # payment created by the service does not invalidate that cache, and
-        # without this the response incorrectly says that no payment is in
-        # progress until the next request.
         order._prefetched_objects_cache.pop("payments", None)
         data = self.get_serializer(order).data
         if method == "kaspi":
@@ -160,8 +153,8 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             }) from exc
         invoice = getattr(payment, "apipay_invoice", None)
         if (
-            invoice is not None
-            and invoice.status in MONEY_RECEIVED_INVOICE_STATUSES
+                invoice is not None
+                and invoice.status in MONEY_RECEIVED_INVOICE_STATUSES
         ):
             raise ValidationError({
                 "detail": (
@@ -170,9 +163,9 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                 "code": "payment_already_paid",
             })
         if (
-            invoice is not None
-            and invoice.channel == "phone"
-            and invoice.status not in ("cancelled", "expired", "error", "superseded")
+                invoice is not None
+                and invoice.channel == "phone"
+                and invoice.status not in ("cancelled", "expired", "error", "superseded")
         ):
             try:
                 cancel_invoice(invoice)
@@ -182,7 +175,7 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                     "code": exc.error_code,
                 }) from exc
             if invoice.status not in (
-                "cancelled", "expired", "error", "superseded",
+                    "cancelled", "expired", "error", "superseded",
             ):
                 # ApiPay may acknowledge cancellation asynchronously. Keep the
                 # amount reserved until webhook/reconciliation proves that the
@@ -275,9 +268,3 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             raise ValidationError({"detail": "Введите номер КАМАЗа", "code": "empty"})
         set_truck_number(order, value, request.user)
         return Response(self.get_serializer(order).data)
-
-
-@api_view(["GET"])
-@permission_classes([IsClientUser])
-def payment_info(request):
-    return Response(settings.PORTAL_PAYMENT_INFO)

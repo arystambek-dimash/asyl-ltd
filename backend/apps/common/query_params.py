@@ -1,6 +1,7 @@
 """Typed validation for query parameters shared by API read endpoints."""
 
 from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from rest_framework.exceptions import ValidationError
 
@@ -48,6 +49,31 @@ def filter_date_range(queryset, field: str, date_from, date_to):
     if date_to:
         queryset = queryset.filter(**{f"{field}__date__lte": date_to})
     return queryset
+
+
+def parse_money_param(raw: str | None, name: str) -> Decimal | None:
+    """Parse an optional, finite, non-negative monetary query parameter."""
+    if raw in (None, ""):
+        return None
+    try:
+        value = Decimal(raw)
+        if not value.is_finite():
+            raise InvalidOperation
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValidationError(
+            {
+                "detail": f"Некорректное значение: {name}",
+                "code": "bad_amount",
+            }
+        ) from exc
+    if value < 0:
+        raise ValidationError(
+            {
+                "detail": f"{name} не может быть меньше нуля",
+                "code": "bad_amount",
+            }
+        )
+    return value
 
 
 def parse_store_id(raw: str | None) -> int | None:

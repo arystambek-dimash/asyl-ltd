@@ -25,7 +25,7 @@ def _order_on(client, year, month, day):
 
 
 def test_list_filters_orders_by_inclusive_creation_date_range(manager):
-    client = Client.objects.create(first_name="A", last_name="B", phone="1")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     before = _order_on(client, 2026, 6, 30)
     first = _order_on(client, 2026, 7, 1)
     last = _order_on(client, 2026, 7, 15)
@@ -52,7 +52,7 @@ def test_list_rejects_invalid_date_filters(manager, query):
 
 def test_list_filters_by_public_status_group(manager):
     """«Ожидает загрузки» покрывает все внутренние этапы погрузки."""
-    client = Client.objects.create(first_name="A", last_name="B", phone="1")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     statuses = {}
     for status in ("pending", "confirmed", "arrived", "loading", "loaded", "shipped"):
         statuses[status] = Order.objects.create(client=client, status=status)

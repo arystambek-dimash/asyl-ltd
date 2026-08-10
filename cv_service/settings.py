@@ -5,7 +5,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-
 CAMERA_RE = re.compile(r"^cam[1-9][0-9]*$")
 LINE_RE = re.compile(
     r"^(0(?:\.\d+)?|1(?:\.0+)?),(0(?:\.\d+)?|1(?:\.0+)?),"
@@ -75,9 +74,11 @@ class Settings:
     prewarm_source: str = "sub"
     always_on_state_path: Path = Path("data/always-on.json")
     camera_roles_state_path: Path = Path("data/camera-roles.json")
+    counting_lines_state_path: Path = Path("data/counting-lines.json")
+    wagon_frame_max_bytes: int = 12 * 1024 * 1024
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         digest = os.getenv("AI_SERVICE_API_KEY_SHA256", "").strip().lower()
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError("AI_SERVICE_API_KEY_SHA256 must be a lowercase SHA-256 digest")
@@ -127,6 +128,15 @@ class Settings:
                     "AI_CAMERA_ROLES_STATE_PATH",
                     str(base / "data" / "camera-roles.json"),
                 )
+            ),
+            counting_lines_state_path=Path(
+                os.getenv(
+                    "AI_COUNTING_LINES_STATE_PATH",
+                    str(base / "data" / "counting-lines.json"),
+                )
+            ),
+            wagon_frame_max_bytes=_positive_int(
+                "AI_WAGON_FRAME_MAX_BYTES", 12 * 1024 * 1024,
             ),
         )
 

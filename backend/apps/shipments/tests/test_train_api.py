@@ -22,7 +22,7 @@ def _api(user):
 def _train_order(boss, status="confirmed", qty=10, stock=100):
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     receive_stock(p, stock, boss)
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     o = Order.objects.create(client=c, status=status, transport_type="train")
     OrderItem.objects.create(order=o, product=p, quantity=qty)
     return o

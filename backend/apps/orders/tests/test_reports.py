@@ -16,7 +16,7 @@ URL = "/api/reports/summary/"
 
 def _client(**kwargs):
     defaults = {"first_name": "И", "last_name": "П", "phone": "x"}
-    return Client.objects.create(**{**defaults, **kwargs})
+    return Client.objects.create_with_user(**{**defaults, **kwargs})
 
 
 def _product(price="1000", name="Мука", color="Red", weight="50"):

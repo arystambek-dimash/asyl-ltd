@@ -21,7 +21,7 @@ pytestmark = pytest.mark.django_db
 def _loading_order(boss, operator, qty=50, stock=100):
     product = Product.objects.create(name="Высший", color="Red", weight_kg="50", price="25000")
     receive_stock(product, stock, boss)
-    client = Client.objects.create(first_name="L", last_name="К", phone="x")
+    client = Client.objects.create_with_user(first_name="L", last_name="К", phone="x")
     order = Order.objects.create(client=client, status="confirmed", truck_number="01A123")
     OrderItem.objects.create(order=order, product=product, quantity=qty)
     record_arrival(order, Decimal("8000"), operator)

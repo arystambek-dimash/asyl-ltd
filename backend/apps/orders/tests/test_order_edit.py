@@ -1,7 +1,9 @@
 """Редактирование заказа: позиции и цены — до начала загрузки."""
-import pytest
 from decimal import Decimal
+
+import pytest
 from rest_framework.test import APIClient
+
 from apps.catalog.models import Product
 from apps.clients.models import Client, Store
 from apps.orders.models import Order, OrderItem
@@ -22,7 +24,7 @@ def _product(price="100.00", bags=500):
 
 
 def _order(status="pending", unit_price="100.00"):
-    client = Client.objects.create(first_name="A", last_name="B", phone="x")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     order = Order.objects.create(client=client, status=status)
     OrderItem.objects.create(order=order, product=_product(), quantity=2,
                              unit_price=unit_price)
@@ -123,6 +125,48 @@ def test_edit_fields_without_items(manager):
     assert o.items.count() == 1
 
 
+def test_pending_settlement_intent_round_trips(manager):
+    o = _order(status="pending")
+    o.settlement_intent = "pending"
+    o.payment_method = "pending"
+    o.save(update_fields=["settlement_intent", "payment_method"])
+
+    response = _api(manager).patch(
+        f"/api/orders/{o.id}/",
+        {"settlement_intent": "pending"},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert response.data["settlement_intent"] == "pending"
+    assert response.data["payment_method"] == "pending"
+    o.refresh_from_db()
+    assert o.settlement_intent == "pending"
+    assert o.payment_method == "pending"
+
+
+@pytest.mark.parametrize("payment_method", ["kaspi", "cash", "mixed"])
+def test_unchanged_instant_intent_preserves_payment_method(
+    manager,
+    payment_method,
+):
+    o = _order(status="shipped")
+    o.settlement_intent = "instant"
+    o.payment_method = payment_method
+    o.save(update_fields=["settlement_intent", "payment_method"])
+
+    response = _api(manager).patch(
+        f"/api/orders/{o.id}/",
+        {"settlement_intent": "instant"},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    o.refresh_from_db()
+    assert o.settlement_intent == "instant"
+    assert o.payment_method == payment_method
+
+
 def test_edit_order_note(manager):
     o = _order(status="shipped")
     r = _api(manager).patch(
@@ -135,16 +179,16 @@ def test_edit_order_note(manager):
 
 def test_edit_client_is_locked(manager):
     o = _order(status="pending")
-    other = Client.objects.create(first_name="Z", last_name="Z", phone="z")
+    other = Client.objects.create_with_user(first_name="Z", last_name="Z", phone="z")
     r = _api(manager).patch(f"/api/orders/{o.id}/", {"client": other.id}, format="json")
     assert r.status_code == 400
     o.refresh_from_db()
-    assert o.client.first_name == "A"
+    assert o.client.user.first_name == "A"
 
 
 def test_foreign_store_rejected(manager):
     o = _order(status="pending")
-    stranger = Client.objects.create(first_name="S", last_name="S", phone="s")
+    stranger = Client.objects.create_with_user(first_name="S", last_name="S", phone="s")
     foreign_store = Store.objects.create(client=stranger, name="Чужой")
     r = _api(manager).patch(f"/api/orders/{o.id}/", {"store": foreign_store.id}, format="json")
     assert r.status_code == 400
@@ -152,7 +196,7 @@ def test_foreign_store_rejected(manager):
 
 def test_order_requires_stock_on_create(manager):
     """Заказ принимается только на товар, имеющийся на складе."""
-    client = Client.objects.create(first_name="A", last_name="B", phone="x")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     empty = _product(bags=0)  # складской карточки нет вовсе
     r = _api(manager).post("/api/orders/", {
         "client": client.id,

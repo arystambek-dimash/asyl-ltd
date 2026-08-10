@@ -1,61 +1,47 @@
 import pytest
-from apps.rbac.models import Permission, Role
+
+from apps.employees.models import Employee
+from apps.sys_permissions.models import Permission
 
 pytestmark = pytest.mark.django_db
 
 
-def _perm(code):
-    p, _ = Permission.objects.get_or_create(
-        code=code, defaults={"section": code.split(".")[0],
-                             "action": code.split(".")[1], "label": code})
-    return p
+def _permission(code):
+    permission, _ = Permission.objects.get_or_create(
+        code=code,
+        defaults={
+            "section": code.split(".")[0],
+            "action": code.split(".")[1],
+            "label": code,
+        },
+    )
+    return permission
 
 
 def test_superuser_has_any_code(make_user):
-    u = make_user(username="su")
-    u.is_superuser = True
-    u.save()
-    assert u.has_perm_code("orders.create") is True
+    user = make_user(username="super-codes")
+    user.is_superuser = True
+    user.save(update_fields=["is_superuser"])
+    assert user.has_perm_code("orders.create") is True
 
 
-def test_employee_permissions_grant_code(make_user):
-    from apps.employees.models import Employee
-    u = make_user(username="e1")
-    emp = Employee.objects.create(user=u, first_name="A", last_name="B", phone="x")
-    emp.permissions.add(_perm("orders.view"))
-    assert u.has_perm_code("orders.view") is True
-    assert u.has_perm_code("orders.create") is False
-    assert "orders.view" in u.perm_codes
+def test_employee_permissions_grant_codes(make_user):
+    user = make_user(username="employee-codes")
+    employee = Employee.objects.create(user=user, phone="x")
+    employee.permissions.add(_permission("orders.view"))
+
+    assert user.has_perm_code("orders.view") is True
+    assert user.has_perm_code("orders.create") is False
+    assert user.perm_codes == {"orders.view"}
 
 
-def test_role_permissions_inherited_live(make_user):
-    """Права роли действуют на сотрудника сразу, без личной копии."""
-    from apps.employees.models import Employee
-    u = make_user(username="e3")
-    role = Role.objects.create(name="Тест-R")
-    role.permissions.add(_perm("orders.view"))
-    Employee.objects.create(user=u, first_name="A", last_name="B", phone="x", role=role)
-    assert u.has_perm_code("orders.view") is True
-    assert u.perm_codes == {"orders.view"}
+def test_employee_without_direct_permissions_has_no_codes(make_user):
+    user = make_user(username="employee-no-codes")
+    Employee.objects.create(user=user, phone="x")
+    assert user.perm_codes == set()
 
 
-def test_personal_deny_overrides_role_but_not_personal_grant(make_user):
-    from apps.employees.models import Employee
-    u = make_user(username="deny")
-    role = Role.objects.create(name="Тест deny")
-    permission = _perm("catalog.delete")
-    role.permissions.add(permission)
-    employee = Employee.objects.create(
-        user=u, first_name="A", last_name="B", phone="x", role=role)
-    employee.denied_permissions.add(permission)
-    assert u.has_perm_code("catalog.delete") is False
-    employee.permissions.add(permission)
-    employee.__dict__.pop("effective_perm_codes", None)
-    u = type(u).objects.get(pk=u.pk)
-    assert u.has_perm_code("catalog.delete") is True
-
-
-def test_no_employee_no_codes(make_user):
-    u = make_user(username="e2")
-    assert u.perm_codes == set()
-    assert u.has_perm_code("orders.view") is False
+def test_user_without_employee_has_no_codes(make_user):
+    user = make_user(username="user-no-employee")
+    assert user.perm_codes == set()
+    assert user.has_perm_code("orders.view") is False

@@ -37,7 +37,7 @@ class UpstreamResponse:
 
 
 def _payment():
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Клиент", phone="+7 700 123-45-67"
     )
     product = Product.objects.create(

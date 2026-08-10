@@ -19,7 +19,7 @@ def _api(user):
 
 
 def _order(*, quantities=(50,), prices=("100.00",), payment_status="unpaid"):
-    client = Client.objects.create(first_name="Ерхан", last_name="Тетрадь", phone="x")
+    client = Client.objects.create_with_user(first_name="Ерхан", last_name="Тетрадь", phone="x")
     order = Order.objects.create(
         client=client,
         status="shipped",

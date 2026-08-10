@@ -10,7 +10,7 @@ pytestmark = pytest.mark.django_db
 
 
 def test_serializer_exposes_payment_fields():
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     o = Order.objects.create(client=c)
     data = OrderSerializer(o).data
     assert data["payment_status"] == "unpaid"
@@ -26,14 +26,14 @@ def test_serializer_exposes_payment_fields():
      ("cash", "Наличные"), ("debt", "Долг")],
 )
 def test_payment_method_labels(method, label):
-    client = Client.objects.create(first_name="A", last_name="B", phone=method)
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone=method)
     order = Order.objects.create(client=client)
     payment = Payment.objects.create(order=order, amount="100", method=method)
     assert PaymentSerializer(payment).data["method_label"] == label
 
 
 def test_fully_paid_order_does_not_offer_restoring_rejected_payment():
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="A", last_name="B", phone="87762838451"
     )
     product = Product.objects.create(

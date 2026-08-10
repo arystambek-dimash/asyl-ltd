@@ -8,9 +8,10 @@ import pytest
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
-from apps.clients.serializers import ClientSerializer
+from apps.clients.serializers import ClientReadSerializer
 from apps.clients.services import client_history
-from apps.orders.debt import debt_by_currency, order_remaining, primary_currency
+from apps.common.money import primary_currency
+from apps.orders.debt import debt_by_currency, order_remaining
 from apps.orders.models import Order, OrderItem, Payment
 
 pytestmark = pytest.mark.django_db
@@ -34,7 +35,7 @@ def _debt_order(client, currency, amount, paid=None):
 
 @pytest.fixture
 def client_with_two_currencies():
-    client = Client.objects.create(first_name="A", last_name="B", phone="x")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     _debt_order(client, "KZT", "1000.00")
     _debt_order(client, "USD", "5.00")
     return client
@@ -55,7 +56,7 @@ def test_primary_currency_prefers_business_currency_without_comparing_nominals()
 
 
 def test_client_debt_total_is_per_currency(client_with_two_currencies):
-    data = ClientSerializer(client_with_two_currencies).data
+    data = ClientReadSerializer(client_with_two_currencies).data
     assert data["debt_by_currency"] == {"KZT": "1000.00", "USD": "5.00"}
     # Однострочный debt_total остаётся, но описывает только основную валюту.
     assert data["debt_total"] == "1000.00"
@@ -71,7 +72,7 @@ def test_client_history_summary_is_per_currency(client_with_two_currencies):
 
 def test_remaining_never_negative_on_overpayment():
     """Переплата не уводит остаток в минус и не гасит долг других заказов."""
-    client = Client.objects.create(first_name="C", last_name="D", phone="y")
+    client = Client.objects.create_with_user(first_name="C", last_name="D", phone="y")
     overpaid = _debt_order(client, "KZT", "100.00", paid="250.00")
     assert overpaid.remaining_amount < 0
     assert order_remaining(overpaid) == 0

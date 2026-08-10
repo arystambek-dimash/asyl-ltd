@@ -46,7 +46,7 @@ def _order(
 
 def test_client_debts_aggregate_by_client(boss):
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     store = Store.objects.create(
         client=c, name="S", payment_schedule_type="monthly", payment_days=[25]
     )
@@ -67,9 +67,9 @@ def test_client_debts_aggregate_by_client(boss):
 
 def test_client_debts_filters_department_store_date_and_remaining(boss):
     p = _product()
-    main = Client.objects.create(
+    main = Client.objects.create_with_user(
         first_name="Main", last_name="Client", phone="1")
-    field = Client.objects.create(
+    field = Client.objects.create_with_user(
         first_name="Field", last_name="Client", phone="2")
     main_store = Store.objects.create(client=main, name="Main store")
     other_store = Store.objects.create(client=main, name="Other store")
@@ -101,10 +101,10 @@ def test_client_debts_filters_department_store_date_and_remaining(boss):
 
 def test_client_debts_filters_requested_currency_without_mixing(boss):
     product = _product()
-    first = Client.objects.create(
+    first = Client.objects.create_with_user(
         first_name="First", last_name="Client", phone="11"
     )
-    second = Client.objects.create(
+    second = Client.objects.create_with_user(
         first_name="Second", last_name="Client", phone="22"
     )
     _order(first, product, qty=10, currency="KZT")
@@ -123,7 +123,7 @@ def test_client_debts_filters_requested_currency_without_mixing(boss):
 
 def test_client_debt_detail_returns_unsettled_orders(boss):
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     unpaid = _order(c, p, qty=2, payment_status="unpaid")
     settled = _order(c, p, qty=1, payment_status="settled", paid="100.00")
 
@@ -144,7 +144,7 @@ def test_client_debt_detail_overdue_on_payment_day(boss):
     """Открытое окно оплаты магазина = остаток по его заказам просрочен."""
     from django.utils import timezone
     p = _product()
-    c = Client.objects.create(first_name="A", last_name="B", phone="1")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     today = timezone.localdate()
     store = Store.objects.create(
         client=c, name="S", payment_schedule_type="monthly",

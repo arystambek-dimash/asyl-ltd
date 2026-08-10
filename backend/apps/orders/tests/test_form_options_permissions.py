@@ -2,7 +2,8 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.catalog.models import ClientPrice, Product
-from apps.clients.models import Client, Department, Store
+from apps.clients.models import Client, Store
+from apps.sales.models import Department
 from apps.orders.models import Order, OrderItem
 from apps.warehouse.models import StockItem
 
@@ -17,7 +18,7 @@ def _api(user):
 
 
 def _reference_rows():
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Айжан",
         last_name="Серикова",
         company_name="ТОО Север",

@@ -3,8 +3,10 @@ from decimal import Decimal
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from rest_framework import serializers
-from apps.clients.models import Department
+
 from apps.common.money import money_string
+from apps.sales.models import Department
+
 from .labels import payment_method_label
 from .models import Order, OrderItem, Payment, StatusChangeRequest
 from .services import set_truck_number
@@ -14,21 +16,32 @@ from .statuses import public_status_label
 class OrderItemSerializer(serializers.ModelSerializer):
     product_label = serializers.CharField(read_only=True)
     cv_class = serializers.SerializerMethodField()
-    # PositiveIntegerField пропускает 0 — заказ из «нулевых» позиций бессмыслен.
     quantity = serializers.IntegerField(min_value=1)
-    unit_price = serializers.DecimalField(max_digits=12, decimal_places=2,
-                                          read_only=True, allow_null=True)
+    unit_price = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
+        allow_null=True
+    )
     price = serializers.SerializerMethodField()
     client_price = serializers.SerializerMethodField()
     weight_kg = serializers.SerializerMethodField()
-    # Нужно ли спрашивать вес машины на посту для этого товара.
     ask_truck_weight = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
-        fields = ["id", "product", "product_label", "cv_class", "quantity",
-                  "price", "unit_price", "client_price", "weight_kg",
-                  "ask_truck_weight"]
+        fields = [
+            "id",
+            "product",
+            "product_label",
+            "cv_class",
+            "quantity",
+            "price",
+            "unit_price",
+            "client_price",
+            "weight_kg",
+            "ask_truck_weight"
+        ]
         extra_kwargs = {
             "product": {"required": True, "allow_null": False},
         }
@@ -43,13 +56,9 @@ class OrderItemSerializer(serializers.ModelSerializer):
         return obj.product_ask_truck_weight
 
     def get_price(self, obj):
-        # До фиксации личной цены у позиции намеренно нет стоимости.
         return str(obj.unit_price) if obj.unit_price is not None else None
 
     def get_client_price(self, obj):
-        # Подсказка для предзаполнения: текущая цена клиента на этот товар.
-        # Нужна только пока цена не зафиксирована; прайс клиента грузим один раз
-        # на запрос (кэш в context), а не отдельным запросом на каждую позицию.
         if obj.unit_price is not None:
             return None
         if obj.product_id is None:
@@ -73,17 +82,24 @@ class StatusChangeRequestSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = StatusChangeRequest
-        fields = ["id", "order", "to_status", "to_status_label", "status",
-                  "requested_by", "requested_by_name", "decided_by",
-                  "created_at", "decided_at"]
+        fields = [
+            "id",
+            "order",
+            "to_status",
+            "to_status_label",
+            "status",
+            "requested_by",
+            "requested_by_name",
+            "decided_by",
+            "created_at",
+            "decided_at"
+        ]
 
     def get_requested_by_name(self, obj):
         return obj.requested_by.username if obj.requested_by else None
 
     def get_to_status_label(self, obj):
         return public_status_label(obj.to_status)
-
-
 
 
 def _username(user):
@@ -155,14 +171,12 @@ class PaymentSerializer(serializers.ModelSerializer):
 
     def _request_can(self, code):
         request = self.context.get("request")
-        # Domain/unit serializers have no HTTP principal. API views must pass
-        # request so capability flags describe both state and authorization.
         return request is None or request.user.has_perm_code(code)
 
     def get_can_restore(self, obj):
         if (
-            not self._request_can("payments.confirm")
-            or obj.status != "rejected"
+                not self._request_can("payments.confirm")
+                or obj.status != "rejected"
         ):
             return False
         confirmed = sum(
@@ -192,19 +206,15 @@ class PaymentSerializer(serializers.ModelSerializer):
         except ObjectDoesNotExist:
             return True
         return not (
-            invoice.invoice_id is not None
-            and invoice.status in ("cancelled", "expired", "error", "superseded")
+                invoice.invoice_id is not None
+                and invoice.status in ("cancelled", "expired", "error", "superseded")
         )
 
     def get_can_issue(self, obj):
-        # Выдать счёт сервисом можно только по «Счёту на оплату». QR в кассе
-        # означает уже прошедший POS-терминал: выставлять по нему счёт значило
-        # бы просить клиента заплатить второй раз. Портальный QR сюда не
-        # попадает — там счёт создаётся сразу и повторная выдача не нужна.
         if (
-            not self._request_can("payments.create")
-            or obj.status not in Payment.IN_PROGRESS_STATUSES
-            or obj.method != "invoice"
+                not self._request_can("payments.create")
+                or obj.status not in Payment.IN_PROGRESS_STATUSES
+                or obj.method != "invoice"
         ):
             return False
         try:
@@ -212,22 +222,14 @@ class PaymentSerializer(serializers.ModelSerializer):
         except ObjectDoesNotExist:
             return True
         return (
-            invoice.invoice_id is None
-            and not (
+                invoice.invoice_id is None
+                and not (
                 invoice.channel == "qr"
                 and invoice.status == "creating"
-            )
+        )
         )
 
     def get_confirmation_mode(self, obj):
-        """Кто закроет оплату: платёжный сервис или кассир руками.
-
-        Признак — наличие счёта у провайдера, а не способ оплаты. QR,
-        отмеченный кассой после POS-терминала, счёта не имеет и ждёт ручного
-        подтверждения, как наличные; QR, выставленный клиенту в портале,
-        подтвердится сам. Оба записаны методом «kaspi», поэтому различить их
-        по названию способа нельзя.
-        """
         try:
             obj.apipay_invoice
         except ObjectDoesNotExist:
@@ -279,9 +281,6 @@ class PaymentSerializer(serializers.ModelSerializer):
 
 
 class DepartmentLabelMixin:
-    """department_name/department_color по коду отдела — один справочник на
-    сериализацию списка (кэш на инстансе), без запроса на каждую строку."""
-
     def _department_code(self, obj):
         return obj.department
 
@@ -301,7 +300,6 @@ class DepartmentLabelMixin:
 
 
 class PaymentQueueSerializer(DepartmentLabelMixin, PaymentSerializer):
-    """Оплата с контекстом заказа — для табло бухгалтера и кассы."""
     client_name = serializers.CharField(source="order.client.name", read_only=True)
     department = serializers.CharField(source="order.department", read_only=True)
     department_name = serializers.SerializerMethodField()
@@ -325,7 +323,10 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     items = OrderItemSerializer(many=True)
     status = serializers.CharField(read_only=True)
     payment_status = serializers.CharField(read_only=True)
-    settlement_intent = serializers.CharField(required=False)
+    settlement_intent = serializers.ChoiceField(
+        choices=Order.SETTLEMENT_INTENTS,
+        required=False,
+    )
     payment_method = serializers.CharField(read_only=True)
     total_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     paid_total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
@@ -446,7 +447,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     def get_payments(self, obj):
         # История платежей — только подтверждённые кассой (реально полученные).
         rows = self._payments_by_status(obj, ("confirmed",))
-        return PaymentSerializer(rows, many=True).data
+        return PaymentSerializer(rows, many=True, context=self.context).data
 
     def get_pending_payments(self, obj):
         # Оплаты в цепочке подтверждения (запрошена/принята/сверена) видят все
@@ -456,18 +457,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         if not user or getattr(user, "is_client", False):
             return []
         rows = self._payments_by_status(obj, Payment.IN_PROGRESS_STATUSES)
-        return PaymentSerializer(rows, many=True).data
-
-    def validate_client(self, client):
-        # Управление заказом само по себе даёт доступ только к минимальному
-        # справочнику формы; отдельное clients.view для этого не требуется.
-        # Полный клиентский API и финансовые поля остаются закрыты.
-        from apps.clients.querysets import visible_clients
-        user = self.context["request"].user
-        required_perm = "orders.edit" if self.instance else "orders.create"
-        if not visible_clients(user, required_perm).filter(pk=client.pk).exists():
-            raise serializers.ValidationError("Клиент недоступен")
-        return client
+        return PaymentSerializer(rows, many=True, context=self.context).data
 
     def validate_department(self, code):
         request = self.context.get("request")
@@ -499,25 +489,34 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                 {"detail": "Магазин принадлежит другому клиенту",
                  "code": "store_mismatch"})
         intent = attrs.get("settlement_intent")
-        if intent in Order.SETTLEMENT_INTENTS:
-            attrs["payment_method"] = "debt" if intent == "debt" else "invoice"
+        intent_changed = (
+            intent is not None
+            and (
+                self.instance is None
+                or intent != self.instance.settlement_intent
+            )
+        )
+        if intent_changed:
+            attrs["payment_method"] = {
+                "pending": "pending",
+                "debt": "debt",
+                "instant": "invoice",
+            }[intent]
         return attrs
 
     @transaction.atomic
     def create(self, validated_data):
-        # Атомарно: упавшее подтверждение (например, price_required) не должно
-        # оставлять в базе заказ-сироту без цен.
-        from .services import confirm_order, apply_item_prices
         from apps.warehouse.services import ensure_products_available
+
+        from .services import apply_item_prices, confirm_order
+
         items = validated_data.pop("items")
         template_order = validated_data.pop("template_order", None)
-        # Заказ только на товар в наличии — «нет на складе» отклоняем сразу.
         ensure_products_available(item["product"] for item in items)
         user = self.context["request"].user
         validated_data["created_by"] = user
         validated_data.setdefault("currency", validated_data["client"].currency)
-        # Для сотрудника отдела продаж отдел нельзя подменить на клиенте:
-        # сервер всегда закрепляет его назначение. Остальным оставляем выбор.
+
         employee = getattr(user, "employee", None)
         assigned = getattr(employee, "sales_department", None)
         if assigned is not None:
@@ -527,13 +526,9 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                 })
             validated_data["department"] = assigned.code
         else:
-            # Для старых API-клиентов используем основной отдел.
             validated_data.setdefault("department", Department.default_code())
         if template_order is not None:
             validated_data["repeated_from"] = template_order
-        # Оператор (orders.confirm) создаёт заказ сразу подтверждённым с ценами;
-        # заявка менеджера Отдела 2 остаётся pending до подтверждения бухгалтером.
-        # prices приходит по товару: {product_id: цена} (у позиций ещё нет id).
         prices_by_product = self.initial_data.get("prices")
         if prices_by_product:
             validated_data["status"] = "pending"
@@ -568,17 +563,22 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     def update(self, instance, validated_data):
         from .services import replace_items
         user = self.context["request"].user
-        # Клиент фиксируется при создании: у него свой прайс-лист.
         new_client = validated_data.pop("client", None)
         if new_client is not None and new_client.id != instance.client_id:
             raise serializers.ValidationError(
-                {"detail": "Клиента изменить нельзя — создайте новый заказ",
-                 "code": "client_locked"})
+                {
+                    "detail": "Клиента изменить нельзя — создайте новый заказ",
+                    "code": "client_locked"
+                }
+            )
         new_currency = validated_data.pop("currency", None)
         if new_currency is not None and new_currency != instance.currency:
             raise serializers.ValidationError(
-                {"detail": "Валюту созданного заказа изменить нельзя — создайте новый заказ",
-                 "code": "currency_locked"})
+                {
+                    "detail": "Валюту созданного заказа изменить нельзя — создайте новый заказ",
+                    "code": "currency_locked"
+                }
+            )
         new_truck = validated_data.pop("truck_number", None)
         if new_truck is not None and new_truck != instance.truck_number:
             set_truck_number(instance, new_truck, user)

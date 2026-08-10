@@ -1,5 +1,9 @@
+from urllib.parse import urlencode
+
+from django.urls import reverse
 from rest_framework import serializers
 
+from .attachments import signed_attachment_token
 from .models import Task, TaskAttachment, TaskNotification
 
 STATUS_LABELS = {Task.PENDING: "В ожидании", Task.DONE: "Выполнено"}
@@ -8,12 +12,7 @@ STATUS_LABELS = {Task.PENDING: "В ожидании", Task.DONE: "Выполне
 def _person(user) -> str | None:
     if user is None:
         return None
-    employee = getattr(user, "employee", None)
-    if employee is not None:
-        full = f"{employee.first_name} {employee.last_name}".strip()
-        if full:
-            return full
-    return user.username
+    return user.get_full_name() or user.username
 
 
 class TaskAttachmentSerializer(serializers.ModelSerializer):
@@ -27,7 +26,8 @@ class TaskAttachmentSerializer(serializers.ModelSerializer):
         if not obj.file:
             return None
         request = self.context.get("request")
-        url = obj.file.url
+        url = reverse("task-attachment-download", kwargs={"pk": obj.pk})
+        url = f"{url}?{urlencode({'token': signed_attachment_token(obj.pk)})}"
         return request.build_absolute_uri(url) if request else url
 
 

@@ -1,169 +1,73 @@
-from decimal import Decimal, InvalidOperation
-from django.utils import timezone
+from decimal import Decimal
+
 from django.db import transaction
-from django.db.models import Count
-from django.db.models.deletion import ProtectedError
 from django.db.models import Prefetch
 from django.http import HttpResponse
-from rest_framework import viewsets
+from django.utils import timezone
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, ValidationError
-from apps.common.pagination import OptInPageNumberPagination
-from apps.common.permissions import HasPerm, IsStaff, PermViewSetMixin
-from apps.common.money import money_string
-from apps.common.query_params import parse_iso_date, parse_store_id, validate_date_range
-from apps.orders.models import Order
-from apps.orders.debt import (
-    as_money_strings, debt_orders, order_remaining, primary_currency,
-    sum_by_currency,
-)
-from apps.orders.querysets import with_order_api_relations
+from rest_framework.response import Response
+
 from apps.catalog.models import ClientPrice, Product
 from apps.catalog.serializers import ClientPriceUpdateSerializer
+from apps.common.money import (
+    as_money_strings,
+    money_string,
+    primary_currency,
+    sum_by_currency,
+)
+from apps.common.pagination import OptInPageNumberPagination
+from apps.common.permissions import PermViewSetMixin
+from apps.common.query_params import (
+    parse_iso_date,
+    parse_money_param,
+    parse_store_id,
+    validate_date_range,
+)
+from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.services import log_event
-from .models import Client, Department, Store
-from .serializers import ClientSerializer, DepartmentSerializer, StoreSerializer
-from .services import detect_overdue, is_payment_window_open, client_history
-from .statement_pdf import (
-    build_all_clients_statement_pdf, build_client_statement_pdf,
-)
-from .statements import (
-    ALL_CLIENT_SECTIONS, CLIENT_SECTIONS, build_all_clients_statement,
+from apps.orders.debt import debt_orders, order_remaining
+from apps.orders.models import Order
+from apps.orders.querysets import with_order_api_relations
+
+from .models import Client, Store
+from .reports.statements import (
+    ALL_CLIENT_SECTIONS,
+    CLIENT_SECTIONS,
+    build_all_clients_statement,
+    build_all_clients_statement_pdf,
     build_client_statement,
+    build_client_statement_pdf,
 )
-
-def _money_param(raw, name):
-    if raw in (None, ""):
-        return None
-    try:
-        value = Decimal(raw)
-    except (InvalidOperation, TypeError):
-        raise ValidationError(
-            {"detail": f"Некорректное значение: {name}", "code": "bad_amount"})
-    if value < 0:
-        raise ValidationError(
-            {"detail": f"{name} не может быть меньше нуля", "code": "bad_amount"})
-    return value
-
-
-def _statement_departments(params):
-    raw = params.get("departments")
-    if raw is None:
-        raw = params.get("department")
-    if raw is None:
-        return None
-    codes = tuple(dict.fromkeys(
-        code.strip() for code in raw.split(",") if code.strip()
-    ))
-    if not codes:
-        raise ValidationError({
-            "detail": "Выберите хотя бы один отдел",
-            "code": "departments_required",
-        })
-    known = set(Department.objects.filter(code__in=codes).values_list("code", flat=True))
-    unknown = [code for code in codes if code not in known]
-    if unknown:
-        raise ValidationError({
-            "detail": "Неизвестный отдел: " + ", ".join(unknown),
-            "code": "bad_department",
-        })
-    return codes
+from .reports.statements.utils import (
+    STATEMENT_CONTENT_TYPES,
+    statement_departments,
+    statement_format,
+    statement_sections,
+)
+from .serializers import (
+    ClientCreateUpdateSerializer,
+    ClientPasswordSerializer,
+    ClientReadSerializer,
+    StoreSerializer,
+)
+from .services import client_history, detect_overdue, is_payment_window_open
 
 
-STATEMENT_CONTENT_TYPES = {
-    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "pdf": "application/pdf",
-}
-
-
-def _statement_format(params) -> str:
-    """Формат выгрузки: ``xlsx`` по умолчанию, ``pdf`` — на печать клиенту.
-
-    Значение по умолчанию сохраняет прежние ссылки: кто звал выписку без
-    параметра, продолжает получать Excel.
-    """
-    value = (params.get("export") or "xlsx").strip().lower()
-    if value not in STATEMENT_CONTENT_TYPES:
-        raise ValidationError({
-            "detail": "Формат выписки: xlsx или pdf",
-            "code": "bad_statement_format",
-        })
-    return value
-
-
-def _statement_sections(params, available):
-    """Разделы (листы) выписки из query-параметра ``sections``.
-
-    ``None`` — параметр не передан, выгружаются все листы: старые ссылки и
-    интеграции продолжают получать полную выписку. Пустой или неизвестный
-    выбор отбивается здесь, потому что книга без листов не открывается
-    в Excel, а молча подставленный полный набор скрыл бы ошибку клиента.
-    """
-    raw = params.get("sections")
-    if raw is None:
-        return None
-    keys = tuple(dict.fromkeys(
-        key.strip() for key in raw.split(",") if key.strip()
-    ))
-    if not keys:
-        raise ValidationError({
-            "detail": "Выберите хотя бы один раздел выписки",
-            "code": "sections_required",
-        })
-    unknown = [key for key in keys if key not in available]
-    if unknown:
-        raise ValidationError({
-            "detail": "Неизвестный раздел: " + ", ".join(unknown),
-            "code": "bad_section",
-        })
-    return keys
-
-
-class DepartmentViewSet(viewsets.ModelViewSet):
-    """Динамические отделы заказов. Управление встроено в экран заказов."""
-    queryset = Department.objects.all()
-    serializer_class = DepartmentSerializer
-
-    def get_permissions(self):
-        if self.action in ("list", "retrieve"):
-            return [IsStaff()]
-        return [HasPerm("rbac.manage")]
-
-    def get_queryset(self):
-        qs = super().get_queryset()
-        if self.action == "list" and self.request.query_params.get("all") != "1":
-            qs = qs.filter(is_active=True)
-        return qs
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context["department_order_counts"] = dict(
-            Order.all_objects.values("department").annotate(total=Count("id"))
-            .values_list("department", "total")
-        )
-        return context
-
-    def perform_destroy(self, instance):
-        if Order.all_objects.filter(department=instance.code).exists():
-            raise ValidationError({
-                "detail": "Отдел используется в заказах. Отключите его вместо удаления.",
-                "code": "department_in_use",
-            })
-        if instance.is_default:
-            raise ValidationError({
-                "detail": "Сначала назначьте другой основной отдел",
-                "code": "default_department",
-            })
-        try:
-            instance.delete()
-        except ProtectedError as exc:
-            raise ValidationError({"detail": "Отдел используется", "code": "department_in_use"}) from exc
-
-
-class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
-    queryset = Client.objects.all()
-    serializer_class = ClientSerializer
+class ClientViewSet(
+    SerializerViewSetMixin,
+    PermViewSetMixin,
+    viewsets.ModelViewSet,
+):
+    queryset = Client.objects.select_related("user")
+    serializer_class = ClientReadSerializer
+    serializer_action_classes = {
+        "create": ClientCreateUpdateSerializer,
+        "update": ClientCreateUpdateSerializer,
+        "partial_update": ClientCreateUpdateSerializer,
+        "set_password": ClientPasswordSerializer,
+    }
     pagination_class = OptInPageNumberPagination
     required_perms = {
         "list": "clients.view",
@@ -172,7 +76,6 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "update": "clients.edit",
         "partial_update": "clients.edit",
         "destroy": "clients.delete",
-        # Финансовая детализация и долги — под reports.view.
         "debts": "reports.view",
         "debt_detail": "reports.view",
         "history": "reports.view",
@@ -180,74 +83,95 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "all_statement": "reports.export",
         "prices": "clients.set_price",
         "picker": "clients.view",
-        # Жёсткая зачистка дополнительно требует is_superuser внутри экшена.
+        "set_password": "clients.manage_access",
         "purge": "clients.delete",
     }
 
     def get_queryset(self):
-        # Явный порядок обязателен для стабильных страниц пагинации.
-        base = Client.objects.order_by("-id")
+        base = Client.objects.select_related("user").order_by("-id")
         can_view_financials = self.request.user.has_perm_code("reports.view")
         if self.action not in {"list", "retrieve", "debts", "debt_detail"}:
             return base
         if not can_view_financials:
-            # Для обычного списка/карточки клиентские заказы не нужны.
-            # Serializer также исключает финансовые поля, поэтому не делаем
-            # тяжёлую предзагрузку items/payments без соответствующего права.
             return base
         if self.action == "debt_detail":
-            # Здесь заказы сериализуются целиком — нужен полный план загрузки.
-            return base.prefetch_related(Prefetch(
-                "orders", queryset=with_order_api_relations(Order.objects.all())
-            ))
-        # debt_total и агрегаты долгов обходят заказы только по позициям и
-        # оплатам — без предзагрузки список клиентов даёт N+1 на каждую строку,
-        # а полный план (статусы, прайсы, отгрузки) здесь лишний.
-        #
-        # Набор сужен до отгруженных «в долг»: и debt_by_currency (Order.is_debt),
-        # и lifetime в debt_detail смотрят только на них, поэтому грузить всю
-        # историю заказов клиента ради сегодняшнего долга незачем. Погашенные
-        # остаются — lifetime_paid считает именно по ним.
-        return base.prefetch_related(Prefetch(
-            "orders",
-            queryset=Order.objects.filter(
-                status="shipped", settlement_intent="debt",
-            ).prefetch_related("items", "payments"),
-        ))
+            return base.prefetch_related(
+                Prefetch(
+                    "orders", queryset=with_order_api_relations(Order.objects.all())
+                )
+            )
+        return base.prefetch_related(
+            Prefetch(
+                "orders",
+                queryset=Order.objects.filter(
+                    status="shipped",
+                    settlement_intent="debt",
+                ).prefetch_related("items", "payments"),
+            )
+        )
 
     @action(detail=True, methods=["post"], url_path="purge")
     def purge(self, request, pk=None):
-        """Полное удаление клиента с историей — инструмент суперадмина.
-
-        Нужен, чтобы вычищать тестовые учётки с заказами и оплатами: обычное
-        удаление защищено PROTECT-связью заказов. Событие пишется в журнал
-        до удаления (EventLog неизменяем и переживает каскад через SET_NULL).
-        """
         if not request.user.is_superuser:
             raise PermissionDenied("Удаление с историей доступно только суперадмину.")
         client = self.get_object()
+        portal_user = client.user
         from apps.cameras.models import AiCountingSession
         from apps.orders.models import Order as OrderModel
 
         orders = OrderModel.all_objects.filter(client=client)
         orders_count = orders.count()
-        log_event(
-            "client",
-            f"Клиент «{client.name}» удалён с историей ({orders_count} заказов)",
-            user=request.user,
-            payload={
-                "client_id": client.pk,
-                "client_name": client.name,
-                "orders": orders_count,
-                "action": "client_purged",
-            },
-        )
         with transaction.atomic():
-            # AI-сессии защищают заказ PROTECT-ом — тестовые артефакты удаляем явно.
+            log_event(
+                "client",
+                f"Клиент «{client.name}» удалён с историей "
+                f"({orders_count} заказов)",
+                user=request.user,
+                payload={
+                    "client_id": client.pk,
+                    "client_name": client.name,
+                    "orders": orders_count,
+                    "action": "client_purged",
+                },
+            )
             AiCountingSession.objects.filter(order__in=orders).delete()
             orders.delete()
             client.delete()
+            self._deactivate_portal_user(portal_user)
         return Response(status=204)
+
+    @staticmethod
+    def _deactivate_portal_user(user):
+        if user.is_active:
+            user.is_active = False
+            user.save(update_fields=["is_active"])
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        portal_user = instance.user
+        instance.delete()
+        self._deactivate_portal_user(portal_user)
+
+    @action(detail=True, methods=["post"], url_path="password")
+    @transaction.atomic
+    def set_password(self, request, pk=None):
+        client = self.get_object()
+        context = self.get_serializer_context()
+        context["client"] = client
+        serializer = self.get_serializer(data=request.data, context=context)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        log_event(
+            "client_security",
+            f"Выдан временный пароль клиенту {client.user.username}",
+            user=request.user,
+            payload={
+                "client_id": client.pk,
+                "username": client.user.username,
+                "password_changed": True,
+            },
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["get"], url_path="history")
     def history(self, request, pk=None):
@@ -255,15 +179,20 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="picker")
     def picker(self, request):
-        """Minimal reference list for forms; excludes PII and finance."""
         return Response([
             {"id": client.id, "name": client.name}
-            for client in Client.objects.only(
+            for client in Client.objects.select_related("user").only(
                 "id",
-                "first_name",
-                "last_name",
                 "company_name",
-            ).order_by("company_name", "last_name", "first_name")
+                "user_id",
+                "user__first_name",
+                "user__last_name",
+                "user__username",
+            ).order_by(
+                "company_name",
+                "user__last_name",
+                "user__first_name",
+            )
         ])
 
     @action(detail=True, methods=["get"], url_path="statement")
@@ -271,9 +200,9 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         date_from = parse_iso_date(request.query_params.get("date_from"))
         date_to = parse_iso_date(request.query_params.get("date_to"))
         validate_date_range(date_from, date_to)
-        departments = _statement_departments(request.query_params)
-        sections = _statement_sections(request.query_params, CLIENT_SECTIONS)
-        export = _statement_format(request.query_params)
+        departments = statement_departments(request.query_params)
+        sections = statement_sections(request.query_params, CLIENT_SECTIONS)
+        export = statement_format(request.query_params)
         client = self.get_object()
         builder = (
             build_client_statement_pdf if export == "pdf" else build_client_statement
@@ -304,9 +233,9 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         date_from = parse_iso_date(request.query_params.get("date_from"))
         date_to = parse_iso_date(request.query_params.get("date_to"))
         validate_date_range(date_from, date_to)
-        departments = _statement_departments(request.query_params)
-        sections = _statement_sections(request.query_params, ALL_CLIENT_SECTIONS)
-        export = _statement_format(request.query_params)
+        departments = statement_departments(request.query_params)
+        sections = statement_sections(request.query_params, ALL_CLIENT_SECTIONS)
+        export = statement_format(request.query_params)
         builder = (
             build_all_clients_statement_pdf if export == "pdf"
             else build_all_clients_statement
@@ -411,8 +340,14 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         date_from = parse_iso_date(params.get("date_from"))
         date_to = parse_iso_date(params.get("date_to"))
         validate_date_range(date_from, date_to)
-        debt_min = _money_param(params.get("remaining_min"), "Минимальный остаток")
-        debt_max = _money_param(params.get("remaining_max"), "Максимальный остаток")
+        debt_min = parse_money_param(
+            params.get("remaining_min"),
+            "Минимальный остаток",
+        )
+        debt_max = parse_money_param(
+            params.get("remaining_max"),
+            "Максимальный остаток",
+        )
         remaining_currency = params.get("remaining_currency")
         if remaining_currency and remaining_currency not in ("KZT", "USD"):
             raise ValidationError({
@@ -541,8 +476,7 @@ class ClientViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
 
 class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
-    # Явный порядок обязателен для стабильных страниц пагинации.
-    queryset = Store.objects.select_related("client").order_by("id")
+    queryset = Store.objects.select_related("client__user").order_by("id")
     serializer_class = StoreSerializer
     pagination_class = OptInPageNumberPagination
 

@@ -1,8 +1,8 @@
 "use client";
-import Image from "next/image";
 import { useMemo, useState } from "react";
-import { CheckCircle2, Clock, ImageIcon, Paperclip, Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { CheckCircle2, Clock, ImageIcon, Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
+import { AttachmentChip } from "@/components/task-attachment";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,9 +16,26 @@ import { api, apiError } from "@/lib/api";
 import { showSuccess } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
 import { can } from "@/lib/can";
-import { useAuth } from "@/store/auth";
-import { cn, formatDateTime } from "@/lib/utils";
 import type { Task, TaskAssignee } from "@/lib/types";
+import { cn, formatDateTime } from "@/lib/utils";
+import { useAuth } from "@/store/auth";
+
+const MAX_TASK_ATTACHMENTS = 10;
+const MAX_TASK_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MAX_TASK_ATTACHMENTS_TOTAL_BYTES = 75 * 1024 * 1024;
+
+function attachmentError(files: File[]): string | null {
+  if (files.length > MAX_TASK_ATTACHMENTS) {
+    return `Можно приложить не больше ${MAX_TASK_ATTACHMENTS} файлов.`;
+  }
+  if (files.some((file) => file.size > MAX_TASK_ATTACHMENT_BYTES)) {
+    return "Размер одного файла не должен превышать 25 МБ.";
+  }
+  if (files.reduce((total, file) => total + file.size, 0) > MAX_TASK_ATTACHMENTS_TOTAL_BYTES) {
+    return "Общий размер вложений не должен превышать 75 МБ.";
+  }
+  return null;
+}
 
 type Filter = "pending" | "done" | "all";
 
@@ -27,49 +44,6 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: "done", label: "Выполнено" },
   { key: "all", label: "Все" },
 ];
-
-function AttachmentChip({ kind, url, name }: { kind: string; url: string | null; name: string }) {
-  if (!url) {
-    return (
-      <span
-        className="flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs text-[var(--muted-foreground)]"
-        title="Файл недоступен"
-      >
-        <Paperclip className="size-3.5" />
-        {name || "файл"}
-        <span aria-hidden="true">·</span>
-        <span>недоступен</span>
-      </span>
-    );
-  }
-  if (kind === "voice") {
-    return <audio src={url} controls className="h-8 max-w-[220px]" />;
-  }
-  if (kind === "photo") {
-    return (
-      <a href={url} target="_blank" rel="noreferrer" className="group relative">
-        <Image
-          src={url}
-          alt={name}
-          width={64}
-          height={64}
-          unoptimized
-          className="size-16 rounded-lg border object-cover transition group-hover:opacity-80"
-        />
-      </a>
-    );
-  }
-  return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noreferrer"
-      className="flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs hover:bg-[var(--muted)]"
-    >
-      <Paperclip className="size-3.5" /> {name || "файл"}
-    </a>
-  );
-}
 
 function TaskCard({
   task,
@@ -127,10 +101,24 @@ function TaskCard({
           {(photos.length > 0 || rest.length > 0) && (
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {photos.map((a) => (
-                <AttachmentChip key={a.id} kind={a.kind} url={a.url} name={a.original_name} />
+                <AttachmentChip
+                  key={a.id}
+                  taskId={task.id}
+                  attachmentId={a.id}
+                  kind={a.kind}
+                  url={a.url}
+                  name={a.original_name}
+                />
               ))}
               {rest.map((a) => (
-                <AttachmentChip key={a.id} kind={a.kind} url={a.url} name={a.original_name} />
+                <AttachmentChip
+                  key={a.id}
+                  taskId={task.id}
+                  attachmentId={a.id}
+                  kind={a.kind}
+                  url={a.url}
+                  name={a.original_name}
+                />
               ))}
             </div>
           )}
@@ -265,6 +253,12 @@ export default function TasksPage() {
   }
 
   async function submit() {
+    const attachmentFiles = [...photos, ...(voice ? [voice] : [])];
+    const uploadError = attachmentError(attachmentFiles);
+    if (!editing && uploadError) {
+      setFormError(uploadError);
+      return;
+    }
     setSaving(true);
     setFormError("");
     try {
@@ -472,6 +466,9 @@ export default function TasksPage() {
                     onChange={(e) => setPhotos(Array.from(e.target.files ?? []))}
                     className="text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--card)] file:px-3 file:py-1.5 file:text-sm file:font-medium"
                   />
+                  <p className="text-xs text-[var(--muted-foreground)]">
+                    До 10 файлов, каждый до 25 МБ, суммарно до 75 МБ.
+                  </p>
                   {photos.length > 0 && (
                     <div className="flex flex-wrap gap-1.5">
                       {photos.map((file) => (

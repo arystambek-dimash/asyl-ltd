@@ -18,11 +18,14 @@ from django.db.models import Count, DecimalField, F, Q, Sum, Value
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
 
-from apps.common.money import money_string as _d
-from .debt import (
-    DEFAULT_CURRENCY, as_money_strings, debt_orders, order_remaining,
-    primary_currency, sum_by_currency,
+from apps.common.money import (
+    DEFAULT_CURRENCY,
+    as_money_strings,
+    money_string as _d,
+    primary_currency,
+    sum_by_currency,
 )
+from .debt import debt_orders, order_remaining
 from .models import OrderItem, Payment
 
 CASH_METHODS = ("cash",)
@@ -101,8 +104,8 @@ def _clients_breakdown(orders_qs, date_from, date_to):
     qs = _day_bounds(qs, date_from, date_to)
     per_order = qs.values(
         "order_id", "day", "order__currency", "order__settlement_intent",
-        "order__client_id", "order__client__first_name",
-        "order__client__last_name",
+        "order__client_id", "order__client__user__first_name",
+        "order__client__user__last_name",
     ).annotate(
         total=Coalesce(Sum(line, output_field=_MONEY), _ZERO,
                        output_field=_MONEY),
@@ -112,8 +115,8 @@ def _clients_breakdown(orders_qs, date_from, date_to):
     clients: dict = {}
     for row in per_order:
         currency = row["order__currency"] or DEFAULT_CURRENCY
-        name = (f'{row["order__client__first_name"]} '
-                f'{row["order__client__last_name"]}').strip()
+        name = (f'{row["order__client__user__first_name"]} '
+                f'{row["order__client__user__last_name"]}').strip()
         entry = clients.setdefault(row["order__client_id"], {
             "id": row["order__client_id"], "name": name,
             "orders": 0, "bags": 0,

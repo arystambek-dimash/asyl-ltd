@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
+from apps.eventlog.services import log_event
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
-
-from apps.eventlog.services import log_event
 
 from . import ai
 from .models import (
@@ -15,10 +14,6 @@ from .models import (
     AlwaysOnDailyAnalytics,
     MonoblockCameraSettings,
 )
-
-
-def _observed_day(observed_at: datetime | None = None) -> date:
-    return timezone.localdate(observed_at or timezone.now())
 
 
 def _processor_total(processor: dict) -> int | None:
@@ -53,10 +48,6 @@ def _processor_colors(processor: dict) -> dict[str, int]:
     return result
 
 
-# Перезапустившийся воркер начинает счёт с нуля, поэтому за перезапуск
-# принимаем только снимок у самого начала. Любое другое падение счётчика —
-# устаревший или чужой снимок, и целиком записывать его в дневной итог нельзя:
-# счётчик 5000 → 4000 давал бы +4000 мешков на пустом месте.
 _RESTART_TOTAL_MAX = 5
 
 
@@ -90,13 +81,8 @@ def _record_processor(processor: dict, day: date) -> None:
         return
     colors = _processor_colors(processor)
 
-    # Курсор — база отсчёта именно для 24/7. Снимок сессионной погрузки или
-    # остановленного воркера про неё ничего не говорит: его счётчик идёт с нуля
-    # и своей жизнью. Раньше такой снимок перезаписывал курсор, и следующая
-    # разница по возобновившемуся 24/7 уходила в дневной итог второй раз
-    # (100 → сессия 40 → 24/7 130 давало 190 вместо 130).
     authoritative = (
-        processor.get("mode") == "always_on" and bool(processor.get("running"))
+            processor.get("mode") == "always_on" and bool(processor.get("running"))
     )
     if not authoritative:
         return
@@ -116,10 +102,6 @@ def _record_processor(processor: dict, day: date) -> None:
         delta = _counter_delta(total, cursor.last_total)
         color_delta = _color_delta(colors, cursor.last_per_color)
 
-    # Устаревший снимок (кэш страницы аналитики) приходит, когда монитор уже
-    # учёл более свежий. Отматывать курсор назад нельзя: следующая свежая
-    # разница посчиталась бы дважды. Настоящий перезапуск воркера отличаем по
-    # счётчику, ушедшему в самое начало, — там база отсчёта обязана обнулиться.
     rewind = not created and total < cursor.last_total
     if rewind and total > _RESTART_TOTAL_MAX:
         return
@@ -143,7 +125,7 @@ def _record_processor(processor: dict, day: date) -> None:
 
 
 def record_snapshot(live: dict, observed_at: datetime | None = None) -> None:
-    day = _observed_day(observed_at)
+    day = timezone.localdate(observed_at or timezone.now())
     processors = live.get("processors") if isinstance(live, dict) else None
     if not isinstance(processors, list):
         return

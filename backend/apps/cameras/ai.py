@@ -1,17 +1,6 @@
-"""Клиент AI-подсчёта мешков (ai_service.py на ПК с камерами).
-
-Модель включается per-камера по HTTP: POST /processors/cam<N> поднимает
-обработчик и публикует в MediaMTX аннотированный поток cam<N>ai, DELETE
-выключает его. Счётчик живёт в памяти обработчика — финальное число нужно
-забирать ДО выключения.
-
-Планшеты поста не в Tailscale и до ai_service не достают, поэтому все
-вызовы идут через бэкенд, а ключ API не покидает сервер.
-"""
 import http.client
 import json
 import math
-import os
 import re
 import urllib.error
 import urllib.parse
@@ -19,46 +8,28 @@ import urllib.request
 from collections.abc import Mapping, Sequence
 from numbers import Real
 
+from django.conf import settings
 from django.core.cache import cache
 
-from .services import CAMERA_HOST, GO2RTC_API
-
-AI_URL = (
-    os.environ.get("AI_SERVICE_URL")
-    or os.environ.get("CAMERA_AI_URL")
-    or f"http://{CAMERA_HOST}:8890"
-).rstrip("/")
-AI_KEY = os.environ.get("AI_SERVICE_API_KEY") or os.environ.get("CAMERA_AI_KEY", "")
-
-
-def _timeout() -> float:
-    """Bound the server-side request timeout even when env is malformed."""
-    try:
-        value = float(os.environ.get("AI_SERVICE_TIMEOUT", "10"))
-    except (TypeError, ValueError):
-        return 10
-    return value if math.isfinite(value) and value > 0 else 10
-
-
-TIMEOUT = _timeout()  # запуск модели асинхронный, долгих ответов у API нет
+AI_URL = settings.AI_SERVICE_URL
+AI_KEY = settings.AI_SERVICE_API_KEY
+TIMEOUT = settings.AI_SERVICE_TIMEOUT
+GO2RTC_API = settings.GO2RTC_API_URL
 MAX_JSON_RESPONSE_BYTES = 512 * 1024
 MAX_ERROR_JSON_RESPONSE_BYTES = 64 * 1024
-# Снимок 24/7 для опрашивающих экранов. Короткий TTL: цифры на экране остаются
-# «живыми», но частый опрос перестаёт быть сетевым вызовом на каждый запрос.
+
+WAGON_PLATE_TIMEOUT = 15
+WAGON_PLATE_MAX_BYTES = 12 * 1024 * 1024
+
 ALWAYS_ON_CACHE_KEY = "cameras:always-on-status:v1"
 ALWAYS_ON_TTL = 5
-# Рамки живут отдельно от общего снимка: мешок проезжает кадр за секунды, и
-# пятисекундный снимок рисовал рамку там, где мешка уже нет. Здесь TTL короче
-# ровно настолько, чтобы рамка держалась мешка, а сам вызов к ПК цеха остался
-# кэшированным — иначе каждый опрос снова платил бы полный TIMEOUT при
-# выключенном цехе.
+
 DETECTIONS_CACHE_KEY = "cameras:always-on-detections:v1"
 DETECTIONS_TTL = 1
+
 WAGON_NUMBER_CACHE_KEY = "cameras:wagon-number-status:v1"
 WAGON_NUMBER_TTL = 5
 
-# Контракт AI-сервиса допускает только NVR ID cam<N>. Строгая локальная
-# проверка не позволяет передать произвольный path в URL camera-PC.
 CAM_RE = re.compile(r"^cam[1-9][0-9]*$")
 LINE_DIRECTIONS = frozenset({"any", "up", "down", "positive", "negative"})
 
@@ -128,7 +99,6 @@ def _request(method: str, path: str, body: dict | None = None) -> tuple[int, dic
         finally:
             e.close()
     except (http.client.HTTPException, TimeoutError, OSError) as e:
-        # URLError — подкласс OSError.
         raise AiUnavailable(str(e)) from e
     try:
         status = response.status
@@ -209,8 +179,6 @@ def validate_counting_line(payload) -> dict:
             400,
             "direction должен быть any, up, down, positive или negative",
         )
-    # Send only the documented fields. The API key is injected exclusively as
-    # an HTTP header in _request and can never be forwarded from user input.
     return {"line": line, "direction": direction}
 
 
@@ -278,19 +246,8 @@ def always_on_status() -> dict:
 
 
 def always_on_status_cached() -> dict:
-    """Read path for polling views: a snapshot at most ``ALWAYS_ON_TTL`` old.
-
-    The monoblock page re-reads 24/7 state on a timer. Calling the camera PC on
-    every GET means each request pays a network round trip, and a full
-    ``TIMEOUT`` wait whenever the shop floor is offline — which is exactly what
-    left the page stuck on "Загрузка…". Writes stay uncached and invalidate
-    this snapshot, so an administrator still sees their change immediately.
-    """
     cached = cache.get(ALWAYS_ON_CACHE_KEY)
     if isinstance(cached, Exception):
-        # Отрицательный результат тоже кэшируется: иначе каждый опрос при
-        # выключенном ПК цеха снова платит полный TIMEOUT, и подряд идущие
-        # запросы копят это ожидание.
         raise cached
     if cached is not None:
         return cached
@@ -370,14 +327,10 @@ def configure_always_on(cameras: list[str], source: str = "sub") -> dict:
     except AiError as exc:
         if exc.status != 422:
             raise
-        # Совместимость с предыдущим пакетом камеры на время поэтапного
-        # обновления: его строгая Pydantic-схема принимала поле cameras.
         payload = _call(
             "PUT", "/always-on", {"cameras": normalized, "source": source},
         )
     status = _normalize_always_on(payload)
-    # The administrator must see their own change immediately, not a snapshot
-    # taken before it. Store the authoritative response as the new snapshot.
     cache.set(ALWAYS_ON_CACHE_KEY, status, ALWAYS_ON_TTL)
     return status
 
@@ -431,15 +384,6 @@ def configure_wagon_number(camera: str | None, source: str = "main") -> dict:
 def delete_recordings(stream: str, starts: list[str]) -> dict:
     """Delete exact recording segments on the camera PC through its secured API."""
     return _call("DELETE", "/recordings", {"stream": stream, "starts": starts}) or {}
-
-
-# ── Детектор таблички вагона ───────────────────────────────────────────────
-# Датчика прибытия поезда нет: его роль играет камера. Модель находит табличку
-# вагона, но цифры не читает — распознавание номера появится отдельной OCR.
-# Backend'у здесь достаточно факта «табличка в кадре».
-
-WAGON_PLATE_TIMEOUT = 15
-WAGON_PLATE_MAX_BYTES = 12 * 1024 * 1024
 
 
 def camera_frame_jpeg(stream: str) -> bytes | None:

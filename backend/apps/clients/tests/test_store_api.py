@@ -12,7 +12,7 @@ def _api(user):
 
 
 def test_create_store_via_api(manager):
-    client = Client.objects.create(first_name="A", last_name="B", phone="x")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     r = _api(manager).post("/api/stores/", {
         "client": client.id, "name": "Магазин №1",
         "payment_schedule_type": "monthly", "payment_days": [5, 20],
@@ -24,7 +24,7 @@ def test_create_store_via_api(manager):
 
 
 def test_client_picker_exposes_only_form_reference_fields(manager):
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="A",
         last_name="B",
         phone="secret",
@@ -39,7 +39,7 @@ def test_client_picker_exposes_only_form_reference_fields(manager):
 
 
 def test_can_create_store_for_any_client(manager):
-    foreign = Client.objects.create(
+    foreign = Client.objects.create_with_user(
         first_name="Field", last_name="Client", phone="x")
 
     response = _api(manager).post("/api/stores/", {

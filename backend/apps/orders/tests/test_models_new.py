@@ -7,7 +7,7 @@ from apps.orders.models import Order, OrderItem, Payment
 
 @pytest.fixture
 def order(db):
-    client = Client.objects.create(first_name="A", last_name="B", phone="1")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     p = Product.objects.create(name="Flour", color="Red", weight_kg=Decimal("50"), price=Decimal("100"))
     o = Order.objects.create(client=client, status="confirmed")
     OrderItem.objects.create(order=o, product=p, quantity=2)

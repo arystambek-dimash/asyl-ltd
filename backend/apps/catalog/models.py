@@ -1,4 +1,5 @@
 from decimal import Decimal
+
 from django.conf import settings
 from django.db import models
 
@@ -16,14 +17,9 @@ class Product(models.Model):
     name = models.CharField(max_length=100)
     color = models.CharField(max_length=10, choices=COLORS)
     weight_kg = models.DecimalField(max_digits=6, decimal_places=2, choices=WEIGHTS)
-    # Цена не является свойством товара: она закрепляется отдельно для каждого
-    # клиента в ClientPrice и фиксируется в OrderItem.unit_price при заказе.
-    # Поле временно оставлено nullable для совместимости со старыми миграциями.
     price = models.DecimalField(
         max_digits=12, decimal_places=2, null=True, blank=True)
     is_active = models.BooleanField(default=True)
-    # Если стоит — при въезде машины с этим товаром пост спрашивает вес машины;
-    # иначе вес не спрашивается (используется расчётный по мешкам).
     ask_truck_weight = models.BooleanField(default=False)
 
     class Meta:
@@ -39,7 +35,6 @@ class Product(models.Model):
 
 
 class ClientPrice(models.Model):
-    """Договорная цена товара для конкретного клиента (прайс-лист клиента)."""
     CURRENCIES = (("KZT", "KZT (тенге)"), ("USD", "USD (доллар)"))
 
     client = models.ForeignKey(

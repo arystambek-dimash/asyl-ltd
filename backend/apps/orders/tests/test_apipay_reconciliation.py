@@ -30,7 +30,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _invoice(invoice_id: int, status: str = "pending") -> ApiPayInvoice:
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name=f"Клиент {invoice_id}",
         phone=f"8700{invoice_id:07d}"[-11:],
     )

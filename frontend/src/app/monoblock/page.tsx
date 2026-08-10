@@ -1749,12 +1749,27 @@ function SessionCard({
   const total = ai.status?.total ?? session.last_status?.total ?? 0;
   const canStop = ai.status?.can_stop ?? session.can_stop;
   const stream = ai.status?.stream ?? (live ? `${session.camera}ai` : camera?.src);
+  const needsRecovery =
+    session.status === "starting" ||
+    ai.status?.code === "ai_reconciliation_required" ||
+    ai.status?.code === "ai_processor_stopped";
+
+  async function retryStart() {
+    try {
+      await ai.start();
+    } catch {
+      // useAiCounter уже показывает понятную ошибку внутри карточки.
+    } finally {
+      onStopped();
+    }
+  }
 
   async function stop() {
     try {
-      // Моноблок закрывает бизнес-операцию целиком: backend сначала сохраняет
-      // финальный счёт модели, затем переводит заказ в `shipped`.
-      await ai.stop(true);
+      // STARTING означает, что сетевой ответ на запуск был неоднозначным, а
+      // заказ ещё не обязан быть в loading. Такую попытку можно отменить, но
+      // нельзя выдавать за завершённую отгрузку.
+      await ai.stop(session.status === "active");
     } catch {
       // ошибка уже показана через ai.error — карточку всё равно обновляем
     } finally {
@@ -1813,14 +1828,23 @@ function SessionCard({
 
         <div className="mt-4">
           {canStop ? (
-            <Button
-              variant="outline"
-              className="h-10 w-full rounded-xl border-red-200 text-[var(--destructive)] hover:bg-red-50 hover:text-red-700"
-              disabled={ai.busy}
-              onClick={() => void stop()}
-            >
-              <Square className="size-3.5 fill-current" /> Остановить и завершить
-            </Button>
+            <div className={cn("grid gap-2", needsRecovery && "sm:grid-cols-2")}>
+              {needsRecovery && (
+                <Button className="h-10 rounded-xl" disabled={ai.busy} onClick={() => void retryStart()}>
+                  <RefreshCw className={cn("size-3.5", ai.busy && "animate-spin")} />
+                  Повторить запуск
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                className="h-10 rounded-xl border-red-200 text-[var(--destructive)] hover:bg-red-50 hover:text-red-700"
+                disabled={ai.busy}
+                onClick={() => void stop()}
+              >
+                <Square className="size-3.5 fill-current" />
+                {session.status === "starting" ? "Отменить запуск" : "Остановить и завершить"}
+              </Button>
+            </div>
           ) : (
             <div className="flex items-center justify-center gap-2 rounded-xl bg-slate-50 px-3 py-2.5 text-[12px] text-slate-500">
               <LockKeyhole className="size-3.5" /> Остановить может {session.started_by_name} или администратор
@@ -1957,7 +1981,7 @@ function MonoblockPageInner() {
           {(error || auxiliaryError) && (
             <ErrorAlert message={error || auxiliaryError} onRetry={() => void reloadAll()} />
           )}
-          {(isSuper || can(me, "rbac.manage")) && (
+          {(isSuper || can(me, "sys_permissions.manage")) && (
             <div className="flex flex-wrap items-center gap-3">
               {isSuper && (
                 <div
@@ -2013,7 +2037,7 @@ function MonoblockPageInner() {
                     settings={alwaysOnSettings}
                     onSaved={setAlwaysOnSettings}
                   />
-                ) : can(me, "rbac.manage") ? (
+                ) : can(me, "sys_permissions.manage") ? (
                   <>
                     {isSuper && (
                       <MonoblockDevicesButton

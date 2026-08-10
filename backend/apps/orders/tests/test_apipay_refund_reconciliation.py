@@ -29,7 +29,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _invoice(*, channel="phone", amount="100.00", invoice_id=800):
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Возврат",
         phone="87762838451",
     )

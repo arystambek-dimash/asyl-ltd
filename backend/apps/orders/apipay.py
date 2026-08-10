@@ -1,5 +1,3 @@
-"""Server-side ApiPay client and payment lifecycle integration."""
-
 from __future__ import annotations
 
 import json
@@ -277,7 +275,7 @@ def create_invoice(
         with transaction.atomic():
             order = (
                 Order.all_objects.select_for_update()
-                .select_related("client")
+                .select_related("client__user")
                 .get(pk=payment.order_id)
             )
             locked_payment = Payment.objects.select_for_update().get(

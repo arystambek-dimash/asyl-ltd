@@ -7,13 +7,15 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from .settings import parse_camera, parse_line
 
+LineDirection = Literal["any", "up", "down", "positive", "negative"]
+
 
 class ProcessorOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: Literal["sub", "main"] = "sub"
     line: str | None = None
-    direction: Literal["any", "positive", "negative"] = "any"
+    direction: LineDirection = "any"
 
     @field_validator("line")
     @classmethod
@@ -21,6 +23,15 @@ class ProcessorOptions(BaseModel):
         if value is not None:
             parse_line(value)
         return value
+
+
+class CountingLineOptions(BaseModel):
+    """Normalized line accepted from the CRM editor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    line: object
+    direction: LineDirection
 
 
 class AlwaysOnOptions(BaseModel):

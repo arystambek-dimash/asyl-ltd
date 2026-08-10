@@ -32,15 +32,16 @@ services:
       CORS_ALLOWED_ORIGINS: "http://localhost:3000"
       REDIS_URL: "redis://redis:6379/0"
       SUPER_ADMIN_EMAIL: "${SUPER_ADMIN_EMAIL:-admin@asyl.local}"
-      SUPER_ADMIN_PASS: "${SUPER_ADMIN_PASS:-admin12345}"
+      # Development-only default that still passes Django's validators.
+      SUPER_ADMIN_PASS: "${SUPER_ADMIN_PASS:-Local-only-Q7v9-Pass!}"
       SUPER_ADMIN_RESET_PASSWORD: "${SUPER_ADMIN_RESET_PASSWORD:-0}"
       # Камеры и AI-подсчёт: для локальной отладки укажите хосты в .env
       # (host.docker.internal — мок на маке); пусто = функции выключены.
       CAMERA_HOST: "${CAMERA_HOST:-}"
       CAMERA_PORT: "${CAMERA_PORT:-8554}"
       CAMERA_PASS: "${CAMERA_PASS:-}"
-      CAMERA_AI_URL: "${CAMERA_AI_URL:-}"
-      CAMERA_AI_KEY: "${CAMERA_AI_KEY:-}"
+      # Deployment-only migration boundary: the container receives canonical
+      # names even when an existing host .env still contains CAMERA_AI_*.
       AI_SERVICE_URL: "${AI_SERVICE_URL:-${CAMERA_AI_URL:-}}"
       AI_SERVICE_API_KEY: "${AI_SERVICE_API_KEY:-${CAMERA_AI_KEY:-}}"
       AI_SERVICE_TIMEOUT: "${AI_SERVICE_TIMEOUT:-10}"

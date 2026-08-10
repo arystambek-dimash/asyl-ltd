@@ -14,6 +14,22 @@ from .contracts import Detection
 from .settings import Settings, parse_camera
 
 
+def decode_jpeg(data: bytes):
+    """Decode one bounded JPEG request without accepting another file type."""
+
+    if not data.startswith(b"\xff\xd8\xff"):
+        raise ValueError("request body must be a valid JPEG image")
+    try:
+        import cv2
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError("Install production CV dependencies before starting ai_service") from exc
+    frame = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None or len(frame.shape) < 2 or not frame.shape[0] or not frame.shape[1]:
+        raise ValueError("request body must be a valid JPEG image")
+    return frame
+
+
 def validate_classes(classes: list[str]) -> None:
     if not classes or any(not item.strip() for item in classes):
         raise RuntimeError("Checkpoint contains no usable classes")
@@ -34,8 +50,8 @@ class ModelRuntime:
         if not model_path.is_file():
             raise RuntimeError(f"AI checkpoint not found: {model_path}")
         try:
-            from ultralytics import YOLO
             import numpy as np
+            from ultralytics import YOLO
         except ImportError as exc:
             raise RuntimeError("Install production CV dependencies before starting ai_service") from exc
         ModelRuntime.instances += 1
@@ -148,7 +164,7 @@ class MediaMtxClient:
         paths = self.paths()
         devices: list[dict] = []
         for name in sorted(paths):
-            if name.endswith("ai") or name.endswith("sub"):
+            if name.endswith(("ai", "sub")):
                 continue
             payload = paths[name]
             match = re.fullmatch(r"cam([1-9][0-9]*)", name)

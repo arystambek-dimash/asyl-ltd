@@ -12,6 +12,7 @@ interface AuthState {
    * Без force срабатывает не чаще раза в минуту (для фокуса вкладки). */
   refreshMe: (force?: boolean) => Promise<void>;
   login: (username: string, password: string) => Promise<Me>;
+  completeInitialPasswordChange: (username: string, currentPassword: string, newPassword: string) => Promise<Me>;
   adoptSession: (access: string, refresh: string) => Promise<Me>;
   /** Re-read the session after another tab replaces the shared credentials. */
   syncExternalSession: () => Promise<void>;
@@ -140,6 +141,33 @@ export const useAuth = create<AuthState>((set, get) => ({
       const { data } = await api.post<{ access: string; refresh: string }>(
         "/auth/login/",
         { username, password },
+        { signal: controller.signal },
+      );
+      if (generation !== authGeneration) throw staleAuthOperation();
+      setTokens(data.access, data.refresh);
+      return await commitSessionMe(generation, set);
+    } catch (error) {
+      if (generation === authGeneration) {
+        if (isUnauthorized(error)) get().logout();
+        else set({ loading: false });
+      }
+      throw error;
+    } finally {
+      if (loginController === controller) loginController = null;
+    }
+  },
+  completeInitialPasswordChange: async (username, currentPassword, newPassword) => {
+    const generation = beginSession(set);
+    const controller = new AbortController();
+    loginController = controller;
+    try {
+      const { data } = await api.post<{ access: string; refresh: string }>(
+        "/auth/initial-password/",
+        {
+          username,
+          current_password: currentPassword,
+          new_password: newPassword,
+        },
         { signal: controller.signal },
       );
       if (generation !== authGeneration) throw staleAuthOperation();

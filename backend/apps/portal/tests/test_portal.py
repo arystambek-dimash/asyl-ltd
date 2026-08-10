@@ -17,7 +17,7 @@ def _product():
 
 
 def _client_for(user):
-    return Client.objects.create(first_name="Мой", last_name="К", phone="x", user=user)
+    return Client.objects.create_with_user(first_name="Мой", last_name="К", phone="x", user=user)
 
 
 def test_client_creates_own_pending_order(auth_client, client_user):
@@ -106,7 +106,7 @@ def test_client_can_choose_instant_intent(auth_client, client_user):
 def test_client_sees_only_own_orders(auth_client, client_user, make_user):
     mine = _client_for(client_user)
     other_user = make_user(username="other", client=True)
-    other = Client.objects.create(first_name="Чужой", last_name="К", phone="y", user=other_user)
+    other = Client.objects.create_with_user(first_name="Чужой", last_name="К", phone="y", user=other_user)
     Order.objects.create(client=mine, status="draft")
     Order.objects.create(client=other, status="draft")
     resp = auth_client(client_user).get("/api/portal/orders/")
@@ -117,7 +117,7 @@ def test_client_sees_only_own_orders(auth_client, client_user, make_user):
 def test_client_cannot_fetch_foreign_order(auth_client, client_user, make_user):
     _client_for(client_user)
     other_user = make_user(username="other", client=True)
-    other = Client.objects.create(first_name="Чужой", last_name="К", phone="y", user=other_user)
+    other = Client.objects.create_with_user(first_name="Чужой", last_name="К", phone="y", user=other_user)
     foreign = Order.objects.create(client=other, status="draft")
     resp = auth_client(client_user).get(f"/api/portal/orders/{foreign.id}/")
     assert resp.status_code == 404
@@ -152,7 +152,7 @@ def test_client_catalog_returns_only_own_personal_price(
         auth_client, client_user, make_user):
     client = _client_for(client_user)
     other_user = make_user(username="priced-other", client=True)
-    other = Client.objects.create(
+    other = Client.objects.create_with_user(
         first_name="Другой", last_name="К", phone="2", user=other_user)
     product = _product()
     ClientPrice.objects.create(client=client, product=product, price="87.50")

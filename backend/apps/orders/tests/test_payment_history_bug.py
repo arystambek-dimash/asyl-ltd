@@ -4,11 +4,12 @@ from threading import Barrier
 import pytest
 from django.contrib.auth import get_user_model
 from django.db import close_old_connections
+
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem, Payment
-from apps.orders.services import create_client_payment
 from apps.orders.serializers import OrderSerializer
+from apps.orders.services import create_client_payment
 
 pytestmark = pytest.mark.django_db
 
@@ -22,7 +23,7 @@ def _shipped_order(client):
 
 def test_history_excludes_pending_payments(make_user):
     user = make_user(client=True)
-    c = Client.objects.create(first_name="A", last_name="B", phone="x", user=user)
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x", user=user)
     o = _shipped_order(c)
     Payment.objects.create(order=o, amount="50", method="card", status="received")
     data = OrderSerializer(o).data
@@ -33,7 +34,7 @@ def test_history_excludes_pending_payments(make_user):
 
 def test_pending_payments_visible_to_confirmer(make_user, accountant, auth_client):
     user = make_user(username="client-pay", client=True)
-    c = Client.objects.create(first_name="A", last_name="B", phone="x", user=user)
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x", user=user)
     o = _shipped_order(c)
     Payment.objects.create(order=o, amount="50", method="card", status="received", recorded_by=user)
 
@@ -44,9 +45,35 @@ def test_pending_payments_visible_to_confirmer(make_user, accountant, auth_clien
     assert response.data["pending_payments"][0]["amount"] == "50.00"
 
 
+def test_nested_payment_capabilities_use_order_request_permissions(
+    user_with_perms,
+    auth_client,
+):
+    client = Client.objects.create_with_user(
+        first_name="Права",
+        last_name="Платежа",
+    )
+    order = _shipped_order(client)
+    Payment.objects.create(
+        order=order,
+        amount="50",
+        method="invoice",
+        status="received",
+    )
+    viewer = user_with_perms(
+        "order-payment-viewer",
+        codes=["orders.view"],
+    )
+
+    response = auth_client(viewer).get(f"/api/orders/{order.id}/")
+
+    assert response.status_code == 200
+    assert response.data["pending_payments"][0]["can_issue"] is False
+
+
 def test_history_shows_confirmed(make_user):
     user = make_user(client=True)
-    c = Client.objects.create(first_name="A", last_name="B", phone="x", user=user)
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x", user=user)
     o = _shipped_order(c)
     Payment.objects.create(order=o, amount="50", method="cash", status="confirmed")
     data = OrderSerializer(o).data
@@ -55,7 +82,7 @@ def test_history_shows_confirmed(make_user):
 
 def test_client_pay_does_not_duplicate_pending(make_user):
     user = make_user(client=True)
-    c = Client.objects.create(first_name="A", last_name="B", phone="x", user=user)
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x", user=user)
     o = _shipped_order(c)
     create_client_payment(o, "card", user)
     create_client_payment(o, "kaspi", user)
@@ -67,7 +94,7 @@ def test_client_pay_does_not_duplicate_pending(make_user):
 @pytest.mark.django_db(transaction=True)
 def test_concurrent_client_payments_share_one_pending_request(make_user):
     user = make_user(username="parallel-client", client=True)
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Параллельный", last_name="Клиент", phone="x", user=user)
     order = _shipped_order(client)
     barrier = Barrier(2)

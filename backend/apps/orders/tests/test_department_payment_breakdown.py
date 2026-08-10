@@ -7,7 +7,8 @@
 import pytest
 
 from apps.catalog.models import Product
-from apps.clients.models import Client, Department
+from apps.clients.models import Client
+from apps.sales.models import Department
 from apps.orders.models import Order, OrderItem, Payment
 
 pytestmark = pytest.mark.django_db
@@ -42,7 +43,7 @@ def _summary(auth_client, boss):
 def test_summary_splits_paid_partial_and_unpaid(boss, auth_client):
     department = Department.objects.create(
         code="mill", name="Мельница", color="#315FD5")
-    client = Client.objects.create(first_name="Опл", last_name="Ата", phone="1")
+    client = Client.objects.create_with_user(first_name="Опл", last_name="Ата", phone="1")
 
     _pay(_order(client, department, "1000"), "1000")   # оплачен полностью
     _pay(_order(client, department, "1000"), "400")    # частично
@@ -64,7 +65,7 @@ def test_summary_debt_matches_is_debt_rule(boss, auth_client):
     """Моментальная оплата долгом не считается, даже если денег ещё нет."""
     department = Department.objects.create(
         code="city", name="Нью-Сити", color="#1F9D6A")
-    client = Client.objects.create(first_name="Мгн", last_name="Овен", phone="2")
+    client = Client.objects.create_with_user(first_name="Мгн", last_name="Овен", phone="2")
 
     _order(client, department, "500", intent="instant")
     _order(client, department, "700", intent="debt")
@@ -80,7 +81,7 @@ def test_summary_ignores_non_financial_orders(boss, auth_client):
     """Черновик и «на рассмотрении» не попадают ни в выручку, ни в счётчики."""
     department = Department.objects.create(
         code="draft", name="Черновики", color="#888888")
-    client = Client.objects.create(first_name="Чер", last_name="Новик", phone="3")
+    client = Client.objects.create_with_user(first_name="Чер", last_name="Новик", phone="3")
 
     _order(client, department, "900", status="draft")
     _order(client, department, "900", status="pending")
@@ -97,7 +98,7 @@ def test_summary_keeps_debt_split_by_currency(boss, auth_client):
     """Долги разных валют не складываются — как и выручка."""
     department = Department.objects.create(
         code="mix", name="Смешанный", color="#C58A35")
-    client = Client.objects.create(first_name="Мул", last_name="Ьти", phone="4")
+    client = Client.objects.create_with_user(first_name="Мул", last_name="Ьти", phone="4")
 
     kzt = _order(client, department, "1000")
     usd = _order(client, department, "20")

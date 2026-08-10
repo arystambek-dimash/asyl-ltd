@@ -1,7 +1,8 @@
+from decimal import Decimal
+
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
-from decimal import Decimal
 
 
 class OrderQuerySet(models.QuerySet):
@@ -21,8 +22,8 @@ class Order(models.Model):
     STATUSES = ["draft", "pending", "confirmed", "arrived",
                 "loading", "loaded", "shipped", "rejected", "cancelled"]
     PAYMENT_STATUSES = ["unpaid", "partial", "settled"]
-    SETTLEMENT_INTENTS = ["debt", "instant"]
-    PAYMENT_METHODS = ["invoice", "kaspi", "cash", "debt", "mixed"]
+    SETTLEMENT_INTENTS = ["pending", "debt", "instant"]
+    PAYMENT_METHODS = ["pending", "invoice", "kaspi", "cash", "debt", "mixed"]
     TRANSPORT_TYPES = ["truck", "train"]
 
     client = models.ForeignKey(
@@ -39,8 +40,8 @@ class Order(models.Model):
     status = models.CharField(max_length=20, default="draft")
     payment_status = models.CharField(max_length=20, default="unpaid")
     settlement_intent = models.CharField(max_length=20, default="debt")
-    # Выбор клиента. settlement_intent сохраняем как совместимый финансовый
-    # признак: debt для долга, instant для остальных способов.
+    # Выбор клиента. До выбора оплаты оба поля имеют значение pending;
+    # затем settlement_intent хранит debt либо instant.
     payment_method = models.CharField(max_length=10, default="debt")
     truck_number = models.CharField(max_length=30, blank=True, default="")
     truck_number_set_by = models.ForeignKey(

@@ -3,14 +3,13 @@ import pytest
 from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Client
 
-
 pytestmark = pytest.mark.django_db
 
 
 def test_client_prices_are_available_for_order_creation(auth_client, manager):
-    mine = Client.objects.create(
+    mine = Client.objects.create_with_user(
         first_name="Mine", last_name="Client", phone="1")
-    foreign = Client.objects.create(
+    foreign = Client.objects.create_with_user(
         first_name="Other", last_name="Client", phone="2")
     product = Product.objects.create(
         name="Scoped", color="Red", weight_kg="50", price="100.00")
@@ -50,3 +49,30 @@ def test_client_price_api_requires_valid_client(
 
     assert response.status_code == 400
     assert "client" in response.data["detail"]
+
+
+@pytest.mark.parametrize("method", ["head", "options"])
+def test_client_price_head_and_options_use_get_permissions(
+    auth_client,
+    user_with_perms,
+    method,
+):
+    editor = user_with_perms("prices-editor", codes=["orders.edit"])
+    api = auth_client(editor)
+
+    response = getattr(api, method)("/api/client-prices/?client=1")
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("method", ["head", "options"])
+def test_client_price_head_and_options_do_not_bypass_get_permissions(
+    auth_client,
+    make_user,
+    method,
+):
+    api = auth_client(make_user(username="no-order-permissions"))
+
+    response = getattr(api, method)("/api/client-prices/?client=1")
+
+    assert response.status_code == 403

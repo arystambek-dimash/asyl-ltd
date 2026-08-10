@@ -11,7 +11,7 @@ pytestmark = pytest.mark.django_db
 
 
 def test_repeat_creates_independent_order_for_today(auth_client, manager):
-    client = Client.objects.create(first_name="Нью", last_name="Сити", phone="1")
+    client = Client.objects.create_with_user(first_name="Нью", last_name="Сити", phone="1")
     product = Product.objects.create(name="Мука", color="Red", weight_kg="50")
     StockItem.objects.create(product=product, bags=100)
     source = Order.objects.create(
@@ -50,7 +50,7 @@ def test_repeat_creates_independent_order_for_today(auth_client, manager):
 
 def test_repeat_without_confirm_permission_stays_pending(auth_client, user_with_perms):
     user = user_with_perms("repeater", codes=["orders.view", "orders.create"])
-    client = Client.objects.create(first_name="A", last_name="B", phone="2")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="2")
     product = Product.objects.create(name="Товар", color="Blue", weight_kg="50")
     StockItem.objects.create(product=product, bags=10)
     source = Order.objects.create(client=client, status="shipped")
@@ -63,7 +63,7 @@ def test_repeat_without_confirm_permission_stays_pending(auth_client, user_with_
 
 
 def test_repeat_rejects_deleted_product_snapshot(auth_client, manager):
-    client = Client.objects.create(first_name="A", last_name="C", phone="3")
+    client = Client.objects.create_with_user(first_name="A", last_name="C", phone="3")
     source = Order.objects.create(client=client, status="shipped")
     OrderItem.objects.create(
         order=source, product=None, product_label_snapshot="Архивный товар",

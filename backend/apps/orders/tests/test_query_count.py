@@ -22,7 +22,7 @@ def _make_order():
     n = _seq[0]
     product = Product.objects.create(
         name=f"P{n}", color="Red", weight_kg="50", price="100.00")
-    client = Client.objects.create(first_name=f"C{n}", last_name="X", phone="x")
+    client = Client.objects.create_with_user(first_name=f"C{n}", last_name="X", phone="x")
     order = Order.objects.create(client=client, status="shipped")
     OrderItem.objects.create(order=order, product=product, quantity=2,
                              unit_price="120.00")
@@ -38,7 +38,7 @@ def _make_unpriced_order(user):
     n = _seq[0]
     product = Product.objects.create(
         name=f"Hint{n}", color="Blue", weight_kg="25", price="90.00")
-    client = Client.objects.create(first_name=f"Hint{n}", last_name="X", phone="x")
+    client = Client.objects.create_with_user(first_name=f"Hint{n}", last_name="X", phone="x")
     ClientPrice.objects.create(client=client, product=product, price="85.00")
     order = Order.objects.create(client=client, status="pending")
     OrderItem.objects.create(order=order, product=product, quantity=2)
@@ -115,7 +115,7 @@ def test_client_debts_query_count_is_constant(boss):
 
 
 def test_store_debt_detail_query_count_is_constant(boss):
-    client = Client.objects.create(first_name="Store", last_name="Client", phone="x")
+    client = Client.objects.create_with_user(first_name="Store", last_name="Client", phone="x")
     store = Store.objects.create(client=client, name="Store")
 
     def add_order():
@@ -139,7 +139,7 @@ def test_store_debt_detail_query_count_is_constant(boss):
 
 
 def test_portal_orders_query_count_is_constant(client_user):
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Portal", last_name="Client", phone="x", user=client_user)
     store = Store.objects.create(client=client, name="Portal store")
     for _ in range(2):

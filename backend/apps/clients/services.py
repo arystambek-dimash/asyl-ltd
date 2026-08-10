@@ -1,10 +1,12 @@
 from decimal import Decimal
-from apps.notifications.services import notify
-from apps.common.money import money_string as _d
-from apps.orders.debt import (
-    debt_orders, financial_orders, order_remaining, primary_currency,
+
+from apps.common.money import (
+    money_string as _d,
+    primary_currency,
     sum_by_currency,
 )
+from apps.notifications.services import notify
+from apps.orders.debt import debt_orders, financial_orders, order_remaining
 
 
 def client_history(client) -> dict:

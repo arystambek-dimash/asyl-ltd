@@ -1,7 +1,8 @@
 """Least-privilege reference projection used by the staff order form."""
 
 from apps.catalog.models import Product
-from apps.clients.models import Client, Department, Store
+from apps.clients.models import Client, Store
+from apps.sales.models import Department
 
 
 def build_order_form_options() -> dict:
@@ -12,10 +13,11 @@ def build_order_form_options() -> dict:
     cross-domain projection to choose valid foreign keys, but does not need
     bank details, client debt, store schedules or CV metadata.
     """
-    clients = Client.objects.only(
+    clients = Client.objects.select_related("user").only(
         "id",
-        "first_name",
-        "last_name",
+        "user__first_name",
+        "user__last_name",
+        "user__username",
         "company_name",
         "phone",
         "currency",

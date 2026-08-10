@@ -12,7 +12,7 @@ pytestmark = pytest.mark.django_db
 def test_shipment_sets_unpaid_debt(boss):
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     receive_stock(p, 100, boss)
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     o = Order.objects.create(client=c, status="confirmed", truck_number="01A1")
     OrderItem.objects.create(order=o, product=p, quantity=2)
     record_arrival(o, Decimal("8000"), boss)

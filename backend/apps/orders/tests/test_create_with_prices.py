@@ -17,7 +17,7 @@ def _api(user):
 
 
 def test_staff_create_with_prices_confirms_immediately(manager):
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     StockItem.objects.create(product=p, bags=500)
     r = _api(manager).post(
@@ -37,7 +37,7 @@ def test_staff_create_with_prices_confirms_immediately(manager):
 
 
 def test_staff_create_without_prices_stays_draft(manager):
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     StockItem.objects.create(product=p, bags=500)
     r = _api(manager).post(
@@ -53,7 +53,7 @@ def test_staff_create_without_prices_stays_draft(manager):
 
 
 def test_staff_reviews_template_then_creates_linked_order(manager):
-    client = Client.objects.create(first_name="Нью", last_name="Сити", phone="x")
+    client = Client.objects.create_with_user(first_name="Нью", last_name="Сити", phone="x")
     product = Product.objects.create(name="Template P", color="Blue", weight_kg="50")
     StockItem.objects.create(product=product, bags=500)
     source = Order.objects.create(client=client, status="shipped", created_by=manager)
@@ -81,7 +81,7 @@ def test_staff_reviews_template_then_creates_linked_order(manager):
 
 
 def test_staff_can_create_usd_order_and_remember_usd_price(manager):
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="USD P", color="Red", weight_kg="50")
     StockItem.objects.create(product=p, bags=500)
     r = _api(manager).post(
@@ -107,7 +107,7 @@ def test_staff_can_create_usd_order_and_remember_usd_price(manager):
 def test_failed_price_confirmation_leaves_no_orphan_order(manager):
     # Регресс: create() атомарен — упавшее подтверждение цен не должно
     # оставлять в базе заказ без цен.
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     StockItem.objects.create(product=p, bags=500)
     r = _api(manager).post(
@@ -124,7 +124,7 @@ def test_failed_price_confirmation_leaves_no_orphan_order(manager):
 
 
 def test_zero_quantity_rejected(manager):
-    c = Client.objects.create(first_name="A", last_name="B", phone="x")
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     StockItem.objects.create(product=p, bags=500)
     r = _api(manager).post(

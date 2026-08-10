@@ -45,7 +45,7 @@ def test_event_payload_exposes_related_order(auth_client, operator):
     from apps.orders.models import Order
     from apps.eventlog.models import EventLog
 
-    client = Client.objects.create(first_name="A", last_name="B", phone="1")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     order = Order.objects.create(client=client)
     event = EventLog.objects.create(event_type="shipment", message="done", order=order)
 
@@ -61,10 +61,10 @@ def test_order_events_include_all_departments(auth_client, operator):
     from apps.orders.models import Order
     from apps.eventlog.models import EventLog
 
-    main = Order.objects.create(client=Client.objects.create(
+    main = Order.objects.create(client=Client.objects.create_with_user(
         first_name="Main", last_name="Client", phone="1"))
     field = Order.objects.create(
-        client=Client.objects.create(
+        client=Client.objects.create_with_user(
             first_name="Field", last_name="Client", phone="2"),
         department="field",
     )

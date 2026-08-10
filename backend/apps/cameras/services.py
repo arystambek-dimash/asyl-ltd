@@ -14,7 +14,6 @@ RTSP DESCRIBE-пробами прямо в MediaMTX:
 """
 import base64
 import logging
-import os
 import re
 import socket
 import threading
@@ -22,18 +21,21 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
+from django.conf import settings
 from django.core.cache import cache
+
+from . import ai
 
 log = logging.getLogger(__name__)
 
-# `or`, а не второй аргумент get: пустая строка из compose не должна
-# перетирать дефолт.
-CAMERA_HOST = os.environ.get("CAMERA_HOST") or "100.109.156.107"
-CAMERA_PORT = int(os.environ.get("CAMERA_PORT") or "8554")
-CAMERA_USER = os.environ.get("CAMERA_USER") or "viewer"
-CAMERA_PASS = os.environ.get("CAMERA_PASS", "")
-# Внутренний API go2rtc (в docker-сети) — для дозаявки динамических потоков.
-GO2RTC_API = (os.environ.get("GO2RTC_API_URL") or "").rstrip("/")
+# Environment variables are parsed once in Django settings. These module-level
+# names remain the camera discovery dependency boundary and are easy to replace
+# in focused tests.
+CAMERA_HOST = settings.CAMERA_HOST
+CAMERA_PORT = settings.CAMERA_PORT
+CAMERA_USER = settings.CAMERA_USER
+CAMERA_PASS = settings.CAMERA_PASS
+GO2RTC_API = settings.GO2RTC_API_URL
 
 # Столько camN-слотов захардкожено в go2rtc.yaml (вместе с camNai);
 # он же — верхняя граница резервного перебора.
@@ -147,8 +149,6 @@ def discover_cameras() -> list[dict]:
 
 def _discover_by_inventory() -> list[dict] | None:
     """Камеры из инвентаря ai_service; None — сервис недоступен/не настроен."""
-    from . import ai  # локальный импорт: ai.py использует наши константы
-
     if not ai.enabled():
         return None
     try:

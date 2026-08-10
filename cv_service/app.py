@@ -6,7 +6,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .contracts import (
-    AlwaysOnOptions, ProcessorOptions, RecordingDeleteOptions, WagonNumberOptions,
+    AlwaysOnOptions,
+    CountingLineOptions,
+    ProcessorOptions,
+    RecordingDeleteOptions,
+    WagonNumberOptions,
 )
 from .processor import ProcessorManager
 from .security import valid_api_key
@@ -77,11 +81,48 @@ def create_app(manager: ProcessorManager) -> FastAPI:
             "processors": len(statuses),
             "counting": sum(bool(item["running"]) for item in statuses),
             "last_frames": {item["cam"]: item["last_frame_at"] for item in statuses},
+            "capabilities": {
+                "wagon_plate": manager.wagon_plate_capability(),
+            },
         })
 
     @app.get("/cameras")
     def cameras():
         return with_startup(manager.cameras())
+
+    @app.get("/cameras/{camera}/line")
+    def counting_line(camera: str):
+        return manager.counting_line(camera_id(camera))
+
+    @app.put("/cameras/{camera}/line")
+    def save_counting_line(camera: str, options: CountingLineOptions):
+        status, payload = manager.save_counting_line(
+            camera_id(camera), options.line, options.direction,
+        )
+        return JSONResponse(status_code=status, content=payload)
+
+    @app.post("/wagon-number/detect")
+    async def detect_wagon_number(request: Request):
+        content_type = request.headers.get("content-type", "").partition(";")[0]
+        if content_type.strip().lower() != "image/jpeg":
+            raise HTTPException(status_code=415, detail="Content-Type must be image/jpeg")
+        raw_length = request.headers.get("content-length")
+        if raw_length is not None:
+            try:
+                content_length = int(raw_length)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="invalid Content-Length") from exc
+            if content_length < 0:
+                raise HTTPException(status_code=400, detail="invalid Content-Length")
+            if content_length > manager.settings.wagon_frame_max_bytes:
+                raise HTTPException(status_code=413, detail="JPEG frame is too large")
+
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > manager.settings.wagon_frame_max_bytes:
+                raise HTTPException(status_code=413, detail="JPEG frame is too large")
+            body.extend(chunk)
+        return manager.detect_wagon_plate(bytes(body))
 
     @app.get("/processors")
     def processors():

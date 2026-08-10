@@ -30,7 +30,7 @@ def _order(total="100.00", status="shipped"):
     product = Product.objects.create(
         name=f"P-{Product.objects.count() + 1}", color="Red", weight_kg="50",
         price="1")
-    client = Client.objects.create(
+    client = Client.objects.create_with_user(
         first_name="Пла", last_name="Тельщик", phone="87001112233",
         iin="123456789012", company_name="ТОО Тест",
     )
