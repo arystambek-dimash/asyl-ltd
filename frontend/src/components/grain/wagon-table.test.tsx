@@ -158,10 +158,26 @@ describe("WagonTable — удаление завершённого рейса", 
     expect(screen.queryByRole("button", { name: /Удалить рейс/ })).not.toBeInTheDocument();
   });
 
-  it("hides delete while the trip is still on site", () => {
-    renderDeletable([wagon({ id: 1, number: "Поезд-1", status: "at_silo", status_label: "У силоса" })]);
+  it("allows an authorised employee to delete an on-site trip with an explicit warning and reason", async () => {
+    const user = userEvent.setup();
+    const onDeleted = renderDeletable([
+      wagon({ id: 1, number: "Поезд-1", status: "at_silo", status_label: "У силоса" }),
+    ]);
 
-    expect(screen.queryByRole("button", { name: /Удалить рейс/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Удалить рейс Поезд-1" }));
+
+    expect(screen.getByText(/сейчас числится на территории/)).toBeInTheDocument();
+    expect(screen.getByText(/это активный рейс/i)).toBeInTheDocument();
+    const confirm = screen.getByRole("button", { name: "Удалить активный рейс" });
+    expect(confirm).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Причина удаления *"), "Ошибочно созданный рейс");
+    await user.click(confirm);
+
+    expect(deleteMock).toHaveBeenCalledWith("/grain/wagons/1/delete/", {
+      data: { reason: "Ошибочно созданный рейс" },
+    });
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledOnce());
   });
 
   it("warns that intake grain returns to the silo, then deletes", async () => {
@@ -172,9 +188,48 @@ describe("WagonTable — удаление завершённого рейса", 
     // Оператор должен видеть последствие для остатка до подтверждения.
     expect(screen.getByText(/вернутся из силоса/)).toBeInTheDocument();
 
+    const confirm = screen.getByRole("button", { name: "Удалить рейс" });
+    expect(confirm).toBeDisabled();
+    await user.type(screen.getByLabelText("Причина удаления *"), "Ошибка при взвешивании");
     await user.click(screen.getByRole("button", { name: "Удалить рейс" }));
 
-    expect(deleteMock).toHaveBeenCalledWith("/grain/wagons/9/delete/");
+    expect(deleteMock).toHaveBeenCalledWith("/grain/wagons/9/delete/", {
+      data: { reason: "Ошибка при взвешивании" },
+    });
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledOnce());
+  });
+
+  it("requires the unrecorded-grain confirmation for an intake after unloading", async () => {
+    const user = userEvent.setup();
+    const onDeleted = renderDeletable([
+      wagon({
+        id: 14,
+        number: "Приход-14",
+        direction: "intake",
+        status: "unloading_completed",
+        status_label: "Разгрузка завершена",
+      }),
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "Удалить рейс Приход-14" }));
+    await user.type(screen.getByLabelText("Причина удаления *"), "Ошибочная разгрузка");
+
+    const confirmation = screen.getByRole("checkbox", {
+      name: "Подтверждаю: зерно уже учтено отдельно либо фактической разгрузки не было",
+    });
+    const confirm = screen.getByRole("button", { name: "Удалить активный рейс" });
+    expect(confirm).toBeDisabled();
+
+    await user.click(confirmation);
+    expect(confirm).toBeEnabled();
+    await user.click(confirm);
+
+    expect(deleteMock).toHaveBeenCalledWith("/grain/wagons/14/delete/", {
+      data: {
+        reason: "Ошибочная разгрузка",
+        confirm_unrecorded_grain_handled: true,
+      },
+    });
     await waitFor(() => expect(onDeleted).toHaveBeenCalledOnce());
   });
 
@@ -203,6 +258,7 @@ describe("WagonTable — удаление завершённого рейса", 
     const onDeleted = renderDeletable([wagon(finishedIntake)]);
 
     await user.click(screen.getByRole("button", { name: "Удалить рейс Поезд-9" }));
+    await user.type(screen.getByLabelText("Причина удаления *"), "Дубликат");
     await user.click(screen.getByRole("button", { name: "Удалить рейс" }));
 
     expect(await screen.findByText("Ошибка удаления")).toBeInTheDocument();

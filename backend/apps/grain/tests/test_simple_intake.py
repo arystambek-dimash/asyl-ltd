@@ -1,7 +1,11 @@
+from decimal import Decimal
+from unittest.mock import patch
+
 import pytest
 
 from apps.grain import statuses as st
 from apps.grain.models import GrainMovement, GrainSupply, Silo, SiloType
+from apps.shipments import scale
 
 pytestmark = pytest.mark.django_db
 
@@ -46,6 +50,14 @@ def _create_intake(auth_client, user, grain_type, silo, expected=68_300):
     return response.data
 
 
+def _scale_reading(weight):
+    return scale.ScaleReading(
+        weight_kg=Decimal(weight),
+        age_seconds=Decimal("0.2"),
+        updated_at="2026-08-12T10:00:00Z",
+    )
+
+
 def test_simple_intake_runs_from_camera_to_net_and_closes(auth_client, grain_operator):
     grain_type, silo = _setup_route()
     supply_data = _create_intake(auth_client, grain_operator, grain_type, silo)
@@ -81,20 +93,22 @@ def test_simple_intake_runs_from_camera_to_net_and_closes(auth_client, grain_ope
     )
     assert awaiting.data["results"] == []
 
-    entry = auth_client(grain_operator).post(
-        f"/api/grain/wagons/{wagon.pk}/entry-weight/",
-        {"weight_kg": 91_500, "source": "auto", "scale_number": "rail-1"},
-        format="json",
-    )
+    with patch.object(
+        scale, "read_truck_scale", return_value=_scale_reading(91_500)
+    ):
+        entry = auth_client(grain_operator).post(
+            f"/api/grain/wagons/{wagon.pk}/entry-weight/", {}, format="json"
+        )
     assert entry.status_code == 200, entry.data
     assert entry.data["status"] == st.AT_SILO
     assert entry.data["assigned_silo_name"] == "Силос-7"
 
-    exit_weight = auth_client(grain_operator).post(
-        f"/api/grain/wagons/{wagon.pk}/exit-weight/",
-        {"weight_kg": 23_200, "source": "auto", "scale_number": "rail-1"},
-        format="json",
-    )
+    with patch.object(
+        scale, "read_truck_scale", return_value=_scale_reading(23_200)
+    ):
+        exit_weight = auth_client(grain_operator).post(
+            f"/api/grain/wagons/{wagon.pk}/exit-weight/", {}, format="json"
+        )
     assert exit_weight.status_code == 200, exit_weight.data
     assert exit_weight.data["status"] == st.COMPLETED
     assert exit_weight.data["net_weight_kg"] == 68_300
@@ -118,17 +132,19 @@ def test_simple_intake_stops_on_weight_difference_until_confirmed(
         {"supply": supply.pk, "number": "94120088", "camera_source": "cam7"},
         format="json",
     )
-    auth_client(grain_operator).post(
-        f"/api/grain/wagons/{wagon.pk}/entry-weight/",
-        {"weight_kg": 91_500, "source": "auto"},
-        format="json",
-    )
+    with patch.object(
+        scale, "read_truck_scale", return_value=_scale_reading(91_500)
+    ):
+        auth_client(grain_operator).post(
+            f"/api/grain/wagons/{wagon.pk}/entry-weight/", {}, format="json"
+        )
 
-    response = auth_client(grain_operator).post(
-        f"/api/grain/wagons/{wagon.pk}/exit-weight/",
-        {"weight_kg": 23_200, "source": "auto"},
-        format="json",
-    )
+    with patch.object(
+        scale, "read_truck_scale", return_value=_scale_reading(23_200)
+    ):
+        response = auth_client(grain_operator).post(
+            f"/api/grain/wagons/{wagon.pk}/exit-weight/", {}, format="json"
+        )
 
     assert response.status_code == 200
     assert response.data["status"] == st.WEIGHT_DISCREPANCY

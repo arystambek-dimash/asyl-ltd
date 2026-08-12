@@ -1,11 +1,20 @@
 """Полный цикл вагона и краевые сценарии из ТЗ (сценарии 1–15)."""
+from decimal import Decimal
+from unittest.mock import patch
+
 import pytest
 
 from apps.grain import services
 from apps.grain import statuses as st
 from apps.grain.models import (
-    GrainMovement, GrainSettings, GrainSupply, Silo, SiloType, Wagon,
+    GrainMovement,
+    GrainSettings,
+    GrainSupply,
+    Silo,
+    SiloType,
+    Wagon,
 )
+from apps.shipments import scale
 
 pytestmark = pytest.mark.django_db
 
@@ -355,9 +364,15 @@ def test_role_limits(auth_client, user_with_perms):
     wagon = _wagon(supply)
     services.register_arrival(wagon.number, weigher)
 
-    ok = auth_client(weigher).post(
-        f"/api/grain/wagons/{wagon.id}/gross/",
-        {"weight_kg": 90_000, "source": "auto"}, format="json")
+    reading = scale.ScaleReading(
+        weight_kg=Decimal(90_000),
+        age_seconds=Decimal("0.2"),
+        updated_at="2026-08-12T10:00:00Z",
+    )
+    with patch.object(scale, "read_truck_scale", return_value=reading):
+        ok = auth_client(weigher).post(
+            f"/api/grain/wagons/{wagon.id}/gross/", {}, format="json"
+        )
     assert ok.status_code == 200
 
     denied = auth_client(weigher).post(

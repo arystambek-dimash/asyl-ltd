@@ -3,7 +3,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Archive, ChevronDown, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { OrderPurgeDialog } from "@/components/orders/order-purge-dialog";
 import { api, apiError } from "@/lib/api";
 import { cn, currencySymbol, formatDateTime, formatMoney } from "@/lib/utils";
 import { useDismiss } from "@/lib/use-dismiss";
@@ -77,10 +77,6 @@ export function ArchiveDock({
   }
 
   const restore = (order: Order) => act(order, () => api.post(`/orders/${order.id}/restore/`)).catch(() => {});
-  const purge = (order: Order) =>
-    act(order, () => api.delete(`/orders/${order.id}/purge/`))
-      .then(() => setPurgeItem(null))
-      .catch(() => setPurgeItem(null));
 
   // Задержки анимации: карточки «выезжают» из кнопки снизу вверх.
   const delay = (indexFromBottom: number) => ({ animationDelay: `${indexFromBottom * 45}ms` });
@@ -167,7 +163,7 @@ export function ArchiveDock({
                     variant="ghost"
                     disabled={busyId === order.id}
                     className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                    title="Удалить навсегда"
+                    title="Удалить из архива"
                     onClick={() => setPurgeItem(order)}
                   >
                     <Trash2 className="size-4" />
@@ -179,20 +175,7 @@ export function ArchiveDock({
         </div>
       )}
 
-      <ConfirmDialog
-        open={!!purgeItem}
-        onClose={() => setPurgeItem(null)}
-        title="Удалить заказ навсегда?"
-        description={
-          purgeItem
-            ? `Заказ #${purgeItem.id} (${purgeItem.client_name ?? "клиент"}) будет удалён безвозвратно вместе с позициями и оплатами. Восстановить его будет нельзя.`
-            : ""
-        }
-        confirmLabel="Удалить навсегда"
-        busy={purgeItem ? busyId === purgeItem.id : false}
-        error={error}
-        onConfirm={() => purgeItem && purge(purgeItem)}
-      />
+      <OrderPurgeDialog order={purgeItem} onClose={() => setPurgeItem(null)} onPurged={onChanged} />
 
       <button
         ref={triggerRef}

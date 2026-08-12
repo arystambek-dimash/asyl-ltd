@@ -26,6 +26,7 @@ import { ManualOrderStatusModal, type ManualOrderTarget } from "@/components/man
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
 import { ALL_CLIENTS_STATEMENT_SECTIONS, StatementExportModal } from "@/components/statement-export-modal";
 import { ArchiveDock } from "@/components/orders/archive-dock";
+import { OrderPurgeDialog } from "@/components/orders/order-purge-dialog";
 import {
   ORDER_PUBLIC_STATUSES,
   ORDER_STATUS_LABELS,
@@ -1449,11 +1450,6 @@ function ArchiveView({
     }
   }
   const restore = (o: Order) => act(o, () => api.post(`/orders/${o.id}/restore/`));
-  const purge = async (o: Order) => {
-    await act(o, () => api.delete(`/orders/${o.id}/purge/`));
-    setPurgeItem(null);
-  };
-
   const list = trashed ?? [];
   return (
     <>
@@ -1536,7 +1532,7 @@ function ArchiveView({
                           variant="ghost"
                           disabled={busyId === o.id}
                           className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                          title="Удалить навсегда"
+                          title="Удалить из архива"
                           onClick={() => setPurgeItem(o)}
                         >
                           <Trash2 className="size-4" />
@@ -1551,20 +1547,7 @@ function ArchiveView({
         </CardContent>
       </Card>
 
-      <ConfirmDialog
-        open={!!purgeItem}
-        onClose={() => setPurgeItem(null)}
-        title="Удалить заказ навсегда?"
-        description={
-          purgeItem
-            ? `Заказ #${purgeItem.id} (${purgeItem.client_name ?? "клиент"}) будет удалён безвозвратно вместе с позициями и оплатами. Восстановить его будет нельзя.`
-            : ""
-        }
-        confirmLabel="Удалить навсегда"
-        busy={purgeItem ? busyId === purgeItem.id : false}
-        error={actErr}
-        onConfirm={() => purgeItem && purge(purgeItem)}
-      />
+      <OrderPurgeDialog order={purgeItem} onClose={() => setPurgeItem(null)} onPurged={onRestored} />
     </>
   );
 }

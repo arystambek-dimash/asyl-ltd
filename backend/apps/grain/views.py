@@ -33,6 +33,22 @@ def _get_supply(supply_id) -> GrainSupply | None:
         )
 
 
+def _require_empty_scale_command(request) -> None:
+    """Scale actions trust only the server-side physical scale client."""
+    if not isinstance(request.data, dict) or request.data:
+        raise ValidationError(
+            {
+                "detail": "Не передавайте вес: сервер прочитает его с весов.",
+                "code": "scale_weight_server_only",
+                "fields": (
+                    sorted(request.data.keys())
+                    if isinstance(request.data, dict)
+                    else []
+                ),
+            }
+        )
+
+
 class GrainSupplyViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     queryset = (
         GrainSupply.objects.select_related("grain_type", "assigned_silo")
@@ -202,23 +218,29 @@ class WagonViewSet(
 
     @action(detail=True, methods=["post"], url_path="gross")
     def gross(self, request, pk=None):
-        wagon = services.record_gross(
-            self.get_object(),
-            request.data.get("weight_kg"),
-            request.user,
-            scale_number=request.data.get("scale_number") or "",
-            source=request.data.get("source") or "manual",
-            manual_reason=request.data.get("manual_reason") or "",
+        _require_empty_scale_command(request)
+        wagon = services.record_scale_weight(
+            self.get_object(), "gross", request.user
         )
         return self._done(wagon)
 
     @action(detail=True, methods=["delete"], url_path="delete")
     def delete_wagon(self, request, pk=None):
-        """Удалить завершённый рейс, откатив приход из силоса."""
-        result = services.delete_finished_wagon(
+        """Удалить допустимый рейс с безопасным откатом учёта."""
+        if hasattr(request.data, "__contains__") and "reason" in request.data:
+            reason = request.data.get("reason")
+        else:
+            # Transitional fallback for callers using the previous contract.
+            reason = request.query_params.get("reason") or ""
+        result = services.delete_wagon(
             self.get_object(),
             request.user,
-            reason=request.query_params.get("reason") or "",
+            reason=reason,
+            confirm_unrecorded_grain_handled=(
+                request.data.get("confirm_unrecorded_grain_handled", False)
+                if hasattr(request.data, "get")
+                else False
+            ),
         )
         return Response(result)
 
@@ -237,21 +259,9 @@ class WagonViewSet(
 
     @action(detail=True, methods=["post"], url_path="entry-weight")
     def entry_weight(self, request, pk=None):
-        # Один эндпоинт на оба направления: фронту не нужно знать, приход это
-        # или проход — маршрут выбирается по направлению самой записи.
-        wagon = self.get_object()
-        record = (
-            services.record_passage_entry_weight
-            if wagon.is_passage
-            else services.record_simple_entry_weight
-        )
-        wagon = record(
-            wagon,
-            request.data.get("weight_kg"),
-            request.user,
-            scale_number=request.data.get("scale_number") or "",
-            source=request.data.get("source") or "manual",
-            manual_reason=request.data.get("manual_reason") or "",
+        _require_empty_scale_command(request)
+        wagon = services.record_scale_weight(
+            self.get_object(), "entry", request.user
         )
         return self._done(wagon)
 
@@ -331,31 +341,17 @@ class WagonViewSet(
 
     @action(detail=True, methods=["post"], url_path="tare")
     def tare(self, request, pk=None):
-        wagon = services.record_tare(
-            self.get_object(),
-            request.data.get("weight_kg"),
-            request.user,
-            scale_number=request.data.get("scale_number") or "",
-            source=request.data.get("source") or "manual",
-            manual_reason=request.data.get("manual_reason") or "",
+        _require_empty_scale_command(request)
+        wagon = services.record_scale_weight(
+            self.get_object(), "tare", request.user
         )
         return self._done(wagon)
 
     @action(detail=True, methods=["post"], url_path="exit-weight")
     def exit_weight(self, request, pk=None):
-        wagon = self.get_object()
-        record = (
-            services.record_passage_exit_weight
-            if wagon.is_passage
-            else services.record_simple_exit_weight
-        )
-        wagon = record(
-            wagon,
-            request.data.get("weight_kg"),
-            request.user,
-            scale_number=request.data.get("scale_number") or "",
-            source=request.data.get("source") or "manual",
-            manual_reason=request.data.get("manual_reason") or "",
+        _require_empty_scale_command(request)
+        wagon = services.record_scale_weight(
+            self.get_object(), "exit", request.user
         )
         return self._done(wagon)
 

@@ -620,16 +620,10 @@ function GrainPageInner() {
               wagons={wagons.items}
               me={me}
               emptyText={tab === "on_site" ? "На территории никого нет" : "Завершённых рейсов пока нет"}
-              // Удаление предлагается только в завершённых: рейс на территории
-              // ещё живой, его надо довести или отменить, а не стирать.
-              onDeleted={
-                tab === "finished"
-                  ? () => {
-                      setNotice("Рейс удалён, остаток силоса пересчитан.");
-                      refreshAll();
-                    }
-                  : undefined
-              }
+              onDeleted={() => {
+                setNotice(tab === "finished" ? "Рейс удалён, остаток силоса пересчитан." : "Активный рейс удалён.");
+                refreshAll();
+              }}
             />
             <LoadMore
               shown={wagons.items.length}

@@ -11,6 +11,8 @@ export function ConfirmDialog({
   confirmVariant = "destructive",
   busy,
   error,
+  confirmDisabled,
+  children,
   onConfirm,
 }: {
   open: boolean;
@@ -21,6 +23,8 @@ export function ConfirmDialog({
   confirmVariant?: "default" | "destructive";
   busy?: boolean;
   error?: string;
+  confirmDisabled?: boolean;
+  children?: React.ReactNode;
   onConfirm: () => void;
 }) {
   return (
@@ -35,7 +39,7 @@ export function ConfirmDialog({
           <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
             Отмена
           </Button>
-          <Button type="button" variant={confirmVariant} onClick={onConfirm} disabled={busy}>
+          <Button type="button" variant={confirmVariant} onClick={onConfirm} disabled={busy || confirmDisabled}>
             {busy ? "Выполнение…" : confirmLabel}
           </Button>
         </>
@@ -43,8 +47,12 @@ export function ConfirmDialog({
     >
       <div className="flex flex-col gap-3">
         {description && <p className="text-sm text-[var(--muted-foreground)]">{description}</p>}
+        {children}
         {error && (
-          <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
+          <p
+            role="alert"
+            className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]"
+          >
             {error}
           </p>
         )}

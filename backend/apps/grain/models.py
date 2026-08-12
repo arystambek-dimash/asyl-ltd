@@ -149,7 +149,7 @@ class GrainSupply(models.Model):
 
 
 class Wagon(models.Model):
-    WEIGHT_SOURCES = ["auto", "manual"]
+    WEIGHT_SOURCES = ["auto", "manual", "scale"]
 
     # Направление рейса. Приход: транспорт въезжает гружёным и оставляет зерно
     # в силосе, нетто = вход − выход. Проход: въезжает пустым, забирает отруби

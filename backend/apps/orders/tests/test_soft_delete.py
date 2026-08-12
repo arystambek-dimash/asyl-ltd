@@ -14,7 +14,8 @@ from apps.cameras.models import AiCountingSession
 from apps.catalog.models import Product
 from apps.clients.models import Client, Store
 from apps.orders import services as order_services
-from apps.orders.models import Order, OrderItem, Payment
+from apps.orders.models import Order, OrderItem, Payment, StatusChangeRequest
+from apps.shipments.models import Shipment
 
 pytestmark = pytest.mark.django_db
 
@@ -127,7 +128,7 @@ def test_editor_purge_deletes_non_financial_draft_from_trash(manager):
     assert _api(manager).get("/api/orders/trash/").data == []
 
 
-def test_purge_preserves_shipped_financial_records(manager):
+def test_purge_hides_shipped_order_but_preserves_financial_records(manager):
     product = _product()
     client = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     order = _order(client, product, paid="100.00")
@@ -135,13 +136,18 @@ def test_purge_preserves_shipped_financial_records(manager):
 
     response = _api(manager).delete(f"/api/orders/{order.id}/purge/")
 
-    assert response.status_code == 400
-    assert response.data["code"] == "financial_record_protected"
-    assert Order.all_objects.filter(pk=order.id).exists()
+    assert response.status_code == 204
+    retained = Order.all_objects.get(pk=order.id)
+    assert retained.purged_at is not None
+    assert retained.purged_by == manager
+    assert not Order.all_objects.deleted().filter(pk=order.id).exists()
+    assert order.id not in [
+        row["id"] for row in _api(manager).get("/api/orders/trash/").data
+    ]
     assert Payment.objects.filter(order_id=order.id).exists()
 
 
-def test_purge_preserves_ai_history(manager):
+def test_purge_hides_order_but_preserves_ai_history(manager):
     p = _product()
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p, status="draft")
@@ -154,9 +160,88 @@ def test_purge_preserves_ai_history(manager):
 
     response = _api(manager).delete(f"/api/orders/{o.id}/purge/")
 
-    assert response.status_code == 400
-    assert response.data["code"] == "financial_record_protected"
-    assert Order.all_objects.filter(pk=o.pk).exists()
+    assert response.status_code == 204
+    retained = Order.all_objects.get(pk=o.pk)
+    assert retained.purged_at is not None
+    assert retained.purged_by == manager
+    assert not Order.all_objects.deleted().filter(pk=o.pk).exists()
+    assert AiCountingSession.objects.filter(order_id=o.pk).exists()
+
+
+def test_purge_hides_order_but_preserves_shipment_history(manager):
+    product = _product()
+    client = Client.objects.create_with_user(
+        first_name="A", last_name="B", phone="shipment-history",
+    )
+    order = _order(client, product, status="draft")
+    shipment = Shipment.objects.create(
+        order=order,
+        truck_number="01ABC01",
+        bags_loaded=2,
+    )
+    _api(manager).delete(f"/api/orders/{order.id}/")
+
+    response = _api(manager).delete(f"/api/orders/{order.id}/purge/")
+
+    assert response.status_code == 204
+    assert Order.all_objects.get(pk=order.pk).purged_at is not None
+    assert Shipment.objects.filter(pk=shipment.pk, order_id=order.pk).exists()
+
+
+def test_purge_retains_non_draft_business_document_without_relations(manager):
+    product = _product()
+    client = Client.objects.create_with_user(
+        first_name="A", last_name="B", phone="pending-business-document",
+    )
+    order = _order(client, product, status="pending")
+    _api(manager).delete(f"/api/orders/{order.id}/")
+
+    response = _api(manager).delete(f"/api/orders/{order.id}/purge/")
+
+    assert response.status_code == 204
+    retained = Order.all_objects.get(pk=order.pk)
+    assert retained.status == "pending"
+    assert retained.purged_at is not None
+    assert not Order.all_objects.deleted().filter(pk=order.pk).exists()
+
+
+def test_purge_retains_draft_with_status_approval_history(manager):
+    product = _product()
+    client = Client.objects.create_with_user(
+        first_name="A", last_name="B", phone="approval-history",
+    )
+    order = _order(client, product, status="draft")
+    request = StatusChangeRequest.objects.create(
+        order=order,
+        to_status="cancelled",
+        requested_by=manager,
+    )
+    _api(manager).delete(f"/api/orders/{order.id}/")
+
+    response = _api(manager).delete(f"/api/orders/{order.id}/purge/")
+
+    assert response.status_code == 204
+    assert Order.all_objects.get(pk=order.pk).purged_at is not None
+    assert StatusChangeRequest.objects.filter(pk=request.pk).exists()
+
+
+def test_purged_business_document_cannot_be_restored(manager):
+    product = _product()
+    client = Client.objects.create_with_user(
+        first_name="A", last_name="B", phone="purged-restore",
+    )
+    order = _order(client, product, status="pending")
+    order_services.soft_delete_order(order, manager)
+    order_services.purge_order(order, manager)
+    retained = Order.all_objects.get(pk=order.pk)
+
+    with pytest.raises(ValidationError) as exc_info:
+        order_services.restore_order(retained, manager)
+
+    assert exc_info.value.detail["code"] == "already_purged"
+    retained.refresh_from_db()
+    assert retained.deleted_at is not None
+    assert retained.purged_at is not None
 
 
 def test_purge_requires_edit_permission(operator):

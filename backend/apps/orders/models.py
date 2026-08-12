@@ -7,14 +7,26 @@ from django.db.models import Q
 
 class OrderQuerySet(models.QuerySet):
     def deleted(self):
-        return self.filter(deleted_at__isnull=False)
+        """Orders still available in the user-facing recycle bin.
+
+        A purged accounting document remains in ``all_objects`` so payments,
+        shipment and external-provider reconciliation keep their immutable
+        foreign-key target, but it must never reappear in the recycle bin.
+        """
+        return self.filter(
+            deleted_at__isnull=False,
+            purged_at__isnull=True,
+        )
 
 
 class LiveOrderManager(models.Manager):
     """Менеджер по умолчанию: удалённые (в корзине) заказы не видны нигде —
     ни в списках, ни в агрегатах, ни через related (client.orders/store.orders)."""
     def get_queryset(self):
-        return OrderQuerySet(self.model, using=self._db).filter(deleted_at__isnull=True)
+        return OrderQuerySet(self.model, using=self._db).filter(
+            deleted_at__isnull=True,
+            purged_at__isnull=True,
+        )
 
 
 class Order(models.Model):
@@ -88,6 +100,15 @@ class Order(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="deleted_orders",
     )
+    # Permanent removal of a business document is logical whenever it has
+    # operational history. The row stays addressable through ``all_objects``
+    # for payments, shipment and provider reconciliation, while every
+    # user-facing manager and the recycle bin hide it.
+    purged_at = models.DateTimeField(null=True, blank=True)
+    purged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="purged_orders",
+    )
 
     # objects — только «живые» заказы (по умолчанию везде). all_objects — включая корзину.
     objects = LiveOrderManager()
@@ -117,6 +138,13 @@ class Order(models.Model):
             ),
         ]
         constraints = [
+            models.CheckConstraint(
+                name="order_purged_only_from_trash",
+                condition=(
+                    Q(purged_at__isnull=True)
+                    | Q(deleted_at__isnull=False)
+                ),
+            ),
             models.UniqueConstraint(
                 fields=["loading_camera"],
                 condition=(

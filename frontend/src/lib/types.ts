@@ -705,7 +705,7 @@ export interface GrainWeighing {
   kind: "gross" | "tare";
   weight_kg: number;
   scale_number: string;
-  source: "auto" | "manual";
+  source: "auto" | "manual" | "scale";
   manual_reason: string;
   previous_weight_kg: number | null;
   operator_name: string | null;

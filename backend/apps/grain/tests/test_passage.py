@@ -6,10 +6,14 @@
 поэтому направление проверяется отдельно от общего потока.
 """
 
+from decimal import Decimal
+from unittest.mock import patch
+
 import pytest
 
 from apps.grain import statuses as st
 from apps.grain.models import GrainMovement, Wagon
+from apps.shipments import scale
 
 pytestmark = pytest.mark.django_db
 
@@ -33,11 +37,17 @@ def _open_passage(auth_client, user, cargo="Отруби", number="123 ABC 02"):
 
 
 def _weigh(auth_client, user, wagon_id, path, weight):
-    return auth_client(user).post(
-        f"/api/grain/wagons/{wagon_id}/{path}/",
-        {"weight_kg": weight, "source": "manual", "manual_reason": "весовая"},
-        format="json",
+    reading = scale.ScaleReading(
+        weight_kg=Decimal(weight),
+        age_seconds=Decimal("0.2"),
+        updated_at="2026-08-12T10:00:00Z",
     )
+    with patch.object(scale, "read_truck_scale", return_value=reading):
+        return auth_client(user).post(
+            f"/api/grain/wagons/{wagon_id}/{path}/",
+            {},
+            format="json",
+        )
 
 
 def test_passage_net_is_exit_minus_entry(auth_client, gate_operator):

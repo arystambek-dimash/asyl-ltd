@@ -1,19 +1,21 @@
 "use client";
 import { use, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Camera, Check, Scale, TrainFront, Warehouse } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ArrowLeft, Camera, Check, LoaderCircle, Scale, TrainFront, Trash2, Warehouse } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataGate } from "@/components/ui/data-state";
+import { GrainWagonDeleteDialog } from "@/components/grain/wagon-delete-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { GRAIN_STATUS_TONE, formatKg } from "@/lib/grain";
+import { GRAIN_STATUS_TONE, formatKg, isGrainWagonDeleteSupported } from "@/lib/grain";
 import { useApi } from "@/lib/use-api";
 import { cn, formatDateTime } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
@@ -28,36 +30,17 @@ function InfoRow({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-function WeightField({
-  label,
-  value,
-  onChange,
-  reason,
-  onReason,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  reason: string;
-  onReason: (value: string) => void;
-}) {
+function ScaleCaptureButton({ busy, label, onClick }: { busy: boolean; label: string; onClick: () => void }) {
   return (
-    <>
-      <div className="flex flex-col gap-1.5">
-        <Label>{label}</Label>
-        <Input
-          type="number"
-          min="1"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="в килограммах"
-        />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label>Причина ручного ввода *</Label>
-        <Input value={reason} onChange={(e) => onReason(e.target.value)} placeholder="например: весы без связи" />
-      </div>
-    </>
+    <Button
+      className="h-auto min-h-10 whitespace-normal py-2.5 text-center"
+      disabled={busy}
+      aria-busy={busy}
+      onClick={onClick}
+    >
+      {busy ? <LoaderCircle className="animate-spin" /> : <Scale />}
+      {busy ? "Получаю вес с весов…" : label}
+    </Button>
   );
 }
 
@@ -66,7 +49,6 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
   const { me } = useAuth();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [weight, setWeight] = useState("");
   const [reason, setReason] = useState("");
   const [decision, setDecision] = useState("accepted");
   const [moisture, setMoisture] = useState("");
@@ -91,12 +73,13 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
       onChanged();
     } catch (e) {
       setError(apiError(e));
+      // A mutation can commit even when its HTTP response is lost. Reloading
+      // prevents an operator from repeating an already completed weighing.
+      onChanged();
     } finally {
       setBusy(false);
     }
   }
-
-  const weighBody = () => ({ weight_kg: Number(weight), source: "manual", manual_reason: reason });
 
   let body: React.ReactNode = null;
   const passage = wagon.direction === "passage";
@@ -105,19 +88,14 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
       <>
         <div className="rounded-xl border border-sky-100 bg-sky-50 p-3 text-sm text-sky-950">
           {passage
-            ? `Машина заехала пустой за «${wagon.cargo_name || "грузом"}». Взвесьте её до погрузки — это вес заезда.`
-            : `Зафиксируйте полный входной вес. После этого система покажет маршрут к силосу «${wagon.assigned_silo_name}».`}
+            ? `Поставьте пустую машину на весы перед погрузкой «${wagon.cargo_name || "груза"}». Система сама получит текущий вес.`
+            : `Поставьте поезд на входные весы. Система сама получит полный вес и покажет маршрут к силосу «${wagon.assigned_silo_name}».`}
         </div>
-        <WeightField
-          label={passage ? "Вес пустой машины, кг" : "Входной общий вес, кг"}
-          value={weight}
-          onChange={setWeight}
-          reason={reason}
-          onReason={setReason}
+        <ScaleCaptureButton
+          busy={busy}
+          label={passage ? "Получить вес пустой и отправить на погрузку" : "Получить входной вес и направить к силосу"}
+          onClick={() => void act("entry-weight")}
         />
-        <Button disabled={busy || !weight || !reason} onClick={() => void act("entry-weight", weighBody())}>
-          {passage ? "Сохранить и отправить на погрузку" : "Сохранить и направить к силосу"}
-        </Button>
       </>
     );
   } else if (wagon.workflow === "simple" && wagon.status === "at_silo" && can(me, "grain.weigh")) {
@@ -125,19 +103,14 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
       <>
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
           {passage
-            ? `Машина на погрузке «${wagon.cargo_name || "груза"}». Когда загрузят — взвесьте гружёную: разница и есть вывезенный вес.`
-            : `Поезд находится у силоса «${wagon.assigned_silo_name}». Он может оставаться здесь несколько дней — при выезде внесите контрольный вес.`}
+            ? `После погрузки «${wagon.cargo_name || "груза"}» поставьте машину на весы. Система получит вес, рассчитает вывезенное нетто и завершит рейс.`
+            : `Перед выездом поставьте поезд на весы. Система получит контрольный вес и рассчитает фактическое нетто.`}
         </div>
-        <WeightField
-          label={passage ? "Вес гружёной машины, кг" : "Выходной вес после разгрузки, кг"}
-          value={weight}
-          onChange={setWeight}
-          reason={reason}
-          onReason={setReason}
+        <ScaleCaptureButton
+          busy={busy}
+          label={passage ? "Получить вес гружёной и завершить вывоз" : "Получить выходной вес и рассчитать нетто"}
+          onClick={() => void act("exit-weight")}
         />
-        <Button disabled={busy || !weight || !reason} onClick={() => void act("exit-weight", weighBody())}>
-          {passage ? "Рассчитать вывезенный вес" : "Рассчитать нетто и завершить"}
-        </Button>
       </>
     );
   } else if (wagon.workflow === "simple" && wagon.status === "weight_discrepancy" && can(me, "grain.inventory")) {
@@ -195,10 +168,10 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
   } else if (wagon.status === "arrived" && can(me, "grain.weigh")) {
     body = (
       <>
-        <WeightField label="Брутто, кг" value={weight} onChange={setWeight} reason={reason} onReason={setReason} />
-        <Button disabled={busy || !weight || !reason} onClick={() => void act("gross", weighBody())}>
-          Зафиксировать брутто
-        </Button>
+        <div className="rounded-xl border border-sky-100 bg-sky-50 p-3 text-sm text-sky-950">
+          Поставьте вагон на весы. Система сама получит текущее брутто и сохранит его.
+        </div>
+        <ScaleCaptureButton busy={busy} label="Получить вес брутто" onClick={() => void act("gross")} />
       </>
     );
   } else if (wagon.status === "lab_pending" && can(me, "grain.lab")) {
@@ -302,10 +275,10 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
   ) {
     body = (
       <>
-        <WeightField label="Тара, кг" value={weight} onChange={setWeight} reason={reason} onReason={setReason} />
-        <Button disabled={busy || !weight || !reason} onClick={() => void act("tare", weighBody())}>
-          Зафиксировать тару
-        </Button>
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+          После разгрузки поставьте вагон на весы. Система сама получит тару и рассчитает нетто.
+        </div>
+        <ScaleCaptureButton busy={busy} label="Получить вес тары" onClick={() => void act("tare")} />
       </>
     );
   } else if (wagon.status === "weight_discrepancy" && can(me, "grain.inventory")) {
@@ -354,7 +327,11 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
       </CardHeader>
       <CardContent className="flex flex-col gap-3 p-4 pt-2">
         {body}
-        {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
+        {error && (
+          <p role="alert" className="text-sm text-[var(--destructive)]">
+            {error}
+          </p>
+        )}
       </CardContent>
     </Card>
   );
@@ -419,8 +396,11 @@ function SimpleFlowProgress({ wagon }: { wagon: GrainWagon }) {
 
 function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const router = useRouter();
+  const { me } = useAuth();
   const { data: wagon, loading, error, reload } = useApi<GrainWagon>(`/grain/wagons/${id}/`);
   const { data: timeline, reload: reloadTimeline } = useApi<GrainTimelineEvent[]>(`/grain/wagons/${id}/timeline/`);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (!wagon) {
     return (
@@ -434,6 +414,8 @@ function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
     void reload();
     void reloadTimeline();
   }
+
+  const canDelete = can(me, "grain.delete") && isGrainWagonDeleteSupported(wagon.status);
 
   return (
     <AppShell title="Приход и проход" section="Работа">
@@ -450,6 +432,18 @@ function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
           {wagon.status_label}
         </Badge>
         {wagon.unplanned && <Badge tone="warning">внеплановый</Badge>}
+        {canDelete && (
+          <Button
+            className="ml-auto"
+            size="sm"
+            variant="destructive"
+            onClick={() => {
+              setDeleteOpen(true);
+            }}
+          >
+            <Trash2 /> Удалить рейс
+          </Button>
+        )}
       </div>
 
       <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -477,7 +471,11 @@ function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
             ))}
           </Card>
 
-          <StageAction wagon={wagon} onChanged={refresh} />
+          <StageAction
+            key={`${wagon.status}:${wagon.gross_weight_kg}:${wagon.tare_weight_kg}`}
+            wagon={wagon}
+            onChanged={refresh}
+          />
 
           <Card>
             <CardHeader className="p-4 pb-2">
@@ -569,6 +567,13 @@ function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
           )}
         </aside>
       </div>
+
+      <GrainWagonDeleteDialog
+        wagon={wagon}
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        onDeleted={() => router.replace("/grain")}
+      />
     </AppShell>
   );
 }

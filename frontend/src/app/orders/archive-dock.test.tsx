@@ -1,8 +1,15 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ArchiveDock } from "@/components/orders/archive-dock";
 import type { Order } from "@/lib/types";
+
+const deleteMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/api", () => ({
+  api: { delete: deleteMock, post: vi.fn() },
+  apiError: () => "Не удалось удалить заказ из архива",
+}));
 
 const archivedOrder = {
   id: 7,
@@ -14,6 +21,10 @@ const archivedOrder = {
 } as Order;
 
 describe("ArchiveDock", () => {
+  beforeEach(() => {
+    deleteMock.mockReset();
+  });
+
   it("exposes a related dialog, enters it, and restores trigger focus on Escape", async () => {
     const user = userEvent.setup();
     render(<ArchiveDock trashed={[]} count={0} onOpenArchive={vi.fn()} onChanged={vi.fn()} />);
@@ -83,20 +94,54 @@ describe("ArchiveDock", () => {
 
     const trigger = screen.getByRole("button", { name: "Архив заказов" });
     await user.click(trigger);
-    const purge = screen.getByTitle("Удалить навсегда");
+    const purge = screen.getByTitle("Удалить из архива");
     await user.click(purge);
 
-    expect(screen.getByRole("dialog", { name: "Удалить заказ навсегда?" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Удалить заказ из архива?" })).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Последние заказы в архиве" })).toBeInTheDocument();
 
     await user.keyboard("{Escape}");
 
-    expect(screen.queryByRole("dialog", { name: "Удалить заказ навсегда?" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Удалить заказ из архива?" })).not.toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Последние заказы в архиве" })).toBeInTheDocument();
     expect(purge).toHaveFocus();
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Последние заказы в архиве" })).not.toBeInTheDocument();
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("keeps the purge confirmation open and exposes the API error when deletion fails", async () => {
+    deleteMock.mockRejectedValue(new Error("protected financial record"));
+    const user = userEvent.setup();
+    const onChanged = vi.fn();
+    render(<ArchiveDock trashed={[archivedOrder]} count={1} onOpenArchive={vi.fn()} onChanged={onChanged} />);
+
+    await user.click(screen.getByRole("button", { name: "Архив заказов" }));
+    await user.click(screen.getByTitle("Удалить из архива"));
+    const confirmation = screen.getByRole("dialog", { name: "Удалить заказ из архива?" });
+    await user.click(within(confirmation).getByRole("button", { name: "Удалить из архива" }));
+
+    expect(deleteMock).toHaveBeenCalledWith("/orders/7/purge/");
+    expect(await screen.findByText("Не удалось удалить заказ из архива")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Удалить заказ из архива?" })).toBeInTheDocument();
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("closes and refreshes the archive only after a successful purge", async () => {
+    deleteMock.mockResolvedValue({ status: 204 });
+    const user = userEvent.setup();
+    const onChanged = vi.fn();
+    render(<ArchiveDock trashed={[archivedOrder]} count={1} onOpenArchive={vi.fn()} onChanged={onChanged} />);
+
+    await user.click(screen.getByRole("button", { name: "Архив заказов" }));
+    await user.click(screen.getByTitle("Удалить из архива"));
+    const confirmation = screen.getByRole("dialog", { name: "Удалить заказ из архива?" });
+    expect(confirmation).toHaveTextContent("Проведённые оплаты, отгрузка и история AI останутся в учёте.");
+    await user.click(within(confirmation).getByRole("button", { name: "Удалить из архива" }));
+
+    expect(deleteMock).toHaveBeenCalledWith("/orders/7/purge/");
+    await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("dialog", { name: "Удалить заказ из архива?" })).not.toBeInTheDocument();
   });
 });

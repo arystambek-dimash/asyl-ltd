@@ -1215,6 +1215,11 @@ def soft_delete_order(order: Order, user) -> Order:
         raise ValidationError(
             {"detail": "Заказ не найден", "code": "not_found"}
         ) from exc
+    if order.purged_at is not None:
+        raise ValidationError({
+            "detail": "Заказ удалён безвозвратно",
+            "code": "already_purged",
+        })
     if order.deleted_at is not None:
         raise ValidationError({"detail": "Заказ уже в корзине", "code": "already_deleted"})
     order.deleted_at = timezone.now()
@@ -1234,6 +1239,11 @@ def restore_order(order: Order, user) -> Order:
         raise ValidationError(
             {"detail": "Заказ не найден", "code": "not_found"}
         ) from exc
+    if order.purged_at is not None:
+        raise ValidationError({
+            "detail": "Заказ удалён безвозвратно и не может быть восстановлен",
+            "code": "already_purged",
+        })
     if order.deleted_at is None:
         raise ValidationError({"detail": "Заказ не в корзине", "code": "not_deleted"})
     order.deleted_at = None
@@ -1246,10 +1256,14 @@ def restore_order(order: Order, user) -> Order:
 
 @transaction.atomic
 def purge_order(order: Order, user) -> None:
-    """Permanently remove only an unprocessed order already in the trash.
+    """Permanently remove an order from the user-facing system.
 
-    Financial, shipment and AI history are retained. The row lock serializes
-    purge with restore/delete so a stale view object cannot delete a live row.
+    Only a pristine draft can be physically deleted. Any document that has
+    left the draft state or acquired payment, shipment, AI or approval history
+    is tombstoned instead: it disappears from the recycle bin, while its row
+    and related accounting records remain available to reconciliation code via
+    ``Order.all_objects``. The row lock serializes purge with restore/delete so
+    a stale view object cannot delete a live or already-purged row.
     """
     try:
         order = Order.all_objects.select_for_update().get(pk=order.pk)
@@ -1257,19 +1271,38 @@ def purge_order(order: Order, user) -> None:
         raise ValidationError(
             {"detail": "Заказ не найден", "code": "not_found"}
         ) from exc
+    if order.purged_at is not None:
+        raise ValidationError({
+            "detail": "Заказ уже удалён безвозвратно",
+            "code": "already_purged",
+        })
     if order.deleted_at is None:
         raise ValidationError(
             {"detail": "Сначала переместите заказ в корзину", "code": "not_deleted"})
-    if (
-        order.status == "shipped"
+    must_retain_history = (
+        order.status != "draft"
         or order.payments.exists()
         or hasattr(order, "shipment")
         or order.ai_counting_sessions.exists()
-    ):
-        raise ValidationError({
-            "detail": "Заказ с проведёнными операциями нельзя удалить безвозвратно",
-            "code": "financial_record_protected",
-        })
+        or order.status_requests.exists()
+    )
+    if must_retain_history:
+        order.purged_at = timezone.now()
+        order.purged_by = user
+        order.save(update_fields=["purged_at", "purged_by"])
+        log_event(
+            "order",
+            f"Заказ #{order.id} удалён из архива с сохранением учётной истории",
+            user=user,
+            order=order,
+            payload={
+                "order_id": order.id,
+                "client_id": order.client_id,
+                "total_amount": str(order.total_amount),
+                "retained_for_audit": True,
+            },
+        )
+        return
     log_event("order", f"Заказ #{order.id} удалён навсегда", user=user,
               payload={"order_id": order.id, "client_id": order.client_id,
                        "total_amount": str(order.total_amount)})

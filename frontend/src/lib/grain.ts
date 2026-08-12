@@ -1,5 +1,20 @@
 import { formatMoney } from "@/lib/utils";
 
+const FINISHED_WAGON_STATUSES = new Set(["completed", "cancelled", "return_to_supplier", "exited"]);
+
+/** Used only to explain the consequence in the UI; deletion eligibility is
+ * always decided by the backend. */
+export function isFinishedGrainWagon(status: string): boolean {
+  return FINISHED_WAGON_STATUSES.has(status);
+}
+
+/** Expected records are managed through their supply, while unplanned OCR
+ * records must first be approved or cancelled. The backend remains the final
+ * authority for every other status. */
+export function isGrainWagonDeleteSupported(status: string): boolean {
+  return status !== "expected" && status !== "unplanned";
+}
+
 type Tone = "muted" | "primary" | "success" | "warning" | "destructive";
 
 /** Тона статусов вагона; подписи приходят с бэка (status_label). */

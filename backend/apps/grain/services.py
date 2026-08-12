@@ -5,13 +5,14 @@
 """
 
 from datetime import timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.db import transaction
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 
 from apps.eventlog.services import log_event
+from apps.shipments import scale
 
 from . import statuses as st
 from .models import (
@@ -279,6 +280,8 @@ def _record_weighing(
     scale_number="",
     source="manual",
     manual_reason="",
+    scale_age_seconds=None,
+    scale_updated_at=None,
 ):
     try:
         weight_kg = int(weight_kg)
@@ -299,6 +302,11 @@ def _record_weighing(
         previous_weight_kg=previous,
         operator=user,
     )
+    scale_payload = {}
+    if scale_age_seconds is not None:
+        scale_payload["scale_age_seconds"] = str(scale_age_seconds)
+    if scale_updated_at is not None:
+        scale_payload["scale_updated_at"] = scale_updated_at
     _log(
         wagon,
         "weighing",
@@ -310,8 +318,109 @@ def _record_weighing(
         source=source,
         previous_weight_kg=previous,
         manual_reason=manual_reason,
+        **scale_payload,
     )
     return weight_kg
+
+
+def _whole_scale_weight_kg(reading: scale.ScaleReading) -> int:
+    """Round a strict Decimal scale sample to the grain model's whole kg."""
+    weight = reading.weight_kg.to_integral_value(rounding=ROUND_HALF_UP)
+    if weight <= 0:
+        raise scale.TruckScaleNotReady(
+            "Показание весов после округления должно быть не меньше 1 кг."
+        )
+    return int(weight)
+
+
+def _ensure_scale_action_ready(wagon: Wagon, action: str) -> None:
+    """Reject stale or mismatched commands before contacting the scale."""
+    targets = {
+        "gross": st.GROSS_WEIGHED,
+        "tare": st.TARE_WEIGHED,
+        "entry": st.AT_SILO,
+        "exit": st.TARE_WEIGHED,
+    }
+    try:
+        target = targets[action]
+    except KeyError as exc:
+        raise ValueError(f"Unknown grain scale action: {action}") from exc
+
+    simple_action = action in {"entry", "exit"}
+    if simple_action != (wagon.workflow == "simple"):
+        raise _error(
+            "Команда взвешивания не соответствует маршруту вагона",
+            "wrong_scale_action",
+        )
+    ensure_transition(wagon, target)
+
+
+def record_scale_weight(
+    wagon: Wagon,
+    action: str,
+    user,
+) -> Wagon:
+    """Read the physical scale, then atomically apply one weighing command.
+
+    Network I/O intentionally happens before the database transaction: a slow
+    scale must not hold a row lock.  The write phase locks and reloads the
+    wagon, so concurrent double clicks cannot record the same transition twice.
+    """
+    _ensure_scale_action_ready(wagon, action)
+    expected_status = wagon.status
+    reading = scale.read_truck_scale()
+    return _store_scale_weight(
+        wagon.pk,
+        action,
+        reading,
+        user,
+        expected_status=expected_status,
+    )
+
+
+@transaction.atomic
+def _store_scale_weight(
+    wagon_id: int,
+    action: str,
+    reading: scale.ScaleReading,
+    user,
+    *,
+    expected_status: str,
+) -> Wagon:
+    # Lock only the wagon row. Nullable joins cannot be locked by PostgreSQL,
+    # and related objects are loaded lazily where a transition needs them.
+    wagon = Wagon.objects.select_for_update(of=("self",)).get(pk=wagon_id)
+    if wagon.status != expected_status:
+        raise _error(
+            "Состояние вагона изменилось во время чтения весов — повторите взвешивание",
+            "wagon_changed_during_scale_read",
+        )
+    _ensure_scale_action_ready(wagon, action)
+    kwargs = {
+        "source": "scale",
+        "scale_age_seconds": reading.age_seconds,
+        "scale_updated_at": reading.updated_at,
+    }
+    weight_kg = _whole_scale_weight_kg(reading)
+    if action == "gross":
+        return record_gross(wagon, weight_kg, user, **kwargs)
+    if action == "tare":
+        return record_tare(wagon, weight_kg, user, **kwargs)
+    if action == "entry":
+        record = (
+            record_passage_entry_weight
+            if wagon.is_passage
+            else record_simple_entry_weight
+        )
+        return record(wagon, weight_kg, user, **kwargs)
+    if action == "exit":
+        record = (
+            record_passage_exit_weight
+            if wagon.is_passage
+            else record_simple_exit_weight
+        )
+        return record(wagon, weight_kg, user, **kwargs)
+    raise ValueError(f"Unknown grain scale action: {action}")
 
 
 @transaction.atomic
@@ -345,7 +454,8 @@ def record_simple_entry_weight(wagon: Wagon, weight_kg: int, user, **kwargs) -> 
         wagon,
         st.AT_SILO,
         user,
-        f"Поезд {wagon.number} взвешен и направлен в силос «{wagon.assigned_silo.name}»",
+        f"Поезд {wagon.number} взвешен и направлен в силос "
+        f"«{wagon.assigned_silo.name}»",
         gross_weight_kg=wagon.gross_weight_kg,
         silo_id=wagon.assigned_silo_id,
     )
@@ -848,7 +958,14 @@ def register_exit(wagon: Wagon, user, note: str = "") -> Wagon:
 
 @transaction.atomic
 def adjust_silo(
-    silo: Silo, delta_kg: int, movement_type: str, note: str, user
+    silo: Silo,
+    delta_kg: int,
+    movement_type: str,
+    note: str,
+    user,
+    *,
+    supply: GrainSupply | None = None,
+    batch_number: str = "",
 ) -> GrainMovement:
     if movement_type not in (
         "adjustment",
@@ -878,6 +995,8 @@ def adjust_silo(
         movement_type=movement_type,
         delta_kg=delta_kg,
         balance_after_kg=new_balance,
+        supply=supply,
+        batch_number=batch_number,
         note=note,
         created_by=user,
     )
@@ -889,6 +1008,8 @@ def adjust_silo(
             "silo_id": silo.pk,
             "delta_kg": delta_kg,
             "movement_type": movement_type,
+            "supply_id": supply.pk if supply is not None else None,
+            "batch_number": batch_number,
         },
     )
     return movement
@@ -993,16 +1114,44 @@ def record_passage_exit_weight(wagon: Wagon, weight_kg: int, user, **kwargs) -> 
     return register_exit(wagon, user, note="Выезд после загрузки")
 
 
-# ── Удаление завершённого рейса ────────────────────────────────────────────
+# ── Удаление рейса ─────────────────────────────────────────────────────────
+
+
+DELETE_REASON_MIN_LENGTH = 5
+DELETE_REASON_MAX_LENGTH = 200
+UNRECORDED_GRAIN_CONFIRMATION_STATUSES = {st.UNLOADING, st.UNLOADING_COMPLETED}
+
+
+def _normalized_delete_reason(reason) -> str:
+    if not isinstance(reason, str):
+        raise _error("Причина удаления должна быть строкой", "bad_delete_reason")
+    normalized = " ".join(reason.split())
+    if normalized and len(normalized) > DELETE_REASON_MAX_LENGTH:
+        raise _error(
+            f"Причина удаления не должна превышать {DELETE_REASON_MAX_LENGTH} символов",
+            "delete_reason_too_long",
+        )
+    return normalized
+
+
+def _is_active_deletable_wagon(wagon: Wagon) -> bool:
+    return wagon.status in st.ON_SITE_STATUSES
 
 
 @transaction.atomic
-def delete_finished_wagon(wagon: Wagon, user, reason: str = "") -> dict:
-    """Удалить завершённый рейс, вернув силос к честному остатку.
+def delete_wagon(
+    wagon: Wagon,
+    user,
+    reason: str = "",
+    *,
+    confirm_unrecorded_grain_handled=False,
+) -> dict:
+    """Удалить допустимый рейс, не искажая остатки и резервы.
 
-    Удалять можно только рейс, который уже никуда не едет: незакрытый вагон
-    стоит сначала довести или отменить, иначе пропадёт запись о технике,
-    физически находящейся на территории.
+    Сильное право ``grain.delete`` позволяет удалить завершённый рейс либо
+    ошибочную запись, пока транспорт числится на территории. Для активной
+    записи обязательна причина. Ожидаемые и ещё не зарегистрированные рейсы
+    удаляются через управление поставкой, а не через этот аварийный контракт.
 
     Оприходованное зерно не исчезает молча: на каждое движение прихода
     пишется компенсирующий расход, поэтому остаток силоса сходится с
@@ -1011,16 +1160,84 @@ def delete_finished_wagon(wagon: Wagon, user, reason: str = "") -> dict:
 
     Проход силоса не касается, откатывать там нечего.
     """
-    if wagon.status not in st.TERMINAL_STATUSES and wagon.status != st.EXITED:
+    try:
+        wagon = Wagon.objects.select_for_update(of=("self",)).get(pk=wagon.pk)
+    except Wagon.DoesNotExist as exc:
+        raise NotFound(
+            {"detail": "Рейс уже удалён", "code": "wagon_not_found"}
+        ) from exc
+    supply = (
+        GrainSupply.objects.select_for_update().get(pk=wagon.supply_id)
+        if wagon.supply_id is not None
+        else None
+    )
+    reason = _normalized_delete_reason(reason)
+    active_deletion = _is_active_deletable_wagon(wagon)
+    finished = wagon.status in st.TERMINAL_STATUSES or wagon.status == st.EXITED
+    if not finished and not active_deletion:
         raise _error(
-            "Удалить можно только завершённый рейс. "
-            "Сначала завершите или отмените его.",
-            "wagon_not_finished",
+            "Рейс нельзя удалить на текущем этапе. "
+            "Сначала завершите текущую физическую операцию.",
+            "wagon_delete_not_allowed",
+        )
+    if active_deletion and len(reason) < DELETE_REASON_MIN_LENGTH:
+        raise _error(
+            f"Укажите причину удаления (минимум {DELETE_REASON_MIN_LENGTH} символов)",
+            "delete_reason_required",
+        )
+    needs_unrecorded_grain_confirmation = (
+        active_deletion
+        and wagon.direction == Wagon.INTAKE
+        and wagon.status in UNRECORDED_GRAIN_CONFIRMATION_STATUSES
+    )
+    if (
+        needs_unrecorded_grain_confirmation
+        and confirm_unrecorded_grain_handled is not True
+    ):
+        raise _error(
+            "Подтвердите, что физически разгруженное зерно уже учтено "
+            "отдельно либо фактической разгрузки не было",
+            "unrecorded_grain_confirmation_required",
         )
 
     label = wagon.number or f"#{wagon.pk}"
+    reservation = SiloReservation.objects.filter(wagon=wagon).values(
+        "id", "silo_id", "amount_kg", "active"
+    ).first()
+    income_movements = list(
+        wagon.movements.filter(movement_type="income")
+        .select_related("silo")
+        .order_by("id")
+    )
+    snapshot = {
+        "wagon_id": wagon.pk,
+        "supply_id": wagon.supply_id,
+        "number": wagon.number,
+        "direction": wagon.direction,
+        "workflow": wagon.workflow,
+        "status": wagon.status,
+        "gross_weight_kg": wagon.gross_weight_kg,
+        "tare_weight_kg": wagon.tare_weight_kg,
+        "net_weight_kg": wagon.net_weight_kg,
+        "assigned_silo_id": wagon.assigned_silo_id,
+        "unloading_started_at": (
+            wagon.unloading_started_at.isoformat()
+            if wagon.unloading_started_at
+            else None
+        ),
+        "unloading_finished_at": (
+            wagon.unloading_finished_at.isoformat()
+            if wagon.unloading_finished_at
+            else None
+        ),
+        "weighing_count": wagon.weighings.count(),
+        "lab_check_count": wagon.lab_checks.count(),
+        "allocation_count": wagon.allocations.count(),
+        "income_movement_ids": [movement.pk for movement in income_movements],
+        "reservation": reservation,
+    }
     reverted_kg = 0
-    for movement in wagon.movements.filter(movement_type="income"):
+    for movement in income_movements:
         adjust_silo(
             movement.silo,
             -movement.delta_kg,
@@ -1030,11 +1247,16 @@ def delete_finished_wagon(wagon: Wagon, user, reason: str = "") -> dict:
                 + (f": {reason}" if reason else "")
             ),
             user=user,
+            supply=movement.supply,
+            batch_number=f"DELETE-WAGON-{wagon.pk}",
         )
         reverted_kg += movement.delta_kg
 
     # Леджер переживает удалённый рейс: обнуляем ссылку, а не запись.
     wagon.movements.update(wagon=None)
+    released_reservation_kg = (
+        reservation["amount_kg"] if reservation and reservation["active"] else 0
+    )
     SiloReservation.objects.filter(wagon=wagon).delete()
     WeighingRecord.objects.filter(wagon=wagon).delete()
     LabCheck.objects.filter(wagon=wagon).delete()
@@ -1046,21 +1268,28 @@ def delete_finished_wagon(wagon: Wagon, user, reason: str = "") -> dict:
         + (f", возвращено из силоса {reverted_kg} кг" if reverted_kg else ""),
         user=user,
         payload={
-            "wagon_id": wagon.pk,
-            "number": wagon.number,
-            "direction": wagon.direction,
-            "net_weight_kg": wagon.net_weight_kg,
+            **snapshot,
             "reverted_kg": reverted_kg,
+            "released_reservation_kg": released_reservation_kg,
+            "active_deletion": active_deletion,
+            "unrecorded_grain_confirmation_required": (
+                needs_unrecorded_grain_confirmation
+            ),
+            "confirm_unrecorded_grain_handled": (
+                confirm_unrecorded_grain_handled is True
+            ),
             "reason": reason,
         },
     )
-    supply = wagon.supply
     wagon.delete()
     # Поставка без вагонов больше ничего не ждёт.
     if supply and not supply.wagons.exists():
         supply.status = "closed"
         supply.save(update_fields=["status"])
-    return {"reverted_kg": reverted_kg}
+    return {
+        "reverted_kg": reverted_kg,
+        "released_reservation_kg": released_reservation_kg,
+    }
 
 
 # ── Автоматический приход по камере ────────────────────────────────────────
