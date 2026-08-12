@@ -3,9 +3,11 @@ from rest_framework import mixins, viewsets
 from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
 
+from apps.clients.models import Client
 from apps.common.permissions import PermViewSetMixin
 from apps.common.query_params import parse_iso_date, validate_date_range
 from apps.orders.models import Order
+from apps.sales.access import assigned_department_id, scope_by_client_department
 
 from .models import EventLog
 from .serializers import EventLogSerializer
@@ -25,10 +27,28 @@ class EventLogViewSet(PermViewSetMixin, mixins.ListModelMixin, viewsets.GenericV
     required_perms = {"list": "events.view"}
 
     def get_queryset(self):
-        visible_orders = Order.objects.all()
-        # Системные события и события заказов доступны в едином журнале.
+        ownership_department_id = assigned_department_id(self.request.user)
+        visible_orders = scope_by_client_department(
+            Order.objects.all(),
+            self.request.user,
+            client_path="client",
+        )
+        system_events = Q(order__isnull=True)
+        if ownership_department_id is not None:
+            visible_client_ids = list(
+                Client.objects.filter(
+                    department_id=ownership_department_id,
+                ).values_list("pk", flat=True)
+            )
+            # Client-level events have no order FK, so their ownership marker
+            # lives in the JSON payload. Rows without a verifiable client are
+            # hidden fail-closed: an old order event becomes order=NULL after
+            # hard deletion and must never be mistaken for a global event.
+            system_events &= Q(payload__client_id__in=visible_client_ids)
+
+        # Системные события и события видимых заказов доступны в едином журнале.
         qs = EventLog.objects.select_related("user").filter(
-            Q(order__isnull=True) | Q(order__in=visible_orders)
+            system_events | Q(order__in=visible_orders)
         )
         p = self.request.query_params
         raw_order_id = p.get("order")

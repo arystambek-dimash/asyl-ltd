@@ -23,6 +23,14 @@ x-backend-environment: &backend-environment
   AI_SERVICE_URL: ${AI_SERVICE_URL:-${CAMERA_AI_URL:-}}
   AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY:-${CAMERA_AI_KEY:-}}
   AI_SERVICE_TIMEOUT: ${AI_SERVICE_TIMEOUT:-10}
+  # Физические автомобильные весы доступны серверу по Tailscale. Браузер к
+  # этому адресу не обращается: оба замера делает только backend.
+  # Single `-` is intentional: an explicitly empty production variable is an
+  # emergency kill switch, while an unset variable uses the Tailscale default.
+  TRUCK_SCALE_API_URL: ${TRUCK_SCALE_API_URL-http://100.77.27.95:8000/api/v1/weight}
+  TRUCK_SCALE_TIMEOUT_SECONDS: ${TRUCK_SCALE_TIMEOUT_SECONDS:-3}
+  TRUCK_SCALE_MAX_AGE_SECONDS: ${TRUCK_SCALE_MAX_AGE_SECONDS:-5}
+  TRUCK_SCALE_MAX_WEIGHT_KG: ${TRUCK_SCALE_MAX_WEIGHT_KG:-100000}
   CAMERA_PLAYBACK_URL: ${CAMERA_PLAYBACK_URL:-}
   GO2RTC_API_URL: ${GO2RTC_API_URL:-http://go2rtc:1984}
   CAMERA_EXPECTED_COUNT: ${CAMERA_EXPECTED_COUNT:-10}

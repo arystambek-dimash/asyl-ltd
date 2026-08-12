@@ -1029,12 +1029,71 @@ def can_set_truck_number(order: Order, user) -> bool:
 
 @transaction.atomic
 def set_truck_number(order: Order, value: str, user) -> Order:
+    # Serialize the number with scale capture/loading. A stale serializer or a
+    # second portal tab must not retag an already weighed truck.
+    caller_order = order
+    # Match the scale-capture lock order (AI reservation, then order) so a
+    # number correction cannot deadlock a simultaneous Monoblock start.
+    from apps.cameras.models import AiCountingSession
+
+    open_ai_session = (
+        AiCountingSession.objects.select_for_update()
+        .filter(order_id=order.pk, status__in=AiCountingSession.OPEN_STATUSES)
+        .first()
+    )
+    order = Order.objects.select_for_update().get(pk=order.pk)
     if not can_set_truck_number(order, user):
         raise ValidationError(
             {"detail": "Номер КАМАЗа задан другим пользователем", "code": "forbidden"})
+    if value != order.truck_number:
+        from apps.shipments.models import Shipment
+
+        shipment = Shipment.objects.select_for_update().filter(order_id=order.pk).only(
+            "weigh_in_source", "weigh_in_kg"
+        ).first()
+        has_scale_entry = bool(
+            shipment
+            and shipment.weigh_in_source == Shipment.WeightSource.SCALE
+            and shipment.weigh_in_kg is not None
+        )
+        if (
+            order.status in ("arrived", "loading", "loaded", "shipped")
+            or open_ai_session is not None
+        ):
+            raise ValidationError({
+                "detail": (
+                    "Номер КАМАЗа нельзя изменить после въездного взвешивания "
+                    "или начала погрузки"
+                ),
+                "code": "truck_number_locked",
+            })
+        if has_scale_entry:
+            # A deterministic AI-start failure closes its provisional session
+            # but deliberately leaves the physical entry sample for retry.
+            # Before loading starts, correcting a typo is still recoverable:
+            # invalidate that sample atomically so the new number must be
+            # weighed again and can never inherit the old truck's weight.
+            log_event(
+                "weigh_in_invalidated",
+                f"Входной вес машины {order.truck_number} сброшен при смене номера",
+                user=user,
+                order=order,
+                payload={
+                    "old_truck_number": order.truck_number,
+                    "new_truck_number": value,
+                    "invalidated_weight_kg": str(shipment.weigh_in_kg),
+                    "source": shipment.weigh_in_source,
+                },
+            )
+            shipment.delete()
     order.truck_number = value
     order.truck_number_set_by = user
     order.save(update_fields=["truck_number", "truck_number_set_by"])
+    # Preserve the existing service contract: callers historically observed
+    # their passed instance updated without having to use the return value.
+    caller_order.truck_number = value
+    caller_order.truck_number_set_by = user
+    caller_order.truck_number_set_by_id = user.pk
     log_event("status", f"Номер КАМАЗа: {value}", user=user, order=order,
               payload={"truck_number": value})
     notify(order.client, f"Ваш КАМАЗ {value} отправляется")

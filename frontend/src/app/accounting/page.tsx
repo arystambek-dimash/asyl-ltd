@@ -945,7 +945,7 @@ function CashierInner() {
         {tab === "journal" && canPayments && <PaymentJournalSection q={queue} log={journalLog} />}
 
         {tab === "transactions" && canTransactions && (
-          <TransactionsSection canConfirm={canPayments} canCreate={canCreatePayments} />
+          <TransactionsSection canConfirm={canPayments} canCreate={canCreatePayments} departments={departments ?? []} />
         )}
       </div>
     </AppShell>

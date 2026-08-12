@@ -1,11 +1,15 @@
-from apps.common.permissions import PermViewSetMixin, PermAPIViewMixin
-from rest_framework import viewsets, status
+from django.shortcuts import get_object_or_404
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Product, ClientPrice
+from apps.clients.models import Client
+from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
+from apps.sales.access import scope_by_client_department
+
+from .models import ClientPrice, Product
 from .serializers import ProductSerializer
 from .services import archive_product, restore_product
 
@@ -53,6 +57,10 @@ class ClientPricesView(PermAPIViewMixin, APIView):
     }
 
     def get(self, request):
+        # HEAD probes the endpoint/permission contract, not a concrete price
+        # lookup. Returning no body also avoids turning it into an ID oracle.
+        if request.method == "HEAD":
+            return Response()
         raw_client_id = request.query_params.get("client")
         if not raw_client_id:
             raise ValidationError({"client": "Выберите клиента."})
@@ -65,13 +73,17 @@ class ClientPricesView(PermAPIViewMixin, APIView):
         currency = (request.query_params.get("currency") or "").upper()
         if currency and currency not in dict(ClientPrice.CURRENCIES):
             raise ValidationError({"currency": "Выберите KZT или USD."})
-        qs = ClientPrice.objects.filter(client_id=client_id)
+        client = get_object_or_404(
+            scope_by_client_department(
+                Client.objects.only("id", "currency"),
+                request.user,
+            ),
+            pk=client_id,
+        )
+        qs = ClientPrice.objects.filter(client=client)
 
         if not currency:
-            currency = (
-                    qs.values_list("client__currency", flat=True).first()
-                    or "KZT"
-            )
+            currency = client.currency or "KZT"
 
         qs = qs.filter(currency=currency)
         return Response({

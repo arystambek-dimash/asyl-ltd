@@ -2,18 +2,49 @@
 
 from typing import ClassVar
 
-from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
-from apps.orders.models import Order
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
+from apps.orders.models import Order
+from apps.sales.access import scope_by_client_department
+
 from .. import ai, counting, sessions
+from ..models import AiCountingSession
 from ..serializers import CameraAiActionSerializer
 
 
+def _hidden_busy_metadata() -> dict:
+    """Expose that a camera is occupied without leaking its foreign owner."""
+    return {
+        "available": False,
+        "busy": True,
+        "owned_by_order": False,
+    }
+
+
+def _session_is_visible(session_id: int, user) -> bool:
+    sessions_qs = scope_by_client_department(
+        AiCountingSession.objects.filter(pk=session_id),
+        user,
+        client_path="order__client",
+    )
+    return sessions_qs.exists()
+
+
 def _busy_response(session, user=None) -> Response:
+    if user is not None and not _session_is_visible(session.pk, user):
+        return Response(
+            {
+                "detail": "AI-подсчёт занят другой отгрузкой",
+                "code": "ai_busy",
+                **_hidden_busy_metadata(),
+                "running": False,
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
     return Response(
         {
             "detail": f"AI-подсчёт занят заказом #{session.order_id}",
@@ -92,7 +123,12 @@ def _loading_order(request) -> Order | None:
     order_id = _order_id(request)
     if order_id is None:
         return None
-    return get_object_or_404(Order.objects.all(), pk=order_id)
+    orders = scope_by_client_department(
+        Order.objects.all(),
+        request.user,
+        client_path="client",
+    )
+    return get_object_or_404(orders, pk=order_id)
 
 
 def _complete_order(request) -> bool:
@@ -147,8 +183,22 @@ class CameraAiView(APIView):
         return [HasPerm("shipping.load")]
 
     def get(self, request, cam: str):
+        order_id = _order_id(request)
+        if order_id is not None:
+            order_id = _loading_order(request).pk
+
+        def get_status():
+            payload = counting.get_status(cam, order_id, request.user)
+            session_id = payload.get("session_id")
+            if session_id is not None and not _session_is_visible(
+                session_id,
+                request.user,
+            ):
+                return {"running": False, **_hidden_busy_metadata()}
+            return payload
+
         return _ai_response(
-            lambda: counting.get_status(cam, _order_id(request), request.user),
+            get_status,
             request.user,
         )
 

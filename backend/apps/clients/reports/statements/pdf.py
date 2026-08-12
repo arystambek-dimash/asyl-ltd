@@ -995,6 +995,7 @@ def build_all_clients_statement_pdf(
         date_to=None,
         departments=None,
         sections=None,
+        client_ids=None,
 ) -> bytes:
     """Build and render a consolidated PDF statement."""
     data = build_statement_data(
@@ -1002,5 +1003,6 @@ def build_all_clients_statement_pdf(
         date_to=date_to,
         departments=departments,
         sections=sections,
+        client_ids=client_ids,
     )
     return render_all_clients_statement_pdf(data)

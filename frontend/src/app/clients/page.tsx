@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
@@ -14,6 +14,7 @@ import { PasswordInput } from "@/components/ui/password-input";
 import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
+import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { ActionMenu, type ActionMenuItem } from "@/components/ui/action-menu";
 import { ActionCard } from "@/components/ui/action-card";
@@ -24,7 +25,6 @@ import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { LoadMore } from "@/components/ui/load-more";
 import { api, apiError } from "@/lib/api";
-import { finiteMoney } from "@/lib/currency-map";
 import { cn, currencySymbol, formatPhone, formatMoney, formatDateTime, sumDebtByCurrency } from "@/lib/utils";
 import { COUNTRIES } from "@/lib/countries";
 import { BarChart3, FileSpreadsheet, KeyRound, Pencil, Phone, Plus, Search, Tags, Trash2 } from "lucide-react";
@@ -32,7 +32,9 @@ import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ALL_CLIENTS_STATEMENT_SECTIONS, StatementExportModal } from "@/components/statement-export-modal";
-import type { Client, ReportSummary } from "@/lib/types";
+import type { Client, ClientDebt, Department, Me } from "@/lib/types";
+
+const NO_DEPARTMENT = "none";
 
 const schema = z.object({
   first_name: z.string().min(2, "Введите имя (мин. 2 символа)"),
@@ -47,6 +49,7 @@ const schema = z.object({
   bank: z.string().optional(),
   bank_account: z.string().optional(),
   currency: z.enum(["KZT", "USD"]),
+  department: z.string(),
 });
 type FormValues = z.infer<typeof schema>;
 
@@ -54,12 +57,21 @@ function ClientForm({
   onDone,
   onCancel,
   editing,
+  assignedDepartment,
 }: {
   onDone: () => void;
   onCancel: () => void;
   editing?: Client | null;
+  assignedDepartment: Me["sales_department"];
 }) {
   const [serverError, setServerError] = useState("");
+  const departmentChoiceTouched = useRef(Boolean(editing || assignedDepartment));
+  const {
+    data: departments,
+    loading: departmentsLoading,
+    error: departmentsError,
+    reload: reloadDepartments,
+  } = useApi<Department[]>(assignedDepartment ? null : "/departments/?all=1");
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: editing
@@ -73,6 +85,11 @@ function ClientForm({
           bank: editing.bank ?? "",
           bank_account: editing.bank_account ?? "",
           currency: editing.currency ?? "KZT",
+          department: assignedDepartment
+            ? String(assignedDepartment.id)
+            : editing.department
+              ? String(editing.department)
+              : "",
         }
       : {
           first_name: "",
@@ -84,14 +101,32 @@ function ClientForm({
           bank: "",
           bank_account: "",
           currency: "KZT",
+          department: assignedDepartment ? String(assignedDepartment.id) : "",
         },
   });
+
+  const currentDepartmentMissing =
+    editing?.department != null && !(departments ?? []).some((row) => row.id === editing.department);
+
+  useEffect(() => {
+    if (editing || assignedDepartment || !departments || departmentChoiceTouched.current) return;
+    const defaultDepartment =
+      departments.find((department) => department.is_active && department.is_default) ??
+      departments.find((department) => department.is_active);
+    if (defaultDepartment) form.setValue("department", String(defaultDepartment.id));
+    departmentChoiceTouched.current = true;
+  }, [assignedDepartment, departments, editing, form]);
 
   async function onSubmit(values: FormValues) {
     setServerError("");
     try {
-      if (editing) await api.patch(`/clients/${editing.id}/`, values);
-      else await api.post("/clients/", values);
+      const { department, ...clientValues } = values;
+      const payload = {
+        ...clientValues,
+        department: assignedDepartment?.id ?? (department ? Number(department) : null),
+      };
+      if (editing) await api.patch(`/clients/${editing.id}/`, payload);
+      else await api.post("/clients/", payload);
       onDone();
     } catch (e) {
       setServerError(apiError(e));
@@ -185,6 +220,77 @@ function ClientForm({
                   ))}
                 </SelectContent>
               </Select>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name="department"
+          render={({ field }) => (
+            <FormItem className="sm:col-span-2">
+              <FormLabel>
+                Отдел продаж{" "}
+                {!assignedDepartment && (
+                  <span className="font-normal text-[var(--muted-foreground)]">(необязательно)</span>
+                )}
+              </FormLabel>
+              {assignedDepartment ? (
+                <div className="flex h-9 items-center gap-2 rounded-md border bg-[var(--muted)]/35 px-3 text-sm font-medium">
+                  <span className="size-2 rounded-full" style={{ backgroundColor: assignedDepartment.color }} />
+                  {assignedDepartment.name}
+                </div>
+              ) : (
+                <Select
+                  value={field.value || NO_DEPARTMENT}
+                  onValueChange={(value) => {
+                    departmentChoiceTouched.current = true;
+                    field.onChange(value === NO_DEPARTMENT ? "" : value);
+                  }}
+                  disabled={departmentsLoading && !departments}
+                >
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue placeholder={departmentsLoading ? "Загружаем отделы…" : "Выберите отдел"} />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    <SelectItem value={NO_DEPARTMENT}>Без отдела</SelectItem>
+                    {currentDepartmentMissing && editing?.department && (
+                      <SelectItem value={String(editing.department)}>
+                        {editing.department_name || `Отдел #${editing.department}`} (архивный)
+                      </SelectItem>
+                    )}
+                    {(departments ?? []).map((department) => (
+                      <SelectItem
+                        key={department.id}
+                        value={String(department.id)}
+                        disabled={!department.is_active && department.id !== editing?.department}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className="size-2 rounded-full" style={{ backgroundColor: department.color }} />
+                          {department.name}
+                          {!department.is_active && " (архивный)"}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              <p className="text-xs text-[var(--muted-foreground)]">
+                {assignedDepartment
+                  ? "Клиент закрепляется за вашим отделом."
+                  : "Клиента можно оставить без ответственного отдела."}
+              </p>
+              {departmentsError && (
+                <div className="flex items-center justify-between gap-3 text-xs text-[var(--destructive)]">
+                  <span>{departmentsError}</span>
+                  <Button type="button" size="sm" variant="link" className="h-auto px-0" onClick={reloadDepartments}>
+                    Повторить
+                  </Button>
+                </div>
+              )}
               <FormMessage />
             </FormItem>
           )}
@@ -402,25 +508,39 @@ function ClientsPageInner() {
   const canManagePortalAccess = can(me, "clients.manage_access");
   const canMoney = can(me, "reports.view"); // финансовая аналитика — под reports.view
   const canExport = can(me, "reports.export");
+  const assignedDepartment = me?.sales_department ?? null;
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Client | null>(null);
   const [q, setQ] = useState("");
   const [iinQ, setIinQ] = useState("");
   const [phoneQ, setPhoneQ] = useState("");
+  const [department, setDepartment] = useState("all");
   const [sortKey, setSortKey] = useState("created");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const effectiveDepartment = assignedDepartment?.code ?? department;
+  const clientsUrl =
+    effectiveDepartment === "all" ? "/clients/" : `/clients/?department=${encodeURIComponent(effectiveDepartment)}`;
   // Страницы — только в «дефолтном» виде: поиск и пересортировка должны
   // видеть всех клиентов, поэтому в этих режимах грузим полный список.
   const searching = Boolean(q || iinQ || phoneQ);
   const usePaging = !searching && sortKey === "created" && sortDir === "desc";
-  const paged = usePagedApi<Client>(usePaging ? "/clients/" : null, 50);
-  const flat = useApi<Client[]>(usePaging ? null : "/clients/");
+  const paged = usePagedApi<Client>(usePaging ? clientsUrl : null, 50);
+  const flat = useApi<Client[]>(usePaging ? null : clientsUrl);
   const clients = usePaging ? paged.items : flat.data;
   const error = usePaging ? paged.error : flat.error;
   const reload = usePaging ? paged.reload : flat.reload;
-  // Сводный долг обязан считаться по всем клиентам, а не по загруженной
-  // странице — в ленивом режиме берём его из серверного отчёта.
-  const { data: debtSummary } = useApi<ReportSummary>(usePaging && canMoney ? "/reports/summary/" : null);
+  const { data: departments } = useApi<Department[]>("/departments/");
+  // Клиентский отдел и отдел заказа независимы. Поэтому шапку считаем по
+  // ownership клиента, а не через reports/summary?department=...
+  const clientDebtsUrl =
+    effectiveDepartment === "all"
+      ? "/clients/debts/"
+      : `/clients/debts/?client_department=${encodeURIComponent(effectiveDepartment)}`;
+  const {
+    data: clientDebts,
+    error: clientDebtsError,
+    reload: reloadClientDebts,
+  } = useApi<ClientDebt[]>(canMoney ? clientDebtsUrl : null);
   const [delItem, setDelItem] = useState<Client | null>(null);
   const [delError, setDelError] = useState("");
   const [delBusy, setDelBusy] = useState(false);
@@ -438,6 +558,7 @@ function ClientsPageInner() {
       await api.delete(`/clients/${delItem.id}/`);
       setDelItem(null);
       reload();
+      void reloadClientDebts();
     } catch (e) {
       setDelError(apiError(e));
     } finally {
@@ -453,6 +574,7 @@ function ClientsPageInner() {
       await api.post(`/clients/${purgeItem.id}/purge/`);
       setPurgeItem(null);
       reload();
+      void reloadClientDebts();
     } catch (e) {
       setPurgeError(apiError(e));
     } finally {
@@ -463,16 +585,7 @@ function ClientsPageInner() {
   const list = clients ?? [];
   // Валюта долга берётся из заказов, а не из карточки клиента: у KZT-клиента
   // может быть заказ в USD, и складывать их в одну сумму нельзя.
-  const debtByCurrency: Record<string, number> = !canMoney
-    ? {}
-    : usePaging
-      ? Object.fromEntries(
-          Object.entries(debtSummary?.debt_now.by_currency ?? {}).map(([currency, value]) => [
-            currency,
-            finiteMoney(value),
-          ]),
-        )
-      : sumDebtByCurrency(list);
+  const debtByCurrency: Record<string, number> = canMoney ? sumDebtByCurrency(clientDebts ?? []) : {};
 
   const filtered = list.filter(
     (c) =>
@@ -629,6 +742,12 @@ function ClientsPageInner() {
         </div>
       )}
 
+      {clientDebtsError && (
+        <div className="mb-4">
+          <ErrorAlert message={clientDebtsError} onRetry={reloadClientDebts} />
+        </div>
+      )}
+
       {/* Фильтры — отдельные поля, как в референсе. */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative w-full sm:w-64">
@@ -649,6 +768,24 @@ function ClientsPageInner() {
           value={phoneQ}
           onChange={(e) => setPhoneQ(e.target.value)}
         />
+        {assignedDepartment ? (
+          <div className="flex h-9 items-center gap-2 rounded-md border bg-[var(--primary)]/5 px-3 text-[13px]">
+            <span className="text-[var(--muted-foreground)]">Отдел:</span>
+            <span className="size-2 rounded-full" style={{ backgroundColor: assignedDepartment.color }} />
+            <span className="font-medium">{assignedDepartment.name}</span>
+          </div>
+        ) : (
+          <FilterDropdown
+            label="Отдел"
+            active={department}
+            onChange={setDepartment}
+            options={[
+              { key: "all", label: "Все" },
+              { key: "none", label: "Без отдела" },
+              ...(departments ?? []).map((row) => ({ key: row.code, label: row.name })),
+            ]}
+          />
+        )}
       </div>
 
       {error && !clients && (
@@ -682,6 +819,7 @@ function ClientsPageInner() {
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <div className="text-sm font-semibold">{c.name}</div>
+                  <div className="text-xs text-[var(--muted-foreground)]">{c.department_name || "Без отдела"}</div>
                   <a
                     href={`tel:${c.phone}`}
                     className="relative z-10 flex items-center gap-1.5 text-sm text-[var(--muted-foreground)]"
@@ -723,6 +861,7 @@ function ClientsPageInner() {
               <THead>
                 <TR>
                   <SortableHeader label="Имя" sortKey="name" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
+                  <TH>Отдел</TH>
                   <TH>ИИН/БИН</TH>
                   <TH>Телефон</TH>
                   {canMoney && (
@@ -764,6 +903,7 @@ function ClientsPageInner() {
                         <span className="font-medium">{c.name}</span>
                       )}
                     </TD>
+                    <TD className="text-[var(--muted-foreground)]">{c.department_name || "—"}</TD>
                     <TD className="tabular-nums">{c.iin || "—"}</TD>
                     <TD className="tabular-nums">{c.phone}</TD>
                     {canMoney && (
@@ -789,7 +929,7 @@ function ClientsPageInner() {
                 ))}
                 {sorted.length === 0 && (
                   <TR>
-                    <TD colSpan={canMoney ? 6 : 5} className="py-14 text-center text-[var(--muted-foreground)]">
+                    <TD colSpan={canMoney ? 7 : 6} className="py-14 text-center text-[var(--muted-foreground)]">
                       Здесь пусто
                     </TD>
                   </TR>
@@ -820,10 +960,12 @@ function ClientsPageInner() {
         {open && (
           <ClientForm
             editing={editing}
+            assignedDepartment={assignedDepartment}
             onCancel={() => setOpen(false)}
             onDone={() => {
               setOpen(false);
               reload();
+              void reloadClientDebts();
             }}
           />
         )}

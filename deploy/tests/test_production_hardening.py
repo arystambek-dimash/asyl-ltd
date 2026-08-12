@@ -292,6 +292,21 @@ class ProductionManifestTests(unittest.TestCase):
             workflow,
         )
 
+    def test_scale_endpoint_secret_is_forwarded_to_production(self) -> None:
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "deploy-production.yml"
+        ).read_text(encoding="utf-8")
+        deploy_script = REMOTE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "TRUCK_SCALE_API_URL: ${{ secrets.TRUCK_SCALE_API_URL }}",
+            workflow,
+        )
+        self.assertIn('test -n "$TRUCK_SCALE_API_URL"', workflow)
+        self.assertIn("TRUCK_SCALE_API_URL_B64='$TRUCK_SCALE_API_URL_B64'", workflow)
+        self.assertIn('base64 -d)', deploy_script)
+        self.assertIn("export TRUCK_SCALE_API_URL", deploy_script)
+
 
 class SecurityHeaderTests(unittest.TestCase):
     """Заголовки не должны молча отключать то, чем пользуются сотрудники."""

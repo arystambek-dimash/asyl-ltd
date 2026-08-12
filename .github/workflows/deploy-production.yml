@@ -82,6 +82,7 @@ jobs:
       PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
       GHCR_USER: ${{ github.actor }}
       GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TRUCK_SCALE_API_URL: ${{ secrets.TRUCK_SCALE_API_URL }}
       BACKEND_IMAGE_REF: ghcr.io/${{ github.repository }}-backend@${{ needs.build.outputs.backend_digest }}
       FRONTEND_IMAGE_REF: ghcr.io/${{ github.repository }}-frontend@${{ needs.build.outputs.frontend_digest }}
 
@@ -99,8 +100,14 @@ jobs:
           test -n "$PROD_PORT"
           test -n "$PROD_USER"
           test -n "$PROD_SSH_KEY"
+          test -n "$TRUCK_SCALE_API_URL"
           test -n "$BACKEND_IMAGE_REF"
           test -n "$FRONTEND_IMAGE_REF"
+
+          # Encode the repository secret before embedding it in the remote
+          # shell command. Base64 has no shell quotes, so the endpoint cannot
+          # alter the command even if it is changed later.
+          TRUCK_SCALE_API_URL_B64=$(printf '%s' "$TRUCK_SCALE_API_URL" | base64 | tr -d '\n')
 
           install -m 700 -d ~/.ssh
           printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/asyl_ltd_deploy_key
@@ -149,6 +156,7 @@ jobs:
                   EXPECTED_SHA='$RELEASE_SHA' \
                   GHCR_USER='$GHCR_USER' \
                   GHCR_TOKEN='$GHCR_TOKEN' \
+                  TRUCK_SCALE_API_URL_B64='$TRUCK_SCALE_API_URL_B64' \
                   BACKEND_IMAGE_REF='$BACKEND_IMAGE_REF' \
                   FRONTEND_IMAGE_REF='$FRONTEND_IMAGE_REF' \
                   ./deploy/remote-deploy.sh"

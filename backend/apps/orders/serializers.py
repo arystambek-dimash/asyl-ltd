@@ -4,7 +4,9 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from rest_framework import serializers
 
+from apps.clients.models import Client, Store
 from apps.common.money import money_string
+from apps.sales.access import scope_by_client_department
 from apps.sales.models import Department
 
 from .labels import payment_method_label
@@ -336,6 +338,9 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     client_name = serializers.CharField(source="client.name", read_only=True)
     client_phone = serializers.CharField(source="client.phone", read_only=True)
     weigh_in_kg = serializers.SerializerMethodField()
+    weigh_in_source = serializers.SerializerMethodField()
+    weigh_out_kg = serializers.SerializerMethodField()
+    net_weight_kg = serializers.SerializerMethodField()
     bags_loaded = serializers.SerializerMethodField()
     bag_estimate_kg = serializers.SerializerMethodField()
     bag_weight_kg = serializers.SerializerMethodField()
@@ -365,7 +370,8 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                   "paid_total", "remaining_amount", "is_fully_paid",
                   "is_debt", "debt_override", "debt_override_by_name", "pending_status_requests",
                   "payments", "pending_payments",
-                  "weigh_in_kg",
+                  "weigh_in_kg", "weigh_in_source", "weigh_out_kg",
+                  "net_weight_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at",
                   "shipped_at", "loading_camera", "repeated_from",
                   "template_order",
@@ -378,12 +384,46 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
             "transport_type": {"required": False},
         }
 
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user is None:
+            return fields
+        fields["client"].queryset = scope_by_client_department(
+            Client.objects.all(),
+            user,
+        )
+        fields["store"].queryset = scope_by_client_department(
+            Store.objects.all(),
+            user,
+            client_path="client",
+        )
+        fields["template_order"].queryset = scope_by_client_department(
+            Order.objects.all(),
+            user,
+            client_path="client",
+        )
+        return fields
+
     def _shipment(self, obj):
         return getattr(obj, "shipment", None)
 
     def get_weigh_in_kg(self, obj):
         s = self._shipment(obj)
         return str(s.weigh_in_kg) if s and s.weigh_in_kg is not None else None
+
+    def get_weigh_in_source(self, obj):
+        s = self._shipment(obj)
+        return s.weigh_in_source if s else None
+
+    def get_weigh_out_kg(self, obj):
+        s = self._shipment(obj)
+        return str(s.weigh_out_kg) if s and s.weigh_out_kg is not None else None
+
+    def get_net_weight_kg(self, obj):
+        s = self._shipment(obj)
+        return str(s.net_weight_kg) if s and s.net_weight_kg is not None else None
 
     def get_bags_loaded(self, obj):
         s = self._shipment(obj)

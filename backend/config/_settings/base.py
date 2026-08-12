@@ -166,6 +166,34 @@ APIPAY_BASE_URL = os.environ.get(
 ).rstrip("/")
 APIPAY_TIMEOUT_SECONDS = float(os.environ.get("APIPAY_TIMEOUT_SECONDS", "10"))
 
+TRUCK_SCALE_API_URL = os.environ.get("TRUCK_SCALE_API_URL", "").strip()
+try:
+    TRUCK_SCALE_TIMEOUT_SECONDS = float(
+        os.environ.get("TRUCK_SCALE_TIMEOUT_SECONDS", "3")
+    )
+except (TypeError, ValueError):
+    TRUCK_SCALE_TIMEOUT_SECONDS = 3.0
+if not 0 < TRUCK_SCALE_TIMEOUT_SECONDS < float("inf"):
+    TRUCK_SCALE_TIMEOUT_SECONDS = 3.0
+
+try:
+    TRUCK_SCALE_MAX_AGE_SECONDS = float(
+        os.environ.get("TRUCK_SCALE_MAX_AGE_SECONDS", "5")
+    )
+except (TypeError, ValueError):
+    TRUCK_SCALE_MAX_AGE_SECONDS = 5.0
+if not 0 <= TRUCK_SCALE_MAX_AGE_SECONDS < float("inf"):
+    TRUCK_SCALE_MAX_AGE_SECONDS = 5.0
+
+try:
+    TRUCK_SCALE_MAX_WEIGHT_KG = int(
+        os.environ.get("TRUCK_SCALE_MAX_WEIGHT_KG", "100000")
+    )
+except (TypeError, ValueError):
+    TRUCK_SCALE_MAX_WEIGHT_KG = 100_000
+if TRUCK_SCALE_MAX_WEIGHT_KG <= 0:
+    TRUCK_SCALE_MAX_WEIGHT_KG = 100_000
+
 INVOICE_SUPPLIER = {
     "short_name": os.environ.get("INVOICE_SUPPLIER_SHORT_NAME", "АСЫЛ-LTD"),
     "legal_name": os.environ.get(

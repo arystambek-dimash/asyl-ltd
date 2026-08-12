@@ -6,6 +6,16 @@ BRANCH="${BRANCH:-main}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 EXPECTED_SHA="${EXPECTED_SHA:-}"
 
+if [ -n "${TRUCK_SCALE_API_URL_B64:-}" ]; then
+  TRUCK_SCALE_API_URL="$(printf '%s' "$TRUCK_SCALE_API_URL_B64" | base64 -d)"
+  if ! printf '%s\n' "$TRUCK_SCALE_API_URL" \
+    | grep -Eq '^https?://[^[:space:]]+/[^[:space:]]*$'; then
+    echo "TRUCK_SCALE_API_URL must be an absolute HTTP(S) URL." >&2
+    exit 1
+  fi
+  export TRUCK_SCALE_API_URL
+fi
+
 # Production must run the exact manifests built by this CI run. A mutable tag
 # such as `latest` can change between pull and restart (or be overwritten in the
 # registry), so fail closed unless both references are the expected GHCR image

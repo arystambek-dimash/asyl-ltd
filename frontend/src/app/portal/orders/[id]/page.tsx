@@ -522,7 +522,8 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
               <p className="text-sm text-[var(--muted-foreground)]">
-                Укажите номер КАМАЗа. Оплата станет доступна после отгрузки.
+                Укажите номер КАМАЗа. Входной вес автоматически зафиксируется, когда оператор начнёт отгрузку на
+                моноблоке.
               </p>
               {order.truck_number && (
                 <p className="text-sm">

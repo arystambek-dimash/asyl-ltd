@@ -15,11 +15,17 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 
-from apps.orders.models import Order
-from apps.shipments.services import begin_camera_loading, finish_ai_loading
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
+
+from apps.orders.models import Order
+from apps.shipments.services import (
+    begin_camera_loading,
+    ensure_scale_entry_weight,
+    finish_ai_loading,
+    read_scale_exit_if_required,
+)
 
 from . import ai, sessions
 from .models import AiCountingSession, MonoblockCameraSettings, MonoblockDevice
@@ -254,16 +260,46 @@ def _validate_start(order: Order, camera: str) -> None:
         )
 
 
+def _release_unweighed_reservation(session: AiCountingSession) -> None:
+    """Remove only our provisional reservation when scale capture failed.
+
+    A concurrent retry may have stored the entry while this request was
+    waiting for the scale. In that case the reservation is no longer orphaned
+    and must be left for that retry to activate.
+    """
+    from apps.shipments.models import Shipment
+
+    with transaction.atomic():
+        locked = AiCountingSession.objects.select_for_update().filter(
+            pk=session.pk,
+            status=AiCountingSession.STARTING,
+        ).first()
+        if locked is None:
+            return
+        captured = Shipment.objects.filter(
+            order_id=locked.order_id,
+            weigh_in_source=Shipment.WeightSource.SCALE,
+            weigh_in_kg__isnull=False,
+        ).exists()
+        if not captured:
+            locked.delete()
+
+
 def start(camera: str, order: Order, user) -> dict:
     """Reserve a camera, start its worker, then begin the DB loading.
 
-    The remote call intentionally happens before ``begin_camera_loading``.
-    Therefore a deterministic upstream 4xx leaves a confirmed order and its
-    Shipment untouched and immediately retryable.  An ambiguous timeout keeps
-    the ``starting`` reservation; repeating this same command reconciles it.
+    The camera is reserved before the physical scale read, so a request that
+    loses a camera race cannot leave an entry weight on the wrong workflow.
+    The read itself stays outside DB transactions; its save rechecks both the
+    reservation and truck number under row locks. The AI remote call still
+    happens before ``begin_camera_loading``. An ambiguous AI timeout keeps the
+    ``starting`` reservation; repeating this command reconciles it.
     """
     camera = ai.normalize(camera)
     assert_device_camera(user, camera)
+    # Cheap preflight first; reservation and order state are checked again
+    # around every durable mutation below.
+    _validate_start(order, camera)
     # Commit the reservation while holding the same device-row lock used by
     # configuration mutations. Once this short transaction commits, an admin
     # sees the OPEN session and cannot strand it by moving/deleting the device.
@@ -271,6 +307,22 @@ def start(camera: str, order: Order, user) -> dict:
         _lock_device_camera(user, camera)
         _validate_start(order, camera)
         session, created = sessions.reserve(order, camera, user)
+
+    # No DB lock spans the scale HTTP request. Saving the sample locks the
+    # provisional session first and the exact order second, and verifies that
+    # both the reservation and truck number still match this request.
+    if Order.objects.filter(pk=order.pk, status="confirmed").exists():
+        try:
+            ensure_scale_entry_weight(
+                order,
+                user,
+                reservation_id=session.pk,
+                camera=camera,
+            )
+        except Exception:
+            if created:
+                _release_unweighed_reservation(session)
+            raise
 
     deterministic_error: ai.AiError | None = None
     validation_error: ValidationError | None = None
@@ -469,6 +521,23 @@ def stop(
     cleanup_failure: Exception | None = None
     actual_bags: int | None = None
     session_id: int | None = None
+    exit_reading = None
+
+    # Внешний сервис может отвечать до нескольких секунд. Ни строка заказа,
+    # ни AI-сессия в это время не заблокированы; транзакция ниже повторно
+    # валидирует их перед единой записью веса, склада и статуса.
+    if complete_order and order.status == "loading":
+        preflight_session = sessions.current_for_camera(camera)
+        if preflight_session is not None:
+            if preflight_session.order_id != order.pk:
+                raise sessions.AiSessionBusy(preflight_session)
+            if not can_control_session(preflight_session, user):
+                raise PermissionDenied(
+                    "Завершить отгрузку может только начавший её "
+                    "сотрудник или администратор"
+                )
+            if preflight_session.status == AiCountingSession.ACTIVE:
+                exit_reading = read_scale_exit_if_required(order)
 
     with transaction.atomic():
         session = _locked_open_session(camera)
@@ -513,7 +582,12 @@ def stop(
 
         # finish_ai_loading locks the order and validates the transition.
         if complete_order:
-            shipment = finish_ai_loading(locked_order, safe_total, user)
+            shipment = finish_ai_loading(
+                locked_order,
+                safe_total,
+                user,
+                exit_reading=exit_reading,
+            )
             actual_bags = shipment.bags_loaded
             # If the worker total was unusable, the shipment service chooses
             # its audited ordered-quantity fallback. Persist that actual value

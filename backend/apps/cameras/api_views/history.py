@@ -3,9 +3,6 @@
 from datetime import timedelta
 from typing import ClassVar
 
-from apps.common.permissions import HasPerm
-from apps.orders.models import Order
-from apps.orders.querysets import for_post_board
 from django.core import signing
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
@@ -15,6 +12,11 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from apps.common.permissions import HasPerm
+from apps.orders.models import Order
+from apps.orders.querysets import for_post_board
+from apps.sales.access import scope_by_client_department
 
 from .. import recordings
 from ..models import AiCountingSession, MonoblockCameraSettings
@@ -42,6 +44,11 @@ class CameraAiSessionListView(APIView):
             )
             .select_related("order__client__user", "started_by")
             .order_by("started_at")
+        )
+        open_sessions = scope_by_client_department(
+            open_sessions,
+            request.user,
+            client_path="order__client",
         )
         device = active_device_for(request.user)
         if device is not None:
@@ -112,14 +119,21 @@ def _history_payload(session: AiCountingSession, names=None) -> dict:
     }
 
 
-def _history_queryset():
-    return (
+def _history_queryset(user=None):
+    queryset = (
         AiCountingSession.objects
         # Метаданные и финальный счёт остаются в БД вместе с заказом. Только
         # тяжёлые видеофайлы удаляются на ПК камер через 14 дней.
         .filter(order__in=Order.objects.all()).select_related(
             "order__client__user", "started_by"
         )
+    )
+    if user is None:
+        return queryset
+    return scope_by_client_department(
+        queryset,
+        user,
+        client_path="order__client",
     )
 
 
@@ -130,7 +144,7 @@ class CameraAiSessionHistoryView(APIView):
         return [HasPerm("shipping.view")]
 
     def get(self, request):
-        queryset = _history_queryset().order_by("-started_at")
+        queryset = _history_queryset(request.user).order_by("-started_at")
         raw_order_ids = request.query_params.get("order_ids", "").strip()
         raw_order_id = request.query_params.get("order_id", "").strip()
         if raw_order_id:
@@ -144,7 +158,11 @@ class CameraAiSessionHistoryView(APIView):
             completed_days = settings.completed_orders_days if settings else 1
             queryset = queryset.filter(
                 order__in=for_post_board(
-                    Order.objects.all(),
+                    scope_by_client_department(
+                        Order.objects.all(),
+                        request.user,
+                        client_path="client",
+                    ),
                     completed_days,
                 )
             )
@@ -167,8 +185,8 @@ class CameraAiSessionHistoryView(APIView):
         )
 
 
-def _history_session(pk: int) -> AiCountingSession:
-    return get_object_or_404(_history_queryset(), pk=pk)
+def _history_session(pk: int, user=None) -> AiCountingSession:
+    return get_object_or_404(_history_queryset(user), pk=pk)
 
 
 def _session_segments(session: AiCountingSession) -> list[dict]:
@@ -204,7 +222,7 @@ class CameraAiRecordingView(APIView):
         return [HasPerm("shipping.view")]
 
     def get(self, request, pk: int):
-        session = _history_session(pk)
+        session = _history_session(pk, request.user)
         try:
             segments = _session_segments(session)
         except recordings.RecordingUnavailable:

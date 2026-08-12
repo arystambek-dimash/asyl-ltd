@@ -65,7 +65,12 @@ def test_sales_employee_order_is_forced_to_assigned_department(user_with_perms):
     user = user_with_perms("assigned-manager", codes=["orders.create"])
     user.employee.sales_department = assigned
     user.employee.save(update_fields=["sales_department"])
-    client = Client.objects.create_with_user(first_name="Алия", last_name="С", phone="1")
+    client = Client.objects.create_with_user(
+        first_name="Алия",
+        last_name="С",
+        phone="1",
+        department=assigned,
+    )
     product = _product()
 
     response = _api(user).post("/api/orders/", {

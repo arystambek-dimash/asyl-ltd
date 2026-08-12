@@ -18,6 +18,7 @@ from apps.common.money import as_money_strings, money_string, primary_currency
 from apps.common.query_params import (
     filter_date_range, parse_date_range, parse_store_id,
 )
+from apps.sales.access import scope_by_client_department
 from apps.sales.models import Department
 from apps.eventlog.models import EventLog
 from apps.eventlog.services import log_event
@@ -313,7 +314,11 @@ class ReportSummaryView(APIView):
 
     def get(self, request):
         date_from, date_to = parse_date_range(request.query_params)
-        qs = Order.objects.all()
+        qs = scope_by_client_department(
+            Order.objects.all(),
+            request.user,
+            client_path="client",
+        )
         department = request.query_params.get("department")
         if department:
             qs = qs.filter(department=department)
@@ -331,13 +336,21 @@ class PaymentTransactionListView(APIView):
         # Оплаты корзины деньгами не считаются: у Payment своего мягкого
         # удаления нет, а order__ не проходит через LiveOrderManager — скоуп
         # задаём явно, иначе итог кассы включает удалённые заказы.
-        qs = with_payment_api_relations(
+        payments = scope_by_client_department(
             Payment.objects.filter(order__deleted_at__isnull=True),
+            request.user,
+            client_path="order__client",
+        )
+        qs = with_payment_api_relations(
+            payments,
             order_context=True,
         ).order_by("-paid_at")
         status = request.query_params.get("status")
         method = request.query_params.get("method")
         search = request.query_params.get("search")
+        department = request.query_params.get("department")
+        if department:
+            qs = qs.filter(order__department=department)
         if method:
             qs = qs.filter(method=method)
         if search:
@@ -472,7 +485,12 @@ class PaymentReceiptView(APIView):
         return [HasPerm("payments.view")]
 
     def get(self, request, payment_id):
-        payment = get_object_or_404(Payment, pk=payment_id)
+        payments = scope_by_client_department(
+            Payment.objects.all(),
+            request.user,
+            client_path="order__client",
+        )
+        payment = get_object_or_404(payments, pk=payment_id)
         if payment.status != "confirmed":
             raise ValidationError({
                 "detail": "Квитанция доступна только после подтверждения оплаты.",
@@ -490,8 +508,13 @@ class PaymentRefundView(APIView):
         return [HasPerm("payments.confirm")]
 
     def post(self, request, payment_id):
-        payment = get_object_or_404(
+        payments = scope_by_client_department(
             Payment.objects.select_related("order", "apipay_invoice"),
+            request.user,
+            client_path="order__client",
+        )
+        payment = get_object_or_404(
+            payments,
             pk=payment_id,
         )
         mode = str(request.data.get("mode") or "auto")
@@ -553,8 +576,13 @@ class PaymentProviderIssueView(APIView):
         return [HasPerm("payments.create")]
 
     def post(self, request, payment_id):
-        payment = get_object_or_404(
+        payments = scope_by_client_department(
             Payment.objects.select_related("order__client__user", "apipay_invoice"),
+            request.user,
+            client_path="order__client",
+        )
+        payment = get_object_or_404(
+            payments,
             pk=payment_id,
             status__in=Payment.IN_PROGRESS_STATUSES,
             method__in=PROVIDER_METHOD_CHANNELS,
@@ -577,8 +605,13 @@ class PaymentRestoreView(APIView):
         return [HasPerm("payments.confirm")]
 
     def post(self, request, payment_id):
-        payment = get_object_or_404(
+        payments = scope_by_client_department(
             Payment.objects.select_related("order__client__user", "apipay_invoice"),
+            request.user,
+            client_path="order__client",
+        )
+        payment = get_object_or_404(
+            payments,
             pk=payment_id,
         )
         payment = _restore_payment_and_provider(payment, request.user)
@@ -590,8 +623,13 @@ class PaymentRejectView(APIView):
         return [HasPerm("payments.confirm")]
 
     def post(self, request, payment_id):
-        payment = get_object_or_404(
+        payments = scope_by_client_department(
             Payment.objects.select_related("order", "apipay_invoice"),
+            request.user,
+            client_path="order__client",
+        )
+        payment = get_object_or_404(
+            payments,
             pk=payment_id,
         )
         if payment.status not in Payment.IN_PROGRESS_STATUSES:
@@ -678,7 +716,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         return super().get_permissions()
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = scope_by_client_department(
+            super().get_queryset(),
+            self.request.user,
+            client_path="client",
+        )
         device = getattr(self.request.user, "active_monoblock_device", None)
         if device is not None:
             # Устройство видит только очередь старта и собственную текущую
@@ -723,7 +765,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="form-options")
     def form_options(self, request):
         """Minimal cross-domain reference data needed by the order form."""
-        return Response(build_order_form_options())
+        return Response(build_order_form_options(request.user))
 
     @action(
         detail=False,
@@ -794,7 +836,12 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="repeat")
     def repeat(self, request, pk=None):
         order = repeat_order(self.get_object(), request.user)
-        order = with_order_api_relations(Order.objects.all()).get(pk=order.pk)
+        repeated = scope_by_client_department(
+            Order.objects.all(),
+            request.user,
+            client_path="client",
+        )
+        order = with_order_api_relations(repeated).get(pk=order.pk)
         return Response(
             OrderSerializer(order, context={"request": request}).data,
             status=201,
@@ -808,7 +855,12 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             total_amount=request.data.get("total_amount"),
             prices=request.data.get("prices"),
         )
-        order = with_order_api_relations(Order.objects.all()).get(pk=order.pk)
+        corrected = scope_by_client_department(
+            Order.objects.all(),
+            request.user,
+            client_path="client",
+        )
+        order = with_order_api_relations(corrected).get(pk=order.pk)
         return Response(
             OrderSerializer(order, context={"request": request}).data
         )
@@ -822,7 +874,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         # сводке не читается, поэтому джоин к каталогу здесь лишний.
         # Платежи нужны для разбивки «оплачено / частично / не оплачено»:
         # paid_total читает их у каждого заказа, без prefetch это N+1.
-        qs = Order.objects.prefetch_related("items", "payments")
+        qs = scope_by_client_department(
+            Order.objects.prefetch_related("items", "payments"),
+            request.user,
+            client_path="client",
+        )
         date_from, date_to = parse_date_range(params)
         qs = filter_date_range(qs, "created_at", date_from, date_to)
         group = params.get("status_group")
@@ -911,7 +967,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         """Очередь ручной обработки кассиром (requested и received)."""
         stage = request.query_params.get("stage")
         stages = [stage] if stage in Payment.STATUSES else Payment.IN_PROGRESS_STATUSES
-        qs = with_payment_api_relations(
+        payments = scope_by_client_department(
             Payment.objects.filter(
                 # Кассой вручную закрывается всё, за что платёжный сервис не
                 # отвечает: наличные, «наш PDF-счёт» и QR, отмеченный после
@@ -919,8 +975,13 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 Q(method="cash")
                 | Q(method__in=("invoice", "kaspi"), apipay_invoice__isnull=True),
                 status__in=stages,
-                order__in=Order.objects.all(),
+                order__deleted_at__isnull=True,
             ),
+            request.user,
+            client_path="order__client",
+        )
+        qs = with_payment_api_relations(
+            payments,
             order_context=True,
         ).order_by("paid_at")
         department = request.query_params.get("department")
@@ -949,9 +1010,18 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 message = message.replace(source, target)
             return message
 
-        qs = (EventLog.objects
-              .filter(event_type="payment", order__in=Order.objects.all())
-              .select_related("user", "order__client__user", "order__store"))
+        events = scope_by_client_department(
+            EventLog.objects.filter(
+                event_type="payment",
+                order__isnull=False,
+                order__deleted_at__isnull=True,
+            ),
+            request.user,
+            client_path="order__client",
+        )
+        qs = events.select_related(
+            "user", "order__client__user", "order__store"
+        )
         department = request.query_params.get("department")
         if department:
             qs = qs.filter(order__department=department)
@@ -970,8 +1040,14 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             event.payload.get("payment_id") for event in events
             if event.payload.get("payment_id") is not None
         }
-        current_statuses = dict(Payment.objects.filter(pk__in=payment_ids)
-                                .values_list("pk", "status"))
+        visible_payments = scope_by_client_department(
+            Payment.objects.filter(pk__in=payment_ids),
+            request.user,
+            client_path="order__client",
+        )
+        current_statuses = dict(
+            visible_payments.values_list("pk", "status")
+        )
         closed_provider_payments = set(
             ApiPayInvoice.objects.filter(
                 payment_id__in=payment_ids,
@@ -1081,7 +1157,12 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     def _deleted_scoped(self):
         """Удалённые заказы (корзина), доступные редактору заказов."""
-        return with_order_api_relations(Order.all_objects.deleted())
+        deleted = scope_by_client_department(
+            Order.all_objects.deleted(),
+            self.request.user,
+            client_path="client",
+        )
+        return with_order_api_relations(deleted)
 
     @action(detail=False, methods=["get"], url_path="trash")
     def trash(self, request):
@@ -1095,8 +1176,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="trash-preview")
     def trash_preview(self, request):
         """Small archive dock projection; full history loads only on demand."""
-        base = Order.all_objects.deleted().order_by("-deleted_at")
-        rows = with_order_api_relations(base[:4])
+        base = self._deleted_scoped().order_by("-deleted_at")
+        rows = base[:4]
         return Response({
             "count": base.count(),
             "results": OrderSerializer(

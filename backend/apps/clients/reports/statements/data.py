@@ -100,7 +100,7 @@ def _orders_in_period(queryset, date_from, date_to, *, sale_date=False):
     return queryset.order_by(field.removesuffix("__date"), "id")
 
 
-def _statement_orders(client=None, departments=None):
+def _statement_orders(client=None, departments=None, client_ids=None):
     queryset = (
         Order
         .objects
@@ -120,12 +120,14 @@ def _statement_orders(client=None, departments=None):
     )
     if client is not None:
         queryset = queryset.filter(client=client)
+    if client_ids is not None:
+        queryset = queryset.filter(client_id__in=client_ids)
     if departments is not None:
         queryset = queryset.filter(department__in=departments)
     return queryset
 
 
-def _statement_payments(client=None, departments=None):
+def _statement_payments(client=None, departments=None, client_ids=None):
     queryset = Payment.objects.filter(
         order__deleted_at__isnull=True,
     ).select_related(
@@ -136,6 +138,8 @@ def _statement_payments(client=None, departments=None):
     )
     if client is not None:
         queryset = queryset.filter(order__client=client)
+    if client_ids is not None:
+        queryset = queryset.filter(order__client_id__in=client_ids)
     if departments is not None:
         queryset = queryset.filter(order__department__in=departments)
     return queryset
@@ -254,12 +258,14 @@ def _clients_for_statement(
         debt_orders,
         payments,
         client_opening,
+        client_ids,
 ):
     if client is not None:
         return [client]
-    if departments is None and not date_from and not date_to:
-        queryset = Client.objects.all()
-    else:
+    queryset = Client.objects.all()
+    if client_ids is not None:
+        queryset = queryset.filter(id__in=client_ids)
+    if departments is not None or date_from or date_to:
         relevant_ids = {
             *(order.client_id for order in orders),
             *(order.client_id for order in sales_orders),
@@ -271,7 +277,7 @@ def _clients_for_statement(
                 if balance
             ),
         }
-        queryset = Client.objects.filter(id__in=relevant_ids)
+        queryset = queryset.filter(id__in=relevant_ids)
     return list(
         queryset.select_related("user").order_by(
             "user__first_name",
@@ -288,11 +294,17 @@ def build_statement_data(
         date_to=None,
         departments=None,
         sections=None,
+        client_ids=None,
 ) -> StatementData:
-    base_orders = _statement_orders(client=client, departments=departments)
+    base_orders = _statement_orders(
+        client=client,
+        departments=departments,
+        client_ids=client_ids,
+    )
     payments_queryset = _statement_payments(
         client=client,
         departments=departments,
+        client_ids=client_ids,
     )
     orders = list(_orders_in_period(base_orders, date_from, date_to))
     sales_orders = list(
@@ -323,6 +335,7 @@ def build_statement_data(
         debt_orders,
         payments,
         client_opening,
+        client_ids,
     )
 
     totals: defaultdict[str, CurrencyTotals] = defaultdict(

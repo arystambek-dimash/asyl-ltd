@@ -19,6 +19,13 @@ class Client(models.Model):
         on_delete=models.PROTECT,
         related_name="client_profile",
     )
+    department = models.ForeignKey(
+        "sales.Department",
+        blank=True,
+        null=True,
+        on_delete=models.PROTECT,
+        related_name="clients",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     objects = ClientManager()

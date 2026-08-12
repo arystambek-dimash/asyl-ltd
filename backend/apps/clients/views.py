@@ -30,6 +30,7 @@ from apps.eventlog.services import log_event
 from apps.orders.debt import debt_orders, order_remaining
 from apps.orders.models import Order
 from apps.orders.querysets import with_order_api_relations
+from apps.sales.access import scope_by_client_department
 
 from .models import Client, Store
 from .reports.statements import (
@@ -60,7 +61,7 @@ class ClientViewSet(
     PermViewSetMixin,
     viewsets.ModelViewSet,
 ):
-    queryset = Client.objects.select_related("user")
+    queryset = Client.objects.select_related("user", "department")
     serializer_class = ClientReadSerializer
     serializer_action_classes = {
         "create": ClientCreateUpdateSerializer,
@@ -88,7 +89,19 @@ class ClientViewSet(
     }
 
     def get_queryset(self):
-        base = Client.objects.select_related("user").order_by("-id")
+        base = Client.objects.select_related("user", "department").order_by("-id")
+        base = scope_by_client_department(base, self.request.user)
+        department = None
+        if self.action == "list":
+            department = self.request.query_params.get("department")
+        elif self.action == "debts":
+            # ``department`` on this endpoint remains the order department;
+            # client ownership has its own explicit filter.
+            department = self.request.query_params.get("client_department")
+        if department == "none":
+            base = base.filter(department__isnull=True)
+        elif department:
+            base = base.filter(department__code=department)
         can_view_financials = self.request.user.has_perm_code("reports.view")
         if self.action not in {"list", "retrieve", "debts", "debt_detail"}:
             return base
@@ -108,6 +121,26 @@ class ClientViewSet(
                     settlement_intent="debt",
                 ).prefetch_related("items", "payments"),
             )
+        )
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        client = serializer.instance
+        previous = client.department
+        client = serializer.save()
+        current = client.department
+        if (previous.pk if previous else None) == (current.pk if current else None):
+            return
+        log_event(
+            "client",
+            f"Клиент «{client.name}» перенесён в другой отдел",
+            user=self.request.user,
+            payload={
+                "client_id": client.pk,
+                "action": "client_department_changed",
+                "department_from": previous.code if previous else None,
+                "department_to": current.code if current else None,
+            },
         )
 
     @action(detail=True, methods=["post"], url_path="purge")
@@ -179,20 +212,27 @@ class ClientViewSet(
 
     @action(detail=False, methods=["get"], url_path="picker")
     def picker(self, request):
-        return Response([
-            {"id": client.id, "name": client.name}
-            for client in Client.objects.select_related("user").only(
+        clients = (
+            self.get_queryset()
+            .select_related(None)
+            .select_related("user")
+            .only(
                 "id",
                 "company_name",
                 "user_id",
                 "user__first_name",
                 "user__last_name",
                 "user__username",
-            ).order_by(
+            )
+            .order_by(
                 "company_name",
                 "user__last_name",
                 "user__first_name",
             )
+        )
+        return Response([
+            {"id": client.id, "name": client.name}
+            for client in clients
         ])
 
     @action(detail=True, methods=["get"], url_path="statement")
@@ -240,8 +280,12 @@ class ClientViewSet(
             build_all_clients_statement_pdf if export == "pdf"
             else build_all_clients_statement
         )
+        client_ids = tuple(
+            self.get_queryset().values_list("pk", flat=True)
+        )
         content = builder(
             date_from, date_to, departments=departments, sections=sections,
+            client_ids=client_ids,
         )
         response = HttpResponse(content, content_type=STATEMENT_CONTENT_TYPES[export])
         response["Content-Disposition"] = (
@@ -484,16 +528,20 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "list": "clients.view", "retrieve": "clients.view",
         "create": "clients.create", "update": "clients.edit",
         "partial_update": "clients.edit", "destroy": "clients.delete",
-        # check_overdue создаёт уведомления (side-effect) → требует edit.
         "check_overdue": "clients.edit",
-        # Долги магазинов — финансовое, под reports.view.
         "debts": "reports.view",
         "debt_detail": "reports.view",
     }
 
+    def get_queryset(self):
+        return scope_by_client_department(
+            super().get_queryset(),
+            self.request.user,
+            client_path="client",
+        )
+
     @action(detail=True, methods=["get"], url_path="debt-detail")
     def debt_detail(self, request, pk=None):
-        """Детали долга одного магазина: расписание, окно и непогашенные заказы."""
         from apps.orders.serializers import OrderSerializer
         store = self.get_object()
         today = timezone.localdate()

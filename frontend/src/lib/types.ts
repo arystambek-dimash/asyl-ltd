@@ -163,6 +163,8 @@ export interface Client {
   iin: string;
   bank: string;
   bank_account: string;
+  department: number | null;
+  department_name: string | null;
   user: number;
   portal_access_enabled: boolean;
   password_change_required: boolean;
@@ -246,6 +248,9 @@ export interface Order {
   payments?: Payment[];
   pending_payments?: Payment[];
   weigh_in_kg?: string | null;
+  weigh_in_source?: "legacy" | "estimated" | "manual" | "scale" | null;
+  weigh_out_kg?: string | null;
+  net_weight_kg?: string | null;
   bags_loaded?: number;
   bag_estimate_kg?: string;
   bag_weight_kg?: string;

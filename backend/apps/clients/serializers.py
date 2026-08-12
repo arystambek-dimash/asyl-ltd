@@ -1,15 +1,14 @@
 from decimal import Decimal
 
-from apps.common.money import (
-    as_money_strings,
-    money_string,
-    primary_currency
-)
-from apps.orders.debt import debt_by_currency
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
+
+from apps.common.money import as_money_strings, money_string, primary_currency
+from apps.orders.debt import debt_by_currency
+from apps.sales.access import assigned_department_id, scope_by_client_department
+from apps.sales.models import Department
 
 from .models import Client, Store
 
@@ -26,6 +25,11 @@ class ClientReadSerializer(serializers.ModelSerializer):
     portal_access_enabled = serializers.SerializerMethodField()
     password_change_required = serializers.BooleanField(
         source="user.must_change_password",
+        read_only=True,
+    )
+    department_name = serializers.CharField(
+        source="department.name",
+        allow_null=True,
         read_only=True,
     )
     debt_total = serializers.SerializerMethodField()
@@ -46,6 +50,8 @@ class ClientReadSerializer(serializers.ModelSerializer):
             "iin",
             "bank",
             "bank_account",
+            "department",
+            "department_name",
             "user",
             "portal_access_enabled",
             "password_change_required",
@@ -60,9 +66,6 @@ class ClientReadSerializer(serializers.ModelSerializer):
     def get_fields(self):
         fields = super().get_fields()
         request = self.context.get("request")
-        # Direct domain use keeps the complete representation. Every DRF HTTP
-        # response supplies request in serializer context and enforces the
-        # reports permission here, including nested/create representations.
         if request is not None and not request.user.has_perm_code("reports.view"):
             for field_name in self.FINANCIAL_FIELDS:
                 fields.pop(field_name, None)
@@ -115,10 +118,46 @@ class ClientCreateUpdateSerializer(serializers.ModelSerializer):
             "bank",
             "bank_account",
             "currency",
+            "department",
         ]
 
     def to_representation(self, instance):
         return ClientReadSerializer(instance, context=self.context).data
+
+    def validate_department(self, value):
+        if value is None or value.is_active:
+            return value
+        if self.instance is not None and self.instance.department_id == value.pk:
+            return value
+        raise serializers.ValidationError("Выберите действующий отдел продаж")
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        department_id = assigned_department_id(request.user) if request else None
+        if department_id is None:
+            return attrs
+
+        if self.instance is None:
+            department = Department.objects.get(pk=department_id)
+            if not department.is_active:
+                raise serializers.ValidationError({
+                    "department": (
+                        "Закреплённый отдел продаж отключён — "
+                        "обратитесь к администратору"
+                    )
+                })
+            # The employee's ownership scope is authoritative even when an old
+            # or malicious client submits another department.
+            attrs["department"] = department
+            return attrs
+
+        if "department" in attrs:
+            department = attrs["department"]
+            if department is None or department.pk != department_id:
+                raise serializers.ValidationError({
+                    "department": "Нельзя передать клиента в другой отдел"
+                })
+        return attrs
 
     def create(self, validated_data):
         first_name = validated_data.pop("first_name")
@@ -185,3 +224,13 @@ class StoreSerializer(serializers.ModelSerializer):
             "payment_days",
             "contract_signed_at"
         ]
+
+    def get_fields(self):
+        fields = super().get_fields()
+        request = self.context.get("request")
+        if request is not None:
+            fields["client"].queryset = scope_by_client_department(
+                Client.objects.all(),
+                request.user,
+            )
+        return fields

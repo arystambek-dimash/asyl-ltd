@@ -1,11 +1,20 @@
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from apps.orders.models import Order
+
 from apps.common.permissions import PermViewSetMixin
+from apps.orders.models import Order
+from apps.sales.access import scope_by_client_department
+
+from . import scale
 from .serializers import ArrivalSerializer, LoadSerializer, ShipmentSerializer
 from .services import (
-    finish_loading, record_arrival, record_count, record_shipment, rewind_loading,
+    finish_loading,
+    record_arrival,
+    record_count,
+    record_scale_arrival,
+    record_shipment,
+    rewind_loading,
 )
 
 
@@ -22,7 +31,11 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
     }
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = scope_by_client_department(
+            super().get_queryset(),
+            self.request.user,
+            client_path="client",
+        )
         device = getattr(self.request.user, "active_monoblock_device", None)
         if device is not None:
             # A physical post may mutate only its own live loading workflow.
@@ -36,11 +49,14 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
     def arrive(self, request, pk=None):
         serializer = ArrivalSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        shipment = record_arrival(
-            self.get_object(),
-            serializer.validated_data.get("weigh_in_kg"),  # None → расчётный вес
-            request.user,
-        )
+        order = self.get_object()
+        weigh_in_kg = serializer.validated_data.get("weigh_in_kg")
+        if scale.enabled():
+            # Когда production-весы настроены, значение из HTTP-клиента не
+            # является доверенным источником и намеренно игнорируется.
+            shipment = record_scale_arrival(order, request.user)
+        else:
+            shipment = record_arrival(order, weigh_in_kg, request.user)
         return Response(ShipmentSerializer(shipment).data)
 
     @action(detail=True, methods=["post"], url_path="load")

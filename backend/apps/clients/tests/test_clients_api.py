@@ -2,6 +2,7 @@ import pytest
 
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
+from apps.sales.models import Department
 
 pytestmark = pytest.mark.django_db
 
@@ -42,6 +43,116 @@ def test_country_and_requisites_optional(auth_client, manager):
          "country": "Узбекистан"},
     )
     assert resp.status_code == 201
+
+
+def test_manager_assigns_and_returns_client_department(auth_client, manager):
+    department = Department.objects.create(
+        code="client-team",
+        name="Отдел по работе с клиентами",
+    )
+
+    created = auth_client(manager).post(
+        "/api/clients/",
+        {
+            "first_name": "Отдел",
+            "phone": "1",
+            "department": department.pk,
+        },
+        format="json",
+    )
+
+    assert created.status_code == 201
+    assert created.data["department"] == department.pk
+    assert created.data["department_name"] == department.name
+    client = Client.objects.get(pk=created.data["id"])
+    assert client.department_id == department.pk
+
+    cleared = auth_client(manager).patch(
+        f"/api/clients/{client.pk}/",
+        {"department": None},
+        format="json",
+    )
+
+    assert cleared.status_code == 200
+    assert cleared.data["department"] is None
+    assert cleared.data["department_name"] is None
+
+
+def test_inactive_department_cannot_be_newly_assigned_to_client(
+    auth_client,
+    manager,
+):
+    department = Department.objects.create(
+        code="inactive-client-team",
+        name="Архивный отдел",
+        is_active=False,
+    )
+
+    rejected = auth_client(manager).post(
+        "/api/clients/",
+        {
+            "first_name": "Архив",
+            "phone": "1",
+            "department": department.pk,
+        },
+        format="json",
+    )
+
+    assert rejected.status_code == 400
+    assert "department" in rejected.data["detail"]
+
+
+def test_client_can_keep_its_existing_inactive_department(auth_client, manager):
+    department = Department.objects.create(
+        code="archived-existing-client-team",
+        name="Старый отдел",
+    )
+    client = Client.objects.create_with_user(
+        first_name="Старый",
+        phone="1",
+        department=department,
+    )
+    department.is_active = False
+    department.save(update_fields=["is_active"])
+
+    response = auth_client(manager).patch(
+        f"/api/clients/{client.pk}/",
+        {"phone": "2", "department": department.pk},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    client.refresh_from_db()
+    assert client.phone == "2"
+    assert client.department_id == department.pk
+
+
+def test_client_department_change_is_audited(auth_client, manager):
+    first = Department.objects.create(code="audit-first", name="Первый")
+    second = Department.objects.create(code="audit-second", name="Второй")
+    client = Client.objects.create_with_user(
+        first_name="Аудит",
+        phone="1",
+        department=first,
+    )
+
+    response = auth_client(manager).patch(
+        f"/api/clients/{client.pk}/",
+        {"department": second.pk},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    event = EventLog.objects.get(
+        event_type="client",
+        payload__action="client_department_changed",
+    )
+    assert event.payload == {
+        "client_id": client.pk,
+        "action": "client_department_changed",
+        "department_from": first.code,
+        "department_to": second.code,
+    }
 
 
 def test_last_name_is_optional(auth_client, manager):

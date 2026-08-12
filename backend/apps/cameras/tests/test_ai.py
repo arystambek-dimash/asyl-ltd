@@ -1,20 +1,23 @@
 """Прокси AI-подсчёта мешков: маппинг ответов ai_service и права доступа."""
 from datetime import timedelta
+from decimal import Decimal
 from io import BytesIO
 from unittest.mock import patch
 
 import pytest
+from django.core import signing
+from django.utils import timezone
+
 from apps.cameras import ai, recordings
 from apps.cameras.models import AiCountingSession, MonoblockCameraSettings
 from apps.cameras.views import RECORDING_TOKEN_SALT
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
+from apps.shipments import scale as shipment_scale
 from apps.shipments.models import Shipment
 from apps.warehouse.models import StockItem
 from apps.warehouse.services import receive_stock
-from django.core import signing
-from django.utils import timezone
 
 pytestmark = pytest.mark.django_db
 
@@ -101,6 +104,81 @@ def test_monoblock_start_binds_camera_and_moves_confirmed_order_to_loading(
         ("POST", "/processors/cam2", {}),
         ("POST", "/processors/cam2/reset", None),
     ]
+
+
+def test_unstable_scale_blocks_monoblock_before_ai_or_database_change(
+    api_client, loader, settings,
+):
+    settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
+    client = Client.objects.create_with_user(
+        first_name="Scale", last_name="Waiting", phone="scale-waiting"
+    )
+    order = Order.objects.create(
+        client=client,
+        status="confirmed",
+        truck_number="01WAIT-SCALE",
+    )
+    api_client.force_authenticate(loader)
+
+    with patch.object(
+        shipment_scale,
+        "read_truck_scale",
+        side_effect=shipment_scale.TruckScaleNotReady(),
+    ), patch.object(ai, "_request") as ai_request:
+        response = api_client.post(
+            "/api/cameras/cam2/ai/",
+            {"order_id": order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "truck_scale_not_ready"
+    ai_request.assert_not_called()
+    order.refresh_from_db()
+    assert order.status == "confirmed"
+    assert order.loading_camera == ""
+    assert not Shipment.objects.filter(order=order).exists()
+    assert not AiCountingSession.objects.filter(order=order).exists()
+
+
+def test_scale_entry_is_not_saved_if_camera_reservation_disappears_during_read(
+    api_client, loader, settings,
+):
+    settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
+    client = Client.objects.create_with_user(
+        first_name="Scale", last_name="Reservation", phone="scale-reservation"
+    )
+    order = Order.objects.create(
+        client=client,
+        status="confirmed",
+        truck_number="01RESERVATION",
+    )
+    api_client.force_authenticate(loader)
+
+    def lose_reservation():
+        AiCountingSession.objects.filter(order=order).delete()
+        return shipment_scale.ScaleReading(
+            weight_kg=Decimal("10000"),
+            age_seconds=Decimal("0.1"),
+            updated_at="2026-08-10T16:00:00+05:00",
+        )
+
+    with patch.object(
+        shipment_scale, "read_truck_scale", side_effect=lose_reservation
+    ), patch.object(ai, "_request") as ai_request:
+        response = api_client.post(
+            "/api/cameras/cam2/ai/",
+            {"order_id": order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "camera_reservation_lost"
+    ai_request.assert_not_called()
+    order.refresh_from_db()
+    assert order.status == "confirmed"
+    assert not Shipment.objects.filter(order=order).exists()
+    assert not AiCountingSession.objects.filter(order=order).exists()
 
 
 def test_always_on_client_uses_windows_camera_sources_contract():
@@ -682,6 +760,69 @@ def test_monoblock_stop_saves_ai_total_and_completes_order(
     session = AiCountingSession.objects.get(order=order)
     assert session.status == AiCountingSession.CLOSED
     assert session.final_total == 42
+
+
+def test_monoblock_scale_flow_records_entry_exit_and_net(
+    api_client, loader, boss, settings,
+):
+    settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
+    product = Product.objects.create(
+        name="AI scale final", color="Blue", weight_kg="50", price="100.00",
+    )
+    receive_stock(product, 100, boss)
+    client = Client.objects.create_with_user(
+        first_name="Scale", last_name="AI", phone="scale-ai"
+    )
+    order = Order.objects.create(
+        client=client,
+        status="confirmed",
+        truck_number="01AI-SCALE",
+    )
+    OrderItem.objects.create(order=order, product=product, quantity=50)
+    api_client.force_authenticate(loader)
+    readings = [
+        shipment_scale.ScaleReading(
+            weight_kg=Decimal("10000"),
+            age_seconds=Decimal("0.2"),
+            updated_at="2026-08-10T16:00:00+05:00",
+        ),
+        shipment_scale.ScaleReading(
+            weight_kg=Decimal("12600"),
+            age_seconds=Decimal("0.1"),
+            updated_at="2026-08-10T16:20:00+05:00",
+        ),
+    ]
+
+    with patch.object(
+        shipment_scale, "read_truck_scale", side_effect=readings
+    ) as read_scale:
+        with patch.object(ai, "_request", return_value=(200, RUNNING)):
+            started = api_client.post(
+                "/api/cameras/cam2/ai/",
+                {"order_id": order.pk},
+                format="json",
+            )
+        with patch.object(
+            ai,
+            "_request",
+            side_effect=[(200, RUNNING), (200, {"running": False})],
+        ):
+            completed = api_client.delete(
+                "/api/cameras/cam2/ai/?complete_order=1",
+                {"order_id": order.pk},
+                format="json",
+            )
+
+    assert started.status_code == 200
+    assert completed.status_code == 200
+    assert read_scale.call_count == 2
+    order.refresh_from_db()
+    assert order.status == "shipped"
+    assert order.shipment.weigh_in_source == Shipment.WeightSource.SCALE
+    assert order.shipment.weigh_in_kg == Decimal("10000")
+    assert order.shipment.weigh_out_kg == Decimal("12600")
+    assert order.shipment.net_weight_kg == Decimal("2600")
+    assert StockItem.objects.get(product=product).bags == 50
 
 
 def test_delete_commits_final_snapshot_before_worker_is_idled(

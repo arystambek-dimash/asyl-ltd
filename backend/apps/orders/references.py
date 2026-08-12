@@ -2,10 +2,11 @@
 
 from apps.catalog.models import Product
 from apps.clients.models import Client, Store
+from apps.sales.access import scope_by_client_department
 from apps.sales.models import Department
 
 
-def build_order_form_options() -> dict:
+def build_order_form_options(user) -> dict:
     """Return only fields needed to create or edit an order.
 
     The generic client, catalog and store APIs intentionally keep their own
@@ -13,7 +14,10 @@ def build_order_form_options() -> dict:
     cross-domain projection to choose valid foreign keys, but does not need
     bank details, client debt, store schedules or CV metadata.
     """
-    clients = Client.objects.select_related("user").only(
+    clients = scope_by_client_department(
+        Client.objects.select_related("user"),
+        user,
+    ).only(
         "id",
         "user__first_name",
         "user__last_name",
@@ -34,7 +38,11 @@ def build_order_form_options() -> dict:
         )
         .order_by("id")
     )
-    stores = Store.objects.only(
+    stores = scope_by_client_department(
+        Store.objects.all(),
+        user,
+        client_path="client",
+    ).only(
         "id",
         "client_id",
         "name",

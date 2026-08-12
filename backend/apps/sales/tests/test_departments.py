@@ -1,6 +1,8 @@
 import pytest
-from apps.sales.models import Department
 from rest_framework.test import APIClient
+
+from apps.clients.models import Client
+from apps.sales.models import Department
 
 pytestmark = pytest.mark.django_db
 
@@ -64,3 +66,22 @@ def test_department_name_is_unique_case_insensitive(boss):
         format="json",
     )
     assert response.status_code == 400
+
+
+def test_department_with_clients_cannot_be_deleted(boss):
+    department = Department.objects.create(
+        code="client-owner",
+        name="Отдел с клиентом",
+    )
+    client = Client.objects.create_with_user(
+        first_name="Клиент",
+        phone="1",
+        department=department,
+    )
+
+    response = _api(boss).delete(f"/api/departments/{department.pk}/")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "department_in_use"
+    client.refresh_from_db()
+    assert client.department_id == department.pk

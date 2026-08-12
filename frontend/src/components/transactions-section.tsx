@@ -12,13 +12,14 @@ import { Input } from "@/components/ui/input";
 import { LoadMore } from "@/components/ui/load-more";
 import { Modal } from "@/components/ui/modal";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
+import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { api, apiError } from "@/lib/api";
 import { downloadBlob } from "@/lib/download";
 import { useApi } from "@/lib/use-api";
 import { useDebounced } from "@/lib/use-debounced";
 import { cn, formatCurrency, formatDateTime, formatMoney, currencySymbol } from "@/lib/utils";
 import { PAYMENT_METHOD_LABELS, PAYMENT_STAGE_LABELS, paymentStage } from "@/lib/constants";
-import type { Payment } from "@/lib/types";
+import type { Department, Payment } from "@/lib/types";
 
 interface TransactionPage {
   results: Payment[];
@@ -192,21 +193,34 @@ const STATUS_FILTERS = [
 ];
 
 /* ── Вкладка «Транзакции»: все платежи, возвраты и чеки ─────────────────── */
-export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boolean; canCreate: boolean }) {
+export function TransactionsSection({
+  canConfirm,
+  canCreate,
+  departments,
+}: {
+  canConfirm: boolean;
+  canCreate: boolean;
+  departments: Department[];
+}) {
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [department, setDepartment] = useState("all");
   const debouncedQuery = useDebounced(query.trim());
-  useEffect(() => setPage(1), [debouncedQuery, statusFilter]);
+  useEffect(() => setPage(1), [debouncedQuery, department, statusFilter]);
+  const transactionParams = new URLSearchParams({
+    page: String(page),
+    page_size: "50",
+    search: debouncedQuery,
+  });
+  if (statusFilter !== "all") transactionParams.set("status", statusFilter);
+  if (department !== "all") transactionParams.set("department", department);
   const {
     data,
     loading,
     error: loadError,
     reload,
-  } = useApi<TransactionPage>(
-    `/payment-transactions/?page=${page}&page_size=50&search=${encodeURIComponent(debouncedQuery)}` +
-      (statusFilter !== "all" ? `&status=${statusFilter}` : ""),
-  );
+  } = useApi<TransactionPage>(`/payment-transactions/?${transactionParams.toString()}`);
   // Единый стиль пагинации: страницы накапливаются под «Показать ещё»,
   // а не листаются взад-вперёд. Итоги в конверте всегда по всей выборке.
   const [rows, setRows] = useState<Payment[]>([]);
@@ -229,10 +243,11 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
     // должны выглядеть результатом свежего запроса.
     setRows([]);
     setMeta(null);
-  }, [debouncedQuery, statusFilter]);
+  }, [debouncedQuery, department, statusFilter]);
   // Счётчики статусов приходят до статус-фильтра и живут между запросами,
   // чтобы пилюли не мигали на каждую загрузку.
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
+  useEffect(() => setStatusCounts({}), [department]);
   useEffect(() => {
     if (data?.status_counts) setStatusCounts(data.status_counts);
   }, [data]);
@@ -402,6 +417,18 @@ export function TransactionsSection({ canConfirm, canCreate }: { canConfirm: boo
                 }}
               />
             </div>
+            <FilterDropdown
+              label="Отдел"
+              active={department}
+              onChange={(value) => {
+                setPage(1);
+                setDepartment(value);
+              }}
+              options={[
+                { key: "all", label: "Все" },
+                ...departments.map((row) => ({ key: row.code, label: row.name })),
+              ]}
+            />
             {/* Мини-отчёт по статусам: пилюля = фильтр, цифра = сколько таких. */}
             <div className="flex flex-wrap gap-1.5">
               {[

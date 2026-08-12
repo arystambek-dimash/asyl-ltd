@@ -405,6 +405,27 @@ function TransportBadge({ order, size = "md" }: { order: Order; size?: "md" | "l
   return <PlateBadge value={order.truck_number} size={size === "lg" ? "lg" : "md"} />;
 }
 
+const WEIGH_IN_LABELS: Record<NonNullable<Order["weigh_in_source"]>, string> = {
+  legacy: "Старый замер",
+  estimated: "Расчётный вес",
+  manual: "Въезд вручную",
+  scale: "Въезд с весов",
+};
+
+function WeightBadge({ label, weight, net = false }: { label: string; weight: string; net?: boolean }) {
+  return (
+    <span
+      className={cn(
+        "flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm",
+        net && "border-emerald-200 bg-emerald-50 text-emerald-800",
+      )}
+    >
+      <Scale className="size-3.5 text-[var(--muted-foreground)]" />
+      {label} <b className="tabular-nums">{formatMoney(weight)} кг</b>
+    </span>
+  );
+}
+
 function BoardCard({
   order,
   stage,
@@ -1503,11 +1524,17 @@ function ShippingPageInner() {
                       <b className="tabular-nums">× {it.quantity}</b>
                     </span>
                   ))}
-                  {selected.weigh_in_kg && (
-                    <span className="flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm">
-                      <Scale className="size-3.5 text-[var(--muted-foreground)]" />
-                      На въезде <b className="tabular-nums">{formatMoney(selected.weigh_in_kg)} кг</b>
-                    </span>
+                  {!isTrain && selected.weigh_in_kg && (
+                    <WeightBadge
+                      label={selected.weigh_in_source ? WEIGH_IN_LABELS[selected.weigh_in_source] : "Замер на въезде"}
+                      weight={selected.weigh_in_kg}
+                    />
+                  )}
+                  {!isTrain && selected.weigh_out_kg && (
+                    <WeightBadge label="На выезде" weight={selected.weigh_out_kg} />
+                  )}
+                  {!isTrain && selected.net_weight_kg && (
+                    <WeightBadge label="Нетто" weight={selected.net_weight_kg} net />
                   )}
                 </div>
 
@@ -1639,11 +1666,17 @@ function ShippingPageInner() {
         onClose={() => !busy && setFinishing(null)}
         title="Завершить отгрузку?"
         description={
-          finishing
-            ? `Машина ${formatPlate(finishing.truck_number) || "без номера"} уедет с ${
-                finishing.bags_loaded ?? 0
-              } из ${orderedBagCount(finishing)} меш. Откат потребует отдельного права.`
-            : ""
+          !finishing
+            ? ""
+            : finishing.transport_type === "train"
+              ? `В вагон загружено ${finishing.bags_loaded ?? 0} из ${orderedBagCount(finishing)} меш. Откат потребует отдельного права.`
+              : finishing.weigh_in_source === "scale"
+                ? `Поставьте машину ${formatPlate(finishing.truck_number) || "без номера"} на весы. При подтверждении система зафиксирует выходной вес и нетто. Загружено ${
+                    finishing.bags_loaded ?? 0
+                  } из ${orderedBagCount(finishing)} меш. Откат потребует отдельного права.`
+                : `Машина ${formatPlate(finishing.truck_number) || "без номера"} уедет с ${
+                    finishing.bags_loaded ?? 0
+                  } из ${orderedBagCount(finishing)} меш. Откат потребует отдельного права.`
         }
         confirmLabel="Завершить"
         confirmVariant="default"

@@ -1,13 +1,25 @@
+from dataclasses import dataclass
 from decimal import Decimal
+
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
+
 from apps.eventlog.services import log_event
 from apps.warehouse.services import deduct_stock
+
+from . import scale
 from .models import Shipment
 
-
 LOADING_CAMERA_CONSTRAINT = "orders_one_active_order_per_loading_camera"
+
+
+@dataclass(frozen=True)
+class BoundScaleReading:
+    """A scale sample bound to the truck number observed before network I/O."""
+
+    truck_number: str
+    reading: scale.ScaleReading
 
 
 def _locked(order):
@@ -111,6 +123,336 @@ def estimated_load_kg(order) -> Decimal:
     )
 
 
+def _lock_start_reservation(
+    reservation_id: int | None,
+    order_id: int,
+    camera: str | None,
+) -> None:
+    if reservation_id is None and camera is None:
+        return
+    if reservation_id is None or not camera:
+        raise ValueError("reservation_id and camera must be provided together")
+
+    # Local import avoids shipments -> cameras -> shipments at Django startup.
+    from apps.cameras.models import AiCountingSession
+
+    reservation_exists = AiCountingSession.objects.select_for_update().filter(
+        pk=reservation_id,
+        order_id=order_id,
+        camera=camera,
+        status__in=AiCountingSession.OPEN_STATUSES,
+    ).exists()
+    if not reservation_exists:
+        raise ValidationError({
+            "detail": "Бронь камеры изменилась — повторите запуск отгрузки",
+            "code": "camera_reservation_lost",
+        })
+
+
+def ensure_scale_entry_weight(
+    order,
+    user,
+    *,
+    reservation_id: int | None = None,
+    camera: str | None = None,
+) -> Shipment | None:
+    """Зафиксировать первый реальный замер до начала погрузки.
+
+    Сетевой GET выполняется до транзакции и блокировки заказа. Повторный старт
+    той же машины использует уже сохранённый замер: таймаут AI-сервиса не
+    должен незаметно заменить вес пустого КАМАЗа более поздним показанием.
+    """
+    state = type(order).objects.filter(pk=order.pk).values(
+        "transport_type", "truck_number"
+    ).get()
+    if state["transport_type"] != "truck" or not scale.enabled():
+        return None
+    expected_truck_number = state["truck_number"]
+    if not expected_truck_number.strip():
+        raise ValidationError({
+            "detail": "Сначала укажите номер КАМАЗа",
+            "code": "truck_number_required",
+        })
+
+    existing = Shipment.objects.filter(
+        order_id=order.pk,
+        truck_number=expected_truck_number,
+        weigh_in_source=Shipment.WeightSource.SCALE,
+        weigh_in_kg__isnull=False,
+    ).first()
+    if existing is not None:
+        return _store_scale_entry_weight(
+            order,
+            None,
+            user,
+            expected_truck_number=expected_truck_number,
+            reservation_id=reservation_id,
+            camera=camera,
+        )
+
+    reading = scale.read_truck_scale()
+    return _store_scale_entry_weight(
+        order,
+        reading,
+        user,
+        expected_truck_number=expected_truck_number,
+        reservation_id=reservation_id,
+        camera=camera,
+    )
+
+
+def _save_scale_entry(
+    shipment: Shipment,
+    order,
+    reading: scale.ScaleReading,
+    user,
+) -> Shipment:
+    previous_weight = shipment.weigh_in_kg
+    previous_source = shipment.weigh_in_source
+    shipment.truck_number = order.truck_number
+    shipment.weigh_in_kg = reading.weight_kg
+    shipment.weigh_in_source = Shipment.WeightSource.SCALE
+    shipment.weigh_out_kg = None
+    shipment.net_weight_kg = None
+    shipment.arrived_at = timezone.now()
+    shipment.save()
+    log_event(
+        "weigh_in",
+        f"Машина {order.truck_number}: входной вес {reading.weight_kg} кг",
+        user=user,
+        order=order,
+        payload={
+            "weight_kg": str(reading.weight_kg),
+            "source": Shipment.WeightSource.SCALE,
+            "age_seconds": str(reading.age_seconds),
+            "scale_updated_at": reading.updated_at,
+            "replaced_weight_kg": (
+                str(previous_weight) if previous_weight is not None else None
+            ),
+            "replaced_source": previous_source,
+        },
+    )
+    return shipment
+
+
+@transaction.atomic
+def _store_scale_entry_weight(
+    order,
+    reading: scale.ScaleReading | None,
+    user,
+    *,
+    expected_truck_number: str,
+    reservation_id: int | None = None,
+    camera: str | None = None,
+) -> Shipment:
+    # Match counting.start's lock order: reservation first, order second.
+    # The HTTP read happened before both, so no database lock spans network I/O.
+    _lock_start_reservation(reservation_id, order.pk, camera)
+    order = _locked(order)
+    _require_transport(order, "truck")
+    if order.status != "confirmed":
+        raise ValidationError({
+            "detail": "Взвесить КАМАЗ на въезде можно только до начала погрузки",
+            "code": "invalid_status",
+        })
+    if not order.truck_number.strip():
+        raise ValidationError({
+            "detail": "Сначала укажите номер КАМАЗа",
+            "code": "truck_number_required",
+        })
+    if order.truck_number != expected_truck_number:
+        raise ValidationError({
+            "detail": "Номер КАМАЗа изменился во время взвешивания — повторите замер",
+            "code": "truck_number_changed_during_weighing",
+        })
+
+    shipment = Shipment.objects.select_for_update().filter(order=order).first()
+    if (
+        shipment is not None
+        and shipment.truck_number == order.truck_number
+        and shipment.weigh_in_source == Shipment.WeightSource.SCALE
+        and shipment.weigh_in_kg is not None
+    ):
+        return shipment
+
+    if reading is None:
+        raise ValidationError({
+            "detail": "Не удалось сохранить входной замер автомобильных весов",
+            "code": "scale_entry_weight_required",
+        })
+
+    if shipment is None:
+        shipment = Shipment(order=order)
+    return _save_scale_entry(shipment, order, reading, user)
+
+
+def record_scale_arrival(order, user) -> Shipment:
+    """Read outside a transaction, then atomically bind sample and arrival.
+
+    Unlike calling ``ensure_scale_entry_weight`` followed by ``record_arrival``,
+    this leaves no gap in which the truck number can change and make a stale
+    scale value look as if it belonged to the replacement truck.
+    """
+    if not scale.enabled():
+        raise ValidationError({
+            "detail": "Автомобильные весы не настроены",
+            "code": "truck_scale_disabled",
+        })
+    state = type(order).objects.filter(pk=order.pk).values(
+        "transport_type", "truck_number"
+    ).get()
+    if state["transport_type"] != "truck":
+        _require_transport(order, "truck")
+    expected_truck_number = state["truck_number"]
+    if not expected_truck_number.strip():
+        raise ValidationError({
+            "detail": "Сначала укажите номер КАМАЗа",
+            "code": "truck_number_required",
+        })
+
+    existing = Shipment.objects.filter(
+        order_id=order.pk,
+        truck_number=expected_truck_number,
+        weigh_in_source=Shipment.WeightSource.SCALE,
+        weigh_in_kg__isnull=False,
+    ).exists()
+    reading = None if existing else scale.read_truck_scale()
+    return _record_scale_arrival_locked(
+        order,
+        expected_truck_number,
+        reading,
+        user,
+    )
+
+
+@transaction.atomic
+def _record_scale_arrival_locked(
+    order,
+    expected_truck_number: str,
+    reading: scale.ScaleReading | None,
+    user,
+) -> Shipment:
+    order = _locked(order)
+    _require_transport(order, "truck")
+    if order.status != "confirmed":
+        raise ValidationError({
+            "detail": "Машину можно принять только для подтверждённого заказа",
+            "code": "invalid_status",
+        })
+    if order.truck_number != expected_truck_number:
+        raise ValidationError({
+            "detail": "Номер КАМАЗа изменился во время взвешивания — повторите замер",
+            "code": "truck_number_changed_during_weighing",
+        })
+
+    shipment = Shipment.objects.select_for_update().filter(order=order).first()
+    has_matching_entry = bool(
+        shipment
+        and shipment.truck_number == order.truck_number
+        and shipment.weigh_in_source == Shipment.WeightSource.SCALE
+        and shipment.weigh_in_kg is not None
+    )
+    if not has_matching_entry:
+        if reading is None:
+            raise ValidationError({
+                "detail": "Не найден входной вес КАМАЗа",
+                "code": "scale_entry_weight_required",
+            })
+        shipment = shipment or Shipment(order=order)
+        _save_scale_entry(shipment, order, reading, user)
+
+    order.status = "arrived"
+    order.save(update_fields=["status"])
+    log_event(
+        "arrival",
+        f"Машина {order.truck_number} прибыла",
+        user=user,
+        order=order,
+        payload={
+            "weigh_in_kg": str(shipment.weigh_in_kg),
+            "source": Shipment.WeightSource.SCALE,
+        },
+    )
+    return shipment
+
+
+def read_scale_exit_if_required(order) -> BoundScaleReading | None:
+    state = type(order).objects.filter(pk=order.pk).values(
+        "transport_type",
+        "truck_number",
+        "shipment__weigh_in_source",
+    ).get()
+    if state["transport_type"] != "truck":
+        return None
+    source = state["shipment__weigh_in_source"]
+    if source != Shipment.WeightSource.SCALE:
+        # Уже начатые до внедрения весов машины завершаются по старому flow:
+        # их прежний weigh_in мог быть расчётом мешков, считать по нему нельзя.
+        return None
+    return BoundScaleReading(
+        truck_number=state["truck_number"],
+        reading=scale.read_truck_scale(),
+    )
+
+
+def _record_scale_exit(
+    order,
+    shipment: Shipment,
+    bound_reading: BoundScaleReading | None,
+    user,
+) -> None:
+    if shipment.weigh_in_source != Shipment.WeightSource.SCALE:
+        return
+    if shipment.weigh_in_kg is None:
+        raise ValidationError({
+            "detail": "Не найден входной вес КАМАЗа",
+            "code": "scale_entry_weight_required",
+        })
+    if bound_reading is None:
+        raise ValidationError({
+            "detail": "Перед завершением нужен свежий замер автомобильных весов",
+            "code": "scale_exit_weight_required",
+        })
+    if (
+        bound_reading.truck_number != order.truck_number
+        or shipment.truck_number != order.truck_number
+    ):
+        raise ValidationError({
+            "detail": "Номер КАМАЗа изменился во время взвешивания — повторите замер",
+            "code": "truck_number_changed_during_weighing",
+        })
+    reading = bound_reading.reading
+    if reading.weight_kg <= shipment.weigh_in_kg:
+        raise ValidationError({
+            "detail": (
+                "Выходной вес должен быть больше входного: "
+                f"{reading.weight_kg} кг ≤ {shipment.weigh_in_kg} кг"
+            ),
+            "code": "invalid_scale_weight_direction",
+        })
+
+    shipment.weigh_out_kg = reading.weight_kg
+    shipment.net_weight_kg = reading.weight_kg - shipment.weigh_in_kg
+    shipment.save(update_fields=["weigh_out_kg", "net_weight_kg"])
+    log_event(
+        "weigh_out",
+        (
+            f"Машина {shipment.truck_number}: выходной вес "
+            f"{shipment.weigh_out_kg} кг, нетто {shipment.net_weight_kg} кг"
+        ),
+        user=user,
+        order=shipment.order,
+        payload={
+            "weigh_in_kg": str(shipment.weigh_in_kg),
+            "weigh_out_kg": str(shipment.weigh_out_kg),
+            "net_weight_kg": str(shipment.net_weight_kg),
+            "source": Shipment.WeightSource.SCALE,
+            "age_seconds": str(reading.age_seconds),
+            "scale_updated_at": reading.updated_at,
+        },
+    )
+
+
 @transaction.atomic
 def begin_camera_loading(order, camera: str, user):
     """Закрепить свободную камеру и перевести заказ в активную погрузку.
@@ -139,6 +481,26 @@ def begin_camera_loading(order, camera: str, user):
     now = timezone.now()
     old_status = order.status
     shipment = getattr(order, "shipment", None)
+    matching_scale_entry = bool(
+        shipment
+        and shipment.truck_number == order.truck_number
+        and shipment.weigh_in_source == Shipment.WeightSource.SCALE
+        and shipment.weigh_in_kg is not None
+    )
+    if (
+        order.transport_type == "truck"
+        and old_status == "confirmed"
+        and scale.enabled()
+        and order.scale_weighing_required
+        and not matching_scale_entry
+    ):
+        # Direct service calls and future adapters must obey the same boundary
+        # as counting.start. Waiting until _do_ship would let an unweighed new
+        # truck enter a live loading workflow and fail only at the exit gate.
+        raise ValidationError({
+            "detail": "Перед началом погрузки зафиксируйте входной вес КАМАЗа",
+            "code": "scale_entry_weight_required",
+        })
     if shipment is None:
         shipment = Shipment.objects.create(
             order=order,
@@ -147,14 +509,23 @@ def begin_camera_loading(order, camera: str, user):
 
     if order.transport_type == "truck" and old_status == "confirmed":
         shipment.truck_number = order.truck_number
-        shipment.weigh_in_kg = estimated_load_kg(order)
-        shipment.arrived_at = now
+        # counting.start заранее сохраняет реальный замер без DB-lock. Прямые
+        # старые вызовы сервиса оставляем совместимыми, но явно помечаем их
+        # расчёт как estimated — выходное нетто по нему считаться не будет.
+        if not matching_scale_entry:
+            shipment.weigh_in_kg = estimated_load_kg(order)
+            shipment.weigh_in_source = Shipment.WeightSource.ESTIMATED
+        shipment.arrived_at = shipment.arrived_at or now
         log_event(
             "arrival",
             f"Машина {order.truck_number} принята через Моноблок",
             user=user,
             order=order,
-            payload={"weigh_in_kg": str(shipment.weigh_in_kg), "source": "monoblock"},
+            payload={
+                "weigh_in_kg": str(shipment.weigh_in_kg),
+                "source": shipment.weigh_in_source,
+                "channel": "monoblock",
+            },
         )
 
     shipment.loading_started_at = shipment.loading_started_at or now
@@ -183,9 +554,7 @@ def begin_camera_loading(order, camera: str, user):
 
 @transaction.atomic
 def record_arrival(order, weigh_in_kg, user):
-    # Въезд разрешён без оплаты: машина заезжает, затем склад грузит заказ,
-    # а расчёт идёт после отгрузки. Вес спрашивается только для товаров с
-    # флагом; если не передан — берём расчётный вес по мешкам.
+    """Совместимый ручной приём, когда интеграция весов выключена."""
     order = _locked(order)
     _require_transport(order, "truck")
     if order.status != "confirmed":
@@ -193,8 +562,16 @@ def record_arrival(order, weigh_in_kg, user):
             {"detail": "Машину можно принять только для подтверждённого заказа",
              "code": "invalid_status"}
         )
+    if scale.enabled() and order.scale_weighing_required:
+        raise ValidationError({
+            "detail": "Используйте автоматический замер автомобильных весов",
+            "code": "scale_entry_weight_required",
+        })
     if weigh_in_kg is None:
         weigh_in_kg = estimated_load_kg(order)
+        weigh_in_source = Shipment.WeightSource.ESTIMATED
+    else:
+        weigh_in_source = Shipment.WeightSource.MANUAL
     truck = order.truck_number
     order.status = "arrived"
     order.save(update_fields=["status"])
@@ -203,10 +580,16 @@ def record_arrival(order, weigh_in_kg, user):
     )
     shipment.truck_number = truck
     shipment.weigh_in_kg = weigh_in_kg
+    shipment.weigh_in_source = weigh_in_source
+    shipment.weigh_out_kg = None
+    shipment.net_weight_kg = None
     shipment.arrived_at = timezone.now()
     shipment.save()
     log_event("arrival", f"Машина {truck} прибыла", user=user, order=order,
-              payload={"weigh_in_kg": str(weigh_in_kg)})
+              payload={
+                  "weigh_in_kg": str(weigh_in_kg),
+                  "source": weigh_in_source,
+              })
     return shipment
 
 
@@ -233,8 +616,16 @@ def record_count(order, bags, user):
     return shipment
 
 
-@transaction.atomic
 def finish_loading(order, user):
+    exit_reading = (
+        read_scale_exit_if_required(order)
+        if order.status == "loading" else None
+    )
+    return _finish_loading_locked(order, user, exit_reading)
+
+
+@transaction.atomic
+def _finish_loading_locked(order, user, exit_reading):
     order = _locked(order)
     _assert_device_order_camera(order, user)
     _require_transport(order, "truck")
@@ -243,8 +634,15 @@ def finish_loading(order, user):
             {"detail": "Завершить можно только идущую загрузку", "code": "invalid_status"}
         )
     shipment = _require_shipment(order)
+    _record_scale_exit(order, shipment, exit_reading, user)
     log_event("loading_done", "Загрузка завершена", user=user, order=order,
-              payload={"bags": shipment.bags_loaded})
+              payload={
+                  "bags": shipment.bags_loaded,
+                  "net_weight_kg": (
+                      str(shipment.net_weight_kg)
+                      if shipment.net_weight_kg is not None else None
+                  ),
+              })
     # Для оператора «отгружен» и «завершён» — один финальный этап. Не оставляем
     # заказ в техническом `loaded`: сразу фиксируем отгрузку, время, долг и
     # списание склада. `record_shipment` остаётся только для старых `loaded`.
@@ -260,7 +658,7 @@ def _valid_ai_total(bags) -> bool:
 
 
 @transaction.atomic
-def finish_ai_loading(order, bags: int, user):
+def finish_ai_loading(order, bags: int, user, *, exit_reading=None):
     """Сохранить финальный AI-счёт и завершить отгрузку одним DB-действием.
 
     Воркер на ПК цеха — сторонний процесс, и его ответ может прийти пустым
@@ -278,6 +676,7 @@ def finish_ai_loading(order, bags: int, user):
             "code": "invalid_status",
         })
     shipment = _require_shipment(order)
+    _record_scale_exit(order, shipment, exit_reading, user)
 
     source = "ai_final"
     if not _valid_ai_total(bags):
@@ -306,7 +705,14 @@ def finish_ai_loading(order, bags: int, user):
         "Отгрузка завершена по финальному AI-подсчёту",
         user=user,
         order=order,
-        payload={"bags": bags, "source": source},
+        payload={
+            "bags": bags,
+            "source": source,
+            "net_weight_kg": (
+                str(shipment.net_weight_kg)
+                if shipment.net_weight_kg is not None else None
+            ),
+        },
     )
     label = (
         "Вагон: отгрузка завершена"
@@ -369,7 +775,9 @@ def manual_complete_order(order, bags: int | None, user):
         )
     if order.transport_type == "truck":
         shipment.truck_number = order.truck_number
-        shipment.weigh_in_kg = shipment.weigh_in_kg or estimated_load_kg(order)
+        if shipment.weigh_in_kg is None:
+            shipment.weigh_in_kg = estimated_load_kg(order)
+            shipment.weigh_in_source = Shipment.WeightSource.ESTIMATED
         shipment.arrived_at = shipment.arrived_at or now
     shipment.loading_started_at = shipment.loading_started_at or now
     shipment.bags_loaded = bags
@@ -555,6 +963,37 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
 
 def _do_ship(order, shipment, user, label):
     """Списать со склада и зафиксировать отгрузку в долг. Общее для трака и вагона."""
+    if order.transport_type == "truck":
+        requires_new_scale_flow = bool(
+            scale.enabled() and order.scale_weighing_required
+        )
+        has_scale_flow = shipment.weigh_in_source == Shipment.WeightSource.SCALE
+        if requires_new_scale_flow and (
+            not has_scale_flow or shipment.weigh_in_kg is None
+        ):
+            raise ValidationError({
+                "detail": "Перед отгрузкой зафиксируйте входной вес КАМАЗа",
+                "code": "scale_entry_weight_required",
+            })
+        if has_scale_flow:
+            if shipment.truck_number != order.truck_number:
+                raise ValidationError({
+                    "detail": "Входной замер относится к другому номеру КАМАЗа",
+                    "code": "scale_truck_number_mismatch",
+                })
+            if shipment.weigh_out_kg is None or shipment.net_weight_kg is None:
+                # Manual status and legacy /ship/ must not bypass the second
+                # sample after a physical scale entry has been captured.
+                raise ValidationError({
+                    "detail": "Перед отгрузкой зафиксируйте выходной вес КАМАЗа",
+                    "code": "scale_exit_weight_required",
+                })
+            expected_net = shipment.weigh_out_kg - shipment.weigh_in_kg
+            if expected_net <= 0 or shipment.net_weight_kg != expected_net:
+                raise ValidationError({
+                    "detail": "Нетто автомобильных весов повреждено или некорректно",
+                    "code": "invalid_scale_net_weight",
+                })
     for item in order.items.select_related("product").all():
         if item.product_id is None:
             raise ValidationError({
@@ -573,12 +1012,33 @@ def _do_ship(order, shipment, user, label):
     bag_estimate = estimated_load_kg(order)
     log_event("shipment", label, user=user, order=order,
               payload={"bags_loaded": shipment.bags_loaded,
-                       "bag_estimate_kg": str(bag_estimate)})
+                       "bag_estimate_kg": str(bag_estimate),
+                       "weigh_in_kg": (
+                           str(shipment.weigh_in_kg)
+                           if shipment.weigh_in_kg is not None else None
+                       ),
+                       "weigh_out_kg": (
+                           str(shipment.weigh_out_kg)
+                           if shipment.weigh_out_kg is not None else None
+                       ),
+                       "net_weight_kg": (
+                           str(shipment.net_weight_kg)
+                           if shipment.net_weight_kg is not None else None
+                       ),
+                       "weight_source": shipment.weigh_in_source})
     return shipment
 
 
-@transaction.atomic
 def record_shipment(order, user):
+    exit_reading = (
+        read_scale_exit_if_required(order)
+        if order.status == "loaded" else None
+    )
+    return _record_shipment_locked(order, user, exit_reading)
+
+
+@transaction.atomic
+def _record_shipment_locked(order, user, exit_reading):
     order = _locked(order)
     _require_transport(order, "truck")
     if order.status != "loaded":
@@ -587,7 +1047,7 @@ def record_shipment(order, user):
              "code": "invalid_status"}
         )
     shipment = _require_shipment(order)
-    # Выезд не взвешивается — просто фиксируем отгрузку.
+    _record_scale_exit(order, shipment, exit_reading, user)
     return _do_ship(order, shipment, user, f"Машина {shipment.truck_number} выехала")
 
 

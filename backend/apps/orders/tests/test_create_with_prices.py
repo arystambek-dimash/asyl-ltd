@@ -77,6 +77,7 @@ def test_staff_reviews_template_then_creates_linked_order(manager):
         "source_order_id": source.id,
         "new_order_id": created.id,
         "mode": "reviewed_template",
+        "client_id": client.id,
     }
 
 
