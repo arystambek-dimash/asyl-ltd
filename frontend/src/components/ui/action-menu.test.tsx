@@ -9,6 +9,24 @@ describe("ActionMenu", () => {
     expect(screen.queryByRole("button", { name: "Нет действий" })).not.toBeInTheDocument();
   });
 
+  it("supports a visible page-level trigger without changing its accessible label", async () => {
+    const user = userEvent.setup();
+    render(
+      <ActionMenu
+        label="Операции с зерном"
+        triggerText="Операции"
+        items={[{ key: "supply", label: "Новый приход", onSelect: vi.fn() }]}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: "Операции с зерном" });
+    expect(trigger).toHaveTextContent("Операции");
+    expect(trigger).toHaveAttribute("aria-haspopup", "menu");
+
+    await user.click(trigger);
+    expect(screen.getByRole("menuitem", { name: "Новый приход" })).toBeInTheDocument();
+  });
+
   it("closes when its trigger is clicked a second time", async () => {
     const user = userEvent.setup();
     render(<ActionMenu label="Действия заказа" items={[{ key: "edit", label: "Редактировать", onSelect: vi.fn() }]} />);

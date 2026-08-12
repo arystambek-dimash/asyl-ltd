@@ -1,12 +1,17 @@
+from typing import ClassVar
+
+from config.throttles import TruckScalePreviewRateThrottle
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from apps.common.permissions import PermViewSetMixin
+from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
 from apps.orders.models import Order
 from apps.sales.access import scope_by_client_department
 
 from . import scale
+from .scale_preview import get_scale_preview
 from .serializers import ArrivalSerializer, LoadSerializer, ShipmentSerializer
 from .services import (
     finish_loading,
@@ -18,9 +23,32 @@ from .services import (
 )
 
 
+class TruckScaleReadingView(PermAPIViewMixin, APIView):
+    """Read-only operator display; capture actions always read again."""
+
+    required_perms: ClassVar[dict[str, tuple[str, ...]]] = {
+        "get": (
+            "grain.weigh",
+            "shipping.arrive",
+            "shipping.load",
+            "shipping.ship",
+        ),
+    }
+
+    def get_throttles(self):
+        throttles = super().get_throttles()
+        throttles.append(TruckScalePreviewRateThrottle())
+        return throttles
+
+    def get(self, request):
+        response = Response(get_scale_preview())
+        response["Cache-Control"] = "no-store, max-age=0"
+        return response
+
+
 class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
     queryset = Order.objects.select_related("shipment").prefetch_related("items__product")
-    required_perms = {
+    required_perms: ClassVar[dict[str, str]] = {
         "arrive": "shipping.arrive",
         "load": "shipping.load",
         "finish_loading": "shipping.load",

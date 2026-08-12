@@ -54,6 +54,9 @@ REST_FRAMEWORK = {
         "portal_order_create": os.environ.get(
             "THROTTLE_PORTAL_ORDER_CREATE", "10/min"
         ),
+        "truck_scale_preview": os.environ.get(
+            "THROTTLE_TRUCK_SCALE_PREVIEW", "120/min"
+        ),
     },
     "NUM_PROXIES": int(os.environ.get("THROTTLE_NUM_PROXIES", "0")),
 }
@@ -175,6 +178,17 @@ except (TypeError, ValueError):
     TRUCK_SCALE_TIMEOUT_SECONDS = 3.0
 if not 0 < TRUCK_SCALE_TIMEOUT_SECONDS < float("inf"):
     TRUCK_SCALE_TIMEOUT_SECONDS = 3.0
+
+try:
+    # The operator display should fail quickly; capture commands retain the
+    # longer timeout above because they are explicit user actions.
+    TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS = float(
+        os.environ.get("TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS", "1")
+    )
+except (TypeError, ValueError):
+    TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS = 1.0
+if not 0 < TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS < float("inf"):
+    TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS = 1.0
 
 try:
     TRUCK_SCALE_MAX_AGE_SECONDS = float(

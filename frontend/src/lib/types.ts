@@ -700,6 +700,21 @@ export interface TaskAssignee {
 
 /* ── Приход зерна ─────────────────────────────────────────────────────── */
 
+export interface TruckScalePreview {
+  state: "ready" | "unstable" | "stale" | "disconnected" | "unavailable" | "disabled" | "malformed" | "refreshing";
+  enabled: boolean;
+  ready: boolean;
+  capturable: boolean;
+  connected: boolean;
+  stable: boolean;
+  stale: boolean;
+  weight_kg: string | null;
+  age_seconds: string | null;
+  updated_at: string | null;
+  observed_at: string;
+  poll_after_ms: number;
+}
+
 export interface GrainWeighing {
   id: number;
   kind: "gross" | "tare";

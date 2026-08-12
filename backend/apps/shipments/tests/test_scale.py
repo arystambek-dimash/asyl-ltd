@@ -8,7 +8,6 @@ import pytest
 
 from apps.shipments import scale
 
-
 READY = {
     "weight_kg": 12_345.67,
     "stable": True,
@@ -48,6 +47,7 @@ def open_patch(*, return_value=None, side_effect=None):
 def scale_settings(settings):
     settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
     settings.TRUCK_SCALE_TIMEOUT_SECONDS = 1.25
+    settings.TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS = 0.75
     settings.TRUCK_SCALE_MAX_AGE_SECONDS = 5
     settings.TRUCK_SCALE_MAX_WEIGHT_KG = 100_000
 
@@ -298,6 +298,82 @@ def test_real_not_ready_payload_is_conflict_even_with_null_measurements():
     assert_error(exc_info, status=409, code="truck_scale_not_ready")
 
 
+@pytest.mark.parametrize(
+    ("payload", "state", "weight", "stale"),
+    [
+        (READY, "ready", "12345.67", False),
+        ({**READY, "stable": False}, "unstable", "12345.67", False),
+        ({**READY, "stale": True}, "stale", None, True),
+        ({**READY, "connected": False}, "disconnected", None, False),
+        ({**READY, "error": "COM11 disconnected"}, "unavailable", None, False),
+        (
+            {**READY, "stable": False, "age_seconds": 5.01},
+            "stale",
+            None,
+            True,
+        ),
+    ],
+)
+def test_observation_maps_display_states_and_hides_unsafe_weight(
+    payload, state, weight, stale
+):
+    upstream = response(payload)
+    with open_patch(return_value=upstream) as request_open:
+        observation = scale.read_truck_scale_observation()
+
+    assert observation.state == state
+    assert (
+        str(observation.weight_kg)
+        if observation.weight_kg is not None
+        else None
+    ) == weight
+    assert observation.stale is stale
+    assert request_open.call_args.kwargs == {"timeout": 0.75}
+
+
+def test_real_empty_scale_payload_is_a_stale_observation_without_a_weight():
+    upstream = response({
+        "weight_kg": None,
+        "stable": False,
+        "gross": None,
+        "connected": True,
+        "stale": True,
+        "age_seconds": None,
+        "updated_at": None,
+        "raw": "",
+        "port": "COM11",
+        "baud": 9600,
+        "error": None,
+    })
+    with open_patch(return_value=upstream):
+        observation = scale.read_truck_scale_observation()
+
+    assert observation == scale.ScaleObservation(
+        state="stale",
+        weight_kg=None,
+        connected=True,
+        stable=False,
+        stale=True,
+        age_seconds=None,
+        updated_at=None,
+    )
+
+
+def test_zero_is_displayable_but_authoritative_capture_still_rejects_it():
+    zero = {**READY, "weight_kg": 0}
+    with open_patch(side_effect=[response(zero), response(zero)]) as request_open:
+        observation = scale.read_truck_scale_observation()
+        with pytest.raises(scale.TruckScaleNotReady):
+            scale.read_truck_scale()
+
+    assert observation.state == "ready"
+    assert observation.weight_kg == scale.Decimal("0.00")
+    assert [call.kwargs["timeout"] for call in request_open.call_args_list] == [
+        0.75,
+        1.25,
+    ]
+
+
 @pytest.mark.parametrize("field", ["connected", "stable", "stale"])
 @pytest.mark.parametrize("value", [None, 0, 1, "true"])
 def test_state_flags_must_be_json_booleans(field, value):
@@ -452,4 +528,16 @@ def test_invalid_runtime_configuration_fails_closed(settings, name, value):
          pytest.raises(scale.TruckScaleUnavailable) as exc_info:
         scale.read_truck_scale()
 
+    assert_error(exc_info, status=503, code="truck_scale_unreachable")
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), "invalid"])
+def test_invalid_preview_timeout_fails_closed_before_io(settings, value):
+    settings.TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS = value
+
+    with open_patch() as request_open, \
+         pytest.raises(scale.TruckScaleUnavailable) as exc_info:
+        scale.read_truck_scale_observation()
+
+    request_open.assert_not_called()
     assert_error(exc_info, status=503, code="truck_scale_unreachable")

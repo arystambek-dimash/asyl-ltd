@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { MoreVertical } from "lucide-react";
+import { ChevronDown, MoreVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDismiss } from "@/lib/use-dismiss";
 
@@ -31,10 +31,15 @@ export function ActionMenu({
   items,
   label = "Действия",
   className,
+  triggerText,
+  triggerIcon,
 }: {
   items: ActionMenuItem[];
   label?: string;
   className?: string;
+  /** Optional visible label for page-level action menus. Row menus stay compact. */
+  triggerText?: string;
+  triggerIcon?: React.ElementType;
 }) {
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -43,6 +48,7 @@ export function ActionMenu({
   const triggerId = `${menuId}-trigger`;
   const focusEdgeRef = useRef<"first" | "last">("first");
   const open = pos !== null;
+  const TriggerIcon = triggerIcon ?? MoreVertical;
   useDismiss(menuRef, () => setPos(null), open, [triggerRef]);
 
   useEffect(() => {
@@ -162,13 +168,20 @@ export function ActionMenu({
         onClick={toggle}
         onKeyDown={onTriggerKeyDown}
         className={cn(
-          "inline-flex size-8 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors",
+          "inline-flex items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors",
+          triggerText ? "h-8 gap-2 px-3 text-xs font-medium shadow-xs" : "size-8",
           "hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
           open && "bg-[var(--accent)] text-[var(--foreground)]",
           className,
         )}
       >
-        <MoreVertical className="size-4" />
+        <TriggerIcon className="size-4 shrink-0" />
+        {triggerText && (
+          <>
+            <span>{triggerText}</span>
+            <ChevronDown className="size-3.5 shrink-0 opacity-70" aria-hidden="true" />
+          </>
+        )}
       </button>
 
       {open &&

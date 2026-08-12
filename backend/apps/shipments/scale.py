@@ -9,12 +9,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from django.conf import settings
 from rest_framework.exceptions import APIException
-
 
 MAX_RESPONSE_BYTES = 32 * 1024
 WEIGHT_QUANTUM = Decimal("0.01")
@@ -51,6 +50,24 @@ class ScaleReading:
     updated_at: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class ScaleObservation:
+    """Sanitized read-only state for an operator display.
+
+    Unlike ``ScaleReading``, an observation may describe an empty or moving
+    scale. It is never accepted as the value of a business operation: capture
+    commands always call ``read_truck_scale`` again.
+    """
+
+    state: str
+    weight_kg: Decimal | None
+    connected: bool
+    stable: bool
+    stale: bool
+    age_seconds: Decimal | None
+    updated_at: str | None
+
+
 def _api_url() -> str:
     value = getattr(settings, "TRUCK_SCALE_API_URL", "")
     return value.strip() if isinstance(value, str) else ""
@@ -68,7 +85,7 @@ def _validated_api_url(url: str) -> str:
         username = parsed.username
         password = parsed.password
         # Accessing ``port`` also rejects malformed values before any I/O.
-        parsed.port
+        _ = parsed.port
     except ValueError as exc:
         raise TruckScaleUnavailable(
             "Адрес автомобильных весов настроен некорректно."
@@ -113,9 +130,9 @@ def _configuration_decimal(name: str, *, positive: bool) -> Decimal:
     return value
 
 
-def _timeout() -> float:
+def _configured_timeout(name: str) -> float:
     try:
-        value = float(getattr(settings, "TRUCK_SCALE_TIMEOUT_SECONDS"))
+        value = float(getattr(settings, name))
     except (AttributeError, TypeError, ValueError, OverflowError) as exc:
         raise TruckScaleUnavailable() from exc
     if not math.isfinite(value) or value <= 0:
@@ -123,18 +140,29 @@ def _timeout() -> float:
     return value
 
 
+def _timeout() -> float:
+    return _configured_timeout("TRUCK_SCALE_TIMEOUT_SECONDS")
+
+
+def _preview_timeout() -> float:
+    return _configured_timeout("TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS")
+
+
 def _invalid_json_constant(_value: str) -> None:
     raise ValueError("non-finite JSON number")
 
 
-def _read_payload(url: str) -> dict[str, Any]:
+def _read_payload(url: str, *, timeout: float | None = None) -> dict[str, Any]:
     try:
         request = urllib.request.Request(
             url,
             headers={"Accept": "application/json"},
             method="GET",
         )
-        with _open_request(request, timeout=_timeout()) as response:
+        with _open_request(
+            request,
+            timeout=_timeout() if timeout is None else timeout,
+        ) as response:
             if getattr(response, "status", 200) != 200:
                 raise TruckScaleUnavailable()
             raw = response.read(MAX_RESPONSE_BYTES + 1)
@@ -182,6 +210,97 @@ def _required_decimal(payload: dict[str, Any], name: str) -> Decimal:
     if not isinstance(value, Decimal) or not value.is_finite():
         raise TruckScaleMalformedResponse()
     return value
+
+
+def _optional_decimal(payload: dict[str, Any], name: str) -> Decimal | None:
+    value = payload.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, Decimal) or not value.is_finite():
+        raise TruckScaleMalformedResponse()
+    return value
+
+
+def _normalized_preview_weight(weight: Decimal | None) -> Decimal | None:
+    if weight is None:
+        return None
+    max_weight = _configuration_decimal(
+        "TRUCK_SCALE_MAX_WEIGHT_KG", positive=True
+    )
+    if weight < 0 or weight > max_weight:
+        return None
+    try:
+        return weight.quantize(WEIGHT_QUANTUM, rounding=ROUND_HALF_UP)
+    except InvalidOperation as exc:
+        raise TruckScaleMalformedResponse() from exc
+
+
+def read_truck_scale_observation() -> ScaleObservation:
+    """Read display state without weakening the authoritative capture path."""
+    url = _api_url()
+    if not url:
+        raise TruckScaleDisabled()
+
+    payload = _read_payload(
+        _validated_api_url(url),
+        timeout=_preview_timeout(),
+    )
+    connected = _required_flag(payload, "connected")
+    stable = _required_flag(payload, "stable")
+    stale = _required_flag(payload, "stale")
+
+    if "error" not in payload:
+        raise TruckScaleMalformedResponse()
+    error = payload["error"]
+    if error is not None and not isinstance(error, str):
+        raise TruckScaleMalformedResponse()
+
+    if "updated_at" not in payload:
+        raise TruckScaleMalformedResponse()
+    updated_at = payload["updated_at"]
+    if updated_at is not None and not isinstance(updated_at, str):
+        raise TruckScaleMalformedResponse()
+
+    weight = _normalized_preview_weight(
+        _optional_decimal(payload, "weight_kg")
+    )
+    age = _optional_decimal(payload, "age_seconds")
+    if age is not None and age < 0:
+        raise TruckScaleMalformedResponse()
+
+    if not connected:
+        state = "disconnected"
+    elif error not in (None, ""):
+        state = "unavailable"
+    elif stale:
+        state = "stale"
+    elif age is not None and age > _configuration_decimal(
+        "TRUCK_SCALE_MAX_AGE_SECONDS", positive=False
+    ):
+        # Trust the local freshness limit even if an upstream implementation
+        # accidentally leaves its own ``stale`` flag false.
+        state = "stale"
+        stale = True
+    elif not stable:
+        state = "unstable"
+    elif weight is None or age is None:
+        state = "malformed"
+    else:
+        state = "ready"
+
+    # Never keep a number on screen when its origin is disconnected or stale.
+    if state in {"disconnected", "unavailable", "stale", "malformed"}:
+        weight = None
+
+    return ScaleObservation(
+        state=state,
+        weight_kg=weight,
+        connected=connected,
+        stable=stable,
+        stale=stale,
+        age_seconds=age,
+        updated_at=updated_at,
+    )
 
 
 def read_truck_scale() -> ScaleReading:

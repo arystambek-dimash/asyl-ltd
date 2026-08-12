@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ArrowRight, Camera, Check, Plus, ScanLine, TrainFront, Truck } from "lucide-react";
+import { ArrowRight, Camera, Check, Plus, ScanLine, TrainFront } from "lucide-react";
+import { GrainToolbar } from "@/components/grain/grain-toolbar";
 import { AppShell } from "@/components/layout/app-shell";
 import { WagonNumberCameraWorkspace } from "@/components/grain/wagon-number-camera";
 import { FlowEmptyState, WagonTable } from "@/components/grain/wagon-table";
@@ -523,6 +524,7 @@ function GrainPageInner() {
   const { me } = useAuth();
   const canSupply = can(me, "grain.supply");
   const canArrive = can(me, "grain.arrive");
+  const canWeigh = can(me, "grain.weigh");
   const [tab, setTab] = useState<GrainTab>("on_site");
   const [supplyOpen, setSupplyOpen] = useState(false);
   const [arriveOpen, setArriveOpen] = useState(false);
@@ -561,23 +563,14 @@ function GrainPageInner() {
       description="Приход — привозят зерно в силос. Проход — забирают отруби и увозят. Оба рейса взвешиваются на въезде и на выезде."
       actions={
         tab !== "camera" ? (
-          <div className="flex items-center gap-2">
-            {canArrive && (
-              <Button size="sm" variant="outline" onClick={() => setPassageOpen(true)}>
-                <Truck className="size-4" /> Оформить вывоз
-              </Button>
-            )}
-            {canArrive && (
-              <Button size="sm" variant="outline" onClick={() => openArrival()}>
-                <TrainFront className="size-4" /> Принять поезд
-              </Button>
-            )}
-            {canSupply && (
-              <Button size="sm" onClick={() => setSupplyOpen(true)}>
-                <Plus className="size-4" /> Новый приход
-              </Button>
-            )}
-          </div>
+          <GrainToolbar
+            canArrive={canArrive}
+            canSupply={canSupply}
+            canWeigh={canWeigh}
+            onPassage={() => setPassageOpen(true)}
+            onArrival={() => openArrival()}
+            onSupply={() => setSupplyOpen(true)}
+          />
         ) : undefined
       }
     >

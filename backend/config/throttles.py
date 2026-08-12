@@ -23,11 +23,7 @@ class RegisterRateThrottle(_FixedScopeThrottle):
     scope = "register"
 
 
-class PortalOrderCreateRateThrottle(_FixedScopeThrottle):
-    """Per-account limit for the portal's write-heavy order creation path."""
-
-    scope = "portal_order_create"
-
+class _UserScopeThrottle(_FixedScopeThrottle):
     def get_cache_key(self, request, view):
         if self.rate is None:
             return None
@@ -38,3 +34,15 @@ class PortalOrderCreateRateThrottle(_FixedScopeThrottle):
             else self.get_ident(request)
         )
         return self.cache_format % {"scope": self.scope, "ident": ident}
+
+
+class PortalOrderCreateRateThrottle(_UserScopeThrottle):
+    """Per-account limit for the portal's write-heavy order creation path."""
+
+    scope = "portal_order_create"
+
+
+class TruckScalePreviewRateThrottle(_UserScopeThrottle):
+    """Bound live scale polling per authenticated operator account."""
+
+    scope = "truck_scale_preview"
