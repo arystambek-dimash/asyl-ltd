@@ -38,6 +38,17 @@ never contain the token or digest. The admin can call:
 - `POST /api/conveyors/devices/<uuid>/emergency-stop/` (new terminal OFF revision);
 - `POST /api/conveyors/devices/<uuid>/disable/` (OFF plus credential revocation).
 
+There is no manual production ON endpoint. For an electrically isolated relay
+bench only, a superuser may call
+`POST /api/conveyors/devices/<uuid>/bench-pulse/` with the exact body
+`{"confirmation":"ISOLATED_NO_MOTOR"}`. It is accepted only from a fresh,
+acknowledged OFF state, with no open AI session, no fault, and firmware whose
+reported version contains `bench`. It sends 500 ms leases during a 500 ms
+server window and then terminally stops. The existing emergency-stop endpoint
+can end it earlier. This endpoint must never be used with a motor, contactor or
+other driven machinery connected; the confirmation is an operator assertion,
+not something software can physically verify.
+
 Rotation and disable are two-step fail-OFF operations. The first call latches a
 durable OFF revision but keeps the old credential active; retry only succeeds
 after a fresh heartbeat acknowledges that revision and both the GPIO output and

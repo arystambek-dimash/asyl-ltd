@@ -34,6 +34,15 @@ config ASYL_FEEDBACK_ACTIVE_HIGH
     bool "Feedback is active-high"
     default y
 
+config ASYL_BENCH_NO_PHYSICAL_FEEDBACK
+    bool "BENCH ONLY: use commanded output as virtual feedback"
+    default n
+    help
+        Disable the independent contactor feedback input and report the
+        commanded relay state as feedback. This exists only for an isolated
+        relay-module bench with no motor or contactor attached. Never enable
+        it for production machinery.
+
 config ASYL_FEEDBACK_SETTLE_MS
     int "Maximum feedback transition time (ms)"
     range 50 1000

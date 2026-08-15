@@ -20,6 +20,7 @@ TERMINAL_REASONS = (
     "controller_fault",
     "shutdown",
 )
+BENCH_PULSE_CONFIRMATION = "ISOLATED_NO_MOTOR"
 
 
 class StrictIntegerField(serializers.IntegerField):
@@ -153,6 +154,18 @@ class ConveyorDeviceUpdateSerializer(ForbidUnknownSerializer):
     def validate_is_active(self, value):
         if type(self.initial_data.get("is_active")) is not bool:
             raise serializers.ValidationError("Must be a boolean")
+        return value
+
+
+class ConveyorDeviceBenchPulseSerializer(ForbidUnknownSerializer):
+    confirmation = StrictCharField(max_length=len(BENCH_PULSE_CONFIRMATION))
+
+    def validate_confirmation(self, value):
+        if value != BENCH_PULSE_CONFIRMATION:
+            raise serializers.ValidationError(
+                f'Type exactly "{BENCH_PULSE_CONFIRMATION}" after physically '
+                "isolating the relay from every motor and contactor"
+            )
         return value
 
 

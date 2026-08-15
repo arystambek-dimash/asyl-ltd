@@ -54,12 +54,17 @@ static bool provisioning_button_held(void) {
 
 void app_main(void) {
     asyl_conveyor_bootstrap_off();
+    if (CONFIG_ASYL_RELAY_GPIO == CONFIG_ASYL_PROVISION_BUTTON_GPIO) {
+        ESP_LOGE(TAG, "relay and provisioning GPIOs must be distinct");
+        return;
+    }
+#ifndef CONFIG_ASYL_BENCH_NO_PHYSICAL_FEEDBACK
     if (CONFIG_ASYL_RELAY_GPIO == CONFIG_ASYL_FEEDBACK_GPIO ||
-        CONFIG_ASYL_RELAY_GPIO == CONFIG_ASYL_PROVISION_BUTTON_GPIO ||
         CONFIG_ASYL_FEEDBACK_GPIO == CONFIG_ASYL_PROVISION_BUTTON_GPIO) {
         ESP_LOGE(TAG, "relay, feedback and provisioning GPIOs must be distinct");
         return;
     }
+#endif
 
     /* Never erase NVS automatically: losing the persisted command revision
      * could turn a replayed old ON into a seemingly new command. */

@@ -16,19 +16,24 @@ from .credentials import authorization_value
 from .models import ConveyorDevice
 from .permissions import IsAiCallback, IsConveyorDevice
 from .serializers import (
+    BENCH_PULSE_CONFIRMATION,
     AiObservationSerializer,
+    ConveyorDeviceBenchPulseSerializer,
     ConveyorDeviceEnrollSerializer,
     ConveyorDeviceUpdateSerializer,
     DeviceSyncSerializer,
     device_payload,
 )
 from .services import (
+    BENCH_PULSE_LEASE_MS,
+    BENCH_PULSE_WINDOW_MS,
     ConveyorDeviceError,
     disable_device,
     emergency_stop,
     enroll_device,
     record_ai_observation,
     rotate_secret,
+    start_bench_pulse,
     sync_device,
     update_device,
 )
@@ -269,3 +274,41 @@ class ConveyorDeviceEmergencyStopView(APIView):
             payload={"device_id": str(device.public_id), "camera": device.camera_source},
         )
         return Response(device_payload(device))
+
+
+class ConveyorDeviceBenchPulseView(APIView):
+    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+
+    def post(self, request, public_id):
+        serializer = ConveyorDeviceBenchPulseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            # Never commit an ON revision without its audit record.
+            with transaction.atomic():
+                device = start_bench_pulse(
+                    get_object_or_404(ConveyorDevice, public_id=public_id)
+                )
+                log_event(
+                    "conveyor_bench_pulse",
+                    f"Короткий стендовый импульс ESP32 «{device.name}»",
+                    user=request.user,
+                    payload={
+                        "device_id": str(device.public_id),
+                        "camera": device.camera_source,
+                        "revision": device.command_revision,
+                        "pulse_window_ms": BENCH_PULSE_WINDOW_MS,
+                        "lease_ms": BENCH_PULSE_LEASE_MS,
+                        "confirmation": BENCH_PULSE_CONFIRMATION,
+                    },
+                )
+        except ConveyorDeviceError as exc:
+            return _service_error(exc)
+        return _no_store(
+            Response(
+                {
+                    **device_payload(device),
+                    "pulse_window_ms": BENCH_PULSE_WINDOW_MS,
+                    "lease_ms": BENCH_PULSE_LEASE_MS,
+                }
+            )
+        )

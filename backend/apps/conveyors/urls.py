@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     ConveyorAiObservationView,
+    ConveyorDeviceBenchPulseView,
     ConveyorDeviceDetailView,
     ConveyorDeviceDisableView,
     ConveyorDeviceEmergencyStopView,
@@ -29,5 +30,9 @@ urlpatterns = [
     path(
         "conveyors/devices/<uuid:public_id>/emergency-stop/",
         ConveyorDeviceEmergencyStopView.as_view(),
+    ),
+    path(
+        "conveyors/devices/<uuid:public_id>/bench-pulse/",
+        ConveyorDeviceBenchPulseView.as_view(),
     ),
 ]

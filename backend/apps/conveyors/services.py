@@ -18,6 +18,12 @@ ADMIN_PENDING_REASONS = frozenset({
     "device_disable_pending",
     "credential_rotation_pending",
 })
+BENCH_PULSE_REASON = "bench_pulse"
+# Keep both the server renewal window and every local ESP lease short. Even if
+# an ON response spends the full firmware HTTP timeout (900 ms) in flight, the
+# 500 ms device lease still expires comfortably before two seconds.
+BENCH_PULSE_WINDOW_MS = 500
+BENCH_PULSE_LEASE_MS = 500
 
 
 class ConveyorDeviceError(Exception):
@@ -112,8 +118,12 @@ def _latch_off_locked(device: ConveyorDevice, reason: str) -> bool:
 
 def _command_payload(device: ConveyorDevice, *, reason: str | None = None) -> dict:
     enabled = bool(device.desired_state and not device.command_terminal)
-    lease_ms = int(getattr(settings, "CONVEYOR_DEVICE_LEASE_MS", 1200))
-    lease_ms = min(1500, max(1, lease_ms)) if enabled else 0
+    bench_pulse = enabled and device.stop_reason == BENCH_PULSE_REASON
+    if bench_pulse:
+        lease_ms = BENCH_PULSE_LEASE_MS
+    else:
+        lease_ms = int(getattr(settings, "CONVEYOR_DEVICE_LEASE_MS", 1200))
+        lease_ms = min(1500, max(1, lease_ms)) if enabled else 0
     return {
         "protocol_version": 1,
         "server_time": int(time.time()),
@@ -122,8 +132,23 @@ def _command_payload(device: ConveyorDevice, *, reason: str | None = None) -> di
             "revision": device.command_revision,
             "state": int(enabled),
             "lease_ms": lease_ms,
-            "session_id": device.command_session_id if enabled else None,
-            "target_total": device.command_target_total if enabled else None,
+            # The current ESP guard requires positive binding fields for every
+            # ON lease. A bench pulse has no AI session, so use stable opaque
+            # sentinels which are never interpreted as an actual DB binding.
+            "session_id": (
+                device.pk
+                if bench_pulse
+                else device.command_session_id
+                if enabled
+                else None
+            ),
+            "target_total": (
+                1
+                if bench_pulse
+                else device.command_target_total
+                if enabled
+                else None
+            ),
             "reason": reason or device.stop_reason or (
                 "active_session" if enabled else "off"
             ),
@@ -144,6 +169,20 @@ def _audit_payload(device: ConveyorDevice) -> dict:
 
 
 def _session_can_run(device: ConveyorDevice, now) -> tuple[bool, str]:
+    if device.stop_reason == BENCH_PULSE_REASON:
+        if "bench" not in (device.firmware or "").casefold():
+            return False, "bench_firmware_lost"
+        if _camera_has_open_session(device.camera_source):
+            return False, "session_started_during_bench"
+        if device.run_started_at is None:
+            return False, "bench_deadline_missing"
+        deadline = device.run_started_at + timedelta(
+            milliseconds=BENCH_PULSE_WINDOW_MS
+        )
+        if now >= deadline:
+            return False, "bench_timeout"
+        return True, BENCH_PULSE_REASON
+
     session = device.command_session
     if (
         session is None
@@ -398,6 +437,56 @@ def emergency_stop(device: ConveyorDevice, reason: str = "emergency_stop") -> Co
     if advanced:
         locked.stop_reason = pending_reason or reason
     locked.run_started_at = None
+    locked.save()
+    return locked
+
+
+@transaction.atomic
+def start_bench_pulse(device: ConveyorDevice) -> ConveyorDevice:
+    """Arm one short relay-only pulse on an explicitly isolated bench.
+
+    This is deliberately not a general manual conveyor start. It exists only
+    for firmware images which identify themselves as bench builds, and it
+    requires fresh physical OFF telemetry before creating a 500 ms lease.
+    """
+    lock_camera_binding()
+    locked = ConveyorDevice.objects.select_for_update().get(pk=device.pk)
+    if not locked.is_active:
+        raise ConveyorDeviceError(
+            "device_disabled", "Bench device is disabled",
+        )
+    if locked.stop_reason in ADMIN_PENDING_REASONS:
+        raise ConveyorDeviceError(
+            "device_transition_pending",
+            "Finish the pending ESP32 disable or credential rotation first",
+        )
+    if _camera_has_open_session(locked.camera_source):
+        raise ConveyorDeviceError(
+            "device_busy", "Close the active AI session before a bench pulse",
+        )
+    if locked.desired_state or not locked.command_terminal:
+        raise ConveyorDeviceError(
+            "device_busy", "ESP32 already has a non-terminal command",
+        )
+    if "bench" not in (locked.firmware or "").casefold():
+        raise ConveyorDeviceError(
+            "bench_firmware_required",
+            "ESP32 must report an explicit bench firmware build",
+        )
+    if not confirmed_state(locked, False):
+        raise ConveyorDeviceError(
+            "off_not_confirmed",
+            "Fresh acknowledged output OFF and feedback OFF are required",
+        )
+    if not _next_revision(locked):
+        locked.save()
+        raise ConveyorDeviceError(
+            "revision_exhausted", "ESP32 command revision is exhausted",
+        )
+    locked.desired_state = True
+    locked.command_terminal = False
+    locked.stop_reason = BENCH_PULSE_REASON
+    locked.run_started_at = timezone.now()
     locked.save()
     return locked
 

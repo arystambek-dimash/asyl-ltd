@@ -35,6 +35,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--credentials", type=Path, required=True)
     parser.add_argument("--device-id")
     parser.add_argument("--ssid")
+    parser.add_argument(
+        "--scan",
+        action="store_true",
+        help="Scan Wi-Fi networks from the ESP32 and select one interactively",
+    )
     return parser.parse_args()
 
 
@@ -99,16 +104,20 @@ def main() -> int:
     args = parse_args()
     credentials = read_private_credentials(args.credentials)
     device_id = canonical_uuid4(args.device_id or input("Backend device UUID: ").strip())
-    ssid = args.ssid or input("Wi-Fi SSID: ").strip()
-    if not ssid or len(ssid.encode("utf-8")) > 32:
+    if args.scan and args.ssid:
+        raise SystemExit("Use either --scan or --ssid, not both")
+    ssid = None if args.scan else (args.ssid or input("Wi-Fi SSID: ").strip())
+    if ssid is not None and (not ssid or len(ssid.encode("utf-8")) > 32):
         raise SystemExit("Wi-Fi SSID must be 1..32 bytes")
 
     device_token = getpass.getpass("One-time backend device token: ").strip()
     if not TOKEN_PATTERN.fullmatch(device_token):
         raise SystemExit("Device token must be 43 base64url characters")
-    wifi_password = getpass.getpass("Wi-Fi password: ")
-    if len(wifi_password.encode("utf-8")) > 64:
-        raise SystemExit("Wi-Fi password must be at most 64 bytes")
+    wifi_password = None
+    if not args.scan:
+        wifi_password = getpass.getpass("Wi-Fi password: ")
+        if len(wifi_password.encode("utf-8")) > 64:
+            raise SystemExit("Wi-Fi password must be at most 64 bytes")
 
     custom_data = json.dumps(
         {
@@ -137,11 +146,9 @@ def main() -> int:
             str(credentials["password"]),
             "--custom_data",
             custom_data,
-            "--ssid",
-            ssid,
-            "--passphrase",
-            wifi_password,
         ]
+        if ssid is not None:
+            sys.argv.extend(["--ssid", ssid, "--passphrase", wifi_password])
         asyncio.run(client.main())
     finally:
         sys.argv = original_argv

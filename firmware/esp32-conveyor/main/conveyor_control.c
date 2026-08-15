@@ -72,8 +72,14 @@ void asyl_conveyor_bootstrap_off(void) {
 }
 
 static bool read_feedback(void) {
+#ifdef CONFIG_ASYL_BENCH_NO_PHYSICAL_FEEDBACK
+    /* Explicit relay-only bench mode. This is a command echo, not physical
+     * proof that a contactor or conveyor changed state. */
+    return s_output_on;
+#else
     const bool high = gpio_get_level(CONFIG_ASYL_FEEDBACK_GPIO) != 0;
     return FEEDBACK_ACTIVE_HIGH ? high : !high;
+#endif
 }
 
 static void copy_fault(const char *reason) {
@@ -200,6 +206,7 @@ esp_err_t asyl_conveyor_init(uint64_t persisted_blocked_revision) {
     }
     gpio_set_level(CONFIG_ASYL_RELAY_GPIO, output_level(false));
 
+#ifndef CONFIG_ASYL_BENCH_NO_PHYSICAL_FEEDBACK
     gpio_config_t feedback = {
         .pin_bit_mask = 1ULL << CONFIG_ASYL_FEEDBACK_GPIO,
         .mode = GPIO_MODE_INPUT,
@@ -215,6 +222,12 @@ esp_err_t asyl_conveyor_init(uint64_t persisted_blocked_revision) {
     if (error != ESP_OK) {
         return error;
     }
+#else
+    ESP_LOGW(
+        TAG,
+        "BENCH ONLY: physical feedback disabled; GPIO state is virtual feedback"
+    );
+#endif
     s_lock = xSemaphoreCreateMutex();
     s_ready = xSemaphoreCreateBinary();
     if (s_lock == NULL || s_ready == NULL) {

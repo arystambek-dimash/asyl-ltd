@@ -74,6 +74,28 @@ def _sync(api_client, device, seq=0, **overrides):
     )
 
 
+def _ready_bench_device(api_client):
+    device = _device()
+    first = _sync(
+        api_client,
+        device,
+        seq=0,
+        firmware="1.0.0-bench-d15",
+    )
+    assert first.status_code == 200
+    revision = first.data["command"]["revision"]
+    acknowledged = _sync(
+        api_client,
+        device,
+        seq=1,
+        ack_revision=revision,
+        firmware="1.0.0-bench-d15",
+    )
+    assert acknowledged.status_code == 200
+    device.refresh_from_db()
+    return device
+
+
 def _order_session(user, *, status=AiCountingSession.STARTING, target=10):
     client = Client.objects.create_with_user(
         first_name="Cloud", last_name="Conveyor", phone=f"cloud-{target}"
@@ -940,3 +962,260 @@ def test_device_binding_itself_selects_server_managed_transport(
     device.is_active = False
     device.save(update_fields=["is_active"])
     assert transport_for("cam2") == AiCountingSession.CONVEYOR_DIRECT
+
+
+def test_bench_pulse_emits_short_lease_then_terminally_auto_stops(
+    api_client, auth_client, django_user_model,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username="bench-pulse-root", password="pass12345",
+    )
+    device = _ready_bench_device(api_client)
+    previous_revision = device.command_revision
+
+    started = auth_client(superuser).post(
+        f"/api/conveyors/devices/{device.public_id}/bench-pulse/",
+        {"confirmation": "ISOLATED_NO_MOTOR"},
+        format="json",
+    )
+
+    assert started.status_code == 200, started.data
+    assert started["Cache-Control"] == "no-store"
+    assert started.data["desired_state"] == 1
+    assert started.data["command_terminal"] is False
+    assert started.data["stop_reason"] == "bench_pulse"
+    assert started.data["pulse_window_ms"] == 500
+    assert started.data["lease_ms"] == 500
+    revision = started.data["command_revision"]
+    assert revision == previous_revision + 1
+
+    command = _sync(
+        api_client,
+        device,
+        seq=2,
+        ack_revision=previous_revision,
+        firmware="1.0.0-bench-d15",
+    )
+    assert command.status_code == 200, command.data
+    assert command.data["command"] == {
+        "revision": revision,
+        "state": 1,
+        "lease_ms": 500,
+        "session_id": device.pk,
+        "target_total": 1,
+        "reason": "bench_pulse",
+    }
+
+    device.refresh_from_db()
+    device.run_started_at = timezone.now() - timedelta(seconds=1)
+    device.save(update_fields=["run_started_at"])
+    stopped = _sync(
+        api_client,
+        device,
+        seq=3,
+        ack_revision=revision,
+        output_state=1,
+        feedback_state=1,
+        firmware="1.0.0-bench-d15",
+    )
+    assert stopped.status_code == 200, stopped.data
+    assert stopped.data["command"]["state"] == 0
+    assert stopped.data["command"]["lease_ms"] == 0
+    assert stopped.data["command"]["session_id"] is None
+    assert stopped.data["command"]["target_total"] is None
+    assert stopped.data["command"]["revision"] == revision + 1
+    assert stopped.data["command"]["reason"] == "bench_timeout"
+
+    device.refresh_from_db()
+    assert device.desired_state is False
+    assert device.command_terminal is True
+    assert device.stop_reason == "bench_timeout"
+    event = EventLog.objects.get(event_type="conveyor_bench_pulse")
+    assert event.payload == {
+        "device_id": str(device.public_id),
+        "camera": "cam2",
+        "revision": revision,
+        "pulse_window_ms": 500,
+        "lease_ms": 500,
+        "confirmation": "ISOLATED_NO_MOTOR",
+    }
+
+
+def test_bench_pulse_requires_superuser_and_exact_isolation_confirmation(
+    auth_client, api_client, django_user_model,
+):
+    device = _ready_bench_device(api_client)
+    regular = django_user_model.objects.create_user(
+        username="bench-regular", password="pass12345",
+    )
+    superuser = django_user_model.objects.create_superuser(
+        username="bench-confirm-root", password="pass12345",
+    )
+    url = f"/api/conveyors/devices/{device.public_id}/bench-pulse/"
+
+    forbidden = auth_client(regular).post(
+        url,
+        {"confirmation": "ISOLATED_NO_MOTOR"},
+        format="json",
+    )
+    assert forbidden.status_code == 403
+
+    client = auth_client(superuser)
+    for body in (
+        {},
+        {"confirmation": "yes"},
+        {"confirmation": True},
+        {"confirmation": "ISOLATED_NO_MOTOR", "duration_ms": 500},
+    ):
+        rejected = client.post(url, body, format="json")
+        assert rejected.status_code == 400
+
+    device.refresh_from_db()
+    assert device.desired_state is False
+    assert device.command_revision == 1
+    assert not EventLog.objects.filter(event_type="conveyor_bench_pulse").exists()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error_code"),
+    [
+        ({"firmware": "1.0.0"}, "bench_firmware_required"),
+        (
+            {"last_seen_at": timezone.now() - timedelta(seconds=10)},
+            "off_not_confirmed",
+        ),
+        ({"last_ack_revision": None}, "off_not_confirmed"),
+        ({"output_state": True}, "off_not_confirmed"),
+        ({"feedback_state": True}, "off_not_confirmed"),
+        ({"fault": "feedback_failed_on"}, "off_not_confirmed"),
+        (
+            {"desired_state": True, "command_terminal": False},
+            "device_busy",
+        ),
+        (
+            {"stop_reason": "credential_rotation_pending"},
+            "device_transition_pending",
+        ),
+    ],
+)
+def test_bench_pulse_rejects_every_unsafe_device_state(
+    auth_client, django_user_model, overrides, error_code,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username=f"bench-unsafe-{error_code}-{len(overrides)}",
+        password="pass12345",
+    )
+    values = {
+        "last_seen_at": timezone.now(),
+        "last_boot_id": BOOT_ID,
+        "last_sequence": 1,
+        "last_ack_revision": 1,
+        "output_state": False,
+        "feedback_state": False,
+        "fault": "",
+        "firmware": "1.0.0-bench-d15",
+    }
+    values.update(overrides)
+    device = _device(**values)
+
+    response = auth_client(superuser).post(
+        f"/api/conveyors/devices/{device.public_id}/bench-pulse/",
+        {"confirmation": "ISOLATED_NO_MOTOR"},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == error_code
+    device.refresh_from_db()
+    assert device.command_revision == 1
+    assert not EventLog.objects.filter(event_type="conveyor_bench_pulse").exists()
+
+
+def test_bench_pulse_rejects_an_open_camera_session(
+    auth_client, django_user_model,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username="bench-open-session-root", password="pass12345",
+    )
+    device = _device(
+        last_seen_at=timezone.now(),
+        last_boot_id=BOOT_ID,
+        last_sequence=1,
+        last_ack_revision=1,
+        output_state=False,
+        feedback_state=False,
+        firmware="1.0.0-bench-d15",
+    )
+    _order_session(superuser)
+
+    response = auth_client(superuser).post(
+        f"/api/conveyors/devices/{device.public_id}/bench-pulse/",
+        {"confirmation": "ISOLATED_NO_MOTOR"},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "device_busy"
+    device.refresh_from_db()
+    assert device.command_revision == 1
+    assert device.desired_state is False
+
+
+def test_emergency_stop_preempts_an_unfetched_bench_pulse(
+    api_client, auth_client, django_user_model,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username="bench-stop-root", password="pass12345",
+    )
+    device = _ready_bench_device(api_client)
+    client = auth_client(superuser)
+    started = client.post(
+        f"/api/conveyors/devices/{device.public_id}/bench-pulse/",
+        {"confirmation": "ISOLATED_NO_MOTOR"},
+        format="json",
+    )
+    on_revision = started.data["command_revision"]
+
+    stopped = client.post(
+        f"/api/conveyors/devices/{device.public_id}/emergency-stop/",
+        {},
+        format="json",
+    )
+
+    assert stopped.status_code == 200
+    assert stopped.data["desired_state"] == 0
+    assert stopped.data["command_terminal"] is True
+    assert stopped.data["command_revision"] == on_revision + 1
+    command = _sync(
+        api_client,
+        device,
+        seq=2,
+        ack_revision=1,
+        firmware="1.0.0-bench-d15",
+    )
+    assert command.data["command"]["state"] == 0
+
+
+def test_bench_pulse_rolls_back_if_audit_write_fails(
+    api_client, auth_client, django_user_model, monkeypatch,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username="bench-audit-root", password="pass12345",
+    )
+    device = _ready_bench_device(api_client)
+
+    def fail_audit(*_args, **_kwargs):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr("apps.conveyors.views.log_event", fail_audit)
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        auth_client(superuser).post(
+            f"/api/conveyors/devices/{device.public_id}/bench-pulse/",
+            {"confirmation": "ISOLATED_NO_MOTOR"},
+            format="json",
+        )
+
+    device.refresh_from_db()
+    assert device.command_revision == 1
+    assert device.desired_state is False
+    assert device.command_terminal is True
