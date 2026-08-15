@@ -150,4 +150,34 @@ describe("ConveyorDevicesButton", () => {
     expect(within(credentialDialog).getByText(/device-secret-token/)).toBeInTheDocument();
     expect(screen.queryByText("Не удалось создать привязку")).not.toBeInTheDocument();
   });
+
+  it("безопасно перевыпускает token существующего ESP32 и показывает его один раз", async () => {
+    const current = device();
+    const rotated: ConveyorDeviceEnrollment = {
+      ...current,
+      stop_reason: "credential_rotated",
+      command_revision: 2,
+      credential: {
+        device_id: current.public_id,
+        token: "replacement-device-token",
+        authorization: `Device ${current.public_id}.replacement-device-token`,
+      },
+    };
+    postMock.mockResolvedValue({ data: rotated });
+    const reload = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<ConveyorDevicesButton cameras={cameras} devices={[current]} reload={reload} />);
+
+    await user.click(screen.getByRole("button", { name: /ESP32/ }));
+    const manager = screen.getByRole("dialog", { name: "ESP32 по камерам" });
+    await user.click(within(manager).getByRole("button", { name: "Перевыпустить token" }));
+    const confirmation = screen.getByRole("dialog", { name: "Перевыпустить device token?" });
+    await user.click(within(confirmation).getByRole("button", { name: "Выпустить новый token" }));
+
+    expect(postMock).toHaveBeenCalledWith(`/conveyors/devices/${current.public_id}/rotate-secret/`, {});
+    const credentialDialog = await screen.findByRole("dialog", { name: "Token ESP32 перевыпущен" });
+    expect(within(credentialDialog).getByText(/replacement-device-token/)).toBeInTheDocument();
+    expect(successMock).toHaveBeenCalledWith("Новый token выпущен для cam2");
+    expect(reload).toHaveBeenCalledTimes(2);
+  });
 });

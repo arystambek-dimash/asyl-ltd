@@ -12,6 +12,7 @@ import {
   ClipboardCheck,
   Eye,
   EyeOff,
+  KeyRound,
   Link2,
   LoaderCircle,
   LockKeyhole,
@@ -129,6 +130,10 @@ export function ConveyorDevicesButton({
   const [copied, setCopied] = useState<"token" | "json" | null>(null);
   const [copyError, setCopyError] = useState("");
   const [discardOpen, setDiscardOpen] = useState(false);
+  const [credentialReason, setCredentialReason] = useState<"enrolled" | "rotated">("enrolled");
+  const [rotateDevice, setRotateDevice] = useState<ConveyorDevice | null>(null);
+  const [rotating, setRotating] = useState(false);
+  const [rotateError, setRotateError] = useState("");
 
   const byCamera = useMemo(() => new Map(devices.map((device) => [device.camera_source, device])), [devices]);
   const freeCameras = useMemo(() => cameras.filter((camera) => !byCamera.has(camera.src)), [byCamera, cameras]);
@@ -161,6 +166,7 @@ export function ConveyorDevicesButton({
       });
       // Capture the one-time credential before any follow-up request. A failed
       // list refresh must never make the enrollment token disappear.
+      setCredentialReason("enrolled");
       setIssued(response.data);
       setShowToken(false);
       setCopied(null);
@@ -172,6 +178,32 @@ export function ConveyorDevicesButton({
       setFormError(fieldApiError(cause));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function rotateSecret() {
+    if (!rotateDevice) return;
+    setRotating(true);
+    setRotateError("");
+    try {
+      const response = await api.post<ConveyorDeviceEnrollment>(
+        `/conveyors/devices/${rotateDevice.public_id}/rotate-secret/`,
+        {},
+      );
+      // Rotation returns the replacement credential once, exactly like
+      // enrollment. Open the credential dialog before refreshing the list.
+      setCredentialReason("rotated");
+      setIssued(response.data);
+      setShowToken(false);
+      setCopied(null);
+      setCopyError("");
+      setRotateDevice(null);
+      showSuccess(`Новый token выпущен для ${response.data.camera_source}`);
+      void reload().catch(() => undefined);
+    } catch (cause) {
+      setRotateError(fieldApiError(cause));
+    } finally {
+      setRotating(false);
     }
   }
 
@@ -309,6 +341,18 @@ export function ConveyorDevicesButton({
                           ? `Последняя связь: ${formatDateTime(device.last_seen_at)}`
                           : "Контроллер ещё не подключался к API"}
                     </p>
+                    <div className="mt-3 flex justify-end">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setRotateError("");
+                          setRotateDevice(device);
+                        }}
+                      >
+                        <KeyRound className="size-3.5" /> Перевыпустить token
+                      </Button>
+                    </div>
                   </>
                 ) : (
                   <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-sky-100 bg-white p-3">
@@ -439,7 +483,7 @@ export function ConveyorDevicesButton({
         open={issued !== null}
         onClose={() => setDiscardOpen(true)}
         eyebrow="Показано только один раз"
-        title="ESP32 привязан"
+        title={credentialReason === "rotated" ? "Token ESP32 перевыпущен" : "ESP32 привязан"}
         description={issued ? `${issued.name} → ${issued.camera_source}` : undefined}
         className="max-w-2xl"
         footer={
@@ -527,6 +571,22 @@ export function ConveyorDevicesButton({
           </div>
         )}
       </Modal>
+
+      <ConfirmDialog
+        open={rotateDevice !== null}
+        onClose={() => {
+          if (rotating) return;
+          setRotateDevice(null);
+          setRotateError("");
+        }}
+        title="Перевыпустить device token?"
+        description="Старый token будет отозван. Для уже подключённого ESP32 сервер сначала потребует свежий физический OFF; для нового контроллера замена выполнится сразу."
+        confirmLabel="Выпустить новый token"
+        confirmVariant="default"
+        busy={rotating}
+        error={rotateError}
+        onConfirm={() => void rotateSecret()}
+      />
 
       <ConfirmDialog
         open={discardOpen}
