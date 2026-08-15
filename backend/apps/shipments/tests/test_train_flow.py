@@ -3,10 +3,16 @@ from decimal import Decimal
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
+from apps.cameras.models import AiCountingSession
 from apps.warehouse.services import receive_stock
 from apps.warehouse.models import StockItem
 from apps.shipments.services import (
-    start_train_loading, record_count, finish_train_loading, record_arrival)
+    finish_train_loading,
+    record_arrival,
+    record_count,
+    record_shipment,
+    start_train_loading,
+)
 from rest_framework.exceptions import ValidationError
 
 pytestmark = pytest.mark.django_db
@@ -21,7 +27,7 @@ def _train_order(boss, status="confirmed", qty=50, stock=100):
     return o, prod
 
 
-def test_train_full_flow_to_shipped(boss):
+def test_train_finish_and_shipment_are_separate_transitions(boss):
     o, prod = _train_order(boss, qty=50, stock=100)
     start_train_loading(o, boss)
     o.refresh_from_db()
@@ -32,9 +38,37 @@ def test_train_full_flow_to_shipped(boss):
     record_count(o, 50, boss)
     finish_train_loading(o, boss)
     o.refresh_from_db()
-    assert o.status == "shipped"            # авто-отгрузка
-    assert o.payment_status == "unpaid"     # в долг
-    assert StockItem.objects.get(product=prod).bags == 50  # списано
+    assert o.status == "loaded"
+    assert o.shipment.shipped_at is None
+    assert StockItem.objects.get(product=prod).bags == 100
+
+    record_shipment(o, boss)
+    o.refresh_from_db()
+    assert o.status == "shipped"
+    assert o.payment_status == "unpaid"
+    assert o.shipment.shipped_at is not None
+    assert StockItem.objects.get(product=prod).bags == 50
+
+
+def test_train_finish_cannot_bypass_open_ai_session(boss):
+    order, product = _train_order(boss, qty=50, stock=100)
+    start_train_loading(order, boss)
+    record_count(order, 25, boss)
+    AiCountingSession.objects.create(
+        order=order,
+        camera="cam6",
+        status=AiCountingSession.ACTIVE,
+        started_by=boss,
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        finish_train_loading(order, boss)
+
+    assert exc.value.detail["code"] == "ai_session_active"
+    order.refresh_from_db()
+    assert order.status == "loading"
+    assert order.shipment.shipped_at is None
+    assert StockItem.objects.get(product=product).bags == 100
 
 
 def test_train_start_requires_confirmed(boss):

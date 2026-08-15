@@ -4,7 +4,8 @@ import pytest
 
 from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Client
-
+from apps.clients.views import ClientViewSet
+from apps.sales.models import Department
 
 pytestmark = pytest.mark.django_db
 
@@ -125,3 +126,33 @@ def test_same_product_in_two_currencies_is_allowed(auth_client, user_with_perms)
 
     assert response.status_code == 200
     assert ClientPrice.objects.filter(client=client, product=product).count() == 2
+
+
+def test_stale_price_write_rechecks_department_after_client_lock(
+    auth_client,
+    user_with_perms,
+    monkeypatch,
+):
+    first = Department.objects.create(code="price-stale-a", name="Отдел A")
+    second = Department.objects.create(code="price-stale-b", name="Отдел B")
+    user = user_with_perms(
+        "price-stale-writer",
+        codes=["clients.view", "clients.set_price"],
+    )
+    user.employee.sales_department = first
+    user.employee.save(update_fields=["sales_department"])
+    client = _client(department=first)
+    stale_client = Client.objects.get(pk=client.pk)
+    client.department = second
+    client.save(update_fields=["department"])
+    product = _product("Прайс после переноса")
+    monkeypatch.setattr(ClientViewSet, "get_object", lambda _view: stale_client)
+
+    response = auth_client(user).put(
+        f"/api/clients/{client.pk}/prices/",
+        {"prices": [{"product": product.pk, "price": "900"}]},
+        format="json",
+    )
+
+    assert response.status_code == 403
+    assert not ClientPrice.objects.filter(client=client, product=product).exists()

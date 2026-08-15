@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import time
 from dataclasses import dataclass
 from datetime import timedelta
@@ -8,10 +9,15 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from apps.cameras.models import AiCountingSession
+from apps.cameras.models import AiCountingSession, MonoblockCameraSettings
 
 from .credentials import digest_token, generate_token
 from .models import MAX_SEQUENCE, ConveyorDevice
+
+ADMIN_PENDING_REASONS = frozenset({
+    "device_disable_pending",
+    "credential_rotation_pending",
+})
 
 
 class ConveyorDeviceError(Exception):
@@ -32,6 +38,19 @@ class SyncResult:
 class ObservationResult:
     payload: dict
     audit: dict | None = None
+
+
+def lock_camera_binding() -> None:
+    """Serialize controller binding changes with creation of AI sessions."""
+    row, _ = MonoblockCameraSettings.objects.get_or_create(singleton=True)
+    MonoblockCameraSettings.objects.select_for_update().get(pk=row.pk)
+
+
+def _camera_has_open_session(camera: str) -> bool:
+    return AiCountingSession.objects.filter(
+        camera=camera,
+        status__in=AiCountingSession.OPEN_STATUSES,
+    ).exists()
 
 
 def transport_for(camera: str) -> str:
@@ -71,14 +90,19 @@ def _next_revision(device: ConveyorDevice) -> bool:
 
 
 def _latch_off_locked(device: ConveyorDevice, reason: str) -> bool:
+    # An administrator's disable/rotation intent must survive transitional
+    # telemetry such as the controller reporting its previous ON output. It
+    # remains latched until the dedicated operation observes fresh OFF and
+    # completes; automatic faults may stop but never cancel that intent.
+    if device.stop_reason in ADMIN_PENDING_REASONS:
+        reason = device.stop_reason
     transition = bool(
         device.desired_state
         or not device.command_terminal
         or device.stop_reason != reason
     )
-    if transition:
-        if not _next_revision(device):
-            return True
+    if transition and not _next_revision(device):
+        return True
     device.desired_state = False
     device.command_terminal = True
     device.stop_reason = reason[:64]
@@ -161,7 +185,11 @@ def _session_can_run(device: ConveyorDevice, now) -> tuple[bool, str]:
 
 
 @transaction.atomic
-def sync_device(device_id: int, data: dict) -> SyncResult:
+def sync_device(
+    device_id: int,
+    data: dict,
+    presented_secret_sha256: str,
+) -> SyncResult:
     now = timezone.now()
     device = (
         ConveyorDevice.objects.select_for_update(of=("self",))
@@ -171,6 +199,16 @@ def sync_device(device_id: int, data: dict) -> SyncResult:
     if not device.is_active:
         raise ConveyorDeviceError(
             "device_disabled", "Device is disabled", status=401,
+        )
+    if (
+        not isinstance(presented_secret_sha256, str)
+        or not hmac.compare_digest(
+            device.secret_sha256,
+            presented_secret_sha256,
+        )
+    ):
+        raise ConveyorDeviceError(
+            "invalid_credential", "Device credential was rotated", status=401,
         )
 
     boot_id = data["boot_id"]
@@ -349,62 +387,161 @@ def _observation_response(device: ConveyorDevice, *, duplicate: bool) -> dict:
 @transaction.atomic
 def emergency_stop(device: ConveyorDevice, reason: str = "emergency_stop") -> ConveyorDevice:
     locked = ConveyorDevice.objects.select_for_update().get(pk=device.pk)
+    pending_reason = (
+        locked.stop_reason if locked.stop_reason in ADMIN_PENDING_REASONS else None
+    )
     # Explicit stop always gets a new revision so an ESP that acknowledged an
     # earlier state cannot mistake this operation for an old OFF response.
     advanced = _next_revision(locked)
     locked.desired_state = False
     locked.command_terminal = True
     if advanced:
-        locked.stop_reason = reason
+        locked.stop_reason = pending_reason or reason
     locked.run_started_at = None
     locked.save()
     return locked
 
 
-@transaction.atomic
 def rotate_secret(device: ConveyorDevice) -> tuple[ConveyorDevice, str]:
-    locked = ConveyorDevice.objects.select_for_update().get(pk=device.pk)
-    advanced = _next_revision(locked)
-    locked.desired_state = False
-    locked.command_terminal = True
-    if advanced:
-        locked.stop_reason = "credential_rotated"
-    locked.run_started_at = None
-    token = generate_token()
-    locked.secret_sha256 = digest_token(token)
-    locked.save()
+    pending_error: ConveyorDeviceError | None = None
+    token: str | None = None
+    with transaction.atomic():
+        lock_camera_binding()
+        locked = ConveyorDevice.objects.select_for_update().get(pk=device.pk)
+        if locked.stop_reason == "device_disable_pending":
+            pending_error = ConveyorDeviceError(
+                "device_transition_pending",
+                "Finish the pending ESP32 disable before rotating credentials",
+            )
+        elif _camera_has_open_session(locked.camera_source):
+            _latch_off_locked(locked, "credential_rotation_pending")
+            locked.save()
+            pending_error = ConveyorDeviceError(
+                "device_busy",
+                "Close the active AI session before rotating credentials",
+            )
+        elif (
+            locked.is_active
+            and not _never_seen_safe_off(locked)
+            and not confirmed_state(locked, False)
+        ):
+            # Keep the old credential valid long enough for the controller to
+            # fetch and physically acknowledge this durable OFF revision.
+            _latch_off_locked(locked, "credential_rotation_pending")
+            locked.save()
+            pending_error = ConveyorDeviceError(
+                "off_not_confirmed",
+                "ESP32 must report fresh physical OFF before credential rotation",
+            )
+        else:
+            advanced = _next_revision(locked)
+            locked.desired_state = False
+            locked.command_terminal = True
+            if advanced:
+                locked.stop_reason = "credential_rotated"
+                token = generate_token()
+                locked.secret_sha256 = digest_token(token)
+            else:
+                pending_error = ConveyorDeviceError(
+                    "revision_exhausted",
+                    "Command revision is exhausted; replace the controller identity",
+                )
+            locked.run_started_at = None
+            locked.save()
+    if pending_error is not None:
+        raise pending_error
+    assert token is not None
     return locked, token
 
 
-@transaction.atomic
 def disable_device(device: ConveyorDevice) -> ConveyorDevice:
-    locked = ConveyorDevice.objects.select_for_update().get(pk=device.pk)
-    advanced = _next_revision(locked)
-    locked.desired_state = False
-    locked.command_terminal = True
-    if advanced:
-        locked.stop_reason = "device_disabled"
-    locked.run_started_at = None
-    locked.is_active = False
-    locked.save()
+    pending_error: ConveyorDeviceError | None = None
+    with transaction.atomic():
+        lock_camera_binding()
+        locked = ConveyorDevice.objects.select_for_update().get(pk=device.pk)
+        if not locked.is_active:
+            return locked
+        if locked.stop_reason == "credential_rotation_pending":
+            pending_error = ConveyorDeviceError(
+                "device_transition_pending",
+                "Finish the pending credential rotation before disabling ESP32",
+            )
+        elif _camera_has_open_session(locked.camera_source):
+            _latch_off_locked(locked, "device_disable_pending")
+            locked.save()
+            pending_error = ConveyorDeviceError(
+                "device_busy",
+                "Close the active AI session before disabling its ESP32",
+            )
+        elif not confirmed_state(locked, False):
+            # Do not revoke authentication before the old controller has
+            # fetched and acknowledged OFF. The administrator retries after
+            # the next authenticated heartbeat proves both output channels.
+            _latch_off_locked(locked, "device_disable_pending")
+            locked.save()
+            pending_error = ConveyorDeviceError(
+                "off_not_confirmed",
+                "ESP32 must report fresh physical OFF before it can be disabled",
+            )
+        else:
+            locked.desired_state = False
+            locked.command_terminal = True
+            locked.stop_reason = "device_disabled"
+            locked.run_started_at = None
+            locked.is_active = False
+            locked.save()
+    if pending_error is not None:
+        raise pending_error
     return locked
+
+
+@transaction.atomic
+def enroll_device(values: dict, user) -> tuple[ConveyorDevice, str]:
+    camera = values["camera_source"]
+    lock_camera_binding()
+    if values.get("is_active", True) and _camera_has_open_session(camera):
+        raise ConveyorDeviceError(
+            "device_busy",
+            "Close the active AI session before enabling an ESP32",
+        )
+    token = generate_token()
+    device = ConveyorDevice.objects.create(
+        **values,
+        secret_sha256=digest_token(token),
+        created_by=user,
+    )
+    return device, token
 
 
 @transaction.atomic
 def update_device(device: ConveyorDevice, values: dict) -> ConveyorDevice:
+    lock_camera_binding()
     locked = ConveyorDevice.objects.select_for_update().get(pk=device.pk)
     camera = values.get("camera_source", locked.camera_source)
+    next_active = values.get("is_active", locked.is_active)
+    if locked.is_active and not next_active:
+        raise ConveyorDeviceError(
+            "use_disable_endpoint",
+            "Use the disable action so physical OFF is confirmed before revoking access",
+        )
+    activating = next_active and not locked.is_active
+    open_binding = AiCountingSession.objects.filter(
+        camera__in=(locked.camera_source, camera),
+        status__in=AiCountingSession.OPEN_STATUSES,
+    ).exists()
     if camera != locked.camera_source and (
         locked.desired_state
         or locked.output_state is True
         or locked.feedback_state is True
-        or AiCountingSession.objects.filter(
-            camera__in=(locked.camera_source, camera),
-            status__in=AiCountingSession.OPEN_STATUSES,
-        ).exists()
+        or open_binding
+        or (locked.is_active and not confirmed_state(locked, False))
     ):
         raise ConveyorDeviceError(
             "device_busy", "Stop the active conveyor session before rebinding",
+        )
+    if activating and open_binding:
+        raise ConveyorDeviceError(
+            "device_busy", "Close the active AI session before enabling an ESP32",
         )
     was_active = locked.is_active
     for field, value in values.items():
@@ -435,6 +572,11 @@ def prepare_session(session: AiCountingSession) -> ConveyorDevice:
     if device is None:
         raise ConveyorDeviceError(
             "device_not_found", "Active conveyor device not found", status=503,
+        )
+    if device.stop_reason in ADMIN_PENDING_REASONS:
+        raise ConveyorDeviceError(
+            "device_transition_pending",
+            "Finish the pending ESP32 disable or credential rotation first",
         )
     if device.command_session_id not in (None, session.pk):
         previous = device.command_session
@@ -548,6 +690,28 @@ def confirmed_state(device: ConveyorDevice, desired: bool) -> bool:
         and device.output_state is desired
         and device.feedback_state is desired
         and not device.fault
+    )
+
+
+def _never_seen_safe_off(device: ConveyorDevice) -> bool:
+    """Allow revoking an unprovisioned credential without first using it.
+
+    A controller that has never authenticated cannot have received a leased ON
+    command.  Keep the predicate deliberately strict so any device or session
+    history still requires a fresh, independent physical OFF acknowledgement.
+    """
+    return bool(
+        device.last_seen_at is None
+        and device.last_boot_id is None
+        and device.last_sequence is None
+        and device.last_ack_revision is None
+        and device.output_state is None
+        and device.feedback_state is None
+        and device.command_session_id is None
+        and device.command_target_total is None
+        and device.desired_state is False
+        and device.command_terminal is True
+        and device.run_started_at is None
     )
 
 

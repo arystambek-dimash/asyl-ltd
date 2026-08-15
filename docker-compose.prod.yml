@@ -33,8 +33,8 @@ x-backend-environment: &backend-environment
   CONVEYOR_MAX_RUN_SECONDS: ${CONVEYOR_MAX_RUN_SECONDS:-300}
   THROTTLE_CONVEYOR_DEVICE: ${THROTTLE_CONVEYOR_DEVICE:-180/min}
   THROTTLE_CONVEYOR_AI: ${THROTTLE_CONVEYOR_AI:-6000/min}
-  # Физические автомобильные весы доступны серверу по Tailscale. Браузер к
-  # этому адресу не обращается: оба замера делает только backend.
+  # Физические весы участка Grain доступны серверу по Tailscale. Браузер к
+  # этому адресу не обращается: preview и фиксацию замеров делает Grain backend.
   # Single `-` is intentional: an explicitly empty production variable is an
   # emergency kill switch, while an unset variable uses the Tailscale default.
   TRUCK_SCALE_API_URL: ${TRUCK_SCALE_API_URL-http://100.77.27.95:8000/api/v1/weight}

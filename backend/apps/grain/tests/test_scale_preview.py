@@ -4,7 +4,7 @@ from unittest.mock import patch
 import pytest
 from django.core.cache import cache
 
-from apps.shipments import scale, scale_preview
+from apps.grain import scale, scale_preview
 
 pytestmark = pytest.mark.django_db
 
@@ -52,21 +52,10 @@ def observation(**overrides):
     return scale.ScaleObservation(**values)
 
 
-@pytest.mark.parametrize(
-    "permission_code",
-    [
-        "grain.weigh",
-        "shipping.arrive",
-        "shipping.load",
-        "shipping.ship",
-    ],
-)
-def test_reading_endpoint_allows_any_relevant_operator_permission(
-    api_client, user_with_perms, permission_code
-):
+def test_reading_endpoint_allows_grain_weigher(api_client, user_with_perms):
     user = user_with_perms(
-        f"preview-{permission_code.replace('.', '-')}",
-        codes=[permission_code],
+        "preview-grain-weigher",
+        codes=["grain.weigh"],
     )
     api_client.force_authenticate(user)
 
@@ -87,6 +76,26 @@ def test_reading_endpoint_allows_any_relevant_operator_permission(
     read_scale.assert_called_once_with()
 
 
+@pytest.mark.parametrize(
+    "permission_code",
+    ["shipping.arrive", "shipping.load", "shipping.ship"],
+)
+def test_reading_endpoint_denies_shipping_permissions_before_scale_io(
+    api_client, user_with_perms, permission_code
+):
+    user = user_with_perms(
+        f"preview-denied-{permission_code.replace('.', '-')}",
+        codes=[permission_code],
+    )
+    api_client.force_authenticate(user)
+
+    with patch("apps.grain.views.get_scale_preview") as get_scale_preview:
+        response = api_client.get(READING_URL)
+
+    assert response.status_code == 403
+    get_scale_preview.assert_not_called()
+
+
 def test_reading_endpoint_denies_unrelated_permission_before_scale_io(
     api_client, user_with_perms
 ):
@@ -94,7 +103,7 @@ def test_reading_endpoint_denies_unrelated_permission_before_scale_io(
     api_client.force_authenticate(user)
 
     with patch(
-        "apps.shipments.views.get_scale_preview"
+        "apps.grain.views.get_scale_preview"
     ) as get_scale_preview:
         response = api_client.get(READING_URL)
 
@@ -108,7 +117,7 @@ def test_reading_endpoint_denies_client_accounts_before_scale_io(
     api_client.force_authenticate(client_user)
 
     with patch(
-        "apps.shipments.views.get_scale_preview"
+        "apps.grain.views.get_scale_preview"
     ) as get_scale_preview:
         response = api_client.get(READING_URL)
 

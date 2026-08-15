@@ -46,12 +46,17 @@ class ConveyorDeviceAuthentication(BaseAuthentication):
         if not TOKEN_RE.fullmatch(token):  # pragma: no cover - regex invariant
             raise AuthenticationFailed("Invalid device credential")
         device = ConveyorDevice.objects.filter(public_id=public_id).first()
+        supplied_digest = digest_token(token)
         if (
             device is None
             or not device.is_active
-            or not hmac.compare_digest(device.secret_sha256, digest_token(token))
+            or not hmac.compare_digest(device.secret_sha256, supplied_digest)
         ):
             raise AuthenticationFailed("Invalid device credential")
+        # Authentication runs before the service acquires the device row. The
+        # service compares this request-local digest again under that lock so
+        # a credential rotated in between cannot authorize a stale request.
+        device._presented_secret_sha256 = supplied_digest
         return (
             ServicePrincipal("conveyor-device", str(device.public_id)),
             device,

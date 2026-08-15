@@ -1,31 +1,69 @@
 from decimal import Decimal, InvalidOperation
+
 from django.db import transaction
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
+
+from apps.clients.services import is_payment_window_open
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
-from apps.clients.services import is_payment_window_open
+from apps.sales.access import scope_by_client_department
+
 from .models import Order, OrderItem, Payment, StatusChangeRequest
 from .statuses import PUBLIC_MANUAL_STATUSES, PUBLIC_STATUS_LABELS, public_status_label
-
 
 MAX_MONEY = Decimal("9999999999.99")
 
 
-def _locked_payment_order(order: Order) -> Order:
+def _assert_order_user_scope(order: Order, user) -> None:
+    if user is not None and not scope_by_client_department(
+        Order.all_objects.filter(pk=order.pk),
+        user,
+        client_path="client",
+    ).exists():
+        raise PermissionDenied("Заказ передан в другой отдел")
+
+
+def lock_live_order(order: Order | int, user=None) -> Order:
+    """Lock an order and reject stale operations against archived rows.
+
+    Callers must already be inside ``transaction.atomic()``. Using the
+    all-objects manager lets us distinguish an archived/tombstoned order from
+    a live row instead of leaking ``DoesNotExist`` as a 500 after a concurrent
+    archive or purge.
+    """
+    order_id = order.pk if isinstance(order, Order) else order
+    try:
+        locked = Order.all_objects.select_for_update().get(pk=order_id)
+    except Order.DoesNotExist as exc:
+        raise ValidationError({
+            "detail": "Заказ больше недоступен",
+            "code": "order_not_active",
+        }) from exc
+    if locked.deleted_at is not None or locked.purged_at is not None:
+        raise ValidationError({
+            "detail": "Заказ находится в архиве",
+            "code": "order_not_active",
+        })
+    _assert_order_user_scope(locked, user)
+    return locked
+
+
+def _locked_payment_order(order: Order, user=None) -> Order:
     """Serialize payment choices and derived totals through the order row."""
+    locked = lock_live_order(order, user)
     return (
-        Order.objects.select_for_update(of=("self",))
+        Order.objects
         .select_related("client__user", "store")
         .prefetch_related("items", "payments")
-        .get(pk=order.pk)
+        .get(pk=locked.pk)
     )
 
 
-def _locked_payment_with_order(payment: Payment) -> tuple[Payment, Order]:
+def _locked_payment_with_order(payment: Payment, user=None) -> tuple[Payment, Order]:
     """Use one lock order (Order -> Payment) across every payment transition."""
-    order = Order.objects.select_for_update().get(pk=payment.order_id)
+    order = lock_live_order(payment.order_id, user)
     locked_payment = Payment.objects.select_for_update().get(pk=payment.pk)
     # Reuse the row-locked instance for totals, currency and audit logging.
     locked_payment.order = order
@@ -113,7 +151,7 @@ def _set_payment_stage(payment: Payment, status: str, user) -> Payment:
 def add_payment(order: Order, amount, user, method="cash", stage="received",
                 note="") -> Payment:
     """Начало цепочки оплаты: «запрошена» (счёт выставлен) или «принята» (деньги у менеджера)."""
-    order = _locked_payment_order(order)
+    order = _locked_payment_order(order, user)
     _validate_payment_open(order)
     if stage not in ("requested", "received"):
         raise ValidationError({"detail": "Недопустимый шаг оплаты", "code": "bad_stage"})
@@ -166,9 +204,10 @@ def add_mixed_payments(order: Order, parts, user, note="") -> list[Payment]:
     amount as well, so a second cashier cannot allocate more than the actual
     outstanding balance.
     """
-    locked = (Order.objects.select_for_update()
-              .prefetch_related("items", "payments")
-              .get(pk=order.pk))
+    locked = lock_live_order(order, user)
+    locked = (
+        Order.objects.prefetch_related("items", "payments").get(pk=locked.pk)
+    )
     _validate_payment_open(locked)
     if not isinstance(parts, list) or not parts:
         raise ValidationError({"detail": "Добавьте хотя бы один способ оплаты",
@@ -246,7 +285,7 @@ def add_mixed_payments(order: Order, parts, user, note="") -> list[Payment]:
 def create_client_payment(order: Order, method: str, user, amount=None) -> Payment:
     if method not in ("invoice", "kaspi", "cash", "card"):
         raise ValidationError({"detail": "Недопустимый способ оплаты", "code": "bad_method"})
-    order = _locked_payment_order(order)
+    order = _locked_payment_order(order, user)
     _validate_payment_open(order)
     remaining = order.total_amount - order.paid_total
     if remaining <= 0:
@@ -344,7 +383,7 @@ def create_client_payment(order: Order, method: str, user, amount=None) -> Payme
 @transaction.atomic
 def release_client_payment(payment: Payment, user) -> Payment:
     """Освободить зарезервированную часть, не скрывая возможную позднюю оплату."""
-    payment, order = _locked_payment_with_order(payment)
+    payment, order = _locked_payment_with_order(payment, user)
     invoice = getattr(payment, "apipay_invoice", None)
     if payment.status not in Payment.IN_PROGRESS_STATUSES:
         if (
@@ -399,7 +438,7 @@ def release_client_payment(payment: Payment, user) -> Payment:
 @transaction.atomic
 def request_client_debt(order: Order, user) -> Order:
     """Зафиксировать выбор «В долг» без создания денежной оплаты."""
-    order = _locked_payment_order(order)
+    order = _locked_payment_order(order, user)
     if order.status != "shipped":
         raise ValidationError({"detail": "Долг фиксируется после отгрузки",
                                "code": "invalid_status"})
@@ -442,7 +481,7 @@ def _advance_payment(payment: Payment, expected_from: str, user) -> Payment:
 def receive_payment(payment: Payment, user) -> Payment:
     """Менеджер/оператор отметил: деньги получены от клиента."""
     original = payment
-    payment, _order = _locked_payment_with_order(payment)
+    payment, _order = _locked_payment_with_order(payment, user)
     _advance_payment(payment, "requested", user)
     return _sync_payment_instance(original, payment)
 
@@ -451,7 +490,7 @@ def receive_payment(payment: Payment, user) -> Payment:
 def accountant_confirm_payment(payment: Payment, user) -> Payment:
     """Бухгалтер (касса) сверил и подтвердил оплату — деньги учтены сразу."""
     original = payment
-    payment, order = _locked_payment_with_order(payment)
+    payment, order = _locked_payment_with_order(payment, user)
     provider = getattr(payment, "apipay_invoice", None)
     if provider is not None and provider.status != "paid":
         raise ValidationError({
@@ -492,7 +531,7 @@ def reopen_confirmed_payment(payment: Payment, user) -> Payment:
     отмена остаются отдельными append-only событиями в журнале.
     """
     original = payment
-    payment, order = _locked_payment_with_order(payment)
+    payment, order = _locked_payment_with_order(payment, user)
     if payment.status != "confirmed":
         raise ValidationError({
             "detail": "Вернуть можно только подтверждённую оплату",
@@ -537,7 +576,7 @@ def reopen_confirmed_payment(payment: Payment, user) -> Payment:
 @transaction.atomic
 def reject_payment(payment: Payment, user) -> Payment:
     original = payment
-    payment, _order = _locked_payment_with_order(payment)
+    payment, _order = _locked_payment_with_order(payment, user)
     if payment.status in ("confirmed", "rejected"):
         raise ValidationError(
             {"detail": "Оплата уже финализирована", "code": "invalid_payment_stage"})
@@ -566,7 +605,7 @@ def reject_payment(payment: Payment, user) -> Payment:
 def restore_rejected_payment(payment: Payment, user) -> Payment:
     """Вернуть ошибочно отклонённую кассовую оплату в рабочую очередь."""
     original = payment
-    payment, order = _locked_payment_with_order(payment)
+    payment, order = _locked_payment_with_order(payment, user)
     if payment.status != "rejected":
         raise ValidationError({
             "detail": "Восстановить можно только отклонённую оплату",
@@ -683,6 +722,8 @@ ALLOWED_TRANSITIONS = {
 
 @transaction.atomic
 def transition(order: Order, to_status: str, user, message: str | None = None) -> Order:
+    order = lock_live_order(order, user)
+    _assert_no_open_ai_session(order)
     allowed = ALLOWED_TRANSITIONS.get(order.status, set())
     if to_status not in allowed:
         raise ValidationError(
@@ -698,11 +739,17 @@ def transition(order: Order, to_status: str, user, message: str | None = None) -
 
 @transaction.atomic
 def confirm_order(order: Order, user, prices: dict | None = None) -> Order:
+    # Freeze the order and its item set before validating/pricing. This shares
+    # the parent fence with item edits and AI reservation.
+    caller_order = order
+    order = lock_live_order(order, user)
     if order.status not in ("draft", "pending"):
         raise ValidationError(
             {"detail": "Подтвердить можно только новый заказ", "code": "invalid_status"})
     _apply_prices(order, prices or {}, user)
-    return transition(order, "confirmed", user, "Заказ подтверждён")
+    confirmed = transition(order, "confirmed", user, "Заказ подтверждён")
+    caller_order.status = confirmed.status
+    return confirmed
 
 
 @transaction.atomic
@@ -710,9 +757,9 @@ def repeat_order(source: Order, user) -> Order:
     """Создать независимый заказ из старого документа с сегодняшней датой."""
     from apps.warehouse.services import ensure_products_available
 
+    source = lock_live_order(source, user)
     source = (
-        Order.objects.select_for_update(of=("self",))
-        .select_related("client__user", "store")
+        Order.objects.select_related("client__user", "store")
         .prefetch_related("items__product")
         .get(pk=source.pk)
     )
@@ -761,7 +808,7 @@ def repeat_order(source: Order, user) -> Order:
         for item in items
     ]
     # Цены — исторический снимок шаблона. Если сотрудник может подтверждать,
-    # новый заказ сразу попадает в «Ожидание въезда», иначе остаётся заявкой.
+    # новый заказ сразу попадает в «Ожидает погрузки», иначе остаётся заявкой.
     if has_complete_prices and user.has_perm_code("orders.confirm"):
         prices = {item.pk: item.unit_price for item in copies}
         confirm_order(repeated, user, prices=prices)
@@ -828,7 +875,7 @@ def correct_order_prices(
     The correction updates only item prices, then recomputes the payment state;
     confirmed cash movements remain immutable accounting facts.
     """
-    locked = Order.objects.select_for_update().get(pk=order.pk)
+    locked = lock_live_order(order, user)
     items = list(
         OrderItem.objects.select_for_update()
         .filter(order=locked)
@@ -975,7 +1022,7 @@ def replace_items(order: Order, items_data: list, prices: dict | None, user) -> 
     ensure_products_available(item["product"] for item in items_data)
     # Блокируем строку заказа: правка не должна гоняться со стартом загрузки
     # (склад переводит arrived → loading в этот же момент).
-    order = Order.objects.select_for_update().get(pk=order.pk)
+    order = lock_live_order(order, user)
     if order.status not in ITEMS_EDITABLE_STATUSES:
         raise ValidationError(
             {"detail": "Позиции можно менять только до начала загрузки",
@@ -1022,10 +1069,14 @@ def replace_items(order: Order, items_data: list, prices: dict | None, user) -> 
 
 @transaction.atomic
 def reject_order(order: Order, user) -> Order:
+    caller_order = order
+    order = lock_live_order(order, user)
     if order.status != "pending":
         raise ValidationError(
             {"detail": "Отклонить можно только заказ на рассмотрении", "code": "invalid_status"})
-    return transition(order, "rejected", user, "Заказ отклонён")
+    rejected = transition(order, "rejected", user, "Заказ отклонён")
+    caller_order.status = rejected.status
+    return rejected
 
 
 def can_set_truck_number(order: Order, user) -> bool:
@@ -1043,63 +1094,23 @@ def can_set_truck_number(order: Order, user) -> bool:
 
 @transaction.atomic
 def set_truck_number(order: Order, value: str, user) -> Order:
-    # Serialize the number with scale capture/loading. A stale serializer or a
-    # second portal tab must not retag an already weighed truck.
+    # Serialize the number with loading. A stale serializer or a second portal
+    # tab must not retag a truck after its physical workflow has started.
     caller_order = order
-    # Match the scale-capture lock order (AI reservation, then order) so a
-    # number correction cannot deadlock a simultaneous Monoblock start.
-    from apps.cameras.models import AiCountingSession
-
-    open_ai_session = (
-        AiCountingSession.objects.select_for_update()
-        .filter(order_id=order.pk, status__in=AiCountingSession.OPEN_STATUSES)
-        .first()
-    )
-    order = Order.objects.select_for_update().get(pk=order.pk)
+    # Match AI start: lock the parent first. If start already reserved a
+    # session we observe it after waiting; if not, start waits for this edit.
+    order = lock_live_order(order, user)
     if not can_set_truck_number(order, user):
         raise ValidationError(
             {"detail": "Номер КАМАЗа задан другим пользователем", "code": "forbidden"})
-    if value != order.truck_number:
-        from apps.shipments.models import Shipment
-
-        shipment = Shipment.objects.select_for_update().filter(order_id=order.pk).only(
-            "weigh_in_source", "weigh_in_kg"
-        ).first()
-        has_scale_entry = bool(
-            shipment
-            and shipment.weigh_in_source == Shipment.WeightSource.SCALE
-            and shipment.weigh_in_kg is not None
-        )
-        if (
-            order.status in ("arrived", "loading", "loaded", "shipped")
-            or open_ai_session is not None
-        ):
-            raise ValidationError({
-                "detail": (
-                    "Номер КАМАЗа нельзя изменить после въездного взвешивания "
-                    "или начала погрузки"
-                ),
-                "code": "truck_number_locked",
-            })
-        if has_scale_entry:
-            # A deterministic AI-start failure closes its provisional session
-            # but deliberately leaves the physical entry sample for retry.
-            # Before loading starts, correcting a typo is still recoverable:
-            # invalidate that sample atomically so the new number must be
-            # weighed again and can never inherit the old truck's weight.
-            log_event(
-                "weigh_in_invalidated",
-                f"Входной вес машины {order.truck_number} сброшен при смене номера",
-                user=user,
-                order=order,
-                payload={
-                    "old_truck_number": order.truck_number,
-                    "new_truck_number": value,
-                    "invalidated_weight_kg": str(shipment.weigh_in_kg),
-                    "source": shipment.weigh_in_source,
-                },
-            )
-            shipment.delete()
+    if value != order.truck_number and (
+        order.status in ("arrived", "loading", "loaded", "shipped")
+        or _has_open_ai_session(order)
+    ):
+        raise ValidationError({
+            "detail": "Номер КАМАЗа нельзя изменить после прибытия или начала погрузки",
+            "code": "truck_number_locked",
+        })
     order.truck_number = value
     order.truck_number_set_by = user
     order.save(update_fields=["truck_number", "truck_number_set_by"])
@@ -1121,17 +1132,116 @@ def _can_edit_status(user) -> bool:
 def _validate_manual_status(to_status: str, user) -> None:
     if to_status not in Order.STATUSES:
         raise ValidationError({"detail": "Неизвестный статус", "code": "bad_status"})
-    if not getattr(user, "is_superuser", False) and to_status not in PUBLIC_MANUAL_STATUSES:
+    # Внутренние физические этапы нельзя ставить сырым status override даже
+    # суперпользователю: иначе можно обойти AI/ESP32 ownership, Shipment и
+    # подтверждение OFF. Для них существуют отдельные доменные действия.
+    if to_status not in PUBLIC_MANUAL_STATUSES:
         raise ValidationError({
-            "detail": "Доступны статусы: " + ", ".join(PUBLIC_STATUS_LABELS.values()),
+            "detail": "Доступны статусы: " + ", ".join(
+                PUBLIC_STATUS_LABELS[status]
+                for status in PUBLIC_MANUAL_STATUSES
+            ),
             "code": "status_not_available",
         })
+
+
+def _assert_no_open_ai_session(order: Order) -> None:
+    """Do not hide or mutate an order while its camera slot is owned."""
+    from apps.cameras.models import AiCountingSession
+
+    if AiCountingSession.objects.filter(
+        order_id=order.pk,
+        status__in=AiCountingSession.OPEN_STATUSES,
+    ).exists():
+        raise ValidationError({
+            "detail": "Сначала завершите AI-подсчёт на Моноблоке",
+            "code": "ai_session_active",
+        })
+
+
+def _has_open_ai_session(order: Order) -> bool:
+    from apps.cameras.models import AiCountingSession
+
+    return AiCountingSession.objects.filter(
+        order_id=order.pk,
+        status__in=AiCountingSession.OPEN_STATUSES,
+    ).exists()
+
+
+def _assert_not_active_loading(order: Order) -> None:
+    if order.status in ("arrived", "loading", "loaded"):
+        raise ValidationError({
+            "detail": "Сначала завершите или верните текущую погрузку",
+            "code": "active_loading",
+        })
+
+
+@transaction.atomic
+def set_transport_type(order: Order, value: str, user) -> Order:
+    """Change truck/train only before a physical workflow owns the order."""
+    if value not in Order.TRANSPORT_TYPES:
+        raise ValidationError({
+            "detail": "Неизвестный вид транспорта",
+            "code": "bad_transport_type",
+        })
+    caller_order = order
+    order = lock_live_order(order, user)
+    if value == order.transport_type:
+        return order
+    _assert_no_open_ai_session(order)
+    if order.status in ("arrived", "loading", "loaded", "shipped"):
+        raise ValidationError({
+            "detail": "Вид транспорта нельзя изменить после начала погрузки",
+            "code": "transport_type_locked",
+        })
+    old = order.transport_type
+    order.transport_type = value
+    order.save(update_fields=["transport_type"])
+    caller_order.transport_type = value
+    log_event(
+        "status",
+        "Вид транспорта изменён",
+        user=user,
+        order=order,
+        payload={"from": old, "to": value},
+    )
+    return order
+
+
+@transaction.atomic
+def set_order_department(order: Order, value: str, user) -> Order:
+    """Keep an active camera order inside the scope that can stop it."""
+    caller_order = order
+    order = lock_live_order(order, user)
+    if value == order.department:
+        return order
+    _assert_no_open_ai_session(order)
+    if order.status in ("arrived", "loading", "loaded", "shipped"):
+        raise ValidationError({
+            "detail": "Отдел нельзя изменить после начала погрузки",
+            "code": "department_locked",
+        })
+    old = order.department
+    order.department = value
+    order.save(update_fields=["department"])
+    caller_order.department = value
+    log_event(
+        "status",
+        "Отдел заказа изменён",
+        user=user,
+        order=order,
+        payload={"from": old, "to": value},
+    )
+    return order
 
 
 @transaction.atomic
 def _force_set_status(order: Order, to_status: str, user,
                       bags_loaded: int | None = None) -> Order:
     _validate_manual_status(to_status, user)
+    # AI start takes the same row lock before reserving a camera. Holding it
+    # through the check+transition closes confirmed→cancelled/pending races.
+    order = lock_live_order(order, user)
     old = order.status
 
     # Завершённый заказ уже списал склад и создал финансовый след. Обратный
@@ -1141,6 +1251,8 @@ def _force_set_status(order: Order, to_status: str, user,
             "detail": "Отгруженный заказ возвращается отдельной операцией с обязательной причиной",
             "code": "shipped_is_final",
         })
+
+    _assert_no_open_ai_session(order)
 
     if to_status == "shipped":
         from apps.shipments.services import manual_complete_order
@@ -1173,15 +1285,25 @@ def request_status_change(order: Order, to_status: str, user,
                           bags_loaded: int | None = None) -> dict:
     """Сотрудник с orders.edit меняет сразу; остальные создают запрос.
 
-    Обычным сотрудникам доступны четыре публичных состояния, суперпользователь
-    может вручную выбрать любой внутренний этап.
+    Всем сотрудникам доступны только четыре ручных состояния. Внутренние
+    этапы меняются отдельными операциями погрузки/выезда.
     """
+    # Establish the canonical Order -> StatusChangeRequest lock order before
+    # either applying the transition or inserting an approval request.
+    order = lock_live_order(order, user)
     _validate_manual_status(to_status, user)
     if to_status == order.status:
         raise ValidationError({"detail": "Статус уже такой", "code": "no_change"})
     if _can_edit_status(user):
         _force_set_status(order, to_status, user, bags_loaded=bags_loaded)
         return {"applied": True, "request": None}
+    if bags_loaded is not None:
+        # Approval requests store a status, not a physical count. Silently
+        # dropping this value could deduct a different quantity on approval.
+        raise ValidationError({
+            "detail": "Количество мешков может указать только сотрудник с правом прямой отгрузки",
+            "code": "bags_loaded_requires_direct_permission",
+        })
     req = StatusChangeRequest.objects.create(
         order=order, to_status=to_status, requested_by=user)
     log_event("status_request",
@@ -1193,9 +1315,15 @@ def request_status_change(order: Order, to_status: str, user,
 
 @transaction.atomic
 def approve_status_change(req: StatusChangeRequest, user) -> StatusChangeRequest:
+    order = lock_live_order(req.order_id, user)
+    req = (
+        StatusChangeRequest.objects.select_for_update()
+        .select_related("order")
+        .get(pk=req.pk, order_id=order.pk)
+    )
     if req.status != "pending":
         raise ValidationError({"detail": "Запрос уже обработан", "code": "already_decided"})
-    _force_set_status(req.order, req.to_status, user)
+    _force_set_status(order, req.to_status, user)
     req.status = "approved"
     req.decided_by = user
     req.decided_at = timezone.now()
@@ -1207,6 +1335,12 @@ def approve_status_change(req: StatusChangeRequest, user) -> StatusChangeRequest
 
 @transaction.atomic
 def reject_status_change(req: StatusChangeRequest, user) -> StatusChangeRequest:
+    order = lock_live_order(req.order_id, user)
+    req = (
+        StatusChangeRequest.objects.select_for_update()
+        .select_related("order")
+        .get(pk=req.pk, order_id=order.pk)
+    )
     if req.status != "pending":
         raise ValidationError({"detail": "Запрос уже обработан", "code": "already_decided"})
     req.status = "rejected"
@@ -1236,6 +1370,9 @@ def soft_delete_order(order: Order, user) -> Order:
         })
     if order.deleted_at is not None:
         raise ValidationError({"detail": "Заказ уже в корзине", "code": "already_deleted"})
+    _assert_order_user_scope(order, user)
+    _assert_no_open_ai_session(order)
+    _assert_not_active_loading(order)
     order.deleted_at = timezone.now()
     order.deleted_by = user
     order.save(update_fields=["deleted_at", "deleted_by"])
@@ -1260,6 +1397,7 @@ def restore_order(order: Order, user) -> Order:
         })
     if order.deleted_at is None:
         raise ValidationError({"detail": "Заказ не в корзине", "code": "not_deleted"})
+    _assert_order_user_scope(order, user)
     order.deleted_at = None
     order.deleted_by = None
     order.save(update_fields=["deleted_at", "deleted_by"])
@@ -1293,6 +1431,9 @@ def purge_order(order: Order, user) -> None:
     if order.deleted_at is None:
         raise ValidationError(
             {"detail": "Сначала переместите заказ в корзину", "code": "not_deleted"})
+    _assert_order_user_scope(order, user)
+    _assert_no_open_ai_session(order)
+    _assert_not_active_loading(order)
     must_retain_history = (
         order.status != "draft"
         or order.payments.exists()

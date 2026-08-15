@@ -12,6 +12,7 @@ from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
 from apps.orders.services import replace_items
 from apps.shipments.models import Shipment
+from apps.warehouse.models import StockItem
 
 pytestmark = pytest.mark.django_db
 
@@ -298,7 +299,7 @@ def test_unconfirmed_off_blocks_completion_and_keeps_ownership(
     assert order.loading_camera == "cam2"
 
 
-def test_completion_reverifies_off_after_exit_scale(auth_client, loader):
+def test_completion_reverifies_off_before_loaded_transition(auth_client, loader):
     order = _order(status="loading", bags=10)
     session = AiCountingSession.objects.create(
         order=order,
@@ -322,31 +323,24 @@ def test_completion_reverifies_off_after_exit_scale(auth_client, loader):
         session_id=session.pk,
         target_total=10,
     )
-    scale_read = False
-
-    def read_exit(_order):
-        nonlocal scale_read
-        scale_read = True
-        return None
+    stop_calls = 0
 
     def edge(method, path, body=None):
+        nonlocal stop_calls
         assert path in {
             "/processors/cam2",
             "/processors/cam2/conveyor/stop",
         }
-        if method == "GET" or not scale_read:
+        if method == "GET":
             return 200, safe
-        # The controller changed after the slow external scale operation. A
-        # preflight-only proof must never permit the shipped transition.
+        stop_calls += 1
+        if stop_calls == 1:
+            return 200, safe
+        # A preflight-only OFF proof must never permit the irreversible count
+        # completion if the controller changed before the DB transition.
         return 200, unsafe
 
-    with (
-        patch(
-            "apps.cameras.counting.read_scale_exit_if_required",
-            side_effect=read_exit,
-        ),
-        patch.object(ai, "_request", side_effect=edge) as request,
-    ):
+    with patch.object(ai, "_request", side_effect=edge) as request:
         response = auth_client(loader).delete(
             "/api/cameras/cam2/ai/",
             {"order_id": order.pk, "complete_order": True},
@@ -354,7 +348,6 @@ def test_completion_reverifies_off_after_exit_scale(auth_client, loader):
         )
 
     assert response.status_code == 503
-    assert scale_read is True
     assert [call.args[1] for call in request.call_args_list] == [
         "/processors/cam2",
         "/processors/cam2/conveyor/stop",
@@ -409,7 +402,7 @@ def test_controlled_completion_commits_fresh_final_stop_snapshot(
         )
 
     assert response.status_code == 200, response.data
-    assert response.data["order_status"] == "shipped"
+    assert response.data["order_status"] == "loaded"
     assert response.data["bags_loaded"] == 10
     assert [call.args[:2] for call in request.call_args_list] == [
         ("GET", "/processors/cam2"),
@@ -422,8 +415,11 @@ def test_controlled_completion_commits_fresh_final_stop_snapshot(
     assert session.status == AiCountingSession.CLOSED
     assert session.final_total == 10
     assert session.error == ""
-    assert order.status == "shipped"
+    assert order.status == "loaded"
     assert order.loading_camera == ""
+    assert order.is_debt is False
+    assert order.shipment.shipped_at is None
+    assert not StockItem.objects.filter(product=product).exists()
 
 
 def test_unsafe_prepare_is_compensated_and_never_starts_loading(

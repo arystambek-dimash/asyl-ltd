@@ -57,6 +57,45 @@ def test_delete_moves_to_trash_not_gone(manager):
     assert not Order.objects.filter(pk=o.pk).exists()
 
 
+def test_delete_cannot_hide_order_with_open_ai_session(manager):
+    product = _product()
+    client = Client.objects.create_with_user(
+        first_name="A", last_name="B", phone="open-ai-delete",
+    )
+    order = _order(client, product, status="confirmed")
+    session = AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.STARTING,
+        started_by=manager,
+    )
+
+    response = _api(manager).delete(f"/api/orders/{order.id}/")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "ai_session_active"
+    order.refresh_from_db()
+    session.refresh_from_db()
+    assert order.deleted_at is None
+    assert session.status == AiCountingSession.STARTING
+
+
+@pytest.mark.parametrize("status", ["arrived", "loading", "loaded"])
+def test_delete_cannot_hide_active_loading_without_ai(manager, status):
+    product = _product()
+    client = Client.objects.create_with_user(
+        first_name="A", last_name="B", phone=f"active-delete-{status}",
+    )
+    order = _order(client, product, status=status)
+
+    response = _api(manager).delete(f"/api/orders/{order.id}/")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "active_loading"
+    order.refresh_from_db()
+    assert order.deleted_at is None
+
+
 def test_deleted_order_hidden_from_list(manager):
     p = _product()
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")

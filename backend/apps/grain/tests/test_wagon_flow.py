@@ -14,7 +14,7 @@ from apps.grain.models import (
     SiloType,
     Wagon,
 )
-from apps.shipments import scale
+from apps.grain import scale
 
 pytestmark = pytest.mark.django_db
 

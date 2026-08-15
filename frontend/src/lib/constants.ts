@@ -1,4 +1,4 @@
-/** Четыре понятных статуса; ключ группы = реальный статус модели,
+/** Пять понятных статусов; ключ группы = реальный статус модели,
  * поэтому выбор в селекте отправляется на бэк без маппинга. */
 const ORDER_STATUS_GROUPS: Record<string, string> = {
   draft: "pending",
@@ -6,7 +6,7 @@ const ORDER_STATUS_GROUPS: Record<string, string> = {
   confirmed: "confirmed",
   arrived: "confirmed",
   loading: "confirmed",
-  loaded: "shipped",
+  loaded: "loaded",
   shipped: "shipped",
   rejected: "cancelled",
   cancelled: "cancelled",
@@ -18,13 +18,17 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
   confirmed: "Ожидает загрузки",
   arrived: "Ожидает загрузки",
   loading: "Ожидает загрузки",
-  loaded: "Отгружено",
+  loaded: "Готов к выезду",
   shipped: "Отгружено",
   rejected: "Отменён",
   cancelled: "Отменён",
 };
 
-export const ORDER_PUBLIC_STATUSES = ["pending", "confirmed", "shipped", "cancelled"] as const;
+export const ORDER_PUBLIC_STATUSES = ["pending", "confirmed", "loaded", "shipped", "cancelled"] as const;
+
+// `loaded` показываем в фильтрах, но этот этап ставит только завершение
+// погрузки. Ручной селект не должен подменять доменную операцию.
+export const ORDER_MANUAL_STATUSES = ["pending", "confirmed", "shipped", "cancelled"] as const;
 
 export function orderStatusGroup(status: string): string {
   return ORDER_STATUS_GROUPS[status] ?? status;
@@ -57,7 +61,7 @@ export const ORDER_STATUS_TONE: Record<string, "muted" | "primary" | "success" |
   confirmed: "warning",
   arrived: "warning",
   loading: "warning",
-  loaded: "success",
+  loaded: "primary",
   shipped: "success",
   rejected: "destructive",
   cancelled: "destructive",

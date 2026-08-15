@@ -38,8 +38,12 @@ never contain the token or digest. The admin can call:
 - `POST /api/conveyors/devices/<uuid>/emergency-stop/` (new terminal OFF revision);
 - `POST /api/conveyors/devices/<uuid>/disable/` (OFF plus credential revocation).
 
-Rotation and disable are fail-OFF. If the old device cannot fetch the new OFF
-revision, its last ON lease expires locally within at most 1500 ms.
+Rotation and disable are two-step fail-OFF operations. The first call latches a
+durable OFF revision but keeps the old credential active; retry only succeeds
+after a fresh heartbeat acknowledges that revision and both the GPIO output and
+independent contactor feedback report OFF. If the controller is unreachable,
+its last ON lease still expires locally within at most 1500 ms, but credentials
+remain valid until physical OFF is explicitly proven.
 
 ## ESP32 sync protocol
 

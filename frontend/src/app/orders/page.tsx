@@ -180,6 +180,7 @@ function DateRangeFilter({
 const STATUS_SHARE_COLORS: Record<string, string> = {
   pending: "var(--warning)",
   confirmed: "var(--ring)",
+  loaded: "var(--primary)",
   shipped: "var(--success)",
 };
 
@@ -915,6 +916,10 @@ function OrdersPageInner() {
             label: "В архив",
             icon: Archive,
             tone: "destructive" as const,
+            disabled: ["arrived", "loading", "loaded"].includes(o.status),
+            hint: ["arrived", "loading", "loaded"].includes(o.status)
+              ? "Сначала завершите или верните текущую погрузку"
+              : undefined,
             onSelect: () => {
               setDelError("");
               setDelItem(o);
@@ -933,7 +938,7 @@ function OrdersPageInner() {
 
   // Карточки считаются по видимой выборке (фильтры + поиск): выбрал
   // «На рассмотрении» — видишь их сумму. Отменённые и отклонённые
-  // не искажают цифры, «в процессе» = ещё не загружен.
+  // не искажают цифры, «в процессе» = ещё не оформлен выезд.
   const countable = filtered.filter((o) => orderStatusGroup(o.status) !== "cancelled");
   const activeCount = countable.filter((o) => orderStatusGroup(o.status) !== "shipped").length;
 
@@ -952,7 +957,7 @@ function OrdersPageInner() {
     }
   };
 
-  // Загруженные всегда падают вниз списка — сверху активная работа.
+  // Только выехавшие падают вниз списка — сверху активная работа.
   const doneRank = (o: Order) => (orderStatusGroup(o.status) === "shipped" ? 1 : 0);
   const sorted = [...filtered].sort((a, b) => {
     const rank = doneRank(a) - doneRank(b);

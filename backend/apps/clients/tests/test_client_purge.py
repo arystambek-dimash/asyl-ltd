@@ -3,8 +3,10 @@ from decimal import Decimal
 
 import pytest
 
+from apps.cameras.models import AiCountingSession
 from apps.catalog.models import Product
 from apps.clients.models import Client
+from apps.conveyors.models import ConveyorDevice
 from apps.orders.models import Order, OrderItem, Payment
 
 pytestmark = pytest.mark.django_db
@@ -51,3 +53,73 @@ def test_purge_denied_for_non_superadmin(auth_client, user_with_perms):
 
     assert resp.status_code == 403
     assert Client.objects.filter(pk=client.pk).exists()
+
+
+def test_superadmin_cannot_purge_client_with_open_ai_session(
+    auth_client, make_user,
+):
+    client = _client_with_history()
+    order = Order.objects.get(client=client)
+    order.status = "loading"
+    order.loading_camera = "cam2"
+    order.save(update_fields=["status", "loading_camera"])
+    session = AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+    )
+    root = make_user(username="active-purge-root")
+    root.is_superuser = True
+    root.save(update_fields=["is_superuser"])
+
+    response = auth_client(root).post(f"/api/clients/{client.id}/purge/")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "active_loading"
+    assert Client.objects.filter(pk=client.pk).exists()
+    assert Order.all_objects.filter(pk=order.pk).exists()
+    assert AiCountingSession.objects.filter(pk=session.pk).exists()
+
+
+def test_purge_preserves_ai_history_referenced_by_esp32(
+    auth_client,
+    make_user,
+):
+    client = _client_with_history()
+    portal_user = client.user
+    order = Order.objects.get(client=client)
+    session = AiCountingSession.objects.create(
+        order=order,
+        camera="cam-history",
+        status=AiCountingSession.CLOSED,
+        target_total=1,
+        final_total=1,
+    )
+    device = ConveyorDevice.objects.create(
+        name="ESP32 history owner",
+        camera_source="cam-history",
+        secret_sha256="a" * 64,
+        command_session=session,
+        command_target_total=1,
+        command_terminal=True,
+        desired_state=False,
+        stop_reason="target_reached",
+    )
+    root = make_user(username="protected-device-history-root")
+    root.is_superuser = True
+    root.save(update_fields=["is_superuser"])
+
+    response = auth_client(root).post(f"/api/clients/{client.id}/purge/")
+
+    assert response.status_code == 409
+    assert response.data["code"] == "device_history_protected"
+    assert Client.objects.filter(pk=client.pk).exists()
+    assert Order.all_objects.filter(pk=order.pk).exists()
+    assert AiCountingSession.objects.filter(pk=session.pk).exists()
+    assert ConveyorDevice.objects.filter(
+        pk=device.pk,
+        command_session=session,
+    ).exists()
+    assert Payment.objects.filter(order=order).exists()
+    portal_user.refresh_from_db()
+    assert portal_user.is_active is True

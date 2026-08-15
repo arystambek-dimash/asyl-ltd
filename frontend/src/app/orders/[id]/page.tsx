@@ -20,7 +20,7 @@ import { can } from "@/lib/can";
 import { cn } from "@/lib/utils";
 import { currencySymbol, formatDateTime, formatIsoDate, formatMoney } from "@/lib/utils";
 import {
-  ORDER_PUBLIC_STATUSES,
+  ORDER_MANUAL_STATUSES,
   ORDER_STATUS_LABELS,
   PORTAL_PAYMENT_METHOD_LABELS,
   PAYMENT_STATUS_LABELS,
@@ -154,7 +154,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const paid = Number(order.paid_total);
   const remaining = total - paid;
 
-  const hasShipment = order.weigh_in_kg != null;
+  const hasRecordedWeight = order.weigh_in_kg != null;
   const itemsWeight = order.items.reduce((s, it) => s + Number(it.quantity) * Number(it.weight_kg ?? 0), 0);
 
   const isNew = order.status === "draft" || order.status === "pending";
@@ -168,10 +168,15 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   // Начать цепочку оплаты можно, пока есть непогашенный остаток.
   const canStartPayment = can(me, "payments.create") && paymentOpen(order) && remaining > 0 && !hasPendingPayment;
   const orderEvents = events?.results ?? [];
-  // Ручной выбор ограничен четырьмя публичными статусами для всех (и суперадмина):
+  // Ручной выбор ограничен четырьмя управляемыми статусами:
   // внутренние этапы ставят только бизнес-процессы, в журнале они видны как события.
-  const statusOptions = order.status === "shipped" && !canRollback ? (["shipped"] as const) : ORDER_PUBLIC_STATUSES;
   const currentStatusOption = orderStatusGroup(order.status);
+  const statusOptions: readonly string[] =
+    order.status === "shipped" && !canRollback
+      ? ["shipped"]
+      : currentStatusOption === "loaded"
+        ? ["loaded", ...ORDER_MANUAL_STATUSES]
+        : ORDER_MANUAL_STATUSES;
   const moneySymbol = currencySymbol(order.currency);
 
   return (
@@ -356,9 +361,9 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                 </InfoRow>
                 <InfoRow label="Отдел">{order.department_name ?? order.department}</InfoRow>
                 <InfoRow label="Склад">{store?.name || (order.store ? `Склад #${order.store}` : "Основной")}</InfoRow>
-                {hasShipment && (
+                {hasRecordedWeight && (
                   <>
-                    <InfoRow label="Вес машины">{formatMoney(order.weigh_in_kg!)} кг</InfoRow>
+                    <InfoRow label="Учётный вес машины">{formatMoney(order.weigh_in_kg!)} кг</InfoRow>
                     <InfoRow label="Вес груза">
                       {formatMoney(String(Number(order.bag_estimate_kg ?? itemsWeight)))} кг
                     </InfoRow>

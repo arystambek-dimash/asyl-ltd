@@ -1,11 +1,14 @@
 from django.contrib import admin
+
+from apps.common.admin import ReadOnlyOperationalAdmin
+
 from .models import StockItem, StockMovement, StockReceipt
 
-admin.site.register([StockItem, StockReceipt])
+admin.site.register([StockItem, StockReceipt], ReadOnlyOperationalAdmin)
 
 
 @admin.register(StockMovement)
-class StockMovementAdmin(admin.ModelAdmin):
+class StockMovementAdmin(ReadOnlyOperationalAdmin):
     list_display = (
         "product",
         "delta",

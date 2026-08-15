@@ -51,7 +51,7 @@ def test_list_rejects_invalid_date_filters(manager, query):
 
 
 def test_list_filters_by_public_status_group(manager):
-    """«Ожидает загрузки» покрывает все внутренние этапы погрузки."""
+    """Погрузка, готовность к выезду и выезд остаются разными этапами."""
     client = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     statuses = {}
     for status in ("pending", "confirmed", "arrived", "loading", "loaded", "shipped"):
@@ -62,8 +62,10 @@ def test_list_filters_by_public_status_group(manager):
     assert {row["id"] for row in r.data} == {
         statuses["confirmed"].id, statuses["arrived"].id, statuses["loading"].id}
 
+    r = _api(manager).get("/api/orders/?status_group=loaded")
+    assert {row["id"] for row in r.data} == {statuses["loaded"].id}
+
     r = _api(manager).get("/api/orders/?status_group=shipped")
-    assert {row["id"] for row in r.data} == {
-        statuses["loaded"].id, statuses["shipped"].id}
+    assert {row["id"] for row in r.data} == {statuses["shipped"].id}
 
     assert _api(manager).get("/api/orders/?status_group=bogus").status_code == 400

@@ -1,6 +1,5 @@
 """Прокси AI-подсчёта мешков: маппинг ответов ai_service и права доступа."""
 from datetime import timedelta
-from decimal import Decimal
 from io import BytesIO
 from unittest.mock import patch
 
@@ -9,12 +8,17 @@ from django.core import signing
 from django.utils import timezone
 
 from apps.cameras import ai, recordings
-from apps.cameras.models import AiCountingSession, MonoblockCameraSettings
+from apps.cameras.models import (
+    AiCountingSession,
+    MonoblockCameraSettings,
+    MonoblockDevice,
+)
 from apps.cameras.views import RECORDING_TOKEN_SALT
 from apps.catalog.models import Product
 from apps.clients.models import Client
+from apps.eventlog.models import EventLog
+from apps.grain import scale as grain_scale
 from apps.orders.models import Order, OrderItem
-from apps.shipments import scale as shipment_scale
 from apps.shipments.models import Shipment
 from apps.warehouse.models import StockItem
 from apps.warehouse.services import receive_stock
@@ -106,7 +110,47 @@ def test_monoblock_start_binds_camera_and_moves_confirmed_order_to_loading(
     ]
 
 
-def test_monoblock_start_binds_numberless_truck_by_order_and_camera(
+def test_device_camera_conflict_is_rejected_before_worker_start(
+    api_client,
+    django_user_model,
+):
+    device_user = django_user_model.objects.create_user(
+        username="cam2-device-conflict",
+        password="pass12345",
+    )
+    MonoblockDevice.objects.create(
+        user=device_user,
+        name="Моноблок cam2",
+        camera_source="cam2",
+    )
+    client = Client.objects.create_with_user(
+        first_name="AI",
+        last_name="Camera conflict",
+        phone="camera-conflict",
+    )
+    order = Order.objects.create(
+        client=client,
+        status="confirmed",
+        loading_camera="cam3",
+    )
+    api_client.force_authenticate(device_user)
+
+    with patch.object(ai, "_request") as request:
+        response = api_client.post(
+            "/api/cameras/cam2/ai/",
+            {"order_id": order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 403
+    request.assert_not_called()
+    assert not AiCountingSession.objects.filter(order=order).exists()
+    order.refresh_from_db()
+    assert order.status == "confirmed"
+    assert order.loading_camera == "cam3"
+
+
+def test_monoblock_start_ignores_scale_and_does_not_record_arrival(
     api_client, loader, settings,
 ):
     settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
@@ -119,14 +163,11 @@ def test_monoblock_start_binds_numberless_truck_by_order_and_camera(
         truck_number="",
     )
     api_client.force_authenticate(loader)
-    reading = shipment_scale.ScaleReading(
-        weight_kg=Decimal(10000),
-        age_seconds=Decimal("0.1"),
-        updated_at="2026-08-15T12:00:00+05:00",
-    )
 
     with patch.object(
-        shipment_scale, "read_truck_scale", return_value=reading
+        grain_scale,
+        "read_truck_scale",
+        side_effect=AssertionError("Monoblock must not read the physical scale"),
     ) as scale_read, patch.object(
         ai, "_request", return_value=(200, RUNNING)
     ) as ai_request:
@@ -143,16 +184,15 @@ def test_monoblock_start_binds_numberless_truck_by_order_and_camera(
     assert order.status == "loading"
     assert order.loading_camera == "cam2"
     assert shipment.truck_number == ""
-    assert shipment.weigh_in_kg == Decimal(10000)
-    assert shipment.weigh_in_source == Shipment.WeightSource.SCALE
+    assert shipment.weigh_in_kg is None
+    assert shipment.arrived_at is None
+    assert shipment.shipped_at is None
     assert session.camera == "cam2"
-    assert shipment.weigh_in_camera == "cam2"
-    assert shipment.weigh_in_session_id == session.pk
-    scale_read.assert_called_once_with()
+    scale_read.assert_not_called()
     assert ai_request.called
 
 
-def test_numberless_retry_on_another_camera_reads_scale_again(
+def test_numberless_retry_on_another_camera_never_reads_scale(
     api_client, loader, settings,
 ):
     settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
@@ -161,21 +201,11 @@ def test_numberless_retry_on_another_camera_reads_scale_again(
     )
     order = Order.objects.create(client=client, status="confirmed", truck_number="")
     api_client.force_authenticate(loader)
-    readings = [
-        shipment_scale.ScaleReading(
-            weight_kg=Decimal(10000),
-            age_seconds=Decimal("0.1"),
-            updated_at="2026-08-15T12:00:00+05:00",
-        ),
-        shipment_scale.ScaleReading(
-            weight_kg=Decimal(11000),
-            age_seconds=Decimal("0.1"),
-            updated_at="2026-08-15T12:01:00+05:00",
-        ),
-    ]
 
     with patch.object(
-        shipment_scale, "read_truck_scale", side_effect=readings
+        grain_scale,
+        "read_truck_scale",
+        side_effect=AssertionError("AI retry must not read the physical scale"),
     ) as scale_read, patch.object(
         ai,
         "_request",
@@ -201,14 +231,14 @@ def test_numberless_retry_on_another_camera_reads_scale_again(
     order.refresh_from_db()
     shipment = Shipment.objects.get(order=order)
     active = AiCountingSession.objects.get(order=order, status=AiCountingSession.ACTIVE)
-    assert scale_read.call_count == 2
+    scale_read.assert_not_called()
     assert order.loading_camera == "cam3"
-    assert shipment.weigh_in_kg == Decimal(11000)
-    assert shipment.weigh_in_camera == "cam3"
-    assert shipment.weigh_in_session_id == active.pk
+    assert shipment.weigh_in_kg is None
+    assert shipment.arrived_at is None
+    assert active.camera == "cam3"
 
 
-def test_unstable_scale_blocks_monoblock_before_ai_or_database_change(
+def test_unstable_scale_cannot_block_monoblock(
     api_client, loader, settings,
 ):
     settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
@@ -223,65 +253,26 @@ def test_unstable_scale_blocks_monoblock_before_ai_or_database_change(
     api_client.force_authenticate(loader)
 
     with patch.object(
-        shipment_scale,
+        grain_scale,
         "read_truck_scale",
-        side_effect=shipment_scale.TruckScaleNotReady(),
-    ), patch.object(ai, "_request") as ai_request:
+        side_effect=grain_scale.TruckScaleNotReady(),
+    ) as scale_read, patch.object(
+        ai, "_request", return_value=(200, RUNNING)
+    ) as ai_request:
         response = api_client.post(
             "/api/cameras/cam2/ai/",
             {"order_id": order.pk},
             format="json",
         )
 
-    assert response.status_code == 409
-    assert response.data["code"] == "truck_scale_not_ready"
-    ai_request.assert_not_called()
+    assert response.status_code == 200
+    scale_read.assert_not_called()
+    assert ai_request.called
     order.refresh_from_db()
-    assert order.status == "confirmed"
-    assert order.loading_camera == ""
-    assert not Shipment.objects.filter(order=order).exists()
-    assert not AiCountingSession.objects.filter(order=order).exists()
-
-
-@pytest.mark.parametrize("truck_number", ["01RESERVATION", ""])
-def test_scale_entry_is_not_saved_if_camera_reservation_disappears_during_read(
-    api_client, loader, settings, truck_number,
-):
-    settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
-    client = Client.objects.create_with_user(
-        first_name="Scale", last_name="Reservation", phone="scale-reservation"
-    )
-    order = Order.objects.create(
-        client=client,
-        status="confirmed",
-        truck_number=truck_number,
-    )
-    api_client.force_authenticate(loader)
-
-    def lose_reservation():
-        AiCountingSession.objects.filter(order=order).delete()
-        return shipment_scale.ScaleReading(
-            weight_kg=Decimal("10000"),
-            age_seconds=Decimal("0.1"),
-            updated_at="2026-08-10T16:00:00+05:00",
-        )
-
-    with patch.object(
-        shipment_scale, "read_truck_scale", side_effect=lose_reservation
-    ), patch.object(ai, "_request") as ai_request:
-        response = api_client.post(
-            "/api/cameras/cam2/ai/",
-            {"order_id": order.pk},
-            format="json",
-        )
-
-    assert response.status_code == 400
-    assert response.data["code"] == "camera_reservation_lost"
-    ai_request.assert_not_called()
-    order.refresh_from_db()
-    assert order.status == "confirmed"
-    assert not Shipment.objects.filter(order=order).exists()
-    assert not AiCountingSession.objects.filter(order=order).exists()
+    assert order.status == "loading"
+    assert order.loading_camera == "cam2"
+    assert order.shipment.weigh_in_kg is None
+    assert order.shipment.arrived_at is None
 
 
 def test_always_on_client_uses_windows_camera_sources_contract():
@@ -379,7 +370,7 @@ def test_monoblock_rejects_unbound_order_that_is_already_loading(
         )
 
     assert response.status_code == 400
-    assert "Ожидание въезда" in response.data["detail"]
+    assert "подтверждённого или прибывшего" in response.data["detail"]
     assert not AiCountingSession.objects.filter(order=order).exists()
     request.assert_not_called()
 
@@ -821,7 +812,7 @@ def test_delete_returns_final_and_releases_slot(api_client, loader, loading_orde
     assert loading_order.loading_camera == ""
 
 
-def test_monoblock_stop_saves_ai_total_and_completes_order(
+def test_monoblock_stop_saves_ai_total_and_only_finishes_loading(
     api_client, loader, boss,
 ):
     product = Product.objects.create(
@@ -851,21 +842,32 @@ def test_monoblock_stop_saves_ai_total_and_completes_order(
         )
 
     assert completed.status_code == 200
-    assert completed.data["order_status"] == "shipped"
+    assert completed.data["order_status"] == "loaded"
     assert completed.data["bags_loaded"] == 42
+
+    # The loading-post permission may finish AI counting, but it must never
+    # cross the separate shipping permission boundary or deduct stock.
+    ship_attempt = api_client.post(f"/api/orders/{order.pk}/ship/", format="json")
+    assert ship_attempt.status_code == 403
+
     order.refresh_from_db()
-    assert order.status == "shipped"
+    assert order.status == "loaded"
     assert order.loading_camera == ""
     assert order.payment_status == "unpaid"
+    assert order.is_debt is False
     assert order.shipment.bags_loaded == 42
-    assert order.shipment.shipped_at is not None
-    assert StockItem.objects.get(product=product).bags == 50
+    assert order.shipment.shipped_at is None
+    assert StockItem.objects.get(product=product).bags == 100
+    assert not EventLog.objects.filter(
+        order=order,
+        event_type__in=("debt", "shipment"),
+    ).exists()
     session = AiCountingSession.objects.get(order=order)
     assert session.status == AiCountingSession.CLOSED
     assert session.final_total == 42
 
 
-def test_monoblock_scale_flow_records_entry_exit_and_net(
+def test_monoblock_start_and_complete_never_read_physical_scale(
     api_client, loader, boss, settings,
 ):
     settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
@@ -883,21 +885,11 @@ def test_monoblock_scale_flow_records_entry_exit_and_net(
     )
     OrderItem.objects.create(order=order, product=product, quantity=50)
     api_client.force_authenticate(loader)
-    readings = [
-        shipment_scale.ScaleReading(
-            weight_kg=Decimal("10000"),
-            age_seconds=Decimal("0.2"),
-            updated_at="2026-08-10T16:00:00+05:00",
-        ),
-        shipment_scale.ScaleReading(
-            weight_kg=Decimal("12600"),
-            age_seconds=Decimal("0.1"),
-            updated_at="2026-08-10T16:20:00+05:00",
-        ),
-    ]
 
     with patch.object(
-        shipment_scale, "read_truck_scale", side_effect=readings
+        grain_scale,
+        "read_truck_scale",
+        side_effect=AssertionError("Monoblock must not read Grain scales"),
     ) as read_scale:
         with patch.object(ai, "_request", return_value=(200, RUNNING)):
             started = api_client.post(
@@ -918,14 +910,18 @@ def test_monoblock_scale_flow_records_entry_exit_and_net(
 
     assert started.status_code == 200
     assert completed.status_code == 200
-    assert read_scale.call_count == 2
+    read_scale.assert_not_called()
     order.refresh_from_db()
-    assert order.status == "shipped"
-    assert order.shipment.weigh_in_source == Shipment.WeightSource.SCALE
-    assert order.shipment.weigh_in_kg == Decimal("10000")
-    assert order.shipment.weigh_out_kg == Decimal("12600")
-    assert order.shipment.net_weight_kg == Decimal("2600")
-    assert StockItem.objects.get(product=product).bags == 50
+    assert order.status == "loaded"
+    assert order.shipment.weigh_in_kg is None
+    assert order.shipment.arrived_at is None
+    assert order.shipment.shipped_at is None
+    assert order.shipment.bags_loaded == 42
+    assert StockItem.objects.get(product=product).bags == 100
+    assert not EventLog.objects.filter(
+        order=order,
+        event_type__in=("arrival", "weigh_in", "weigh_out", "debt", "shipment"),
+    ).exists()
 
 
 def test_delete_commits_final_snapshot_before_worker_is_idled(
@@ -1133,7 +1129,9 @@ def test_stop_never_uses_always_on_total_for_order(
     session.refresh_from_db()
     order.refresh_from_db()
     assert session.final_total == 13
+    assert order.status == "loaded"
     assert order.shipment.bags_loaded == 13
+    assert order.shipment.shipped_at is None
 
 
 def test_only_starter_or_admin_can_stop_session(

@@ -1,5 +1,4 @@
 from datetime import timedelta
-from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -14,9 +13,10 @@ from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.conveyors.credentials import digest_token
 from apps.conveyors.models import ConveyorDevice
+from apps.grain import scale as grain_scale
 from apps.orders.models import Order, OrderItem
-from apps.shipments import scale as shipment_scale
 from apps.shipments.models import Shipment
+from apps.warehouse.models import StockItem
 
 
 pytestmark = pytest.mark.django_db
@@ -150,7 +150,7 @@ def test_bind_cloud_uses_only_cloud_master_and_freezes_transport(
     direct_stop.assert_not_called()
 
 
-def test_numberless_cloud_start_binds_scale_sample_to_reserved_session(
+def test_numberless_cloud_start_never_reads_scale_or_records_arrival(
     auth_client, loader, settings,
 ):
     settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
@@ -165,14 +165,12 @@ def test_numberless_cloud_start_binds_scale_sample_to_reserved_session(
         "stream": "cam2ai",
         "total": 0,
     }
-    reading = shipment_scale.ScaleReading(
-        weight_kg=Decimal(10000),
-        age_seconds=Decimal("0.1"),
-        updated_at="2026-08-15T12:00:00+05:00",
-    )
-
     with (
-        patch.object(shipment_scale, "read_truck_scale", return_value=reading),
+        patch.object(
+            grain_scale,
+            "read_truck_scale",
+            side_effect=AssertionError("Cloud AI must not read Grain scales"),
+        ) as scale_read,
         patch.object(ai, "start_order_session", return_value=(edge, True)),
         patch(
             "apps.cameras.counting.cloud_conveyors.wait_prepared",
@@ -194,9 +192,10 @@ def test_numberless_cloud_start_binds_scale_sample_to_reserved_session(
     shipment = Shipment.objects.get(order=order)
     assert session.conveyor_transport == AiCountingSession.CONVEYOR_CLOUD
     assert shipment.truck_number == ""
-    assert shipment.weigh_in_kg == Decimal(10000)
-    assert shipment.weigh_in_camera == "cam2"
-    assert shipment.weigh_in_session_id == session.pk
+    assert shipment.weigh_in_kg is None
+    assert shipment.arrived_at is None
+    assert shipment.shipped_at is None
+    scale_read.assert_not_called()
 
 
 def test_cloud_emergency_stop_never_calls_direct_modbus_endpoint(
@@ -247,7 +246,7 @@ def test_cloud_emergency_stop_never_calls_direct_modbus_endpoint(
     direct_stop.assert_not_called()
 
 
-def test_cloud_completion_uses_post_scale_heartbeat_and_no_direct_master(
+def test_cloud_completion_uses_fresh_off_heartbeat_without_shipping(
     auth_client, loader,
 ):
     order = _order(status="loading", target=10, product=True)
@@ -273,6 +272,11 @@ def test_cloud_completion_uses_post_scale_heartbeat_and_no_direct_master(
     )
 
     with (
+        patch.object(
+            grain_scale,
+            "read_truck_scale",
+            side_effect=AssertionError("Cloud completion must not read Grain scales"),
+        ) as scale_read,
         patch(
             "apps.cameras.counting.cloud_conveyors.wait_confirmed",
             side_effect=_confirm,
@@ -295,13 +299,18 @@ def test_cloud_completion_uses_post_scale_heartbeat_and_no_direct_master(
         )
 
     assert response.status_code == 200, response.data
-    assert response.data["order_status"] == "shipped"
+    assert response.data["order_status"] == "loaded"
     assert wait.call_count == 2
     assert wait.call_args_list[1].kwargs["seen_after"] is not None
+    scale_read.assert_not_called()
     direct_emergency.assert_not_called()
     direct_stop.assert_not_called()
     session.refresh_from_db()
     order.refresh_from_db()
     assert session.status == AiCountingSession.CLOSED
     assert session.final_total == 10
-    assert order.status == "shipped"
+    assert order.status == "loaded"
+    assert order.is_debt is False
+    assert order.shipment.shipped_at is None
+    product_id = order.items.values_list("product_id", flat=True).get()
+    assert not StockItem.objects.filter(product_id=product_id).exists()

@@ -10,7 +10,8 @@ from apps.cameras.models import (
     MonoblockDevice,
 )
 from apps.warehouse.services import receive_stock
-from apps.shipments.services import record_arrival, record_count
+from apps.warehouse.models import StockItem
+from apps.shipments.services import finish_loading, record_arrival, record_count
 
 pytestmark = pytest.mark.django_db
 
@@ -39,20 +40,88 @@ def test_arrive_endpoint_no_truck_param(boss):
 
 
 def test_finish_loading_endpoint(boss):
-    # confirmed → въезд → загрузка → finish (оплата теперь после shipped)
+    # Завершение загрузки лишь готовит машину к отдельному выезду.
     o = _order(boss, status="confirmed")
     record_arrival(o, Decimal("8000"), boss)
     record_count(o, 50, boss)
     r = _client(boss).post(f"/api/orders/{o.id}/finish-loading/")
     assert r.status_code == 200
     o.refresh_from_db()
+    assert o.status == "loaded"
+    assert o.shipment.shipped_at is None
+
+
+def test_ship_endpoint_is_the_only_step_that_ships_and_deducts_stock(boss):
+    o = _order(boss, status="confirmed")
+    product = o.items.get().product
+    record_arrival(o, Decimal("8000"), boss)
+    record_count(o, 50, boss)
+    finish_loading(o, boss)
+
+    assert StockItem.objects.get(product=product).bags == 100
+    response = _client(boss).post(f"/api/orders/{o.id}/ship/")
+
+    assert response.status_code == 200
+    o.refresh_from_db()
     assert o.status == "shipped"
+    assert o.shipment.shipped_at is not None
+    assert StockItem.objects.get(product=product).bags == 50
+
+
+def test_ship_endpoint_cannot_bypass_open_ai_session(boss):
+    order = _order(boss, status="confirmed")
+    product = order.items.get().product
+    record_arrival(order, Decimal("8000"), boss)
+    record_count(order, 50, boss)
+    finish_loading(order, boss)
+    AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.STARTING,
+        started_by=boss,
+    )
+
+    response = _client(boss).post(f"/api/orders/{order.id}/ship/")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "ai_session_active"
+    order.refresh_from_db()
+    assert order.status == "loaded"
+    assert order.shipment.shipped_at is None
+    assert StockItem.objects.get(product=product).bags == 100
 
 
 def test_finish_loading_wrong_status_400(boss):
     o = _order(boss, status="arrived")  # въезд есть, но загрузка не начата
     r = _client(boss).post(f"/api/orders/{o.id}/finish-loading/")
     assert r.status_code == 400
+
+
+def test_finish_loading_cannot_bypass_active_ai_session(boss):
+    order = _order(boss, status="confirmed")
+    record_arrival(order, Decimal("8000"), boss)
+    record_count(order, 10, boss)
+    order.loading_camera = "cam2"
+    order.save(update_fields=["loading_camera"])
+    AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+        started_by=boss,
+    )
+
+    response = _client(boss).post(
+        f"/api/orders/{order.id}/finish-loading/",
+        {},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "ai_session_active"
+    order.refresh_from_db()
+    assert order.status == "loading"
+    assert order.loading_camera == "cam2"
+    assert order.shipment.shipped_at is None
 
 
 def test_load_without_shipment_returns_400_and_keeps_status(boss):
@@ -110,6 +179,41 @@ def test_loading_camera_assign_and_clear(operator):
     assert r.status_code == 200
     o.refresh_from_db()
     assert o.loading_camera == ""
+
+
+def test_loading_camera_action_cannot_clear_open_ai_binding(operator):
+    product = Product.objects.create(
+        name="Камера с активной сессией",
+        color="Blue",
+        weight_kg="50",
+        price="100.00",
+    )
+    client = Client.objects.create_with_user(
+        first_name="A", last_name="B", phone="active-camera-binding",
+    )
+    order = Order.objects.create(
+        client=client,
+        status="loading",
+        loading_camera="cam2",
+    )
+    OrderItem.objects.create(order=order, product=product, quantity=2)
+    AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+        started_by=operator,
+    )
+
+    response = _client(operator).post(
+        f"/api/orders/{order.id}/loading-camera/",
+        {"camera": ""},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "ai_session_active"
+    order.refresh_from_db()
+    assert order.loading_camera == "cam2"
 
 
 def test_loading_camera_must_be_allowed_by_admin(operator):

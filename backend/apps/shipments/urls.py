@@ -1,6 +1,6 @@
 from django.urls import path
 
-from .views import ShipmentViewSet, TruckScaleReadingView
+from .views import ShipmentViewSet
 
 shipment_actions = {
     "arrive": ShipmentViewSet.as_view({"post": "arrive"}),
@@ -11,7 +11,6 @@ shipment_actions = {
 }
 
 urlpatterns = [
-    path("truck-scale/reading/", TruckScaleReadingView.as_view()),
     path("orders/<int:pk>/arrive/", shipment_actions["arrive"]),
     path("orders/<int:pk>/load/", shipment_actions["load"]),
     path("orders/<int:pk>/finish-loading/", shipment_actions["finish_loading"]),

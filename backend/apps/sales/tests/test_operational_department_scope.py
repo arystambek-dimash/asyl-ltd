@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 import pytest
 from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIClient
 
 from apps.cameras import ai, counting, recordings, sessions
@@ -9,10 +10,11 @@ from apps.cameras.models import AiCountingSession
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
 from apps.eventlog.services import log_event
+from apps.orders import services as order_services
 from apps.orders.models import Order
 from apps.sales.models import Department
-from apps.shipments import scale
 from apps.shipments.models import Shipment
+from apps.shipments.services import record_arrival
 
 pytestmark = pytest.mark.django_db
 
@@ -41,7 +43,6 @@ def _owned_client(name, department):
 
 def test_assigned_employee_cannot_mutate_foreign_shipment_but_global_employee_can(
     user_with_perms,
-    monkeypatch,
 ):
     department_a = Department.objects.create(code="shipment-a", name="Отдел A")
     department_b = Department.objects.create(code="shipment-b", name="Отдел B")
@@ -62,8 +63,6 @@ def test_assigned_employee_cannot_mutate_foreign_shipment_but_global_employee_ca
         status="confirmed",
         truck_number="01B001",
     )
-    monkeypatch.setattr(scale, "enabled", lambda: False)
-
     scoped_api = _api(assigned)
     for suffix, payload in (
         ("arrive", {"weigh_in_kg": "8000"}),
@@ -92,6 +91,42 @@ def test_assigned_employee_cannot_mutate_foreign_shipment_but_global_employee_ca
     assert response.status_code == 200
     foreign_order.refresh_from_db()
     assert foreign_order.status == "arrived"
+
+
+def test_stale_scoped_shipment_request_rechecks_department_under_order_lock(
+    user_with_perms,
+):
+    department_a = Department.objects.create(code="stale-a", name="Старый отдел")
+    department_b = Department.objects.create(code="stale-b", name="Новый отдел")
+    assigned = _employee(
+        user_with_perms,
+        "stale-shipment-a",
+        ["shipping.arrive"],
+        department_a,
+    )
+    client = _owned_client("Stale transfer", department_a)
+    stale_order = Order.objects.create(
+        client=client,
+        status="confirmed",
+        truck_number="01A777",
+    )
+    client.department = department_b
+    client.save(update_fields=["department"])
+
+    with pytest.raises(PermissionDenied):
+        record_arrival(stale_order, "8000", assigned)
+
+    stale_order.refresh_from_db()
+    assert stale_order.status == "confirmed"
+    assert not Shipment.objects.filter(order=stale_order).exists()
+
+    with pytest.raises(PermissionDenied):
+        order_services.repeat_order(stale_order, assigned)
+    with pytest.raises(PermissionDenied):
+        order_services.soft_delete_order(stale_order, assigned)
+
+    stale_order.refresh_from_db()
+    assert stale_order.deleted_at is None
 
 
 def test_camera_sessions_history_recordings_and_status_respect_client_ownership(

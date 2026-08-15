@@ -7,7 +7,14 @@ from apps.cameras.models import AiCountingSession
 from apps.clients.models import Client
 from apps.conveyors.credentials import digest_token
 from apps.conveyors.models import ConveyorDevice
-from apps.conveyors.services import arm_session, prepare_session, transport_for
+from apps.conveyors.services import (
+    ConveyorDeviceError,
+    arm_session,
+    emergency_stop,
+    prepare_session,
+    sync_device,
+    transport_for,
+)
 from apps.orders.models import Order, OrderItem
 
 pytestmark = pytest.mark.django_db
@@ -412,6 +419,22 @@ def test_admin_enroll_shows_secret_once_and_rotate_revokes_old(
     assert "credential" not in detail.data
     assert "secret_sha256" not in repr(listing.data)
 
+    first_sync = api_client.post(
+        SYNC_URL,
+        _sync_body(),
+        format="json",
+        HTTP_AUTHORIZATION=credential["authorization"],
+    )
+    assert first_sync.status_code == 200
+    off_revision = first_sync.data["command"]["revision"]
+    off_ack = api_client.post(
+        SYNC_URL,
+        _sync_body(seq=1, ack_revision=off_revision),
+        format="json",
+        HTTP_AUTHORIZATION=credential["authorization"],
+    )
+    assert off_ack.status_code == 200
+
     rotated = client.post(
         f"/api/conveyors/devices/{public_id}/rotate-secret/",
         {},
@@ -428,8 +451,83 @@ def test_admin_enroll_shows_secret_once_and_rotate_revokes_old(
     assert old.status_code == 401
 
 
-def test_admin_emergency_and_disable_are_off_only(
+def test_admin_can_rotate_never_seen_credential_without_provisioning_it(
+    api_client, auth_client, django_user_model,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username="unprovisioned-rotate-root", password="pass12345",
+    )
+    client = auth_client(superuser)
+    enrolled = client.post(
+        "/api/conveyors/devices/",
+        {"name": "Fresh ESP", "camera_source": "cam2"},
+        format="json",
+    )
+    old_credential = enrolled.data["credential"]
+
+    rotated = client.post(
+        f"/api/conveyors/devices/{enrolled.data['public_id']}/rotate-secret/",
+        {},
+        format="json",
+    )
+
+    assert rotated.status_code == 200
+    assert rotated.data["credential"]["token"] != old_credential["token"]
+    rejected = api_client.post(
+        SYNC_URL,
+        _sync_body(),
+        format="json",
+        HTTP_AUTHORIZATION=old_credential["authorization"],
+    )
+    assert rejected.status_code == 401
+
+
+def test_admin_cannot_enroll_active_device_on_open_direct_session(
     auth_client, django_user_model,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username="enroll-open-root", password="pass12345",
+    )
+    _, session = _order_session(superuser)
+    session.conveyor_transport = AiCountingSession.CONVEYOR_DIRECT
+    session.save(update_fields=["conveyor_transport"])
+
+    response = auth_client(superuser).post(
+        "/api/conveyors/devices/",
+        {"name": "Late ESP32", "camera_source": "cam2", "is_active": True},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "device_busy"
+    assert not ConveyorDevice.objects.filter(camera_source="cam2").exists()
+
+
+def test_admin_cannot_activate_device_on_open_direct_session(
+    auth_client, django_user_model,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username="activate-open-root", password="pass12345",
+    )
+    device = _device(is_active=False)
+    _, session = _order_session(superuser)
+    session.conveyor_transport = AiCountingSession.CONVEYOR_DIRECT
+    session.save(update_fields=["conveyor_transport"])
+
+    response = auth_client(superuser).patch(
+        f"/api/conveyors/devices/{device.public_id}/",
+        {"is_active": True},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "device_busy"
+    device.refresh_from_db()
+    assert device.is_active is False
+
+
+def test_admin_emergency_and_disable_are_off_only(
+    api_client, auth_client, django_user_model,
 ):
     superuser = django_user_model.objects.create_superuser(
         username="stop-root", password="pass12345",
@@ -449,13 +547,241 @@ def test_admin_emergency_and_disable_are_off_only(
     assert emergency.data["command_terminal"] is True
     revision = emergency.data["command_revision"]
 
+    acknowledged = _sync(
+        api_client,
+        device,
+        seq=0,
+        ack_revision=revision,
+        output_state=0,
+        feedback_state=0,
+    )
+    assert acknowledged.status_code == 200
+
     disabled = client.post(
         f"/api/conveyors/devices/{device.public_id}/disable/",
         {}, format="json",
     )
     assert disabled.status_code == 200
     assert disabled.data["is_active"] is False
-    assert disabled.data["command_revision"] > revision
+    assert disabled.data["command_revision"] == revision
+
+
+def test_disable_keeps_old_auth_until_fresh_off_is_proven(
+    api_client, auth_client, django_user_model,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username="safe-disable-root", password="pass12345",
+    )
+    device = _device()
+    client = auth_client(superuser)
+
+    pending = client.post(
+        f"/api/conveyors/devices/{device.public_id}/disable/",
+        {},
+        format="json",
+    )
+
+    assert pending.status_code == 409
+    assert pending.data["code"] == "off_not_confirmed"
+    device.refresh_from_db()
+    assert device.is_active is True
+    assert device.stop_reason == "device_disable_pending"
+    revision = device.command_revision
+
+    fetched = _sync(api_client, device, seq=0)
+    assert fetched.status_code == 200
+    assert fetched.data["command"]["revision"] == revision
+    assert fetched.data["command"]["state"] == 0
+    acknowledged = _sync(
+        api_client,
+        device,
+        seq=1,
+        ack_revision=revision,
+        output_state=0,
+        feedback_state=0,
+    )
+    assert acknowledged.status_code == 200
+
+    disabled = client.post(
+        f"/api/conveyors/devices/{device.public_id}/disable/",
+        {},
+        format="json",
+    )
+    assert disabled.status_code == 200
+    assert disabled.data["is_active"] is False
+
+
+def test_disable_refuses_open_session_and_latches_off(
+    api_client, auth_client, django_user_model,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username="busy-disable-root", password="pass12345",
+    )
+    device = _device(desired_state=True, command_terminal=False)
+    _, session = _order_session(superuser)
+    device.command_session = session
+    device.command_target_total = session.target_total
+    device.save(update_fields=["command_session", "command_target_total"])
+
+    response = auth_client(superuser).post(
+        f"/api/conveyors/devices/{device.public_id}/disable/",
+        {},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "device_busy"
+    device.refresh_from_db()
+    assert device.is_active is True
+    assert device.desired_state is False
+    assert device.command_terminal is True
+    assert device.stop_reason == "device_disable_pending"
+    assert _sync(api_client, device, seq=0).status_code == 200
+
+
+def test_patch_cannot_bypass_safe_disable(auth_client, django_user_model):
+    superuser = django_user_model.objects.create_superuser(
+        username="patch-disable-root", password="pass12345",
+    )
+    device = _device()
+
+    response = auth_client(superuser).patch(
+        f"/api/conveyors/devices/{device.public_id}/",
+        {"is_active": False},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "use_disable_endpoint"
+    device.refresh_from_db()
+    assert device.is_active is True
+
+
+def test_rotate_keeps_old_secret_until_fresh_off_is_proven(
+    api_client, auth_client, django_user_model,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username="safe-rotate-root", password="pass12345",
+    )
+    device = _device()
+    old_digest = device.secret_sha256
+    assert _sync(
+        api_client, device, seq=0, output_state=1, feedback_state=1,
+    ).status_code == 200
+
+    response = auth_client(superuser).post(
+        f"/api/conveyors/devices/{device.public_id}/rotate-secret/",
+        {},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "off_not_confirmed"
+    device.refresh_from_db()
+    assert device.secret_sha256 == old_digest
+    assert device.stop_reason == "credential_rotation_pending"
+    assert _sync(api_client, device, seq=1).status_code == 200
+
+
+def test_pending_disable_survives_transitional_on_telemetry(
+    api_client, auth_client, django_user_model,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username="durable-disable-root", password="pass12345",
+    )
+    device = _device(desired_state=True, command_terminal=False)
+    _, old_session = _order_session(superuser)
+    device.command_session = old_session
+    device.command_target_total = old_session.target_total
+    device.save(update_fields=["command_session", "command_target_total"])
+
+    pending = auth_client(superuser).post(
+        f"/api/conveyors/devices/{device.public_id}/disable/",
+        {},
+        format="json",
+    )
+    assert pending.status_code == 409
+    device.refresh_from_db()
+    off_revision = device.command_revision
+
+    transitional = _sync(
+        api_client,
+        device,
+        seq=0,
+        ack_revision=off_revision - 1,
+        output_state=1,
+        feedback_state=1,
+    )
+    assert transitional.status_code == 200
+    device.refresh_from_db()
+    assert device.stop_reason == "device_disable_pending"
+
+    stopped = emergency_stop(device, "manual_stop")
+    assert stopped.stop_reason == "device_disable_pending"
+    off_revision = stopped.command_revision
+    old_session.status = AiCountingSession.CLOSED
+    old_session.save(update_fields=["status"])
+    confirmed_off = _sync(
+        api_client,
+        device,
+        seq=1,
+        ack_revision=off_revision,
+        output_state=0,
+        feedback_state=0,
+    )
+    assert confirmed_off.status_code == 200
+    _, new_session = _order_session(superuser, target=11)
+
+    with pytest.raises(ConveyorDeviceError) as caught:
+        prepare_session(new_session)
+
+    assert caught.value.code == "device_transition_pending"
+
+
+def test_sync_rechecks_presented_secret_under_device_lock():
+    device = _device()
+    presented_digest = device.secret_sha256
+    device.secret_sha256 = digest_token("B" * 43)
+    device.save(update_fields=["secret_sha256"])
+    payload = _sync_body()
+    payload["boot_id"] = BOOT_ID
+
+    with pytest.raises(ConveyorDeviceError) as caught:
+        sync_device(device.pk, payload, presented_digest)
+
+    assert caught.value.code == "invalid_credential"
+    device.refresh_from_db()
+    assert device.last_seen_at is None
+
+
+@pytest.mark.parametrize(
+    ("pending_reason", "action"),
+    [
+        ("device_disable_pending", "rotate-secret"),
+        ("credential_rotation_pending", "disable"),
+    ],
+)
+def test_pending_admin_transition_cannot_be_silently_superseded(
+    auth_client,
+    django_user_model,
+    pending_reason,
+    action,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username=f"pending-{action}-root", password="pass12345",
+    )
+    device = _device(stop_reason=pending_reason)
+
+    response = auth_client(superuser).post(
+        f"/api/conveyors/devices/{device.public_id}/{action}/",
+        {},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "device_transition_pending"
+    device.refresh_from_db()
+    assert device.stop_reason == pending_reason
 
 
 def test_device_binding_itself_selects_server_managed_transport(

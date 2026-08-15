@@ -71,7 +71,8 @@ def test_finish_loading_requires_loading(boss, operator):
     record_count(o, 50, operator)
     finish_loading(o, operator)
     o.refresh_from_db()
-    assert o.status == "shipped"
+    assert o.status == "loaded"
+    assert o.shipment.shipped_at is None
 
 
 def test_shipment_requires_loaded(boss, operator):
@@ -82,7 +83,12 @@ def test_shipment_requires_loaded(boss, operator):
         record_shipment(o, operator)
     finish_loading(o, operator)
     o.refresh_from_db()
+    assert o.status == "loaded"
+    from apps.warehouse.models import StockItem
+    assert StockItem.objects.get(product=prod).bags == 100
+
+    record_shipment(o, operator)
+    o.refresh_from_db()
     assert o.status == "shipped"
     assert o.payment_status == "unpaid"
-    from apps.warehouse.models import StockItem
     assert StockItem.objects.get(product=prod).bags == 50

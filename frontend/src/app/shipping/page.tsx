@@ -11,7 +11,6 @@ import { PlateBadge } from "@/components/ui/license-plate-input";
 import { CameraStream } from "@/components/camera-stream";
 import { BagCounter, type BagCounterHandle } from "@/components/shipping/bag-counter";
 import { ErrorAlert } from "@/components/ui/data-state";
-import { ManualOrderStatusModal, type ManualOrderTarget } from "@/components/manual-order-status-modal";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { formatPlate } from "@/components/ui/license-plate-input";
@@ -23,6 +22,12 @@ import { can } from "@/lib/can";
 import { resolveApiMediaUrl } from "@/lib/safe-url";
 import { orderedBagCount } from "@/lib/orders";
 import { cn, formatDateTime, formatMoney } from "@/lib/utils";
+import {
+  allowedShippingBoardStages,
+  postLoadedOrderExit,
+  shippingBoardAction,
+  type ShippingBoardStageKey,
+} from "@/lib/shipping-flow";
 import {
   Activity,
   Archive,
@@ -40,7 +45,6 @@ import {
   Phone,
   Radio,
   RotateCcw,
-  Scale,
   Settings2,
   TrainFront,
   Truck,
@@ -75,10 +79,10 @@ function isAiOnlineStatus(status?: string): boolean {
 const BOARD_STAGES = [
   {
     key: "waiting",
-    label: "Ожидание въезда",
+    label: "Ожидает погрузки",
     color: "var(--ring)",
     statuses: ["confirmed"],
-    hint: "Подтверждённые заказы",
+    hint: "Готовые к погрузке",
     image: null,
     tint: "#f3f7ff",
     icon: Clock3,
@@ -98,11 +102,23 @@ const BOARD_STAGES = [
     activeLabel: "text-amber-600",
   },
   {
+    key: "exit",
+    label: "Готов к выезду",
+    color: "var(--ring)",
+    statuses: ["loaded"],
+    hint: "Погрузка завершена — выезд не оформлен",
+    image: "/shipping/completed-clipboard.jpg",
+    tint: "#f3f7ff",
+    icon: LogOut,
+    activeCircle: "border-blue-600 bg-blue-600 text-white shadow-[0_12px_28px_rgba(37,99,235,0.32)]",
+    activeLabel: "text-blue-700",
+  },
+  {
     key: "done",
-    label: "Отгружено",
+    label: "Выехал",
     color: "var(--success)",
-    statuses: ["loaded", "shipped"],
-    hint: "Отгруженные заказы",
+    statuses: ["shipped"],
+    hint: "Выезд оформлен",
     image: "/shipping/completed-clipboard.jpg",
     tint: "#f4fbf5",
     icon: Check,
@@ -112,17 +128,18 @@ const BOARD_STAGES = [
 ] as const;
 
 const ACTIVE_STATUSES = ["confirmed", "arrived", "loading", "loaded"];
-type BoardStageKey = (typeof BOARD_STAGES)[number]["key"];
+type BoardStageKey = ShippingBoardStageKey;
 
 const STEPS = [
-  { key: "arrive", label: "Прибытие", icon: Scale },
+  { key: "arrive", label: "Прибытие", icon: Truck },
   { key: "load", label: "Погрузка", icon: Package },
   { key: "exit", label: "Выезд", icon: LogOut },
 ];
 function stepIndex(status: string) {
   if (status === "confirmed") return 0;
   if (status === "arrived" || status === "loading") return 1;
-  return 2; // loaded | shipped
+  if (status === "loaded") return 2;
+  return 3; // shipped: все три шага завершены
 }
 
 /** Сегментированный прогресс этапов — как трекер статуса заказа в доставках. */
@@ -405,23 +422,11 @@ function TransportBadge({ order, size = "md" }: { order: Order; size?: "md" | "l
   return <PlateBadge value={order.truck_number} size={size === "lg" ? "lg" : "md"} />;
 }
 
-const WEIGH_IN_LABELS: Record<NonNullable<Order["weigh_in_source"]>, string> = {
-  legacy: "Старый замер",
-  estimated: "Расчётный вес",
-  manual: "Въезд вручную",
-  scale: "Въезд с весов",
-};
-
-function WeightBadge({ label, weight, net = false }: { label: string; weight: string; net?: boolean }) {
+function RecordedWeightBadge({ weight }: { weight: string }) {
   return (
-    <span
-      className={cn(
-        "flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm",
-        net && "border-emerald-200 bg-emerald-50 text-emerald-800",
-      )}
-    >
-      <Scale className="size-3.5 text-[var(--muted-foreground)]" />
-      {label} <b className="tabular-nums">{formatMoney(weight)} кг</b>
+    <span className="flex items-center gap-1.5 rounded-lg border bg-[var(--card)] px-2.5 py-1 text-sm">
+      <Package className="size-3.5 text-[var(--muted-foreground)]" />
+      Учётный вес <b className="tabular-nums">{formatMoney(weight)} кг</b>
     </span>
   );
 }
@@ -497,7 +502,8 @@ function BoardCard({
         <div className="mt-0.5 text-xs tabular-nums text-[var(--muted-foreground)]">
           {stage.key === "waiting" && `${ordered} меш. к погрузке`}
           {stage.key === "loading" && `${bags} / ${ordered} меш.`}
-          {stage.key === "done" && (order.shipped_at ? `выехал ${formatDateTime(order.shipped_at)}` : `${bags} меш.`)}
+          {stage.key === "exit" && `${bags} меш. · ожидает оформления выезда`}
+          {stage.key === "done" && (order.shipped_at ? `выехал ${formatDateTime(order.shipped_at)}` : "выезд оформлен")}
         </div>
       </div>
       {order.loading_camera && (
@@ -555,7 +561,12 @@ function BoardCard({
           )}
           {quickTargets.includes("done") && (
             <Button size="sm" variant="outline" className="flex-1" onClick={() => onQuickMove("done")}>
-              <Check className="size-4" /> Завершить
+              <LogOut className="size-4" /> Оформить выезд
+            </Button>
+          )}
+          {quickTargets.includes("exit") && (
+            <Button size="sm" variant="outline" className="flex-1" onClick={() => onQuickMove("exit")}>
+              <Check className="size-4" /> Завершить погрузку
             </Button>
           )}
         </div>
@@ -600,7 +611,7 @@ function StageNav({
   const activeIndex = BOARD_STAGES.findIndex((stage) => stage.key === active);
   return (
     <div className="rounded-[22px] border bg-[var(--card)] px-3 pb-3 pt-5 shadow-[0_10px_30px_rgba(45,62,94,0.04)] sm:px-6">
-      <div className="grid grid-cols-3">
+      <div className="grid grid-cols-4">
         {BOARD_STAGES.map((stage) => {
           const Icon = stage.icon;
           const isActive = stage.key === active;
@@ -661,7 +672,7 @@ function StageNav({
       </div>
 
       {/* дорога: грузовик подъезжает к выбранному этапу */}
-      <div className="relative mx-[16.66%] mt-2 h-9">
+      <div className="relative mx-[12.5%] mt-2 h-9">
         <div className="absolute inset-x-0 top-1/2 border-t-2 border-dashed border-slate-200" />
         {BOARD_STAGES.map((stage, index) => (
           <span
@@ -802,9 +813,10 @@ function LiveBoard({
                     <div className="text-[14px] font-semibold text-slate-600">{stage.hint}: пусто</div>
                     <p className="mt-1 max-w-[210px] text-[12px] leading-relaxed text-slate-400">
                       {stage.key === "loading" && "Здесь появятся заказы в процессе погрузки."}
+                      {stage.key === "exit" && "Здесь появятся загруженные заказы, которым ещё нужно оформить выезд."}
                       {stage.key === "done" &&
-                        `Нет отгруженных заказов ${completedDays === 1 ? "за сегодня" : `за последние ${completedDays} дней`}.`}
-                      {stage.key === "waiting" && "Новые подтверждённые заказы появятся здесь."}
+                        `Нет заказов с оформленным выездом ${completedDays === 1 ? "за сегодня" : `за последние ${completedDays} дней`}.`}
+                      {stage.key === "waiting" && "Новые готовые к погрузке заказы появятся здесь."}
                     </p>
                   </div>
                 ) : (
@@ -1199,7 +1211,7 @@ function ShippingPageInner() {
   const { me } = useAuth();
   const canLoad = can(me, "shipping.load");
   const canTrain = can(me, "train.load");
-  const canEditStatus = can(me, "orders.edit");
+  const canShip = can(me, "shipping.ship");
   const canRollback = can(me, "shipping.rollback");
   const canManage = can(me, "sys_permissions.manage");
   const canViewHistory = can(me, "shipping.view");
@@ -1230,14 +1242,13 @@ function ShippingPageInner() {
   const [movingId, setMovingId] = useState<number | null>(null);
   const [moveError, setMoveError] = useState("");
   const [rewindDropOrder, setRewindDropOrder] = useState<Order | null>(null);
-  const [manualStatusOrder, setManualStatusOrder] = useState<Order | null>(null);
-  const [manualStatusTarget, setManualStatusTarget] = useState<ManualOrderTarget | null>(null);
   const [rollbackOrder, setRollbackOrder] = useState<Order | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Кнопка отгрузки стоит вплотную под «+1/+5»: промах перчаткой отправлял
   // машину с неверным счётом, а откат требует отдельного права.
   const [finishing, setFinishing] = useState<Order | null>(null);
+  const [shippingOut, setShippingOut] = useState<Order | null>(null);
   const bagCounterRef = useRef<BagCounterHandle>(null);
   const auxiliaryLoadError = camerasError || sessionsError || boardSettingsError || historiesError;
 
@@ -1309,29 +1320,14 @@ function ShippingPageInner() {
   };
 
   const allowedBoardStages = useCallback(
-    (order: Order): BoardStageKey[] => {
-      const stages: BoardStageKey[] = [];
-      if (order.status === "shipped") {
-        if (canRollback) stages.push("waiting");
-        return stages;
-      }
-      if (order.status === "confirmed") {
-        // Фактический старт и назначение камеры выполняет только Моноблок.
-        // Редактор заказа может закрыть/отменить ожидающий заказ вручную.
-        if (canEditStatus) stages.push("done");
-        return stages;
-      }
-      if ((order.status === "arrived" || order.status === "loading") && canLoad) {
-        stages.push("waiting");
-      }
-      if (order.transport_type === "train" && order.status === "loading") {
-        if (canTrain) stages.push("done");
-        return stages;
-      }
-      if ((order.status === "arrived" || order.status === "loading") && canLoad) stages.push("done");
-      return stages;
-    },
-    [canEditStatus, canLoad, canRollback, canTrain],
+    (order: Order): BoardStageKey[] =>
+      allowedShippingBoardStages(order, {
+        canLoad,
+        canTrain,
+        canShip,
+        canRollback,
+      }),
+    [canLoad, canRollback, canShip, canTrain],
   );
 
   const stopOrderAi = useCallback(
@@ -1347,10 +1343,11 @@ function ShippingPageInner() {
     [sessionsByOrderId],
   );
 
-  const completeOrder = useCallback(
+  const completeLoading = useCallback(
     async (order: Order, latestBags = order.bags_loaded ?? 0) => {
       // При активной AI-сессии один backend-вызов фиксирует финальный кадр/счёт,
-      // закрывает processor и сразу переводит заказ в `shipped`.
+      // закрывает processor и переводит заказ только в `loaded`. Оформление
+      // физического выезда остаётся отдельным действием с правом shipping.ship.
       if (await stopOrderAi(order, true)) return;
       if (order.transport_type === "train") {
         await api.post(`/orders/${order.id}/train/`, { action: "finish" });
@@ -1361,10 +1358,7 @@ function ShippingPageInner() {
       }
       if (order.status === "arrived" || order.status === "loading") {
         await api.post(`/orders/${order.id}/finish-loading/`, {});
-        return;
       }
-      // Совместимость с единичными заказами, оставшимися в старом `loaded`.
-      if (order.status === "loaded") await api.post(`/orders/${order.id}/ship/`, {});
     },
     [stopOrderAi],
   );
@@ -1373,32 +1367,41 @@ function ShippingPageInner() {
     async (order: Order) => {
       // Completion must never overtake the counter's debounce or an active save.
       const latestBags = await bagCounterRef.current?.saveNow();
-      await completeOrder(order, latestBags ?? order.bags_loaded ?? 0);
+      await completeLoading(order, latestBags ?? order.bags_loaded ?? 0);
       setSelectedId(null);
     },
-    [completeOrder],
+    [completeLoading],
   );
 
   const executeMove = useCallback(
     async (order: Order, target: BoardStageKey) => {
-      if (!allowedBoardStages(order).includes(target)) return;
+      if (!allowedBoardStages(order).includes(target)) return false;
       setMovingId(order.id);
       setMoveError("");
       try {
-        if (target === "waiting") {
+        const action = shippingBoardAction(order, target);
+        if (action === "rewind_loading") {
           await stopOrderAi(order);
           await api.post(`/orders/${order.id}/rewind-loading/`, {});
-        } else if (target === "done") {
-          await completeOrder(order);
+        } else if (action === "finish_loading") {
+          await completeLoading(order);
+        } else if (action === "ship") {
+          // `loaded` — ещё не выехал. Это единственный штатный переход в
+          // `shipped`, и он защищён отдельным правом shipping.ship.
+          await postLoadedOrderExit(order.id, (url, body) => api.post(url, body));
+        } else {
+          return false;
         }
         await Promise.all([reload(), reloadSessions(), reloadHistories()]);
+        return true;
       } catch (e) {
         setMoveError(apiError(e));
+        return false;
       } finally {
         setMovingId(null);
       }
     },
-    [allowedBoardStages, completeOrder, reload, reloadHistories, reloadSessions, stopOrderAi],
+    [allowedBoardStages, completeLoading, reload, reloadHistories, reloadSessions, stopOrderAi],
   );
 
   const moveOrder = useCallback(
@@ -1411,15 +1414,13 @@ function ShippingPageInner() {
         setRewindDropOrder(order);
         return;
       }
-      if (target === "done" && order.status === "confirmed") {
-        setManualStatusOrder(order);
-        setManualStatusTarget("shipped");
+      if (target === "exit") {
+        setFinishing(order);
         return;
       }
-      // Отгрузка необратима без отдельного права: показываем счёт мешков,
-      // чтобы промах перчаткой мимо «+1» был виден до выезда машины.
       if (target === "done") {
-        setFinishing(order);
+        setMoveError("");
+        setShippingOut(order);
         return;
       }
       void executeMove(order, target);
@@ -1524,18 +1525,7 @@ function ShippingPageInner() {
                       <b className="tabular-nums">× {it.quantity}</b>
                     </span>
                   ))}
-                  {!isTrain && selected.weigh_in_kg && (
-                    <WeightBadge
-                      label={selected.weigh_in_source ? WEIGH_IN_LABELS[selected.weigh_in_source] : "Замер на въезде"}
-                      weight={selected.weigh_in_kg}
-                    />
-                  )}
-                  {!isTrain && selected.weigh_out_kg && (
-                    <WeightBadge label="На выезде" weight={selected.weigh_out_kg} />
-                  )}
-                  {!isTrain && selected.net_weight_kg && (
-                    <WeightBadge label="Нетто" weight={selected.net_weight_kg} net />
-                  )}
+                  {!isTrain && selected.weigh_in_kg && <RecordedWeightBadge weight={selected.weigh_in_kg} />}
                 </div>
 
                 {/* видео + действие шага */}
@@ -1550,13 +1540,13 @@ function ShippingPageInner() {
                   )}
 
                   <div className="flex flex-col justify-center gap-4 rounded-2xl bg-[var(--muted)]/40 p-5">
-                    {/* ── Вагон: старт → счёт → финиш (без въезда и весов) ── */}
+                    {/* ── Вагон: старт → счёт → финиш ── */}
                     {isTrain && selected.status === "confirmed" && (
                       <div className="grid gap-3">
                         <div>
                           <div className="text-base font-semibold">Вагон готов к загрузке</div>
                           <p className="mt-1 text-sm leading-relaxed text-[var(--muted-foreground)]">
-                            Запустите загрузку, затем фиксируйте мешки и завершите отгрузку прямо на этом посту.
+                            Запустите загрузку, затем фиксируйте мешки и завершите погрузку. Выезд оформляется отдельно.
                           </p>
                         </div>
                         {canTrain ? (
@@ -1585,7 +1575,7 @@ function ShippingPageInner() {
                       <div>
                         <div className="text-base font-semibold">Ожидает запуска в Моноблоке</div>
                         <p className="mt-1 text-sm leading-relaxed text-[var(--muted-foreground)]">
-                          Приём машины, выбор камеры и запуск AI выполняются одним действием в «Моноблоке».
+                          Выбор камеры и запуск AI выполняются одним действием в «Моноблоке».
                         </p>
                       </div>
                     )}
@@ -1614,7 +1604,7 @@ function ShippingPageInner() {
                             disabled={busy}
                             onClick={() => setFinishing(selected)}
                           >
-                            <Check className="size-5" /> Завершить отгрузку
+                            <Check className="size-5" /> Завершить погрузку
                           </Button>
                         </>
                       ) : (
@@ -1622,6 +1612,34 @@ function ShippingPageInner() {
                           {isTrain ? "Идёт загрузка вагона." : "Идёт погрузка."}
                         </p>
                       ))}
+
+                    {selected.status === "loaded" && (
+                      <div className="grid gap-3">
+                        <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-4 text-blue-950">
+                          <div className="text-base font-semibold">Погрузка завершена</div>
+                          <p className="mt-1 text-sm leading-relaxed text-blue-800/80">
+                            Результат подсчёта сохранён. Машина ещё не отмечена как выехавшая — оформите выезд отдельным
+                            действием.
+                          </p>
+                        </div>
+                        {canShip ? (
+                          <Button
+                            className="h-12 rounded-xl"
+                            disabled={busy}
+                            onClick={() => {
+                              setMoveError("");
+                              setShippingOut(selected);
+                            }}
+                          >
+                            <LogOut className="size-5" /> Оформить выезд
+                          </Button>
+                        ) : (
+                          <p className="text-sm text-[var(--muted-foreground)]">
+                            Оформление выезда доступно сотруднику с правом выпуска машины.
+                          </p>
+                        )}
+                      </div>
+                    )}
 
                     {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
                   </div>
@@ -1640,17 +1658,6 @@ function ShippingPageInner() {
         }}
       />
       <CountingHistoryModal history={selectedHistory} onClose={() => setSelectedHistory(null)} />
-      <ManualOrderStatusModal
-        order={manualStatusOrder}
-        target={manualStatusTarget}
-        onClose={() => {
-          setManualStatusOrder(null);
-          setManualStatusTarget(null);
-        }}
-        onChanged={async () => {
-          await Promise.all([reload(), reloadSessions(), reloadHistories()]);
-        }}
-      />
       <ShipmentRollbackModal
         order={rollbackOrder}
         onClose={() => setRollbackOrder(null)}
@@ -1660,25 +1667,21 @@ function ShippingPageInner() {
       />
 
       {/* Счёт мешков виден в подтверждении: если промахнулись мимо «+1»,
-          ошибка заметна здесь, а не после выезда машины. */}
+          ошибка заметна здесь до завершения погрузки. */}
       <ConfirmDialog
         open={finishing !== null}
         onClose={() => !busy && setFinishing(null)}
-        title="Завершить отгрузку?"
+        title="Завершить погрузку?"
         description={
           !finishing
             ? ""
             : finishing.transport_type === "train"
-              ? `В вагон загружено ${finishing.bags_loaded ?? 0} из ${orderedBagCount(finishing)} меш. Откат потребует отдельного права.`
-              : finishing.weigh_in_source === "scale"
-                ? `Поставьте машину ${formatPlate(finishing.truck_number) || "без номера"} на весы. При подтверждении система зафиксирует выходной вес и нетто. Загружено ${
-                    finishing.bags_loaded ?? 0
-                  } из ${orderedBagCount(finishing)} меш. Откат потребует отдельного права.`
-                : `Машина ${formatPlate(finishing.truck_number) || "без номера"} уедет с ${
-                    finishing.bags_loaded ?? 0
-                  } из ${orderedBagCount(finishing)} меш. Откат потребует отдельного права.`
+              ? `В вагон загружено ${finishing.bags_loaded ?? 0} из ${orderedBagCount(finishing)} меш. После завершения результат будет готов к отдельному оформлению выезда.`
+              : `Для машины ${formatPlate(finishing.truck_number) || "без номера"} зафиксировано ${
+                  finishing.bags_loaded ?? 0
+                } из ${orderedBagCount(finishing)} меш. После завершения заказ перейдёт в «Готов к выезду», но выезд ещё не будет оформлен.`
         }
-        confirmLabel="Завершить"
+        confirmLabel="Завершить погрузку"
         confirmVariant="default"
         busy={busy}
         error={error}
@@ -1688,12 +1691,33 @@ function ShippingPageInner() {
           void act(() => finishSelectedOrder(order)).then(() => setFinishing(null));
         }}
       />
+      <ConfirmDialog
+        open={shippingOut !== null}
+        onClose={() => movingId !== shippingOut?.id && setShippingOut(null)}
+        title="Оформить выезд?"
+        description={
+          shippingOut
+            ? `Погрузка заказа #${shippingOut.id} уже завершена. Подтвердите, что машина действительно покинула пост.`
+            : ""
+        }
+        confirmLabel="Подтвердить выезд"
+        confirmVariant="default"
+        busy={movingId === shippingOut?.id}
+        error={moveError}
+        onConfirm={() => {
+          const order = shippingOut;
+          if (!order) return;
+          void executeMove(order, "done").then((moved) => {
+            if (moved) setShippingOut(null);
+          });
+        }}
+      />
       <Modal
         open={!!rewindDropOrder}
         onClose={() => setRewindDropOrder(null)}
         eyebrow={rewindDropOrder ? `Заказ #${rewindDropOrder.id}` : undefined}
-        title="Вернуть в ожидание въезда?"
-        description="Заказ вернётся в первую колонку, а назначенная камера снова станет свободной."
+        title="Вернуть в готовые к погрузке?"
+        description="Заказ снова станет готов к погрузке, а назначенная камера освободится."
         footer={
           <>
             <Button variant="ghost" onClick={() => setRewindDropOrder(null)}>
@@ -1745,7 +1769,7 @@ function ShippingPageInner() {
             </div>
           )}
           <p className="text-sm leading-relaxed text-slate-500">
-            Вес въезда и текущий результат незавершённой погрузки будут очищены. Действие запишется в журнал.
+            Назначенная камера и текущий результат незавершённой погрузки будут очищены. Действие запишется в журнал.
           </p>
         </div>
       </Modal>

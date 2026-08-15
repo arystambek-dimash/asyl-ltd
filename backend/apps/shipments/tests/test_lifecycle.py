@@ -36,17 +36,23 @@ def test_arrive_requires_confirmed(boss, operator):
 
 
 def test_full_flow_deducts_stock(boss, operator):
-    # Новый поток: въезд → загрузка (без оплаты) → отгрузка в долг.
+    # Въезд → загрузка → готово к выезду → отдельная отгрузка в долг.
     o, prod = _order(boss, status="confirmed", bags_in_stock=100, qty=50)
     record_arrival(o, Decimal("8000"), operator)
     record_count(o, 50, operator)
     finish_loading(o, operator)
     o.refresh_from_db()
+    assert o.status == "loaded"
+    assert o.shipment.shipped_at is None
+    from apps.warehouse.models import StockItem
+    assert StockItem.objects.get(product=prod).bags == 100
+
+    record_shipment(o, operator)
+    o.refresh_from_db()
     assert o.status == "shipped"
     assert o.payment_status == "unpaid"
     assert o.shipment.weigh_in_kg == Decimal("8000")
     assert o.shipment.shipped_at is not None
-    from apps.warehouse.models import StockItem
     assert StockItem.objects.get(product=prod).bags == 50
 
 
@@ -55,5 +61,6 @@ def test_double_ship_rejected(boss, operator):
     record_arrival(o, Decimal("8000"), operator)
     record_count(o, 50, operator)
     finish_loading(o, operator)
+    record_shipment(o, operator)
     with pytest.raises(ValidationError):
         record_shipment(o, operator)

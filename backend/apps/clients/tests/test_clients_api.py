@@ -1,6 +1,7 @@
 import pytest
 
 from apps.clients.models import Client
+from apps.clients.views import ClientViewSet
 from apps.eventlog.models import EventLog
 from apps.sales.models import Department
 
@@ -155,6 +156,109 @@ def test_client_department_change_is_audited(auth_client, manager):
     }
 
 
+def test_client_department_change_rejects_open_ai_session(
+    auth_client, manager,
+):
+    from apps.cameras.models import AiCountingSession
+    from apps.orders.models import Order
+
+    first = Department.objects.create(code="active-first", name="Первый")
+    second = Department.objects.create(code="active-second", name="Второй")
+    client = Client.objects.create_with_user(
+        first_name="Активный",
+        phone="active-client-department",
+        department=first,
+    )
+    order = Order.objects.create(
+        client=client,
+        status="loading",
+        loading_camera="cam2",
+    )
+    session = AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+        started_by=manager,
+    )
+
+    response = auth_client(manager).patch(
+        f"/api/clients/{client.pk}/",
+        {"department": second.pk},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "active_loading"
+    client.refresh_from_db()
+    session.refresh_from_db()
+    assert client.department_id == first.pk
+    assert session.status == AiCountingSession.ACTIVE
+
+
+def test_stale_update_cannot_resurrect_deleted_client(
+    auth_client,
+    manager,
+    monkeypatch,
+):
+    client = Client.objects.create_with_user(
+        first_name="Удалённый",
+        phone="stale-update-original",
+    )
+    stale_client = Client.objects.select_related("user").get(pk=client.pk)
+    client_pk = client.pk
+    Client.objects.filter(pk=client_pk).delete()
+    monkeypatch.setattr(
+        ClientViewSet,
+        "get_object",
+        lambda _view: stale_client,
+    )
+
+    response = auth_client(manager).patch(
+        f"/api/clients/{client_pk}/",
+        {"phone": "stale-update-new"},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "client_not_active"
+    assert not Client.objects.filter(pk=client_pk).exists()
+
+
+def test_stale_update_rechecks_client_department_after_lock(
+    auth_client,
+    user_with_perms,
+    monkeypatch,
+):
+    first = Department.objects.create(code="stale-client-a", name="Отдел A")
+    second = Department.objects.create(code="stale-client-b", name="Отдел B")
+    editor = user_with_perms(
+        "stale-client-editor",
+        codes=["clients.view", "clients.edit"],
+    )
+    editor.employee.sales_department = first
+    editor.employee.save(update_fields=["sales_department"])
+    client = Client.objects.create_with_user(
+        first_name="Перенесённый",
+        phone="stale-client-original",
+        department=first,
+    )
+    stale_client = Client.objects.select_related("user").get(pk=client.pk)
+    client.department = second
+    client.save(update_fields=["department"])
+    monkeypatch.setattr(ClientViewSet, "get_object", lambda _view: stale_client)
+
+    response = auth_client(editor).patch(
+        f"/api/clients/{client.pk}/",
+        {"phone": "stale-client-new"},
+        format="json",
+    )
+
+    assert response.status_code == 403
+    client.refresh_from_db()
+    assert client.phone == "stale-client-original"
+    assert client.department_id == second.pk
+
+
 def test_last_name_is_optional(auth_client, manager):
     resp = auth_client(manager).post(
         "/api/clients/", {"first_name": "Айжан", "phone": "+77001112233"}
@@ -282,6 +386,40 @@ def test_temporary_password_rolls_back_if_security_audit_fails(
     assert client.user.password == original_hash
     assert client.user.is_active is False
     assert client.user.has_usable_password() is False
+
+
+def test_stale_password_request_cannot_reactivate_deleted_client_account(
+    auth_client,
+    portal_access_manager,
+    monkeypatch,
+):
+    client = Client.objects.create_with_user(
+        first_name="Удалённый",
+        phone="stale-password-client",
+    )
+    stale_client = Client.objects.select_related("user").get(pk=client.pk)
+    portal_user = stale_client.user
+    original_hash = portal_user.password
+    client_pk = client.pk
+    Client.objects.filter(pk=client_pk).delete()
+    monkeypatch.setattr(
+        ClientViewSet,
+        "get_object",
+        lambda _view: stale_client,
+    )
+
+    response = auth_client(portal_access_manager).post(
+        f"/api/clients/{client_pk}/password/",
+        {"password": "Temporary-client-pass-2026!"},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "client_not_active"
+    assert not Client.objects.filter(pk=client_pk).exists()
+    portal_user.refresh_from_db()
+    assert portal_user.password == original_hash
+    assert portal_user.is_active is False
 
 
 def test_client_editor_cannot_change_portal_password(auth_client, manager):

@@ -5,7 +5,7 @@ import pytest
 
 from apps.grain import statuses as st
 from apps.grain.models import GrainMovement, GrainSupply, Silo, SiloType
-from apps.shipments import scale
+from apps.grain import scale
 
 pytestmark = pytest.mark.django_db
 

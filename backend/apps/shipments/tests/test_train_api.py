@@ -1,8 +1,10 @@
 import pytest
 from rest_framework.test import APIClient
 from apps.catalog.models import Product
+from apps.cameras.models import AiCountingSession
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
+from apps.warehouse.models import StockItem
 from apps.warehouse.services import receive_stock
 
 pytestmark = pytest.mark.django_db
@@ -10,7 +12,10 @@ pytestmark = pytest.mark.django_db
 
 @pytest.fixture
 def loader(user_with_perms):
-    return user_with_perms("loader", codes=["train.view", "train.load"])
+    return user_with_perms(
+        "loader",
+        codes=["train.view", "train.load", "shipping.ship"],
+    )
 
 
 def _api(user):
@@ -46,7 +51,17 @@ def test_train_action_flow(loader, boss):
     r = api.post(f"/api/orders/{o.id}/train/", {"action": "finish"}, format="json")
     assert r.status_code == 200
     o.refresh_from_db()
+    product = o.items.get().product
+    assert o.status == "loaded"
+    assert o.shipment.shipped_at is None
+    assert StockItem.objects.get(product=product).bags == 100
+
+    shipped = api.post(f"/api/orders/{o.id}/ship/", format="json")
+    assert shipped.status_code == 200
+    o.refresh_from_db()
     assert o.status == "shipped"
+    assert o.shipment.shipped_at is not None
+    assert StockItem.objects.get(product=product).bags == 90
 
 
 def test_train_action_requires_perm(accountant, boss):
@@ -55,6 +70,34 @@ def test_train_action_requires_perm(accountant, boss):
         f"/api/orders/{o.id}/train/", {"action": "start"}, format="json"
     )
     assert r.status_code == 403
+
+
+def test_train_finish_cannot_bypass_active_ai_session(loader, boss):
+    order = _train_order(boss)
+    api = _api(loader)
+    assert api.post(
+        f"/api/orders/{order.id}/train/",
+        {"action": "start"},
+        format="json",
+    ).status_code == 200
+    AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
+
+    response = api.post(
+        f"/api/orders/{order.id}/train/",
+        {"action": "finish"},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "ai_session_active"
+    order.refresh_from_db()
+    assert order.status == "loading"
+    assert order.shipment.shipped_at is None
 
 
 def test_train_bad_action_400(loader, boss):

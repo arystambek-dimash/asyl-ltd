@@ -4,7 +4,7 @@ PUBLIC_STATUS_GROUPS = {
     "confirmed": "confirmed",
     "arrived": "confirmed",
     "loading": "confirmed",
-    "loaded": "shipped",
+    "loaded": "loaded",
     "shipped": "shipped",
     "rejected": "cancelled",
     "cancelled": "cancelled",
@@ -13,11 +13,14 @@ PUBLIC_STATUS_GROUPS = {
 PUBLIC_STATUS_LABELS = {
     "pending": "На рассмотрении",
     "confirmed": "Ожидает загрузки",
+    "loaded": "Готов к выезду",
     "shipped": "Отгружено",
     "cancelled": "Отменён",
 }
 
-PUBLIC_MANUAL_STATUSES = tuple(PUBLIC_STATUS_LABELS)
+# `loaded` виден в списках отдельным бизнес-этапом, но вручную его не ставят:
+# в него переводит только завершение погрузки/AI-счёта.
+PUBLIC_MANUAL_STATUSES = ("pending", "confirmed", "shipped", "cancelled")
 
 # Заказ в этих статусах ещё (или уже) не является финансовым документом:
 # черновик и «на рассмотрении» не подтверждены, отказ и отмена аннулированы.

@@ -23,11 +23,11 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from apps.conveyors import services as cloud_conveyors
 from apps.eventlog.services import log_event
 from apps.orders.models import Order
+from apps.sales.access import scope_by_client_department
 from apps.shipments.services import (
+    assert_device_camera_change,
     begin_camera_loading,
-    ensure_scale_entry_weight,
-    finish_ai_loading,
-    read_scale_exit_if_required,
+    finish_ai_counting,
 )
 
 from . import ai, sessions
@@ -49,6 +49,7 @@ CLEANUP_PENDING_PREFIX = "AI worker cleanup pending: "
 
 def _lock_device_camera(user, camera: str) -> None:
     """Serialize a device start against admin reassignment/deactivation."""
+    cloud_conveyors.lock_camera_binding()
     device = (
         MonoblockDevice.objects.select_for_update()
         .filter(user_id=user.pk)
@@ -389,43 +390,18 @@ def _validate_start(order: Order, camera: str) -> None:
         raise sessions.AiSessionBusy(order_session)
 
     restoring_same_binding = (
-        order.status in ("arrived", "loading") and order.loading_camera == camera
+        order.status == "loading" and order.loading_camera == camera
     )
-    if order.status != "confirmed" and not restoring_same_binding:
+    if order.status not in ("confirmed", "arrived") and not restoring_same_binding:
         raise ai.AiError(
             400,
-            "Для новой отгрузки выберите заказ в статусе «Ожидание въезда»",
+            "Загрузку можно начать только для подтверждённого или прибывшего заказа",
         )
     if camera not in MonoblockCameraSettings.allowed_sources():
         raise ai.AiError(
             400,
             "Эта камера не разрешена администратором для Моноблока",
         )
-
-
-def _release_unweighed_reservation(session: AiCountingSession) -> None:
-    """Remove only our provisional reservation when scale capture failed.
-
-    A concurrent retry may have stored the entry while this request was
-    waiting for the scale. In that case the reservation is no longer orphaned
-    and must be left for that retry to activate.
-    """
-    from apps.shipments.models import Shipment
-
-    with transaction.atomic():
-        locked = AiCountingSession.objects.select_for_update().filter(
-            pk=session.pk,
-            status=AiCountingSession.STARTING,
-        ).first()
-        if locked is None:
-            return
-        captured = Shipment.objects.filter(
-            order_id=locked.order_id,
-            weigh_in_source=Shipment.WeightSource.SCALE,
-            weigh_in_kg__isnull=False,
-        ).exists()
-        if not captured:
-            locked.delete()
 
 
 def _cloud_ai_error(exc: cloud_conveyors.ConveyorDeviceError) -> ai.AiError:
@@ -567,7 +543,6 @@ def _start_cloud(
                 locked.order,
                 camera,
                 user,
-                reservation_id=locked.pk,
             )
             armed = cloud_conveyors.arm_session(locked)
             locked.conveyor_enabled = True
@@ -629,31 +604,37 @@ def start(
 ) -> dict:
     """Reserve a camera, start its worker, then begin the DB loading.
 
-    The camera is reserved before the physical scale read, so a request that
-    loses a camera race cannot leave an entry weight on the wrong workflow.
-    The read itself stays outside DB transactions; its save rechecks both the
-    reservation and truck number under row locks. The AI remote call still
-    happens before ``begin_camera_loading``. An ambiguous AI timeout keeps the
-    ``starting`` reservation; repeating this command reconciles it.
+    The AI remote call happens before ``begin_camera_loading``. An ambiguous
+    AI timeout keeps the ``starting`` reservation; repeating this command
+    reconciles it.
     """
     camera = ai.normalize(camera)
     assert_device_camera(user, camera)
     # Cheap preflight first; reservation and order state are checked again
     # around every durable mutation below.
     _validate_start(order, camera)
+    assert_device_camera_change(order, camera, user)
     # Commit the reservation while holding the same device-row lock used by
     # configuration mutations. Once this short transaction commits, an admin
     # sees the OPEN session and cannot strand it by moving/deleting the device.
     with transaction.atomic():
         _lock_device_camera(user, camera)
+        from apps.orders.services import lock_live_order
+
         # replace_items takes this same parent-row lock and refuses edits once
         # an OPEN session exists. The target therefore stays immutable from
-        # reservation through the slow scale/edge calls and final loading
-        # transition.
-        order = Order.objects.select_for_update().get(pk=order.pk)
+        # reservation through the edge calls and final loading transition.
+        order = lock_live_order(order)
+        if not scope_by_client_department(
+            Order.objects.filter(pk=order.pk),
+            user,
+            client_path="client",
+        ).exists():
+            raise PermissionDenied("Заказ передан в другой отдел")
         existing = sessions.current_for_camera(camera)
         _assert_expected_session(existing, expected_session_id)
         _validate_start(order, camera)
+        assert_device_camera_change(order, camera, user)
         session, created = sessions.reserve(
             order,
             camera,
@@ -662,22 +643,6 @@ def start(
             conveyor_transport=cloud_conveyors.transport_for(camera),
         )
         _assert_expected_session(session, expected_session_id)
-
-    # No DB lock spans the scale HTTP request. Saving the sample locks the
-    # provisional session first and the exact order second, and verifies that
-    # both the reservation and truck number still match this request.
-    if Order.objects.filter(pk=order.pk, status="confirmed").exists():
-        try:
-            ensure_scale_entry_weight(
-                order,
-                user,
-                reservation_id=session.pk,
-                camera=camera,
-            )
-        except Exception:
-            if created:
-                _release_unweighed_reservation(session)
-            raise
 
     if session.conveyor_transport == AiCountingSession.CONVEYOR_CLOUD:
         return _start_cloud(
@@ -689,7 +654,7 @@ def start(
         )
 
     deterministic_error: ai.AiError | None = None
-    validation_error: ValidationError | None = None
+    validation_error: ValidationError | PermissionDenied | None = None
 
     with transaction.atomic():
         session = (
@@ -798,9 +763,8 @@ def start(
                     order,
                     camera,
                     user,
-                    reservation_id=session.pk,
                 )
-            except ValidationError as exc:
+            except (ValidationError, PermissionDenied) as exc:
                 # The worker did start, but the order changed concurrently.
                 # Compensate remotely. If that is ambiguous, the durable
                 # marker forces cleanup before any future order can start.
@@ -1179,12 +1143,8 @@ def _stop_cloud(
     except cloud_conveyors.ConveyorDeviceError as exc:
         raise _cloud_ai_error(exc) from exc
 
-    exit_reading = None
-    if complete_order and order.status == "loading":
-        exit_reading = read_scale_exit_if_required(order)
-
-    # Require a heartbeat produced after the potentially slow scale operation;
-    # cached preflight OFF is not enough for an irreversible shipment.
+    # Require a fresh heartbeat after the first OFF acknowledgement. Cached
+    # preflight OFF is not enough to close ownership of a physical conveyor.
     proof_after = timezone.now()
     try:
         confirmed = cloud_conveyors.wait_confirmed(
@@ -1231,11 +1191,10 @@ def _stop_cloud(
             raise ai.AiError(409, "Cloud conveyor target/session is not complete")
 
         if complete_order:
-            shipment = finish_ai_loading(
+            shipment = finish_ai_counting(
                 locked_order,
                 device.last_total,
                 user,
-                exit_reading=exit_reading,
             )
             actual_bags = shipment.bags_loaded
             final_total = actual_bags
@@ -1299,7 +1258,7 @@ def _stop_cloud(
     if cleanup_failure is not None:
         response["cleanup_pending"] = True
     if complete_order:
-        response.update(order_status="shipped", bags_loaded=actual_bags)
+        response.update(order_status="loaded", bags_loaded=actual_bags)
     return _with_cloud_control(session, response)
 
 
@@ -1325,11 +1284,10 @@ def stop(
     cleanup_failure: Exception | None = None
     actual_bags: int | None = None
     session_id: int | None = None
-    exit_reading = None
 
-    # A physical output is stopped and read back before any potentially slow
-    # exit-scale request or irreversible shipment transition.  Failure keeps
-    # ownership open and visible; it is never downgraded to a cleanup warning.
+    # A physical output is stopped and read back before the loading transition.
+    # Failure keeps ownership open and visible; it is never downgraded to a
+    # cleanup warning.
     preflight_session = sessions.current_for_camera(camera)
     _assert_expected_session(preflight_session, expected_session_id)
     preflight_session_id = (
@@ -1368,17 +1326,6 @@ def stop(
             stopped = ai.stop_conveyor(camera, preflight_session.pk)
             _assert_conveyor_confirmed_off(preflight_session, stopped)
 
-    # Внешний сервис может отвечать до нескольких секунд. Ни строка заказа,
-    # ни AI-сессия в это время не заблокированы; транзакция ниже повторно
-    # валидирует их перед единой записью веса, склада и статуса.
-    if (
-        complete_order
-        and order.status == "loading"
-        and preflight_session is not None
-        and preflight_session.status == AiCountingSession.ACTIVE
-    ):
-        exit_reading = read_scale_exit_if_required(order)
-
     with transaction.atomic():
         session = _locked_open_session(camera)
         # A second concurrent stop re-evaluates the OPEN predicate after the
@@ -1387,9 +1334,9 @@ def stop(
             response = {"running": False, **metadata(None, order.pk, camera, user)}
             if complete_order:
                 order.refresh_from_db(fields=["status"])
-                if order.status == "shipped":
+                if order.status == "loaded":
                     response.update(
-                        order_status="shipped",
+                        order_status="loaded",
                         bags_loaded=order.shipment.bags_loaded,
                     )
             return response
@@ -1422,12 +1369,10 @@ def stop(
             )
 
         if complete_order and session.conveyor_enabled:
-            # The first OFF/readback happened before the potentially slow exit
-            # scale. Repeat the idempotent command under the session row lock
-            # and use that single fresh response as both the final count and
-            # the last physical proof immediately before the irreversible
-            # shipment transition. A controller that went online/ON/fault
-            # while the scale was read therefore blocks completion.
+            # Repeat the idempotent command under the session row lock and use
+            # that single fresh response as both the final count and the last
+            # physical proof immediately before closing the loading session.
+            # A controller that went online/ON/fault meanwhile blocks closure.
             final = _payload(ai.stop_conveyor(camera, session.pk))
             _assert_conveyor_goal_reached(session, final)
             _assert_conveyor_confirmed_off(session, final)
@@ -1444,13 +1389,12 @@ def stop(
                 session,
             )
 
-        # finish_ai_loading locks the order and validates the transition.
+        # finish_ai_counting locks the order and validates the transition.
         if complete_order:
-            shipment = finish_ai_loading(
+            shipment = finish_ai_counting(
                 locked_order,
                 safe_total,
                 user,
-                exit_reading=exit_reading,
             )
             actual_bags = shipment.bags_loaded
             # If the worker total was unusable, the shipment service chooses
@@ -1540,7 +1484,7 @@ def stop(
             cleanup_failure,
         )
     if complete_order:
-        response.update(order_status="shipped", bags_loaded=actual_bags)
+        response.update(order_status="loaded", bags_loaded=actual_bags)
     return _with_control(session, response)
 
 

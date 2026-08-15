@@ -7,7 +7,7 @@ from apps.eventlog.models import EventLog
 from apps.grain import services
 from apps.grain import statuses as st
 from apps.grain.models import GrainSupply, Wagon, WeighingRecord
-from apps.shipments import scale
+from apps.grain import scale
 
 pytestmark = pytest.mark.django_db
 

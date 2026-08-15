@@ -60,14 +60,6 @@ class Order(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="truck_numbers_set",
     )
-    # Rollout marker for the physical truck-scale workflow. Migration 0030
-    # keeps every already existing order False, while newly created orders get
-    # True. This lets active production trucks finish through their legacy
-    # flow without letting new orders bypass entry/exit weighing.
-    # db_default keeps rolling deploys compatible: an older application
-    # process that does not know this column can still insert an order, and the
-    # database marks that post-migration row as requiring the new workflow.
-    scale_weighing_required = models.BooleanField(default=True, db_default=True)
     arrival_date = models.DateField(null=True, blank=True)
     # Короткая внутренняя заметка для оператора на детальной странице заказа.
     notes = models.TextField(blank=True, default="")

@@ -522,8 +522,8 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
               <p className="text-sm text-[var(--muted-foreground)]">
-                Укажите номер КАМАЗа. Входной вес автоматически зафиксируется, когда оператор начнёт отгрузку на
-                моноблоке.
+                Укажите номер КАМАЗа для документов и оператора. Запуск AI/ESP32 на моноблоке привязывается к самому
+                заказу и выбранной камере.
               </p>
               {order.truck_number && (
                 <p className="text-sm">

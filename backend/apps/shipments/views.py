@@ -1,49 +1,21 @@
 from typing import ClassVar
 
-from config.throttles import TruckScalePreviewRateThrottle
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.views import APIView
 
-from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
+from apps.common.permissions import PermViewSetMixin
 from apps.orders.models import Order
 from apps.sales.access import scope_by_client_department
 
-from . import scale
-from .scale_preview import get_scale_preview
 from .serializers import ArrivalSerializer, LoadSerializer, ShipmentSerializer
 from .services import (
     finish_loading,
     record_arrival,
     record_count,
-    record_scale_arrival,
     record_shipment,
     rewind_loading,
 )
-
-
-class TruckScaleReadingView(PermAPIViewMixin, APIView):
-    """Read-only operator display; capture actions always read again."""
-
-    required_perms: ClassVar[dict[str, tuple[str, ...]]] = {
-        "get": (
-            "grain.weigh",
-            "shipping.arrive",
-            "shipping.load",
-            "shipping.ship",
-        ),
-    }
-
-    def get_throttles(self):
-        throttles = super().get_throttles()
-        throttles.append(TruckScalePreviewRateThrottle())
-        return throttles
-
-    def get(self, request):
-        response = Response(get_scale_preview())
-        response["Cache-Control"] = "no-store, max-age=0"
-        return response
 
 
 class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
@@ -79,12 +51,7 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         serializer.is_valid(raise_exception=True)
         order = self.get_object()
         weigh_in_kg = serializer.validated_data.get("weigh_in_kg")
-        if scale.enabled():
-            # Когда production-весы настроены, значение из HTTP-клиента не
-            # является доверенным источником и намеренно игнорируется.
-            shipment = record_scale_arrival(order, request.user)
-        else:
-            shipment = record_arrival(order, weigh_in_kg, request.user)
+        shipment = record_arrival(order, weigh_in_kg, request.user)
         return Response(ShipmentSerializer(shipment).data)
 
     @action(detail=True, methods=["post"], url_path="load")

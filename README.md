@@ -204,7 +204,7 @@ draft → pending → confirmed → arrived → loading → loaded → shipped
 | `draft` | черновик, свободно редактируется |
 | `pending` | заявка ждёт подтверждения (цены — у бухгалтера/кассы) |
 | `confirmed` | подтверждён, цены зафиксированы, ждёт машину/вагон |
-| `arrived` | машина въехала (пост взвешивания) |
+| `arrived` | машина отмечена прибывшей отдельным постом |
 | `loading` | идёт погрузка (счёт мешков) |
 | `loaded` | погрузка завершена |
 | `shipped` | выехал; товар списан со склада |
@@ -265,18 +265,21 @@ CRUD + действия: `confirm`, `reject`, `payments` (+ `receive/confirm/rej
 
 ### shipments — отгрузка
 
-`Shipment` (OneToOne к заказу): `truck_number`, `weigh_in_kg` (вес на въезде —
-спрашивается только если у товара `ask_truck_weight=True`, иначе берётся
-расчётный `Σ qty × weight_kg`), `bags_loaded`, `arrived_at`,
+`Shipment` (OneToOne к заказу): `truck_number`, нейтральный учётный
+`weigh_in_kg`, `bags_loaded`, `arrived_at`,
 `loading_started_at`, `shipped_at`.
 
-Поток **грузовик**: `record_arrival` (confirmed→arrived, взвешивание) →
+Поток **грузовик**: `record_arrival` (confirmed→arrived, без обращения к весам) →
 `start_loading` (→loading) → `record_count(bags)` (счёт мешков; из arrived
 автоматически переводит в loading) → `finish_loading` (→loaded) →
 `record_shipment` (→shipped).
 
 Поток **вагон**: `start_train_loading` (confirmed→loading) →
-`record_count` → `finish_train_loading` (→loaded→shipped одним шагом).
+`record_count` → `finish_train_loading` (→loaded) → `record_shipment` (→shipped).
+
+Monoblock/AI/ESP32 работает только с заказом, камерой, числом мешков и
+переходом `loading→loaded`; номер машины и физические весы для его запуска не
+нужны. Интеграция автовесов принадлежит отдельному приложению `grain`.
 
 Общий финал `_do_ship`: списывает каждую позицию со склада
 (`deduct_stock(allow_negative=True)` — по факту можно уйти в минус),
@@ -537,9 +540,11 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 2. `git pull --ff-only` → бэкап БД → `docker compose pull` →
    `up -d --wait` (по healthcheck'ам: у backend — `healthcheck.py`, GET
    `/api/auth/me/`).
-3. **Camera health gate**: `wait-for-camera-health.sh` ждёт свежий heartbeat
-   camera-monitor (exit-коды: 0 ok / 2 stale / 3 outage / 4 degraded) —
-   деплой падает, если камеры не поднялись после рестарта go2rtc.
+3. **Camera health** не блокирует выпуск приложения: `camera-monitor`
+   продолжает проверять потоки и отправлять алерты, а
+   `wait-for-camera-health.sh` остаётся отдельной ручной диагностикой. Поэтому
+   плановое отключение камер не запускает повторный деплой уже обновлённых
+   контейнеров.
 4. `nginx -t && nginx -s reload` (graceful).
 
 Замечания по прод-хостингу (ps.kz): сервер может внезапно ребутнуться —

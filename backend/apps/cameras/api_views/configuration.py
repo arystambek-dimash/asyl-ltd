@@ -2,9 +2,6 @@
 
 from typing import ClassVar
 
-from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
-from apps.eventlog.services import log_event
-from apps.orders.models import Order
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.shortcuts import get_object_or_404
@@ -12,6 +9,11 @@ from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
+from apps.conveyors.services import lock_camera_binding
+from apps.eventlog.services import log_event
+from apps.orders.models import Order
 
 from .. import services
 from ..models import AiCountingSession, MonoblockCameraSettings, MonoblockDevice
@@ -177,6 +179,20 @@ def _assert_device_can_change_binding(
         )
 
 
+def _assert_camera_has_no_active_work(camera: str) -> None:
+    if AiCountingSession.objects.filter(
+        camera=camera,
+        status__in=AiCountingSession.OPEN_STATUSES,
+    ).exists() or Order.objects.filter(
+        loading_camera=camera,
+        status__in=("confirmed", "arrived", "loading"),
+    ).exists():
+        raise ValidationError({
+            "detail": "Сначала завершите активную отгрузку этой камеры",
+            "code": "monoblock_busy",
+        })
+
+
 class MonoblockDeviceListView(APIView):
     """Суперпользователь создаёт отдельные аккаунты физических устройств."""
 
@@ -199,6 +215,11 @@ class MonoblockDeviceListView(APIView):
         User = get_user_model()
         try:
             with transaction.atomic():
+                # Common order is camera mutex -> MonoblockDevice/User. AI
+                # reservation takes the same mutex before creating OPEN.
+                lock_camera_binding()
+                if is_active:
+                    _assert_camera_has_no_active_work(camera)
                 user = User.objects.create_user(
                     username=username,
                     password=data["password"],
@@ -240,6 +261,7 @@ class MonoblockDeviceDetailView(APIView):
     def patch(self, request, pk):
         try:
             with transaction.atomic():
+                lock_camera_binding()
                 device = self._get(pk, lock=True)
                 serializer = MonoblockDeviceCreateUpdateSerializer(
                     device,
@@ -305,6 +327,7 @@ class MonoblockDeviceDetailView(APIView):
 
     def delete(self, request, pk):
         with transaction.atomic():
+            lock_camera_binding()
             device = self._get(pk, lock=True)
             if AiCountingSession.objects.filter(
                 camera=device.camera_source,

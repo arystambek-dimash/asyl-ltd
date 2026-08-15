@@ -6,7 +6,7 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 
-from apps.shipments import scale
+from apps.grain import scale
 
 READY = {
     "weight_kg": 12_345.67,

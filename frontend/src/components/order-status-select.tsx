@@ -1,18 +1,20 @@
 "use client";
 
 import { ChevronDown } from "lucide-react";
-import { ORDER_PUBLIC_STATUSES, ORDER_STATUS_LABELS, orderStatusGroup } from "@/lib/constants";
+import { ORDER_MANUAL_STATUSES, ORDER_STATUS_LABELS, orderStatusGroup } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
 const STATUS_STYLE: Record<string, string> = {
   pending: "border-slate-200 bg-slate-100 text-slate-700",
   confirmed: "border-amber-200 bg-amber-50 text-amber-700",
+  loaded: "border-blue-200 bg-blue-50 text-blue-700",
   shipped: "border-emerald-200 bg-emerald-50 text-emerald-700",
   cancelled: "border-red-200 bg-red-50 text-red-700",
 };
 const STATUS_DOT: Record<string, string> = {
   pending: "bg-slate-500",
   confirmed: "bg-amber-500",
+  loaded: "bg-blue-500",
   shipped: "bg-emerald-500",
   cancelled: "bg-red-500",
 };
@@ -57,7 +59,12 @@ export function OrderStatusSelect({
           STATUS_STYLE[current] ?? STATUS_STYLE.pending,
         )}
       >
-        {ORDER_PUBLIC_STATUSES.map((option) => (
+        {!ORDER_MANUAL_STATUSES.some((option) => option === current) && (
+          <option value={current} disabled>
+            {ORDER_STATUS_LABELS[current] ?? current}
+          </option>
+        )}
+        {ORDER_MANUAL_STATUSES.map((option) => (
           <option key={option} value={option}>
             {ORDER_STATUS_LABELS[option]}
           </option>

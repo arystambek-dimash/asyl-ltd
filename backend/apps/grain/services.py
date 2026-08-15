@@ -12,8 +12,7 @@ from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
 from apps.eventlog.services import log_event
-from apps.shipments import scale
-
+from . import scale
 from . import statuses as st
 from .models import (
     GrainMovement,

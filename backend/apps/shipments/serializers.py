@@ -3,8 +3,7 @@ from .models import Shipment
 
 
 class ArrivalSerializer(serializers.Serializer):
-    # Обычно поле не передаётся: backend сам читает физические весы. Ручное
-    # значение оставлено как совместимый аварийный путь для старого поста.
+    # Если вес не передан, backend сохраняет расчётный вес заказа.
     weigh_in_kg = serializers.DecimalField(max_digits=12, decimal_places=2,
                                            required=False, allow_null=True)
 
@@ -21,9 +20,6 @@ class ShipmentSerializer(serializers.ModelSerializer):
             "order",
             "truck_number",
             "weigh_in_kg",
-            "weigh_in_source",
-            "weigh_out_kg",
-            "net_weight_kg",
             "bags_loaded",
             "arrived_at",
             "shipped_at",

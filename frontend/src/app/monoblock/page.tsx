@@ -1882,7 +1882,7 @@ function SessionCard({
     isStarting || ai.status?.code === "ai_reconciliation_required" || ai.status?.code === "ai_processor_stopped";
   const progress = target && target > 0 ? Math.min(100, Math.round((total / target) * 100)) : 0;
   const overrun = target !== null && total > target;
-  // Для подключённого контроллера завершение допустимо только после server goal
+  // Для подключённого контроллера завершение погрузки допустимо только после server goal
   // и физического read-back OFF. Старая конфигурация без ESP сохраняет прежний flow.
   const freshControlledStatus =
     ai.status !== null &&
@@ -1931,18 +1931,18 @@ function SessionCard({
 
   async function closeForManualReconciliation() {
     const confirmed = window.confirm(
-      "Конвейер будет подтверждённо остановлен, AI-сессия закроется, но заказ не будет отгружен. " +
-        "После этого завершите или верните заказ вручную с обязательной сверкой. Продолжить?",
+      "Конвейер будет подтверждённо остановлен, AI-сессия закроется, но погрузка не будет завершена. " +
+        "После сверки завершите погрузку или верните заказ вручную. Продолжить?",
     );
     if (!confirmed) return;
     await runCommand(() => ai.stop(false, session.id));
   }
 
   function completionHint(): string {
-    if (!isConveyorEnabled) return "";
-    if (!freshControlledStatus) return "Получите свежее состояние текущей AI-сессии перед завершением.";
+    if (!isConveyorEnabled) return "Итог AI-подсчёта будет сохранён, а заказ станет готов к оформлению выезда.";
+    if (!freshControlledStatus) return "Получите свежее состояние текущей AI-сессии перед завершением погрузки.";
     if (ai.stale) return "Сначала восстановите связь и подтвердите остановку конвейера.";
-    if (conveyorFault) return "Устраните аварию контроллера перед завершением заказа.";
+    if (conveyorFault) return "Устраните аварию контроллера перед завершением погрузки.";
     if (controllerOnline !== true) {
       return controllerOnline === false
         ? "ESP32 не на связи — физическая остановка не подтверждена."
@@ -1950,7 +1950,7 @@ function SessionCard({
     }
     if (!goalReached) return remaining !== null ? `До цели осталось ${remaining} меш.` : "Цель ещё не достигнута.";
     if (!feedbackOff) return "Ждём физическое подтверждение feedback OFF.";
-    return "Конвейер подтверждённо остановлен — заказ можно завершить.";
+    return "Конвейер подтверждённо остановлен — итог подсчёта можно сохранить.";
   }
 
   return (
@@ -2101,7 +2101,7 @@ function SessionCard({
         {ai.stale && (
           <div className="mt-3 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-xs text-red-700">
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-            Последнее состояние устарело. Не завершайте заказ, пока связь и feedback OFF не подтверждены.
+            Последнее состояние устарело. Не завершайте погрузку, пока связь и feedback OFF не подтверждены.
           </div>
         )}
 
@@ -2163,7 +2163,7 @@ function SessionCard({
                   disabled={ai.busy || !canComplete}
                   onClick={() => void runCommand(() => ai.stop(true, session.id))}
                 >
-                  <Check className="size-3.5" /> Завершить заказ
+                  <Check className="size-3.5" /> Завершить погрузку
                 </Button>
                 {requiresManualReconciliation && (
                   <Button
@@ -2175,16 +2175,14 @@ function SessionCard({
                     <Square className="size-3.5" /> Закрыть AI для ручной сверки
                   </Button>
                 )}
-                {isConveyorEnabled && (
-                  <p
-                    className={cn(
-                      "text-center text-[11px] sm:col-span-2",
-                      canComplete ? "text-emerald-700" : "text-slate-500",
-                    )}
-                  >
-                    {completionHint()}
-                  </p>
-                )}
+                <p
+                  className={cn(
+                    "text-center text-[11px] sm:col-span-2",
+                    canComplete ? "text-emerald-700" : "text-slate-500",
+                  )}
+                >
+                  {completionHint()} После этого оформите фактический выезд отдельно на «Посту погрузки».
+                </p>
               </div>
             )
           ) : (
@@ -2301,10 +2299,11 @@ function MonoblockPageInner() {
   const sessionOrderIds = new Set((sessions ?? []).map((session) => session.order_id));
   const startable = (orders ?? []).filter((order) => {
     if (sessionOrderIds.has(order.id)) return false;
-    // Новая сессия начинается только из колонки «Ожидание въезда».
+    // Новая сессия начинается для готового к погрузке заказа. `arrived`
+    // поддерживаем для старых/ручных записей, но въезд и весы здесь не нужны.
     // После привязки камеры backend сразу переводит заказ в `loading`,
     // поэтому активный заказ больше не должен оставаться в этом списке.
-    return order.status === "confirmed";
+    return order.status === "confirmed" || order.status === "arrived";
   });
   const cameraOwners = useMemo(() => {
     const result: Record<string, number> = {};

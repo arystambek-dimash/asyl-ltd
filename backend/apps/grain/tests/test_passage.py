@@ -13,7 +13,7 @@ import pytest
 
 from apps.grain import statuses as st
 from apps.grain.models import GrainMovement, Wagon
-from apps.shipments import scale
+from apps.grain import scale
 
 pytestmark = pytest.mark.django_db
 

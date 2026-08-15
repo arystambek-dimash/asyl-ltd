@@ -1,17 +1,22 @@
+from typing import ClassVar
+
+from config.throttles import TruckScalePreviewRateThrottle
 from django.db import transaction
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.common.pagination import OptInPageNumberPagination
-from apps.common.permissions import PermViewSetMixin
+from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
 from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.models import EventLog
 
 from . import services
 from . import statuses as st
 from .models import GrainSupply, Silo, SiloType, Wagon
+from .scale_preview import get_scale_preview
 from .serializers import (
     GrainMovementSerializer,
     GrainSupplySerializer,
@@ -20,6 +25,22 @@ from .serializers import (
     WagonBriefSerializer,
     WagonSerializer,
 )
+
+
+class TruckScaleReadingView(PermAPIViewMixin, APIView):
+    """Read-only display for the Grain site's physical scale."""
+
+    required_perms: ClassVar[dict[str, str]] = {"get": "grain.weigh"}
+
+    def get_throttles(self):
+        throttles = super().get_throttles()
+        throttles.append(TruckScalePreviewRateThrottle())
+        return throttles
+
+    def get(self, request):
+        response = Response(get_scale_preview())
+        response["Cache-Control"] = "no-store, max-age=0"
+        return response
 
 
 def _get_supply(supply_id) -> GrainSupply | None:

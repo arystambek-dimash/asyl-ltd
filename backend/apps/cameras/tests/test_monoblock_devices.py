@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 import pytest
+
 from apps.cameras import ai, services
 from apps.cameras.models import AiCountingSession, MonoblockDevice
 from apps.clients.models import Client
@@ -141,3 +142,39 @@ def test_legacy_camera_binding_also_prevents_device_deactivation(
 
     assert response.status_code == 400
     assert response.data["code"] == "monoblock_busy"
+
+
+def test_active_device_cannot_be_created_over_open_camera_session(
+    auth_client,
+    superuser,
+    django_user_model,
+):
+    order = Order.objects.create(
+        client=Client.objects.create_with_user(
+            first_name="Reserved", last_name="Camera", phone="create-busy",
+        ),
+        status="confirmed",
+    )
+    AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.STARTING,
+        started_by=superuser,
+    )
+
+    response = auth_client(superuser).post(
+        "/api/cameras/monoblock-devices/",
+        {
+            "name": "Поздний моноблок",
+            "username": "late-monoblock",
+            "password": "Complex-pass-123",
+            "camera_source": "cam2",
+            "is_active": True,
+        },
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "monoblock_busy"
+    assert not MonoblockDevice.objects.filter(camera_source="cam2").exists()
+    assert not django_user_model.objects.filter(username="late-monoblock").exists()

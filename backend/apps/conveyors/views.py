@@ -12,7 +12,7 @@ from apps.eventlog.services import log_event
 from apps.orders.models import Order
 
 from .authentication import AiCallbackAuthentication, ConveyorDeviceAuthentication
-from .credentials import authorization_value, digest_token, generate_token
+from .credentials import authorization_value
 from .models import ConveyorDevice
 from .permissions import IsAiCallback, IsConveyorDevice
 from .serializers import (
@@ -26,6 +26,7 @@ from .services import (
     ConveyorDeviceError,
     disable_device,
     emergency_stop,
+    enroll_device,
     record_ai_observation,
     rotate_secret,
     sync_device,
@@ -77,7 +78,11 @@ class ConveyorDeviceSyncView(NoStoreAPIView):
         serializer = DeviceSyncSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            result = sync_device(request.auth.pk, serializer.validated_data)
+            result = sync_device(
+                request.auth.pk,
+                serializer.validated_data,
+                request.auth._presented_secret_sha256,
+            )
         except ConveyorDeviceError as exc:
             return _no_store(_service_error(exc))
         _log_automatic_stop(result.audit)
@@ -119,13 +124,10 @@ class ConveyorDeviceListView(APIView):
     def post(self, request):
         serializer = ConveyorDeviceEnrollSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        token = generate_token()
         try:
-            device = ConveyorDevice.objects.create(
-                **serializer.validated_data,
-                secret_sha256=digest_token(token),
-                created_by=request.user,
-            )
+            device, token = enroll_device(serializer.validated_data, request.user)
+        except ConveyorDeviceError as exc:
+            return _service_error(exc)
         except IntegrityError as exc:
             raise ValidationError(
                 {
@@ -182,7 +184,10 @@ class ConveyorDeviceDetailView(APIView):
     put = patch
 
     def delete(self, request, public_id):
-        device = disable_device(self._get(public_id))
+        try:
+            device = disable_device(self._get(public_id))
+        except ConveyorDeviceError as exc:
+            return _service_error(exc)
         log_event(
             "conveyor_device_disabled",
             f"Отключён ESP32 «{device.name}»",
@@ -196,9 +201,12 @@ class ConveyorDeviceRotateSecretView(APIView):
     permission_classes: ClassVar[list[type]] = [IsSuperUser]
 
     def post(self, request, public_id):
-        device, token = rotate_secret(
-            get_object_or_404(ConveyorDevice, public_id=public_id)
-        )
+        try:
+            device, token = rotate_secret(
+                get_object_or_404(ConveyorDevice, public_id=public_id)
+            )
+        except ConveyorDeviceError as exc:
+            return _service_error(exc)
         log_event(
             "conveyor_device_secret_rotated",
             f"Секрет ESP32 «{device.name}» заменён; конвейер остановлен",
@@ -217,9 +225,12 @@ class ConveyorDeviceDisableView(APIView):
     permission_classes: ClassVar[list[type]] = [IsSuperUser]
 
     def post(self, request, public_id):
-        device = disable_device(
-            get_object_or_404(ConveyorDevice, public_id=public_id)
-        )
+        try:
+            device = disable_device(
+                get_object_or_404(ConveyorDevice, public_id=public_id)
+            )
+        except ConveyorDeviceError as exc:
+            return _service_error(exc)
         log_event(
             "conveyor_device_disabled",
             f"Отключён ESP32 «{device.name}»",

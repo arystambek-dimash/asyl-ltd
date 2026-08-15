@@ -2,11 +2,12 @@ from decimal import Decimal
 
 from django.db import transaction
 from django.db.models import Prefetch
+from django.db.models.deletion import ProtectedError
 from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from apps.catalog.models import ClientPrice, Product
@@ -54,6 +55,57 @@ from .serializers import (
     StoreSerializer,
 )
 from .services import client_history, detect_overdue, is_payment_window_open
+
+
+class ClientNoLongerAvailable(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_code = "client_not_active"
+
+    def __init__(self):
+        super().__init__({
+            "detail": "Клиент уже удалён",
+            "code": self.default_code,
+        })
+
+
+class ClientDeviceHistoryProtected(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_code = "device_history_protected"
+
+    def __init__(self):
+        super().__init__({
+            "detail": (
+                "Нельзя удалить клиента: история ESP32 связана с его сессией "
+                "погрузки"
+            ),
+            "code": self.default_code,
+        })
+
+
+class StoreChanged(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_code = "store_changed"
+
+    def __init__(self):
+        super().__init__({
+            "detail": "Магазин был изменён другим запросом; обновите страницу",
+            "code": self.default_code,
+        })
+
+
+def _lock_scoped_client(client_pk, user=None):
+    try:
+        # Do not join here: PostgreSQL otherwise also locks related User and
+        # Department before the Client authorization boundary is established.
+        client = Client.objects.select_for_update().get(pk=client_pk)
+    except Client.DoesNotExist as exc:
+        raise ClientNoLongerAvailable() from exc
+    if user is not None and not scope_by_client_department(
+        Client.objects.filter(pk=client.pk),
+        user,
+    ).exists():
+        raise PermissionDenied("Клиент передан в другой отдел")
+    return client
 
 
 class ClientViewSet(
@@ -125,8 +177,41 @@ class ClientViewSet(
 
     @transaction.atomic
     def perform_update(self, serializer):
-        client = serializer.instance
+        client_pk = serializer.instance.pk
+        if "department" in serializer.validated_data:
+            # Order mutations already use Order→Client (for example when an
+            # order creates a client notification).  Take existing Orders
+            # first so this path never holds Client while waiting for Order.
+            self._lock_client_orders(client_pk)
+        client = self._lock_client(client_pk, self.request.user)
+        # Validation happens before ``perform_update``.  Replace its possibly
+        # stale instance so a concurrent purge cannot turn ``save()`` into an
+        # INSERT that resurrects the deleted Client row.
+        serializer.instance = client
         previous = client.department
+        target = serializer.validated_data.get("department", previous)
+        if (previous.pk if previous else None) != (target.pk if target else None):
+            from apps.cameras.models import AiCountingSession
+
+            # Repeat after Client is locked: an Order whose FK key lock began
+            # before our Client lock may have committed after the first pass.
+            # No new Order can pass its FK check while Client stays locked.
+            locked_orders = self._lock_client_orders(client_pk)
+            order_ids = [order.pk for order in locked_orders]
+            if (
+                AiCountingSession.objects.filter(
+                    order_id__in=order_ids,
+                    status__in=AiCountingSession.OPEN_STATUSES,
+                ).exists()
+                or any(
+                    order.status in ("arrived", "loading", "loaded")
+                    for order in locked_orders
+                )
+            ):
+                raise ValidationError({
+                    "detail": "Сначала завершите или верните активные погрузки клиента",
+                    "code": "active_loading",
+                })
         client = serializer.save()
         current = client.department
         if (previous.pk if previous else None) == (current.pk if current else None):
@@ -147,31 +232,87 @@ class ClientViewSet(
     def purge(self, request, pk=None):
         if not request.user.is_superuser:
             raise PermissionDenied("Удаление с историей доступно только суперадмину.")
-        client = self.get_object()
-        portal_user = client.user
+        client_pk = self.get_object().pk
         from apps.cameras.models import AiCountingSession
+        from apps.conveyors.models import ConveyorDevice
         from apps.orders.models import Order as OrderModel
 
-        orders = OrderModel.all_objects.filter(client=client)
-        orders_count = orders.count()
-        with transaction.atomic():
-            log_event(
-                "client",
-                f"Клиент «{client.name}» удалён с историей "
-                f"({orders_count} заказов)",
-                user=request.user,
-                payload={
-                    "client_id": client.pk,
-                    "client_name": client.name,
-                    "orders": orders_count,
-                    "action": "client_purged",
-                },
-            )
-            AiCountingSession.objects.filter(order__in=orders).delete()
-            orders.delete()
-            client.delete()
-            self._deactivate_portal_user(portal_user)
+        try:
+            with transaction.atomic():
+                # Existing Orders→Client→Orders again is deliberate.  It
+                # agrees with order-side services that write a Client FK and
+                # closes the insert gap once the Client row is held.
+                self._lock_client_orders(client_pk)
+                client = self._lock_client(client_pk, request.user)
+                portal_user = client.user
+                locked_orders = self._lock_client_orders(client_pk)
+                order_ids = [order.pk for order in locked_orders]
+                orders_count = len(order_ids)
+                if (
+                    AiCountingSession.objects.filter(
+                        order_id__in=order_ids,
+                        status__in=AiCountingSession.OPEN_STATUSES,
+                    ).exists()
+                    or any(
+                        order.status in ("arrived", "loading", "loaded")
+                        for order in locked_orders
+                    )
+                ):
+                    raise ValidationError({
+                        "detail": (
+                            "Сначала завершите или верните активные погрузки клиента"
+                        ),
+                        "code": "active_loading",
+                    })
+
+                # ConveyorDevice.command_session deliberately uses PROTECT:
+                # deleting that session would erase the provenance of the
+                # latest command.  Keep both histories intact and return a
+                # stable conflict instead of clearing the safety reference.
+                if ConveyorDevice.objects.filter(
+                    command_session__order_id__in=order_ids,
+                ).exists():
+                    raise ClientDeviceHistoryProtected()
+
+                log_event(
+                    "client",
+                    f"Клиент «{client.name}» удалён с историей "
+                    f"({orders_count} заказов)",
+                    user=request.user,
+                    payload={
+                        "client_id": client.pk,
+                        "client_name": client.name,
+                        "orders": orders_count,
+                        "action": "client_purged",
+                    },
+                )
+                AiCountingSession.objects.filter(order_id__in=order_ids).delete()
+                OrderModel.all_objects.filter(pk__in=order_ids).delete()
+                client.delete()
+                self._deactivate_portal_user(portal_user)
+        except ProtectedError as exc:
+            # Close the small check/delete race as well.  Only translate the
+            # ESP32 safety reference; unrelated future PROTECT relations must
+            # retain their own policy rather than being mislabeled.
+            if any(
+                isinstance(obj, ConveyorDevice) for obj in exc.protected_objects
+            ):
+                raise ClientDeviceHistoryProtected() from exc
+            raise
         return Response(status=204)
+
+    @staticmethod
+    def _lock_client(client_pk, user=None):
+        return _lock_scoped_client(client_pk, user)
+
+    @staticmethod
+    def _lock_client_orders(client_pk):
+        return list(
+            Order.all_objects.select_for_update()
+            .filter(client_id=client_pk)
+            .only("pk", "status")
+            .order_by("pk")
+        )
 
     @staticmethod
     def _deactivate_portal_user(user):
@@ -181,6 +322,10 @@ class ClientViewSet(
 
     @transaction.atomic
     def perform_destroy(self, instance):
+        client_pk = instance.pk
+        self._lock_client_orders(client_pk)
+        instance = self._lock_client(client_pk, self.request.user)
+        self._lock_client_orders(client_pk)
         portal_user = instance.user
         instance.delete()
         self._deactivate_portal_user(portal_user)
@@ -188,7 +333,7 @@ class ClientViewSet(
     @action(detail=True, methods=["post"], url_path="password")
     @transaction.atomic
     def set_password(self, request, pk=None):
-        client = self.get_object()
+        client = self._lock_client(self.get_object().pk, request.user)
         context = self.get_serializer_context()
         context["client"] = client
         serializer = self.get_serializer(data=request.data, context=context)
@@ -347,6 +492,7 @@ class ClientViewSet(
         changed = 0
         removed = 0
         with transaction.atomic():
+            client = self._lock_client(client.pk, request.user)
             for row in serializer.validated_data["prices"]:
                 product = row["product"]
                 currency = row["currency"]
@@ -539,6 +685,69 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             self.request.user,
             client_path="client",
         )
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        client = _lock_scoped_client(
+            serializer.validated_data["client"].pk,
+            self.request.user,
+        )
+        serializer.save(client=client)
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        # Canonical order is Client -> Store, matching client deletion whose
+        # cascade later reaches Store. Read the FK optimistically, lock every
+        # possible Client in pk order, then lock/recheck the Store.
+        current_client_id = (
+            Store.objects.filter(pk=serializer.instance.pk)
+            .values_list("client_id", flat=True)
+            .first()
+        )
+        if current_client_id is None:
+            raise StoreChanged()
+        requested_client = serializer.validated_data.get("client")
+        if (
+            requested_client is not None
+            and requested_client.pk != current_client_id
+        ):
+            raise ValidationError({
+                "detail": "Клиента магазина изменить нельзя — создайте новый магазин",
+                "code": "client_locked",
+            })
+        next_client_id = (
+            requested_client.pk if requested_client is not None else current_client_id
+        )
+        locked_clients = {
+            client_pk: _lock_scoped_client(client_pk, self.request.user)
+            for client_pk in sorted({current_client_id, next_client_id})
+        }
+        try:
+            store = Store.objects.select_for_update().get(pk=serializer.instance.pk)
+        except Store.DoesNotExist as exc:
+            raise StoreChanged() from exc
+        if store.client_id not in locked_clients:
+            raise StoreChanged()
+        serializer.instance = store
+        serializer.save(client=locked_clients[next_client_id])
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        current_client_id = (
+            Store.objects.filter(pk=instance.pk)
+            .values_list("client_id", flat=True)
+            .first()
+        )
+        if current_client_id is None:
+            raise StoreChanged()
+        _lock_scoped_client(current_client_id, self.request.user)
+        try:
+            store = Store.objects.select_for_update().get(pk=instance.pk)
+        except Store.DoesNotExist as exc:
+            raise StoreChanged() from exc
+        if store.client_id != current_client_id:
+            raise StoreChanged()
+        store.delete()
 
     @action(detail=True, methods=["get"], url_path="debt-detail")
     def debt_detail(self, request, pk=None):

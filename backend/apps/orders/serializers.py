@@ -11,7 +11,7 @@ from apps.sales.models import Department
 
 from .labels import payment_method_label
 from .models import Order, OrderItem, Payment, StatusChangeRequest
-from .services import set_truck_number
+from .services import set_order_department, set_transport_type, set_truck_number
 from .statuses import public_status_label
 
 
@@ -324,6 +324,7 @@ class PaymentQueueSerializer(DepartmentLabelMixin, PaymentSerializer):
 class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     items = OrderItemSerializer(many=True)
     status = serializers.CharField(read_only=True)
+    loading_camera = serializers.CharField(read_only=True)
     payment_status = serializers.CharField(read_only=True)
     settlement_intent = serializers.ChoiceField(
         choices=Order.SETTLEMENT_INTENTS,
@@ -338,9 +339,6 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     client_name = serializers.CharField(source="client.name", read_only=True)
     client_phone = serializers.CharField(source="client.phone", read_only=True)
     weigh_in_kg = serializers.SerializerMethodField()
-    weigh_in_source = serializers.SerializerMethodField()
-    weigh_out_kg = serializers.SerializerMethodField()
-    net_weight_kg = serializers.SerializerMethodField()
     bags_loaded = serializers.SerializerMethodField()
     bag_estimate_kg = serializers.SerializerMethodField()
     bag_weight_kg = serializers.SerializerMethodField()
@@ -370,8 +368,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                   "paid_total", "remaining_amount", "is_fully_paid",
                   "is_debt", "debt_override", "debt_override_by_name", "pending_status_requests",
                   "payments", "pending_payments",
-                  "weigh_in_kg", "weigh_in_source", "weigh_out_kg",
-                  "net_weight_kg",
+                  "weigh_in_kg",
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at",
                   "shipped_at", "loading_camera", "repeated_from",
                   "template_order",
@@ -413,18 +410,6 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         s = self._shipment(obj)
         return str(s.weigh_in_kg) if s and s.weigh_in_kg is not None else None
 
-    def get_weigh_in_source(self, obj):
-        s = self._shipment(obj)
-        return s.weigh_in_source if s else None
-
-    def get_weigh_out_kg(self, obj):
-        s = self._shipment(obj)
-        return str(s.weigh_out_kg) if s and s.weigh_out_kg is not None else None
-
-    def get_net_weight_kg(self, obj):
-        s = self._shipment(obj)
-        return str(s.net_weight_kg) if s and s.net_weight_kg is not None else None
-
     def get_bags_loaded(self, obj):
         s = self._shipment(obj)
         return s.bags_loaded if s else 0
@@ -444,8 +429,8 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
 
         Считаем по всем позициям: у смешанного заказа фасовки разные, и вес
         первой позиции, умноженный на все мешки, завышал число (30×50кг +
-        20×25кг давало 2500 вместо 2000). Поле стоит рядом с весом машины на
-        весах, поэтому обязано совпадать с расчётом поста погрузки.
+        20×25кг давало 2500 вместо 2000). Расчёт должен совпадать с итогом
+        поста погрузки и не зависит от физического сервиса весов Grain.
         """
         items = list(obj.items.all())
         ordered = sum(item.quantity for item in items)
@@ -529,14 +514,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                 {"detail": "Магазин принадлежит другому клиенту",
                  "code": "store_mismatch"})
         intent = attrs.get("settlement_intent")
-        intent_changed = (
-            intent is not None
-            and (
-                self.instance is None
-                or intent != self.instance.settlement_intent
-            )
-        )
-        if intent_changed:
+        if self.instance is None and intent is not None:
             attrs["payment_method"] = {
                 "pending": "pending",
                 "debt": "debt",
@@ -600,9 +578,26 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
             )
         return order
 
+    @transaction.atomic
     def update(self, instance, validated_data):
-        from .services import replace_items
+        from .services import lock_live_order, replace_items
         user = self.context["request"].user
+        # ModelSerializer.save() writes the whole instance. Re-read it under
+        # the same parent lock as AI start/finish so a stale PATCH cannot put
+        # status/loading_camera back after a physical transition.
+        instance = lock_live_order(instance, user)
+        new_intent = validated_data.get("settlement_intent")
+        if new_intent is not None and new_intent != instance.settlement_intent:
+            if instance.status == "shipped":
+                raise serializers.ValidationError({
+                    "detail": "Способ расчёта нельзя изменить после выезда",
+                    "code": "settlement_intent_locked",
+                })
+            validated_data["payment_method"] = {
+                "pending": "pending",
+                "debt": "debt",
+                "instant": "invoice",
+            }[new_intent]
         new_client = validated_data.pop("client", None)
         if new_client is not None and new_client.id != instance.client_id:
             raise serializers.ValidationError(
@@ -622,6 +617,14 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         new_truck = validated_data.pop("truck_number", None)
         if new_truck is not None and new_truck != instance.truck_number:
             set_truck_number(instance, new_truck, user)
+            instance.refresh_from_db()
+        new_transport = validated_data.pop("transport_type", None)
+        if new_transport is not None and new_transport != instance.transport_type:
+            set_transport_type(instance, new_transport, user)
+            instance.refresh_from_db()
+        new_department = validated_data.pop("department", None)
+        if new_department is not None and new_department != instance.department:
+            set_order_department(instance, new_department, user)
             instance.refresh_from_db()
         items = validated_data.pop("items", None)
         if items is not None:

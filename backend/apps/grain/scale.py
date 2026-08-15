@@ -1,4 +1,4 @@
-"""Strict HTTP client for the truck scale connected through Tailscale."""
+"""Strict HTTP client for the Grain site's physical truck scale."""
 
 from __future__ import annotations
 

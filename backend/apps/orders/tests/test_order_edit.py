@@ -1,12 +1,18 @@
 """Редактирование заказа: позиции и цены — до начала загрузки."""
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
+from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient
 
+from apps.cameras.models import AiCountingSession
 from apps.catalog.models import Product
 from apps.clients.models import Client, Store
+from apps.orders import services
 from apps.orders.models import Order, OrderItem
+from apps.orders.serializers import OrderSerializer
+from apps.sales.models import Department
 
 pytestmark = pytest.mark.django_db
 
@@ -125,6 +131,119 @@ def test_edit_fields_without_items(manager):
     assert o.items.count() == 1
 
 
+def test_stale_scalar_patch_cannot_restore_pre_ai_status(manager):
+    stale_order = _order(status="confirmed")
+    Order.objects.filter(pk=stale_order.pk).update(
+        status="loading",
+        loading_camera="cam2",
+    )
+    serializer = OrderSerializer(
+        stale_order,
+        data={"notes": "Проверено оператором"},
+        partial=True,
+        context={"request": SimpleNamespace(user=manager)},
+    )
+    assert serializer.is_valid(), serializer.errors
+
+    serializer.save()
+
+    stale_order.refresh_from_db()
+    assert stale_order.status == "loading"
+    assert stale_order.loading_camera == "cam2"
+    assert stale_order.notes == "Проверено оператором"
+
+
+def test_stale_serializer_cannot_update_archived_order(manager):
+    stale_order = _order(status="pending")
+    serializer = OrderSerializer(
+        stale_order,
+        data={"notes": "Устаревшая вкладка"},
+        partial=True,
+        context={"request": SimpleNamespace(user=manager)},
+    )
+    assert serializer.is_valid(), serializer.errors
+    services.soft_delete_order(stale_order, manager)
+
+    with pytest.raises(ValidationError) as caught:
+        serializer.save()
+
+    assert caught.value.detail["code"] == "order_not_active"
+    stale_order.refresh_from_db()
+    assert stale_order.deleted_at is not None
+    assert stale_order.notes == ""
+
+
+def test_generic_patch_cannot_change_status_or_camera(manager):
+    order = _order(status="loading")
+    order.loading_camera = "cam2"
+    order.save(update_fields=["loading_camera"])
+    AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+        started_by=manager,
+    )
+
+    response = _api(manager).patch(
+        f"/api/orders/{order.id}/",
+        {"status": "shipped", "loading_camera": "cam3"},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    order.refresh_from_db()
+    assert order.status == "loading"
+    assert order.loading_camera == "cam2"
+
+
+def test_transport_type_change_rejects_open_ai_reservation(manager):
+    order = _order(status="confirmed")
+    AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.STARTING,
+        started_by=manager,
+    )
+
+    response = _api(manager).patch(
+        f"/api/orders/{order.id}/",
+        {"transport_type": "train"},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "ai_session_active"
+    order.refresh_from_db()
+    assert order.transport_type == "truck"
+
+
+def test_department_change_rejects_open_ai_reservation(manager):
+    order = _order(status="confirmed")
+    department = Department.objects.create(
+        code="safe-scope",
+        name="Безопасный отдел",
+        color="#2457C5",
+        is_active=True,
+    )
+    AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.STARTING,
+        started_by=manager,
+    )
+
+    response = _api(manager).patch(
+        f"/api/orders/{order.id}/",
+        {"department": department.code},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "ai_session_active"
+    order.refresh_from_db()
+    assert order.department != department.code
+
+
 def test_pending_settlement_intent_round_trips(manager):
     o = _order(status="pending")
     o.settlement_intent = "pending"
@@ -143,6 +262,46 @@ def test_pending_settlement_intent_round_trips(manager):
     o.refresh_from_db()
     assert o.settlement_intent == "pending"
     assert o.payment_method == "pending"
+
+
+def test_stale_intent_patch_keeps_intent_and_method_consistent(manager):
+    stale_order = _order(status="confirmed")
+    stale_order.settlement_intent = "pending"
+    stale_order.payment_method = "pending"
+    stale_order.save(update_fields=["settlement_intent", "payment_method"])
+    Order.objects.filter(pk=stale_order.pk).update(
+        settlement_intent="instant",
+        payment_method="invoice",
+    )
+    serializer = OrderSerializer(
+        stale_order,
+        data={"settlement_intent": "pending"},
+        partial=True,
+        context={"request": SimpleNamespace(user=manager)},
+    )
+    assert serializer.is_valid(), serializer.errors
+
+    serializer.save()
+
+    stale_order.refresh_from_db()
+    assert stale_order.settlement_intent == "pending"
+    assert stale_order.payment_method == "pending"
+
+
+def test_shipped_order_rejects_actual_settlement_intent_change(manager):
+    order = _order(status="shipped")
+
+    response = _api(manager).patch(
+        f"/api/orders/{order.id}/",
+        {"settlement_intent": "instant"},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "settlement_intent_locked"
+    order.refresh_from_db()
+    assert order.settlement_intent == "debt"
+    assert order.payment_method == "debt"
 
 
 @pytest.mark.parametrize("payment_method", ["kaspi", "cash", "mixed"])

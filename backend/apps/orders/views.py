@@ -7,10 +7,9 @@ from django.shortcuts import get_object_or_404
 from django.http import FileResponse
 from io import BytesIO
 from collections import defaultdict
-from datetime import timedelta
 from decimal import Decimal
 import re
-from django.db.models import Count, Q, Sum
+from django.db.models import Q, Sum
 from django.utils import timezone
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import HasPerm, PermViewSetMixin
@@ -1433,7 +1432,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     def approve_status(self, request, pk=None, rid=None):
         req = get_object_or_404(
             StatusChangeRequest, pk=rid, order=self.get_object())
-        approve_status_change(req, request.user)
+        req = approve_status_change(req, request.user)
         return Response(StatusChangeRequestSerializer(req).data)
 
     @action(detail=True, methods=["post"],
@@ -1441,5 +1440,5 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     def reject_status(self, request, pk=None, rid=None):
         req = get_object_or_404(
             StatusChangeRequest, pk=rid, order=self.get_object())
-        reject_status_change(req, request.user)
+        req = reject_status_change(req, request.user)
         return Response(StatusChangeRequestSerializer(req).data)

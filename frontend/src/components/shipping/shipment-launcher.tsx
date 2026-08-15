@@ -273,7 +273,7 @@ export function ShipmentLauncher({
                   ? `#${order.id} · ${order.client_name || "Без клиента"} · ${orderedBagCount(order)} меш.`
                   : undefined
               }
-              placeholder={orders.length ? "Выберите заказ" : "Нет заказов в ожидании въезда"}
+              placeholder={orders.length ? "Выберите заказ" : "Нет заказов, готовых к погрузке"}
               onChange={setOrderId}
             >
               {orders.map((item) => (
@@ -289,10 +289,8 @@ export function ShipmentLauncher({
           {hasSmartConveyor && !smartConveyorReady
             ? "ESP32 не подтвердил безопасный OFF — автоматический запуск заблокирован. Проверьте контроллер и контактор."
             : smartConveyorReady
-              ? order?.transport_type === "train"
-                ? "После привязки система проверит OFF, запустит конвейер и защёлкнет остановку при достижении цели."
-                : "После входного веса система проверит OFF, запустит конвейер и защёлкнет остановку при достижении цели."
-              : "AI будет считать мешки, но автоматика ESP32 для этой камеры не настроена: запускайте и останавливайте конвейер вручную."}
+              ? "Моноблок запустит AI и ESP32 для выбранных заказа и камеры. При достижении цели конвейер остановится автоматически."
+              : "Моноблок запустит AI для выбранных заказа и камеры. ESP32 здесь не настроен — запускайте и останавливайте конвейер вручную."}
         </p>
         {error && <p className="mt-2 text-center text-sm font-medium text-[var(--destructive)]">{error}</p>}
 

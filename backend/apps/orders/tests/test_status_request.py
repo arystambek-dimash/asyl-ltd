@@ -1,16 +1,18 @@
-import pytest
 from unittest.mock import patch
+
+import pytest
+from rest_framework.exceptions import ValidationError
+
+from apps.cameras import recordings
+from apps.cameras.models import AiCountingSession
 from apps.catalog.models import Product
 from apps.clients.models import Client
+from apps.eventlog.models import EventLog
+from apps.orders import services
 from apps.orders.models import Order, OrderItem, StatusChangeRequest
 from apps.shipments.models import Shipment
 from apps.warehouse.models import StockItem
 from apps.warehouse.services import receive_stock
-from apps.cameras.models import AiCountingSession
-from apps.cameras import recordings
-from apps.eventlog.models import EventLog
-from apps.orders import services
-from rest_framework.exceptions import ValidationError
 
 pytestmark = pytest.mark.django_db
 
@@ -40,6 +42,21 @@ def test_operator_creates_request(operator):
     req = StatusChangeRequest.objects.get()
     assert req.status == "pending"
     assert req.to_status == "shipped"
+
+
+def test_operator_count_is_not_silently_dropped_from_approval(operator):
+    order = _order()
+
+    with pytest.raises(ValidationError) as caught:
+        services.request_status_change(
+            order,
+            "shipped",
+            operator,
+            bags_loaded=7,
+        )
+
+    assert caught.value.detail["code"] == "bags_loaded_requires_direct_permission"
+    assert not StatusChangeRequest.objects.filter(order=order).exists()
 
 
 def test_approve_request_applies_status(operator, boss):
@@ -72,6 +89,41 @@ def test_double_decide_rejected(operator, boss):
     services.approve_status_change(req, boss)
     with pytest.raises(ValidationError):
         services.reject_status_change(req, boss)
+
+
+def test_stale_status_request_cannot_overwrite_decision(operator, boss):
+    order = _order()
+    services.request_status_change(order, "shipped", operator)
+    request = StatusChangeRequest.objects.get()
+    stale_request = StatusChangeRequest.objects.get(pk=request.pk)
+
+    services.approve_status_change(request, boss)
+    with pytest.raises(ValidationError) as exc:
+        services.reject_status_change(stale_request, boss)
+
+    assert exc.value.detail["code"] == "already_decided"
+    stale_request.refresh_from_db()
+    assert stale_request.status == "approved"
+
+
+def test_archived_order_cannot_receive_or_apply_status_request(operator, boss):
+    order = _order()
+    services.request_status_change(order, "shipped", operator)
+    request = StatusChangeRequest.objects.get(order=order)
+    services.soft_delete_order(order, boss)
+
+    with pytest.raises(ValidationError) as approve_error:
+        services.approve_status_change(request, boss)
+    assert approve_error.value.detail["code"] == "order_not_active"
+
+    with pytest.raises(ValidationError) as new_request_error:
+        services.request_status_change(order, "cancelled", operator)
+    assert new_request_error.value.detail["code"] == "order_not_active"
+
+    request.refresh_from_db()
+    order.refresh_from_db()
+    assert request.status == "pending"
+    assert order.status == "confirmed"
 
 
 def test_set_status_endpoint_operator_gets_202(auth_client, operator):
@@ -205,8 +257,24 @@ def test_approve_endpoint(auth_client, operator, manager):
         f"/api/orders/{o.id}/status-requests/{req.id}/approve/"
     )
     assert r.status_code == 200
+    assert r.data["status"] == "approved"
     o.refresh_from_db()
     assert o.status == "shipped"
+
+
+def test_reject_endpoint_returns_decided_status(auth_client, operator, manager):
+    order = _order()
+    services.request_status_change(order, "shipped", operator)
+    request = StatusChangeRequest.objects.get()
+
+    response = auth_client(manager).post(
+        f"/api/orders/{order.id}/status-requests/{request.id}/reject/"
+    )
+
+    assert response.status_code == 200
+    assert response.data["status"] == "rejected"
+    order.refresh_from_db()
+    assert order.status == "confirmed"
 
 
 def test_missing_nested_status_request_returns_404(auth_client, manager):
@@ -240,15 +308,18 @@ def test_regular_editor_endpoint_rejects_internal_status(auth_client, manager):
     assert o.status == "confirmed"
 
 
-def test_superuser_can_choose_internal_status(make_user):
+def test_superuser_cannot_bypass_internal_status_flow(make_user):
     root = make_user(username="root")
     root.is_superuser = True
     root.save(update_fields=["is_superuser"])
     o = _order()
-    result = services.request_status_change(o, "arrived", root)
-    assert result["applied"] is True
+    with pytest.raises(ValidationError) as exc:
+        services.request_status_change(o, "loaded", root)
+
+    assert exc.value.detail["code"] == "status_not_available"
     o.refresh_from_db()
-    assert o.status == "arrived"
+    assert o.status == "confirmed"
+    assert not Shipment.objects.filter(order=o).exists()
 
 
 def test_manual_completed_status_runs_full_shipping_flow(auth_client, manager):
@@ -332,3 +403,23 @@ def test_manual_completion_rejects_open_ai_session(auth_client, manager):
     assert response.data["code"] == "ai_session_active"
     order.refresh_from_db()
     assert order.status == "loading"
+
+
+@pytest.mark.parametrize("target", ["pending", "cancelled"])
+def test_status_override_cannot_orphan_starting_ai_session(manager, target):
+    order = _order()
+    session = AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.STARTING,
+        started_by=manager,
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        services.request_status_change(order, target, manager)
+
+    assert exc.value.detail["code"] == "ai_session_active"
+    order.refresh_from_db()
+    session.refresh_from_db()
+    assert order.status == "confirmed"
+    assert session.status == AiCountingSession.STARTING

@@ -1,4 +1,4 @@
-"""Cached, sanitized scale state for operator displays."""
+"""Cached, sanitized Grain scale state for operator displays."""
 
 from django.core.cache import cache
 from django.utils import timezone
