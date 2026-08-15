@@ -25,6 +25,7 @@ typedef struct {
     uint64_t runtime_revision;
     int runtime_state;
     uint64_t runtime_session_id;
+    uint32_t runtime_target_total;
 } asyl_guard_state_t;
 
 typedef enum {
@@ -73,5 +74,12 @@ bool asyl_guard_can_clear_fault(
     uint64_t blocked_revision,
     uint64_t off_revision,
     bool feedback_is_off
+);
+bool asyl_guard_can_energize(
+    bool fault_latched,
+    uint64_t blocked_revision,
+    uint64_t revision,
+    bool renewal,
+    bool feedback_is_on
 );
 const char *asyl_guard_reason_name(asyl_guard_reason_t reason);

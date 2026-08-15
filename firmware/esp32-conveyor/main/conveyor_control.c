@@ -6,6 +6,7 @@
 #include "device_config.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -13,8 +14,31 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
+#ifndef CONFIG_ESP_TASK_WDT_PANIC
+#error "ASYL conveyor requires panic/reboot when the task watchdog expires"
+#endif
+
+#ifndef CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT
+#error "ASYL conveyor requires the task watchdog panic to reboot"
+#endif
+
+#if CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS != 0
+#error "ASYL conveyor watchdog reboot delay must be zero"
+#endif
+
+#if CONFIG_ESP_TASK_WDT_TIMEOUT_S * 1000 >= CONFIG_ASYL_LOCAL_FAIL_OFF_MS
+#error "ASYL conveyor watchdog timeout must be shorter than local fail-OFF"
+#endif
+
+#if defined(CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0) || \
+    defined(CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1)
+#error "ASYL conveyor TWDT must watch only the dedicated safety task"
+#endif
+
 static const char *TAG = "asyl_safety";
 static SemaphoreHandle_t s_lock;
+static SemaphoreHandle_t s_ready;
+static bool s_safety_available;
 static bool s_output_on;
 static bool s_fault_latched;
 static char s_fault[ASYL_FAULT_MAX + 1] = "boot_off";
@@ -86,22 +110,34 @@ static void persist_blocked(uint64_t revision) {
 
 static void safety_task(void *argument) {
     (void)argument;
-    esp_err_t task_wdt_error = esp_task_wdt_add(NULL);
-    if (task_wdt_error != ESP_OK && task_wdt_error != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "task watchdog registration failed: %s",
+    const esp_err_t task_wdt_error = esp_task_wdt_add(NULL);
+    uint64_t startup_block_revision = 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_safety_available = task_wdt_error == ESP_OK;
+    if (task_wdt_error != ESP_OK) {
+        startup_block_revision = fail_off_locked("watchdog_unavailable");
+    }
+    xSemaphoreGive(s_lock);
+    xSemaphoreGive(s_ready);
+    if (task_wdt_error != ESP_OK) {
+        persist_blocked(startup_block_revision);
+        ESP_LOGE(TAG, "task watchdog unavailable; relay latched OFF: %s",
                  esp_err_to_name(task_wdt_error));
+        vTaskDelete(NULL);
+        return;
     }
 
     while (true) {
         uint64_t block_revision = 0;
-        const int64_t now = esp_timer_get_time();
+        const char *failure_reason = NULL;
         xSemaphoreTake(s_lock, portMAX_DELAY);
+        const int64_t now = esp_timer_get_time();
         const bool feedback = read_feedback();
 
         if (s_output_on &&
             (s_lease_deadline_us == 0 || now >= s_lease_deadline_us)) {
-            ESP_LOGE(TAG, "lease expired; forcing relay OFF");
-            block_revision = fail_off_locked("lease_expired");
+            failure_reason = "lease_expired";
+            block_revision = fail_off_locked(failure_reason);
         } else if (
             !s_output_on && feedback && s_fault_latched &&
             strcmp(s_fault, "feedback_stuck_on") == 0
@@ -118,7 +154,7 @@ static void safety_task(void *argument) {
                 const char *reason = s_output_on
                     ? "feedback_failed_on"
                     : "feedback_stuck_on";
-                ESP_LOGE(TAG, "%s; forcing relay OFF", reason);
+                failure_reason = reason;
                 block_revision = fail_off_locked(reason);
             }
         } else {
@@ -127,8 +163,21 @@ static void safety_task(void *argument) {
         xSemaphoreGive(s_lock);
 
         persist_blocked(block_revision);
-        if (task_wdt_error == ESP_OK) {
-            esp_task_wdt_reset();
+        if (failure_reason != NULL) {
+            ESP_LOGE(TAG, "%s; relay forced OFF", failure_reason);
+        }
+        const esp_err_t reset_error = esp_task_wdt_reset();
+        if (reset_error != ESP_OK) {
+            xSemaphoreTake(s_lock, portMAX_DELAY);
+            s_safety_available = false;
+            const uint64_t reset_block_revision = fail_off_locked(
+                "watchdog_reset_failed"
+            );
+            xSemaphoreGive(s_lock);
+            persist_blocked(reset_block_revision);
+            ESP_LOGE(TAG, "task watchdog reset failed; restarting: %s",
+                     esp_err_to_name(reset_error));
+            esp_restart();
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
@@ -167,9 +216,11 @@ esp_err_t asyl_conveyor_init(uint64_t persisted_blocked_revision) {
         return error;
     }
     s_lock = xSemaphoreCreateMutex();
-    if (s_lock == NULL) {
+    s_ready = xSemaphoreCreateBinary();
+    if (s_lock == NULL || s_ready == NULL) {
         return ESP_ERR_NO_MEM;
     }
+    s_safety_available = false;
     s_output_on = false;
     s_fault_latched = false;
     s_active_revision = 0;
@@ -180,9 +231,19 @@ esp_err_t asyl_conveyor_init(uint64_t persisted_blocked_revision) {
 
     if (xTaskCreate(
             safety_task, "asyl_safety", 4096, NULL,
-            configMAX_PRIORITIES - 2, NULL
+            configMAX_PRIORITIES - 1, NULL
         ) != pdPASS) {
         return ESP_ERR_NO_MEM;
+    }
+    if (xSemaphoreTake(s_ready, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        asyl_conveyor_fail_off("watchdog_start_timeout");
+        return ESP_ERR_TIMEOUT;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    const bool safety_ready = s_safety_available;
+    xSemaphoreGive(s_lock);
+    if (!safety_ready) {
+        return ESP_ERR_INVALID_STATE;
     }
     return ESP_OK;
 }
@@ -197,13 +258,16 @@ esp_err_t asyl_conveyor_apply_on(uint64_t revision, uint32_t lease_ms) {
     esp_err_t error = ESP_OK;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     const bool renewal = s_output_on && s_active_revision == revision;
-    if (revision <= s_blocked_revision ||
-        (s_fault_latched && revision <= s_active_revision) ||
-        (!renewal && read_feedback())) {
+    if (!s_safety_available || !asyl_guard_can_energize(
+            s_fault_latched,
+            s_blocked_revision,
+            revision,
+            renewal,
+            read_feedback()
+        )) {
         error = ESP_ERR_INVALID_STATE;
     } else {
         if (!renewal) {
-            s_fault_latched = false;
             copy_fault("none");
             s_active_revision = revision;
             s_feedback_transition_started_us = esp_timer_get_time();

@@ -31,6 +31,11 @@ typedef struct {
     bool overflow;
 } response_buffer_t;
 
+typedef struct {
+    esp_http_client_handle_t client;
+    response_buffer_t response;
+} sync_http_client_t;
+
 static const char *TAG = "asyl_api";
 static char s_boot_id[37];
 static uint64_t s_sequence;
@@ -246,18 +251,11 @@ static esp_err_t http_event(esp_http_client_event_t *event) {
     return ESP_OK;
 }
 
-static esp_err_t perform_sync(
+static esp_err_t sync_http_client_init(
     const asyl_device_config_t *config,
-    const asyl_guard_state_t *guard,
-    asyl_command_t *command,
-    uint32_t *next_sync_ms
+    sync_http_client_t *http
 ) {
-    asyl_conveyor_snapshot_t snapshot;
-    asyl_conveyor_snapshot(&snapshot);
-    char *request = build_request(&snapshot, guard->persisted_revision);
-    if (request == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
+    memset(http, 0, sizeof(*http));
     char url[API_URL_CAPACITY];
     const int url_length = snprintf(
         url, sizeof(url), "%s%s", config->base_url, CONFIG_ASYL_API_SYNC_PATH
@@ -274,51 +272,102 @@ static esp_err_t perform_sync(
         authorization_length <= 0 ||
         (size_t)authorization_length >= sizeof(authorization)) {
         memset(authorization, 0, sizeof(authorization));
-        cJSON_free(request);
         return ESP_ERR_INVALID_SIZE;
     }
 
-    response_buffer_t response = {0};
     const esp_http_client_config_t http_config = {
         .url = url,
         .event_handler = http_event,
-        .user_data = &response,
+        .user_data = &http->response,
         .timeout_ms = CONFIG_ASYL_HTTP_TIMEOUT_MS,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = false,
         .disable_auto_redirect = true,
         .keep_alive_enable = true,
     };
-    esp_http_client_handle_t client = esp_http_client_init(&http_config);
-    if (client == NULL) {
+    http->client = esp_http_client_init(&http_config);
+    if (http->client == NULL) {
         memset(authorization, 0, sizeof(authorization));
-        cJSON_free(request);
         return ESP_ERR_NO_MEM;
     }
-    esp_http_client_set_method(client, HTTP_METHOD_POST);
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_header(client, "Accept", "application/json");
-    esp_http_client_set_header(client, "Cache-Control", "no-store");
-    esp_http_client_set_header(client, "Authorization", authorization);
-    esp_http_client_set_post_field(client, request, strlen(request));
 
-    esp_err_t error = esp_http_client_perform(client);
+    esp_err_t error = esp_http_client_set_method(
+        http->client, HTTP_METHOD_POST
+    );
+    if (error == ESP_OK) {
+        error = esp_http_client_set_header(
+            http->client, "Content-Type", "application/json"
+        );
+    }
+    if (error == ESP_OK) {
+        error = esp_http_client_set_header(
+            http->client, "Accept", "application/json"
+        );
+    }
+    if (error == ESP_OK) {
+        error = esp_http_client_set_header(
+            http->client, "Cache-Control", "no-store"
+        );
+    }
+    if (error == ESP_OK) {
+        error = esp_http_client_set_header(
+            http->client, "Authorization", authorization
+        );
+    }
+    /* esp_http_client_set_header copies the value into the client context. */
+    memset(authorization, 0, sizeof(authorization));
+    if (error != ESP_OK) {
+        esp_http_client_cleanup(http->client);
+        http->client = NULL;
+    }
+    return error;
+}
+
+static esp_err_t perform_sync(
+    sync_http_client_t *http,
+    const asyl_guard_state_t *guard,
+    asyl_command_t *command,
+    uint32_t *next_sync_ms
+) {
+    memset(&http->response, 0, sizeof(http->response));
+    asyl_conveyor_snapshot_t snapshot;
+    asyl_conveyor_snapshot(&snapshot);
+    char *request = build_request(&snapshot, guard->persisted_revision);
+    if (request == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t error = esp_http_client_set_post_field(
+        http->client, request, strlen(request)
+    );
+    if (error == ESP_OK) {
+        error = esp_http_client_perform(http->client);
+    }
     const int status = error == ESP_OK
-        ? esp_http_client_get_status_code(client)
+        ? esp_http_client_get_status_code(http->client)
         : 0;
     if (error == ESP_OK && status != 200) {
         ESP_LOGW(TAG, "sync returned HTTP %d", status);
         error = ESP_FAIL;
     }
-    if (error == ESP_OK && (response.overflow || response.length == 0)) {
+    if (error == ESP_OK &&
+        !esp_http_client_is_complete_data_received(http->client)) {
+        error = ESP_ERR_INVALID_RESPONSE;
+    }
+    if (error == ESP_OK &&
+        (http->response.overflow || http->response.length == 0)) {
         error = ESP_ERR_INVALID_SIZE;
     }
     if (error == ESP_OK &&
-        !parse_response(response.bytes, command, next_sync_ms)) {
+        !parse_response(http->response.bytes, command, next_sync_ms)) {
         error = ESP_ERR_INVALID_RESPONSE;
     }
-    esp_http_client_cleanup(client);
-    memset(authorization, 0, sizeof(authorization));
+    if (error != ESP_OK) {
+        /* A failed or incomplete perform can leave the IDF client parser in
+         * the middle of an exchange. Close only the transport so the next
+         * request reconnects with the same pinned URL and headers. */
+        esp_http_client_close(http->client);
+    }
     cJSON_free(request);
     return error;
 }
@@ -365,24 +414,33 @@ static void apply_command(
         guard, &policy, command, (int64_t)time(NULL), clock_synchronized()
     );
     if (checked.decision == ASYL_GUARD_REJECT_FAIL_OFF) {
-        ESP_LOGE(TAG, "command rejected: %s",
-                 asyl_guard_reason_name(checked.reason));
         reject_and_fail_off(guard, checked.reason, command->revision);
+        ESP_LOGE(TAG, "command rejected after forcing OFF: %s",
+                 asyl_guard_reason_name(checked.reason));
+        return;
+    }
+
+    if (checked.decision == ASYL_GUARD_APPLY_OFF) {
+        /* De-energize before any NVS write or log can stall. */
+        asyl_conveyor_apply_off(command->revision, "server_off");
+        if (checked.persist_revision &&
+            asyl_safety_state_store_revision(command->revision) != ESP_OK) {
+            reject_and_fail_off(
+                guard, ASYL_GUARD_REVISION_CONFLICT, command->revision
+            );
+            ESP_LOGE(TAG, "OFF revision persistence failed; relay remains OFF");
+            return;
+        }
+        asyl_guard_commit(guard, command, &checked);
         return;
     }
 
     if (checked.persist_revision &&
         asyl_safety_state_store_revision(command->revision) != ESP_OK) {
-        ESP_LOGE(TAG, "revision persistence failed; refusing command");
         reject_and_fail_off(
             guard, ASYL_GUARD_REVISION_CONFLICT, command->revision
         );
-        return;
-    }
-
-    if (checked.decision == ASYL_GUARD_APPLY_OFF) {
-        asyl_conveyor_apply_off(command->revision, "server_off");
-        asyl_guard_commit(guard, command, &checked);
+        ESP_LOGE(TAG, "ON revision persistence failed; relay remains OFF");
         return;
     }
     if (asyl_conveyor_apply_on(command->revision, command->lease_ms) != ESP_OK) {
@@ -412,9 +470,21 @@ static void api_task(void *argument) {
         vTaskDelete(NULL);
         return;
     }
+    sync_http_client_t http;
+    const esp_err_t http_error = sync_http_client_init(&config, &http);
+    if (http_error != ESP_OK) {
+        asyl_conveyor_fail_off("http_client_init_failed");
+        ESP_LOGE(TAG, "HTTP client init failed; refusing ON: %s",
+                 esp_err_to_name(http_error));
+        vTaskDelete(NULL);
+        return;
+    }
     uint32_t next_sync_ms = CONFIG_ASYL_DEFAULT_POLL_MS;
     while (true) {
         if (!asyl_wifi_wait_ready(1000)) {
+            /* This task exclusively owns the handle, so closing here cannot
+             * race an in-flight perform. Keep the headers/context for retry. */
+            esp_http_client_close(http.client);
             continue;
         }
         if (s_sequence == INT64_MAX) {
@@ -425,7 +495,7 @@ static void api_task(void *argument) {
         asyl_command_t command;
         uint32_t server_next_sync = CONFIG_ASYL_DEFAULT_POLL_MS;
         const esp_err_t error = perform_sync(
-            &config, &guard, &command, &server_next_sync
+            &http, &guard, &command, &server_next_sync
         );
         if (error == ESP_OK) {
             apply_command(&guard, &command);

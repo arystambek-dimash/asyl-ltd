@@ -79,9 +79,14 @@ salt/verifier прошиваются в ESP32, а точные username/password
   --sdkconfig-output sdkconfig.defaults.local
 
 idf.py -B build/device-a1b2c3 \
+  -DSDKCONFIG="device-secrets/esp32-a1b2c3/sdkconfig" \
   -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.local" \
   build size
 ```
+
+Отдельный `SDKCONFIG` обязателен: ESP-IDF не заменяет уже сохранённые значения
+новыми defaults. Без него другой build-каталог может случайно переиспользовать
+GPIO, watchdog или Security2 material от предыдущего контроллера.
 
 `device-secrets/`, `sdkconfig.defaults.local`, `sdkconfig` и `build/` исключены
 из Git. Приватную копию `provisioning-credentials.json` храните отдельно от

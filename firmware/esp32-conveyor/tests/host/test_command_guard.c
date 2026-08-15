@@ -143,10 +143,35 @@ static void test_same_revision_cannot_change_session(void) {
            ASYL_GUARD_REVISION_CONFLICT);
 }
 
+static void test_same_revision_cannot_change_target(void) {
+    asyl_guard_state_t state = {
+        .persisted_revision = 21,
+        .off_seen_this_boot = true,
+        .runtime_valid = true,
+        .runtime_revision = 21,
+        .runtime_state = 1,
+        .runtime_session_id = 42,
+        .runtime_target_total = 100,
+    };
+    asyl_command_t value = command(21, 1);
+    value.target_total = 101;
+    assert(asyl_guard_evaluate(&state, &POLICY, &value, 200000, true).reason ==
+           ASYL_GUARD_REVISION_CONFLICT);
+}
+
 static void test_fault_clear_requires_newer_off_and_physical_off(void) {
     assert(!asyl_guard_can_clear_fault(40, 40, true));
     assert(!asyl_guard_can_clear_fault(40, 41, false));
     assert(asyl_guard_can_clear_fault(40, 41, true));
+}
+
+static void test_physical_on_cannot_bypass_fault_latch(void) {
+    assert(asyl_guard_can_energize(false, 40, 41, false, false));
+    assert(!asyl_guard_can_energize(true, 40, 41, false, false));
+    assert(!asyl_guard_can_energize(true, 40, 41, true, true));
+    assert(!asyl_guard_can_energize(false, 40, 40, false, false));
+    assert(!asyl_guard_can_energize(false, 40, 41, false, true));
+    assert(asyl_guard_can_energize(false, 40, 41, true, true));
 }
 
 static void test_stale_off_cannot_be_followed_by_old_on_renewal(void) {
@@ -179,7 +204,9 @@ int main(void) {
     test_fault_latch_needs_new_revision();
     test_off_is_immediate_and_safe_without_clock();
     test_same_revision_cannot_change_session();
+    test_same_revision_cannot_change_target();
     test_fault_clear_requires_newer_off_and_physical_off();
+    test_physical_on_cannot_bypass_fault_latch();
     test_stale_off_cannot_be_followed_by_old_on_renewal();
     puts("command_guard: all tests passed");
     return 0;

@@ -97,7 +97,8 @@ asyl_guard_result_t asyl_guard_evaluate(
             );
         }
         if (state->runtime_state != 1 ||
-            state->runtime_session_id != command->session_id) {
+            state->runtime_session_id != command->session_id ||
+            state->runtime_target_total != command->target_total) {
             return result(
                 ASYL_GUARD_REJECT_FAIL_OFF,
                 ASYL_GUARD_REVISION_CONFLICT,
@@ -144,6 +145,7 @@ void asyl_guard_commit(
     state->runtime_revision = command->revision;
     state->runtime_state = command->state;
     state->runtime_session_id = command->session_id;
+    state->runtime_target_total = command->target_total;
 }
 
 void asyl_guard_block_revision(asyl_guard_state_t *state, uint64_t revision) {
@@ -161,6 +163,20 @@ bool asyl_guard_can_clear_fault(
      * with a newer OFF fence, while the independent contact confirms OFF.
      * The blocked revision remains durable, so the failed ON can never return. */
     return feedback_is_off && off_revision > blocked_revision;
+}
+
+bool asyl_guard_can_energize(
+    bool fault_latched,
+    uint64_t blocked_revision,
+    uint64_t revision,
+    bool renewal,
+    bool feedback_is_on
+) {
+    /* A newer ON revision is not permission to bypass a physical fault.
+     * Only asyl_guard_can_clear_fault(), called from the OFF path, may clear
+     * the latch after a newer server OFF and independent feedback OFF. */
+    return !fault_latched && revision > blocked_revision &&
+           (renewal || !feedback_is_on);
 }
 
 const char *asyl_guard_reason_name(asyl_guard_reason_t reason) {
