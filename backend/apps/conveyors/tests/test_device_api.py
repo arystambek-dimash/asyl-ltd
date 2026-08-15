@@ -2,13 +2,12 @@ import hashlib
 import uuid
 
 import pytest
-from django.test import override_settings
 
 from apps.cameras.models import AiCountingSession
 from apps.clients.models import Client
 from apps.conveyors.credentials import digest_token
 from apps.conveyors.models import ConveyorDevice
-from apps.conveyors.services import arm_session, prepare_session
+from apps.conveyors.services import arm_session, prepare_session, transport_for
 from apps.orders.models import Order, OrderItem
 
 pytestmark = pytest.mark.django_db
@@ -22,7 +21,6 @@ EDGE_BOOT_ID = uuid.UUID("22222222-2222-4222-8222-222222222222")
 
 @pytest.fixture(autouse=True)
 def conveyor_settings(settings):
-    settings.CONVEYOR_TRANSPORTS = {"cam2": "cloud"}
     settings.CONVEYOR_AI_CALLBACK_TOKEN_SHA256 = hashlib.sha256(
         b"camera-callback-secret"
     ).hexdigest()
@@ -267,13 +265,11 @@ def test_cloud_session_gets_on_lease_only_after_off_and_fresh_ai(
     assert confirmed.data["command"]["state"] == 1
 
 
-def test_open_session_keeps_its_frozen_cloud_transport(make_user):
-    """A config rollout must not switch an open order to another master."""
+def test_open_session_uses_its_frozen_cloud_transport(make_user):
     _device()
     _order, session = _order_session(make_user("frozen-cloud-loader"))
 
-    with override_settings(CONVEYOR_TRANSPORTS={"cam2": "direct"}):
-        prepared = prepare_session(session)
+    prepared = prepare_session(session)
 
     assert prepared.command_session_id == session.pk
     assert prepared.command_target_total == session.target_total
@@ -462,16 +458,24 @@ def test_admin_emergency_and_disable_are_off_only(
     assert disabled.data["command_revision"] > revision
 
 
-def test_admin_cannot_enroll_cloud_device_on_direct_transport(
+def test_device_binding_itself_selects_server_managed_transport(
     auth_client, django_user_model,
 ):
     superuser = django_user_model.objects.create_superuser(
         username="direct-root", password="pass12345",
     )
-    with override_settings(CONVEYOR_TRANSPORTS={"cam2": "direct"}):
-        response = auth_client(superuser).post(
-            "/api/conveyors/devices/",
-            {"name": "Unsafe duplicate master", "camera_source": "cam2"},
-            format="json",
-        )
-    assert response.status_code == 400
+    assert transport_for("cam2") == AiCountingSession.CONVEYOR_DIRECT
+
+    response = auth_client(superuser).post(
+        "/api/conveyors/devices/",
+        {"name": "Camera-owned ESP32", "camera_source": "cam2"},
+        format="json",
+    )
+
+    assert response.status_code == 201, response.data
+    assert transport_for("cam2") == AiCountingSession.CONVEYOR_CLOUD
+
+    device = ConveyorDevice.objects.get(camera_source="cam2")
+    device.is_active = False
+    device.save(update_fields=["is_active"])
+    assert transport_for("cam2") == AiCountingSession.CONVEYOR_DIRECT

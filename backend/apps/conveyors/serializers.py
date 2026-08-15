@@ -122,12 +122,6 @@ class ConveyorDeviceEnrollSerializer(ForbidUnknownSerializer):
             raise serializers.ValidationError("Unknown camera") from exc
         if value != camera:
             raise serializers.ValidationError("Camera must be canonical camN")
-        from .services import transport_for
-
-        if transport_for(camera) != "cloud":
-            raise serializers.ValidationError(
-                "Camera is not explicitly configured for cloud control"
-            )
         return camera
 
     def validate_is_active(self, value):
@@ -154,12 +148,6 @@ class ConveyorDeviceUpdateSerializer(ForbidUnknownSerializer):
             raise serializers.ValidationError("Unknown camera") from exc
         if value != camera:
             raise serializers.ValidationError("Camera must be canonical camN")
-        from .services import transport_for
-
-        if transport_for(camera) != "cloud":
-            raise serializers.ValidationError(
-                "Camera is not explicitly configured for cloud control"
-            )
         return camera
 
     def validate_is_active(self, value):

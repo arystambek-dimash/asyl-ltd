@@ -35,9 +35,17 @@ class ObservationResult:
 
 
 def transport_for(camera: str) -> str:
-    mapping = getattr(settings, "CONVEYOR_TRANSPORTS", {})
-    value = mapping.get(camera, "direct") if isinstance(mapping, dict) else "direct"
-    return value if value in {"direct", "cloud"} else "direct"
+    """Choose the controller from the durable camera binding.
+
+    An active ESP32 row is the single source of truth: new order sessions on
+    that camera use the server-leased device.  Without one, the existing
+    camera-PC/direct path remains unchanged.  The chosen value is still frozen
+    into the session, so binding or disabling a device never changes an order
+    that is already open.
+    """
+    if cloud_device_for(camera) is not None:
+        return AiCountingSession.CONVEYOR_CLOUD
+    return AiCountingSession.CONVEYOR_DIRECT
 
 
 def cloud_device_for(camera: str, *, lock: bool = False) -> ConveyorDevice | None:

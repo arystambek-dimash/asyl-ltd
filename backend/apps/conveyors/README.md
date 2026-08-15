@@ -4,23 +4,23 @@ This app is the public HTTPS broker between the order-bound AI session and an
 ESP32. The server cannot open a connection to an ESP32 behind NAT: the device
 must make an outbound sync request every 500 ms and treat every error as OFF.
 
-## Single-master configuration
+## One device per camera
 
-`CONVEYOR_TRANSPORTS_JSON` explicitly selects one controller per camera:
+The durable device binding is the single source of truth.  If a camera has an
+active `ConveyorDevice`, every new order session on that camera uses that ESP32.
+If it has no active device, the existing camera-PC/direct path is unchanged.
+There is no separate server-side camera transport map to maintain.
 
-```json
-{"cam2":"cloud","cam3":"direct"}
-```
+The camera PC still uses a separate OFF-only observation credential. Configure
+its raw token as `AI_CONVEYOR_CLOUD_API_KEY` and store only its SHA-256 digest in
+`CONVEYOR_AI_CALLBACK_TOKEN_SHA256`. Never keep a camera-PC Modbus output
+configured for a camera that is bound to an ESP32; the edge service rejects an
+attempt to run both transports at once.
 
-An omitted camera is `direct`. A cloud device cannot be enrolled or rebound to
-a direct camera. Cloud mapping also requires
-`CONVEYOR_AI_CALLBACK_TOKEN_SHA256`; startup fails if it is absent. Never keep
-the camera-PC Modbus output configured for a camera in cloud mode.
-
-The selected transport is frozen into every order session. Before changing a
-camera between `cloud` and `direct`, close all open sessions, obtain fresh
-physical OFF feedback, and deploy the backend and camera PC together. A config
-change never migrates or resumes a running session through another master.
+The selected transport is frozen into every order session. Bind, rebind, or
+disable devices only after open sessions are stopped and physical OFF is
+confirmed. A binding change never migrates or resumes an already-open session
+through another master.
 
 ## Device enrollment
 

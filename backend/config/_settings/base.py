@@ -1,4 +1,3 @@
-import json
 import os
 import re
 import sys
@@ -277,21 +276,6 @@ def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int
     return value
 
 
-_conveyor_transports_raw = os.environ.get("CONVEYOR_TRANSPORTS_JSON", "{}").strip()
-try:
-    CONVEYOR_TRANSPORTS = json.loads(_conveyor_transports_raw or "{}")
-except json.JSONDecodeError as exc:
-    raise ValueError("CONVEYOR_TRANSPORTS_JSON must be valid JSON") from exc
-if not isinstance(CONVEYOR_TRANSPORTS, dict) or any(
-    not isinstance(camera, str)
-    or re.fullmatch(r"cam[1-9][0-9]*", camera) is None
-    or transport not in {"direct", "cloud"}
-    for camera, transport in CONVEYOR_TRANSPORTS.items()
-):
-    raise ValueError(
-        "CONVEYOR_TRANSPORTS_JSON must map canonical camN names to direct or cloud"
-    )
-
 CONVEYOR_AI_CALLBACK_TOKEN_SHA256 = os.environ.get(
     "CONVEYOR_AI_CALLBACK_TOKEN_SHA256", ""
 ).strip().lower()
@@ -301,13 +285,6 @@ if (
 ):
     raise ValueError(
         "CONVEYOR_AI_CALLBACK_TOKEN_SHA256 must be a lowercase SHA-256 digest"
-    )
-if (
-    "cloud" in CONVEYOR_TRANSPORTS.values()
-    and not CONVEYOR_AI_CALLBACK_TOKEN_SHA256
-):
-    raise ValueError(
-        "CONVEYOR_AI_CALLBACK_TOKEN_SHA256 is required for cloud conveyors"
     )
 CONVEYOR_DEVICE_SYNC_MS = _bounded_int_env(
     "CONVEYOR_DEVICE_SYNC_MS", 500, 100, 500

@@ -91,6 +91,7 @@ describe("ConveyorDevicesButton", () => {
     await user.click(screen.getByRole("button", { name: /ESP32/ }));
 
     const dialog = screen.getByRole("dialog", { name: "ESP32 по камерам" });
+    expect(within(dialog).getByText(/дополнительных настроек режима не нужно/)).toBeInTheDocument();
     expect(within(dialog).getByText("ESP32 B3EDD0")).toBeInTheDocument();
     expect(within(dialog).getByText("cam2")).toBeInTheDocument();
     expect(within(dialog).getByText("Камера 3")).toBeInTheDocument();

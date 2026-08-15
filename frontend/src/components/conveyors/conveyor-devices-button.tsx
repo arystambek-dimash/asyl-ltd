@@ -250,7 +250,7 @@ export function ConveyorDevicesButton({
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-start gap-2.5 text-sm text-slate-500">
             <Link2 className="mt-0.5 size-4 shrink-0 text-sky-600" />
-            <p>Binding создаёт отдельный device ID и секрет именно для выбранной камеры.</p>
+            <p>Привязка сама назначает этот ESP32 выбранной камере — дополнительных настроек режима не нужно.</p>
           </div>
           <Button disabled={!freeCameras.length} onClick={() => showForm()}>
             <Plus className="size-4" /> Привязать ESP32
@@ -354,7 +354,7 @@ export function ConveyorDevicesButton({
         onClose={() => !saving && setFormOpen(false)}
         eyebrow="Новый контроллер"
         title="Привязать ESP32"
-        description="Backend создаст уникальные credentials для одной выбранной камеры."
+        description="После привязки заказы этой камеры будут управлять только её ESP32."
         className="max-w-lg"
         footer={
           <>

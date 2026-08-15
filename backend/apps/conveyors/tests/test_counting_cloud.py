@@ -21,8 +21,7 @@ pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture(autouse=True)
-def cloud_settings(settings, monkeypatch):
-    settings.CONVEYOR_TRANSPORTS = {"cam2": "cloud"}
+def conveyor_settings(settings, monkeypatch):
     settings.CONVEYOR_COMMAND_TIMEOUT_SECONDS = 1
     monkeypatch.setattr(ai, "AI_KEY", "test-key")
     MonoblockCameraSettings.objects.create(camera_sources=["cam2"])
