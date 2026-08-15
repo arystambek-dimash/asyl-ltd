@@ -1,7 +1,9 @@
 import hashlib
 import uuid
+from datetime import timedelta
 
 import pytest
+from django.utils import timezone
 
 from apps.cameras.models import AiCountingSession
 from apps.clients.models import Client
@@ -15,6 +17,7 @@ from apps.conveyors.services import (
     sync_device,
     transport_for,
 )
+from apps.eventlog.models import EventLog
 from apps.orders.models import Order, OrderItem
 
 pytestmark = pytest.mark.django_db
@@ -480,6 +483,138 @@ def test_admin_can_rotate_never_seen_credential_without_provisioning_it(
         HTTP_AUTHORIZATION=old_credential["authorization"],
     )
     assert rejected.status_code == 401
+
+
+def test_admin_can_rotate_never_armed_stale_off_credential(
+    api_client, auth_client, django_user_model,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username="stale-never-armed-rotate-root", password="pass12345",
+    )
+    device = _device(
+        command_revision=3,
+        stop_reason="credential_rotation_pending",
+        last_boot_id=BOOT_ID,
+        last_sequence=2,
+        last_ack_revision=2,
+        last_seen_at=timezone.now() - timedelta(minutes=10),
+        output_state=False,
+        feedback_state=False,
+    )
+    old_digest = device.secret_sha256
+
+    rotated = auth_client(superuser).post(
+        f"/api/conveyors/devices/{device.public_id}/rotate-secret/",
+        {},
+        format="json",
+    )
+
+    assert rotated.status_code == 200
+    device.refresh_from_db()
+    assert device.secret_sha256 != old_digest
+    event = EventLog.objects.get(event_type="conveyor_device_secret_rotated")
+    assert event.payload["rotation_basis"] == "never_armed"
+    assert event.payload["previous_revision"] == 3
+    assert event.payload["previous_ack_revision"] == 2
+    assert event.payload["output_state"] is False
+    assert event.payload["feedback_state"] is False
+    assert "token" not in event.payload
+    assert "secret" not in event.payload
+    rejected = _sync(api_client, device, seq=3)
+    assert rejected.status_code == 401
+
+
+def test_rotation_rolls_back_if_audit_write_fails(
+    auth_client, django_user_model, monkeypatch,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username="rotation-audit-failure-root", password="pass12345",
+    )
+    device = _device()
+    old_digest = device.secret_sha256
+    old_revision = device.command_revision
+
+    def fail_audit(*_args, **_kwargs):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr("apps.conveyors.views.log_event", fail_audit)
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        auth_client(superuser).post(
+            f"/api/conveyors/devices/{device.public_id}/rotate-secret/",
+            {},
+            format="json",
+        )
+
+    device.refresh_from_db()
+    assert device.secret_sha256 == old_digest
+    assert device.command_revision == old_revision
+
+
+def test_stale_off_with_historical_session_still_requires_fresh_proof(
+    auth_client, django_user_model,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username="historical-session-rotate-root", password="pass12345",
+    )
+    _, session = _order_session(superuser, status=AiCountingSession.CLOSED)
+    device = _device(
+        command_session=session,
+        command_target_total=session.target_total,
+        last_seen_at=timezone.now() - timedelta(minutes=10),
+        last_boot_id=BOOT_ID,
+        last_sequence=2,
+        last_ack_revision=1,
+        output_state=False,
+        feedback_state=False,
+    )
+    old_digest = device.secret_sha256
+
+    response = auth_client(superuser).post(
+        f"/api/conveyors/devices/{device.public_id}/rotate-secret/",
+        {},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "off_not_confirmed"
+    device.refresh_from_db()
+    assert device.secret_sha256 == old_digest
+
+
+@pytest.mark.parametrize(
+    "unsafe_history",
+    [
+        {"armed_device_boot_id": BOOT_ID},
+        {"last_total": 1},
+        {"fault": "feedback_mismatch"},
+    ],
+)
+def test_never_armed_bypass_rejects_unsafe_history(
+    auth_client, django_user_model, unsafe_history,
+):
+    superuser = django_user_model.objects.create_superuser(
+        username=f"unsafe-history-{next(iter(unsafe_history))}",
+        password="pass12345",
+    )
+    device = _device(
+        last_seen_at=timezone.now() - timedelta(minutes=10),
+        last_boot_id=BOOT_ID,
+        last_sequence=2,
+        last_ack_revision=1,
+        output_state=False,
+        feedback_state=False,
+        **unsafe_history,
+    )
+
+    response = auth_client(superuser).post(
+        f"/api/conveyors/devices/{device.public_id}/rotate-secret/",
+        {},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "off_not_confirmed"
 
 
 def test_admin_cannot_enroll_active_device_on_open_direct_session(

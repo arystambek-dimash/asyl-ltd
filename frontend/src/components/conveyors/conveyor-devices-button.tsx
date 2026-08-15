@@ -49,6 +49,22 @@ function fieldApiError(cause: unknown) {
   return apiError(cause);
 }
 
+function rotationApiError(cause: unknown) {
+  const data = (cause as AxiosError<{ code?: unknown }>).response?.data;
+  switch (data?.code) {
+    case "off_not_confirmed":
+      return "Команда OFF уже отправлена. Дождитесь, пока ESP32 выйдет на связь и физически подтвердит остановку, затем повторите. Если ESP32 недоступен — сначала физически обесточьте привод.";
+    case "device_busy":
+      return "Сначала завершите активную сессию моноблока. Команда OFF уже отправлена.";
+    case "device_transition_pending":
+      return "ESP32 уже выполняет другую операцию безопасности. Дождитесь подтверждённого OFF и повторите.";
+    case "revision_exhausted":
+      return "Лимит команд исчерпан. Контроллеру нужен новый идентификатор.";
+    default:
+      return fieldApiError(cause);
+  }
+}
+
 function cameraTitle(camera: PlayableCamera | undefined, source: string) {
   return camera?.zone?.trim() || camera?.name?.trim() || source;
 }
@@ -201,7 +217,8 @@ export function ConveyorDevicesButton({
       showSuccess(`Новый token выпущен для ${response.data.camera_source}`);
       void reload().catch(() => undefined);
     } catch (cause) {
-      setRotateError(fieldApiError(cause));
+      setRotateError(rotationApiError(cause));
+      void reload().catch(() => undefined);
     } finally {
       setRotating(false);
     }

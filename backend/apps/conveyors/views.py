@@ -1,6 +1,6 @@
 from typing import ClassVar
 
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
@@ -201,24 +201,39 @@ class ConveyorDeviceRotateSecretView(APIView):
     permission_classes: ClassVar[list[type]] = [IsSuperUser]
 
     def post(self, request, public_id):
-        try:
-            device, token = rotate_secret(
-                get_object_or_404(ConveyorDevice, public_id=public_id)
+        service_error = None
+        with transaction.atomic():
+            try:
+                device, token, rotation_audit = rotate_secret(
+                    get_object_or_404(ConveyorDevice, public_id=public_id)
+                )
+            except ConveyorDeviceError as exc:
+                # Catch inside the outer transaction so a pending durable OFF
+                # requested by rotate_secret is committed with the 409 response.
+                service_error = exc
+            else:
+                # The one-time token must never be committed without its audit
+                # record; an audit failure rolls the credential change back.
+                log_event(
+                    "conveyor_device_secret_rotated",
+                    f"Секрет ESP32 «{device.name}» заменён; конвейер остановлен",
+                    user=request.user,
+                    payload={
+                        "device_id": str(device.public_id),
+                        "camera": device.camera_source,
+                        **rotation_audit,
+                    },
+                )
+        if service_error is not None:
+            return _service_error(service_error)
+        return _no_store(
+            Response(
+                {
+                    **device_payload(device),
+                    "credential": _credential_payload(device, token),
+                }
             )
-        except ConveyorDeviceError as exc:
-            return _service_error(exc)
-        log_event(
-            "conveyor_device_secret_rotated",
-            f"Секрет ESP32 «{device.name}» заменён; конвейер остановлен",
-            user=request.user,
-            payload={"device_id": str(device.public_id), "camera": device.camera_source},
         )
-        return _no_store(Response(
-            {
-                **device_payload(device),
-                "credential": _credential_payload(device, token),
-            }
-        ))
 
 
 class ConveyorDeviceDisableView(APIView):

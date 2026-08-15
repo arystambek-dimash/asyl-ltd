@@ -180,4 +180,29 @@ describe("ConveyorDevicesButton", () => {
     expect(successMock).toHaveBeenCalledWith("Новый token выпущен для cam2");
     expect(reload).toHaveBeenCalledTimes(2);
   });
+
+  it("объясняет по-русски ожидание физического OFF", async () => {
+    postMock.mockRejectedValue({
+      response: {
+        data: {
+          code: "off_not_confirmed",
+          detail: "ESP32 must report fresh physical OFF before credential rotation",
+        },
+      },
+    });
+    const current = device();
+    const reload = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<ConveyorDevicesButton cameras={cameras} devices={[current]} reload={reload} />);
+
+    await user.click(screen.getByRole("button", { name: /ESP32/ }));
+    const manager = screen.getByRole("dialog", { name: "ESP32 по камерам" });
+    await user.click(within(manager).getByRole("button", { name: "Перевыпустить token" }));
+    const confirmation = screen.getByRole("dialog", { name: "Перевыпустить device token?" });
+    await user.click(within(confirmation).getByRole("button", { name: "Выпустить новый token" }));
+
+    expect(await within(confirmation).findByRole("alert")).toHaveTextContent("Команда OFF уже отправлена");
+    expect(within(confirmation).queryByText(/must report fresh/i)).not.toBeInTheDocument();
+    expect(reload).toHaveBeenCalledTimes(2);
+  });
 });

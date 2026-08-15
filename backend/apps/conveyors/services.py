@@ -402,12 +402,14 @@ def emergency_stop(device: ConveyorDevice, reason: str = "emergency_stop") -> Co
     return locked
 
 
-def rotate_secret(device: ConveyorDevice) -> tuple[ConveyorDevice, str]:
+def rotate_secret(device: ConveyorDevice) -> tuple[ConveyorDevice, str, dict]:
     pending_error: ConveyorDeviceError | None = None
     token: str | None = None
+    rotation_audit: dict | None = None
     with transaction.atomic():
         lock_camera_binding()
         locked = ConveyorDevice.objects.select_for_update().get(pk=device.pk)
+        never_armed = _never_armed_safe_off(locked)
         if locked.stop_reason == "device_disable_pending":
             pending_error = ConveyorDeviceError(
                 "device_transition_pending",
@@ -422,7 +424,7 @@ def rotate_secret(device: ConveyorDevice) -> tuple[ConveyorDevice, str]:
             )
         elif (
             locked.is_active
-            and not _never_seen_safe_off(locked)
+            and not never_armed
             and not confirmed_state(locked, False)
         ):
             # Keep the old credential valid long enough for the controller to
@@ -434,6 +436,24 @@ def rotate_secret(device: ConveyorDevice) -> tuple[ConveyorDevice, str]:
                 "ESP32 must report fresh physical OFF before credential rotation",
             )
         else:
+            rotation_audit = {
+                "rotation_basis": (
+                    "never_armed"
+                    if never_armed
+                    else "fresh_physical_off"
+                    if locked.is_active
+                    else "inactive"
+                ),
+                "previous_revision": locked.command_revision,
+                "previous_ack_revision": locked.last_ack_revision,
+                "last_seen_at": (
+                    locked.last_seen_at.isoformat()
+                    if locked.last_seen_at is not None
+                    else None
+                ),
+                "output_state": locked.output_state,
+                "feedback_state": locked.feedback_state,
+            }
             advanced = _next_revision(locked)
             locked.desired_state = False
             locked.command_terminal = True
@@ -451,7 +471,8 @@ def rotate_secret(device: ConveyorDevice) -> tuple[ConveyorDevice, str]:
     if pending_error is not None:
         raise pending_error
     assert token is not None
-    return locked, token
+    assert rotation_audit is not None
+    return locked, token, rotation_audit
 
 
 def disable_device(device: ConveyorDevice) -> ConveyorDevice:
@@ -693,25 +714,57 @@ def confirmed_state(device: ConveyorDevice, desired: bool) -> bool:
     )
 
 
-def _never_seen_safe_off(device: ConveyorDevice) -> bool:
-    """Allow revoking an unprovisioned credential without first using it.
+def _never_armed_safe_off(device: ConveyorDevice) -> bool:
+    """Allow revoking a controller that the server has never armed.
 
-    A controller that has never authenticated cannot have received a leased ON
-    command.  Keep the predicate deliberately strict so any device or session
-    history still requires a fresh, independent physical OFF acknowledgement.
+    ``command_session`` is durable provenance: it is assigned before any ON
+    lease and is never cleared.  A device without that provenance cannot have
+    received server-authorised ON.  This also recovers an unprovisioned or
+    stale-OFF controller whose credential was exposed, without requiring the
+    compromised credential merely to acknowledge another OFF revision.
+
+    Any observed ON, fault, AI history, or session history still requires a
+    fresh independent physical OFF acknowledgement.
     """
-    return bool(
+    no_run_history = bool(
+        device.command_session_id is None
+        and device.command_target_total is None
+        and device.run_started_at is None
+        and device.armed_device_boot_id is None
+        and device.armed_edge_boot_id is None
+        and device.last_ai_seen_at is None
+        and device.last_ai_boot_id is None
+        and device.last_ai_sequence is None
+        and device.last_ai_reported_total is None
+        and device.last_ai_terminal_reason is None
+        and device.last_total == 0
+        and device.last_progress_at is None
+    )
+    durable_off = bool(
+        device.desired_state is False
+        and device.command_terminal is True
+    )
+    never_seen = bool(
         device.last_seen_at is None
         and device.last_boot_id is None
         and device.last_sequence is None
         and device.last_ack_revision is None
         and device.output_state is None
         and device.feedback_state is None
-        and device.command_session_id is None
-        and device.command_target_total is None
-        and device.desired_state is False
-        and device.command_terminal is True
-        and device.run_started_at is None
+        and not device.fault
+    )
+    last_reported_safe_off = bool(
+        device.last_seen_at is not None
+        and device.last_boot_id is not None
+        and device.last_sequence is not None
+        and device.last_ack_revision is not None
+        and device.last_ack_revision <= device.command_revision
+        and device.output_state is False
+        and device.feedback_state is False
+        and not device.fault
+    )
+    return no_run_history and durable_off and (
+        never_seen or last_reported_safe_off
     )
 
 
