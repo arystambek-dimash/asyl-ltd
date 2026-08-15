@@ -108,6 +108,44 @@ def test_ai_error_detail_must_be_a_nonempty_string(monkeypatch):
     assert exc_info.value.detail == "AI-сервис: ошибка 400"
 
 
+def test_legacy_status_caps_each_poll_to_configured_bridge_timeout(settings):
+    settings.CONVEYOR_LEGACY_BRIDGE_REQUEST_TIMEOUT_MS = 275
+    response = UpstreamResponse(
+        b'{"cam":"cam2","running":true,"mode":"session","total":4}'
+    )
+
+    with patch("urllib.request.urlopen", return_value=response) as urlopen:
+        result = ai.legacy_status("cam2", timeout_seconds=10)
+
+    assert result == {
+        "cam": "cam2",
+        "running": True,
+        "mode": "session",
+        "total": 4,
+    }
+    request = urlopen.call_args.args[0]
+    assert request.full_url.endswith("/processors/cam2")
+    assert urlopen.call_args.kwargs["timeout"] == 0.275
+    assert response.closed
+
+
+def test_legacy_status_honours_a_smaller_caller_deadline(settings):
+    settings.CONVEYOR_LEGACY_BRIDGE_REQUEST_TIMEOUT_MS = 350
+    response = UpstreamResponse(b'{"running":false,"mode":"idle","total":0}')
+
+    with patch("urllib.request.urlopen", return_value=response) as urlopen:
+        ai.legacy_status("cam2", timeout_seconds=0.05)
+
+    assert urlopen.call_args.kwargs["timeout"] == 0.05
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), True])
+def test_legacy_status_rejects_invalid_deadlines_without_network(timeout):
+    with patch("urllib.request.urlopen") as urlopen, pytest.raises(ValueError):
+        ai.legacy_status("cam2", timeout_seconds=timeout)
+    urlopen.assert_not_called()
+
+
 @pytest.mark.parametrize("body", [
     b"x" * (recordings.MAX_SEGMENT_LIST_BYTES + 1),
     b"{",

@@ -307,3 +307,57 @@ CONVEYOR_NO_PROGRESS_SECONDS = _bounded_int_env(
 CONVEYOR_MAX_RUN_SECONDS = _bounded_int_env(
     "CONVEYOR_MAX_RUN_SECONDS", 300, 1, 900
 )
+
+_legacy_bridge_cameras = os.environ.get(
+    "CONVEYOR_LEGACY_BRIDGE_CAMERAS", ""
+)
+CONVEYOR_LEGACY_BRIDGE_CAMERAS = frozenset(
+    camera.strip() for camera in _legacy_bridge_cameras.split(",")
+    if camera.strip()
+)
+if any(
+    re.fullmatch(r"cam[1-9][0-9]*", camera) is None
+    for camera in CONVEYOR_LEGACY_BRIDGE_CAMERAS
+):
+    raise ValueError(
+        "CONVEYOR_LEGACY_BRIDGE_CAMERAS must be a comma-separated list of camN"
+    )
+CONVEYOR_LEGACY_BRIDGE_POLL_MS = _bounded_int_env(
+    "CONVEYOR_LEGACY_BRIDGE_POLL_MS", 250, 100, 500
+)
+CONVEYOR_LEGACY_BRIDGE_REQUEST_TIMEOUT_MS = _bounded_int_env(
+    "CONVEYOR_LEGACY_BRIDGE_REQUEST_TIMEOUT_MS", 350, 50, 400
+)
+CONVEYOR_LEGACY_BRIDGE_STALE_MS = _bounded_int_env(
+    "CONVEYOR_LEGACY_BRIDGE_STALE_MS", 750, 500, 1000
+)
+if (
+    CONVEYOR_LEGACY_BRIDGE_REQUEST_TIMEOUT_MS
+    + CONVEYOR_LEGACY_BRIDGE_POLL_MS
+    > CONVEYOR_LEGACY_BRIDGE_STALE_MS
+):
+    raise ValueError(
+        "legacy bridge request timeout plus poll interval must be at most "
+        "CONVEYOR_LEGACY_BRIDGE_STALE_MS"
+    )
+CONVEYOR_LEGACY_BRIDGE_DEVICE_SYNC_MS = _bounded_int_env(
+    "CONVEYOR_LEGACY_BRIDGE_DEVICE_SYNC_MS", 250, 100, 500
+)
+CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS = _bounded_int_env(
+    "CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS", 750, 200, 1000
+)
+if (
+    CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS
+    < CONVEYOR_LEGACY_BRIDGE_DEVICE_SYNC_MS + 100
+):
+    raise ValueError(
+        "CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS must exceed sync by 100 ms"
+    )
+if (
+    CONVEYOR_LEGACY_BRIDGE_STALE_MS
+    + CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS
+    > 1500
+):
+    raise ValueError(
+        "legacy bridge stale window plus ESP lease must be at most 1500 ms"
+    )

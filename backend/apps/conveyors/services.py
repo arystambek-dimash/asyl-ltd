@@ -3,7 +3,7 @@ from __future__ import annotations
 import hmac
 import time
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.conf import settings
 from django.db import transaction
@@ -119,15 +119,33 @@ def _latch_off_locked(device: ConveyorDevice, reason: str) -> bool:
 def _command_payload(device: ConveyorDevice, *, reason: str | None = None) -> dict:
     enabled = bool(device.desired_state and not device.command_terminal)
     bench_pulse = enabled and device.stop_reason == BENCH_PULSE_REASON
+    legacy_bridge = bool(
+        enabled
+        and device.command_session is not None
+        and device.command_session.conveyor_observation_mode
+        == AiCountingSession.OBSERVATION_LEGACY_BRIDGE
+    )
     if bench_pulse:
         lease_ms = BENCH_PULSE_LEASE_MS
+        next_sync_ms = int(getattr(settings, "CONVEYOR_DEVICE_SYNC_MS", 500))
+    elif legacy_bridge:
+        # The compatibility bridge has no callback running beside the camera.
+        # Its tighter pair keeps the last possible positive observation plus
+        # the local ESP lease within the configured 1.5 second OFF envelope.
+        lease_ms = int(
+            getattr(settings, "CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS", 750)
+        )
+        next_sync_ms = int(
+            getattr(settings, "CONVEYOR_LEGACY_BRIDGE_DEVICE_SYNC_MS", 250)
+        )
     else:
         lease_ms = int(getattr(settings, "CONVEYOR_DEVICE_LEASE_MS", 1200))
         lease_ms = min(1500, max(1, lease_ms)) if enabled else 0
+        next_sync_ms = int(getattr(settings, "CONVEYOR_DEVICE_SYNC_MS", 500))
     return {
         "protocol_version": 1,
         "server_time": int(time.time()),
-        "next_sync_ms": int(getattr(settings, "CONVEYOR_DEVICE_SYNC_MS", 500)),
+        "next_sync_ms": next_sync_ms,
         "command": {
             "revision": device.command_revision,
             "state": int(enabled),
@@ -168,6 +186,15 @@ def _audit_payload(device: ConveyorDevice) -> dict:
     }
 
 
+def _ai_stale_ms(session: AiCountingSession) -> int:
+    if (
+        session.conveyor_observation_mode
+        == AiCountingSession.OBSERVATION_LEGACY_BRIDGE
+    ):
+        return int(getattr(settings, "CONVEYOR_LEGACY_BRIDGE_STALE_MS", 750))
+    return int(getattr(settings, "CONVEYOR_AI_STALE_MS", 1500))
+
+
 def _session_can_run(device: ConveyorDevice, now) -> tuple[bool, str]:
     if device.stop_reason == BENCH_PULSE_REASON:
         if "bench" not in (device.firmware or "").casefold():
@@ -203,7 +230,16 @@ def _session_can_run(device: ConveyorDevice, now) -> tuple[bool, str]:
         return False, "device_boot_changed"
     if device.last_ai_boot_id != device.armed_edge_boot_id:
         return False, "edge_boot_changed"
-    stale_ms = int(getattr(settings, "CONVEYOR_AI_STALE_MS", 1500))
+    if (
+        session.conveyor_observation_mode
+        == AiCountingSession.OBSERVATION_LEGACY_BRIDGE
+        and (
+            session.legacy_bridge_boot_id is None
+            or device.last_ai_boot_id != session.legacy_bridge_boot_id
+        )
+    ):
+        return False, "legacy_bridge_restarted"
+    stale_ms = _ai_stale_ms(session)
     if (
         device.last_ai_seen_at is None
         or now - device.last_ai_seen_at >= timedelta(milliseconds=stale_ms)
@@ -337,6 +373,7 @@ def record_ai_observation(data: dict) -> ObservationResult:
         or session.camera != camera
         or session.status not in AiCountingSession.OPEN_STATUSES
         or session.conveyor_transport != AiCountingSession.CONVEYOR_CLOUD
+        or session.conveyor_observation_mode != AiCountingSession.OBSERVATION_EDGE
         or session.target_total != data["target_total"]
         or device.command_target_total != data["target_total"]
     ):
@@ -344,8 +381,25 @@ def record_ai_observation(data: dict) -> ObservationResult:
             "session_mismatch", "Observation does not match the bound session",
         )
 
-    edge_boot_id = data["edge_boot_id"]
-    sequence = data["seq"]
+    return _apply_ai_observation_locked(
+        device,
+        edge_boot_id=data["edge_boot_id"],
+        sequence=data["seq"],
+        total=data["total"],
+        terminal_reason=data["terminal_reason"],
+        now=now,
+    )
+
+
+def _apply_ai_observation_locked(
+    device: ConveyorDevice,
+    *,
+    edge_boot_id,
+    sequence: int,
+    total: int,
+    terminal_reason: str | None,
+    now,
+) -> ObservationResult:
     duplicate = False
     edge_restarted = False
     if device.last_ai_boot_id is None:
@@ -363,8 +417,8 @@ def record_ai_observation(data: dict) -> ObservationResult:
             )
         if sequence == device.last_ai_sequence:
             if (
-                data["total"] != device.last_ai_reported_total
-                or data["terminal_reason"] != device.last_ai_terminal_reason
+                total != device.last_ai_reported_total
+                or terminal_reason != device.last_ai_terminal_reason
             ):
                 raise ConveyorDeviceError(
                     "sequence_conflict", "Sequence was reused with different data",
@@ -375,10 +429,9 @@ def record_ai_observation(data: dict) -> ObservationResult:
             )
 
     previous_total = device.last_total
-    total = data["total"]
     device.last_ai_sequence = sequence
     device.last_ai_reported_total = total
-    device.last_ai_terminal_reason = data["terminal_reason"]
+    device.last_ai_terminal_reason = terminal_reason
     device.last_ai_seen_at = now
     failure_reason = "edge_restarted" if edge_restarted else None
     if total < previous_total:
@@ -389,7 +442,6 @@ def record_ai_observation(data: dict) -> ObservationResult:
         if total > previous_total:
             device.last_progress_at = now
 
-    terminal_reason = data["terminal_reason"]
     if failure_reason is None and total >= device.command_target_total:
         failure_reason = "target_reached"
     elif failure_reason is None and terminal_reason is not None:
@@ -406,6 +458,131 @@ def record_ai_observation(data: dict) -> ObservationResult:
     device.save()
     return ObservationResult(
         _observation_response(device, duplicate=duplicate),
+        _audit_payload(device) if transitioned else None,
+    )
+
+
+@transaction.atomic
+def record_legacy_ai_observation(
+    session_id: int,
+    bridge_boot_id,
+    total: int,
+    *,
+    observed_at: datetime,
+) -> ObservationResult:
+    """Apply one backend-polled legacy counter sample.
+
+    Sequence allocation is performed while holding the device row, so even an
+    accidental duplicate monitor cannot refresh freshness with reordered data.
+    ``observed_at`` is captured before the legacy HTTP request, ensuring a slow
+    response cannot extend the positive observation lease.
+    """
+    if type(total) is not int or not 0 <= total <= 2_147_483_647:
+        raise ConveyorDeviceError(
+            "invalid_legacy_total", "Legacy camera returned an invalid total",
+            status=503,
+        )
+    now = timezone.now()
+    if (
+        not isinstance(observed_at, datetime)
+        or timezone.is_naive(observed_at)
+        or observed_at > now
+    ):
+        raise ConveyorDeviceError(
+            "invalid_legacy_observed_at",
+            "Legacy observation time must be an aware request-start timestamp",
+            status=503,
+        )
+    device = (
+        ConveyorDevice.objects.select_for_update(of=("self",))
+        .select_related("command_session__order")
+        .filter(command_session_id=session_id, is_active=True)
+        .first()
+    )
+    session = device.command_session if device is not None else None
+    if (
+        device is None
+        or session is None
+        or session.status not in AiCountingSession.OPEN_STATUSES
+        or session.conveyor_transport != AiCountingSession.CONVEYOR_CLOUD
+        or session.conveyor_observation_mode
+        != AiCountingSession.OBSERVATION_LEGACY_BRIDGE
+        or session.legacy_bridge_boot_id != bridge_boot_id
+        or session.camera != device.camera_source
+        or session.target_total != device.command_target_total
+    ):
+        raise ConveyorDeviceError(
+            "legacy_session_mismatch",
+            "Legacy observation does not match its frozen session and leader",
+        )
+    if device.command_terminal:
+        raise ConveyorDeviceError(
+            "session_terminal", "Legacy conveyor session is terminal",
+        )
+    if now - observed_at >= timedelta(milliseconds=_ai_stale_ms(session)):
+        transitioned = _latch_off_locked(device, "stale_ai")
+        device.save()
+        return ObservationResult(
+            _observation_response(device, duplicate=False),
+            _audit_payload(device) if transitioned else None,
+        )
+    if device.last_ai_boot_id not in (None, bridge_boot_id):
+        transitioned = _latch_off_locked(device, "legacy_bridge_restarted")
+        device.save()
+        return ObservationResult(
+            _observation_response(device, duplicate=False),
+            _audit_payload(device) if transitioned else None,
+        )
+    sequence = 0 if device.last_ai_sequence is None else device.last_ai_sequence + 1
+    if sequence > MAX_SEQUENCE:
+        transitioned = _latch_off_locked(device, "legacy_sequence_exhausted")
+        device.save()
+        return ObservationResult(
+            _observation_response(device, duplicate=False),
+            _audit_payload(device) if transitioned else None,
+        )
+    return _apply_ai_observation_locked(
+        device,
+        edge_boot_id=bridge_boot_id,
+        sequence=sequence,
+        total=total,
+        terminal_reason=None,
+        # Freshness starts when the legacy HTTP request began, not when a slow
+        # or timing-out camera service eventually returned its payload.
+        now=observed_at,
+    )
+
+
+@transaction.atomic
+def fail_legacy_ai_session(
+    session_id: int,
+    reason: str,
+    *,
+    bridge_boot_id=None,
+) -> ObservationResult | None:
+    """Fence one legacy session OFF without being able to energize anything."""
+    device = (
+        ConveyorDevice.objects.select_for_update(of=("self",))
+        .select_related("command_session")
+        .filter(command_session_id=session_id, is_active=True)
+        .first()
+    )
+    if device is None or device.command_session is None:
+        return None
+    session = device.command_session
+    if (
+        session.conveyor_observation_mode
+        != AiCountingSession.OBSERVATION_LEGACY_BRIDGE
+        or (
+            bridge_boot_id is not None
+            and session.legacy_bridge_boot_id != bridge_boot_id
+        )
+    ):
+        return None
+    transitioned = _latch_off_locked(device, reason[:64])
+    device.save()
+    return ObservationResult(
+        _observation_response(device, duplicate=False),
         _audit_payload(device) if transitioned else None,
     )
 
@@ -772,7 +949,7 @@ def arm_session(session: AiCountingSession) -> ConveyorDevice:
             "not_ready", "Fresh AI and physical OFF confirmation are required",
             status=503,
         )
-    stale_ms = int(getattr(settings, "CONVEYOR_AI_STALE_MS", 1500))
+    stale_ms = _ai_stale_ms(session)
     if timezone.now() - device.last_ai_seen_at >= timedelta(milliseconds=stale_ms):
         raise ConveyorDeviceError(
             "ai_observation_stale", "AI observation is stale", status=503,
@@ -878,7 +1055,7 @@ def wait_prepared(session: AiCountingSession, timeout: float) -> ConveyorDevice:
                 "session_terminal", "Cloud conveyor session is no longer prepared",
             )
         now = timezone.now()
-        stale_ms = int(getattr(settings, "CONVEYOR_AI_STALE_MS", 1500))
+        stale_ms = _ai_stale_ms(session)
         ai_fresh = bool(
             device.last_ai_seen_at is not None
             and now - device.last_ai_seen_at < timedelta(milliseconds=stale_ms)

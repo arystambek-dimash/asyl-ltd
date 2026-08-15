@@ -420,7 +420,7 @@ def _fail_cloud_start(
         device = cloud_conveyors.cloud_device_for(camera)
         if device is not None:
             cloud_conveyors.emergency_stop(device, "session_setup_failed")
-    except Exception:  # noqa: BLE001 - OFF remains lease-enforced
+    except Exception:
         log.exception(
             "Unable to persist cloud conveyor OFF camera=%s session=%s",
             camera,
@@ -463,6 +463,20 @@ def _finish_pending_cleanup_cloud(camera: str, exclude_session_id: int) -> None:
         ).exclude(pk=exclude_session_id).update(error="")
 
 
+def _assert_legacy_session_worker(payload: Mapping, *, reset: bool = False) -> None:
+    """Require the exact old camera-PC session contract before cloud prepare."""
+    if payload.get("running") is not True or payload.get("mode") != "session":
+        raise ai.AiError(
+            503,
+            "Legacy camera PC did not start an order counting session",
+        )
+    if reset and _valid_total(payload.get("total")) != 0:
+        raise ai.AiError(
+            503,
+            "Legacy camera PC did not confirm a zeroed counter",
+        )
+
+
 def _start_cloud(
     camera: str,
     order: Order,
@@ -493,22 +507,74 @@ def _start_cloud(
         }
 
     worker_started = False
+    legacy_mode = (
+        session.conveyor_observation_mode
+        == AiCountingSession.OBSERVATION_LEGACY_BRIDGE
+    )
     try:
         _finish_pending_cleanup_cloud(camera, session.pk)
-        cloud_conveyors.prepare_session(session)
-        live, controlled = ai.start_order_session(
-            camera,
-            session.pk,
-            session.target_total,
-            initialize_legacy_worker=created,
-            conveyor_transport="cloud",
-        )
-        worker_started = live is not None
-        live_payload = _payload(live)
-        if not controlled or live_payload.get("running") is not True:
-            raise ai.AiError(
-                503, "Camera PC did not bind the cloud conveyor session",
+        if legacy_mode:
+            # The old camera service cannot bind `/session` or push cloud
+            # observations. Serialize its one-time status/start/reset sequence
+            # with this durable row, then prepare the ESP binding. The bridge
+            # may claim legacy_bridge_boot_id before or after this lock, but
+            # lifecycle code never invents or replaces that process identity.
+            with transaction.atomic():
+                locked = (
+                    AiCountingSession.objects.select_for_update(of=("self",))
+                    .select_related("order")
+                    .get(pk=session.pk)
+                )
+                if locked.status != AiCountingSession.STARTING:
+                    raise ai.AiError(
+                        409, "AI session changed during legacy preparation",
+                    )
+                device = cloud_conveyors.cloud_device_for(camera, lock=True)
+                already_prepared = bool(
+                    device is not None
+                    and device.command_session_id == locked.pk
+                )
+                live = ai.status(camera)
+                current = _payload(live)
+                worker_started = bool(
+                    live is not None and current.get("running") is True
+                )
+                if not already_prepared:
+                    # Conservatively assume POST may have taken effect even if
+                    # its response is lost; the failure path will issue DELETE.
+                    worker_started = True
+                    live = ai.start(camera)
+                    _assert_legacy_session_worker(_payload(live))
+                    live = ai.reset(camera)
+                    _assert_legacy_session_worker(_payload(live), reset=True)
+                elif (
+                    live is None
+                    or current.get("running") is not True
+                    or current.get("mode") != "session"
+                ):
+                    worker_started = True
+                    live = ai.start(camera)
+                    _assert_legacy_session_worker(_payload(live), reset=True)
+                else:
+                    _assert_legacy_session_worker(current)
+                cloud_conveyors.prepare_session(locked)
+                session = locked
+            live_payload = _payload(live)
+        else:
+            cloud_conveyors.prepare_session(session)
+            live, controlled = ai.start_order_session(
+                camera,
+                session.pk,
+                session.target_total,
+                initialize_legacy_worker=created,
+                conveyor_transport="cloud",
             )
+            worker_started = live is not None
+            live_payload = _payload(live)
+            if not controlled or live_payload.get("running") is not True:
+                raise ai.AiError(
+                    503, "Camera PC did not bind the cloud conveyor session",
+                )
         timeout = float(
             getattr(settings, "CONVEYOR_COMMAND_TIMEOUT_SECONDS", 5)
         )

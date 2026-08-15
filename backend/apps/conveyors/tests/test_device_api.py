@@ -14,6 +14,7 @@ from apps.conveyors.services import (
     arm_session,
     emergency_stop,
     prepare_session,
+    record_legacy_ai_observation,
     sync_device,
     transport_for,
 )
@@ -96,7 +97,13 @@ def _ready_bench_device(api_client):
     return device
 
 
-def _order_session(user, *, status=AiCountingSession.STARTING, target=10):
+def _order_session(
+    user,
+    *,
+    status=AiCountingSession.STARTING,
+    target=10,
+    observation_mode=AiCountingSession.OBSERVATION_EDGE,
+):
     client = Client.objects.create_with_user(
         first_name="Cloud", last_name="Conveyor", phone=f"cloud-{target}"
     )
@@ -110,6 +117,7 @@ def _order_session(user, *, status=AiCountingSession.STARTING, target=10):
         target_total=target,
         conveyor_enabled=True,
         conveyor_transport=AiCountingSession.CONVEYOR_CLOUD,
+        conveyor_observation_mode=observation_mode,
     )
     return order, session
 
@@ -307,6 +315,85 @@ def test_open_session_uses_its_frozen_cloud_transport(make_user):
     assert prepared.command_target_total == session.target_total
     assert prepared.desired_state is False
     assert prepared.command_terminal is False
+
+
+def test_blank_observation_mode_remains_fail_closed(api_client, make_user):
+    device = _device()
+    _order, session = _order_session(
+        make_user("blank-observation-loader"),
+        observation_mode=AiCountingSession.OBSERVATION_NONE,
+    )
+    prepare_session(session)
+
+    response = _observe(api_client, session, total=1)
+
+    assert response.status_code == 409
+    assert response.data["code"] == "session_mismatch"
+    device.refresh_from_db()
+    assert device.last_ai_seen_at is None
+
+
+def test_legacy_observation_freshness_starts_before_camera_request(
+    make_user, settings,
+):
+    settings.CONVEYOR_LEGACY_BRIDGE_STALE_MS = 750
+    bridge_boot_id = uuid.uuid4()
+    device = _device()
+    _order, session = _order_session(
+        make_user("legacy-observed-at-loader"),
+        observation_mode=AiCountingSession.OBSERVATION_LEGACY_BRIDGE,
+    )
+    session.legacy_bridge_boot_id = bridge_boot_id
+    session.save(update_fields=["legacy_bridge_boot_id"])
+    prepare_session(session)
+    request_started_at = timezone.now() - timedelta(milliseconds=300)
+
+    result = record_legacy_ai_observation(
+        session.pk,
+        bridge_boot_id,
+        2,
+        observed_at=request_started_at,
+    )
+
+    device.refresh_from_db()
+    assert result.payload["desired_state"] == 0
+    assert device.last_total == 2
+    assert device.last_ai_seen_at == request_started_at
+    assert device.last_progress_at == request_started_at
+
+
+def test_stale_legacy_response_latches_off_without_refreshing_freshness(
+    make_user, settings,
+):
+    settings.CONVEYOR_LEGACY_BRIDGE_STALE_MS = 750
+    bridge_boot_id = uuid.uuid4()
+    device = _device(desired_state=True, command_terminal=False)
+    _order, session = _order_session(
+        make_user("legacy-stale-response-loader"),
+        status=AiCountingSession.ACTIVE,
+        observation_mode=AiCountingSession.OBSERVATION_LEGACY_BRIDGE,
+    )
+    session.legacy_bridge_boot_id = bridge_boot_id
+    session.save(update_fields=["legacy_bridge_boot_id"])
+    device.command_session = session
+    device.command_target_total = session.target_total
+    device.last_ai_boot_id = bridge_boot_id
+    device.last_ai_seen_at = timezone.now() - timedelta(milliseconds=100)
+    device.save()
+    previous_seen_at = device.last_ai_seen_at
+
+    result = record_legacy_ai_observation(
+        session.pk,
+        bridge_boot_id,
+        2,
+        observed_at=timezone.now() - timedelta(milliseconds=800),
+    )
+
+    device.refresh_from_db()
+    assert result.payload["terminal"] is True
+    assert result.payload["reason"] == "stale_ai"
+    assert device.desired_state is False
+    assert device.last_ai_seen_at == previous_seen_at
 
 
 def test_target_observation_terminally_stops_and_off_has_null_binding(

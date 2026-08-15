@@ -80,7 +80,13 @@ def _read_json_object(response, limit: int, *, error_status: int | None = None) 
     return payload
 
 
-def _request(method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
+def _request(
+    method: str,
+    path: str,
+    body: dict | None = None,
+    *,
+    timeout_seconds: float | None = None,
+) -> tuple[int, dict]:
     req = urllib.request.Request(
         f"{AI_URL}{path}",
         method=method,
@@ -88,7 +94,10 @@ def _request(method: str, path: str, body: dict | None = None) -> tuple[int, dic
         headers={"X-Api-Key": AI_KEY, "Content-Type": "application/json"},
     )
     try:
-        response = urllib.request.urlopen(req, timeout=TIMEOUT)
+        response = urllib.request.urlopen(
+            req,
+            timeout=TIMEOUT if timeout_seconds is None else timeout_seconds,
+        )
     except urllib.error.HTTPError as e:
         try:
             return e.code, _read_json_object(
@@ -113,9 +122,24 @@ def _request(method: str, path: str, body: dict | None = None) -> tuple[int, dic
         response.close()
 
 
-def _call(method: str, path: str, body: dict | None = None,
-          none_on_404: bool = False) -> dict | None:
-    status, payload = _request(method, path, body)
+def _call(
+    method: str,
+    path: str,
+    body: dict | None = None,
+    none_on_404: bool = False,
+    *,
+    timeout_seconds: float | None = None,
+) -> dict | None:
+    if timeout_seconds is None:
+        # Preserve the historical call shape for normal requests and tests.
+        status, payload = _request(method, path, body)
+    else:
+        status, payload = _request(
+            method,
+            path,
+            body,
+            timeout_seconds=timeout_seconds,
+        )
     if status == 404 and none_on_404:
         return None
     if status >= 400:
@@ -208,6 +232,28 @@ def save_counting_line(cam: str, payload) -> tuple[int, dict]:
 def status(cam: str) -> dict | None:
     """Статус и живой счётчик; None — модель на камере не запущена."""
     return _call("GET", _path(cam), none_on_404=True)
+
+
+def legacy_status(camera: str, *, timeout_seconds: float) -> dict | None:
+    """Bounded status poll used only by the server-side legacy bridge."""
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(float(timeout_seconds))
+        or timeout_seconds <= 0
+    ):
+        raise ValueError("timeout_seconds must be a positive finite number")
+    configured_timeout = (
+        int(getattr(settings, "CONVEYOR_LEGACY_BRIDGE_REQUEST_TIMEOUT_MS", 350))
+        / 1000
+    )
+    effective_timeout = min(float(timeout_seconds), configured_timeout)
+    return _call(
+        "GET",
+        _path(camera),
+        none_on_404=True,
+        timeout_seconds=effective_timeout,
+    )
 
 
 def start(cam: str, options: dict | None = None) -> dict:

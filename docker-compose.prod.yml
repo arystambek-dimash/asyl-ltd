@@ -31,6 +31,14 @@ x-backend-environment: &backend-environment
   CONVEYOR_COMMAND_TIMEOUT_SECONDS: ${CONVEYOR_COMMAND_TIMEOUT_SECONDS:-5}
   CONVEYOR_NO_PROGRESS_SECONDS: ${CONVEYOR_NO_PROGRESS_SECONDS:-15}
   CONVEYOR_MAX_RUN_SECONDS: ${CONVEYOR_MAX_RUN_SECONDS:-300}
+  # Explicit compatibility allow-list. Native camera-PC callbacks remain the
+  # preferred path; only cam2 may fall back to the supervised legacy poller.
+  CONVEYOR_LEGACY_BRIDGE_CAMERAS: ${CONVEYOR_LEGACY_BRIDGE_CAMERAS:-cam2}
+  CONVEYOR_LEGACY_BRIDGE_POLL_MS: ${CONVEYOR_LEGACY_BRIDGE_POLL_MS:-250}
+  CONVEYOR_LEGACY_BRIDGE_REQUEST_TIMEOUT_MS: ${CONVEYOR_LEGACY_BRIDGE_REQUEST_TIMEOUT_MS:-350}
+  CONVEYOR_LEGACY_BRIDGE_STALE_MS: ${CONVEYOR_LEGACY_BRIDGE_STALE_MS:-750}
+  CONVEYOR_LEGACY_BRIDGE_DEVICE_SYNC_MS: ${CONVEYOR_LEGACY_BRIDGE_DEVICE_SYNC_MS:-250}
+  CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS: ${CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS:-750}
   THROTTLE_CONVEYOR_DEVICE: ${THROTTLE_CONVEYOR_DEVICE:-180/min}
   THROTTLE_CONVEYOR_AI: ${THROTTLE_CONVEYOR_AI:-6000/min}
   # Физические весы участка Grain доступны серверу по Tailscale. Браузер к
@@ -249,6 +257,29 @@ services:
       timeout: 5s
       retries: 3
       start_period: 60s
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - data
+      - default
+
+  legacy-conveyor-monitor:
+    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    environment:
+      <<: *backend-environment
+      DJANGO_COLLECTSTATIC: "0"
+    entrypoint: []
+    command: ["python", "manage.py", "monitor_legacy_conveyors"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    init: true
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "monitor_legacy_conveyors", "--healthcheck"]
+      interval: 2s
+      timeout: 1s
+      retries: 3
+      start_period: 5s
     restart: unless-stopped
     logging: *default-logging
     networks:
