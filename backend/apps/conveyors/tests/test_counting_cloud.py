@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -14,6 +15,7 @@ from apps.clients.models import Client
 from apps.conveyors.credentials import digest_token
 from apps.conveyors.models import ConveyorDevice
 from apps.orders.models import Order, OrderItem
+from apps.shipments import scale as shipment_scale
 from apps.shipments.models import Shipment
 
 
@@ -146,6 +148,55 @@ def test_bind_cloud_uses_only_cloud_master_and_freezes_transport(
     )
     direct_start.assert_not_called()
     direct_stop.assert_not_called()
+
+
+def test_numberless_cloud_start_binds_scale_sample_to_reserved_session(
+    auth_client, loader, settings,
+):
+    settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
+    order = _order(target=12)
+    order.truck_number = ""
+    order.save(update_fields=["truck_number"])
+    _device()
+    edge = {
+        "cam": "cam2",
+        "running": True,
+        "mode": "session",
+        "stream": "cam2ai",
+        "total": 0,
+    }
+    reading = shipment_scale.ScaleReading(
+        weight_kg=Decimal(10000),
+        age_seconds=Decimal("0.1"),
+        updated_at="2026-08-15T12:00:00+05:00",
+    )
+
+    with (
+        patch.object(shipment_scale, "read_truck_scale", return_value=reading),
+        patch.object(ai, "start_order_session", return_value=(edge, True)),
+        patch(
+            "apps.cameras.counting.cloud_conveyors.wait_prepared",
+            side_effect=_mark_prepared,
+        ),
+        patch(
+            "apps.cameras.counting.cloud_conveyors.wait_confirmed",
+            side_effect=_confirm,
+        ),
+    ):
+        response = auth_client(loader).post(
+            "/api/cameras/cam2/ai/",
+            {"order_id": order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 200, response.data
+    session = AiCountingSession.objects.get(order=order)
+    shipment = Shipment.objects.get(order=order)
+    assert session.conveyor_transport == AiCountingSession.CONVEYOR_CLOUD
+    assert shipment.truck_number == ""
+    assert shipment.weigh_in_kg == Decimal(10000)
+    assert shipment.weigh_in_camera == "cam2"
+    assert shipment.weigh_in_session_id == session.pk
 
 
 def test_cloud_emergency_stop_never_calls_direct_modbus_endpoint(

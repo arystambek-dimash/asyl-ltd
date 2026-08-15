@@ -106,6 +106,108 @@ def test_monoblock_start_binds_camera_and_moves_confirmed_order_to_loading(
     ]
 
 
+def test_monoblock_start_binds_numberless_truck_by_order_and_camera(
+    api_client, loader, settings,
+):
+    settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
+    client = Client.objects.create_with_user(
+        first_name="Order", last_name="Bound", phone="order-bound"
+    )
+    order = Order.objects.create(
+        client=client,
+        status="confirmed",
+        truck_number="",
+    )
+    api_client.force_authenticate(loader)
+    reading = shipment_scale.ScaleReading(
+        weight_kg=Decimal(10000),
+        age_seconds=Decimal("0.1"),
+        updated_at="2026-08-15T12:00:00+05:00",
+    )
+
+    with patch.object(
+        shipment_scale, "read_truck_scale", return_value=reading
+    ) as scale_read, patch.object(
+        ai, "_request", return_value=(200, RUNNING)
+    ) as ai_request:
+        response = api_client.post(
+            "/api/cameras/cam2/ai/",
+            {"order_id": order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    order.refresh_from_db()
+    shipment = Shipment.objects.get(order=order)
+    session = AiCountingSession.objects.get(order=order)
+    assert order.status == "loading"
+    assert order.loading_camera == "cam2"
+    assert shipment.truck_number == ""
+    assert shipment.weigh_in_kg == Decimal(10000)
+    assert shipment.weigh_in_source == Shipment.WeightSource.SCALE
+    assert session.camera == "cam2"
+    assert shipment.weigh_in_camera == "cam2"
+    assert shipment.weigh_in_session_id == session.pk
+    scale_read.assert_called_once_with()
+    assert ai_request.called
+
+
+def test_numberless_retry_on_another_camera_reads_scale_again(
+    api_client, loader, settings,
+):
+    settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
+    client = Client.objects.create_with_user(
+        first_name="Retry", last_name="Bound", phone="retry-bound"
+    )
+    order = Order.objects.create(client=client, status="confirmed", truck_number="")
+    api_client.force_authenticate(loader)
+    readings = [
+        shipment_scale.ScaleReading(
+            weight_kg=Decimal(10000),
+            age_seconds=Decimal("0.1"),
+            updated_at="2026-08-15T12:00:00+05:00",
+        ),
+        shipment_scale.ScaleReading(
+            weight_kg=Decimal(11000),
+            age_seconds=Decimal("0.1"),
+            updated_at="2026-08-15T12:01:00+05:00",
+        ),
+    ]
+
+    with patch.object(
+        shipment_scale, "read_truck_scale", side_effect=readings
+    ) as scale_read, patch.object(
+        ai,
+        "_request",
+        side_effect=[
+            (400, {"detail": "camera refused"}),
+            (200, {**RUNNING, "cam": "cam3", "stream": "cam3ai"}),
+            (200, {**RUNNING, "cam": "cam3", "stream": "cam3ai"}),
+        ],
+    ):
+        refused = api_client.post(
+            "/api/cameras/cam2/ai/",
+            {"order_id": order.pk},
+            format="json",
+        )
+        started = api_client.post(
+            "/api/cameras/cam3/ai/",
+            {"order_id": order.pk},
+            format="json",
+        )
+
+    assert refused.status_code == 400
+    assert started.status_code == 200
+    order.refresh_from_db()
+    shipment = Shipment.objects.get(order=order)
+    active = AiCountingSession.objects.get(order=order, status=AiCountingSession.ACTIVE)
+    assert scale_read.call_count == 2
+    assert order.loading_camera == "cam3"
+    assert shipment.weigh_in_kg == Decimal(11000)
+    assert shipment.weigh_in_camera == "cam3"
+    assert shipment.weigh_in_session_id == active.pk
+
+
 def test_unstable_scale_blocks_monoblock_before_ai_or_database_change(
     api_client, loader, settings,
 ):
@@ -141,8 +243,9 @@ def test_unstable_scale_blocks_monoblock_before_ai_or_database_change(
     assert not AiCountingSession.objects.filter(order=order).exists()
 
 
+@pytest.mark.parametrize("truck_number", ["01RESERVATION", ""])
 def test_scale_entry_is_not_saved_if_camera_reservation_disappears_during_read(
-    api_client, loader, settings,
+    api_client, loader, settings, truck_number,
 ):
     settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
     client = Client.objects.create_with_user(
@@ -151,7 +254,7 @@ def test_scale_entry_is_not_saved_if_camera_reservation_disappears_during_read(
     order = Order.objects.create(
         client=client,
         status="confirmed",
-        truck_number="01RESERVATION",
+        truck_number=truck_number,
     )
     api_client.force_authenticate(loader)
 

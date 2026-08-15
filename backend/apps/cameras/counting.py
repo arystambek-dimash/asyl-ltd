@@ -563,7 +563,12 @@ def _start_cloud(
                     "Only the employee who started loading or an administrator "
                     "may start this conveyor"
                 )
-            order = begin_camera_loading(locked.order, camera, user)
+            order = begin_camera_loading(
+                locked.order,
+                camera,
+                user,
+                reservation_id=locked.pk,
+            )
             armed = cloud_conveyors.arm_session(locked)
             locked.conveyor_enabled = True
             live_payload["conveyor"] = cloud_conveyors.control_payload(armed)
@@ -789,7 +794,12 @@ def start(
                 raise
         else:
             try:
-                order = begin_camera_loading(order, camera, user)
+                order = begin_camera_loading(
+                    order,
+                    camera,
+                    user,
+                    reservation_id=session.pk,
+                )
             except ValidationError as exc:
                 # The worker did start, but the order changed concurrently.
                 # Compensate remotely. If that is ambiguous, the durable

@@ -24,6 +24,11 @@ class Shipment(models.Model):
         default=WeightSource.LEGACY,
         db_default=WeightSource.LEGACY,
     )
+    # Для заказа без номера машины Моноблок связывает замер с конкретной
+    # зарезервированной AI-сессией. Это не даёт повторному старту на другой
+    # камере принять старый замер за новый.
+    weigh_in_camera = models.CharField(max_length=32, blank=True, default="")
+    weigh_in_session_id = models.PositiveBigIntegerField(null=True, blank=True)
     # Для КАМАЗа, который приезжает пустым и уезжает гружёным:
     # net = weigh_out - weigh_in. У вагонов и старых отгрузок поля остаются NULL.
     weigh_out_kg = models.DecimalField(
@@ -36,3 +41,20 @@ class Shipment(models.Model):
     arrived_at = models.DateTimeField(null=True, blank=True)
     loading_started_at = models.DateTimeField(null=True, blank=True)
     shipped_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        weigh_in_camera="",
+                        weigh_in_session_id__isnull=True,
+                    )
+                    | (
+                        ~models.Q(weigh_in_camera="")
+                        & models.Q(weigh_in_session_id__isnull=False)
+                    )
+                ),
+                name="shipment_scale_provenance_pair",
+            ),
+        ]

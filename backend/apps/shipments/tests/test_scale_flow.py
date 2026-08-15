@@ -89,6 +89,87 @@ def test_entry_weight_is_real_scale_reading_and_is_idempotent(
     read.assert_called_once_with()
 
 
+def test_direct_scale_entry_still_requires_truck_number(
+    settings, boss, operator,
+):
+    settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
+    order, _product = _order(boss)
+    order.truck_number = ""
+    order.save(update_fields=["truck_number"])
+
+    with patch.object(scale, "read_truck_scale") as read, pytest.raises(
+        ValidationError
+    ) as exc_info:
+        ensure_scale_entry_weight(order, operator)
+
+    assert exc_info.value.detail["code"] == "truck_number_required"
+    read.assert_not_called()
+    assert not Shipment.objects.filter(order=order).exists()
+
+
+def test_legacy_order_skips_scale_preflight(
+    settings, boss, operator,
+):
+    settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
+    order, _product = _order(boss)
+    order.scale_weighing_required = False
+    order.save(update_fields=["scale_weighing_required"])
+
+    with patch.object(scale, "read_truck_scale") as read:
+        assert ensure_scale_entry_weight(order, operator) is None
+
+    read.assert_not_called()
+    assert not Shipment.objects.filter(order=order).exists()
+
+
+def test_numberless_monoblock_scale_flow_finishes_by_order_binding(
+    settings, boss, operator,
+):
+    settings.TRUCK_SCALE_API_URL = "http://scale.test/api/v1/weight"
+    order, product = _order(boss)
+    order.truck_number = ""
+    order.save(update_fields=["truck_number"])
+    session = AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.STARTING,
+        started_by=operator,
+    )
+
+    with patch.object(
+        scale,
+        "read_truck_scale",
+        side_effect=[_reading("10000"), _reading("12500")],
+    ) as read:
+        ensure_scale_entry_weight(
+            order,
+            operator,
+            reservation_id=session.pk,
+            camera="cam2",
+        )
+        begin_camera_loading(
+            order,
+            "cam2",
+            operator,
+            reservation_id=session.pk,
+        )
+        record_count(order, 50, operator)
+        order.refresh_from_db()
+        shipment = finish_loading(order, operator)
+
+    order.refresh_from_db()
+    shipment.refresh_from_db()
+    assert read.call_count == 2
+    assert order.status == "shipped"
+    assert shipment.truck_number == ""
+    assert shipment.weigh_in_kg == Decimal(10000)
+    assert shipment.weigh_out_kg == Decimal(12500)
+    assert shipment.net_weight_kg == Decimal(2500)
+    assert shipment.weigh_in_camera == "cam2"
+    assert shipment.weigh_in_session_id == session.pk
+    assert StockItem.objects.get(product=product).bags == 50
+
+
 def test_direct_begin_cannot_create_estimated_entry_for_new_required_order(
     settings, boss, operator,
 ):

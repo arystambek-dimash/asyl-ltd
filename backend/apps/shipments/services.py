@@ -123,6 +123,30 @@ def estimated_load_kg(order) -> Decimal:
     )
 
 
+def _matching_scale_entry(
+    shipment: Shipment | None,
+    truck_number: str,
+    *,
+    reservation_id: int | None = None,
+    camera: str | None = None,
+) -> bool:
+    if (
+        shipment is None
+        or shipment.truck_number != truck_number
+        or shipment.weigh_in_source != Shipment.WeightSource.SCALE
+        or shipment.weigh_in_kg is None
+    ):
+        return False
+    if truck_number.strip():
+        return True
+    return bool(
+        reservation_id is not None
+        and camera
+        and shipment.weigh_in_session_id == reservation_id
+        and shipment.weigh_in_camera == camera
+    )
+
+
 def _lock_start_reservation(
     reservation_id: int | None,
     order_id: int,
@@ -163,24 +187,29 @@ def ensure_scale_entry_weight(
     должен незаметно заменить вес пустого КАМАЗа более поздним показанием.
     """
     state = type(order).objects.filter(pk=order.pk).values(
-        "transport_type", "truck_number"
+        "transport_type", "truck_number", "scale_weighing_required"
     ).get()
-    if state["transport_type"] != "truck" or not scale.enabled():
+    if (
+        state["transport_type"] != "truck"
+        or not state["scale_weighing_required"]
+        or not scale.enabled()
+    ):
         return None
     expected_truck_number = state["truck_number"]
-    if not expected_truck_number.strip():
+    has_camera_reservation = reservation_id is not None and bool(camera)
+    if not expected_truck_number.strip() and not has_camera_reservation:
         raise ValidationError({
             "detail": "Сначала укажите номер КАМАЗа",
             "code": "truck_number_required",
         })
 
-    existing = Shipment.objects.filter(
-        order_id=order.pk,
-        truck_number=expected_truck_number,
-        weigh_in_source=Shipment.WeightSource.SCALE,
-        weigh_in_kg__isnull=False,
-    ).first()
-    if existing is not None:
+    existing = Shipment.objects.filter(order_id=order.pk).first()
+    if _matching_scale_entry(
+        existing,
+        expected_truck_number,
+        reservation_id=reservation_id,
+        camera=camera,
+    ):
         return _store_scale_entry_weight(
             order,
             None,
@@ -206,12 +235,20 @@ def _save_scale_entry(
     order,
     reading: scale.ScaleReading,
     user,
+    *,
+    reservation_id: int | None = None,
+    camera: str | None = None,
 ) -> Shipment:
     previous_weight = shipment.weigh_in_kg
     previous_source = shipment.weigh_in_source
     shipment.truck_number = order.truck_number
     shipment.weigh_in_kg = reading.weight_kg
     shipment.weigh_in_source = Shipment.WeightSource.SCALE
+    has_camera_reservation = reservation_id is not None and bool(camera)
+    shipment.weigh_in_camera = camera if has_camera_reservation else ""
+    shipment.weigh_in_session_id = (
+        reservation_id if has_camera_reservation else None
+    )
     shipment.weigh_out_kg = None
     shipment.net_weight_kg = None
     shipment.arrived_at = timezone.now()
@@ -255,7 +292,12 @@ def _store_scale_entry_weight(
             "detail": "Взвесить КАМАЗ на въезде можно только до начала погрузки",
             "code": "invalid_status",
         })
-    if not order.truck_number.strip():
+    # Моноблок уже закрепляет физическую операцию за неизменяемой парой
+    # order + camera reservation. Поэтому текстовый номер машины там не
+    # является идентификатором весового замера. В остальных flow старое
+    # требование номера сохраняется.
+    has_camera_reservation = reservation_id is not None and bool(camera)
+    if not order.truck_number.strip() and not has_camera_reservation:
         raise ValidationError({
             "detail": "Сначала укажите номер КАМАЗа",
             "code": "truck_number_required",
@@ -267,11 +309,11 @@ def _store_scale_entry_weight(
         })
 
     shipment = Shipment.objects.select_for_update().filter(order=order).first()
-    if (
-        shipment is not None
-        and shipment.truck_number == order.truck_number
-        and shipment.weigh_in_source == Shipment.WeightSource.SCALE
-        and shipment.weigh_in_kg is not None
+    if _matching_scale_entry(
+        shipment,
+        order.truck_number,
+        reservation_id=reservation_id,
+        camera=camera,
     ):
         return shipment
 
@@ -283,7 +325,14 @@ def _store_scale_entry_weight(
 
     if shipment is None:
         shipment = Shipment(order=order)
-    return _save_scale_entry(shipment, order, reading, user)
+    return _save_scale_entry(
+        shipment,
+        order,
+        reading,
+        user,
+        reservation_id=reservation_id,
+        camera=camera,
+    )
 
 
 def record_scale_arrival(order, user) -> Shipment:
@@ -454,7 +503,13 @@ def _record_scale_exit(
 
 
 @transaction.atomic
-def begin_camera_loading(order, camera: str, user):
+def begin_camera_loading(
+    order,
+    camera: str,
+    user,
+    *,
+    reservation_id: int | None = None,
+):
     """Закрепить свободную камеру и перевести заказ в активную погрузку.
 
     Моноблок вызывает эту операцию перед запуском модели. Поэтому заказ из
@@ -481,11 +536,11 @@ def begin_camera_loading(order, camera: str, user):
     now = timezone.now()
     old_status = order.status
     shipment = getattr(order, "shipment", None)
-    matching_scale_entry = bool(
-        shipment
-        and shipment.truck_number == order.truck_number
-        and shipment.weigh_in_source == Shipment.WeightSource.SCALE
-        and shipment.weigh_in_kg is not None
+    matching_scale_entry = _matching_scale_entry(
+        shipment,
+        order.truck_number,
+        reservation_id=reservation_id,
+        camera=camera,
     )
     if (
         order.transport_type == "truck"
