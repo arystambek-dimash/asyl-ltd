@@ -562,6 +562,42 @@ export interface MonoblockDevice {
   created_at: string;
   updated_at: string;
 }
+
+/** Cloud-polled ESP32 bound to exactly one camera source. */
+export interface ConveyorDevice {
+  id: number;
+  public_id: string;
+  name: string;
+  camera_source: string;
+  is_active: boolean;
+  desired_state: 0 | 1;
+  command_revision: number;
+  command_session_id: number | null;
+  command_target_total: number | null;
+  command_terminal: boolean;
+  stop_reason: string;
+  last_seen_at: string | null;
+  output_state: 0 | 1 | null;
+  feedback_state: 0 | 1 | null;
+  fault: string | null;
+  firmware: string;
+  wifi_rssi: number | null;
+  last_ai_seen_at: string | null;
+  last_total: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConveyorDeviceCredential {
+  device_id: string;
+  token: string;
+  authorization: string;
+}
+
+/** POST response: credential is intentionally present only once. */
+export interface ConveyorDeviceEnrollment extends ConveyorDevice {
+  credential: ConveyorDeviceCredential;
+}
 /**
  * Рамка мешка на последнем кадре.
  *

@@ -33,6 +33,7 @@ import {
 import { AppShell } from "@/components/layout/app-shell";
 import { playableCameras, type CameraFeed } from "@/components/camera-wall";
 import { CameraStream } from "@/components/camera-stream";
+import { ConveyorDevicesButton } from "@/components/conveyors/conveyor-devices-button";
 import { DetectionOverlay } from "@/components/detection-overlay";
 import { RequirePerm } from "@/components/require-perm";
 import { ShipmentLauncher } from "@/components/shipping/shipment-launcher";
@@ -55,6 +56,7 @@ import type {
   AlwaysOnDetection,
   AlwaysOnProcessorStatus,
   ConveyorStatus,
+  ConveyorDevice,
   MonoblockCameraSettings,
   MonoblockDevice,
   Order,
@@ -2229,6 +2231,11 @@ function MonoblockPageInner() {
     reload: reloadMonoblockDevices,
   } = useApi<MonoblockDevice[]>(me?.is_superuser ? "/cameras/monoblock-devices/" : null);
   const {
+    data: conveyorDevices,
+    error: conveyorDevicesError,
+    reload: reloadConveyorDevices,
+  } = useApi<ConveyorDevice[]>(me?.is_superuser ? "/conveyors/devices/" : null);
+  const {
     data: alwaysOnSettings,
     error: alwaysOnSettingsError,
     reload: reloadAlwaysOnSettings,
@@ -2267,7 +2274,7 @@ function MonoblockPageInner() {
         reloadOrders(),
         reloadCameras(),
         reloadCameraSettings(),
-        ...(me?.is_superuser ? [reloadAlwaysOnSettings(), reloadAlwaysOnAnalytics()] : []),
+        ...(me?.is_superuser ? [reloadAlwaysOnSettings(), reloadAlwaysOnAnalytics(), reloadConveyorDevices()] : []),
       ]),
     SLOW_POLL_MS,
   );
@@ -2276,6 +2283,7 @@ function MonoblockPageInner() {
     sessionsError ||
     cameraSettingsError ||
     monoblockDevicesError ||
+    conveyorDevicesError ||
     alwaysOnSettingsError ||
     alwaysOnAnalyticsError;
   const reloadAll = () =>
@@ -2285,6 +2293,7 @@ function MonoblockPageInner() {
       reloadSessions(),
       reloadCameraSettings(),
       reloadMonoblockDevices(),
+      reloadConveyorDevices(),
       reloadAlwaysOnSettings(),
       reloadAlwaysOnAnalytics(),
     ]);
@@ -2392,11 +2401,18 @@ function MonoblockPageInner() {
                 ) : can(me, "sys_permissions.manage") ? (
                   <>
                     {isSuper && (
-                      <MonoblockDevicesButton
-                        cameras={playable}
-                        devices={monoblockDevices ?? []}
-                        reload={reloadMonoblockDevices}
-                      />
+                      <>
+                        <ConveyorDevicesButton
+                          cameras={playable}
+                          devices={conveyorDevices ?? []}
+                          reload={reloadConveyorDevices}
+                        />
+                        <MonoblockDevicesButton
+                          cameras={playable}
+                          devices={monoblockDevices ?? []}
+                          reload={reloadMonoblockDevices}
+                        />
+                      </>
                     )}
                     <CameraSettingsButton cameras={playable} settings={cameraSettings} reload={reloadCameraSettings} />
                   </>
