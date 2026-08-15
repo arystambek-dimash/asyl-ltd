@@ -7,9 +7,25 @@ import type { CameraFeed } from "@/components/camera-wall";
 import { apiError } from "@/lib/api";
 import { orderedBagCount } from "@/lib/orders";
 import type { Order } from "@/lib/types";
+import type { ConveyorStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type PlayableCamera = CameraFeed & { src: string };
+
+function conveyorConfigured(status: ConveyorStatus | null | undefined): boolean {
+  return status?.configured === true || status?.enabled === true;
+}
+
+function conveyorReady(status: ConveyorStatus | null | undefined): boolean {
+  return (
+    conveyorConfigured(status) &&
+    status?.online === true &&
+    status.state === "off" &&
+    status.desired === 0 &&
+    status.feedback === 0 &&
+    !status.error
+  );
+}
 
 function SelectCard({
   kind,
@@ -106,6 +122,16 @@ export function ShipmentLauncher({
   const availableCameras = useMemo(
     () =>
       cameras.filter((camera) => {
+        // Поток с известным src ещё не означает живую камеру. Для удалённого
+        // запуска конвейера оператор может выбрать только подтверждённый online
+        // источник; backend всё равно повторно проверяет interlock перед стартом.
+        if (!camera.online) return false;
+        // A configured smart output is selectable only after boot OFF/readback.
+        // An unconfigured camera remains available in explicitly labelled
+        // AI-only/manual-conveyor mode for rolling compatibility.
+        if (conveyorConfigured(camera.conveyor) && !conveyorReady(camera.conveyor)) {
+          return false;
+        }
         const ownerId = cameraOwners[camera.src];
         if (ownerId != null) return ownerId === order?.id;
         return !busyCameras.includes(camera.src);
@@ -113,7 +139,25 @@ export function ShipmentLauncher({
     [busyCameras, cameraOwners, cameras, order?.id],
   );
   const camera = availableCameras.find((item) => item.src === cameraSrc) ?? null;
-  const equipmentOnline = cameras.some((item) => item.online);
+  const selectedPhysicalCamera = cameraLocked
+    ? (cameras[0] ?? null)
+    : (cameras.find((item) => item.src === cameraSrc) ?? camera);
+  const hasSmartConveyor = conveyorConfigured(selectedPhysicalCamera?.conveyor);
+  const smartConveyorReady = conveyorReady(selectedPhysicalCamera?.conveyor);
+  const onlineCameraCount = cameras.filter((item) => item.online).length;
+  const camerasOnline = onlineCameraCount > 0;
+  const cameraPlaceholder = !cameras.length
+    ? "Камеры не настроены"
+    : !onlineCameraCount
+      ? "Нет камер онлайн"
+      : !availableCameras.length
+        ? "Нет свободных камер"
+        : "Выберите камеру";
+  const cameraStatus = !cameras.length
+    ? "Не настроены"
+    : onlineCameraCount === cameras.length
+      ? "Онлайн"
+      : `${onlineCameraCount} из ${cameras.length} онлайн`;
 
   useEffect(() => {
     if (cameraSrc && !availableCameras.some((item) => item.src === cameraSrc)) {
@@ -162,34 +206,32 @@ export function ShipmentLauncher({
 
       <div className="absolute right-5 top-5 flex items-center gap-3 rounded-2xl border border-[#dce5f2] bg-white/90 px-4 py-3 text-[13px] shadow-[0_8px_28px_rgba(47,75,123,0.08)] backdrop-blur-lg sm:right-7 sm:top-6">
         <span className="relative flex size-2.5">
-          {equipmentOnline && (
+          {camerasOnline && (
             <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-40" />
           )}
-          <span className={cn("relative size-2.5 rounded-full", equipmentOnline ? "bg-emerald-500" : "bg-amber-400")} />
+          <span className={cn("relative size-2.5 rounded-full", camerasOnline ? "bg-emerald-500" : "bg-amber-400")} />
         </span>
-        <span className="font-semibold text-slate-700">Оборудование</span>
-        <span className={equipmentOnline ? "text-emerald-600" : "text-amber-600"}>
-          {equipmentOnline ? "Онлайн" : "Нет связи"}
-        </span>
+        <span className="font-semibold text-slate-700">Камеры</span>
+        <span className={camerasOnline ? "text-emerald-600" : "text-amber-600"}>{cameraStatus}</span>
       </div>
 
       <div className="relative z-10 flex min-h-[390px] flex-col items-center justify-center px-5 pb-7 pt-24 sm:px-8 lg:px-10 lg:pb-6 lg:pt-12">
         <div className="grid w-full max-w-[1180px] items-center gap-5 lg:grid-cols-[minmax(230px,1fr)_260px_minmax(230px,1fr)] lg:gap-10">
           <div className="order-2 flex justify-center lg:order-1 lg:justify-end">
             {cameraLocked ? (
-              <AssignedCameraCard camera={cameras[0] ?? null} available={!!camera} />
+              <AssignedCameraCard camera={cameras[0] ?? null} available={!!camera?.online} />
             ) : (
               <SelectCard
                 kind="camera"
                 label="Камера"
                 value={cameraSrc}
                 displayValue={camera?.zone}
-                placeholder={availableCameras.length ? "Выберите камеру" : "Нет свободных камер"}
+                placeholder={cameraPlaceholder}
                 onChange={setCameraSrc}
               >
                 {availableCameras.map((item) => (
                   <option key={item.id} value={item.src}>
-                    {item.zone}
+                    {item.zone} · {conveyorReady(item.conveyor) ? "авто-конвейер" : "AI, конвейер вручную"}
                   </option>
                 ))}
               </SelectCard>
@@ -226,7 +268,11 @@ export function ShipmentLauncher({
               kind="order"
               label="Заказ"
               value={orderId}
-              displayValue={order ? `#${order.id} · ${order.client_name || "Без клиента"}` : undefined}
+              displayValue={
+                order
+                  ? `#${order.id} · ${order.client_name || "Без клиента"} · ${orderedBagCount(order)} меш.`
+                  : undefined
+              }
               placeholder={orders.length ? "Выберите заказ" : "Нет заказов в ожидании въезда"}
               onChange={setOrderId}
             >
@@ -240,13 +286,13 @@ export function ShipmentLauncher({
         </div>
 
         <p className="mt-5 max-w-[570px] text-center text-[14px] font-medium leading-relaxed text-[#415174] sm:text-[15px]">
-          {order?.transport_type === "train"
-            ? cameraLocked
-              ? "Выберите вагон — закреплённая камера включится автоматически и начнёт считывать мешки."
-              : "Выберите вагон и свободную камеру — система начнёт считывать мешки."
-            : cameraLocked
-              ? "Поставьте КАМАЗ на весы и выберите заказ — система зафиксирует входной вес, включит закреплённую камеру и начнёт считывать мешки."
-              : "Поставьте КАМАЗ на весы, выберите заказ и камеру — система зафиксирует входной вес и начнёт считывать мешки."}
+          {hasSmartConveyor && !smartConveyorReady
+            ? "ESP32 не подтвердил безопасный OFF — автоматический запуск заблокирован. Проверьте контроллер и контактор."
+            : smartConveyorReady
+              ? order?.transport_type === "train"
+                ? "После привязки система проверит OFF, запустит конвейер и защёлкнет остановку при достижении цели."
+                : "После входного веса система проверит OFF, запустит конвейер и защёлкнет остановку при достижении цели."
+              : "AI будет считать мешки, но автоматика ESP32 для этой камеры не настроена: запускайте и останавливайте конвейер вручную."}
         </p>
         {error && <p className="mt-2 text-center text-sm font-medium text-[var(--destructive)]">{error}</p>}
 

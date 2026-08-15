@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, apiError, isCanceledRequest } from "@/lib/api";
+import type { ConveyorStatus } from "@/lib/types";
 
 /**
  * AI-подсчёт мешков на камере (ai_service через бэкенд-прокси).
@@ -15,7 +16,7 @@ export interface AiStatus {
   busy?: boolean;
   available?: boolean;
   owned_by_order?: boolean;
-  session_id?: number;
+  session_id?: number | string | null;
   session_order_id?: number;
   session_camera?: string;
   session_started_at?: string;
@@ -31,6 +32,10 @@ export interface AiStatus {
   total?: number;
   weight?: number;
   per_color?: Record<string, number>;
+  target_total?: number | null;
+  remaining?: number | null;
+  goal_reached?: boolean;
+  conveyor?: ConveyorStatus | null;
 }
 
 const POLL_LIVE_MS = 1500;
@@ -45,11 +50,13 @@ function pollDelay(status: AiStatus | null): number {
 export function useAiCounter(cam: string | null, orderId: number | null, active: boolean) {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [stoppingConveyor, setStoppingConveyor] = useState(false);
   const [commandError, setCommandError] = useState("");
   const [pollError, setPollError] = useState("");
   const [stale, setStale] = useState(false);
   const latestPoll = useRef(0);
   const latestCommand = useRef(0);
+  const commandGeneration = useRef(0);
   const scopeGeneration = useRef(0);
   const statusRef = useRef<AiStatus | null>(null);
   const reschedulePolling = useRef<() => void>(() => {});
@@ -65,6 +72,7 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
     const scope = ++scopeGeneration.current;
     latestPoll.current += 1;
     latestCommand.current += 1;
+    commandGeneration.current += 1;
     commandQueue.current = Promise.resolve();
     statusRef.current = null;
     setStatus(null);
@@ -72,6 +80,7 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
     setPollError("");
     setStale(false);
     setBusy(false);
+    setStoppingConveyor(false);
     if (!active || !cam || !orderId) return;
 
     let disposed = false;
@@ -139,6 +148,7 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
       scopeGeneration.current += 1;
       latestPoll.current += 1;
       latestCommand.current += 1;
+      commandGeneration.current += 1;
       reschedulePolling.current = () => {};
       if (timer) clearTimeout(timer);
       controller?.abort();
@@ -164,6 +174,7 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
       }
 
       const scope = scopeGeneration.current;
+      const generation = commandGeneration.current;
       const command = ++latestCommand.current;
       latestPoll.current += 1;
       setBusy(true);
@@ -171,12 +182,18 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
       setPollError("");
 
       const run = async () => {
-        if (actionScope !== currentActionScope.current || scope !== scopeGeneration.current) return;
+        if (
+          actionScope !== currentActionScope.current ||
+          scope !== scopeGeneration.current ||
+          generation !== commandGeneration.current
+        )
+          return;
         try {
           const res = await fn();
           if (
             actionScope !== currentActionScope.current ||
             scope !== scopeGeneration.current ||
+            generation !== commandGeneration.current ||
             command !== latestCommand.current
           ) {
             return;
@@ -191,6 +208,7 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
           if (
             actionScope === currentActionScope.current &&
             scope === scopeGeneration.current &&
+            generation === commandGeneration.current &&
             command === latestCommand.current
           ) {
             setCommandError(apiError(cause));
@@ -200,6 +218,7 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
           if (
             actionScope === currentActionScope.current &&
             scope === scopeGeneration.current &&
+            generation === commandGeneration.current &&
             command === latestCommand.current
           ) {
             setBusy(false);
@@ -219,25 +238,124 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
   // Дублируем order_id в query и JSON. Query переживает старые proxy/body
   // настройки и делает привязку заказа видимой в access-log; JSON оставляем
   // для обратной совместимости API.
-  const orderParams = useCallback(() => ({ params: { order_id: orderId } }), [orderId]);
+  const fencedSessionId = useCallback(
+    (expected?: number | string | null) => expected ?? statusRef.current?.session_id ?? null,
+    [],
+  );
+  const actionConfig = useCallback(
+    (expected?: number | string | null) => {
+      const sessionId = fencedSessionId(expected);
+      return {
+        params: {
+          order_id: orderId,
+          ...(sessionId != null ? { session_id: sessionId } : {}),
+        },
+      };
+    },
+    [fencedSessionId, orderId],
+  );
+  const actionBody = useCallback(
+    (expected?: number | string | null) => {
+      const sessionId = fencedSessionId(expected);
+      return {
+        order_id: orderId,
+        ...(sessionId != null ? { session_id: sessionId } : {}),
+      };
+    },
+    [fencedSessionId, orderId],
+  );
 
   const start = useCallback(
-    () => act(() => api.post<AiStatus>(`/cameras/${cam}/ai/`, { order_id: orderId }, orderParams())),
-    [act, cam, orderId, orderParams],
+    (expectedSessionId?: number | string | null) =>
+      act(() =>
+        api.post<AiStatus>(`/cameras/${cam}/ai/`, actionBody(expectedSessionId), actionConfig(expectedSessionId)),
+      ),
+    [act, actionBody, actionConfig, cam],
   );
   const stop = useCallback(
-    (completeOrder = false) =>
+    (completeOrder = false, expectedSessionId?: number | string | null) =>
       act(() =>
         api.delete<AiStatus>(`/cameras/${cam}/ai/`, {
-          params: { order_id: orderId, complete_order: completeOrder ? 1 : 0 },
-          data: { order_id: orderId, complete_order: completeOrder },
+          params: {
+            ...actionConfig(expectedSessionId).params,
+            complete_order: completeOrder ? 1 : 0,
+          },
+          data: {
+            ...actionBody(expectedSessionId),
+            complete_order: completeOrder,
+          },
         }),
       ),
-    [act, cam, orderId],
+    [act, actionBody, actionConfig, cam],
+  );
+  const stopConveyor = useCallback(
+    async (expectedSessionId?: number | string | null) => {
+      if (
+        actionScope !== currentActionScope.current ||
+        !actionScope.active ||
+        !actionScope.cam ||
+        !actionScope.orderId
+      ) {
+        return;
+      }
+      const scope = scopeGeneration.current;
+      // Emergency OFF preempts queued UI commands. An already-running HTTP
+      // start may still finish server-side, but the edge terminal latch for
+      // this session makes its delayed ON lose to this OFF.
+      const generation = ++commandGeneration.current;
+      const command = ++latestCommand.current;
+      latestPoll.current += 1;
+      commandQueue.current = Promise.resolve();
+      setBusy(false);
+      setStoppingConveyor(true);
+      setCommandError("");
+      setPollError("");
+      try {
+        const response = await api.post<AiStatus>(
+          `/cameras/${cam}/ai/conveyor/stop/`,
+          actionBody(expectedSessionId),
+          actionConfig(expectedSessionId),
+        );
+        if (
+          actionScope === currentActionScope.current &&
+          scope === scopeGeneration.current &&
+          generation === commandGeneration.current &&
+          command === latestCommand.current
+        ) {
+          latestPoll.current += 1;
+          statusRef.current = response.data;
+          setStatus(response.data);
+          setStale(false);
+          reschedulePolling.current();
+        }
+      } catch (cause) {
+        if (
+          actionScope === currentActionScope.current &&
+          scope === scopeGeneration.current &&
+          generation === commandGeneration.current &&
+          command === latestCommand.current
+        ) {
+          setCommandError(apiError(cause));
+        }
+        throw cause;
+      } finally {
+        if (
+          actionScope === currentActionScope.current &&
+          scope === scopeGeneration.current &&
+          generation === commandGeneration.current
+        ) {
+          setStoppingConveyor(false);
+        }
+      }
+    },
+    [actionBody, actionConfig, actionScope, cam],
   );
   const reset = useCallback(
-    () => act(() => api.post<AiStatus>(`/cameras/${cam}/ai/reset/`, { order_id: orderId }, orderParams())),
-    [act, cam, orderId, orderParams],
+    (expectedSessionId?: number | string | null) =>
+      act(() =>
+        api.post<AiStatus>(`/cameras/${cam}/ai/reset/`, actionBody(expectedSessionId), actionConfig(expectedSessionId)),
+      ),
+    [act, actionBody, actionConfig, cam],
   );
 
   return {
@@ -245,11 +363,13 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
     running,
     occupied,
     busy,
+    stoppingConveyor,
     stale,
     error: commandError || pollError,
     orderId,
     start,
     stop,
+    stopConveyor,
     reset,
   };
 }

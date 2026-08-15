@@ -340,5 +340,33 @@ class SecurityHeaderTests(unittest.TestCase):
             self.assertIn(header, headers)
 
 
+class ConveyorDeviceIngressTests(unittest.TestCase):
+    """The high-rate ESP path stays bounded and separate from operator API."""
+
+    def test_device_sync_has_an_exact_small_body_location(self) -> None:
+        nginx = (
+            REPO_ROOT / "deploy" / "nginx" / "conf.d" / "asyl-ltd.conf"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "limit_req_zone $binary_remote_addr "
+            "zone=asyl_conveyor_device_per_ip:10m rate=100r/s;",
+            nginx,
+        )
+        self.assertIn(
+            "location = /api/conveyors/v1/device/sync/ {",
+            nginx,
+        )
+        self.assertIn(
+            "location = /api/conveyors/v1/ai/observation/ {",
+            nginx,
+        )
+        self.assertIn(
+            "limit_req zone=asyl_conveyor_device_per_ip burst=200 nodelay;",
+            nginx,
+        )
+        self.assertIn("client_max_body_size 16k;", nginx)
+
+
 if __name__ == "__main__":
     unittest.main()

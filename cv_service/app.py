@@ -7,11 +7,14 @@ from fastapi.responses import JSONResponse
 
 from .contracts import (
     AlwaysOnOptions,
+    ControlledSessionOptions,
+    ConveyorCommandOptions,
     CountingLineOptions,
     ProcessorOptions,
     RecordingDeleteOptions,
     WagonNumberOptions,
 )
+from .conveyor import ConveyorConflictError, ConveyorUnavailableError
 from .processor import ProcessorManager
 from .security import valid_api_key
 from .settings import parse_camera
@@ -49,6 +52,14 @@ def create_app(manager: ProcessorManager) -> FastAPI:
     async def dependency_unavailable(_request: Request, exc: RuntimeError):
         return JSONResponse(status_code=503, content={"detail": str(exc)})
 
+    @app.exception_handler(ConveyorConflictError)
+    async def conveyor_conflict(_request: Request, exc: ConveyorConflictError):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(ConveyorUnavailableError)
+    async def conveyor_unavailable(_request: Request, exc: ConveyorUnavailableError):
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
     def camera_id(value: str) -> str:
         try:
             return parse_camera(value)
@@ -83,6 +94,8 @@ def create_app(manager: ProcessorManager) -> FastAPI:
             "last_frames": {item["cam"]: item["last_frame_at"] for item in statuses},
             "capabilities": {
                 "wagon_plate": manager.wagon_plate_capability(),
+                "conveyor_control": manager.conveyor.capability(),
+                "conveyor_cloud_observation": manager.cloud_conveyor.capability(),
             },
         })
 
@@ -160,6 +173,39 @@ def create_app(manager: ProcessorManager) -> FastAPI:
     @app.post("/processors/{camera}")
     def start(camera: str, options: ProcessorOptions):
         return with_startup(manager.start(camera_id(camera), options))
+
+    @app.post("/processors/{camera}/session")
+    def start_controlled_session(camera: str, options: ControlledSessionOptions):
+        return with_startup(
+            manager.start_controlled_session(camera_id(camera), options)
+        )
+
+    @app.post("/processors/{camera}/conveyor/start")
+    def start_conveyor(camera: str, options: ConveyorCommandOptions):
+        try:
+            return with_startup(
+                manager.start_conveyor(camera_id(camera), options.session_id)
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="processor not found") from exc
+
+    @app.post("/processors/{camera}/conveyor/stop")
+    def stop_conveyor(camera: str, options: ConveyorCommandOptions):
+        try:
+            return with_startup(
+                manager.stop_conveyor(camera_id(camera), options.session_id)
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="processor not found") from exc
+
+    @app.post("/processors/{camera}/conveyor/emergency-stop")
+    def emergency_stop_conveyor(camera: str, options: ConveyorCommandOptions):
+        return with_startup(
+            manager.emergency_stop_conveyor(
+                camera_id(camera),
+                options.session_id,
+            )
+        )
 
     @app.post("/processors/{camera}/prewarm")
     def prewarm(camera: str, options: ProcessorOptions):

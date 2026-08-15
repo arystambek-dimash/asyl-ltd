@@ -9,7 +9,17 @@ param(
     [string]$ModelDevice = '0',
     [string]$PrewarmCameras = 'cam2',
     [string]$PrewarmSource = 'sub',
-    [int]$MaxActiveProcessors = 2
+    [int]$MaxActiveProcessors = 2,
+    [string]$ConveyorControllersJson = '',
+    [string]$ConveyorCloudCameras = '',
+    [string]$ConveyorCloudApiUrl = 'https://asyl-ltd.kz/api/conveyors/v1/ai/observation/',
+    [string]$ConveyorCloudApiKey = '',
+    [double]$ConveyorHeartbeatSeconds = 0.5,
+    [double]$ConveyorStaleAiSeconds = 1.5,
+    [double]$ConveyorNoProgressSeconds = 15.0,
+    [double]$ConveyorMaxRunSeconds = 300.0,
+    [double]$ConveyorIoTimeoutSeconds = 0.5,
+    [double]$ConveyorCommandTimeoutSeconds = 3.0
 )
 
 Set-StrictMode -Version 2.0
@@ -39,9 +49,64 @@ foreach ($camera in @($PrewarmCameras -split ',' | Where-Object { $_ })) {
 if ($MaxActiveProcessors -lt 1) {
     throw 'MaxActiveProcessors must be positive.'
 }
+if (
+    $ConveyorHeartbeatSeconds -le 0 -or
+    $ConveyorHeartbeatSeconds -gt 0.5 -or
+    $ConveyorStaleAiSeconds -lt (2 * $ConveyorHeartbeatSeconds) -or
+    $ConveyorStaleAiSeconds -gt 1.5 -or
+    $ConveyorNoProgressSeconds -le 0 -or
+    $ConveyorNoProgressSeconds -gt 30.0 -or
+    $ConveyorMaxRunSeconds -le 0 -or
+    $ConveyorMaxRunSeconds -gt 900.0 -or
+    $ConveyorIoTimeoutSeconds -le 0 -or
+    $ConveyorIoTimeoutSeconds -gt 0.5 -or
+    $ConveyorCommandTimeoutSeconds -le 0 -or
+    $ConveyorCommandTimeoutSeconds -gt 5.0
+) {
+    throw 'Conveyor timing values are invalid: heartbeat <= 0.5s, stale AI <= 1.5s and >= 2 heartbeats, no-progress <= 30s, max-run <= 900s, I/O <= 0.5s, command <= 5s.'
+}
+$conveyorControllers = $null
+if (-not [String]::IsNullOrWhiteSpace($ConveyorControllersJson)) {
+    try {
+        $conveyorControllers = $ConveyorControllersJson | ConvertFrom-Json
+    } catch {
+        throw "ConveyorControllersJson must be valid JSON: $($_.Exception.Message)"
+    }
+    if ($null -eq $conveyorControllers -or $conveyorControllers -isnot [PSCustomObject]) {
+        throw 'ConveyorControllersJson root must be a JSON object.'
+    }
+}
+$cloudCameraList = @(
+    $ConveyorCloudCameras -split ',' |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ }
+)
+foreach ($camera in $cloudCameraList) {
+    if ($camera -cnotmatch '^cam[1-9][0-9]*$') {
+        throw "Invalid cloud conveyor camera: $camera"
+    }
+}
+if ($cloudCameraList.Count -gt 0) {
+    if ($ConveyorCloudApiUrl -cne 'https://asyl-ltd.kz/api/conveyors/v1/ai/observation/') {
+        throw 'ConveyorCloudApiUrl must be the canonical HTTPS observation endpoint.'
+    }
+    if (
+        [String]::IsNullOrWhiteSpace($ConveyorCloudApiKey) -or
+        $ConveyorCloudApiKey -notmatch '^[\x21-\x7e]{1,1024}$'
+    ) {
+        throw 'ConveyorCloudApiKey must contain 1-1024 visible ASCII characters.'
+    }
+    if ($null -ne $conveyorControllers) {
+        $directCameraNames = @($conveyorControllers.PSObject.Properties.Name)
+        $overlap = @($cloudCameraList | Where-Object { $_ -in $directCameraNames })
+        if ($overlap.Count -gt 0) {
+            throw "Cloud/direct conveyor camera mappings overlap: $($overlap -join ', ')"
+        }
+    }
+}
 $source = [IO.Path]::GetFullPath($SourceRoot)
 foreach ($required in @(
-    'ai_service.py', 'app.py', 'contracts.py', 'processor.py', 'runtime.py',
+    'ai_service.py', 'app.py', 'cloud_conveyor.py', 'contracts.py', 'conveyor.py', 'processor.py', 'runtime.py',
     'security.py', 'settings.py', 'state.py', 'requirements.txt'
 )) {
     if (-not (Test-Path -LiteralPath (Join-Path $source $required) -PathType Leaf)) {
@@ -179,13 +244,25 @@ $serviceEnvironment = [ordered]@{
     AI_ALWAYS_ON_STATE_PATH = (Join-Path $InstallRoot 'state\always-on.json')
     AI_CAMERA_ROLES_STATE_PATH = $cameraRolesStatePath
     AI_COUNTING_LINES_STATE_PATH = $countingLinesStatePath
+    AI_CONVEYOR_CONTROLLERS_JSON = $ConveyorControllersJson
+    AI_CONVEYOR_CLOUD_CAMERAS = ($cloudCameraList -join ',')
+    AI_CONVEYOR_CLOUD_API_URL = $ConveyorCloudApiUrl
+    AI_CONVEYOR_CLOUD_API_KEY = $ConveyorCloudApiKey
+    AI_CONVEYOR_HEARTBEAT_SECONDS = $ConveyorHeartbeatSeconds.ToString([Globalization.CultureInfo]::InvariantCulture)
+    AI_CONVEYOR_STALE_AI_SECONDS = $ConveyorStaleAiSeconds.ToString([Globalization.CultureInfo]::InvariantCulture)
+    AI_CONVEYOR_NO_PROGRESS_SECONDS = $ConveyorNoProgressSeconds.ToString([Globalization.CultureInfo]::InvariantCulture)
+    AI_CONVEYOR_MAX_RUN_SECONDS = $ConveyorMaxRunSeconds.ToString([Globalization.CultureInfo]::InvariantCulture)
+    AI_CONVEYOR_IO_TIMEOUT_SECONDS = $ConveyorIoTimeoutSeconds.ToString([Globalization.CultureInfo]::InvariantCulture)
+    AI_CONVEYOR_COMMAND_TIMEOUT_SECONDS = $ConveyorCommandTimeoutSeconds.ToString([Globalization.CultureInfo]::InvariantCulture)
 }
+# The outbound cloud token is plaintext by necessity. Harden the parent tree
+# before creating service-env.json so the file is never briefly user-readable.
+Protect-AiServicePath -Path $InstallRoot
 [IO.File]::WriteAllText(
     (Join-Path $InstallRoot 'service-env.json'),
     ($serviceEnvironment | ConvertTo-Json),
     (New-Object Text.UTF8Encoding($false))
 )
-Protect-AiServicePath -Path $InstallRoot
 
 # This loads and warms best.pt, validates classes and prewarm inventory, and
 # probes H.264 before the HTTP listener can ever be registered.
@@ -247,8 +324,9 @@ if (([string]$task.State -ne 'Running') -or -not $listenerReady) {
     throw "AI service did not stay running/listen on 8890: state=$($task.State), listener=$listenerReady, lastResult=$lastResult"
 }
 
-# No plaintext key is available on this PC by design. An unauthenticated probe
-# still proves that FastAPI is answering and its backend-only guard is active.
+# No plaintext inbound AI_SERVICE_API_KEY is available on this PC. The optional
+# outbound cloud credential is unrelated and cannot authenticate this listener.
+# An unauthenticated probe still proves the backend-only guard is active.
 $unauthenticatedStatus = 0
 try {
     $probe = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8890/health' -TimeoutSec 5
@@ -271,6 +349,7 @@ if ($unauthenticatedStatus -ne 401) {
     AllowedBackend = $BackendTailnetIp
     PrewarmCameras = $PrewarmCameras
     PlaintextKeyStored = $false
+    CloudCredentialStored = ($cloudCameraList.Count -gt 0)
     ListenerVerified = $listenerReady
     AuthenticationVerified = ($unauthenticatedStatus -eq 401)
 } | ConvertTo-Json

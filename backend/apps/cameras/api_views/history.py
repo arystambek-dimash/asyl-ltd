@@ -66,6 +66,8 @@ class CameraAiSessionListView(APIView):
                     "started_by_id": session.started_by_id,
                     "started_by_name": session_started_by_name(session),
                     "can_stop": can_control_session(session, request.user),
+                    "target_total": session.target_total,
+                    "conveyor_enabled": session.conveyor_enabled,
                     "last_status": session.last_status,
                 }
                 for session in open_sessions
@@ -108,6 +110,8 @@ def _history_payload(session: AiCountingSession, names=None) -> dict:
         "started_by_id": session.started_by_id,
         "started_by_name": session_started_by_name(session),
         "final_total": total,
+        "target_total": session.target_total,
+        "conveyor_enabled": session.conveyor_enabled,
         "last_status": last,
         "has_recording": bool(stream),
         "recording_available_until": (

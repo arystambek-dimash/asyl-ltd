@@ -434,6 +434,64 @@ export interface ClientDebt {
   stores_count: number;
   overdue_count: number;
 }
+export type ConveyorState =
+  | "unconfigured"
+  | "off"
+  | "prepared"
+  | "armed"
+  | "arming"
+  | "starting"
+  | "running"
+  | "stopping"
+  | "goal_reached"
+  | "fault"
+  | "unknown";
+
+/**
+ * Подтверждённое backend состояние привода конвейера.
+ *
+ * На время плавной раскатки принимаем как нейтральные register-поля
+ * (`commanded`/`feedback`), так и boolean aliases от контроллера. UI никогда
+ * не считает отправленную команду доказательством остановки — для этого есть
+ * только feedback/verified_off.
+ */
+export interface ConveyorStatus {
+  configured?: boolean;
+  enabled?: boolean;
+  state?: ConveyorState;
+  desired?: 0 | 1 | boolean | null;
+  commanded?: 0 | 1 | boolean | null;
+  feedback?: 0 | 1 | boolean | null;
+  commanded_on?: boolean | null;
+  feedback_on?: boolean | null;
+  verified_off?: boolean;
+  feedback_conflict?: boolean;
+  goal_reached?: boolean;
+  online?: boolean;
+  terminal?: boolean;
+  session_id?: number | string | null;
+  target_total?: number | null;
+  stop_reason?: string | null;
+  run_elapsed_seconds?: number | null;
+  progress_idle_seconds?: number | null;
+  no_progress_timeout_seconds?: number | null;
+  max_run_seconds?: number | null;
+  last_seen_at?: string | null;
+  last_contact_at?: string | null;
+  error?: string | null;
+}
+
+export interface AiCountingSnapshot {
+  total?: number;
+  weight?: number;
+  status?: string;
+  per_color?: Record<string, number>;
+  target_total?: number | null;
+  remaining?: number | null;
+  goal_reached?: boolean;
+  conveyor?: ConveyorStatus | null;
+}
+
 export interface AiCountingSession {
   id: number;
   order_id: number;
@@ -445,7 +503,12 @@ export interface AiCountingSession {
   started_by_id: number | null;
   started_by_name: string;
   can_stop: boolean;
-  last_status: { total?: number; weight?: number; status?: string; per_color?: Record<string, number> };
+  target_total?: number | null;
+  remaining?: number | null;
+  goal_reached?: boolean;
+  conveyor_enabled?: boolean;
+  conveyor?: ConveyorStatus | null;
+  last_status: AiCountingSnapshot;
 }
 export interface AiCountingHistory {
   id: number;
@@ -460,7 +523,9 @@ export interface AiCountingHistory {
   started_by_id: number | null;
   started_by_name: string;
   final_total: number | null;
-  last_status: { total?: number; weight?: number; status?: string; per_color?: Record<string, number> };
+  target_total?: number | null;
+  conveyor_enabled?: boolean;
+  last_status: AiCountingSnapshot;
   has_recording: boolean;
   recording_available_until: string | null;
 }

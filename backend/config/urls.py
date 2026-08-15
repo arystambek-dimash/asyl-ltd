@@ -1,7 +1,3 @@
-from django.contrib import admin
-from django.urls import include, path
-from rest_framework_simplejwt.views import TokenObtainPairView
-
 from apps.accounts.serializers import PasswordChangeAwareTokenObtainPairSerializer
 from apps.accounts.views import (
     InitialPasswordView,
@@ -9,6 +5,10 @@ from apps.accounts.views import (
     RevocableTokenRefreshView,
 )
 from apps.orders.webhooks import apipay_webhook
+from django.contrib import admin
+from django.urls import include, path
+from rest_framework_simplejwt.views import TokenObtainPairView
+
 from config.throttles import LoginRateThrottle
 
 
@@ -41,6 +41,7 @@ urlpatterns = [
     path("api/", include("apps.sys_permissions.urls")),
     path("api/", include("apps.employees.urls")),
     path("api/", include("apps.cameras.urls")),
+    path("api/", include("apps.conveyors.urls")),
     path("api/", include("apps.tasks.urls")),
     path("api/", include("apps.grain.urls")),
 ]

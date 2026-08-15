@@ -151,6 +151,13 @@ def _action_input(
         raise ai.AiError(400, missing_order_detail)
 
     data: dict[str, object] = {"order_id": order.pk}
+    raw_session_id = request.query_params.get("session_id")
+    if raw_session_id is None:
+        raw_session_id = request.headers.get("X-AI-Session-Id")
+    if raw_session_id is None:
+        raw_session_id = request.data.get("session_id")
+    if raw_session_id not in (None, ""):
+        data["session_id"] = raw_session_id
     if include_complete_order:
         # Normalize only the two truthy spellings accepted by the old view;
         # DRF's BooleanField intentionally accepts a broader vocabulary.
@@ -204,11 +211,16 @@ class CameraAiView(APIView):
 
     def post(self, request, cam: str):
         def start():
-            order, _validated = _action_input(
+            order, validated = _action_input(
                 request,
                 missing_order_detail="Укажите заказ для AI-подсчёта",
             )
-            return counting.start(cam, order, request.user)
+            return counting.start(
+                cam,
+                order,
+                request.user,
+                expected_session_id=validated.get("session_id"),
+            )
 
         return _ai_response(start, request.user)
 
@@ -224,6 +236,7 @@ class CameraAiView(APIView):
                 order,
                 request.user,
                 complete_order=validated["complete_order"],
+                expected_session_id=validated.get("session_id"),
             )
 
         return _ai_response(stop, request.user)
@@ -237,10 +250,37 @@ class CameraAiResetView(APIView):
 
     def post(self, request, cam: str):
         def reset():
-            order, _validated = _action_input(
+            order, validated = _action_input(
                 request,
                 missing_order_detail="Укажите заказ для сброса AI-счётчика",
             )
-            return counting.reset(cam, order, request.user)
+            return counting.reset(
+                cam,
+                order,
+                request.user,
+                expected_session_id=validated.get("session_id"),
+            )
 
         return _ai_response(reset, request.user)
+
+
+class CameraConveyorStopView(APIView):
+    """Fail-safe physical OFF without completing or releasing the order."""
+
+    def get_permissions(self):
+        return [HasPerm("shipping.load")]
+
+    def post(self, request, cam: str):
+        def stop():
+            order, validated = _action_input(
+                request,
+                missing_order_detail="Укажите заказ для остановки конвейера",
+            )
+            return counting.stop_conveyor(
+                cam,
+                order,
+                request.user,
+                expected_session_id=validated.get("session_id"),
+            )
+
+        return _ai_response(stop, request.user)

@@ -1,4 +1,6 @@
+import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import cast
@@ -29,6 +31,7 @@ INSTALLED_APPS = [
     "apps.portal",
     "apps.notifications",
     "apps.cameras",
+    "apps.conveyors",
     "apps.tasks",
     "apps.grain",
 ]
@@ -56,6 +59,12 @@ REST_FRAMEWORK = {
         ),
         "truck_scale_preview": os.environ.get(
             "THROTTLE_TRUCK_SCALE_PREVIEW", "120/min"
+        ),
+        "conveyor_device": os.environ.get(
+            "THROTTLE_CONVEYOR_DEVICE", "180/min"
+        ),
+        "conveyor_ai": os.environ.get(
+            "THROTTLE_CONVEYOR_AI", "6000/min"
         ),
     },
     "NUM_PROXIES": int(os.environ.get("THROTTLE_NUM_PROXIES", "0")),
@@ -251,8 +260,73 @@ AI_SERVICE_URL = (
 ).rstrip("/")
 AI_SERVICE_API_KEY = os.environ.get("AI_SERVICE_API_KEY", "").strip()
 try:
-    AI_SERVICE_TIMEOUT = float(os.environ.get("AI_SERVICE_TIMEOUT", "10"))
+    AI_SERVICE_TIMEOUT = float(os.environ.get("AI_SERVICE_TIMEOUT", "25"))
 except (TypeError, ValueError):
-    AI_SERVICE_TIMEOUT = 10.0
+    AI_SERVICE_TIMEOUT = 25.0
 if not 0 < AI_SERVICE_TIMEOUT < float("inf"):
-    AI_SERVICE_TIMEOUT = 10.0
+    AI_SERVICE_TIMEOUT = 25.0
+
+
+def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+_conveyor_transports_raw = os.environ.get("CONVEYOR_TRANSPORTS_JSON", "{}").strip()
+try:
+    CONVEYOR_TRANSPORTS = json.loads(_conveyor_transports_raw or "{}")
+except json.JSONDecodeError as exc:
+    raise ValueError("CONVEYOR_TRANSPORTS_JSON must be valid JSON") from exc
+if not isinstance(CONVEYOR_TRANSPORTS, dict) or any(
+    not isinstance(camera, str)
+    or re.fullmatch(r"cam[1-9][0-9]*", camera) is None
+    or transport not in {"direct", "cloud"}
+    for camera, transport in CONVEYOR_TRANSPORTS.items()
+):
+    raise ValueError(
+        "CONVEYOR_TRANSPORTS_JSON must map canonical camN names to direct or cloud"
+    )
+
+CONVEYOR_AI_CALLBACK_TOKEN_SHA256 = os.environ.get(
+    "CONVEYOR_AI_CALLBACK_TOKEN_SHA256", ""
+).strip().lower()
+if (
+    CONVEYOR_AI_CALLBACK_TOKEN_SHA256
+    and re.fullmatch(r"[0-9a-f]{64}", CONVEYOR_AI_CALLBACK_TOKEN_SHA256) is None
+):
+    raise ValueError(
+        "CONVEYOR_AI_CALLBACK_TOKEN_SHA256 must be a lowercase SHA-256 digest"
+    )
+if (
+    "cloud" in CONVEYOR_TRANSPORTS.values()
+    and not CONVEYOR_AI_CALLBACK_TOKEN_SHA256
+):
+    raise ValueError(
+        "CONVEYOR_AI_CALLBACK_TOKEN_SHA256 is required for cloud conveyors"
+    )
+CONVEYOR_DEVICE_SYNC_MS = _bounded_int_env(
+    "CONVEYOR_DEVICE_SYNC_MS", 500, 100, 500
+)
+CONVEYOR_DEVICE_LEASE_MS = _bounded_int_env(
+    "CONVEYOR_DEVICE_LEASE_MS", 1200, CONVEYOR_DEVICE_SYNC_MS + 100, 1500
+)
+CONVEYOR_DEVICE_FRESH_MS = _bounded_int_env(
+    "CONVEYOR_DEVICE_FRESH_MS", 1500, CONVEYOR_DEVICE_LEASE_MS, 5000
+)
+CONVEYOR_AI_STALE_MS = _bounded_int_env(
+    "CONVEYOR_AI_STALE_MS", 1500, 500, 5000
+)
+CONVEYOR_COMMAND_TIMEOUT_SECONDS = _bounded_int_env(
+    "CONVEYOR_COMMAND_TIMEOUT_SECONDS", 5, 1, 10
+)
+CONVEYOR_NO_PROGRESS_SECONDS = _bounded_int_env(
+    "CONVEYOR_NO_PROGRESS_SECONDS", 15, 1, 30
+)
+CONVEYOR_MAX_RUN_SECONDS = _bounded_int_env(
+    "CONVEYOR_MAX_RUN_SECONDS", 300, 1, 900
+)

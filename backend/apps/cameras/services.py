@@ -41,15 +41,15 @@ GO2RTC_API = settings.GO2RTC_API_URL
 # он же — верхняя граница резервного перебора.
 MAX_CAMERAS = 32
 PROBE_TIMEOUT = 12  # сек; on-demand источник у MediaMTX поднимается 2–10 с
-CACHE_KEY = "cameras:discovered:v4"  # v4 — includes persisted AI line configs
+CACHE_KEY = "cameras:discovered:v5"  # v5 — includes conveyor readiness
 CACHE_TTL = 240  # сек; инвентарь на ПК обновляется раз в ~5 мин
-LAST_GOOD_CACHE_KEY = "cameras:last-good:v4"
+LAST_GOOD_CACHE_KEY = "cameras:last-good:v5"
 LAST_GOOD_TTL = 7 * 24 * 3600
 EMPTY_CACHE_TTL = 15  # полный сбой не должен приклеить пустую стену на 4 минуты
 # Один воркер за раз выполняет дорогое обнаружение. Остальные сразу получают
 # last-known-good, поэтому недоступный ПК цеха не превращается в очередь
 # gunicorn-воркеров, ждущих сетевых таймаутов.
-REFRESH_LOCK_KEY = "cameras:discovering:v4"
+REFRESH_LOCK_KEY = "cameras:discovering:v5"
 # Пробы (до 2 волн по 12 с) плюс запрос инвентаря; замок снимается сам, если
 # воркер умер, и не может «залипнуть» дольше одного полного обнаружения.
 REFRESH_LOCK_TTL = 60
@@ -155,6 +155,11 @@ def _discover_by_inventory() -> list[dict] | None:
         inventory = ai.inventory()
         devices = inventory.get("devices") or []
         line_configs = inventory.get("line_configs") or {}
+        camera_statuses = {
+            item.get("cam"): item
+            for item in (inventory.get("cameras") or [])
+            if isinstance(item, dict) and item.get("cam")
+        }
     except (ai.AiUnavailable, ai.AiError) as e:
         log.warning("Инвентарь камер недоступен (%s) — резервные RTSP-пробы", e)
         return None
@@ -175,6 +180,7 @@ def _discover_by_inventory() -> list[dict] | None:
                 "kind": kind,
                 "online": bool(d.get("online", True)),
                 "line_config": line_configs.get(path),
+                "conveyor": camera_statuses.get(path, {}).get("conveyor"),
             })
             sync.append((path, d.get("sub") or path))
         elif kind == "direct" and path:
@@ -186,6 +192,7 @@ def _discover_by_inventory() -> list[dict] | None:
                 "kind": kind,
                 "online": bool(d.get("online", True)),
                 "line_config": line_configs.get(path),
+                "conveyor": camera_statuses.get(path, {}).get("conveyor"),
             })
             sync.append((path, d.get("sub") or path))
         elif kind == "locked":

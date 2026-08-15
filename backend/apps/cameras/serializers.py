@@ -318,4 +318,5 @@ class CameraAiActionSerializer(serializers.Serializer):
     """Common body/query values for start, reset and stop operations."""
 
     order_id = serializers.IntegerField(min_value=1)
+    session_id = serializers.IntegerField(min_value=1, required=False)
     complete_order = serializers.BooleanField(required=False, default=False)

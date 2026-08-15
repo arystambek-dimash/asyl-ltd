@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (
     CameraAiRecordingVideoView, CameraAiRecordingView, CameraAiResetView,
     CameraAiSessionHistoryView, CameraAiSessionListView, CameraAiView,
+    CameraConveyorStopView,
     CameraAuthView, CameraCountingLineView, CameraHealthView, CameraListView, CameraTokenView,
     AlwaysOnAnalyticsArchiveView,
     AlwaysOnAnalyticsSubtractView, AlwaysOnAnalyticsView,
@@ -50,4 +51,8 @@ urlpatterns = [
     path("cameras/<str:cam>/counting-line", CameraCountingLineView.as_view()),
     path("cameras/<str:cam>/ai/", CameraAiView.as_view()),
     path("cameras/<str:cam>/ai/reset/", CameraAiResetView.as_view()),
+    path(
+        "cameras/<str:cam>/ai/conveyor/stop/",
+        CameraConveyorStopView.as_view(),
+    ),
 ]

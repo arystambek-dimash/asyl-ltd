@@ -32,7 +32,14 @@ def current_for_order(order_id: int, *, lock: bool = False) -> AiCountingSession
     return qs.order_by("started_at").first()
 
 
-def reserve(order, camera: str, user) -> tuple[AiCountingSession, bool]:
+def reserve(
+    order,
+    camera: str,
+    user,
+    *,
+    target_total: int = 0,
+    conveyor_transport: str = AiCountingSession.CONVEYOR_NONE,
+) -> tuple[AiCountingSession, bool]:
     """Atomically reserve a camera, or return the same owner session on it."""
     try:
         with transaction.atomic():
@@ -41,6 +48,8 @@ def reserve(order, camera: str, user) -> tuple[AiCountingSession, bool]:
                 camera=camera,
                 status=AiCountingSession.STARTING,
                 started_by=user,
+                target_total=target_total,
+                conveyor_transport=conveyor_transport,
             )
         return session, True
     except IntegrityError:
@@ -60,5 +69,7 @@ def reserve(order, camera: str, user) -> tuple[AiCountingSession, bool]:
                 camera=camera,
                 status=AiCountingSession.STARTING,
                 started_by=user,
+                target_total=target_total,
+                conveyor_transport=conveyor_transport,
             )
         return session, True

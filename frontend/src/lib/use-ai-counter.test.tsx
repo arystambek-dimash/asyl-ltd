@@ -175,6 +175,45 @@ describe("useAiCounter command ordering", () => {
     vi.useRealTimers();
   });
 
+  it("stops the conveyor without completing or closing the AI session", async () => {
+    mocks.get.mockResolvedValueOnce(
+      response({
+        running: true,
+        session_id: 7,
+        total: 12,
+        target_total: 20,
+        conveyor: { enabled: true, state: "running", feedback: true },
+      }),
+    );
+    mocks.post.mockResolvedValueOnce(
+      response({
+        running: true,
+        session_id: 7,
+        total: 12,
+        target_total: 20,
+        conveyor: { enabled: true, state: "off", feedback: false, verified_off: true },
+      }),
+    );
+
+    const { result } = renderHook(() => useAiCounter("cam1", 42, true));
+    await settleMicrotasks();
+
+    await act(async () => {
+      await result.current.stopConveyor();
+    });
+
+    expect(mocks.post).toHaveBeenCalledWith(
+      "/cameras/cam1/ai/conveyor/stop/",
+      { order_id: 42, session_id: 7 },
+      { params: { order_id: 42, session_id: 7 } },
+    );
+    expect(mocks.delete).not.toHaveBeenCalled();
+    expect(result.current.status).toMatchObject({
+      running: true,
+      conveyor: { state: "off", feedback: false, verified_off: true },
+    });
+  });
+
   it("serializes commands and lets the latest action own the visible result", async () => {
     const startRequest = deferred<{ data: AiStatus }>();
     const stopRequest = deferred<{ data: AiStatus }>();
@@ -211,6 +250,67 @@ describe("useAiCounter command ordering", () => {
     expect(result.current.status).toMatchObject({ running: false, total: 5 });
     expect(result.current.running).toBe(false);
     expect(result.current.busy).toBe(false);
+  });
+
+  it("sends emergency OFF immediately and ignores a delayed start response", async () => {
+    const startRequest = deferred<{ data: AiStatus }>();
+    const emergencyRequest = deferred<{ data: AiStatus }>();
+    mocks.get.mockResolvedValueOnce(
+      response({
+        running: true,
+        session_id: 17,
+        total: 3,
+        target_total: 10,
+        conveyor: { enabled: true, state: "armed", feedback: false },
+      }),
+    );
+    mocks.post.mockReturnValueOnce(startRequest.promise).mockReturnValueOnce(emergencyRequest.promise);
+
+    const { result } = renderHook(() => useAiCounter("cam1", 42, true));
+    await settleMicrotasks();
+
+    let startPromise!: Promise<void>;
+    act(() => {
+      startPromise = result.current.start(17);
+    });
+    await settleMicrotasks();
+    expect(mocks.post.mock.calls[0]?.[0]).toBe("/cameras/cam1/ai/");
+
+    let emergencyPromise!: Promise<void>;
+    act(() => {
+      emergencyPromise = result.current.stopConveyor(17);
+    });
+    await settleMicrotasks();
+    expect(mocks.post).toHaveBeenCalledTimes(2);
+    expect(mocks.post.mock.calls[1]?.[0]).toBe("/cameras/cam1/ai/conveyor/stop/");
+
+    emergencyRequest.resolve(
+      response({
+        running: true,
+        session_id: 17,
+        total: 3,
+        target_total: 10,
+        conveyor: { enabled: true, state: "off", feedback: false, terminal: true },
+      }),
+    );
+    await act(async () => {
+      await emergencyPromise;
+    });
+    expect(result.current.status?.conveyor).toMatchObject({ state: "off", terminal: true });
+
+    startRequest.resolve(
+      response({
+        running: true,
+        session_id: 17,
+        total: 3,
+        target_total: 10,
+        conveyor: { enabled: true, state: "running", feedback: true },
+      }),
+    );
+    await act(async () => {
+      await startPromise;
+    });
+    expect(result.current.status?.conveyor).toMatchObject({ state: "off", terminal: true });
   });
 
   it("does not let a late command from an old camera overwrite or block a new scope", async () => {

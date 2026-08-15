@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
   Archive,
   BarChart3,
   Camera,
@@ -42,6 +43,7 @@ import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { api, apiError } from "@/lib/api";
+import { orderedBagCount } from "@/lib/orders";
 import { showSuccess } from "@/lib/toast";
 import { can } from "@/lib/can";
 import type {
@@ -52,6 +54,7 @@ import type {
   AlwaysOnDailyCameraAnalytics,
   AlwaysOnDetection,
   AlwaysOnProcessorStatus,
+  ConveyorStatus,
   MonoblockCameraSettings,
   MonoblockDevice,
   Order,
@@ -1735,46 +1738,217 @@ function AlwaysOnCard({
   );
 }
 
+function conveyorEnabled(conveyor: ConveyorStatus | null | undefined): boolean {
+  return conveyor?.enabled ?? conveyor?.configured ?? false;
+}
+
+function conveyorFeedbackValues(conveyor: ConveyorStatus | null | undefined): number[] {
+  const values: number[] = [];
+  if (conveyor?.feedback === 0 || conveyor?.feedback === 1) values.push(conveyor.feedback);
+  if (conveyor?.feedback === false) values.push(0);
+  if (conveyor?.feedback === true) values.push(1);
+  if (conveyor?.feedback_on === false) values.push(0);
+  if (conveyor?.feedback_on === true) values.push(1);
+  if (conveyor?.verified_off === true) values.push(0);
+  return values;
+}
+
+function conveyorFeedbackConflict(conveyor: ConveyorStatus | null | undefined): boolean {
+  const values = conveyorFeedbackValues(conveyor);
+  return conveyor?.feedback_conflict === true || (values.length > 1 && values.some((value) => value !== values[0]));
+}
+
+function conveyorFeedbackOff(conveyor: ConveyorStatus | null | undefined): boolean {
+  const values = conveyorFeedbackValues(conveyor);
+  return values.length > 0 && !conveyorFeedbackConflict(conveyor) && values.every((value) => value === 0);
+}
+
+function conveyorFeedbackLabel(conveyor: ConveyorStatus | null | undefined): string {
+  if (conveyorFeedbackConflict(conveyor)) return "feedback конфликт";
+  if (conveyorFeedbackOff(conveyor)) return "feedback OFF";
+  const values = conveyorFeedbackValues(conveyor);
+  if (values.length > 0 && values.every((value) => value === 1)) {
+    return "feedback ON";
+  }
+  return "feedback —";
+}
+
+function conveyorStateLabel(state: ConveyorStatus["state"]): string {
+  switch (state) {
+    case "off":
+      return "Остановлен";
+    case "prepared":
+    case "armed":
+      return "Готов к запуску";
+    case "arming":
+    case "starting":
+      return "Подготовка к запуску";
+    case "running":
+      return "Работает";
+    case "stopping":
+      return "Останавливается";
+    case "goal_reached":
+      return "Цель достигнута";
+    case "fault":
+      return "Авария";
+    case "unknown":
+      return "Состояние неизвестно";
+    default:
+      return "Автоматика не настроена";
+  }
+}
+
+function conveyorStopMessage(conveyor: ConveyorStatus | null): string | null {
+  if (!conveyor) return null;
+  switch (conveyor.stop_reason) {
+    case "target_reached":
+      return "Цель достигнута — конвейер остановлен.";
+    case "stale_ai":
+      return "Нет свежих данных камеры — выполнен безопасный стоп. Нужна ручная сверка.";
+    case "no_progress":
+      return `Счётчик не увеличивался ${conveyor.no_progress_timeout_seconds ?? 15} с — выполнен безопасный стоп. Нужна ручная сверка.`;
+    case "max_runtime":
+      return `Достигнут предел непрерывной работы ${conveyor.max_run_seconds ?? 300} с — выполнен безопасный стоп.`;
+    case "controller_fault":
+      return conveyor.error
+        ? `Ошибка ESP32 или feedback: ${conveyor.error}`
+        : "Ошибка ESP32 или feedback — используйте аппаратный E-stop.";
+    case "emergency_stop":
+      return "Выполнен аварийный стоп. Автозапуск этой сессии заблокирован.";
+    case "manual_stop":
+      return "Конвейер остановлен оператором. Для заказа нужна ручная сверка.";
+    case "start_timeout":
+      return "ESP32 не подтвердил запуск — выход защёлкнут в OFF.";
+    case "shutdown":
+      return "Сервис камеры завершил работу и перевёл выход в OFF.";
+    default:
+      return conveyor.error || conveyor.stop_reason || null;
+  }
+}
+
 function SessionCard({
   session,
+  order,
   camera,
   onStopped,
 }: {
   session: AiCountingSession;
+  order?: Order;
   camera?: CameraFeed & { src: string };
   onStopped: () => void;
 }) {
   const ai = useAiCounter(session.camera, session.order_id, true);
-  const live = ai.status?.running;
+  const live = !!ai.status?.running;
   const total = ai.status?.total ?? session.last_status?.total ?? 0;
+  const reportedTarget = ai.status?.target_total ?? session.target_total ?? session.last_status?.target_total ?? null;
+  // Старый backend ещё не возвращает frozen target — до завершения раскатки
+  // показываем текущий заказ, но автоматика всё равно опирается только на server target.
+  const orderTarget = order ? orderedBagCount(order) : null;
+  // target_total=0 — legacy sentinel у старых/пустых заказов, не рабочая цель.
+  const target =
+    typeof reportedTarget === "number" && reportedTarget > 0
+      ? reportedTarget
+      : orderTarget !== null && orderTarget > 0
+        ? orderTarget
+        : null;
+  const reportedRemaining = ai.status?.remaining ?? session.remaining ?? session.last_status?.remaining ?? null;
+  const remaining =
+    typeof reportedRemaining === "number"
+      ? Math.max(0, reportedRemaining)
+      : target !== null
+        ? Math.max(0, target - total)
+        : null;
+  const reportedGoalReached = ai.status?.goal_reached ?? session.goal_reached ?? session.last_status?.goal_reached;
+  const liveConveyor = ai.status?.conveyor ?? null;
+  const conveyor = liveConveyor ?? session.conveyor ?? session.last_status?.conveyor ?? null;
+  const conveyorMessage = conveyorStopMessage(conveyor);
+  const isConveyorEnabled = conveyorEnabled(conveyor) || session.conveyor_enabled === true;
+  const serverGoalReached = reportedGoalReached ?? conveyor?.goal_reached;
+  // При включённой автоматике решение о цели принимает только backend: браузерный
+  // счёт может быть отложенным или пропустить пакет обновлений.
+  const goalReached = isConveyorEnabled
+    ? serverGoalReached === true
+    : (serverGoalReached ?? (target !== null && total >= target));
+  const feedbackOff = conveyorFeedbackOff(conveyor);
+  const conveyorState = conveyor?.state ?? (isConveyorEnabled ? "unknown" : "unconfigured");
+  const conveyorFault = conveyorState === "fault" || !!conveyor?.error || conveyorFeedbackConflict(conveyor);
+  const controllerOnline = conveyor?.online;
   const canStop = ai.status?.can_stop ?? session.can_stop;
   const stream = ai.status?.stream ?? (live ? `${session.camera}ai` : camera?.src);
+  const isStarting = session.status === "starting";
   const needsRecovery =
-    session.status === "starting" ||
-    ai.status?.code === "ai_reconciliation_required" ||
-    ai.status?.code === "ai_processor_stopped";
+    isStarting || ai.status?.code === "ai_reconciliation_required" || ai.status?.code === "ai_processor_stopped";
+  const progress = target && target > 0 ? Math.min(100, Math.round((total / target) * 100)) : 0;
+  const overrun = target !== null && total > target;
+  // Для подключённого контроллера завершение допустимо только после server goal
+  // и физического read-back OFF. Старая конфигурация без ESP сохраняет прежний flow.
+  const freshControlledStatus =
+    ai.status !== null &&
+    !ai.stale &&
+    ai.status.owned_by_order === true &&
+    String(ai.status.session_id) === String(session.id) &&
+    liveConveyor !== null;
+  const liveState = liveConveyor?.state;
+  const canComplete =
+    !isConveyorEnabled ||
+    (freshControlledStatus &&
+      ai.status?.goal_reached === true &&
+      conveyorFeedbackOff(liveConveyor) &&
+      liveConveyor?.online === true &&
+      (liveState === "off" || liveState === "goal_reached") &&
+      !liveConveyor?.error &&
+      !conveyorFeedbackConflict(liveConveyor));
+  const requiresManualReconciliation =
+    isConveyorEnabled &&
+    !canComplete &&
+    (conveyor?.terminal === true ||
+      conveyorFault ||
+      needsRecovery ||
+      ai.stale ||
+      conveyorState === "off" ||
+      conveyorState === "goal_reached");
+  const liveLabel = ai.stale
+    ? "СВЯЗЬ ПОТЕРЯНА"
+    : goalReached
+      ? "ЦЕЛЬ ДОСТИГНУТА"
+      : live
+        ? "СЧИТЫВАНИЕ"
+        : needsRecovery
+          ? "ТРЕБУЕТ ЗАПУСКА"
+          : "ЗАПУСК";
 
-  async function retryStart() {
+  async function runCommand(command: () => Promise<void>) {
     try {
-      await ai.start();
+      await command();
     } catch {
-      // useAiCounter уже показывает понятную ошибку внутри карточки.
+      // useAiCounter показывает нормализованную ошибку внутри карточки.
     } finally {
       onStopped();
     }
   }
 
-  async function stop() {
-    try {
-      // STARTING означает, что сетевой ответ на запуск был неоднозначным, а
-      // заказ ещё не обязан быть в loading. Такую попытку можно отменить, но
-      // нельзя выдавать за завершённую отгрузку.
-      await ai.stop(session.status === "active");
-    } catch {
-      // ошибка уже показана через ai.error — карточку всё равно обновляем
-    } finally {
-      onStopped();
+  async function closeForManualReconciliation() {
+    const confirmed = window.confirm(
+      "Конвейер будет подтверждённо остановлен, AI-сессия закроется, но заказ не будет отгружен. " +
+        "После этого завершите или верните заказ вручную с обязательной сверкой. Продолжить?",
+    );
+    if (!confirmed) return;
+    await runCommand(() => ai.stop(false, session.id));
+  }
+
+  function completionHint(): string {
+    if (!isConveyorEnabled) return "";
+    if (!freshControlledStatus) return "Получите свежее состояние текущей AI-сессии перед завершением.";
+    if (ai.stale) return "Сначала восстановите связь и подтвердите остановку конвейера.";
+    if (conveyorFault) return "Устраните аварию контроллера перед завершением заказа.";
+    if (controllerOnline !== true) {
+      return controllerOnline === false
+        ? "ESP32 не на связи — физическая остановка не подтверждена."
+        : "Связь ESP32 ещё не подтверждена.";
     }
+    if (!goalReached) return remaining !== null ? `До цели осталось ${remaining} меш.` : "Цель ещё не достигнута.";
+    if (!feedbackOff) return "Ждём физическое подтверждение feedback OFF.";
+    return "Конвейер подтверждённо остановлен — заказ можно завершить.";
   }
 
   return (
@@ -1788,18 +1962,32 @@ function SessionCard({
             <span className="text-xs">Поток запускается</span>
           </div>
         )}
-        <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/55 to-transparent px-4 pb-8 pt-3">
-          <span className="flex items-center gap-2 rounded-full bg-black/35 px-2.5 py-1 text-[11px] font-semibold text-white backdrop-blur-md">
-            <span className={cn("size-2 rounded-full", live ? "animate-pulse bg-emerald-400" : "bg-amber-400")} />
-            {live ? "СЧИТЫВАНИЕ" : "ЗАПУСК"}
+        <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/60 to-transparent px-4 pb-8 pt-3">
+          <span className="flex items-center gap-2 rounded-full bg-black/40 px-2.5 py-1 text-[11px] font-semibold text-white backdrop-blur-md">
+            <span
+              className={cn(
+                "size-2 rounded-full",
+                ai.stale
+                  ? "bg-red-400"
+                  : goalReached
+                    ? "bg-emerald-400"
+                    : live
+                      ? "animate-pulse bg-emerald-400"
+                      : "bg-amber-400",
+              )}
+            />
+            {liveLabel}
           </span>
-          <span className="rounded-full bg-black/35 px-2.5 py-1 text-[11px] text-white/90 backdrop-blur-md">
+          <span className="rounded-full bg-black/40 px-2.5 py-1 text-[11px] text-white/90 backdrop-blur-md">
             {camera?.zone || session.camera}
           </span>
         </div>
-        <div className="absolute bottom-3 right-3 rounded-2xl border border-white/20 bg-slate-950/65 px-4 py-2 text-right text-white backdrop-blur-lg">
-          <div className="text-[10px] uppercase tracking-[0.14em] text-white/55">мешков</div>
-          <div className="text-3xl font-bold tabular-nums leading-none">{total}</div>
+        <div className="absolute bottom-3 right-3 rounded-2xl border border-white/20 bg-slate-950/70 px-4 py-2 text-right text-white backdrop-blur-lg">
+          <div className="text-[10px] uppercase tracking-[0.14em] text-white/55">мешков камерой</div>
+          <div className="flex items-baseline justify-end gap-1 tabular-nums">
+            <span className="text-3xl font-bold leading-none">{total}</span>
+            {target !== null && <span className="text-sm font-semibold text-white/55">/ {target}</span>}
+          </div>
         </div>
       </div>
 
@@ -1826,28 +2014,192 @@ function SessionCard({
           </div>
         </div>
 
+        {target !== null && (
+          <div className="mt-4">
+            <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold">
+              <span className={overrun ? "text-red-600" : goalReached ? "text-emerald-700" : "text-slate-500"}>
+                {overrun
+                  ? `Превышение цели на ${total - target}`
+                  : goalReached
+                    ? "Цель достигнута"
+                    : `Осталось ${remaining ?? Math.max(0, target - total)} меш.`}
+              </span>
+              <span className="tabular-nums text-slate-400">{progress}%</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+              <div
+                className={cn(
+                  "h-full rounded-full transition-[width] duration-500",
+                  overrun ? "bg-red-500" : goalReached ? "bg-emerald-500" : "bg-blue-600",
+                )}
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        <div
+          className={cn(
+            "mt-4 rounded-2xl border px-3.5 py-3",
+            conveyorFault
+              ? "border-red-200 bg-red-50/80"
+              : conveyorState === "off" || conveyorState === "goal_reached"
+                ? "border-emerald-200 bg-emerald-50/70"
+                : conveyorState === "running"
+                  ? "border-blue-200 bg-blue-50/75"
+                  : "border-amber-200 bg-amber-50/70",
+          )}
+        >
+          <div className="flex items-center gap-3">
+            <span
+              className={cn(
+                "flex size-9 shrink-0 items-center justify-center rounded-xl",
+                conveyorFault
+                  ? "bg-red-600 text-white"
+                  : conveyorState === "off" || conveyorState === "goal_reached"
+                    ? "bg-emerald-600 text-white"
+                    : conveyorState === "running"
+                      ? "bg-blue-600 text-white"
+                      : "bg-amber-500 text-white",
+              )}
+            >
+              <Radio className={cn("size-4", conveyorState === "running" && "animate-pulse")} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Конвейер</div>
+              <div className="truncate text-sm font-bold text-slate-800">{conveyorStateLabel(conveyorState)}</div>
+            </div>
+            <div className="shrink-0 text-right">
+              <div
+                className={cn(
+                  "text-[11px] font-bold",
+                  feedbackOff ? "text-emerald-700" : conveyorFault ? "text-red-700" : "text-slate-600",
+                )}
+              >
+                {isConveyorEnabled ? conveyorFeedbackLabel(conveyor) : "не подключён"}
+              </div>
+              {isConveyorEnabled && (
+                <div
+                  className={cn("mt-0.5 text-[10px]", controllerOnline === false ? "text-red-600" : "text-slate-400")}
+                >
+                  {controllerOnline === true
+                    ? "ESP32 онлайн"
+                    : controllerOnline === false
+                      ? "ESP32 нет связи"
+                      : "связь не подтверждена"}
+                </div>
+              )}
+            </div>
+          </div>
+          {conveyorMessage && (
+            <p className={cn("mt-2 text-xs", conveyor?.error ? "text-red-700" : "text-slate-500")}>{conveyorMessage}</p>
+          )}
+        </div>
+
+        {ai.stale && (
+          <div className="mt-3 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-xs text-red-700">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+            Последнее состояние устарело. Не завершайте заказ, пока связь и feedback OFF не подтверждены.
+          </div>
+        )}
+
         <div className="mt-4">
           {canStop ? (
-            <div className={cn("grid gap-2", needsRecovery && "sm:grid-cols-2")}>
-              {needsRecovery && (
-                <Button className="h-10 rounded-xl" disabled={ai.busy} onClick={() => void retryStart()}>
+            isStarting ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Button
+                  className="h-10 rounded-xl"
+                  disabled={ai.busy}
+                  onClick={() => void runCommand(() => ai.start(session.id))}
+                >
                   <RefreshCw className={cn("size-3.5", ai.busy && "animate-spin")} />
                   Повторить запуск
                 </Button>
-              )}
-              <Button
-                variant="outline"
-                className="h-10 rounded-xl border-red-200 text-[var(--destructive)] hover:bg-red-50 hover:text-red-700"
-                disabled={ai.busy}
-                onClick={() => void stop()}
-              >
-                <Square className="size-3.5 fill-current" />
-                {session.status === "starting" ? "Отменить запуск" : "Остановить и завершить"}
-              </Button>
-            </div>
+                <Button
+                  variant="outline"
+                  className="h-10 rounded-xl border-red-200 text-[var(--destructive)] hover:bg-red-50 hover:text-red-700"
+                  disabled={ai.busy}
+                  onClick={() => void runCommand(() => ai.stop(false, session.id))}
+                >
+                  <Square className="size-3.5 fill-current" /> Отменить запуск
+                </Button>
+                {isConveyorEnabled && (
+                  <Button
+                    variant="destructive"
+                    className="h-10 rounded-xl sm:col-span-2"
+                    disabled={ai.stoppingConveyor}
+                    onClick={() => void runCommand(() => ai.stopConveyor(session.id))}
+                  >
+                    <Square className="size-3.5 fill-current" /> Аварийно остановить конвейер
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <div className={cn("grid gap-2", isConveyorEnabled && "sm:grid-cols-2")}>
+                {needsRecovery && (
+                  <Button
+                    className={cn("h-10 rounded-xl", isConveyorEnabled && "sm:col-span-2")}
+                    disabled={ai.busy}
+                    onClick={() => void runCommand(() => ai.start(session.id))}
+                  >
+                    <RefreshCw className={cn("size-3.5", ai.busy && "animate-spin")} />
+                    Восстановить AI-счётчик
+                  </Button>
+                )}
+                {isConveyorEnabled && (
+                  <Button
+                    variant="destructive"
+                    className="h-10 rounded-xl"
+                    disabled={ai.stoppingConveyor}
+                    onClick={() => void runCommand(() => ai.stopConveyor(session.id))}
+                  >
+                    <Square className="size-3.5 fill-current" /> Остановить конвейер
+                  </Button>
+                )}
+                <Button
+                  className="h-10 rounded-xl"
+                  disabled={ai.busy || !canComplete}
+                  onClick={() => void runCommand(() => ai.stop(true, session.id))}
+                >
+                  <Check className="size-3.5" /> Завершить заказ
+                </Button>
+                {requiresManualReconciliation && (
+                  <Button
+                    variant="outline"
+                    className="h-10 rounded-xl border-amber-300 text-amber-800 sm:col-span-2"
+                    disabled={ai.busy}
+                    onClick={() => void closeForManualReconciliation()}
+                  >
+                    <Square className="size-3.5" /> Закрыть AI для ручной сверки
+                  </Button>
+                )}
+                {isConveyorEnabled && (
+                  <p
+                    className={cn(
+                      "text-center text-[11px] sm:col-span-2",
+                      canComplete ? "text-emerald-700" : "text-slate-500",
+                    )}
+                  >
+                    {completionHint()}
+                  </p>
+                )}
+              </div>
+            )
           ) : (
-            <div className="flex items-center justify-center gap-2 rounded-xl bg-slate-50 px-3 py-2.5 text-[12px] text-slate-500">
-              <LockKeyhole className="size-3.5" /> Остановить может {session.started_by_name} или администратор
+            <div className="grid gap-2">
+              {isConveyorEnabled && (
+                <Button
+                  variant="destructive"
+                  className="h-10 rounded-xl"
+                  disabled={ai.stoppingConveyor}
+                  onClick={() => void runCommand(() => ai.stopConveyor(session.id))}
+                >
+                  <Square className="size-3.5 fill-current" /> Аварийно остановить конвейер
+                </Button>
+              )}
+              <div className="flex items-center justify-center gap-2 rounded-xl bg-slate-50 px-3 py-2.5 text-[12px] text-slate-500">
+                <LockKeyhole className="size-3.5" /> Управлять сессией может {session.started_by_name} или администратор
+              </div>
             </div>
           )}
           {ai.error && <p className="mt-2 text-center text-xs text-[var(--destructive)]">{ai.error}</p>}
@@ -2157,6 +2509,7 @@ function MonoblockPageInner() {
                         <SessionCard
                           key={session.id}
                           session={session}
+                          order={(orders ?? []).find((order) => order.id === session.order_id)}
                           camera={playable.find((camera) => camera.src === session.camera)}
                           onStopped={() => {
                             void Promise.all([reloadOrders(), reloadSessions()]);

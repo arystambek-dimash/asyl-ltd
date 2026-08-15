@@ -53,14 +53,44 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install-ai-service.ps1 `
   -BackendTailnetIp '<TAILSCALE-IP-PROD-СЕРВЕРА>' `
   -ModelDevice '0' `
   -PrewarmCameras 'cam2' `
-  -MaxActiveProcessors 2
+  -MaxActiveProcessors 2 `
+  -ConveyorControllersJson '{"cam2":{"host":"<ESP32-IP>","port":502,"unit_id":1,"register_type":"holding","address":0,"on_value":1,"off_value":0,"feedback_register_type":"holding","feedback_address":1,"feedback_on_value":1,"feedback_off_value":0}}'
 ```
+
+Для cloud ESP вместо `ConveyorControllersJson` используется отдельный
+observation-only режим (одна и та же камера не может быть в обоих списках):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-ai-service.ps1 `
+  -ApiKeySha256 '<64-символьный SHA-256>' `
+  -ModelPath 'C:\Temp\best.pt' `
+  -BackendTailnetIp '<TAILSCALE-IP-PROD-СЕРВЕРА>' `
+  -PrewarmCameras 'cam2' `
+  -ConveyorCloudCameras 'cam2' `
+  -ConveyorCloudApiUrl 'https://asyl-ltd.kz/api/conveyors/v1/ai/observation/' `
+  -ConveyorCloudApiKey '<RAW-OUTBOUND-TOKEN>'
+```
+
+Cloud token хранится в закрытом ACL `service-env.json`, не выводится installer
+и используется только как `Authorization: Bearer` к каноническому HTTPS URL.
+Backend хранит SHA-256 этого token. Camera-PC в этом режиме не пишет регистры,
+не включает привод и не заявляет readback: физический выход ведёт серверный
+lease/ESP-контур, который при пропаже наблюдений обязан уйти в `OFF`.
 
 Installer сохраняет только SHA-256 ключа, прогревает и валидирует модель до
 регистрации HTTP-задачи, закрывает ACL для обычных пользователей и создаёт
 Windows Firewall rule на порт `8890` только с указанного backend-IP. Установка
 считается успешной только когда boot-задача остаётся в состоянии `Running`, порт
 `8890` действительно слушает, а запрос без ключа отклоняется с `401`.
+Пустой `ConveyorControllersJson` оставляет старый AI-only режим. Реальный
+контроллер включается только после проверки требований и физических тестов из
+[`cv_service/README.md`](../../cv_service/README.md#конвейер-esp32).
+До установки сетевой инженер обязан закрыть Modbus/TCP ESP32 (`TCP/502`)
+ESP-side allowlist/VLAN так, чтобы писать регистры мог только этот camera-PC;
+штатный Modbus не аутентифицирует команды.
+Installer также не принимает ослабленные safety-таймауты: heartbeat больше
+0,5 с, stale AI больше 1,5 с, no-progress больше 30 с и max-run больше 900 с.
+Штатные значения — 0,5 / 1,5 / 15 / 300 секунд.
 
 Повторная установка заменяет только `C:\mediamtx\ai-service\cv_service`.
 `always-on.json`, `camera-roles.json` и `counting-lines.json` лежат в соседней

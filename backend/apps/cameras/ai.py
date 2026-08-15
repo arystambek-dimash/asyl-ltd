@@ -217,6 +217,90 @@ def start(cam: str, options: dict | None = None) -> dict:
     return payload
 
 
+def start_order_session(
+    cam: str,
+    session_id: int,
+    target_total: int,
+    *,
+    initialize_legacy_worker: bool,
+    conveyor_transport: str = "direct",
+) -> tuple[dict, bool]:
+    """Start the edge-supervised order session, with rolling compatibility.
+
+    The dedicated endpoint is intentionally separate from the historical
+    ``POST /processors/{cam}`` contract.  Old camera-PC installations return
+    404 and continue through the legacy start/reset path without ever claiming
+    that a conveyor is protected.  A configured controller is enabled only
+    after the updated edge service explicitly accepts the frozen target.
+    """
+    try:
+        body = {"session_id": session_id, "target_total": target_total}
+        if conveyor_transport == "cloud":
+            body["conveyor_transport"] = "cloud"
+        payload = _call(
+            "POST",
+            f"{_path(cam)}/session",
+            body,
+        )
+    except AiError as exc:
+        if exc.status != 404:
+            raise
+        if conveyor_transport == "cloud":
+            raise AiError(
+                503,
+                "Camera PC does not support cloud conveyor observations",
+            ) from exc
+        if initialize_legacy_worker:
+            start(cam)
+            payload = reset(cam)
+        else:
+            payload = status(cam)
+            current = payload if isinstance(payload, dict) else {}
+            if (
+                payload is None
+                or current.get("running") is not True
+                or current.get("mode") == "always_on"
+            ):
+                payload = start(cam)
+        assert payload is not None
+        return payload, False
+    assert payload is not None
+    return payload, True
+
+
+def stop_conveyor(cam: str, session_id: int) -> dict:
+    """Fail-safe OFF command that leaves the AI counter/session running."""
+    payload = _call(
+        "POST",
+        f"{_path(cam)}/conveyor/stop",
+        {"session_id": session_id},
+    )
+    assert payload is not None
+    return payload
+
+
+def emergency_stop_conveyor(cam: str, session_id: int) -> dict:
+    """OFF-only recovery that does not depend on an in-memory AI binding."""
+    payload = _call(
+        "POST",
+        f"{_path(cam)}/conveyor/emergency-stop",
+        {"session_id": session_id},
+    )
+    assert payload is not None
+    return payload
+
+
+def start_conveyor(cam: str, session_id: int) -> dict:
+    """Energize a prepared edge session after CRM state is committed."""
+    payload = _call(
+        "POST",
+        f"{_path(cam)}/conveyor/start",
+        {"session_id": session_id},
+    )
+    assert payload is not None
+    return payload
+
+
 def reset(cam: str) -> dict:
     """Обнулить счётчик работающей модели (новая погрузка)."""
     payload = _call("POST", f"{_path(cam)}/reset")

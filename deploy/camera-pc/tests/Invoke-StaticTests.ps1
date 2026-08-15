@@ -45,6 +45,15 @@ Assert-True ($aiInstallerText -match 'AI_SERVICE_API_KEY_SHA256') 'AI service di
 Assert-True ($aiInstallerText -match 'AI_ALWAYS_ON_STATE_PATH') 'Durable always-on AI state path is not installed.'
 Assert-True ($aiInstallerText -match 'AI_CAMERA_ROLES_STATE_PATH') 'Durable camera-role state path is not installed.'
 Assert-True ($aiInstallerText -match 'AI_COUNTING_LINES_STATE_PATH') 'Durable counting-line state path is not installed.'
+Assert-True ($aiInstallerText -match 'AI_CONVEYOR_CONTROLLERS_JSON') 'Conveyor controller mapping is not installed.'
+Assert-True ($aiInstallerText -match 'AI_CONVEYOR_CLOUD_CAMERAS') 'Cloud conveyor camera mapping is not installed.'
+Assert-True ($aiInstallerText -match 'AI_CONVEYOR_CLOUD_API_URL') 'Cloud conveyor canonical endpoint is not installed.'
+Assert-True ($aiInstallerText -match 'AI_CONVEYOR_CLOUD_API_KEY') 'Cloud conveyor outbound credential is not installed.'
+Assert-True ($aiInstallerText -match 'AI_CONVEYOR_HEARTBEAT_SECONDS') 'Conveyor heartbeat is not installed.'
+Assert-True ($aiInstallerText -match 'AI_CONVEYOR_NO_PROGRESS_SECONDS') 'Conveyor no-progress watchdog is not installed.'
+Assert-True ($aiInstallerText -match 'AI_CONVEYOR_MAX_RUN_SECONDS') 'Conveyor max-run watchdog is not installed.'
+Assert-True ($aiInstallerText -match "'conveyor.py'") 'Conveyor module is not validated before install.'
+Assert-True ($aiInstallerText -match "'cloud_conveyor.py'") 'Cloud conveyor module is not validated before install.'
 Assert-True ($aiInstallerText -match 'data\\camera-roles\.json') 'Known legacy camera-role state is not migrated.'
 Assert-True (
     $aiInstallerText -match 'Get-FileHash' -and

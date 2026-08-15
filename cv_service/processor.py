@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import subprocess
@@ -11,7 +12,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from .contracts import Detection, ProcessorOptions
+from .cloud_conveyor import CloudConveyorObserver
+from .contracts import ControlledSessionOptions, Detection, ProcessorOptions
+from .conveyor import ConveyorConflictError, ConveyorSupervisor
 from .runtime import decode_jpeg
 from .settings import Settings, parse_camera, parse_line
 from .state import LINE_DIRECTIONS, line_payload
@@ -27,6 +30,86 @@ def percentile(values: deque[float], fraction: float) -> float:
     ordered = sorted(values)
     index = min(len(ordered) - 1, max(0, math.ceil(len(ordered) * fraction) - 1))
     return round(ordered[index], 2)
+
+
+def frame_content_fingerprint(frame: Any) -> bytes:
+    """Small perceptual fingerprint of the decoded conveyor image.
+
+    The central sampled grid intentionally ignores low-bit codec noise. This
+    is a fail-closed liveness signal, not object recognition: a static healthy
+    scene can be rejected, while repeated black/frozen images cannot masquerade
+    as fresh frames merely because ``VideoCapture.read`` returned again.
+    """
+
+    height, width = frame.shape[:2]
+    if height <= 0 or width <= 0:
+        raise ValueError("decoded frame has invalid dimensions")
+    y_start, y_stop = height // 8, max(height // 8 + 1, height * 7 // 8)
+    x_start, x_stop = width // 8, max(width // 8 + 1, width * 7 // 8)
+    y_step = max(1, (y_stop - y_start) // 64)
+    x_step = max(1, (x_stop - x_start) // 64)
+    sample = frame[y_start:y_stop:y_step, x_start:x_stop:x_step]
+    raw = sample.tobytes()
+    quantized = bytes(value >> 4 for value in raw)
+    digest = hashlib.blake2s(digest_size=16)
+    digest.update(f"{height}x{width}:{getattr(frame, 'dtype', '')}".encode())
+    digest.update(quantized)
+    return digest.digest()
+
+
+class FrameContentProgress:
+    """Content-based liveness epoch with a monotonic progress sequence."""
+
+    def __init__(self, stale_seconds: float):
+        self.stale_seconds = stale_seconds
+        self.sequence = 0
+        self._epoch: tuple[int, int] | None = None
+        self._fingerprint: bytes | None = None
+        self._last_change_at: float | None = None
+
+    def reset_epoch(self, epoch: tuple[int, int]) -> None:
+        self._epoch = epoch
+        self._fingerprint = None
+        self._last_change_at = None
+
+    def observe(
+        self,
+        epoch: tuple[int, int],
+        fingerprint: bytes,
+        captured_at: float,
+    ) -> tuple[bool, int, str | None]:
+        if epoch != self._epoch:
+            self.reset_epoch(epoch)
+        if self._fingerprint is None:
+            self._fingerprint = fingerprint
+            self._last_change_at = captured_at
+            return (
+                False,
+                self.sequence,
+                "camera source liveness pending: waiting for changed image content",
+            )
+        if fingerprint != self._fingerprint:
+            self._fingerprint = fingerprint
+            self._last_change_at = captured_at
+            self.sequence += 1
+            return True, self.sequence, None
+        changed_at = (
+            self._last_change_at
+            if self._last_change_at is not None
+            else captured_at
+        )
+        unchanged_for = max(0.0, captured_at - changed_at)
+        if unchanged_for >= self.stale_seconds:
+            return (
+                False,
+                self.sequence,
+                "camera source frozen: repeated image content did not change",
+            )
+        return (
+            False,
+            self.sequence,
+            "camera source liveness pending: repeated image content",
+        )
 
 
 class FfmpegPublisher:
@@ -263,6 +346,11 @@ class CameraProcessor:
         self.tracker = LineTracker()
         self.running = False
         self.mode = "idle"
+        self.session_id: int | None = None
+        self.target_total: int | None = None
+        self.conveyor_transport = "direct"
+        self.goal_reached = False
+        self._session_ai_ready = threading.Event()
         self.total = 0
         self.per_color: dict[str, int] = defaultdict(int)
         self.confidence_sums: dict[str, float] = defaultdict(float)
@@ -282,8 +370,23 @@ class CameraProcessor:
         self.latest_counted: frozenset[int] = frozenset()
         self._last_inference_submit = 0.0
         self._source_generation = 0
+        # Independent from the RTSP source generation: every accounting
+        # boundary fences frames already captured or queued for inference.
+        # Otherwise a result captured before START/RESET could be applied to
+        # the freshly-zeroed counter (and could mark a controlled session AI
+        # ready).
+        self._accounting_generation = 0
         self._last_frame_generation = -1
+        self._last_frame_accounting_generation = -1
         self._last_inference_generation = -1
+        self._last_inference_accounting_generation = -1
+        self._session_ai_captured_at: float | None = None
+        self._frame_content_progress = FrameContentProgress(
+            self.settings.conveyor_stale_ai_seconds,
+        )
+        self._accounting_progress_floor = 0
+        self._last_control_progress_sequence = 0
+        self._source_liveness_error = ""
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._decoder_thread = threading.Thread(
@@ -299,6 +402,11 @@ class CameraProcessor:
             if source_stream != self.source_stream:
                 self.source_stream = source_stream
                 self._source_generation += 1
+                self._frame_content_progress.reset_epoch((
+                    self._source_generation,
+                    self._accounting_generation,
+                ))
+                self._source_liveness_error = ""
             self.options = options
 
     def update_counting_line(self, line: str, direction: str) -> None:
@@ -308,23 +416,119 @@ class CameraProcessor:
         if direction not in LINE_DIRECTIONS:
             raise ValueError("invalid counting-line direction")
         with self._lock:
+            if (
+                self.running
+                and getattr(self, "mode", "idle") == "session"
+                and self.session_id is not None
+            ):
+                raise ConveyorConflictError(
+                    "counting line cannot change while a controlled session is active"
+                )
             self.options = self.options.model_copy(update={
                 "line": line,
                 "direction": direction,
             })
             # Tracks observed against the old line must not cross the new one.
             self.tracker.reset()
+            self._advance_accounting_generation_locked()
+
+    def _advance_accounting_generation_locked(self) -> None:
+        """Fence all frames captured before an accounting-state boundary."""
+
+        self._accounting_generation = getattr(
+            self, "_accounting_generation", 0,
+        ) + 1
+        frame_progress = getattr(self, "_frame_content_progress", None)
+        progress_sequence = frame_progress.sequence if frame_progress is not None else 0
+        self._accounting_progress_floor = progress_sequence
+        self._last_control_progress_sequence = progress_sequence
+        if frame_progress is not None:
+            # Reopened capture must prove at least two distinct post-boundary
+            # frames. A source switch/accounting reset is never itself motion.
+            frame_progress.reset_epoch((
+                self._source_generation,
+                self._accounting_generation,
+            ))
+        self._last_inference_submit = 0.0
+        self._source_liveness_error = ""
+        self._last_frame_accounting_generation = -1
+        self._last_inference_accounting_generation = -1
+        self._session_ai_captured_at = None
+        self._session_ai_ready.clear()
 
     def start_session(self, options: ProcessorOptions) -> None:
         self.configure(options)
         with self._lock:
+            self._advance_accounting_generation_locked()
             self.tracker.reset()
+            self.session_id = None
+            self.target_total = None
+            self.conveyor_transport = "direct"
+            self.goal_reached = False
             self.total = 0
             self.per_color.clear()
             self.confidence_sums.clear()
             self.running = True
             self.mode = "session"
             self.publisher.resume()
+
+    def start_controlled_session(
+        self,
+        options: ProcessorOptions,
+        *,
+        session_id: int,
+        target_total: int,
+        conveyor_transport: str = "direct",
+    ) -> None:
+        self.configure(options)
+        with self._lock:
+            self._advance_accounting_generation_locked()
+            self.tracker.reset()
+            self.session_id = session_id
+            self.target_total = target_total
+            self.conveyor_transport = conveyor_transport
+            self.goal_reached = False
+            self.total = 0
+            self.per_color.clear()
+            self.confidence_sums.clear()
+            self.running = True
+            self.mode = "session"
+            self.publisher.resume()
+
+    def wait_for_session_ai(self, session_id: int) -> None:
+        deadline = time.monotonic() + self.settings.prewarm_timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not self._session_ai_ready.wait(timeout=remaining):
+                with self._lock:
+                    detail = (
+                        getattr(self, "_source_liveness_error", "")
+                        or getattr(self, "last_error", "")
+                    )
+                raise RuntimeError(
+                    f"processor {self.camera} did not produce fresh inference "
+                    f"for controlled session: {detail or 'source liveness not proven'}"
+                )
+            with self._lock:
+                if self.session_id != session_id or self.mode != "session":
+                    raise ConveyorConflictError(
+                        "controlled session changed while waiting for AI"
+                    )
+                captured_at = self._session_ai_captured_at
+                age = (
+                    time.monotonic() - captured_at
+                    if captured_at is not None else float("inf")
+                )
+                if 0 <= age < self.settings.conveyor_stale_ai_seconds:
+                    return
+                # The one-shot readiness event outlived its captured frame.
+                # Clear it under the same lock used by apply_inference so a
+                # concurrent fresh result cannot be lost.
+                self._session_ai_ready.clear()
+
+    def control_session(self) -> tuple[int | None, int | None, bool]:
+        with self._lock:
+            return self.session_id, self.target_total, self.goal_reached
 
     def start_always_on(
         self, options: ProcessorOptions, *, force_session_handoff: bool = False
@@ -334,7 +538,12 @@ class CameraProcessor:
             if self.mode == "session" and not force_session_handoff:
                 return
             if self.mode != "always_on" or force_session_handoff:
+                self._advance_accounting_generation_locked()
                 self.tracker.reset()
+                self.session_id = None
+                self.target_total = None
+                self.conveyor_transport = "direct"
+                self.goal_reached = False
                 self.total = 0
                 self.per_color.clear()
                 self.confidence_sums.clear()
@@ -350,6 +559,10 @@ class CameraProcessor:
                 source_ready = (
                     self._last_frame_generation == generation
                     and self._last_inference_generation == generation
+                    and self._last_frame_accounting_generation
+                    == self._accounting_generation
+                    and self._last_inference_accounting_generation
+                    == self._accounting_generation
                 )
             if (
                 self._decoder_thread.is_alive()
@@ -370,6 +583,7 @@ class CameraProcessor:
         with self._lock:
             if not self.running:
                 raise ValueError("processor is not counting")
+            self._advance_accounting_generation_locked()
             self.tracker.reset()
             self.total = 0
             self.per_color.clear()
@@ -377,6 +591,7 @@ class CameraProcessor:
 
     def idle(self) -> None:
         with self._lock:
+            self._advance_accounting_generation_locked()
             self.running = False
             self.mode = "idle"
             self.tracker.reset()
@@ -398,18 +613,60 @@ class CameraProcessor:
         detections: list[Detection],
         elapsed_ms: float,
         source_generation: int,
+        accounting_generation: int | None = None,
+        frame_progress_sequence: int | None = None,
     ) -> None:
+        control_update: tuple[int, int, float, int, int] | None = None
         with self._lock:
+            current_accounting_generation = getattr(
+                self, "_accounting_generation", 0,
+            )
+            if accounting_generation is None:
+                # Compatibility for direct/internal callers: production frame
+                # submissions always carry the generation captured by the
+                # decoder before reading the frame.
+                accounting_generation = current_accounting_generation
             self.inferences += 1
             self.inference_times.append(elapsed_ms)
-            self.frame_latencies.append((time.monotonic() - captured_at) * 1000)
-            if source_generation != self._source_generation:
-                # The operator switched sub/main while this frame waited in
-                # the shared inference queue. Never feed an old-source result
-                # into the new source's tracker or overlay.
+            now = time.monotonic()
+            frame_age = now - captured_at
+            self.frame_latencies.append(frame_age * 1000)
+            if (
+                source_generation != self._source_generation
+                or accounting_generation != current_accounting_generation
+            ):
+                # The operator switched sub/main or crossed an accounting
+                # boundary while this frame waited in the shared queue. Never
+                # feed that result into the new tracker, overlay or readiness
+                # latch.
                 self.dropped_frames += 1
                 return
+            controlled = self.session_id is not None and self.target_total is not None
+            if controlled and not (
+                0 <= frame_age < self.settings.conveyor_stale_ai_seconds
+            ):
+                # Freshness is measured from capture, not from slow inference
+                # completion. Old/future frames cannot count or refresh the
+                # physical conveyor watchdog.
+                self.dropped_frames += 1
+                return
+            if controlled:
+                progress_floor = getattr(self, "_accounting_progress_floor", 0)
+                last_progress = getattr(
+                    self, "_last_control_progress_sequence", progress_floor,
+                )
+                if frame_progress_sequence is None:
+                    # Compatibility for direct unit/internal callers. The
+                    # production decoder always supplies content progress.
+                    frame_progress_sequence = max(progress_floor, last_progress) + 1
+                if (
+                    frame_progress_sequence <= progress_floor
+                    or frame_progress_sequence <= last_progress
+                ):
+                    self.dropped_frames += 1
+                    return
             self._last_inference_generation = source_generation
+            self._last_inference_accounting_generation = accounting_generation
             self.latest_detections = detections
             # Размер кадра нужен, чтобы отдать координаты в долях: браузер
             # рисует рамки поверх видео произвольного размера.
@@ -430,6 +687,46 @@ class CameraProcessor:
                 self.total += 1
                 self.per_color[detection.label] += 1
                 self.confidence_sums[detection.label] += detection.confidence
+            if controlled:
+                assert self.session_id is not None
+                if self.total >= self.target_total:
+                    self.goal_reached = True
+                control_update = (
+                    self.session_id,
+                    self.total,
+                    captured_at,
+                    accounting_generation,
+                    frame_progress_sequence,
+                )
+        if control_update is not None:
+            # Only cached state and a condition notification happen here. All
+            # Modbus I/O is isolated in the actuator worker.
+            observe_with_capture_time = getattr(
+                self.manager, "observe_conveyor_ai", None,
+            )
+            if observe_with_capture_time is None:
+                # Lightweight test doubles predating capture-time watchdogs.
+                accepted = self.manager.conveyor.observe_ai(
+                    self.camera, control_update[0], control_update[1],
+                )
+            else:
+                accepted = observe_with_capture_time(
+                    self.camera,
+                    control_update[0],
+                    control_update[1],
+                    control_update[2],
+                )
+            with self._lock:
+                if (
+                    accepted is not False
+                    and self.session_id == control_update[0]
+                    and self.mode == "session"
+                    and getattr(self, "_accounting_generation", 0)
+                    == control_update[3]
+                ):
+                    self._session_ai_captured_at = control_update[2]
+                    self._last_control_progress_sequence = control_update[4]
+                    self._session_ai_ready.set()
 
     def _detection_overlay(self) -> list[dict]:
         """Рамки последнего кадра в долях кадра — для отрисовки в браузере.
@@ -491,14 +788,22 @@ class CameraProcessor:
             self.last_error = "opencv-python is not installed"
             return
         capture = None
-        generation = -1
+        opened_source_generation = -1
+        opened_accounting_generation = -1
         last_output = 0.0
         while not self._stop.is_set():
             with self._lock:
-                current_generation = self._source_generation
+                source_generation = self._source_generation
+                accounting_generation = self._accounting_generation
                 source_stream = self.source_stream
                 publishing = self.mode == "session"
-            if capture is None or current_generation != generation:
+                controlled = publishing and self.session_id is not None
+            capture_epoch = (source_generation, accounting_generation)
+            if (
+                capture is None
+                or opened_source_generation != source_generation
+                or opened_accounting_generation != accounting_generation
+            ):
                 if capture is not None:
                     capture.release()
                 capture = cv2.VideoCapture(
@@ -512,12 +817,17 @@ class CameraProcessor:
                     ],
                 )
                 capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                generation = current_generation
+                opened_source_generation = source_generation
+                opened_accounting_generation = accounting_generation
                 if not capture.isOpened():
                     self.camera_reconnects += 1
                     self.last_error = f"cannot open {source_stream}"
                     capture.release()
                     capture = None
+                    if controlled:
+                        self.manager.terminate_cloud_conveyor(
+                            self, "capture_failed", captured_at=time.monotonic(),
+                        )
                     self._stop.wait(1.0)
                     continue
             ok, frame = capture.read()
@@ -527,16 +837,98 @@ class CameraProcessor:
                 self.last_error = f"lost {source_stream}"
                 capture.release()
                 capture = None
+                if controlled:
+                    self.manager.terminate_cloud_conveyor(
+                        self, "capture_failed", captured_at=captured_at,
+                    )
                 self._stop.wait(0.5)
                 continue
+            # read() can block while START/RESET/handoff advances the epoch.
+            # Check immediately afterward so the buffered old frame cannot
+            # seed the new content baseline or enter inference.
             with self._lock:
+                if capture_epoch != (
+                    self._source_generation,
+                    self._accounting_generation,
+                ):
+                    self.dropped_frames += 1
+                    continue
+            fingerprint = None
+            if controlled:
+                try:
+                    fingerprint = frame_content_fingerprint(frame)
+                except (AttributeError, TypeError, ValueError) as exc:
+                    with self._lock:
+                        if capture_epoch == (
+                            self._source_generation,
+                            self._accounting_generation,
+                        ):
+                            self._source_liveness_error = (
+                                f"camera source liveness check failed: {exc}"
+                            )
+                            self.dropped_frames += 1
+                    continue
+            with self._lock:
+                if capture_epoch != (
+                    self._source_generation,
+                    self._accounting_generation,
+                ):
+                    self.dropped_frames += 1
+                    continue
                 self.last_error = ""
                 self.frames_seen += 1
-                self.last_frame_at = utc_now()
-                self._last_frame_generation = generation
-            if captured_at - self._last_inference_submit >= 1 / self.settings.inference_fps:
-                self._last_inference_submit = captured_at
-                self.manager.submit(self, frame.copy(), captured_at, generation)
+                frame_progress_sequence = None
+                cloud_terminal_reason = None
+                content_live = True
+                if controlled:
+                    assert fingerprint is not None
+                    (
+                        content_live,
+                        frame_progress_sequence,
+                        self._source_liveness_error,
+                    ) = self._frame_content_progress.observe(
+                        capture_epoch,
+                        fingerprint,
+                        captured_at,
+                    )
+                    content_live = (
+                        content_live
+                        and frame_progress_sequence > self._accounting_progress_floor
+                    )
+                    if not content_live:
+                        self.dropped_frames += 1
+                        if self._source_liveness_error.startswith(
+                            "camera source frozen:"
+                        ):
+                            cloud_terminal_reason = "stale_ai"
+                else:
+                    self._source_liveness_error = ""
+                if content_live:
+                    self.last_frame_at = utc_now()
+                    self._last_frame_generation = source_generation
+                    self._last_frame_accounting_generation = accounting_generation
+                submit_inference = (
+                    content_live
+                    and captured_at - self._last_inference_submit
+                    >= 1 / self.settings.inference_fps
+                )
+                if submit_inference:
+                    self._last_inference_submit = captured_at
+            if cloud_terminal_reason is not None:
+                self.manager.terminate_cloud_conveyor(
+                    self,
+                    cloud_terminal_reason,
+                    captured_at=captured_at,
+                )
+            if submit_inference:
+                self.manager.submit(
+                    self,
+                    frame.copy(),
+                    captured_at,
+                    source_generation,
+                    accounting_generation,
+                    frame_progress_sequence,
+                )
             if publishing and captured_at - last_output >= 1 / self.settings.output_fps:
                 last_output = captured_at
                 self.publisher.write(self._annotate(frame))
@@ -545,6 +937,15 @@ class CameraProcessor:
 
     def status(self) -> dict:
         elapsed = max(0.001, time.monotonic() - self.started_monotonic)
+        # Keep the actuator's own binding untouched. Mirroring the processor
+        # session/target into this nested object would conceal a divergence
+        # from backend fencing; top-level fields below describe the processor.
+        conveyor_transport = getattr(self, "conveyor_transport", "direct")
+        conveyor = (
+            self.manager.cloud_conveyor.status(self.camera)
+            if conveyor_transport == "cloud"
+            else self.manager.conveyor.status(self.camera)
+        )
         with self._lock:
             alive = (
                 self._decoder_thread.is_alive()
@@ -556,6 +957,10 @@ class CameraProcessor:
                 and alive
                 and self._last_frame_generation == self._source_generation
                 and self._last_inference_generation == self._source_generation
+                and self._last_frame_accounting_generation
+                == self._accounting_generation
+                and self._last_inference_accounting_generation
+                == self._accounting_generation
             )
             return {
                 "cam": self.camera,
@@ -569,6 +974,15 @@ class CameraProcessor:
                 "line": self.options.line or self.settings.default_line,
                 "direction": self.options.direction,
                 "total": self.total,
+                "session_id": self.session_id,
+                "target_total": self.target_total,
+                "conveyor_transport": conveyor_transport,
+                "remaining": (
+                    max(0, self.target_total - self.total)
+                    if self.target_total is not None else None
+                ),
+                "goal_reached": self.goal_reached,
+                "conveyor": conveyor,
                 "detections": self._detection_overlay(),
                 # Размер кадра, к которому относятся рамки. Сами координаты уже
                 # нормализованы, но CRM держит и клиентов постарше, отдающих
@@ -581,7 +995,7 @@ class CameraProcessor:
                 "per_color": dict(self.per_color),
                 "confidence_sums": {key: round(value, 3) for key, value in self.confidence_sums.items()},
                 "last_frame_at": self.last_frame_at,
-                "error": self.last_error or None,
+                "error": self._source_liveness_error or self.last_error or None,
                 "metrics": {
                     "camera_fps": round(self.frames_seen / elapsed, 2),
                     "inference_fps": round(self.inferences / elapsed, 2),
@@ -602,11 +1016,13 @@ class DroppingFrameQueue:
 
     def __init__(self, per_camera_size: int):
         self.per_camera_size = per_camera_size
-        self._items: deque[tuple[CameraProcessor, Any, float, int]] = deque()
+        self._items: deque[
+            tuple[CameraProcessor, Any, float, int, int, int | None]
+        ] = deque()
         self._condition = threading.Condition()
 
     def put_latest(
-        self, item: tuple[CameraProcessor, Any, float, int]
+        self, item: tuple[CameraProcessor, Any, float, int, int, int | None]
     ) -> CameraProcessor | None:
         processor = item[0]
         dropped = None
@@ -622,7 +1038,9 @@ class DroppingFrameQueue:
             self._condition.notify()
         return dropped
 
-    def get(self, timeout: float) -> tuple[CameraProcessor, Any, float, int]:
+    def get(
+        self, timeout: float,
+    ) -> tuple[CameraProcessor, Any, float, int, int, int | None]:
         deadline = time.monotonic() + timeout
         with self._condition:
             while not self._items:
@@ -652,6 +1070,8 @@ class ProcessorManager:
         role_state_store=None,
         line_state_store=None,
         wagon_detector=None,
+        conveyor_supervisor=None,
+        cloud_conveyor_observer=None,
     ):
         self.settings = settings
         self.model = model
@@ -663,6 +1083,16 @@ class ProcessorManager:
         self.role_state_store = role_state_store
         self.line_state_store = line_state_store
         self.wagon_detector = wagon_detector
+        self.conveyor = (
+            conveyor_supervisor
+            if conveyor_supervisor is not None
+            else ConveyorSupervisor(settings)
+        )
+        self.cloud_conveyor = (
+            cloud_conveyor_observer
+            if cloud_conveyor_observer is not None
+            else CloudConveyorObserver(settings)
+        )
         self.processors: dict[str, CameraProcessor] = {}
         self.always_on_cameras: set[str] = set()
         self.always_on_source = "sub"
@@ -680,9 +1110,24 @@ class ProcessorManager:
         frame: Any,
         captured_at: float,
         source_generation: int = 0,
+        accounting_generation: int | None = None,
+        frame_progress_sequence: int | None = None,
     ) -> None:
+        if accounting_generation is None:
+            # Non-decoder callers submit the frame synchronously, so the
+            # processor's current boundary is the frame's boundary.
+            accounting_generation = getattr(
+                processor, "_accounting_generation", 0,
+            )
         dropped = self.queue.put_latest(
-            (processor, frame, captured_at, source_generation)
+            (
+                processor,
+                frame,
+                captured_at,
+                source_generation,
+                accounting_generation,
+                frame_progress_sequence,
+            )
         )
         if dropped is not None:
             dropped.mark_dropped()
@@ -690,7 +1135,14 @@ class ProcessorManager:
     def _inference_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                processor, frame, captured_at, source_generation = self.queue.get(timeout=0.2)
+                (
+                    processor,
+                    frame,
+                    captured_at,
+                    source_generation,
+                    accounting_generation,
+                    frame_progress_sequence,
+                ) = self.queue.get(timeout=0.2)
             except TimeoutError:
                 continue
             started = time.perf_counter()
@@ -702,9 +1154,63 @@ class ProcessorManager:
                     detections,
                     (time.perf_counter() - started) * 1000,
                     source_generation,
+                    accounting_generation,
+                    frame_progress_sequence,
                 )
             except Exception as exc:  # noqa: BLE001 - persistent worker boundary
                 processor.last_error = f"inference failed: {exc}"
+                self.terminate_cloud_conveyor(
+                    processor,
+                    "stale_ai",
+                    captured_at=captured_at,
+                )
+
+    def observe_conveyor_ai(
+        self,
+        camera: str,
+        session_id: int,
+        total: int,
+        captured_at: float,
+    ) -> bool:
+        """Route a nonblocking AI observation to the frozen session transport."""
+
+        try:
+            processor = self.get(camera)
+        except KeyError:
+            return False
+        if getattr(processor, "conveyor_transport", "direct") == "cloud":
+            target_total = processor.target_total
+            if target_total is None:
+                return False
+            return self.cloud_conveyor.observe(
+                camera,
+                session_id,
+                target_total,
+                total,
+                captured_at,
+            )
+        return self.conveyor.observe_ai(camera, session_id, total, captured_at)
+
+    def terminate_cloud_conveyor(
+        self,
+        processor: CameraProcessor,
+        reason: str,
+        *,
+        captured_at: float | None = None,
+    ) -> bool:
+        if getattr(processor, "conveyor_transport", "direct") != "cloud":
+            return False
+        session_id, target_total, _goal_reached = processor.control_session()
+        if session_id is None or target_total is None:
+            return False
+        return self.cloud_conveyor.terminate(
+            processor.camera,
+            session_id,
+            target_total,
+            processor.total,
+            reason,
+            captured_at=captured_at,
+        )
 
     def _ensure(self, camera: str, options: ProcessorOptions) -> CameraProcessor:
         camera = parse_camera(camera)
@@ -754,14 +1260,242 @@ class ProcessorManager:
             processor.start_session(processor.options)
         return processor.status()
 
+    def start_controlled_session(
+        self, camera: str, options: ControlledSessionOptions,
+    ) -> dict:
+        camera = parse_camera(camera)
+        transport = options.conveyor_transport
+        direct_configured = self.conveyor.status(camera)["configured"]
+        cloud_configured = self.cloud_conveyor.configured(camera)
+        if transport == "cloud":
+            if not cloud_configured:
+                raise ConveyorConflictError(
+                    f"no cloud conveyor observation configured for {camera}"
+                )
+            if direct_configured:
+                raise ConveyorConflictError(
+                    f"camera {camera} cannot use cloud and direct conveyor transports"
+                )
+        elif cloud_configured:
+            raise ConveyorConflictError(
+                f"camera {camera} requires conveyor_transport=cloud"
+            )
+        processor_options = ProcessorOptions(
+            source=options.source,
+            line=options.line,
+            direction=options.direction,
+        )
+        with self._lock:
+            try:
+                existing = self.get(camera)
+            except KeyError:
+                existing = None
+            if existing is not None and existing.running and existing.mode == "session":
+                session_id, target_total, _goal_reached = existing.control_session()
+                if session_id is None:
+                    raise ConveyorConflictError(
+                        "camera already has an uncontrolled counting session"
+                    )
+                if session_id != options.session_id:
+                    raise ConveyorConflictError("another controlled session is active")
+                if target_total != options.target_total:
+                    raise ConveyorConflictError(
+                        "target_total is immutable for a controlled session"
+                    )
+                if getattr(existing, "conveyor_transport", "direct") != transport:
+                    raise ConveyorConflictError(
+                        "conveyor_transport is immutable for a controlled session"
+                    )
+                processor = existing
+                if transport == "cloud":
+                    if not self.cloud_conveyor.begin_session(
+                        camera, options.session_id, options.target_total,
+                    ):
+                        raise ConveyorConflictError(
+                            "cloud conveyor observation session is terminal"
+                        )
+                elif direct_configured:
+                    self.conveyor.arm(camera, options.session_id, options.target_total)
+            else:
+                processor = self._ensure(camera, processor_options)
+                if transport == "cloud":
+                    if not self.cloud_conveyor.begin_session(
+                        camera, options.session_id, options.target_total,
+                    ):
+                        raise ConveyorConflictError(
+                            "cloud conveyor observation session is unavailable"
+                        )
+                elif direct_configured:
+                    self.conveyor.arm(camera, options.session_id, options.target_total)
+                try:
+                    processor.start_controlled_session(
+                        processor.options,
+                        session_id=options.session_id,
+                        target_total=options.target_total,
+                        conveyor_transport=transport,
+                    )
+                except Exception:
+                    if transport == "cloud":
+                        self.cloud_conveyor.terminate(
+                            camera,
+                            options.session_id,
+                            options.target_total,
+                            0,
+                            "session_setup_failed",
+                        )
+                    elif direct_configured:
+                        try:
+                            self.conveyor.stop(
+                                camera, options.session_id, reason="session_setup_failed",
+                            )
+                        except Exception:  # noqa: BLE001, S110 - original error is authoritative
+                            pass
+                    raise
+        # The old prewarm timestamp is not proof that this new accounting
+        # session has a working inference loop. Wait while the relay is OFF.
+        try:
+            processor.wait_for_session_ai(options.session_id)
+        except Exception:
+            if transport == "cloud":
+                self.cloud_conveyor.terminate(
+                    camera,
+                    options.session_id,
+                    options.target_total,
+                    processor.total,
+                    "session_setup_failed",
+                )
+            raise
+        return processor.status()
+
+    def start_conveyor(self, camera: str, session_id: int) -> dict:
+        processor = self.get(camera)
+        current_session, _target, goal_reached = processor.control_session()
+        if current_session != session_id or not processor.running or processor.mode != "session":
+            raise ConveyorConflictError("stale conveyor session_id")
+        if goal_reached:
+            raise ConveyorConflictError("target is already reached")
+        if getattr(processor, "conveyor_transport", "direct") == "cloud":
+            raise ConveyorConflictError(
+                "cloud conveyor transport is observation-only on camera-PC"
+            )
+        if not self.conveyor.status(camera)["configured"]:
+            raise ConveyorConflictError(f"no conveyor controller configured for {camera}")
+        self.conveyor.run(camera, session_id)
+        return processor.status()
+
+    def stop_conveyor(self, camera: str, session_id: int) -> dict:
+        processor = self.get(camera)
+        current_session, target_total, _goal_reached = processor.control_session()
+        if current_session != session_id:
+            raise ConveyorConflictError("stale conveyor session_id")
+        if getattr(processor, "conveyor_transport", "direct") == "cloud":
+            assert target_total is not None
+            self.cloud_conveyor.terminate(
+                camera,
+                session_id,
+                target_total,
+                processor.total,
+                "manual_stop",
+            )
+            return processor.status()
+        if not self.conveyor.status(camera)["configured"]:
+            return processor.status()
+        self.conveyor.stop(camera, session_id, reason="manual_stop")
+        return processor.status()
+
+    def emergency_stop_conveyor(self, camera: str, session_id: int) -> dict:
+        """OFF-only recovery path; never requires or creates an AI processor."""
+        camera = parse_camera(camera)
+        if self.cloud_conveyor.configured(camera):
+            try:
+                processor = self.get(camera)
+            except KeyError:
+                processor = None
+            if processor is not None:
+                current_session, target_total, _goal_reached = (
+                    processor.control_session()
+                )
+                if current_session != session_id:
+                    raise ConveyorConflictError("stale conveyor session_id")
+                if target_total is not None:
+                    self.cloud_conveyor.terminate(
+                        camera,
+                        session_id,
+                        target_total,
+                        processor.total,
+                        "manual_stop",
+                    )
+                return processor.status()
+            # No in-memory target exists after an edge restart, so constructing
+            # a cloud payload here would violate the signed session contract.
+            # The backend lease still expires OFF without an observation.
+            return {
+                "cam": camera,
+                "running": False,
+                "mode": "idle",
+                "session_id": None,
+                "target_total": None,
+                "remaining": None,
+                "goal_reached": False,
+                "conveyor_transport": "cloud",
+                "conveyor": self.cloud_conveyor.status(camera),
+            }
+        self.conveyor.emergency_stop(
+            camera,
+            session_id,
+            reason="emergency_stop",
+        )
+        try:
+            processor = self.get(camera)
+        except KeyError:
+            return {
+                "cam": camera,
+                "running": False,
+                "mode": "idle",
+                "session_id": None,
+                "target_total": None,
+                "remaining": None,
+                "goal_reached": False,
+                "conveyor": self.conveyor.status(camera),
+            }
+        return processor.status()
+
     def reset(self, camera: str) -> dict:
         processor = self.get(camera)
+        session_id, _target, _goal_reached = processor.control_session()
+        if session_id is not None:
+            raise ConveyorConflictError(
+                "controlled sessions cannot be reset; stop and create a new session"
+            )
         processor.reset()
         return processor.status()
 
     def idle(self, camera: str) -> dict:
         with self._lock:
             processor = self.get(camera)
+            session_id, _target, _goal_reached = processor.control_session()
+            conveyor_transport = getattr(
+                processor, "conveyor_transport", "direct",
+            )
+            conveyor_configured = self.conveyor.status(camera)["configured"]
+            if (
+                session_id is not None
+                and conveyor_transport == "cloud"
+                and processor.target_total is not None
+            ):
+                self.cloud_conveyor.terminate(
+                    camera,
+                    session_id,
+                    processor.target_total,
+                    processor.total,
+                    "processor_stopped",
+                )
+            elif session_id is not None and conveyor_configured:
+                self.conveyor.stop(camera, session_id, reason="processor_idle")
+                # Release also obtains a fresh OFF readback. Do it before the
+                # processor handoff so a relay failure cannot be reported as
+                # IDLE while the accounting worker has already been paused.
+                self.conveyor.release(camera, session_id)
             if camera in self.always_on_cameras:
                 processor.start_always_on(
                     self._resolved_options(
@@ -965,8 +1699,23 @@ class ProcessorManager:
             # one manager transaction. _ensure takes the same lock while it
             # resolves a saved line, so a processor cannot appear with a stale
             # configuration between these steps.
-            config = self.line_state_store.save(camera, value, direction)
             processor = self.processors.get(camera)
+            if processor is not None:
+                session_id, _target, _goal_reached = processor.control_session()
+                if (
+                    processor.running
+                    and processor.mode == "session"
+                    and session_id is not None
+                ):
+                    # The calibrated line is part of the frozen controlled
+                    # accounting contract. Reject before the durable write and
+                    # before touching the live processor; stopping the machine
+                    # is a separate, explicit operation.
+                    raise ConveyorConflictError(
+                        "counting line cannot change while a controlled "
+                        "session is active"
+                    )
+            config = self.line_state_store.save(camera, value, direction)
             if processor is not None:
                 try:
                     processor.update_counting_line(
@@ -1035,6 +1784,14 @@ class ProcessorManager:
 
     def cameras(self) -> dict:
         inventory = self.mediamtx.camera_inventory()
+        for camera, item in inventory.items():
+            # Cached capability/readback only; camera inventory must never
+            # perform Modbus I/O or require a processor to exist.
+            item["conveyor"] = (
+                self.cloud_conveyor.status(camera)
+                if self.cloud_conveyor.configured(camera)
+                else self.conveyor.status(camera)
+            )
         for camera, processor in self.processors.items():
             inventory.setdefault(camera, {"cam": camera})["ai"] = processor.status()
         return {
@@ -1044,9 +1801,27 @@ class ProcessorManager:
         }
 
     def close(self) -> None:
-        self._stop.set()
-        self._worker.join(timeout=3)
         with self._lock:
             processors = list(self.processors.values())
+        for processor in processors:
+            session_id, target_total, _goal_reached = processor.control_session()
+            if (
+                session_id is not None
+                and target_total is not None
+                and getattr(processor, "conveyor_transport", "direct") == "cloud"
+            ):
+                self.cloud_conveyor.terminate(
+                    processor.camera,
+                    session_id,
+                    target_total,
+                    processor.total,
+                    "shutdown",
+                )
+        # Cloud is observation-only. Drain terminal callbacks before stopping
+        # inference; direct outputs are separately de-energized and verified.
+        self.cloud_conveyor.close()
+        self.conveyor.close()
+        self._stop.set()
+        self._worker.join(timeout=3)
         for processor in processors:
             processor.close()

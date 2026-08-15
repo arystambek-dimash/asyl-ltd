@@ -968,8 +968,9 @@ def replace_items(order: Order, items_data: list, prices: dict | None, user) -> 
     каждая позиция обязана получить цену — иначе сумма «поплывёт» на базовый
     прайс и испортит долги.
     """
-    from .models import OrderItem
     from apps.warehouse.services import ensure_products_available
+
+    from .models import OrderItem
     # Позиции только по товару в наличии — как и при создании заказа.
     ensure_products_available(item["product"] for item in items_data)
     # Блокируем строку заказа: правка не должна гоняться со стартом загрузки
@@ -979,6 +980,19 @@ def replace_items(order: Order, items_data: list, prices: dict | None, user) -> 
         raise ValidationError(
             {"detail": "Позиции можно менять только до начала загрузки",
              "code": "items_locked"})
+    # A STARTING camera session has already frozen the physical conveyor
+    # target. The parent Order row is the shared serialization fence with
+    # counting.start, so item edits cannot race that snapshot even while the
+    # scale and camera-PC calls are still in flight.
+    from apps.cameras.models import AiCountingSession
+    if AiCountingSession.objects.filter(
+        order=order,
+        status__in=AiCountingSession.OPEN_STATUSES,
+    ).exists():
+        raise ValidationError({
+            "detail": "Состав заказа уже закреплён за AI-погрузкой",
+            "code": "ai_session_active",
+        })
     if not items_data:
         raise ValidationError(
             {"detail": "В заказе должна остаться хотя бы одна позиция",

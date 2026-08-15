@@ -1,0 +1,257 @@
+from datetime import timedelta
+from unittest.mock import patch
+
+import pytest
+from django.utils import timezone
+
+from apps.cameras import ai
+from apps.cameras.models import (
+    AiCountingSession,
+    MonoblockCameraSettings,
+)
+from apps.catalog.models import Product
+from apps.clients.models import Client
+from apps.conveyors.credentials import digest_token
+from apps.conveyors.models import ConveyorDevice
+from apps.orders.models import Order, OrderItem
+from apps.shipments.models import Shipment
+
+
+pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def cloud_settings(settings, monkeypatch):
+    settings.CONVEYOR_TRANSPORTS = {"cam2": "cloud"}
+    settings.CONVEYOR_COMMAND_TIMEOUT_SECONDS = 1
+    monkeypatch.setattr(ai, "AI_KEY", "test-key")
+    MonoblockCameraSettings.objects.create(camera_sources=["cam2"])
+
+
+@pytest.fixture
+def loader(user_with_perms):
+    return user_with_perms("cloud-count-loader", codes=["shipping.load"])
+
+
+def _order(*, status="confirmed", target=10, product=False):
+    client = Client.objects.create_with_user(
+        first_name="Cloud", last_name="Flow", phone=f"cloud-flow-{status}-{target}"
+    )
+    order = Order.objects.create(
+        client=client,
+        status=status,
+        truck_number="01CLOUD",
+        loading_camera="cam2" if status == "loading" else "",
+    )
+    item_product = None
+    if product:
+        item_product = Product.objects.create(
+            name=f"Cloud product {target}",
+            color="White",
+            weight_kg="50",
+            price="100.00",
+        )
+    OrderItem.objects.create(
+        order=order,
+        product=item_product,
+        quantity=target,
+    )
+    return order
+
+
+def _device(**overrides):
+    return ConveyorDevice.objects.create(
+        name="Cloud line",
+        camera_source="cam2",
+        secret_sha256=digest_token("C" * 43),
+        **overrides,
+    )
+
+
+def _mark_prepared(session, _timeout):
+    device = ConveyorDevice.objects.get(camera_source=session.camera)
+    now = timezone.now()
+    device.last_seen_at = now
+    device.last_boot_id = "11111111-1111-4111-8111-111111111111"
+    device.last_ack_revision = device.command_revision
+    device.output_state = False
+    device.feedback_state = False
+    device.last_ai_seen_at = now
+    device.last_ai_boot_id = "22222222-2222-4222-8222-222222222222"
+    device.last_ai_sequence = 0
+    device.last_total = 0
+    device.save()
+    return device
+
+
+def _confirm(device_id, revision, desired, _timeout, *, seen_after=None):
+    device = ConveyorDevice.objects.get(pk=device_id)
+    device.last_ack_revision = revision
+    device.output_state = desired
+    device.feedback_state = desired
+    device.last_seen_at = (
+        seen_after + timedelta(milliseconds=1)
+        if seen_after is not None
+        else timezone.now()
+    )
+    device.save()
+    return device
+
+
+def test_bind_cloud_uses_only_cloud_master_and_freezes_transport(
+    auth_client, loader,
+):
+    order = _order(target=12)
+    _device()
+    edge = {
+        "cam": "cam2",
+        "running": True,
+        "mode": "session",
+        "stream": "cam2ai",
+        "total": 0,
+    }
+
+    with (
+        patch.object(ai, "start_order_session", return_value=(edge, True)) as start,
+        patch.object(ai, "start_conveyor") as direct_start,
+        patch.object(ai, "emergency_stop_conveyor") as direct_stop,
+        patch(
+            "apps.cameras.counting.cloud_conveyors.wait_prepared",
+            side_effect=_mark_prepared,
+        ),
+        patch(
+            "apps.cameras.counting.cloud_conveyors.wait_confirmed",
+            side_effect=_confirm,
+        ),
+    ):
+        response = auth_client(loader).post(
+            "/api/cameras/cam2/ai/",
+            {"order_id": order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 200, response.data
+    session = AiCountingSession.objects.get(order=order)
+    device = ConveyorDevice.objects.get(camera_source="cam2")
+    assert session.conveyor_transport == AiCountingSession.CONVEYOR_CLOUD
+    assert session.conveyor_enabled is True
+    assert device.command_session_id == session.pk
+    assert device.desired_state is True
+    assert response.data["conveyor"]["transport"] == "cloud"
+    start.assert_called_once_with(
+        "cam2",
+        session.pk,
+        12,
+        initialize_legacy_worker=True,
+        conveyor_transport="cloud",
+    )
+    direct_start.assert_not_called()
+    direct_stop.assert_not_called()
+
+
+def test_cloud_emergency_stop_never_calls_direct_modbus_endpoint(
+    auth_client, loader,
+):
+    order = _order(status="loading", target=10)
+    session = AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+        started_by=loader,
+        target_total=10,
+        conveyor_enabled=True,
+        conveyor_transport=AiCountingSession.CONVEYOR_CLOUD,
+    )
+    _device(
+        desired_state=True,
+        command_terminal=False,
+        command_session=session,
+        command_target_total=10,
+        output_state=True,
+        feedback_state=True,
+        last_total=4,
+        stop_reason="active_session",
+    )
+
+    with (
+        patch(
+            "apps.cameras.counting.cloud_conveyors.wait_confirmed",
+            side_effect=_confirm,
+        ),
+        patch.object(
+            ai, "status", return_value={"running": True, "total": 4},
+        ),
+        patch.object(ai, "emergency_stop_conveyor") as direct_emergency,
+        patch.object(ai, "stop_conveyor") as direct_stop,
+    ):
+        response = auth_client(loader).post(
+            "/api/cameras/cam2/ai/conveyor/stop/",
+            {"order_id": order.pk, "session_id": session.pk},
+            format="json",
+        )
+
+    assert response.status_code == 200, response.data
+    assert response.data["conveyor"]["desired"] == 0
+    assert response.data["conveyor"]["feedback"] == 0
+    direct_emergency.assert_not_called()
+    direct_stop.assert_not_called()
+
+
+def test_cloud_completion_uses_post_scale_heartbeat_and_no_direct_master(
+    auth_client, loader,
+):
+    order = _order(status="loading", target=10, product=True)
+    Shipment.objects.create(order=order, truck_number=order.truck_number)
+    session = AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+        started_by=loader,
+        target_total=10,
+        conveyor_enabled=True,
+        conveyor_transport=AiCountingSession.CONVEYOR_CLOUD,
+    )
+    _device(
+        desired_state=False,
+        command_terminal=True,
+        command_session=session,
+        command_target_total=10,
+        output_state=False,
+        feedback_state=False,
+        last_total=10,
+        stop_reason="target_reached",
+    )
+
+    with (
+        patch(
+            "apps.cameras.counting.cloud_conveyors.wait_confirmed",
+            side_effect=_confirm,
+        ) as wait,
+        patch.object(
+            ai, "status", return_value={"running": True, "total": 10},
+        ),
+        patch.object(ai, "delete", return_value={}),
+        patch.object(ai, "emergency_stop_conveyor") as direct_emergency,
+        patch.object(ai, "stop_conveyor") as direct_stop,
+    ):
+        response = auth_client(loader).delete(
+            "/api/cameras/cam2/ai/",
+            {
+                "order_id": order.pk,
+                "session_id": session.pk,
+                "complete_order": True,
+            },
+            format="json",
+        )
+
+    assert response.status_code == 200, response.data
+    assert response.data["order_status"] == "shipped"
+    assert wait.call_count == 2
+    assert wait.call_args_list[1].kwargs["seen_after"] is not None
+    direct_emergency.assert_not_called()
+    direct_stop.assert_not_called()
+    session.refresh_from_db()
+    order.refresh_from_db()
+    assert session.status == AiCountingSession.CLOSED
+    assert session.final_total == 10
+    assert order.status == "shipped"
