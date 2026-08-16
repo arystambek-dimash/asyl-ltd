@@ -13,7 +13,6 @@ interface PortalProduct {
   id: number;
   label: string;
   weight_kg: string;
-  available_bags: number;
   price: string | null;
   currency: "KZT" | "USD";
 }
@@ -87,15 +86,6 @@ export default function PortalCatalogPage() {
                 ) : (
                   <div className="mt-1 text-sm font-medium text-[var(--muted-foreground)]">Цена уточняется</div>
                 )}
-              </div>
-              <div
-                className={
-                  p.available_bags > 0
-                    ? "mt-3 text-xs font-medium text-[var(--success)]"
-                    : "mt-3 text-xs font-medium text-[var(--muted-foreground)]"
-                }
-              >
-                {p.available_bags > 0 ? `В наличии: ${p.available_bags} меш.` : "Остаток уточнит оператор"}
               </div>
             </Card>
           ))}

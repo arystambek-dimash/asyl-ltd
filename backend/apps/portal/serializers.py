@@ -39,17 +39,15 @@ class CatalogProductSerializer(serializers.ModelSerializer):
     weight_kg = serializers.DecimalField(
         max_digits=10, decimal_places=2, read_only=True
     )
-    available_bags = serializers.SerializerMethodField()
     price = serializers.SerializerMethodField()
     currency = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
-        fields = ["id", "label", "weight_kg", "available_bags", "price", "currency"]
-
-    def get_available_bags(self, obj):
-        s = getattr(obj, "stock", None)
-        return s.bags if s and s.bags > 0 else 0
+        # Warehouse balance is staff-only operational data.  The portal may
+        # list orderable catalogue references and the client's own price, but
+        # must never serialize an exact stock quantity.
+        fields = ["id", "label", "weight_kg", "price", "currency"]
 
     def get_price(self, obj):
         # Только закреплённая цена текущего клиента. Базовую цену не раскрываем.

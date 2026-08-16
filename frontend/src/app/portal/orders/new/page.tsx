@@ -18,7 +18,6 @@ interface PortalProduct {
   id: number;
   label: string;
   weight_kg: string;
-  available_bags: number;
   price: string | null;
   currency: "KZT" | "USD";
 }
@@ -140,11 +139,9 @@ export default function PortalNewOrderPage() {
                 >
                   <option value="">Товар</option>
                   {(products ?? []).map((p) => (
-                    <option key={p.id} value={p.id} disabled={p.available_bags <= 0}>
+                    <option key={p.id} value={p.id}>
                       {p.label}
-                      {p.available_bags > 0
-                        ? ` · ${p.price ? `${formatCurrency(p.price, p.currency)} · ` : ""}в наличии ${p.available_bags} меш.`
-                        : " — нет в наличии"}
+                      {p.price ? ` · ${formatCurrency(p.price, p.currency)}` : " · Цена уточняется"}
                     </option>
                   ))}
                 </Select>
@@ -152,7 +149,6 @@ export default function PortalNewOrderPage() {
                   type="number"
                   min="1"
                   aria-label={`Количество мешков, позиция ${i + 1}`}
-                  max={products?.find((p) => String(p.id) === r.product)?.available_bags || undefined}
                   placeholder="Мешков"
                   className="w-24 sm:w-32"
                   value={r.quantity}

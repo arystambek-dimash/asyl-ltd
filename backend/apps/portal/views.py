@@ -63,7 +63,6 @@ class PortalCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         price_qs = ClientPrice.objects.filter(
             client_id=client_id, currency=self._currency())
         return (Product.objects.filter(is_active=True)
-                .select_related("stock")
                 .prefetch_related(Prefetch(
             "client_prices", queryset=price_qs,
             to_attr="portal_client_prices"))

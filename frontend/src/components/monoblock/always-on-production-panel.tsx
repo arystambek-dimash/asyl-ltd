@@ -105,17 +105,6 @@ function mappingSignature(rows: AlwaysOnProductMapping[]) {
     .join("|");
 }
 
-function runDuration(startedAt: string, endedAt: string | null, lastCountedAt: string) {
-  const start = new Date(startedAt).getTime();
-  const end = new Date(endedAt ?? lastCountedAt).getTime();
-  const minutes = Math.max(0, Math.round((end - start) / 60_000));
-  if (!Number.isFinite(minutes) || minutes < 1) return "меньше минуты";
-  if (minutes < 60) return `${minutes} мин`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest ? `${hours} ч ${rest} мин` : `${hours} ч`;
-}
-
 interface AlwaysOnProductionPanelProps {
   payload: AlwaysOnProductionPayload | null;
   loading: boolean;
@@ -278,13 +267,6 @@ export function AlwaysOnProductionPanel({
     [draft, payload],
   );
   const missingColors = draft.filter((row) => row.product === null).map((row) => colorMeta(row.color).label);
-  const runs = useMemo(
-    () =>
-      [...(payload?.runs ?? [])].sort(
-        (left, right) => new Date(right.started_at).getTime() - new Date(left.started_at).getTime(),
-      ),
-    [payload?.runs],
-  );
   const batches = useMemo(
     () =>
       [...(payload?.batches ?? [])].sort(
@@ -296,7 +278,7 @@ export function AlwaysOnProductionPanel({
   if (loading && !payload) {
     return (
       <div className="flex min-h-72 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-400">
-        <LoaderCircle className="mr-2 size-5 animate-spin" /> Загружаем журнал производства…
+        <LoaderCircle className="mr-2 size-5 animate-spin" /> Загружаем настройки автоприхода…
       </div>
     );
   }
@@ -308,7 +290,7 @@ export function AlwaysOnProductionPanel({
         className="flex min-h-48 flex-col items-center justify-center rounded-2xl border border-red-200 bg-red-50 px-6 text-center text-red-700"
       >
         <AlertTriangle className="mb-2 size-6" />
-        <p className="font-semibold">Журнал производства недоступен</p>
+        <p className="font-semibold">Настройки автоприхода недоступны</p>
         <p className="mt-1 max-w-lg text-sm text-red-600">{error || "Сервер не вернул данные по этой камере."}</p>
       </div>
     );
@@ -341,137 +323,44 @@ export function AlwaysOnProductionPanel({
         </div>
       )}
 
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_16px_42px_rgba(15,23,42,0.07)]">
-        <div className="grid lg:grid-cols-[minmax(0,1fr)_290px]">
-          <div className="p-4 sm:p-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">
-                  <Activity className="size-3.5 text-blue-600" /> Журнал производства
-                </div>
-                <h3 className="mt-1 text-lg font-black tracking-tight text-slate-900">Когда выпускался каждый цвет</h3>
-                <p className="mt-1 text-xs text-slate-500">
-                  Время первого и последнего засчитанного мешка, точность до 30 секунд. День смены:{" "}
-                  {formatIsoDate(payload.current_business_day)}.
-                </p>
-              </div>
-              <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-600">
-                {runs.length} {runs.length === 1 ? "период" : "периодов"}
-              </span>
-            </div>
-
-            {runs.length ? (
-              <div className="mt-5 max-h-[440px] space-y-2.5 overflow-y-auto pr-1">
-                {runs.map((run) => {
-                  const meta = colorMeta(run.color);
-                  const active = run.status === "active";
-                  return (
-                    <article
-                      key={run.id}
-                      className={cn(
-                        "relative overflow-hidden rounded-xl border p-3.5 pl-4 transition",
-                        active ? meta.tint : "border-slate-200 bg-slate-50/60",
-                      )}
-                    >
-                      <span className={cn("absolute inset-y-0 left-0 w-1", meta.line)} />
-                      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
-                        <span
-                          className={cn("mt-1 size-2.5 shrink-0 rounded-full", meta.dot, active && "animate-pulse")}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-bold text-slate-800">{meta.label}</span>
-                            <span
-                              className={cn(
-                                "rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide",
-                                active ? "bg-emerald-100 text-emerald-700" : "bg-slate-200/70 text-slate-500",
-                              )}
-                            >
-                              {active ? "идёт сейчас" : "завершено"}
-                            </span>
-                            {run.is_approximate && (
-                              <span
-                                title="Начало восстановлено по первому доступному замеру"
-                                className="text-[10px] font-semibold text-amber-600"
-                              >
-                                время приблизительное
-                              </span>
-                            )}
-                          </div>
-                          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
-                            <span>
-                              Начало{" "}
-                              <b className="font-semibold text-slate-700">{zonedDateTime(run.started_at, timezone)}</b>
-                            </span>
-                            <span>
-                              {active ? "Последний мешок" : "Конец"}{" "}
-                              <b className="font-semibold text-slate-700">
-                                {zonedDateTime(run.ended_at ?? run.last_counted_at, timezone, false)}
-                              </b>
-                            </span>
-                            <span>{runDuration(run.started_at, run.ended_at, run.last_counted_at)}</span>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-2xl font-black tabular-nums tracking-tight text-slate-900">
-                            {run.model_bags}
-                          </div>
-                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">мешков</div>
-                        </div>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="mt-5 flex min-h-48 flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/50 text-center text-slate-400">
-                <Activity className="mb-2 size-7 text-slate-300" />
-                <span className="text-sm font-semibold">Периодов пока нет</span>
-                <span className="mt-1 max-w-sm text-xs">
-                  Первый период появится, когда модель засчитает мешок и определит его цвет.
-                </span>
-              </div>
-            )}
-          </div>
-
-          <aside className="border-t border-slate-200 bg-slate-950 p-4 text-white sm:p-5 lg:border-l lg:border-t-0">
+      <section className="rounded-2xl bg-slate-950 p-4 text-white shadow-[0_16px_42px_rgba(15,23,42,0.12)] sm:p-5">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.85fr)] lg:items-center">
+          <div>
             <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.14em] text-white/45">
               <CalendarClock className="size-3.5" /> Автоприход на склад
             </div>
-            <div className="mt-3 flex items-baseline gap-2">
+            <div className="mt-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
               <span className="text-4xl font-black tabular-nums tracking-tight">{payload.close_time}</span>
               <span className="text-sm font-semibold text-white/45">каждый день</span>
             </div>
-            <p className="mt-2 text-xs leading-relaxed text-white/50">
+            <p className="mt-2 max-w-xl text-xs leading-relaxed text-white/50">
               В это время смена закрывается, а итог по цветам одним приходом добавляется на склад.
             </p>
+          </div>
 
-            <div className="mt-5 space-y-2.5">
-              <div className="rounded-xl bg-white/[0.07] px-3 py-2.5">
-                <div className="text-[10px] font-bold uppercase tracking-wide text-white/35">Следующий запуск</div>
-                <div className="mt-1 font-semibold tabular-nums text-white/85">{nextRun}</div>
-                <div className="mt-0.5 text-[11px] text-white/35">{timezone}</div>
+          <div className="grid gap-2.5 sm:grid-cols-2">
+            <div className="rounded-xl bg-white/[0.07] px-3 py-2.5">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-white/35">Следующий запуск</div>
+              <div className="mt-1 font-semibold tabular-nums text-white/85">{nextRun}</div>
+              <div className="mt-0.5 text-[11px] text-white/35">{timezone}</div>
+            </div>
+            <div className="rounded-xl bg-white/[0.07] px-3 py-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-white/50">Готовность</span>
+                <span className={cn("text-xs font-bold", missingColors.length ? "text-amber-300" : "text-emerald-300")}>
+                  {missingColors.length ? "нужна настройка" : "готово"}
+                </span>
               </div>
-              <div className="rounded-xl bg-white/[0.07] px-3 py-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-white/50">Готовность</span>
-                  <span
-                    className={cn("text-xs font-bold", missingColors.length ? "text-amber-300" : "text-emerald-300")}
-                  >
-                    {missingColors.length ? "нужна настройка" : "готово"}
-                  </span>
-                </div>
-                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
-                  <div
-                    className={cn("h-full rounded-full", missingColors.length ? "bg-amber-300" : "bg-emerald-400")}
-                    style={{
-                      width: `${draft.length ? ((draft.length - missingColors.length) / draft.length) * 100 : 100}%`,
-                    }}
-                  />
-                </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className={cn("h-full rounded-full", missingColors.length ? "bg-amber-300" : "bg-emerald-400")}
+                  style={{
+                    width: `${draft.length ? ((draft.length - missingColors.length) / draft.length) * 100 : 100}%`,
+                  }}
+                />
               </div>
             </div>
-          </aside>
+          </div>
         </div>
       </section>
 

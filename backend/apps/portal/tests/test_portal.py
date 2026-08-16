@@ -128,10 +128,12 @@ def test_staff_cannot_use_portal(auth_client, manager):
     assert resp.status_code == 403
 
 
-def test_client_catalog_lists_active_products_without_stock(auth_client, client_user):
+def test_client_catalog_lists_active_products_without_exposing_stock(
+    auth_client, client_user,
+):
     _client_for(client_user)
-    # Товар без складской карточки виден в каталоге с остатком 0
-    # (но заказать его нельзя — проверяется отдельно).
+    # Товар без складской карточки виден в каталоге, но самого
+    # поля остатка в клиентском API больше нет.
     active = Product.objects.create(
         name="БезСклада", color="Blue", weight_kg="50", price="100.00")
     inactive = Product.objects.create(
@@ -144,8 +146,72 @@ def test_client_catalog_lists_active_products_without_stock(auth_client, client_
     by_id = {p["id"]: p for p in resp.data}
     assert active.id in by_id
     assert inactive.id not in by_id
-    assert by_id[active.id]["available_bags"] == 0
+    assert "available_bags" not in by_id[active.id]
     assert by_id[active.id]["price"] is None
+
+
+def test_portal_catalog_does_not_leak_exact_balance_but_staff_catalog_keeps_it(
+    auth_client, client_user, manager,
+):
+    _client_for(client_user)
+    product = Product.objects.create(
+        name="Скрытый остаток", color="Red", weight_kg="50", price="100.00",
+    )
+    StockItem.objects.create(product=product, bags=987_654)
+
+    portal_response = auth_client(client_user).get("/api/portal/catalog/")
+
+    assert portal_response.status_code == 200
+    portal_row = next(
+        item for item in portal_response.data if item["id"] == product.pk
+    )
+    assert set(portal_row) == {
+        "id", "label", "weight_kg", "price", "currency",
+    }
+    assert 987_654 not in portal_row.values()
+
+    staff_response = auth_client(manager).get("/api/products/")
+    assert staff_response.status_code == 200
+    staff_row = next(
+        item for item in staff_response.data if item["id"] == product.pk
+    )
+    assert staff_row["available_bags"] == 987_654
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "/api/products/",
+        "/api/stock/",
+        "/api/stock/movements/",
+        "/api/orders/form-options/",
+    ],
+)
+def test_client_role_cannot_bypass_portal_to_read_staff_stock_endpoints(
+    auth_client, client_user, endpoint,
+):
+    response = auth_client(client_user).get(endpoint)
+
+    assert response.status_code == 403
+
+
+def test_client_flag_denies_stock_even_with_accidentally_assigned_permissions(
+    auth_client, user_with_perms,
+):
+    user = user_with_perms(
+        "client-with-staff-permissions",
+        codes=["catalog.view", "warehouse.view", "orders.create"],
+    )
+    user.is_client = True
+    user.save(update_fields=["is_client"])
+
+    for endpoint in (
+        "/api/products/",
+        "/api/stock/",
+        "/api/stock/movements/",
+        "/api/orders/form-options/",
+    ):
+        assert auth_client(user).get(endpoint).status_code == 403
 
 
 def test_client_catalog_returns_only_own_personal_price(

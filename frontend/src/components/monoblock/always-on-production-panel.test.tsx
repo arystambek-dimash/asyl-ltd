@@ -50,11 +50,13 @@ const payload: AlwaysOnProductionPayload = {
 };
 
 describe("AlwaysOnProductionPanel", () => {
-  it("показывает активный цвет и следующий автоприход", () => {
+  it("показывает настройки автоприхода без общего журнала цветов", () => {
     render(<AlwaysOnProductionPanel payload={payload} loading={false} error={null} saving={false} onSave={vi.fn()} />);
 
-    expect(screen.getByText("идёт сейчас")).toBeInTheDocument();
-    expect(screen.getAllByText("126")).toHaveLength(2);
+    expect(screen.queryByText("Когда выпускался каждый цвет")).not.toBeInTheDocument();
+    expect(screen.queryByText("идёт сейчас")).not.toBeInTheDocument();
+    expect(screen.getByText("126")).toBeInTheDocument();
+    expect(screen.getByText("Автоприход на склад")).toBeInTheDocument();
     expect(screen.getByText("19:00")).toBeInTheDocument();
     expect(screen.getByText(/Не настроено:/)).toHaveTextContent("Синий");
   });
