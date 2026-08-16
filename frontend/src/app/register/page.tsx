@@ -31,7 +31,11 @@ export default function RegisterPage() {
     setBusy(true);
     setError("");
     try {
-      const { access, refresh } = await registerClient(f);
+      const { access, refresh } = await registerClient({
+        ...f,
+        company_name: f.company_name.trim(),
+        iin: f.iin.trim(),
+      });
       await adoptSession(access, refresh);
       router.replace("/portal/catalog");
     } catch (err) {
@@ -69,14 +73,15 @@ export default function RegisterPage() {
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="register-company">Название ТОО / ИП</Label>
+              <Label htmlFor="register-company">
+                Название ТОО / ИП <span className="font-normal text-[var(--muted-foreground)]">(необязательно)</span>
+              </Label>
               <Input
                 id="register-company"
                 autoComplete="organization"
                 value={f.company_name}
                 onChange={upd("company_name")}
                 placeholder={'Например, ТОО "Сайрам нан"'}
-                required
               />
             </div>
             <div className="flex flex-col gap-1.5">
@@ -91,7 +96,9 @@ export default function RegisterPage() {
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="register-iin">ИИН/БИН</Label>
+              <Label htmlFor="register-iin">
+                ИИН/БИН <span className="font-normal text-[var(--muted-foreground)]">(необязательно)</span>
+              </Label>
               <Input
                 id="register-iin"
                 value={f.iin}
@@ -99,8 +106,7 @@ export default function RegisterPage() {
                 inputMode="numeric"
                 pattern="[0-9]{12}"
                 maxLength={12}
-                placeholder="12 цифр"
-                required
+                placeholder="12 цифр, если есть"
               />
             </div>
             <div className="flex flex-col gap-1.5">

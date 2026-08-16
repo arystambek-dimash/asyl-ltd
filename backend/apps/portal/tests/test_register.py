@@ -41,18 +41,53 @@ def test_register_allows_empty_last_name(api_client):
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("field", ["company_name", "iin"])
-def test_register_requires_invoice_requisites(api_client, field):
-    payload = {"username": f"missing-{field}", "password": "secret12345",
-               "first_name": "Иван", "last_name": "Петров",
-               "company_name": "ТОО Покупатель", "phone": "+77001112233",
-               "iin": "990101300123"}
-    payload.pop(field)
+@pytest.mark.parametrize(
+    ("username", "optional_fields"),
+    [
+        ("missing-requisites", {}),
+        ("blank-requisites", {"company_name": "", "iin": ""}),
+        ("whitespace-requisites", {"company_name": "   ", "iin": "   "}),
+    ],
+)
+def test_register_allows_empty_invoice_requisites(
+    api_client,
+    username,
+    optional_fields,
+):
+    payload = {
+        "username": username,
+        "password": "secret12345",
+        "first_name": "Иван",
+        "last_name": "Петров",
+        "phone": "+77001112233",
+        **optional_fields,
+    }
+
+    response = api_client.post("/api/portal/register/", payload, format="json")
+
+    assert response.status_code == 201
+    client = Client.objects.get(user__username=username)
+    assert client.company_name == ""
+    assert client.iin == ""
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("iin", ["123", "12345678901x"])
+def test_register_rejects_invalid_non_empty_iin(api_client, iin):
+    payload = {
+        "username": f"invalid-iin-{iin}",
+        "password": "secret12345",
+        "first_name": "Иван",
+        "last_name": "Петров",
+        "phone": "+77001112233",
+        "iin": iin,
+    }
 
     response = api_client.post("/api/portal/register/", payload, format="json")
 
     assert response.status_code == 400
-    assert field in response.data["detail"]
+    assert "iin" in response.data["detail"]
+    assert not get_user_model().objects.filter(username=payload["username"]).exists()
 
 
 @pytest.mark.django_db
