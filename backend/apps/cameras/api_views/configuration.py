@@ -67,11 +67,12 @@ class CameraListView(APIView):
             # ESP stays terminally OFF and the camera remains available in
             # AI-only/manual mode; a fresh safe-OFF controller is advertised
             # as automatic cloud control.
-            if (
-                cloud_device is not None
-                and cloud_device_is_ready_for_session(cloud_device)
-            ):
-                payload["conveyor"] = control_payload(cloud_device)
+            if cloud_device is not None:
+                payload["conveyor"] = (
+                    control_payload(cloud_device)
+                    if cloud_device_is_ready_for_session(cloud_device)
+                    else None
+                )
             cameras.append(payload)
         device = active_device_for(request.user)
         if device is not None:

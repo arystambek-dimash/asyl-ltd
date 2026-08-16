@@ -275,7 +275,14 @@ def test_camera_list_advertises_only_start_ready_cloud_automation(
         "src": "cam2",
         "kind": "nvr-channel",
         "online": True,
-        "conveyor": None,
+        # Simulate a stale upstream/cache snapshot.  Django's current ESP
+        # readiness must remain authoritative for the launcher.
+        "conveyor": {
+            "configured": True,
+            "enabled": True,
+            "online": False,
+            "state": "unknown",
+        },
     }]
     device = ConveyorDevice.objects.create(
         name="Cloud ESP32",
