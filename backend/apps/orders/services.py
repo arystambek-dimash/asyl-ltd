@@ -1,3 +1,4 @@
+from collections import Counter
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
@@ -259,7 +260,17 @@ def add_mixed_payments(order: Order, parts, user, note="") -> list[Payment]:
         })
 
     created = [
-        add_payment(locked, amount, user, method=method, stage="received", note=note)
+        add_payment(
+            locked,
+            amount,
+            user,
+            method=method,
+            # A bill is only a request for money.  Cash and a Kaspi payment
+            # entered at the till describe funds that the employee has already
+            # received, while an invoice must stay open until money arrives.
+            stage="requested" if method == "invoice" else "received",
+            note=note,
+        )
         for method, amount in normalized
     ]
     log_event(
@@ -521,6 +532,106 @@ def accountant_confirm_payment(payment: Payment, user) -> Payment:
     _advance_payment(payment, "received", user)
     _apply_payment_status(order, user)
     return _sync_payment_instance(original, payment)
+
+
+@transaction.atomic
+def record_staff_payment(
+    order: Order,
+    amount,
+    user,
+    *,
+    method="cash",
+    stage="received",
+    note="",
+) -> Payment:
+    """Record money from the CRM and settle funds already received by staff.
+
+    The CRM endpoint itself is protected by ``payments.create`` and cannot be
+    called by portal users.  Consequently the source boundary, rather than a
+    second ``payments.confirm`` permission, determines whether received cash
+    or a till-side Kaspi payment can be finalized immediately.
+
+    Invoices deliberately remain requests: issuing a PDF or provider invoice
+    is not evidence that money arrived.
+    """
+    payment = add_payment(
+        order,
+        amount,
+        user,
+        method=method,
+        # The public CRM action is source-authoritative: choosing cash/Kaspi
+        # means the employee is recording money already received at the till.
+        # Do not let a stale/hand-crafted frontend payload recreate the old
+        # manual queue.  Invoices are the inverse: issuing one never proves
+        # that the client paid, regardless of the submitted stage.
+        stage=(
+            "requested" if method == "invoice"
+            else "received" if method in ("cash", "kaspi")
+            else stage
+        ),
+        note=note,
+    )
+    if payment.status == "received" and payment.method in ("cash", "kaspi"):
+        accountant_confirm_payment(payment, user)
+        payment.refresh_from_db()
+    return payment
+
+
+@transaction.atomic
+def record_staff_mixed_payments(
+    order: Order,
+    parts,
+    user,
+    *,
+    note="",
+    settle_received=True,
+) -> list[Payment]:
+    """Record a CRM split payment and normally settle received parts at once.
+
+    ``settle_received=False`` is used while the view issues an external
+    provider invoice.  It keeps every part reversible until that provider
+    operation succeeds; the same received parts are then finalized together
+    with :func:`confirm_received_staff_payments`.
+    """
+    payments = add_mixed_payments(order, parts, user, note=note)
+    if settle_received:
+        confirm_received_staff_payments(payments, user)
+    return payments
+
+
+@transaction.atomic
+def confirm_received_staff_payments(
+    payments: list[Payment], user,
+) -> list[Payment]:
+    """Finalize all providerless money received in one CRM operation."""
+    for payment in payments:
+        if payment.status == "received" and payment.method in ("cash", "kaspi"):
+            accountant_confirm_payment(payment, user)
+            payment.refresh_from_db()
+    return payments
+
+
+@transaction.atomic
+def receive_and_confirm_payment(payment: Payment, user) -> Payment:
+    """Accept a providerless request and finalize it as one staff decision.
+
+    The outer transaction is intentional: if confirmation fails, the request
+    must remain ``requested`` instead of getting stranded at ``received`` and
+    requiring an unexplained second action.
+    """
+    original = payment
+    if hasattr(payment, "apipay_invoice"):
+        raise ValidationError({
+            "detail": (
+                "Онлайн-оплата подтверждается автоматически после поступления "
+                "уведомления от платёжного сервиса."
+            ),
+            "code": "provider_payment_auto_confirmation",
+        })
+    receive_payment(payment, user)
+    accountant_confirm_payment(payment, user)
+    original.refresh_from_db()
+    return original
 
 
 @transaction.atomic
@@ -1002,31 +1113,90 @@ def correct_order_prices(
     return locked
 
 
-# Состав заказа можно менять, пока машина не начала грузиться
-# (включая «ожидает загрузки»: машина въехала, но погрузка не стартовала).
-ITEMS_EDITABLE_STATUSES = ("draft", "pending", "confirmed", "arrived")
+# An order may be corrected after a physical workflow, but never while the
+# physical load itself is in progress.  ``loaded`` is intentionally editable:
+# the AI target/final count remain immutable evidence, while the corrected
+# order rows become the inventory fact deducted on shipment.
+ITEMS_LOCKED_STATUSES = ("loading",)
+ITEMS_REQUIRE_PRICES_STATUSES = ("confirmed", "arrived", "loaded", "shipped")
+
+
+def _edit_item_payload(item: OrderItem) -> dict:
+    return {
+        "product": item.product_id,
+        "product_label": item.product_label,
+        "quantity": item.quantity,
+        "unit_price": (
+            str(item.unit_price) if item.unit_price is not None else None
+        ),
+    }
+
+
+def _shipped_edit_reason(raw) -> str:
+    reason = " ".join(str(raw or "").split())
+    if len(reason) < 5:
+        raise ValidationError({
+            "detail": "Укажите причину изменения отгруженного заказа (минимум 5 символов)",
+            "code": "edit_reason_required",
+        })
+    if len(reason) > 500:
+        raise ValidationError({
+            "detail": "Причина изменения слишком длинная",
+            "code": "reason_too_long",
+        })
+    return reason
+
+
+def _validate_payment_exposure(order: Order, new_total: Decimal) -> dict:
+    """Lock payments and ensure an edit cannot invalidate active requests.
+
+    Confirmed cash is an immutable accounting fact and may therefore exceed a
+    corrected order total. Requested/received payments can still be cancelled,
+    so they must be resolved first when their reservation would overpay the
+    corrected order. This mirrors ``correct_order_prices``.
+    """
+    payments = list(
+        Payment.objects.select_for_update().filter(order=order)
+    )
+    confirmed = sum(
+        (payment.net_amount for payment in payments
+         if payment.status == "confirmed"),
+        Decimal("0"),
+    )
+    reserved = sum(
+        (payment.amount for payment in payments
+         if payment.status in Payment.IN_PROGRESS_STATUSES),
+        Decimal("0"),
+    )
+    if reserved > 0 and confirmed + reserved > new_total:
+        raise ValidationError({
+            "detail": (
+                "Новая сумма меньше уже оплаченной суммы и активных заявок на оплату. "
+                "Сначала отмените незавершённые оплаты в кассе."
+            ),
+            "code": "active_payments_exceed_total",
+        })
+    return {"confirmed": confirmed, "reserved": reserved}
 
 
 @transaction.atomic
-def replace_items(order: Order, items_data: list, prices: dict | None, user) -> Order:
+def replace_items(
+    order: Order,
+    items_data: list,
+    prices: dict | None,
+    user,
+    *,
+    edit_reason: str = "",
+) -> Order:
     """Заменить позиции заказа (редактирование).
 
     prices приходит по товару: {product_id: цена за мешок}. После подтверждения
     каждая позиция обязана получить цену — иначе сумма «поплывёт» на базовый
     прайс и испортит долги.
     """
-    from apps.warehouse.services import ensure_products_available
-
-    from .models import OrderItem
-    # Позиции только по товару в наличии — как и при создании заказа.
-    ensure_products_available(item["product"] for item in items_data)
     # Блокируем строку заказа: правка не должна гоняться со стартом загрузки
-    # (склад переводит arrived → loading в этот же момент).
+    # или выездом. Они берут ту же строку Order до снимка цели/списания склада.
     order = lock_live_order(order, user)
-    if order.status not in ITEMS_EDITABLE_STATUSES:
-        raise ValidationError(
-            {"detail": "Позиции можно менять только до начала загрузки",
-             "code": "items_locked"})
     # A STARTING camera session has already frozen the physical conveyor
     # target. The parent Order row is the shared serialization fence with
     # counting.start, so item edits cannot race that snapshot even while the
@@ -1040,11 +1210,63 @@ def replace_items(order: Order, items_data: list, prices: dict | None, user) -> 
             "detail": "Состав заказа уже закреплён за AI-погрузкой",
             "code": "ai_session_active",
         })
+    if order.status in ITEMS_LOCKED_STATUSES:
+        raise ValidationError({
+            "detail": "Состав заказа нельзя менять во время загрузки",
+            "code": "items_locked",
+        })
     if not items_data:
         raise ValidationError(
             {"detail": "В заказе должна остаться хотя бы одна позиция",
              "code": "items_empty"})
-    order.items.all().delete()
+
+    is_shipped = order.status == "shipped"
+    reason = _shipped_edit_reason(edit_reason) if is_shipped else ""
+    old_items = list(
+        # ``product`` is nullable for historical rows. Lock only OrderItem;
+        # PostgreSQL cannot apply FOR UPDATE to the nullable side of the outer
+        # join introduced by select_related("product").
+        OrderItem.objects.select_for_update(of=("self",))
+        .select_related("product")
+        .filter(order=order)
+        .order_by("id")
+    )
+    if is_shipped and any(item.product_id is None for item in old_items):
+        deleted = ", ".join(
+            item.product_label for item in old_items if item.product_id is None
+        )
+        raise ValidationError({
+            "detail": "Нельзя сверить склад: удалены товары — " + deleted,
+            "code": "product_deleted",
+        })
+
+    # Before shipment, order admission keeps the existing availability rule.
+    # A shipped edit instead corrects a historical inventory fact and may need
+    # to deduct a product whose current balance is zero or already negative.
+    if not is_shipped:
+        from apps.warehouse.services import ensure_products_available
+
+        ensure_products_available(item["product"] for item in items_data)
+
+    old_total = sum(
+        (
+            item.quantity
+            * (item.unit_price if item.unit_price is not None else Decimal("0"))
+            for item in old_items
+        ),
+        Decimal("0"),
+    )
+    old_payload = [_edit_item_payload(item) for item in old_items]
+    old_quantities = Counter({
+        product_id: sum(
+            item.quantity for item in old_items
+            if item.product_id == product_id
+        )
+        for product_id in {item.product_id for item in old_items}
+        if product_id is not None
+    })
+
+    OrderItem.objects.filter(order=order).delete()
     created = [OrderItem.objects.create(order=order, **item) for item in items_data]
     prices = prices or {}
     prices_by_item = {
@@ -1052,18 +1274,71 @@ def replace_items(order: Order, items_data: list, prices: dict | None, user) -> 
         for it in created
     }
     if (any(v is not None for v in prices_by_item.values())
-            or order.status in ("confirmed", "arrived")):
+            or order.status in ITEMS_REQUIRE_PRICES_STATUSES):
         _apply_prices(order, prices_by_item, user)
+
+    new_total = order.total_amount
+    payment_exposure = {"confirmed": Decimal("0"), "reserved": Decimal("0")}
+    stock_changes = []
+    if is_shipped:
+        # Payment locks come before stock locks everywhere in this operation.
+        # Payment mutations take the Order lock first, so this cannot deadlock
+        # with a concurrent cashier action.
+        payment_exposure = _validate_payment_exposure(order, new_total)
+        new_quantities = Counter()
+        for item in created:
+            new_quantities[item.product_id] += item.quantity
+        product_ids = set(old_quantities) | set(new_quantities)
+        stock_deltas = {
+            product_id: old_quantities[product_id] - new_quantities[product_id]
+            for product_id in product_ids
+            if old_quantities[product_id] != new_quantities[product_id]
+        }
+        from apps.warehouse.services import reconcile_shipment_stock
+
+        stock_changes = reconcile_shipment_stock(
+            stock_deltas,
+            order=order,
+            user=user,
+            reason=reason,
+        )
+
     # Сумма могла измениться — сохранённый статус оплаты приводим к факту.
     _apply_payment_status(order, user)
-    log_event("order_edit",
-              f"Позиции заказа обновлены ({len(created)} шт.)",
-              user=user, order=order,
-              payload={"items": [
-                  {"product": it.product_id, "quantity": it.quantity,
-                   "unit_price": str(it.unit_price) if it.unit_price is not None else None}
-                  for it in created
-              ]})
+    shipment_bags = None
+    if is_shipped:
+        from apps.shipments.models import Shipment
+
+        shipment_bags = (
+            Shipment.objects.filter(order=order)
+            .values_list("bags_loaded", flat=True)
+            .first()
+        )
+    new_payload = [_edit_item_payload(item) for item in created]
+    log_event(
+        "order_edit",
+        (
+            f"Состав отгруженного заказа скорректирован. Причина: {reason}"
+            if is_shipped
+            else f"Позиции заказа обновлены ({len(created)} шт.)"
+        ),
+        user=user,
+        order=order,
+        payload={
+            "action": "shipment_correction" if is_shipped else "items_replaced",
+            "reason": reason or None,
+            "old_total": str(old_total),
+            "new_total": str(new_total),
+            "old_items": old_payload,
+            "items": new_payload,
+            "stock_changes": stock_changes,
+            "confirmed_payments": str(payment_exposure["confirmed"]),
+            "reserved_payments": str(payment_exposure["reserved"]),
+            # Physical evidence is intentionally observed, never rewritten.
+            "shipment_bags_loaded": shipment_bags,
+        },
+    )
+    order.refresh_from_db()
     return order
 
 

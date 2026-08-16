@@ -45,9 +45,12 @@ from .statuses import (
 )
 from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerializer,
                           StatusChangeRequestSerializer)
-from .services import (add_payment, add_mixed_payments, confirm_order, reject_order,
-                       receive_payment, accountant_confirm_payment,
+from .services import (confirm_order, reject_order,
+                       accountant_confirm_payment,
+                       confirm_received_staff_payments,
                        correct_order_prices,
+                       receive_and_confirm_payment,
+                       record_staff_mixed_payments, record_staff_payment,
                        reopen_confirmed_payment, reject_payment,
                        restore_rejected_payment, soft_delete_order, restore_order,
                        purge_order,
@@ -79,40 +82,6 @@ def _provider_error(exc):
     if isinstance(exc, ApiPayAPIError):
         return ValidationError({"detail": exc.message, "code": exc.error_code})
     return exc
-
-
-def _autoconfirm_own_payments(payments, user) -> None:
-    """Сразу закрыть оплаты, которые внёс тот, кто и так их подтверждает.
-
-    Очередь кассы существует, чтобы деньги проверял второй человек. Когда
-    оплату вносит сам кассир, очередь превращается в подтверждение самому
-    себе: лишний клик, за которым нет проверки.
-
-    Автоподтверждение получает только пользователь с правом ``payments.confirm``
-    — менеджер без него по-прежнему отправляет оплату в кассу, и контроль
-    «двух рук» сохраняется.
-
-    Подтверждаются только фактически полученные деньги: наличные и QR с
-    POS-терминала. Счёт на оплату — любой — это выставленное обязательство,
-    а не касса: закрыть его здесь значило бы погасить долг раньше, чем
-    клиент заплатит. Онлайн-счёт ждёт уведомления сервиса, наш PDF —
-    подтверждения кассой по факту поступления.
-
-    Ошибку подтверждения гасим: оплата уже создана и корректно ждёт в
-    очереди, ронять из-за неё весь запрос нельзя.
-    """
-    if not user.has_perm_code("payments.confirm"):
-        return
-    for payment in payments:
-        if payment.status != "received" or payment.method == "invoice":
-            continue
-        if getattr(payment, "apipay_invoice", None) is not None:
-            continue
-        try:
-            accountant_confirm_payment(payment, user)
-        except ValidationError:
-            continue
-        payment.refresh_from_db()
 
 
 def _notify_document_invoice(order, payment: Payment) -> None:
@@ -680,7 +649,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "approve_status": "orders.edit",
         "reject_status": "orders.edit",
         "reject": "orders.confirm",
-        "receive_payment": "payments.create",
+        "receive_payment": "payments.confirm",
         "confirm_payment": "payments.confirm",
         "reopen_payment": "payments.confirm",
         "restore_payment": "payments.confirm",
@@ -969,10 +938,10 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         payments = scope_by_client_department(
             Payment.objects.filter(
                 # Кассой вручную закрывается всё, за что платёжный сервис не
-                # отвечает: наличные, «наш PDF-счёт» и QR, отмеченный после
-                # POS-терминала. Признак один — нет счёта провайдера.
-                Q(method="cash")
-                | Q(method__in=("invoice", "kaspi"), apipay_invoice__isnull=True),
+                # отвечает. Это включает старые клиентские способы оплаты,
+                # поэтому не перечисляем методы: устойчивый признак один —
+                # у заявки нет счёта провайдера.
+                apipay_invoice__isnull=True,
                 status__in=stages,
                 order__deleted_at__isnull=True,
             ),
@@ -1226,9 +1195,17 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                             )
                     normalized_parts.append(part)
                 parts = normalized_parts
-            payments = add_mixed_payments(
-                order, parts, request.user, note=request.data.get("note") or "")
+            payments = record_staff_mixed_payments(
+                order,
+                parts,
+                request.user,
+                note=request.data.get("note") or "",
+                # Provider issuance can fail.  Keep every split part reversible
+                # until all external invoices have been created successfully.
+                settle_received=False,
+            )
             _issue_mixed_provider_payments(payments, parts, request.user)
+            confirm_received_staff_payments(payments, request.user)
             for payment in payments:
                 payment.refresh_from_db()
             # Части и оплаты идут одним списком в одном порядке, поэтому
@@ -1241,7 +1218,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                     and part.get("channel") == "document"
                 ):
                     _notify_document_invoice(order, payment)
-            _autoconfirm_own_payments(payments, request.user)
             return Response(PaymentSerializer(payments, many=True).data, status=201)
         method = request.data.get("method") or "cash"
         # Канал счёта един для обоих путей API: document — наш PDF без провайдера.
@@ -1253,7 +1229,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             phone_number = normalize_phone(
                 phone_number or order.client.phone
             )
-        payment = add_payment(
+        payment = record_staff_payment(
             order, request.data.get("amount"), request.user,
             method=method,
             stage=request.data.get("stage") or "received",
@@ -1271,7 +1247,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             # Уведомляем только после успешного создания оплаты: при ошибке
             # выше клиент не должен получить сообщение о несуществующем счёте.
             _notify_document_invoice(order, payment)
-        _autoconfirm_own_payments([payment], request.user)
         return Response(PaymentSerializer(payment).data, status=201)
 
     @action(detail=True, methods=["get"], url_path="invoice-pdf")
@@ -1319,7 +1294,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path=r"payments/(?P<pid>\d+)/receive")
     def receive_payment(self, request, pk=None, pid=None):
         payment = get_object_or_404(Payment, pk=pid, order=self.get_object())
-        receive_payment(payment, request.user)
+        receive_and_confirm_payment(payment, request.user)
         return Response(OrderSerializer(payment.order, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="confirm")

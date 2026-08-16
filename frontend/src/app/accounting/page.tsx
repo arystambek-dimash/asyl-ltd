@@ -171,7 +171,7 @@ function useCashierQueue(
     confirmPayment: (p: PaymentQueueItem) =>
       act(() => api.post(`/orders/${p.order}/payments/${p.id}/confirm/`), "Оплата подтверждена"),
     receivePayment: (p: PaymentQueueItem) =>
-      act(() => api.post(`/orders/${p.order}/payments/${p.id}/receive/`), "Оплата принята"),
+      act(() => api.post(`/orders/${p.order}/payments/${p.id}/receive/`), "Поступление подтверждено"),
     rejectPayment: (p: PaymentQueueItem) =>
       act(() => api.post(`/orders/${p.order}/payments/${p.id}/reject/`), "Оплата отклонена"),
     reopenPayment: (event: CashierLogItem) => {
@@ -307,7 +307,7 @@ function ConfirmQueueSection({
                     </Button>
                   ) : (
                     <p className="self-center text-xs text-[var(--muted-foreground)]">
-                      Принять может сотрудник с правом создания оплат.
+                      Принять может сотрудник с правом подтверждения оплат.
                     </p>
                   )}
                   <Button size="sm" variant="ghost" disabled={q.busy} onClick={() => q.rejectPayment(p)}>
@@ -725,6 +725,7 @@ function CashierInner() {
   const canPayments = can(me, "payments.confirm");
   const canCreatePayments = can(me, "payments.create");
   const canReports = can(me, "reports.view");
+  const canDebtEntry = canReports || canCreatePayments;
   const canTransactions = can(me, "payments.view");
   const canViewOrders = can(me, "orders.view");
   const canReviewOrders = canViewOrders && can(me, "orders.confirm");
@@ -739,7 +740,7 @@ function CashierInner() {
     confirm: EMPTY_CASH_FILTERS,
     journal: EMPTY_CASH_FILTERS,
   });
-  const [tab, setTab] = useState<CashTab>(canReports ? "overview" : canPayments ? "confirm" : "transactions");
+  const [tab, setTab] = useState<CashTab>(canDebtEntry ? "overview" : canPayments ? "confirm" : "transactions");
   const filterTab: FilterableCashTab = tab === "transactions" ? "overview" : tab;
   const filters = filtersByTab[filterTab];
   const overviewFilters = filtersByTab.overview;
@@ -784,7 +785,7 @@ function CashierInner() {
     loading: debtsLoading,
     error: debtsError,
     reload: reloadDebts,
-  } = useApi<ClientDebt[]>(canReports && validOverview ? debtsUrl : null);
+  } = useApi<ClientDebt[]>(canDebtEntry && validOverview ? debtsUrl : null);
   const { data: stores } = useApi<Store[]>(canReports && canViewClients ? "/stores/" : null);
   const { data: departments } = useApi<Department[]>("/departments/");
 
@@ -832,7 +833,7 @@ function CashierInner() {
   const otherIncomeCurrencies = otherCurrencyAmounts(incomeByCurrency, incomeCurrency);
 
   const tabs: TabDef[] = [
-    ...(canReports ? [{ key: "overview", label: "Общее" }] : []),
+    ...(canDebtEntry ? [{ key: "overview", label: canReports ? "Общее" : "Долги" }] : []),
     ...(canPayments
       ? [
           { key: "confirm", label: "Подтверждение", count: queue.pendingOrders.length + queue.toReview.length },
@@ -872,23 +873,25 @@ function CashierInner() {
           />
         )}
 
-        {tab === "overview" && canReports && (
+        {tab === "overview" && canDebtEntry && (
           <>
-            {summaryError && <ErrorAlert message={summaryError} onRetry={reloadSummary} />}
+            {canReports && summaryError && <ErrorAlert message={summaryError} onRetry={reloadSummary} />}
             <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              <SummaryCard
-                title={isToday ? "Поступило сегодня" : hasDates ? "Поступило за период" : "Поступило за всё время"}
-                tone="success"
-                value={money(incomeTotal, incomeCurrency)}
-                rows={[
-                  { label: "Наличные", value: money(cashTotal, incomeCurrency) },
-                  { label: "Безналичные", value: money(cashlessTotal, incomeCurrency) },
-                  ...otherIncomeCurrencies.map(([currency, value]) => ({
-                    label: "Также поступило",
-                    value: money(value, currency),
-                  })),
-                ]}
-              />
+              {canReports && (
+                <SummaryCard
+                  title={isToday ? "Поступило сегодня" : hasDates ? "Поступило за период" : "Поступило за всё время"}
+                  tone="success"
+                  value={money(incomeTotal, incomeCurrency)}
+                  rows={[
+                    { label: "Наличные", value: money(cashTotal, incomeCurrency) },
+                    { label: "Безналичные", value: money(cashlessTotal, incomeCurrency) },
+                    ...otherIncomeCurrencies.map(([currency, value]) => ({
+                      label: "Также поступило",
+                      value: money(value, currency),
+                    })),
+                  ]}
+                />
+              )}
               {canPayments && (
                 <SummaryCard
                   title="Ожидает подтверждения"
@@ -938,7 +941,7 @@ function CashierInner() {
             canViewOrders={canViewOrders}
             canReviewOrders={canReviewOrders}
             canEditOrders={canEditOrders}
-            canReceivePayments={canCreatePayments}
+            canReceivePayments={canPayments}
           />
         )}
 
@@ -955,7 +958,7 @@ function CashierInner() {
 export default function CashierPage() {
   // Доступ, если есть хотя бы одна из секций: очередь, аналитика с долгами или транзакции.
   return (
-    <RequirePerm perm={["payments.confirm", "reports.view", "payments.view"]} title="Касса">
+    <RequirePerm perm={["payments.confirm", "payments.create", "reports.view", "payments.view"]} title="Касса">
       <CashierInner />
     </RequirePerm>
   );

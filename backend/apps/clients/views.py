@@ -129,8 +129,10 @@ class ClientViewSet(
         "update": "clients.edit",
         "partial_update": "clients.edit",
         "destroy": "clients.delete",
-        "debts": "reports.view",
-        "debt_detail": "reports.view",
+        # ``payments.create`` opens only the debt rows needed to enter a
+        # payment. It does not grant reports/history access.
+        "debts": ("reports.view", "payments.create"),
+        "debt_detail": ("reports.view", "payments.create"),
         "history": "reports.view",
         "statement": "reports.export",
         "all_statement": "reports.export",
@@ -155,9 +157,15 @@ class ClientViewSet(
         elif department:
             base = base.filter(department__code=department)
         can_view_financials = self.request.user.has_perm_code("reports.view")
+        can_enter_payments = self.request.user.has_perm_code("payments.create")
         if self.action not in {"list", "retrieve", "debts", "debt_detail"}:
             return base
-        if not can_view_financials:
+        if self.action in {"list", "retrieve"} and not can_view_financials:
+            return base
+        if (
+            self.action in {"debts", "debt_detail"}
+            and not (can_view_financials or can_enter_payments)
+        ):
             return base
         if self.action == "debt_detail":
             return base.prefetch_related(
@@ -613,25 +621,40 @@ class ClientViewSet(
         from apps.orders.serializers import OrderSerializer
         client = self.get_object()
         today = timezone.localdate()
+        can_view_reports = request.user.has_perm_code("reports.view")
         orders = list(self._debt_orders(client))
         totals = sum_by_currency(orders, order_remaining)
         currency = primary_currency(totals, fallback=client.currency)
         debt = totals.get(currency, Decimal("0"))
         stores = [s for s in client.stores.all()
                   if any(o.store_id == s.id for o in orders)]
-        # За всё время: отгруженные заказы «в долг», включая уже погашенные.
-        lifetime = [o for o in client.orders.all()
-                    if o.status == "shipped" and o.settlement_intent == "debt"]
-        lifetime_total = sum_by_currency(lifetime, lambda o: o.total_amount)
-        lifetime_paid = sum_by_currency(lifetime, lambda o: o.paid_total)
-        # Просрочено = остаток по заказам магазинов, у которых сегодня день оплаты.
-        overdue_stores = {s.id for s in stores
-                          if s.payment_schedule_type != "none"
-                          and is_payment_window_open(s, today)}
-        overdue = sum_by_currency(
-            [o for o in orders if o.store_id in overdue_stores], order_remaining)
+        # Lifetime/overdue analytics remain report-only. A payment recorder
+        # gets current debt, scoped orders and the minimum client identity.
+        lifetime_total = {}
+        lifetime_paid = {}
+        overdue = {}
+        if can_view_reports:
+            lifetime = [o for o in client.orders.all()
+                        if o.status == "shipped" and o.settlement_intent == "debt"]
+            lifetime_total = sum_by_currency(lifetime, lambda o: o.total_amount)
+            lifetime_paid = sum_by_currency(lifetime, lambda o: o.paid_total)
+            overdue_stores = {s.id for s in stores
+                              if s.payment_schedule_type != "none"
+                              and is_payment_window_open(s, today)}
+            overdue = sum_by_currency(
+                [o for o in orders if o.store_id in overdue_stores], order_remaining)
+        client_data = (
+            self.get_serializer(client).data
+            if can_view_reports
+            else {
+                "id": client.id,
+                "name": client.name,
+                "phone": client.phone,
+                "currency": client.currency,
+            }
+        )
         return Response({
-            "client": self.get_serializer(client).data,
+            "client": client_data,
             "debt_total": money_string(debt),
             "debt_currency": currency,
             "debt_by_currency": as_money_strings(totals),
@@ -675,8 +698,8 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "create": "clients.create", "update": "clients.edit",
         "partial_update": "clients.edit", "destroy": "clients.delete",
         "check_overdue": "clients.edit",
-        "debts": "reports.view",
-        "debt_detail": "reports.view",
+        "debts": ("reports.view", "payments.create"),
+        "debt_detail": ("reports.view", "payments.create"),
     }
 
     def get_queryset(self):

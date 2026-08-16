@@ -62,10 +62,10 @@ interface ClientDebtDetail {
   debt_total: string;
   debt_currency?: "KZT" | "USD";
   debt_by_currency?: Record<string, string>;
-  lifetime_total: string;
-  lifetime_paid: string;
+  lifetime_total?: string;
+  lifetime_paid?: string;
   lifetime_by_currency?: Record<string, { total: string; paid: string }>;
-  overdue_total: string;
+  overdue_total?: string;
   overdue_by_currency?: Record<string, string>;
   orders_count: number;
   unpaid_count: number;
@@ -744,7 +744,7 @@ function PaymentModal({
                           >
                             <div className="text-sm font-medium">Наш PDF-счёт</div>
                             <div className="text-[11px] text-[var(--muted-foreground)]">
-                              Скачается для печати, подтверждает касса
+                              Скачается для печати, ожидает поступления денег
                             </div>
                           </button>
                         </div>
@@ -815,13 +815,14 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { me } = useAuth();
   const isAccountant = can(me, "payments.create");
+  const canViewReports = can(me, "reports.view");
   const canViewOrders = can(me, "orders.view");
   const { data, loading, error: loadError, reload } = useApi<ClientDebtDetail>(`/clients/${id}/debt-detail/`);
   const {
     data: history,
     error: historyError,
     reload: reloadHistory,
-  } = useApi<ClientHistory>(`/clients/${id}/history/`);
+  } = useApi<ClientHistory>(canViewReports ? `/clients/${id}/history/` : null);
   const [tab, setTab] = useState("orders");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [paymentOpen, setPaymentOpen] = useState(false);
@@ -850,11 +851,11 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   );
   const lifetimeCurrency = primaryMoneyCurrency(lifetimeTotalByCurrency, debtCurrency);
   const paidCurrency = primaryMoneyCurrency(lifetimePaidByCurrency, lifetimeCurrency);
-  const lifetimeTotal = amountForCurrency(lifetimeTotalByCurrency, data.lifetime_total, lifetimeCurrency);
-  const lifetimePaid = amountForCurrency(lifetimePaidByCurrency, data.lifetime_paid, paidCurrency);
+  const lifetimeTotal = amountForCurrency(lifetimeTotalByCurrency, data.lifetime_total ?? "0", lifetimeCurrency);
+  const lifetimePaid = amountForCurrency(lifetimePaidByCurrency, data.lifetime_paid ?? "0", paidCurrency);
   const overdueByCurrency = data.overdue_by_currency ?? {};
   const overdueCurrency = primaryMoneyCurrency(overdueByCurrency, debtCurrency);
-  const overdueTotal = amountForCurrency(overdueByCurrency, data.overdue_total, overdueCurrency);
+  const overdueTotal = amountForCurrency(overdueByCurrency, data.overdue_total ?? "0", overdueCurrency);
 
   const storeById = new Map(data.stores.map((s) => [s.id, s]));
   // Магазин с расписанием блокирует оплату вне окна.
@@ -869,14 +870,14 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
     setNotice(msg);
     if (refresh) {
       await reload();
-      reloadHistory();
+      if (canViewReports) reloadHistory();
     }
   }
 
   function closePaymentModal() {
     setPaymentOpen(false);
     void reload();
-    void reloadHistory();
+    if (canViewReports) void reloadHistory();
   }
 
   return (
@@ -910,36 +911,40 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
           </div>
           <CurrencyRows totals={debtByCurrency} primary={debtCurrency} />
         </div>
-        <div className="min-w-0">
-          <div className="text-xs text-[var(--muted-foreground)]">Просрочено</div>
-          <div
-            title={money(overdueTotal, overdueCurrency)}
-            className="mt-1 truncate text-lg font-semibold leading-none tabular-nums text-[var(--destructive)]"
-          >
-            {compactMoney(overdueTotal, overdueCurrency)}
-          </div>
-          <CurrencyRows totals={overdueByCurrency} primary={overdueCurrency} />
-        </div>
-        <div className="min-w-0">
-          <div className="text-xs text-[var(--muted-foreground)]">Оплачено за всё время</div>
-          <div
-            title={money(lifetimePaid, paidCurrency)}
-            className="mt-1 truncate text-lg font-semibold leading-none tabular-nums text-[var(--success)]"
-          >
-            {compactMoney(lifetimePaid, paidCurrency)}
-          </div>
-          <CurrencyRows totals={lifetimePaidByCurrency} primary={paidCurrency} />
-        </div>
-        <div className="min-w-0">
-          <div className="text-xs text-[var(--muted-foreground)]">Задолженность за всё время</div>
-          <div
-            title={money(lifetimeTotal, lifetimeCurrency)}
-            className="mt-1 truncate text-lg font-semibold leading-none tabular-nums"
-          >
-            {compactMoney(lifetimeTotal, lifetimeCurrency)}
-          </div>
-          <CurrencyRows totals={lifetimeTotalByCurrency} primary={lifetimeCurrency} />
-        </div>
+        {canViewReports && (
+          <>
+            <div className="min-w-0">
+              <div className="text-xs text-[var(--muted-foreground)]">Просрочено</div>
+              <div
+                title={money(overdueTotal, overdueCurrency)}
+                className="mt-1 truncate text-lg font-semibold leading-none tabular-nums text-[var(--destructive)]"
+              >
+                {compactMoney(overdueTotal, overdueCurrency)}
+              </div>
+              <CurrencyRows totals={overdueByCurrency} primary={overdueCurrency} />
+            </div>
+            <div className="min-w-0">
+              <div className="text-xs text-[var(--muted-foreground)]">Оплачено за всё время</div>
+              <div
+                title={money(lifetimePaid, paidCurrency)}
+                className="mt-1 truncate text-lg font-semibold leading-none tabular-nums text-[var(--success)]"
+              >
+                {compactMoney(lifetimePaid, paidCurrency)}
+              </div>
+              <CurrencyRows totals={lifetimePaidByCurrency} primary={paidCurrency} />
+            </div>
+            <div className="min-w-0">
+              <div className="text-xs text-[var(--muted-foreground)]">Задолженность за всё время</div>
+              <div
+                title={money(lifetimeTotal, lifetimeCurrency)}
+                className="mt-1 truncate text-lg font-semibold leading-none tabular-nums"
+              >
+                {compactMoney(lifetimeTotal, lifetimeCurrency)}
+              </div>
+              <CurrencyRows totals={lifetimeTotalByCurrency} primary={lifetimeCurrency} />
+            </div>
+          </>
+        )}
       </Card>
 
       {error && <p className="mb-4 text-sm text-[var(--destructive)]">{error}</p>}
@@ -956,8 +961,12 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
             onChange={setTab}
             tabs={[
               { key: "orders", label: "Заказы в долге", count: data.orders.length },
-              { key: "history", label: "История платежей", count: payments.length },
-              { key: "invoices", label: "Счета", count: invoices.length },
+              ...(canViewReports
+                ? [
+                    { key: "history", label: "История платежей", count: payments.length },
+                    { key: "invoices", label: "Счета", count: invoices.length },
+                  ]
+                : []),
             ]}
           />
 
@@ -1008,7 +1017,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
 
 export default function ClientDebtPage(props: { params: Promise<{ id: string }> }) {
   return (
-    <RequirePerm perm="reports.view" title="Долг клиента">
+    <RequirePerm perm={["reports.view", "payments.create"]} title="Долг клиента">
       <ClientDebtPageInner {...props} />
     </RequirePerm>
   );

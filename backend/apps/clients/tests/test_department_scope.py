@@ -248,6 +248,11 @@ def test_debt_client_department_filter_is_separate_from_order_department(
         codes=["reports.view"],
     )
     _assign(scoped_reporter, first)
+    scoped_recorder = user_with_perms(
+        "scoped-payment-recorder",
+        codes=["payments.create"],
+    )
+    _assign(scoped_recorder, first)
 
     by_client_owner = api.get(
         "/api/clients/debts/",
@@ -265,11 +270,17 @@ def test_debt_client_department_filter_is_separate_from_order_department(
         "/api/clients/debts/",
         {"client_department": second.code},
     )
+    recorder_cannot_widen = auth_client(scoped_recorder).get(
+        "/api/clients/debts/",
+        {"client_department": second.code},
+    )
 
     assert [row["client_id"] for row in by_client_owner.data] == [first_client.id]
     assert [row["client_id"] for row in by_order_department.data] == [second_client.id]
     assert [row["client_id"] for row in unassigned.data] == [legacy_client.id]
     assert cannot_widen.data == []
+    assert recorder_cannot_widen.status_code == 200
+    assert recorder_cannot_widen.data == []
 
 
 def test_all_clients_statement_contains_only_owned_clients(

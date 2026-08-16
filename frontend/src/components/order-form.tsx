@@ -147,6 +147,11 @@ export function OrderForm({
   );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [editReason, setEditReason] = useState("");
+
+  const compositionLocked = editing?.status === "loading";
+  const shippedCorrection = editing?.status === "shipped";
+  const physicalFieldsLocked = Boolean(editing && ["arrived", "loading", "loaded", "shipped"].includes(editing.status));
 
   const assignedDepartment = !editing ? me?.sales_department : null;
   const clientPricesUrl = client ? `/client-prices/?client=${client}&currency=${currency}` : null;
@@ -232,22 +237,32 @@ export function OrderForm({
     setBusy(true);
     setError("");
     try {
-      if (!validRows.length) throw new Error("empty");
-      if (!allPriced) throw new Error("price_required");
+      if (!compositionLocked && !validRows.length) throw new Error("empty");
+      if (!compositionLocked && !allPriced) throw new Error("price_required");
+      if (shippedCorrection && editReason.trim().length < 5) throw new Error("edit_reason_required");
       const items = validRows.map((row) => ({
         product: Number(row.product),
         quantity: Number(row.quantity),
       }));
       const prices = Object.fromEntries(validRows.map((row) => [row.product, row.price]));
       const body = {
-        department: assignedDepartment?.code ?? dept,
         store: store ? Number(store) : null,
-        transport_type: transport,
-        truck_number: transport === "train" ? "" : truck,
         arrival_date: arrival || null,
         currency,
-        items,
-        prices,
+        ...(!physicalFieldsLocked
+          ? {
+              department: assignedDepartment?.code ?? dept,
+              transport_type: transport,
+              truck_number: transport === "train" ? "" : truck,
+            }
+          : {}),
+        ...(!compositionLocked
+          ? {
+              items,
+              prices,
+              ...(shippedCorrection ? { edit_reason: editReason.trim() } : {}),
+            }
+          : {}),
         ...(!editing && template ? { template_order: template.id } : {}),
       };
       if (editing) {
@@ -263,6 +278,8 @@ export function OrderForm({
         setError("Добавьте хотя бы одну позицию.");
       } else if (cause instanceof Error && cause.message === "price_required") {
         setError("Укажите цену для каждой позиции.");
+      } else if (cause instanceof Error && cause.message === "edit_reason_required") {
+        setError("Укажите причину изменения отгруженного заказа — минимум 5 символов.");
       } else {
         setError(apiError(cause));
       }
@@ -324,9 +341,10 @@ export function OrderForm({
                   <button
                     key={department.code}
                     type="button"
+                    disabled={physicalFieldsLocked}
                     onClick={() => setDept(department.code)}
                     className={cn(
-                      "flex min-h-12 items-center gap-2.5 rounded-xl border px-3 py-2 text-left text-sm font-semibold transition",
+                      "flex min-h-12 items-center gap-2.5 rounded-xl border px-3 py-2 text-left text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60",
                       dept === department.code
                         ? "border-slate-900 bg-slate-900 text-white shadow-md"
                         : "border-slate-200 bg-white text-slate-700 hover:-translate-y-0.5 hover:border-slate-300",
@@ -537,9 +555,10 @@ export function OrderForm({
                 <button
                   key={value}
                   type="button"
+                  disabled={physicalFieldsLocked}
                   onClick={() => setTransport(value)}
                   className={cn(
-                    "flex min-h-16 items-center gap-3 rounded-2xl border px-4 py-3 text-left transition",
+                    "flex min-h-16 items-center gap-3 rounded-2xl border px-4 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60",
                     transport === value
                       ? "border-slate-900 bg-slate-900 text-white shadow-md"
                       : "border-slate-200 bg-white text-slate-700 hover:-translate-y-0.5 hover:border-slate-300",
@@ -559,7 +578,12 @@ export function OrderForm({
             {transport === "truck" && (
               <div className="grid gap-2">
                 <Label id="order-truck-label">Номер машины</Label>
-                <LicensePlateInput labelledBy="order-truck-label" value={truck} onChange={setTruck} />
+                <LicensePlateInput
+                  labelledBy="order-truck-label"
+                  value={truck}
+                  onChange={setTruck}
+                  disabled={physicalFieldsLocked}
+                />
               </div>
             )}
             <div className="grid gap-2">
@@ -613,7 +637,9 @@ export function OrderForm({
             <div>
               <h3 className="text-base font-bold text-slate-900">Позиции заказа</h3>
               <p className="mt-0.5 text-xs text-slate-500">
-                Цена подставляется из личного прайса клиента в {currency}.
+                {compositionLocked
+                  ? "Во время активной погрузки состав зафиксирован. Остальные данные заказа можно исправить."
+                  : `Цена подставляется из личного прайса клиента в ${currency}.`}
               </p>
             </div>
             {client && clientPricesLoading && !loadedClientPrices && (
@@ -657,6 +683,7 @@ export function OrderForm({
                     value={row.product}
                     className="col-span-3 h-10 rounded-xl sm:col-span-1"
                     aria-label={`Товар, позиция ${index + 1}`}
+                    disabled={compositionLocked}
                     onChange={(event) => {
                       const product = event.target.value;
                       setRows(
@@ -669,10 +696,15 @@ export function OrderForm({
                     <option value="">Выберите товар</option>
                     {products.map((product) => {
                       const bags = product.available_bags ?? 0;
+                      const unavailableForNewShipment = bags <= 0 && !shippedCorrection;
                       return (
-                        <option key={product.id} value={product.id} disabled={bags <= 0}>
+                        <option key={product.id} value={product.id} disabled={unavailableForNewShipment}>
                           {product.label}
-                          {bags > 0 ? ` · ${bags} меш.` : " — нет в наличии"}
+                          {bags > 0
+                            ? ` · ${bags} меш.`
+                            : shippedCorrection
+                              ? " — нет текущего остатка, доступно для исправления"
+                              : " — нет в наличии"}
                         </option>
                       );
                     })}
@@ -685,6 +717,7 @@ export function OrderForm({
                     className="rounded-xl"
                     value={row.quantity}
                     aria-label={`Количество мешков, позиция ${index + 1}`}
+                    disabled={compositionLocked}
                     onChange={(event) =>
                       setRows(
                         rows.map((item, itemIndex) =>
@@ -702,6 +735,7 @@ export function OrderForm({
                     aria-label={`Цена, позиция ${index + 1}`}
                     placeholder={`Цена, ${currencySymbol(currency)}`}
                     value={row.price}
+                    disabled={compositionLocked}
                     onChange={(event) =>
                       setRows(
                         rows.map((item, itemIndex) =>
@@ -716,6 +750,7 @@ export function OrderForm({
                     size="icon"
                     title="Удалить позицию"
                     aria-label={`Удалить позицию ${index + 1}`}
+                    disabled={compositionLocked}
                     onClick={() =>
                       setRows(
                         rows.length > 1
@@ -734,6 +769,7 @@ export function OrderForm({
               variant="outline"
               size="sm"
               className="w-full rounded-xl border-dashed"
+              disabled={compositionLocked}
               onClick={() =>
                 setRows([
                   ...rows,
@@ -750,10 +786,31 @@ export function OrderForm({
             </Button>
           </section>
 
+          {shippedCorrection && (
+            <section className="space-y-2 rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+              <Label htmlFor="order-edit-reason">Причина корректировки отгруженного заказа</Label>
+              <textarea
+                id="order-edit-reason"
+                value={editReason}
+                onChange={(event) => setEditReason(event.target.value)}
+                placeholder="Например: исправление фактически отгруженного количества"
+                rows={3}
+                required
+                minLength={5}
+                className="w-full resize-y rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm outline-none focus:ring-4 focus:ring-amber-500/10"
+              />
+              <p className="text-xs text-amber-800">
+                Изменение состава автоматически скорректирует склад и сохранится в журнале.
+              </p>
+            </section>
+          )}
+
           <div className="flex items-start gap-2 rounded-xl border border-blue-100 bg-blue-50/60 px-3 py-2.5 text-xs text-blue-700">
             <Info className="mt-0.5 size-3.5 shrink-0" />
             {editing
-              ? "Позиции и цены можно менять до начала загрузки. Изменения попадут в журнал."
+              ? compositionLocked
+                ? "Заказ открыт для исправления, но состав защищён до завершения текущей погрузки."
+                : "Заказ можно исправить на любом этапе. Физические и финансовые изменения попадут в журнал."
               : template
                 ? `Данные взяты из заказа #${template.id}, а цены обновлены из текущего прайса клиента. Проверьте всё перед созданием.`
                 : "После создания клиент, валюта и отдел закрепятся за заказом. Перед сохранением проверьте итог."}
@@ -793,7 +850,14 @@ export function OrderForm({
         ) : (
           <Button
             type="submit"
-            disabled={busy || !referenceDataReady || !client || !dept || !validRows.length || !allPriced}
+            disabled={
+              busy ||
+              !referenceDataReady ||
+              !client ||
+              !dept ||
+              (!compositionLocked && (!validRows.length || !allPriced)) ||
+              (shippedCorrection && editReason.trim().length < 5)
+            }
           >
             {busy ? "Сохранение…" : editing ? "Сохранить изменения" : "Создать заказ"}
             {!busy && <Check className="size-4" />}

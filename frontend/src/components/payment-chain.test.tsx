@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AddPaymentActions } from "./payment-chain";
+import { AddPaymentActions, PaymentChain } from "./payment-chain";
 import type { Me, Order } from "@/lib/types";
 
 const postMock = vi.hoisted(() => vi.fn());
@@ -106,13 +106,13 @@ describe("AddPaymentActions — счёт на оплату", () => {
     expect(screen.getByText(/сразу уменьшит долг/)).toBeInTheDocument();
   });
 
-  it("tells a manager without the perm that the cashier confirms", async () => {
+  it("tells every internal recorder that received money lands immediately", async () => {
     const user = userEvent.setup();
     const recorder = { ...me, permissions: ["payments.create"] } as unknown as Me;
     render(<AddPaymentActions order={order} me={recorder} onChanged={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
 
-    expect(screen.getByText(/после ручного подтверждения кассиром/)).toBeInTheDocument();
+    expect(screen.getByText(/сразу уменьшит долг/)).toBeInTheDocument();
   });
 
   it("omits channel entirely for cash", async () => {
@@ -125,5 +125,48 @@ describe("AddPaymentActions — счёт на оплату", () => {
       method: "cash",
       stage: "received",
     });
+  });
+
+  it("limits a CRM payment request to an invoice", async () => {
+    const user = userEvent.setup();
+    render(<AddPaymentActions order={order} me={me} onChanged={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: /Запросить оплату/ }));
+
+    const method = screen.getByLabelText("Способ");
+    expect(method).toHaveValue("invoice");
+    expect(screen.queryByRole("option", { name: "Наличные" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "QR" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Запросить" }));
+    expect(postMock).toHaveBeenCalledWith("/orders/156/payments/", {
+      amount: "707000",
+      method: "invoice",
+      stage: "requested",
+      channel: "remote",
+      phone_number: "87001234567",
+    });
+  });
+
+  it("does not show a dead receive action for an automatic provider invoice", () => {
+    const providerOrder = {
+      ...order,
+      pending_payments: [
+        {
+          id: 77,
+          order: order.id,
+          amount: "1000.00",
+          method: "invoice",
+          status: "requested",
+          paid_at: "2026-08-16T10:00:00Z",
+          confirmation_mode: "automatic",
+        },
+      ],
+    } as unknown as Order;
+
+    render(<PaymentChain order={providerOrder} me={me} onChanged={vi.fn()} />);
+
+    expect(screen.getByText("Ожидаем подтверждение сервиса")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Отметить получение" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Подтвердить получение" })).not.toBeInTheDocument();
   });
 });

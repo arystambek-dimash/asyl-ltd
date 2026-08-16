@@ -46,23 +46,20 @@ def test_debts_endpoint_lists_unsettled_shipped(boss):
     assert settled.client_id not in client_ids
 
 
-def test_payments_history_in_order(accountant, payment_recorder, settle_payment):
+def test_payments_history_in_order(accountant, payment_recorder):
     o = _shipped_order()
-    # Вносит менеджер: оплата кассира подтверждается сразу и в «ожидающих»
-    # не появилась бы вовсе.
+    # Любой сотрудник с payments.create фиксирует полученные в CRM деньги
+    # сразу; отдельное подтверждение нужно только заявкам клиента.
     r = _api(payment_recorder).post(
         f"/api/orders/{o.id}/payments/", {"amount": "50"}, format="json"
     )
-    # До подтверждения кассой оплата в истории «полученных» не отображается.
+    assert r.status_code == 201
     mid = _api(accountant).get(f"/api/orders/{o.id}/")
-    assert mid.data["payments"] == []
-    assert len(mid.data["pending_payments"]) == 1
-    settle_payment(Payment.objects.get(pk=r.data["id"]), accountant)
-    r = _api(accountant).get(f"/api/orders/{o.id}/")
-    assert r.status_code == 200
-    assert len(r.data["payments"]) == 1
-    assert r.data["payments"][0]["amount"] == "50.00"
-    assert r.data["payments"][0]["method_label"] == "Наличные"
+    assert mid.status_code == 200
+    assert mid.data["pending_payments"] == []
+    assert len(mid.data["payments"]) == 1
+    assert mid.data["payments"][0]["amount"] == "50.00"
+    assert mid.data["payments"][0]["method_label"] == "Наличные"
 
 
 def test_check_overdue_endpoint(boss):

@@ -1,8 +1,10 @@
 from django.db import transaction
 from django.db.models import F
 from rest_framework.exceptions import ValidationError
+
 from apps.eventlog.services import log_event
-from .models import StockItem, StockReceipt, StockMovement
+
+from .models import StockItem, StockMovement, StockReceipt
 
 
 def _apply(item, delta, reason, user, note=""):
@@ -128,3 +130,75 @@ def deduct_stock(product, bags, user=None, allow_negative=False):
     item.refresh_from_db()
     _apply(item, -bags, "shipment", user)
     return item
+
+
+@transaction.atomic
+def reconcile_shipment_stock(deltas, *, order, user, reason):
+    """Apply net stock deltas caused by correcting a shipped order.
+
+    ``deltas`` maps product ids to ``old shipped qty - new shipped qty``.
+    Positive values restore bags, negative values deduct additional bags.  All
+    stock rows are locked in one global product order so two corrections with
+    overlapping mixed products cannot deadlock by taking A/B and B/A locks.
+
+    A post-shipment correction records a historical fact, just like the
+    original shipment, so an additional deduction is allowed to take stock
+    negative.  The negative balance is still made prominent in the event log.
+    The caller must hold the parent Order lock for the whole transaction.
+    """
+    normalized = {
+        int(product_id): int(delta)
+        for product_id, delta in dict(deltas or {}).items()
+        if int(delta) != 0
+    }
+    if not normalized:
+        return []
+
+    rows = {}
+    for product_id in sorted(normalized):
+        item, _ = StockItem.objects.select_for_update().get_or_create(
+            product_id=product_id,
+        )
+        rows[product_id] = item
+
+    movement_note = (
+        f"Корректировка отгрузки заказа #{order.pk}: {reason}"
+    )[:300]
+    changes = []
+    for product_id in sorted(normalized):
+        delta = normalized[product_id]
+        item = rows[product_id]
+        before = item.bags
+        after = before + delta
+        if after < 0 and delta < 0:
+            log_event(
+                "stock_negative",
+                f"Списание в минус при корректировке заказа #{order.pk}: "
+                f"{item.product} — было {before}, изменение {delta}",
+                user=user,
+                order=order,
+                payload={
+                    "product": product_id,
+                    "had": before,
+                    "delta": delta,
+                    "balance": after,
+                    "action": "shipment_correction",
+                },
+            )
+        item.bags = F("bags") + delta
+        item.save(update_fields=["bags"])
+        item.refresh_from_db(fields=["bags"])
+        _apply(
+            item,
+            delta,
+            "shipment_correction",
+            user,
+            movement_note,
+        )
+        changes.append({
+            "product": product_id,
+            "delta": delta,
+            "balance_before": before,
+            "balance_after": item.bags,
+        })
+    return changes

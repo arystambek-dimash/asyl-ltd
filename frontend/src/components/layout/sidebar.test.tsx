@@ -93,6 +93,13 @@ describe("подсветка активного пункта", () => {
     expect(screen.queryByRole("link", { name: "Силосы" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Приход и проход" })).toHaveAttribute("href", "/grain");
   });
+
+  it("показывает кассу сотруднику, который может вносить оплаты", () => {
+    render(<Sidebar me={{ ...factoryUser, permissions: ["payments.create"] }} />);
+
+    expect(screen.getByRole("link", { name: "Касса" })).toHaveAttribute("href", "/accounting");
+    expect(screen.queryByRole("link", { name: "Отчёты" })).not.toBeInTheDocument();
+  });
 });
 
 describe("mobile Sidebar", () => {

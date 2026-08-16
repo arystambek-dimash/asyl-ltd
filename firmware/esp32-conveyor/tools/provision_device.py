@@ -33,6 +33,13 @@ def parse_args() -> argparse.Namespace:
         required="IDF_PATH" not in os.environ,
     )
     parser.add_argument("--credentials", type=Path, required=True)
+    parser.add_argument(
+        "--service-name",
+        help=(
+            "BLE name printed by the board, for example ASYL-CONV-A1B2C3. "
+            "Use this with a universal image whose name follows the MAC."
+        ),
+    )
     parser.add_argument("--device-id")
     parser.add_argument("--ssid")
     parser.add_argument(
@@ -103,6 +110,11 @@ def load_official_client(idf_path: Path) -> ModuleType:
 def main() -> int:
     args = parse_args()
     credentials = read_private_credentials(args.credentials)
+    service_name = args.service_name or str(credentials["device_name"])
+    if not re.fullmatch(r"ASYL-CONV-(?:[0-9A-F]{6}|UNIVERSAL)", service_name):
+        raise SystemExit(
+            "Service name must look like ASYL-CONV-A1B2C3 (use the BLE name)"
+        )
     device_id = canonical_uuid4(args.device_id or input("Backend device UUID: ").strip())
     if args.scan and args.ssid:
         raise SystemExit("Use either --scan or --ssid, not both")
@@ -137,7 +149,7 @@ def main() -> int:
             "--transport",
             "ble",
             "--service_name",
-            str(credentials["device_name"]),
+            service_name,
             "--sec_ver",
             "2",
             "--sec2_username",

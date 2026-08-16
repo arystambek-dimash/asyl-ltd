@@ -158,8 +158,9 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const itemsWeight = order.items.reduce((s, it) => s + Number(it.quantity) * Number(it.weight_kg ?? 0), 0);
 
   const isNew = order.status === "draft" || order.status === "pending";
-  // Позиции и цены редактируются до начала загрузки (включая «ожидает загрузки»).
-  const canEditOrder = canEditStatus && ["draft", "pending", "confirmed", "arrived"].includes(order.status);
+  // Карточка редактирования доступна на любом этапе. Доменные блокировки
+  // внутри формы/API защищают поля, которыми уже владеет погрузка или AI.
+  const canEditOrder = canEditStatus;
   // Подтверждение с ценами рендерится отдельной карточкой (заказы с позициями).
   const confirmInPriceCard = isManager && isNew && order.items.length > 0;
   const pendingReqs = order.pending_status_requests ?? [];

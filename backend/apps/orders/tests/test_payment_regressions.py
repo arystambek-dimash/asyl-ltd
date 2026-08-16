@@ -134,14 +134,10 @@ def test_cashier_qr_never_calls_the_payment_provider(auth_client, accountant):
     assert not ApiPayInvoice.objects.exists()
 
 
-def test_qr_from_a_non_confirmer_waits_in_the_manual_queue(
+def test_qr_from_a_staff_recorder_is_confirmed_without_manual_queue(
     auth_client, accountant, payment_recorder,
 ):
-    """QR без счёта провайдера закрывает касса — он не должен зависнуть.
-
-    Внесённый самим кассиром, он подтверждается сразу; внесённый менеджером
-    без права подтверждения — обязан дойти до очереди, иначе деньги повиснут.
-    """
+    """CRM QR is a received till payment, regardless of confirmer permission."""
     order = _order()
     created = auth_client(payment_recorder).post(
         f"/api/orders/{order.id}/payments/",
@@ -152,8 +148,8 @@ def test_qr_from_a_non_confirmer_waits_in_the_manual_queue(
     queue = auth_client(accountant).get("/api/orders/payments-queue/")
 
     assert queue.status_code == 200
-    assert created.data["status"] == "received"
-    assert created.data["id"] in [row["id"] for row in queue.data]
+    assert created.data["status"] == "confirmed"
+    assert created.data["id"] not in [row["id"] for row in queue.data]
 
 
 def test_mixed_provider_failure_rejects_every_part(auth_client, accountant):

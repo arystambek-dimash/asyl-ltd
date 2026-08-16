@@ -23,11 +23,13 @@ def test_client_history_requires_reports_view(user_with_perms):
     assert _api(reporter).get(f"/api/clients/{c.id}/history/").status_code == 200
 
 
-def test_client_debts_requires_reports_view(user_with_perms):
+def test_client_debts_allow_reports_or_payment_entry(user_with_perms):
     viewer = user_with_perms("cv2", codes=["clients.view"])
     reporter = user_with_perms("rv2", codes=["reports.view"])
+    recorder = user_with_perms("pay2", codes=["payments.create"])
     assert _api(viewer).get("/api/clients/debts/").status_code == 403
     assert _api(reporter).get("/api/clients/debts/").status_code == 200
+    assert _api(recorder).get("/api/clients/debts/").status_code == 200
 
 
 def test_client_list_hides_debt_without_reports_view(user_with_perms):
@@ -72,11 +74,44 @@ def test_client_prices_hides_debt_without_reports_view(user_with_perms):
     assert response.data["client"] == {"id": client.id, "name": client.name}
 
 
-def test_store_debts_requires_reports_view(user_with_perms):
+def test_store_debts_allow_reports_or_payment_entry(user_with_perms):
     viewer = user_with_perms("cv3", codes=["clients.view"])
     reporter = user_with_perms("rv3", codes=["reports.view"])
+    recorder = user_with_perms("pay3", codes=["payments.create"])
     assert _api(viewer).get("/api/stores/debts/").status_code == 403
     assert _api(reporter).get("/api/stores/debts/").status_code == 200
+    assert _api(recorder).get("/api/stores/debts/").status_code == 200
+
+
+def test_payment_recorder_gets_minimal_client_debt_detail(user_with_perms):
+    client = Client.objects.create_with_user(
+        first_name="A", last_name="B", phone="87000000000",
+        bank="Test bank", bank_account="KZ00TESTACCOUNT",
+    )
+    product = Product.objects.create(
+        name="Debt item", color="Red", weight_kg="50", price="100.00",
+    )
+    order = Order.objects.create(
+        client=client, status="shipped", settlement_intent="debt",
+    )
+    OrderItem.objects.create(
+        order=order, product=product, quantity=1, unit_price="100.00",
+    )
+    recorder = user_with_perms("pay-detail", codes=["payments.create"])
+
+    response = _api(recorder).get(f"/api/clients/{client.id}/debt-detail/")
+
+    assert response.status_code == 200
+    assert response.data["client"] == {
+        "id": client.id,
+        "name": client.name,
+        "phone": client.phone,
+        "currency": client.currency,
+    }
+    assert response.data["debt_total"] == "100.00"
+    assert response.data["lifetime_by_currency"] == {}
+    assert response.data["orders"][0]["id"] == order.id
+    assert _api(recorder).get(f"/api/clients/{client.id}/history/").status_code == 403
 
 
 def test_check_overdue_requires_clients_edit(user_with_perms):

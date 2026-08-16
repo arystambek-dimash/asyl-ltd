@@ -6,6 +6,8 @@ import type { Client, Department, Order, Product } from "@/lib/types";
 
 const useApiMock = vi.hoisted(() => vi.fn());
 const pushMock = vi.hoisted(() => vi.fn());
+const patchMock = vi.hoisted(() => vi.fn());
+const postMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/use-api", () => ({ useApi: useApiMock }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: pushMock }) }));
@@ -13,7 +15,7 @@ vi.mock("@/store/auth", () => ({
   useAuth: () => ({ me: { sales_department: null } }),
 }));
 vi.mock("@/lib/api", () => ({
-  api: { patch: vi.fn(), post: vi.fn() },
+  api: { patch: patchMock, post: postMock },
   apiError: () => "Ошибка сохранения",
 }));
 
@@ -54,6 +56,10 @@ describe("OrderForm reference data resilience", () => {
   beforeEach(() => {
     useApiMock.mockReset();
     pushMock.mockReset();
+    patchMock.mockReset();
+    postMock.mockReset();
+    patchMock.mockResolvedValue({ data: {} });
+    postMock.mockResolvedValue({ data: { id: 1 } });
   });
 
   it("shows a lookup error and blocks progression until all required data is available", async () => {
@@ -125,5 +131,86 @@ describe("OrderForm reference data resilience", () => {
 
     expect(price).toHaveValue(19);
     expect(reloadClientPrices).toHaveBeenCalledOnce();
+  });
+
+  it("requires an audit reason and sends it when a shipped order is corrected", async () => {
+    const editing = {
+      id: 10,
+      client: client.id,
+      client_name: client.name,
+      department: department.code,
+      currency: "KZT",
+      status: "shipped",
+      transport_type: "truck",
+      truck_number: "123ABC02",
+      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
+    } as Order;
+    const states = new Map<string, unknown>([
+      [
+        "/orders/form-options/",
+        apiState({
+          clients: [client],
+          products: [{ ...product, available_bags: 0 }],
+          stores: [],
+          departments: [department],
+        }),
+      ],
+      ["/client-prices/?client=1&currency=KZT", apiState<Record<string, string>>({})],
+    ]);
+    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+
+    const user = userEvent.setup();
+    render(<OrderForm editing={editing} onCancel={vi.fn()} onDone={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+
+    expect(screen.getByRole("option", { name: /доступно для исправления/ })).toBeEnabled();
+    const save = screen.getByRole("button", { name: /Сохранить изменения/ });
+    expect(save).toBeDisabled();
+    await user.type(screen.getByLabelText("Причина корректировки отгруженного заказа"), "Исправили факт");
+    expect(save).toBeEnabled();
+    await user.click(save);
+
+    expect(patchMock).toHaveBeenCalledWith(
+      "/orders/10/",
+      expect.objectContaining({
+        edit_reason: "Исправили факт",
+        items: [{ product: 2, quantity: 3 }],
+        prices: { "2": "17.50" },
+      }),
+    );
+  });
+
+  it("keeps the edit form usable while loading but omits the frozen composition", async () => {
+    const editing = {
+      id: 11,
+      client: client.id,
+      client_name: client.name,
+      department: department.code,
+      currency: "KZT",
+      status: "loading",
+      transport_type: "truck",
+      truck_number: "123ABC02",
+      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
+    } as Order;
+    const states = new Map<string, unknown>([
+      [
+        "/orders/form-options/",
+        apiState({ clients: [client], products: [product], stores: [], departments: [department] }),
+      ],
+      ["/client-prices/?client=1&currency=KZT", apiState<Record<string, string>>({})],
+    ]);
+    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+
+    const user = userEvent.setup();
+    render(<OrderForm editing={editing} onCancel={vi.fn()} onDone={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+
+    expect(screen.getByLabelText("Товар, позиция 1")).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
+    const body = patchMock.mock.calls[0][1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty("items");
+    expect(body).not.toHaveProperty("prices");
   });
 });

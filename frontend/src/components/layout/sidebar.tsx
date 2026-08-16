@@ -64,7 +64,7 @@ function staffSections(): NavSection[] {
           href: "/accounting",
           label: "Касса",
           icon: HandCoins,
-          perm: ["payments.confirm", "reports.view", "payments.view"],
+          perm: ["payments.confirm", "payments.create", "reports.view", "payments.view"],
         },
         // Единый пост: машины и вагоны вместе — лайв-этапы и моноблок отгрузки.
         { href: "/shipping", label: "Пост погрузки", icon: Truck, perm: ["shipping.view", "train.view"] },

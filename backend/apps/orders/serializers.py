@@ -323,6 +323,12 @@ class PaymentQueueSerializer(DepartmentLabelMixin, PaymentSerializer):
 
 class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     items = OrderItemSerializer(many=True)
+    edit_reason = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        max_length=500,
+    )
     status = serializers.CharField(read_only=True)
     loading_camera = serializers.CharField(read_only=True)
     payment_status = serializers.CharField(read_only=True)
@@ -372,6 +378,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                   "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at",
                   "shipped_at", "loading_camera", "repeated_from",
                   "template_order",
+                  "edit_reason",
                   "deleted_at", "deleted_by_name"]
         read_only_fields = ["debt_override", "repeated_from", "deleted_at"]
         extra_kwargs = {
@@ -529,6 +536,9 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         from .services import apply_item_prices, confirm_order
 
         items = validated_data.pop("items")
+        # A reason applies only to a post-shipment correction. Ignore this
+        # optional write-only transport field on ordinary order creation.
+        validated_data.pop("edit_reason", None)
         template_order = validated_data.pop("template_order", None)
         ensure_products_available(item["product"] for item in items)
         user = self.context["request"].user
@@ -582,6 +592,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     def update(self, instance, validated_data):
         from .services import lock_live_order, replace_items
         user = self.context["request"].user
+        edit_reason = validated_data.pop("edit_reason", "")
         # ModelSerializer.save() writes the whole instance. Re-read it under
         # the same parent lock as AI start/finish so a stale PATCH cannot put
         # status/loading_camera back after a physical transition.
@@ -628,6 +639,12 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
             instance.refresh_from_db()
         items = validated_data.pop("items", None)
         if items is not None:
-            replace_items(instance, items, self.initial_data.get("prices"), user)
+            replace_items(
+                instance,
+                items,
+                self.initial_data.get("prices"),
+                user,
+                edit_reason=edit_reason,
+            )
             instance.refresh_from_db()
         return super().update(instance, validated_data)

@@ -173,6 +173,60 @@ idf.py size
 HTTPS, просроченный `server_time`, replay старой revision, перезагрузку во время
 `ON`, залипший feedback, обрыв feedback и физический E-stop.
 
+## Универсальный стендовый образ GPIO15
+
+Готовый стендовый образ находится в
+[`releases/asyl-conveyor-universal-bench-d15-v1.1.0.merged.bin`](releases/asyl-conveyor-universal-bench-d15-v1.1.0.merged.bin).
+Один и тот же файл прошивается на новые одинаковые ESP32 с адреса `0x0`, а
+уникальные backend `device_id`, token и Wi-Fi передаются после прошивки через
+BLE и сохраняются в NVS:
+
+```bash
+cd firmware/esp32-conveyor/releases
+shasum -a 256 -c SHA256SUMS
+cd ..
+
+uvx esptool --chip esp32 --port /dev/cu.usbserial-XXXX erase-flash
+uvx esptool --chip esp32 --port /dev/cu.usbserial-XXXX \
+  write-flash 0x0 releases/asyl-conveyor-universal-bench-d15-v1.1.0.merged.bin
+
+./tools/provision_device.py \
+  --credentials '<private universal provisioning-credentials.json>' \
+  --service-name ASYL-CONV-A1B2C3 \
+  --device-id '<UUID из backend>' \
+  --ssid '<SSID 2.4 GHz>'
+```
+
+Приватный общий BLE bootstrap password в Git намеренно отсутствует. Его утечка
+позволит перепривязать любую ещё не настроенную или физически сброшенную плату,
+поэтому credentials передаются монтажникам отдельно. API token остаётся
+уникальным для каждой ESP32. Для ротации credentials удерживайте GPIO4 при
+загрузке 3 секунды и повторите provisioning; новые данные подхватятся после
+перезапуска. Это подходит для замены token у того же `device_id`. Чтобы
+перепривязать уже работавшую плату к другому `device_id`, полностью сотрите
+flash, заново прошейте merged BIN и выполните provisioning: сохранённый
+revision/fault fence намеренно не сбрасывается одной кнопкой.
+
+Профиль универсального образа: classic ESP32, flash 4 МБ, одно active-low реле
+на GPIO15 и виртуальный feedback. Он подтверждает только выставленный уровень
+GPIO, а не фактическое состояние реле или контактора. Это только изолированный
+relay-only стенд без подключённого двигателя. Подключать этот BIN к
+производственному конвейеру запрещено: там обязательны отдельный физический
+feedback, аппаратный E-stop и индивидуально проверенный production build.
+GPIO15 является strapping pin classic ESP32: конкретный релейный модуль не
+должен удерживать его на несовместимом уровне во время reset. До подключения
+нагрузки обязательно проверьте несколько холодных стартов и состояние OFF.
+
+Сборка стендового профиля использует один приватный Security2 defaults-файл для
+всего этого ограниченного парка:
+
+```bash
+idf.py -B build/universal-bench-d15 \
+  -DSDKCONFIG="device-secrets/universal-bench-d15/sdkconfig" \
+  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.universal-bench-d15;sdkconfig.defaults.local" \
+  set-target esp32 build merge-bin
+```
+
 ### Изолированный relay-only стенд
 
 Для краткой проверки пустого релейного модуля без двигателя и контактора можно

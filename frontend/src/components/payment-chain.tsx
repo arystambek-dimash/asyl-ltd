@@ -96,7 +96,8 @@ export function PaidMethodBreakdown({ order, className = "" }: { order: Order; c
 
 /**
  * Оплаты заказа в цепочке подтверждения с действиями по правам:
- * приём (payments.create) → подтверждение бухгалтером-кассой (payments.confirm).
+ * providerless-заявку принимает и подтверждает касса (payments.confirm),
+ * а провайдерский счёт закрывается только уведомлением платёжного сервиса.
  */
 export function PaymentChain({ order, me, onChanged }: { order: Order; me: Me | null; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
@@ -127,7 +128,13 @@ export function PaymentChain({ order, me, onChanged }: { order: Order; me: Me | 
                 <ReceiptText className="size-4" />
               </span>
               <div>
-                <div className="font-semibold">{p.status === "received" ? "Проверьте оплату" : "Ожидаем оплату"}</div>
+                <div className="font-semibold">
+                  {p.confirmation_mode === "automatic"
+                    ? "Ожидаем подтверждение сервиса"
+                    : p.status === "received"
+                      ? "Проверьте оплату"
+                      : "Ожидаем оплату"}
+                </div>
                 <div className="mt-0.5 text-sm text-[var(--muted-foreground)]">
                   <span className="font-medium tabular-nums text-[var(--foreground)]">
                     {formatCurrency(p.amount, order.currency)}
@@ -140,12 +147,12 @@ export function PaymentChain({ order, me, onChanged }: { order: Order; me: Me | 
             <PaymentStageBadge status={p.status} />
           </div>
           <div className="flex flex-wrap gap-2">
-            {p.status === "requested" && can(me, "payments.create") && (
+            {p.status === "requested" && p.confirmation_mode !== "automatic" && can(me, "payments.confirm") && (
               <Button size="sm" disabled={busy} onClick={() => act(`/orders/${order.id}/payments/${p.id}/receive/`)}>
                 Отметить получение
               </Button>
             )}
-            {p.status === "received" && can(me, "payments.confirm") && (
+            {p.status === "received" && p.confirmation_mode !== "automatic" && can(me, "payments.confirm") && (
               <Button size="sm" disabled={busy} onClick={() => act(`/orders/${order.id}/payments/${p.id}/confirm/`)}>
                 Подтвердить получение
               </Button>
@@ -171,7 +178,8 @@ export function PaymentChain({ order, me, onChanged }: { order: Order; me: Me | 
 
 /**
  * Кнопки старта цепочки: «Запросить оплату» (счёт выставлен) и
- * «Принять оплату» (деньги получены с выезда). Требует payments.create.
+ * «Принять оплату» (деньги получены с выезда). Любая внутренняя операция с
+ * payments.create проводится сразу; очередь предназначена для заявок портала.
  */
 export function AddPaymentActions({
   order,
@@ -200,13 +208,13 @@ export function AddPaymentActions({
 
   const isInvoice = method === "invoice";
   const isRemoteInvoice = isInvoice && channel === "remote";
-  // У кассы оплата закрывается сразу: подтверждать самой себе нечего.
-  const confirmsOwnPayments = can(me, "payments.confirm");
-
+  const availableMethods = stage === "requested" ? (["invoice"] as const) : CASHIER_PAYMENT_METHODS;
   function open(s: "requested" | "received") {
     setStage(s);
     setAmount(String(remaining));
-    setMethod("cash");
+    // A CRM request is an invoice. Cash/Kaspi in CRM always describes money
+    // already received and must go through the immediate-settlement path.
+    setMethod(s === "requested" ? "invoice" : "cash");
     setChannel("remote");
     setPhone(order.client_phone ?? "");
     setError("");
@@ -254,16 +262,12 @@ export function AddPaymentActions({
         onClose={() => setStage(null)}
         eyebrow={`Заказ #${order.id} · ${order.client_name ?? ""}`}
         title={stage === "requested" ? "Запросить оплату" : "Принять оплату"}
-        // Текст описывает то, что произойдёт именно у этого пользователя:
-        // касса подтверждает оплату сразу, остальные отправляют её в очередь.
         description={
           stage === "requested"
             ? "Клиенту выставлен счёт. После поступления кассир вручную подтвердит получение."
             : isInvoice
               ? "Счёт будет учтён как оплата, когда деньги поступят и кассир их подтвердит."
-              : confirmsOwnPayments
-                ? "Деньги получены — оплата сразу уменьшит долг заказа."
-                : "Оплата добавится в очередь и будет учтена только после ручного подтверждения кассиром."
+              : "Деньги получены — внутренняя оплата сразу уменьшит долг заказа."
         }
         className={isInvoice ? "max-w-md" : "max-w-sm"}
       >
@@ -287,7 +291,7 @@ export function AddPaymentActions({
           <div className="grid gap-2">
             <Label htmlFor="payment-method">Способ</Label>
             <Select id="payment-method" value={method} onChange={(e) => setMethod(e.target.value)}>
-              {CASHIER_PAYMENT_METHODS.map((key) => (
+              {availableMethods.map((key) => (
                 <option key={key} value={key}>
                   {PAYMENT_METHOD_LABELS[key]}
                 </option>

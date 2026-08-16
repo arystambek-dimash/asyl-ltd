@@ -24,10 +24,12 @@ export function LicensePlateInput({
   value,
   onChange,
   labelledBy,
+  disabled = false,
 }: {
   value: string;
   onChange: (next: string) => void;
   labelledBy?: string;
+  disabled?: boolean;
 }) {
   const { digits, letters, region } = parse(value);
   const lettersRef = useRef<HTMLInputElement>(null);
@@ -40,7 +42,10 @@ export function LicensePlateInput({
 
   return (
     <div
-      className="flex items-stretch overflow-hidden rounded-xl border bg-[var(--background)] shadow-xs focus-within:ring-[3px] focus-within:ring-[var(--ring)]/40"
+      className={cn(
+        "flex items-stretch overflow-hidden rounded-xl border bg-[var(--background)] shadow-xs focus-within:ring-[3px] focus-within:ring-[var(--ring)]/40",
+        disabled && "cursor-not-allowed opacity-60",
+      )}
       role="group"
       aria-labelledby={labelledBy}
     >
@@ -57,6 +62,7 @@ export function LicensePlateInput({
         inputMode="numeric"
         placeholder="123"
         aria-label="Цифры"
+        disabled={disabled}
         className="w-0 flex-[1.2] bg-transparent px-2 py-3 text-center text-xl font-bold tracking-wide outline-none placeholder:font-bold placeholder:text-[var(--muted-foreground)]/35"
         onChange={(e) => {
           const d = e.target.value.replace(/\D/g, "").slice(0, 3);
@@ -71,6 +77,7 @@ export function LicensePlateInput({
         value={letters}
         placeholder="ABC"
         aria-label="Буквы"
+        disabled={disabled}
         className="w-0 flex-1 bg-transparent px-2 py-3 text-center text-xl font-bold tracking-wide outline-none placeholder:font-bold placeholder:text-[var(--muted-foreground)]/35"
         onChange={(e) => {
           const l = e.target.value
@@ -93,6 +100,7 @@ export function LicensePlateInput({
           inputMode="numeric"
           placeholder="02"
           aria-label="Регион"
+          disabled={disabled}
           className={cn(
             "w-16 bg-transparent px-2 py-3 text-center text-xl font-bold outline-none",
             "placeholder:font-bold placeholder:text-[var(--muted-foreground)]/35",

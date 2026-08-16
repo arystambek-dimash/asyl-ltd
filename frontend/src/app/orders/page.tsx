@@ -66,11 +66,6 @@ import {
 } from "lucide-react";
 import type { Department, DepartmentSummary, Order } from "@/lib/types";
 
-// Позиции и цены редактируются до начала загрузки (включая «ожидает загрузки»).
-function isEditable(o: Order): boolean {
-  return ["draft", "pending", "confirmed", "arrived"].includes(o.status);
-}
-
 function shortDate(value: string) {
   if (!value) return "";
   const [year, month, day] = value.split("-");
@@ -893,8 +888,6 @@ function OrdersPageInner() {
             key: "edit",
             label: "Изменить",
             icon: Pencil,
-            disabled: !isEditable(o),
-            hint: isEditable(o) ? undefined : "Состав заказа в этом статусе не редактируется",
             onSelect: () => setEditing(o),
           },
         ]

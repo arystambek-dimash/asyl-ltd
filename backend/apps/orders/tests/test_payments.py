@@ -82,13 +82,15 @@ def test_confirmed_payment_can_be_reopened_with_audit_log(auth_client, accountan
 def test_only_confirmed_payment_can_be_reopened(
     auth_client, accountant, payment_recorder,
 ):
+    from apps.orders.services import create_client_payment
+
     order = _order(status="shipped")
-    # Вносит тот, кто не подтверждает: нужна именно неподтверждённая оплата.
-    created = auth_client(payment_recorder).post(
-        f"/api/orders/{order.id}/payments/", {"amount": "100.00"}, format="json")
+    payment = create_client_payment(
+        order, "cash", order.client.user, amount="100.00",
+    )
 
     response = auth_client(accountant).post(
-        f"/api/orders/{order.id}/payments/{created.data['id']}/reopen/")
+        f"/api/orders/{order.id}/payments/{payment.id}/reopen/")
 
     assert response.status_code == 400
     assert response.data["code"] == "invalid_payment_stage"
@@ -130,15 +132,13 @@ def test_rejected_payment_can_be_restored_from_cashier_log(
         auth_client, accountant, payment_recorder):
     from apps.eventlog.models import EventLog
     from apps.orders.models import Payment
+    from apps.orders.services import create_client_payment
 
     order = _order(status="shipped")
-    # Отклонять имеет смысл ещё не подтверждённую оплату.
-    created = auth_client(payment_recorder).post(
-        f"/api/orders/{order.id}/payments/",
-        {"amount": "100.00", "method": "cash"},
-        format="json",
+    payment = create_client_payment(
+        order, "cash", order.client.user, amount="100.00",
     )
-    payment_id = created.data["id"]
+    payment_id = payment.id
     rejected = auth_client(accountant).post(
         f"/api/orders/{order.id}/payments/{payment_id}/reject/")
     assert rejected.status_code == 200
@@ -156,7 +156,7 @@ def test_rejected_payment_can_be_restored_from_cashier_log(
 
     assert restored.status_code == 200
     payment = Payment.objects.get(pk=payment_id)
-    assert payment.status == "received"
+    assert payment.status == "requested"
     assert EventLog.objects.filter(
         event_type="payment",
         payload__payment_id=payment_id,
@@ -205,12 +205,13 @@ def test_cashier_log_hides_provider_name_in_historical_messages(
 
 
 def test_payment_not_counted_before_confirm(auth_client, payment_recorder):
-    """До подтверждения бухгалтером-кассой оплата не учтена."""
+    """Заявка из клиентского портала не считается полученными деньгами."""
+    from apps.orders.services import create_client_payment
+
     o = _order(status="shipped")  # total 500
-    resp = auth_client(payment_recorder).post(
-        f"/api/orders/{o.id}/payments/", {"amount": "500.00"}, format="json"
-    )
-    assert resp.status_code == 201
+    payment = create_client_payment(o, "cash", o.client.user)
+
+    assert payment.status == "requested"
     o.refresh_from_db()
     assert o.paid_total == Decimal("0")
     assert o.payment_status == "unpaid"
@@ -253,7 +254,7 @@ def test_mixed_payment_is_created_atomically(
     # Касса вносит всё разом: полученные деньги закрываются сразу, а счёт
     # остаётся обязательством клиента и ждёт поступления.
     assert {row["method"]: row["status"] for row in response.data} == {
-        "cash": "confirmed", "kaspi": "confirmed", "invoice": "received",
+        "cash": "confirmed", "kaspi": "confirmed", "invoice": "requested",
     }
     assert order.payments.count() == 3
     assert {payment.note for payment in order.payments.all()} == {"смешанная оплата"}
@@ -299,9 +300,9 @@ def test_mixed_payment_rejects_duplicate_method_without_partial_write(
     assert not order.payments.exists()
 
 
-def test_cash_is_counted_only_after_manual_confirmation(
-        auth_client, accountant, payment_recorder):
-    """Наличные от менеджера ждут кассу: деньги проверяет второй человек."""
+def test_staff_cash_is_counted_immediately_without_confirm_permission(
+        auth_client, payment_recorder):
+    """CRM receipt is authoritative even for create-only employees."""
     order = _order(status="shipped")
 
     created = auth_client(payment_recorder).post(
@@ -310,15 +311,49 @@ def test_cash_is_counted_only_after_manual_confirmation(
     )
 
     assert created.status_code == 201
-    assert created.data["status"] == "received"
-    order.refresh_from_db()
-    assert order.paid_total == Decimal("0")
-
-    confirmed = auth_client(accountant).post(
-        f"/api/orders/{order.id}/payments/{created.data['id']}/confirm/")
-    assert confirmed.status_code == 200
+    assert created.data["status"] == "confirmed"
     order.refresh_from_db()
     assert order.paid_total == Decimal("100.00")
+
+
+def test_portal_cash_request_is_received_and_confirmed_in_one_action(
+        auth_client, accountant):
+    from apps.orders.services import create_client_payment
+
+    order = _order(status="shipped")
+    payment = create_client_payment(
+        order, "cash", order.client.user, amount="100.00"
+    )
+
+    response = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/{payment.id}/receive/"
+    )
+
+    assert response.status_code == 200
+    payment.refresh_from_db()
+    order.refresh_from_db()
+    assert payment.status == "confirmed"
+    assert payment.received_by_id == accountant.id
+    assert payment.confirmed_by_id == accountant.id
+    assert order.paid_total == Decimal("100.00")
+
+
+def test_receive_and_confirm_requires_payments_confirm(
+        auth_client, payment_recorder):
+    from apps.orders.services import create_client_payment
+
+    order = _order(status="shipped")
+    payment = create_client_payment(
+        order, "cash", order.client.user, amount="100.00"
+    )
+
+    response = auth_client(payment_recorder).post(
+        f"/api/orders/{order.id}/payments/{payment.id}/receive/"
+    )
+
+    assert response.status_code == 403
+    payment.refresh_from_db()
+    assert payment.status == "requested"
 
 
 def test_card_is_not_available_for_new_cashier_payment(auth_client, accountant):

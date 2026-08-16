@@ -53,4 +53,21 @@ describe("ShipmentLauncher", () => {
     await user.click(screen.getByRole("button", { name: "Начатьотгрузку" }));
     expect(onStart).toHaveBeenCalledWith(order, camera);
   });
+
+  it("starts AI when the selected camera has no ESP32 configured", async () => {
+    const user = userEvent.setup();
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    const aiOnlyCamera = { ...camera, conveyor: undefined } as CameraFeed & { src: string };
+    render(<ShipmentLauncher orders={[order]} cameras={[aiOnlyCamera]} onStart={onStart} />);
+
+    await user.selectOptions(screen.getByLabelText("Заказ"), "401");
+    await user.selectOptions(screen.getByLabelText("Камера"), "cam2");
+
+    expect(screen.getByText(/ESP32 не требуется: Моноблок запустит AI/)).toBeInTheDocument();
+    const start = screen.getByRole("button", { name: "Начатьотгрузку" });
+    expect(start).toBeEnabled();
+    await user.click(start);
+
+    expect(onStart).toHaveBeenCalledWith(order, aiOnlyCamera);
+  });
 });

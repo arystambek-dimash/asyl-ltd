@@ -65,9 +65,7 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
     try {
       await api.post(`/orders/${orderId}/payments/`, { amount });
       setAmounts((a) => ({ ...a, [orderId]: "" }));
-      setNotice(
-        `Оплата по заказу #${orderId} принята — долг спишется после сверки бухгалтером и подтверждения кассой.`,
-      );
+      setNotice(`Оплата по заказу #${orderId} принята — долг уменьшен сразу.`);
       await reload();
     } catch (e) {
       setError(apiError(e));
@@ -176,7 +174,7 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                   </div>
                   {(o.pending_payments?.length ?? 0) > 0 && (
                     <div className="flex items-center justify-between rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2 text-xs">
-                      <span className="text-[var(--warning)]">На подтверждении (бухгалтер → касса)</span>
+                      <span className="text-[var(--warning)]">Ожидает поступления или подтверждения</span>
                       <span className="tabular-nums font-semibold text-[var(--warning)]">
                         {formatCurrency(
                           String(o.pending_payments!.reduce((s, p) => s + Number(p.amount), 0)),
@@ -215,7 +213,7 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
 
 export default function StoreDebtPage(props: { params: Promise<{ id: string }> }) {
   return (
-    <RequirePerm perm="reports.view" title="Долг магазина">
+    <RequirePerm perm={["reports.view", "payments.create"]} title="Долг магазина">
       <StoreDebtPageInner {...props} />
     </RequirePerm>
   );

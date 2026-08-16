@@ -1,9 +1,9 @@
-"""Кассир не подтверждает оплату самому себе.
+"""Любые фактически полученные в CRM деньги закрываются сразу.
 
-Очередь кассы нужна, чтобы деньги проверил второй человек. Когда оплату
-вносит тот, кто её и подтверждает, очередь превращается в лишний клик без
-проверки — такая оплата закрывается сразу. Менеджер без права подтверждения
-по-прежнему отправляет деньги в кассу: контроль «двух рук» сохраняется.
+CRM endpoint уже требует ``payments.create`` и недоступен клиентам. Поэтому
+наличные/QR, которые сотрудник отметил как полученные, не должны зависеть от
+дополнительного права ``payments.confirm``. Только заявка из портала либо
+ещё не оплаченный счёт остаются в очереди.
 """
 
 from decimal import Decimal
@@ -13,13 +13,14 @@ import pytest
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import ApiPayInvoice, Order, OrderItem, Payment
+from apps.orders.services import create_client_payment
 
 pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture
 def cashier_without_confirm(user_with_perms):
-    """Менеджер: вносить оплату может, подтверждать — нет."""
+    """Сотрудник CRM: вносить оплату может, подтверждать заявки — нет."""
     return user_with_perms(
         "no-confirm",
         codes=["orders.view", "payments.view", "payments.create"],
@@ -74,24 +75,50 @@ def test_cashier_payment_skips_the_confirmation_queue(auth_client, accountant):
     assert queue.data == [], "подтверждать самому себе нечего"
 
 
-def test_manager_without_the_perm_still_queues_to_the_cashier(
+def test_staff_without_confirm_permission_is_confirmed_immediately(
     auth_client, cashier_without_confirm,
 ):
-    """Контроль «двух рук» остаётся: чужую оплату проверяет касса."""
     order = _order()
 
     response = _pay(auth_client, cashier_without_confirm, order)
 
     assert response.status_code == 201, response.data
-    assert response.data["status"] == "received"
-    assert Payment.objects.get(order=order).confirmed_by_id is None
+    assert response.data["status"] == "confirmed"
+    payment = Payment.objects.get(order=order)
+    assert payment.confirmed_by_id == cashier_without_confirm.id
+    order.refresh_from_db()
+    assert order.paid_total == Decimal("100.00")
 
 
-def test_qr_taken_at_the_till_is_confirmed_too(auth_client, accountant):
+@pytest.mark.parametrize("method", ["cash", "kaspi"])
+def test_crm_cannot_force_received_money_back_into_manual_queue(
+    auth_client, cashier_without_confirm, method,
+):
+    """The endpoint, not a caller-controlled stage, defines the CRM source."""
+    order = _order()
+
+    response = _pay(
+        auth_client,
+        cashier_without_confirm,
+        order,
+        method=method,
+        stage="requested",
+    )
+
+    assert response.status_code == 201, response.data
+    assert response.data["status"] == "confirmed"
+    assert Payment.objects.get(order=order).confirmed_by_id == cashier_without_confirm.id
+
+
+def test_qr_taken_at_the_till_is_confirmed_too(
+    auth_client, cashier_without_confirm,
+):
     """QR в кассе — деньги уже на POS-терминале, ждать нечего."""
     order = _order()
 
-    response = _pay(auth_client, accountant, order, method="kaspi")
+    response = _pay(
+        auth_client, cashier_without_confirm, order, method="kaspi"
+    )
 
     assert response.status_code == 201, response.data
     assert response.data["status"] == "confirmed"
@@ -114,7 +141,7 @@ def test_invoice_is_not_confirmed_before_the_client_pays(
     )
 
     assert response.status_code == 201, response.data
-    assert response.data["status"] == "received"
+    assert response.data["status"] == "requested"
     order.refresh_from_db()
     assert order.paid_total == Decimal("0"), "долг не гасится до оплаты"
 
@@ -130,6 +157,19 @@ def test_invoice_still_waits_in_the_cashier_queue(auth_client, accountant):
     queue = auth_client(accountant).get("/api/orders/payments-queue/")
 
     assert created.data["id"] in [row["id"] for row in queue.data]
+
+
+def test_every_providerless_portal_payment_waits_in_cashier_queue(
+    auth_client, accountant,
+):
+    """Legacy portal methods must not disappear merely because they are card."""
+    order = _order()
+    payment = create_client_payment(order, "card", order.client.user)
+
+    queue = auth_client(accountant).get("/api/orders/payments-queue/")
+
+    assert payment.status == "received"
+    assert payment.id in [row["id"] for row in queue.data]
 
 
 def test_mixed_payment_by_a_cashier_confirms_every_part(
@@ -169,7 +209,7 @@ def test_mixed_payment_confirms_cash_but_not_the_invoice_part(
 
     assert response.status_code == 201, response.data
     by_method = {row["method"]: row["status"] for row in response.data}
-    assert by_method == {"cash": "confirmed", "invoice": "received"}
+    assert by_method == {"cash": "confirmed", "invoice": "requested"}
     order.refresh_from_db()
     assert order.paid_total == Decimal("100.00"), "счёт ещё не деньги"
 

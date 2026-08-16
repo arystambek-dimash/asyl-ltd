@@ -26,6 +26,7 @@ class StockMovement(models.Model):
     REASONS = [
         ("adjustment", "Корректировка"),
         ("shipment", "Отгрузка"),
+        ("shipment_correction", "Корректировка отгрузки"),
         ("receipt", "Приёмка"),
     ]
 
@@ -49,5 +50,4 @@ class StockMovement(models.Model):
                 fields=["-created_at", "-id"], name="stockmovement_recent_idx"
             ),
         ]
-
 

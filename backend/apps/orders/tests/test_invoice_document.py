@@ -43,8 +43,8 @@ def test_document_invoice_part_skips_provider(auth_client, accountant):
     assert resp.status_code == 201
     payment = Payment.objects.get(order=order)
     assert payment.method == "invoice"
-    # Провайдер не участвует: счёт живёт документом и подтверждается кассой.
-    assert payment.status == "received"
+    # Провайдер не участвует, но печать счёта ещё не означает поступление денег.
+    assert payment.status == "requested"
     assert ApiPayInvoice.objects.count() == 0
 
 
@@ -81,7 +81,8 @@ def test_invoice_pdf_download(auth_client, accountant):
     assert b"%PDF" in b"".join(resp.streaming_content)[:8]
 
 
-def test_document_invoice_lands_in_cashier_queue_and_confirms(auth_client, accountant):
+def test_document_invoice_lands_in_cashier_queue_and_is_received_once(
+        auth_client, accountant):
     order = _order()
     created = auth_client(accountant).post(
         f"/api/orders/{order.id}/payments/",
@@ -95,9 +96,9 @@ def test_document_invoice_lands_in_cashier_queue_and_confirms(auth_client, accou
     queue = auth_client(accountant).get("/api/orders/payments-queue/").json()
     assert any(item["id"] == payment_id for item in queue)
 
-    confirm = auth_client(accountant).post(
-        f"/api/orders/{order.id}/payments/{payment_id}/confirm/")
-    assert confirm.status_code == 200
+    received = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/{payment_id}/receive/")
+    assert received.status_code == 200
     payment = Payment.objects.get(pk=payment_id)
     assert payment.status == "confirmed"
 
