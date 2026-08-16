@@ -11,7 +11,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
-from apps.conveyors.services import lock_camera_binding
+from apps.conveyors.models import ConveyorDevice
+from apps.conveyors.services import (
+    cloud_device_is_ready_for_session,
+    control_payload,
+    lock_camera_binding,
+)
 from apps.eventlog.services import log_event
 from apps.orders.models import Order
 
@@ -33,19 +38,41 @@ class CameraListView(APIView):
 
     def get(self, request):
         names = MonoblockCameraSettings.display_names()
-        cameras = []
-        for camera in services.discover_cameras():
-            source = camera.get("src")
-            cameras.append(
-                {
-                    **camera,
-                    "zone": (
-                        names.get(source, camera.get("zone"))
-                        if isinstance(source, str)
-                        else camera.get("zone")
-                    ),
-                }
+        discovered = services.discover_cameras()
+        sources = {
+            source
+            for camera in discovered
+            if isinstance((source := camera.get("src")), str)
+        }
+        cloud_devices = {
+            device.camera_source: device
+            for device in ConveyorDevice.objects.filter(
+                camera_source__in=sources,
+                is_active=True,
             )
+        }
+        cameras = []
+        for camera in discovered:
+            source = camera.get("src")
+            payload = {
+                **camera,
+                "zone": (
+                    names.get(source, camera.get("zone"))
+                    if isinstance(source, str)
+                    else camera.get("zone")
+                ),
+            }
+            cloud_device = cloud_devices.get(source)
+            # Mirror the exact backend transport decision.  A stale enrolled
+            # ESP stays terminally OFF and the camera remains available in
+            # AI-only/manual mode; a fresh safe-OFF controller is advertised
+            # as automatic cloud control.
+            if (
+                cloud_device is not None
+                and cloud_device_is_ready_for_session(cloud_device)
+            ):
+                payload["conveyor"] = control_payload(cloud_device)
+            cameras.append(payload)
         device = active_device_for(request.user)
         if device is not None:
             cameras = [

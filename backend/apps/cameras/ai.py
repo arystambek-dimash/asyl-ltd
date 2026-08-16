@@ -2,6 +2,7 @@ import http.client
 import json
 import math
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -23,6 +24,7 @@ WAGON_PLATE_MAX_BYTES = 12 * 1024 * 1024
 
 ALWAYS_ON_CACHE_KEY = "cameras:always-on-status:v1"
 ALWAYS_ON_TTL = 5
+SESSION_READY_POLL_SECONDS = 0.2
 
 DETECTIONS_CACHE_KEY = "cameras:always-on-detections:v1"
 DETECTIONS_TTL = 1
@@ -234,6 +236,51 @@ def status(cam: str) -> dict | None:
     return _call("GET", _path(cam), none_on_404=True)
 
 
+def _order_session_ready(payload: object, *, require_zero: bool) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    # The oldest counter API omitted ``mode`` entirely.  It can still be an
+    # order worker; only an explicit non-session mode (notably always_on) is a
+    # mismatch.
+    if payload.get("running") is not True or payload.get("mode") not in (
+        None,
+        "session",
+    ):
+        return False
+    return not (require_zero and payload.get("total") != 0)
+
+
+def wait_for_order_session(
+    cam: str,
+    payload: dict | None,
+    *,
+    require_zero: bool = False,
+) -> dict:
+    """Wait for an asynchronously starting counter to become order-ready.
+
+    Shop-floor processors acknowledge POST before their decoder/publisher is
+    necessarily running.  Treat that response as accepted work and poll the
+    read-only status endpoint within the existing AI request timeout instead
+    of making the operator press Start a second time.
+    """
+    current = payload if isinstance(payload, dict) else {}
+    deadline = time.monotonic() + TIMEOUT
+    while not _order_session_ready(current, require_zero=require_zero):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            detail = (
+                "AI-счётчик не подтвердил обнуление новой сессии"
+                if require_zero
+                else "AI-счётчик не подтвердил запуск сессии заказа"
+            )
+            raise AiError(503, detail)
+        time.sleep(min(SESSION_READY_POLL_SECONDS, remaining))
+        live = status(cam)
+        if live is not None:
+            current = live
+    return current
+
+
 def legacy_status(camera: str, *, timeout_seconds: float) -> dict | None:
     """Bounded status poll used only by the server-side legacy bridge."""
     if (
@@ -294,24 +341,30 @@ def start_order_session(
         if conveyor_transport == "cloud":
             raise AiError(
                 503,
-                "Camera PC does not support cloud conveyor observations",
+                "AI-счётчик не поддерживает автоматическое управление ESP32",
             ) from exc
         if initialize_legacy_worker:
-            start(cam)
-            payload = reset(cam)
+            started = start(cam)
+            wait_for_order_session(cam, started)
+            payload = wait_for_order_session(
+                cam,
+                reset(cam),
+                require_zero=True,
+            )
         else:
             payload = status(cam)
             current = payload if isinstance(payload, dict) else {}
             if (
                 payload is None
                 or current.get("running") is not True
-                or current.get("mode") == "always_on"
+                or current.get("mode") != "session"
             ):
                 payload = start(cam)
+            payload = wait_for_order_session(cam, payload)
         assert payload is not None
         return payload, False
     assert payload is not None
-    return payload, True
+    return wait_for_order_session(cam, payload), True
 
 
 def stop_conveyor(cam: str, session_id: int) -> dict:

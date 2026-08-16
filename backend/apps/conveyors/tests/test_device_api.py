@@ -1028,7 +1028,7 @@ def test_pending_admin_transition_cannot_be_silently_superseded(
     assert device.stop_reason == pending_reason
 
 
-def test_device_binding_itself_selects_server_managed_transport(
+def test_only_fresh_safe_off_device_selects_server_managed_transport(
     auth_client, django_user_model,
 ):
     superuser = django_user_model.objects.create_superuser(
@@ -1043,9 +1043,33 @@ def test_device_binding_itself_selects_server_managed_transport(
     )
 
     assert response.status_code == 201, response.data
-    assert transport_for("cam2") == AiCountingSession.CONVEYOR_CLOUD
+    # Registration by itself is not availability: an ESP which has never
+    # acknowledged OFF must not block an AI-only/manual loading session.
+    assert transport_for("cam2") == AiCountingSession.CONVEYOR_DIRECT
 
     device = ConveyorDevice.objects.get(camera_source="cam2")
+    device.last_seen_at = timezone.now()
+    device.last_boot_id = BOOT_ID
+    device.last_sequence = 0
+    device.last_ack_revision = device.command_revision
+    device.output_state = False
+    device.feedback_state = False
+    device.save(
+        update_fields=[
+            "last_seen_at",
+            "last_boot_id",
+            "last_sequence",
+            "last_ack_revision",
+            "output_state",
+            "feedback_state",
+        ]
+    )
+    assert transport_for("cam2") == AiCountingSession.CONVEYOR_CLOUD
+
+    device.last_seen_at = timezone.now() - timedelta(minutes=10)
+    device.save(update_fields=["last_seen_at"])
+    assert transport_for("cam2") == AiCountingSession.CONVEYOR_DIRECT
+
     device.is_active = False
     device.save(update_fields=["is_active"])
     assert transport_for("cam2") == AiCountingSession.CONVEYOR_DIRECT

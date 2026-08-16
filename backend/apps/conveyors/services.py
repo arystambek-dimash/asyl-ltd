@@ -60,15 +60,19 @@ def _camera_has_open_session(camera: str) -> bool:
 
 
 def transport_for(camera: str) -> str:
-    """Choose the controller from the durable camera binding.
+    """Choose cloud control only when ESP32 is presently safe to arm.
 
-    An active ESP32 row is the single source of truth: new order sessions on
-    that camera use the server-leased device.  Without one, the existing
-    camera-PC/direct path remains unchanged.  The chosen value is still frozen
-    into the session, so binding or disabling a device never changes an order
-    that is already open.
+    Enrollment alone is not availability.  A stale/offline controller must
+    not prevent an operator from starting the AI-only loading flow with a
+    manually controlled conveyor.  Conversely, cloud control is selected only
+    after a fresh heartbeat has acknowledged the current durable OFF command
+    and both the output and contactor feedback are physically OFF.
+
+    The selected transport is still frozen into the counting session.  If an
+    offline ESP32 reconnects during a direct session, it keeps receiving the
+    durable terminal OFF command and can never join that session halfway.
     """
-    if cloud_device_for(camera) is not None:
+    if cloud_device_ready_for_session(camera) is not None:
         return AiCountingSession.CONVEYOR_CLOUD
     return AiCountingSession.CONVEYOR_DIRECT
 
@@ -78,6 +82,28 @@ def cloud_device_for(camera: str, *, lock: bool = False) -> ConveyorDevice | Non
     if lock:
         queryset = queryset.select_for_update()
     return queryset.first()
+
+
+def cloud_device_ready_for_session(
+    camera: str,
+    *,
+    lock: bool = False,
+) -> ConveyorDevice | None:
+    """Return an ESP32 binding only when a new session may safely use it."""
+    device = cloud_device_for(camera, lock=lock)
+    if device is None or not cloud_device_is_ready_for_session(device):
+        return None
+    return device
+
+
+def cloud_device_is_ready_for_session(device: ConveyorDevice) -> bool:
+    """Whether this enrolled controller may be selected for a new order."""
+    return not (
+        device.desired_state
+        or not device.command_terminal
+        or device.stop_reason in ADMIN_PENDING_REASONS
+        or not prepared_off(device)
+    )
 
 
 def _next_revision(device: ConveyorDevice) -> bool:

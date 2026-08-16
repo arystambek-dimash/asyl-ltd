@@ -468,12 +468,12 @@ def _assert_legacy_session_worker(payload: Mapping, *, reset: bool = False) -> N
     if payload.get("running") is not True or payload.get("mode") != "session":
         raise ai.AiError(
             503,
-            "Legacy camera PC did not start an order counting session",
+            "AI-счётчик не подтвердил запуск сессии заказа",
         )
     if reset and _valid_total(payload.get("total")) != 0:
         raise ai.AiError(
             503,
-            "Legacy camera PC did not confirm a zeroed counter",
+            "AI-счётчик не подтвердил обнуление новой сессии",
         )
 
 
@@ -543,9 +543,16 @@ def _start_cloud(
                     # Conservatively assume POST may have taken effect even if
                     # its response is lost; the failure path will issue DELETE.
                     worker_started = True
-                    live = ai.start(camera)
+                    live = ai.wait_for_order_session(
+                        camera,
+                        ai.start(camera),
+                    )
                     _assert_legacy_session_worker(_payload(live))
-                    live = ai.reset(camera)
+                    live = ai.wait_for_order_session(
+                        camera,
+                        ai.reset(camera),
+                        require_zero=True,
+                    )
                     _assert_legacy_session_worker(_payload(live), reset=True)
                 elif (
                     live is None
@@ -553,7 +560,11 @@ def _start_cloud(
                     or current.get("mode") != "session"
                 ):
                     worker_started = True
-                    live = ai.start(camera)
+                    live = ai.wait_for_order_session(
+                        camera,
+                        ai.start(camera),
+                        require_zero=True,
+                    )
                     _assert_legacy_session_worker(_payload(live), reset=True)
                 else:
                     _assert_legacy_session_worker(current)

@@ -1,3 +1,4 @@
+import uuid
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -62,11 +63,20 @@ def _order(*, status="confirmed", target=10, product=False):
 
 
 def _device(**overrides):
+    defaults = {
+        "last_seen_at": timezone.now(),
+        "last_boot_id": uuid.UUID("11111111-1111-4111-8111-111111111111"),
+        "last_sequence": 0,
+        "last_ack_revision": 1,
+        "output_state": False,
+        "feedback_state": False,
+    }
+    defaults.update(overrides)
     return ConveyorDevice.objects.create(
         name="Cloud line",
         camera_source="cam2",
         secret_sha256=digest_token("C" * 43),
-        **overrides,
+        **defaults,
     )
 
 

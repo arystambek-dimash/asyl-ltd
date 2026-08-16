@@ -9,6 +9,8 @@ from apps.cameras import ai
 from apps.cameras.models import AiCountingSession, MonoblockCameraSettings
 from apps.catalog.models import Product
 from apps.clients.models import Client
+from apps.conveyors.credentials import digest_token
+from apps.conveyors.models import ConveyorDevice
 from apps.orders.models import Order, OrderItem
 from apps.orders.services import replace_items
 from apps.shipments.models import Shipment
@@ -142,6 +144,79 @@ def test_old_camera_service_falls_back_without_claiming_conveyor(
     assert [call.args[:2] for call in request.call_args_list] == [
         ("POST", "/processors/cam2/session"),
         ("POST", "/processors/cam2"),
+        ("POST", "/processors/cam2/reset"),
+    ]
+
+
+def test_stale_esp_binding_falls_back_to_ai_only_loading(
+    auth_client, loader, settings,
+):
+    settings.CONVEYOR_LEGACY_BRIDGE_CAMERAS = frozenset({"cam2"})
+    order = _order(bags=8)
+    ConveyorDevice.objects.create(
+        name="Offline ESP32",
+        camera_source="cam2",
+        secret_sha256=digest_token("S" * 43),
+    )
+    legacy = {"cam": "cam2", "running": True, "mode": "session", "total": 0}
+
+    with patch.object(
+        ai,
+        "_request",
+        side_effect=[
+            (404, {"detail": "not found"}),
+            (200, legacy),
+            (200, legacy),
+        ],
+    ):
+        response = auth_client(loader).post(
+            "/api/cameras/cam2/ai/", {"order_id": order.pk}, format="json"
+        )
+
+    assert response.status_code == 200, response.data
+    session = AiCountingSession.objects.get(order=order)
+    order.refresh_from_db()
+    assert session.status == AiCountingSession.ACTIVE
+    assert session.conveyor_transport == AiCountingSession.CONVEYOR_DIRECT
+    assert session.conveyor_observation_mode == AiCountingSession.OBSERVATION_NONE
+    assert session.conveyor_enabled is False
+    assert response.data["conveyor"]["state"] == "unconfigured"
+    assert order.status == "loading"
+    assert order.loading_camera == "cam2"
+
+
+def test_async_legacy_worker_becomes_active_from_one_start_request(
+    auth_client, loader, monkeypatch,
+):
+    order = _order(bags=6)
+    starting = {"cam": "cam2", "running": False, "mode": "session", "total": 0}
+    running = {"cam": "cam2", "running": True, "mode": "session", "total": 0}
+    monkeypatch.setattr(ai, "SESSION_READY_POLL_SECONDS", 0)
+
+    with patch.object(
+        ai,
+        "_request",
+        side_effect=[
+            (404, {"detail": "not found"}),
+            (200, starting),
+            (200, running),
+            (200, running),
+        ],
+    ) as request:
+        response = auth_client(loader).post(
+            "/api/cameras/cam2/ai/", {"order_id": order.pk}, format="json"
+        )
+
+    assert response.status_code == 200, response.data
+    session = AiCountingSession.objects.get(order=order)
+    order.refresh_from_db()
+    assert session.status == AiCountingSession.ACTIVE
+    assert session.activated_at is not None
+    assert order.status == "loading"
+    assert [call.args[:2] for call in request.call_args_list] == [
+        ("POST", "/processors/cam2/session"),
+        ("POST", "/processors/cam2"),
+        ("GET", "/processors/cam2"),
         ("POST", "/processors/cam2/reset"),
     ]
 
