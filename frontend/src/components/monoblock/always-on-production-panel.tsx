@@ -1,0 +1,542 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import {
+  Activity,
+  AlertTriangle,
+  CalendarClock,
+  Check,
+  Clock3,
+  LoaderCircle,
+  PackageCheck,
+  RefreshCw,
+  Save,
+  Warehouse,
+} from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
+import type {
+  AlwaysOnProductMapping,
+  AlwaysOnProductionPayload,
+  AlwaysOnProductionProduct,
+  AlwaysOnStockBatch,
+} from "@/lib/types";
+import { cn, formatIsoDate } from "@/lib/utils";
+
+const COLOR_META: Record<string, { label: string; dot: string; tint: string; line: string }> = {
+  red: {
+    label: "Красный",
+    dot: "bg-[#d2604d]",
+    tint: "border-[#d2604d]/25 bg-[#d2604d]/[0.07]",
+    line: "bg-[#d2604d]",
+  },
+  blue: {
+    label: "Синий",
+    dot: "bg-[#4669d8]",
+    tint: "border-[#4669d8]/25 bg-[#4669d8]/[0.07]",
+    line: "bg-[#4669d8]",
+  },
+  green: {
+    label: "Зелёный",
+    dot: "bg-[#48a57a]",
+    tint: "border-[#48a57a]/25 bg-[#48a57a]/[0.07]",
+    line: "bg-[#48a57a]",
+  },
+  white: {
+    label: "Белый",
+    dot: "border border-slate-300 bg-white",
+    tint: "border-slate-200 bg-slate-50",
+    line: "border border-slate-300 bg-white",
+  },
+};
+
+const BATCH_META: Record<AlwaysOnStockBatch["status"], { label: string; className: string }> = {
+  scheduled: { label: "Запланировано", className: "border-blue-200 bg-blue-50 text-blue-700" },
+  blocked: { label: "Нужна настройка", className: "border-amber-200 bg-amber-50 text-amber-700" },
+  posted: { label: "Приход создан", className: "border-emerald-200 bg-emerald-50 text-emerald-700" },
+  empty: { label: "Нет продукции", className: "border-slate-200 bg-slate-50 text-slate-500" },
+  failed: { label: "Ошибка", className: "border-red-200 bg-red-50 text-red-700" },
+};
+
+function normalizedColor(value: string | null | undefined) {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function colorMeta(color: string) {
+  return (
+    COLOR_META[normalizedColor(color)] ?? {
+      label: color,
+      dot: "bg-slate-500",
+      tint: "border-slate-200 bg-slate-50",
+      line: "bg-slate-500",
+    }
+  );
+}
+
+function zonedDateTime(value: string, timezone: string, withDate = true) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone: timezone,
+    ...(withDate ? { day: "2-digit", month: "2-digit", year: "numeric" } : {}),
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function productOptions(products: AlwaysOnProductionProduct[], color: string, selectedProduct: number | null) {
+  const matching = products.filter((product) => normalizedColor(product.color) === normalizedColor(color));
+  if (!matching.length) return products;
+
+  const selected = products.find((product) => product.id === selectedProduct);
+  if (!selected || matching.some((product) => product.id === selected.id)) return matching;
+  // Старую несовпадающую настройку не прячем: оператор должен сначала увидеть,
+  // куда сейчас идёт продукция, и только потом осознанно заменить товар.
+  return [selected, ...matching];
+}
+
+function mappingSignature(rows: AlwaysOnProductMapping[]) {
+  return [...rows]
+    .sort((left, right) => left.color.localeCompare(right.color))
+    .map((row) => `${normalizedColor(row.color)}:${row.product ?? ""}`)
+    .join("|");
+}
+
+function runDuration(startedAt: string, endedAt: string | null, lastCountedAt: string) {
+  const start = new Date(startedAt).getTime();
+  const end = new Date(endedAt ?? lastCountedAt).getTime();
+  const minutes = Math.max(0, Math.round((end - start) / 60_000));
+  if (!Number.isFinite(minutes) || minutes < 1) return "меньше минуты";
+  if (minutes < 60) return `${minutes} мин`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours} ч ${rest} мин` : `${hours} ч`;
+}
+
+interface AlwaysOnProductionPanelProps {
+  payload: AlwaysOnProductionPayload | null;
+  loading: boolean;
+  error: string | null;
+  saving: boolean;
+  onSave: (mappings: AlwaysOnProductMapping[]) => void | Promise<void>;
+  onRetry?: (batch: AlwaysOnStockBatch) => void | Promise<void>;
+}
+
+export function AlwaysOnProductionPanel({
+  payload,
+  loading,
+  error,
+  saving,
+  onSave,
+  onRetry,
+}: AlwaysOnProductionPanelProps) {
+  const [draft, setDraft] = useState<AlwaysOnProductMapping[]>([]);
+
+  useEffect(() => {
+    if (!payload) return;
+    const byColor = new Map(payload.mappings.map((row) => [normalizedColor(row.color), row]));
+    setDraft(
+      payload.available_colors.map((color) => {
+        const current = byColor.get(normalizedColor(color));
+        return current ?? { color, product: null, product_label: null };
+      }),
+    );
+  }, [payload]);
+
+  const dirty = useMemo(
+    () => Boolean(payload && mappingSignature(draft) !== mappingSignature(payload.mappings)),
+    [draft, payload],
+  );
+  const missingColors = draft.filter((row) => row.product === null).map((row) => colorMeta(row.color).label);
+  const runs = useMemo(
+    () =>
+      [...(payload?.runs ?? [])].sort(
+        (left, right) => new Date(right.started_at).getTime() - new Date(left.started_at).getTime(),
+      ),
+    [payload?.runs],
+  );
+  const batches = useMemo(
+    () =>
+      [...(payload?.batches ?? [])].sort(
+        (left, right) => new Date(right.scheduled_for).getTime() - new Date(left.scheduled_for).getTime(),
+      ),
+    [payload?.batches],
+  );
+
+  if (loading && !payload) {
+    return (
+      <div className="flex min-h-72 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-400">
+        <LoaderCircle className="mr-2 size-5 animate-spin" /> Загружаем журнал производства…
+      </div>
+    );
+  }
+
+  if (!payload) {
+    return (
+      <div
+        role="alert"
+        className="flex min-h-48 flex-col items-center justify-center rounded-2xl border border-red-200 bg-red-50 px-6 text-center text-red-700"
+      >
+        <AlertTriangle className="mb-2 size-6" />
+        <p className="font-semibold">Журнал производства недоступен</p>
+        <p className="mt-1 max-w-lg text-sm text-red-600">{error || "Сервер не вернул данные по этой камере."}</p>
+      </div>
+    );
+  }
+
+  const timezone = payload.timezone || "Asia/Almaty";
+  const nextRun = zonedDateTime(payload.next_run_at, timezone);
+
+  function updateMapping(color: string, value: string) {
+    const productId = value ? Number(value) : null;
+    const product = payload?.products.find((row) => row.id === productId) ?? null;
+    setDraft((current) =>
+      current.map((row) =>
+        normalizedColor(row.color) === normalizedColor(color)
+          ? { ...row, product: productId, product_label: product?.label ?? null }
+          : row,
+      ),
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {error && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700"
+        >
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_16px_42px_rgba(15,23,42,0.07)]">
+        <div className="grid lg:grid-cols-[minmax(0,1fr)_290px]">
+          <div className="p-4 sm:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">
+                  <Activity className="size-3.5 text-blue-600" /> Журнал производства
+                </div>
+                <h3 className="mt-1 text-lg font-black tracking-tight text-slate-900">Когда выпускался каждый цвет</h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  Время первого и последнего засчитанного мешка, точность до 30 секунд. День смены:{" "}
+                  {formatIsoDate(payload.current_business_day)}.
+                </p>
+              </div>
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-600">
+                {runs.length} {runs.length === 1 ? "период" : "периодов"}
+              </span>
+            </div>
+
+            {runs.length ? (
+              <div className="mt-5 max-h-[440px] space-y-2.5 overflow-y-auto pr-1">
+                {runs.map((run) => {
+                  const meta = colorMeta(run.color);
+                  const active = run.status === "active";
+                  return (
+                    <article
+                      key={run.id}
+                      className={cn(
+                        "relative overflow-hidden rounded-xl border p-3.5 pl-4 transition",
+                        active ? meta.tint : "border-slate-200 bg-slate-50/60",
+                      )}
+                    >
+                      <span className={cn("absolute inset-y-0 left-0 w-1", meta.line)} />
+                      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+                        <span
+                          className={cn("mt-1 size-2.5 shrink-0 rounded-full", meta.dot, active && "animate-pulse")}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-bold text-slate-800">{meta.label}</span>
+                            <span
+                              className={cn(
+                                "rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide",
+                                active ? "bg-emerald-100 text-emerald-700" : "bg-slate-200/70 text-slate-500",
+                              )}
+                            >
+                              {active ? "идёт сейчас" : "завершено"}
+                            </span>
+                            {run.is_approximate && (
+                              <span
+                                title="Начало восстановлено по первому доступному замеру"
+                                className="text-[10px] font-semibold text-amber-600"
+                              >
+                                время приблизительное
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+                            <span>
+                              Начало{" "}
+                              <b className="font-semibold text-slate-700">{zonedDateTime(run.started_at, timezone)}</b>
+                            </span>
+                            <span>
+                              {active ? "Последний мешок" : "Конец"}{" "}
+                              <b className="font-semibold text-slate-700">
+                                {zonedDateTime(run.ended_at ?? run.last_counted_at, timezone, false)}
+                              </b>
+                            </span>
+                            <span>{runDuration(run.started_at, run.ended_at, run.last_counted_at)}</span>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-2xl font-black tabular-nums tracking-tight text-slate-900">
+                            {run.model_bags}
+                          </div>
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">мешков</div>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="mt-5 flex min-h-48 flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/50 text-center text-slate-400">
+                <Activity className="mb-2 size-7 text-slate-300" />
+                <span className="text-sm font-semibold">Периодов пока нет</span>
+                <span className="mt-1 max-w-sm text-xs">
+                  Первый период появится, когда модель засчитает мешок и определит его цвет.
+                </span>
+              </div>
+            )}
+          </div>
+
+          <aside className="border-t border-slate-200 bg-slate-950 p-4 text-white sm:p-5 lg:border-l lg:border-t-0">
+            <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.14em] text-white/45">
+              <CalendarClock className="size-3.5" /> Автоприход на склад
+            </div>
+            <div className="mt-3 flex items-baseline gap-2">
+              <span className="text-4xl font-black tabular-nums tracking-tight">{payload.close_time}</span>
+              <span className="text-sm font-semibold text-white/45">каждый день</span>
+            </div>
+            <p className="mt-2 text-xs leading-relaxed text-white/50">
+              В это время смена закрывается, а итог по цветам одним приходом добавляется на склад.
+            </p>
+
+            <div className="mt-5 space-y-2.5">
+              <div className="rounded-xl bg-white/[0.07] px-3 py-2.5">
+                <div className="text-[10px] font-bold uppercase tracking-wide text-white/35">Следующий запуск</div>
+                <div className="mt-1 font-semibold tabular-nums text-white/85">{nextRun}</div>
+                <div className="mt-0.5 text-[11px] text-white/35">{timezone}</div>
+              </div>
+              <div className="rounded-xl bg-white/[0.07] px-3 py-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-white/50">Готовность</span>
+                  <span
+                    className={cn("text-xs font-bold", missingColors.length ? "text-amber-300" : "text-emerald-300")}
+                  >
+                    {missingColors.length ? "нужна настройка" : "готово"}
+                  </span>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className={cn("h-full rounded-full", missingColors.length ? "bg-amber-300" : "bg-emerald-400")}
+                    style={{
+                      width: `${draft.length ? ((draft.length - missingColors.length) / draft.length) * 100 : 100}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
+        <section className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <Warehouse className="size-4 text-blue-600" />
+                <h3 className="font-bold text-slate-900">Куда приходовать продукцию</h3>
+              </div>
+              <p className="mt-1 text-xs text-slate-500">Один раз сопоставьте распознанный цвет с товаром каталога.</p>
+            </div>
+            <Button size="sm" disabled={!dirty || saving} onClick={() => void onSave(draft)}>
+              {saving ? <LoaderCircle className="animate-spin" /> : <Save />}
+              {saving ? "Сохраняем…" : "Сохранить"}
+            </Button>
+          </div>
+
+          {missingColors.length > 0 && (
+            <div className="mt-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              <span>
+                Не настроено: <b>{missingColors.join(", ")}</b>. Подсчёт и журнал продолжат работать, но складской
+                приход будет ждать настройки — мешки не потеряются.
+              </span>
+            </div>
+          )}
+
+          <div className="mt-4 space-y-3">
+            {draft.map((mapping) => {
+              const meta = colorMeta(mapping.color);
+              const candidates = productOptions(payload.products, mapping.color, mapping.product);
+              const hasMatchingProducts = payload.products.some(
+                (product) => normalizedColor(product.color) === normalizedColor(mapping.color),
+              );
+              return (
+                <label
+                  key={mapping.color}
+                  className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:grid-cols-[150px_minmax(0,1fr)] sm:items-center"
+                >
+                  <span className="flex items-center gap-2 text-sm font-bold text-slate-700">
+                    <span className={cn("size-3 rounded-full", meta.dot)} /> {meta.label}
+                  </span>
+                  <span>
+                    <Select
+                      aria-label={`Товар для цвета ${meta.label}`}
+                      value={mapping.product ?? ""}
+                      onChange={(event) => updateMapping(mapping.color, event.target.value)}
+                      className="bg-white"
+                    >
+                      <option value="">Не выбран — не приходовать</option>
+                      {candidates.map((product) => (
+                        <option key={product.id} value={product.id}>
+                          {product.label}
+                        </option>
+                      ))}
+                    </Select>
+                    <span className="mt-1 block text-[10px] text-slate-400">
+                      {hasMatchingProducts
+                        ? `Показаны товары цвета «${meta.label}»${candidates.length !== payload.products.length ? "" : "."}`
+                        : "В каталоге нет товара этого цвета — показан весь активный каталог."}
+                    </span>
+                  </span>
+                </label>
+              );
+            })}
+            {!draft.length && (
+              <div className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-400">
+                Цвета появятся здесь после первого распознавания модели.
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+          <div className="flex items-center gap-2">
+            <PackageCheck className="size-4 text-emerald-600" />
+            <h3 className="font-bold text-slate-900">Предварительный приход</h3>
+          </div>
+          <p className="mt-1 text-xs text-slate-500">Что попадёт на склад при ближайшем закрытии смены.</p>
+
+          <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+            {(payload.preview ?? []).map((row, index) => {
+              const meta = colorMeta(row.color);
+              return (
+                <div key={row.color} className={cn("p-3", index > 0 && "border-t border-slate-200")}>
+                  <div className="flex items-center gap-2">
+                    <span className={cn("size-2.5 rounded-full", meta.dot)} />
+                    <span className="text-sm font-bold text-slate-700">{meta.label}</span>
+                    <span className="ml-auto text-lg font-black tabular-nums text-slate-900">{row.net_bags}</span>
+                    <span className="text-[10px] font-semibold uppercase text-slate-400">меш.</span>
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-500">
+                    {row.configured ? (
+                      <>
+                        <Check className="size-3.5 text-emerald-500" />
+                        <span className="truncate">{row.product_label}</span>
+                      </>
+                    ) : (
+                      <>
+                        <AlertTriangle className="size-3.5 text-amber-500" />
+                        <span className="font-semibold text-amber-700">Товар не выбран</span>
+                      </>
+                    )}
+                  </div>
+                  {row.correction_bags !== 0 && (
+                    <div className="mt-1 text-[10px] text-slate-400">
+                      Модель {row.detected_bags} · поправка {row.correction_bags > 0 ? "+" : ""}
+                      {row.correction_bags}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {!payload.preview.length && (
+              <div className="px-4 py-10 text-center text-sm text-slate-400">В текущей смене продукции пока нет.</div>
+            )}
+          </div>
+          <p className="mt-3 flex items-start gap-2 text-[11px] leading-relaxed text-slate-400">
+            <Clock3 className="mt-0.5 size-3.5 shrink-0" />
+            До {payload.close_time} значения могут меняться. После создания прихода партия фиксируется и повторно не
+            проводится.
+          </p>
+        </section>
+      </div>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h3 className="font-bold text-slate-900">История складских приходов</h3>
+            <p className="mt-1 text-xs text-slate-500">Отдельная партия на каждую камеру и производственный день.</p>
+          </div>
+          <span className="text-xs font-semibold text-slate-400">Последние {batches.length}</span>
+        </div>
+
+        {batches.length ? (
+          <div className="mt-4 space-y-2.5">
+            {batches.map((batch) => {
+              const meta = BATCH_META[batch.status];
+              const retryable = batch.status === "blocked" || batch.status === "failed";
+              return (
+                <article key={batch.id} className="rounded-xl border border-slate-200 p-3.5">
+                  <div className="flex flex-wrap items-start gap-3">
+                    <div className="min-w-36">
+                      <div className="text-sm font-bold text-slate-800">Смена {formatIsoDate(batch.business_day)}</div>
+                      <div className="mt-0.5 text-[11px] text-slate-400">
+                        запуск {zonedDateTime(batch.scheduled_for, timezone, false)} · попыток {batch.attempts}
+                      </div>
+                    </div>
+                    <span
+                      className={cn(
+                        "rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide",
+                        meta.className,
+                      )}
+                    >
+                      {meta.label}
+                    </span>
+                    <div className="ml-auto text-right">
+                      <div className="text-xl font-black tabular-nums text-slate-900">{batch.total_bags}</div>
+                      <div className="text-[10px] uppercase text-slate-400">мешков</div>
+                    </div>
+                  </div>
+
+                  {batch.items.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1.5 border-t border-slate-100 pt-3">
+                      {batch.items.map((item) => (
+                        <span key={item.id} className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-600">
+                          <b>{colorMeta(item.color).label}</b> · {item.product_label} · {item.posted_bags} меш.
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {(batch.last_error || retryable) && (
+                    <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+                      {batch.last_error && <p className="min-w-0 flex-1 text-xs text-red-600">{batch.last_error}</p>}
+                      {retryable && onRetry && (
+                        <Button variant="outline" size="sm" onClick={() => void onRetry(batch)}>
+                          <RefreshCw /> Повторить сейчас
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="mt-4 rounded-xl border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-400">
+            Первый складской приход появится после ближайшего запуска в {payload.close_time}.
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}

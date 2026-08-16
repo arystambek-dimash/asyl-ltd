@@ -720,6 +720,75 @@ export interface AlwaysOnDailyAnalytics {
   dominant_color: string | null;
   cameras: AlwaysOnDailyCameraAnalytics[];
 }
+export interface AlwaysOnProductionRun {
+  id: number;
+  camera: string;
+  business_day: string;
+  color: string;
+  started_at: string;
+  last_counted_at: string;
+  ended_at: string | null;
+  model_bags: number;
+  is_approximate: boolean;
+  status: "active" | "closed";
+}
+export interface AlwaysOnProductMapping {
+  color: string;
+  product: number | null;
+  product_label: string | null;
+}
+export interface AlwaysOnStockPosting {
+  id: number;
+  color: string;
+  product: number;
+  product_label: string;
+  detected_bags: number;
+  correction_bags: number;
+  posted_bags: number;
+  receipt_id: number;
+}
+export interface AlwaysOnStockBatch {
+  id: number;
+  camera: string;
+  business_day: string;
+  scheduled_for: string;
+  status: "scheduled" | "blocked" | "posted" | "empty" | "failed";
+  total_bags: number;
+  last_error: string;
+  attempts: number;
+  posted_at: string | null;
+  items: AlwaysOnStockPosting[];
+}
+export interface AlwaysOnProductionProduct {
+  id: number;
+  label: string;
+  color: string;
+  color_label: string;
+  weight_kg: string;
+}
+export interface AlwaysOnStockPreview {
+  color: string;
+  detected_bags: number;
+  correction_bags: number;
+  net_bags: number;
+  product: number | null;
+  product_label: string | null;
+  configured: boolean;
+}
+export interface AlwaysOnProductionPayload {
+  camera: string;
+  timezone: string;
+  close_time: string;
+  current_business_day: string;
+  next_run_at: string;
+  fully_configured: boolean;
+  available_colors: string[];
+  mappings: AlwaysOnProductMapping[];
+  products: AlwaysOnProductionProduct[];
+  runs: AlwaysOnProductionRun[];
+  preview: AlwaysOnStockPreview[];
+  batches: AlwaysOnStockBatch[];
+}
 export interface Permission {
   id: number;
   code: string;

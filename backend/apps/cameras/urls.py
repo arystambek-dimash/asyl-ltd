@@ -8,6 +8,7 @@ from .views import (
     AlwaysOnAnalyticsSubtractView, AlwaysOnAnalyticsView,
     AlwaysOnCameraSettingsView,
     AlwaysOnDetectionsView, MonoblockCameraSettingsView, ShippingBoardSettingsView,
+    AlwaysOnProductionView, AlwaysOnStockRetryView,
     MonoblockDeviceDetailView, MonoblockDeviceListView,
     WagonNumberCameraSettingsView,
 )
@@ -27,6 +28,11 @@ urlpatterns = [
         WagonNumberCameraSettingsView.as_view(),
     ),
     path("cameras/always-on-analytics/", AlwaysOnAnalyticsView.as_view()),
+    path("cameras/always-on-production/", AlwaysOnProductionView.as_view()),
+    path(
+        "cameras/always-on-production/batches/<int:batch_id>/retry/",
+        AlwaysOnStockRetryView.as_view(),
+    ),
     path(
         "cameras/always-on-analytics/<str:cam>/subtract/",
         AlwaysOnAnalyticsSubtractView.as_view(),

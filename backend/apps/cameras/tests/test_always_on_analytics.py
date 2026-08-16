@@ -6,10 +6,12 @@ from django.utils import timezone
 
 from apps.cameras import ai, analytics
 from apps.cameras.models import (
+    AlwaysOnColorProductMapping,
     AlwaysOnCounterCursor,
     AlwaysOnDailyAnalytics,
     MonoblockCameraSettings,
 )
+from apps.catalog.models import Product
 from apps.eventlog.models import EventLog
 
 pytestmark = pytest.mark.django_db
@@ -52,17 +54,17 @@ def test_session_count_is_not_added_to_background_analytics():
 
 def test_superuser_can_subtract_with_reason_and_audit(auth_client, admin_user, boss):
     MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
-    analytics.record_snapshot(live(12))
+    analytics.record_snapshot(live(12, per_color={"Red_50": 12}))
 
     forbidden = auth_client(boss).post(
         "/api/cameras/always-on-analytics/cam3/subtract/",
-        {"amount": 2, "reason": "Ложное срабатывание"}, format="json",
+        {"amount": 2, "color": "red", "reason": "Ложное срабатывание"}, format="json",
     )
     assert forbidden.status_code == 403
 
     response = auth_client(admin_user).post(
         "/api/cameras/always-on-analytics/cam3/subtract/",
-        {"amount": 2, "reason": "Ложное срабатывание"}, format="json",
+        {"amount": 2, "color": "red", "reason": "Ложное срабатывание"}, format="json",
     )
     assert response.status_code == 200
     assert response.data["model_total"] == 12
@@ -72,7 +74,46 @@ def test_superuser_can_subtract_with_reason_and_audit(auth_client, admin_user, b
     assert event.user == admin_user
     assert event.payload["before"] == 12
     assert event.payload["after"] == 10
+    assert event.payload["color"] == "red"
     assert event.payload["reason"] == "Ложное срабатывание"
+
+
+def test_superuser_configures_color_to_product_route(auth_client, admin_user, boss):
+    MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
+    red = Product.objects.create(
+        name="Робот Кука", color="Red", weight_kg="50", price="100",
+    )
+
+    denied = auth_client(boss).get(
+        "/api/cameras/always-on-production/?camera=cam3",
+    )
+    assert denied.status_code == 403
+
+    response = auth_client(admin_user).put(
+        "/api/cameras/always-on-production/",
+        {"camera": "cam3", "mappings": [{"color": "red", "product": red.pk}]},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert response.data["camera"] == "cam3"
+    assert response.data["timezone"] == "Asia/Almaty"
+    assert response.data["close_time"] == "19:00"
+    assert next(
+        item for item in response.data["mappings"] if item["color"] == "red"
+    ) == {
+        "color": "red", "product": red.pk, "product_label": str(red),
+    }
+    assert AlwaysOnColorProductMapping.objects.get(
+        camera="cam3", color="red",
+    ).product == red
+
+    mismatch = auth_client(admin_user).put(
+        "/api/cameras/always-on-production/",
+        {"camera": "cam3", "mappings": [{"color": "blue", "product": red.pk}]},
+        format="json",
+    )
+    assert mismatch.status_code == 400
 
 
 def test_today_endpoint_returns_real_total_and_rejects_excess_subtraction(
@@ -109,7 +150,7 @@ def test_today_endpoint_returns_real_total_and_rejects_excess_subtraction(
 
     too_much = auth_client(admin_user).post(
         "/api/cameras/always-on-analytics/cam3/subtract/",
-        {"amount": 9, "reason": "Проверка ограничения"}, format="json",
+        {"amount": 9, "color": "red", "reason": "Проверка ограничения"}, format="json",
     )
     assert too_much.status_code == 400
 

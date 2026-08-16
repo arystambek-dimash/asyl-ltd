@@ -90,7 +90,7 @@ def delete_stock_item(item, user):
 
 
 @transaction.atomic
-def receive_stock(product, bags, user):
+def receive_stock(product, bags, user, note=""):
     if bags <= 0:
         raise ValidationError(
             {"detail": "Количество мешков должно быть больше нуля", "code": "invalid_bags"}
@@ -100,9 +100,9 @@ def receive_stock(product, bags, user):
     item.save()
     item.refresh_from_db()
     receipt = StockReceipt.objects.create(product=product, bags=bags, received_by=user)
-    _apply(item, bags, "receipt", user)
+    _apply(item, bags, "receipt", user, note)
     log_event("receipt", f"Приёмка {bags} мешков", user=user,
-              payload={"product": product.id, "bags": bags})
+              payload={"product": product.id, "bags": bags, "note": note})
     return receipt
 
 

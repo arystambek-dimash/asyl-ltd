@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
-from apps.eventlog.services import log_event
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
+
+from apps.eventlog.services import log_event
 
 from . import ai
 from .models import (
@@ -70,7 +71,7 @@ def _color_delta(current: dict[str, int], previous: dict) -> dict[str, int]:
 
 
 @transaction.atomic
-def _record_processor(processor: dict, day: date) -> None:
+def _record_processor(processor: dict, observed_at: datetime) -> None:
     camera = processor.get("cam")
     total = _processor_total(processor)
     if not isinstance(camera, str) or total is None:
@@ -113,8 +114,21 @@ def _record_processor(processor: dict, day: date) -> None:
     if delta <= 0:
         return
 
+    # The daily aggregate remains the fast source for charts.  The append-only
+    # production ledger is deliberately separate: display archives may be
+    # created/deleted by an administrator, while warehouse receipts must never
+    # be duplicated or lost because of those presentation actions.
+    from . import production
+
+    production.record_color_deltas(
+        camera=camera,
+        color_deltas=color_delta,
+        total_delta=delta,
+        observed_at=observed_at,
+    )
+
     row, _ = AlwaysOnDailyAnalytics.objects.select_for_update().get_or_create(
-        camera=camera, day=day,
+        camera=camera, day=timezone.localdate(observed_at),
     )
     merged_colors = dict(row.model_per_color or {})
     for color, value in color_delta.items():
@@ -125,13 +139,13 @@ def _record_processor(processor: dict, day: date) -> None:
 
 
 def record_snapshot(live: dict, observed_at: datetime | None = None) -> None:
-    day = timezone.localdate(observed_at or timezone.now())
+    observed_at = observed_at or timezone.now()
     processors = live.get("processors") if isinstance(live, dict) else None
     if not isinstance(processors, list):
         return
     for processor in processors:
         if isinstance(processor, dict):
-            _record_processor(processor, day)
+            _record_processor(processor, observed_at)
 
 
 def _row_payload(row: AlwaysOnDailyAnalytics | None, camera: str, day: date) -> dict:
@@ -277,9 +291,8 @@ def archive_camera(camera: str, note: str, user) -> dict:
     """Закрыть период: накопленное уходит в архив, счётчик начинается с нуля.
 
     Обнуление не удаляет данные — дни остаются в истории и на графике, но
-    выпадают из «сегодня» и «за всё время». Курсор тоже сбрасывается, иначе
-    следующий снимок воркера дал бы разницу против уже заархивированного
-    значения и вернул бы весь счёт обратно.
+    выпадают из «сегодня» и «за всё время». Сырой cursor остаётся baseline
+    camera-PC, поэтому после закрытия учитывается только новый прирост.
     """
     camera = ai.normalize(camera)
     note = " ".join(str(note or "").split())[:500]
@@ -331,9 +344,10 @@ def archive_camera(camera: str, note: str, user) -> dict:
         archive.save(update_fields=["day_rows"])
         AlwaysOnDailyAnalytics.objects.filter(pk=live_today.pk).update(
             model_total=0, model_per_color={}, adjustment=0)
-    # Сбрасываем базу отсчёта: воркер продолжает считать со своего числа, и
-    # без сброса первая же разница вернула бы архивированное в текущий итог.
-    AlwaysOnCounterCursor.objects.filter(camera=camera).delete()
+    # Сырой счётчик на camera-PC здесь не сбрасывается. Поэтому сохраняем его
+    # baseline: если было 100, а после архива стало 140, в новый период должно
+    # попасть только 40. Удаление cursor раньше повторно засчитывало все 140 и
+    # могло бы задвоить автоматическую приёмку на склад.
 
     log_event(
         "always_on_count_archived",
@@ -464,7 +478,7 @@ def archives_payload(camera: str | None = None) -> list[dict]:
 
 
 @transaction.atomic
-def subtract_today(camera: str, amount, reason: str, user) -> dict:
+def subtract_today(camera: str, amount, reason: str, user, color: str) -> dict:
     camera = ai.normalize(camera)
     try:
         amount = int(amount)
@@ -477,6 +491,9 @@ def subtract_today(camera: str, amount, reason: str, user) -> dict:
         raise ValidationError({"reason": "Укажите причину (минимум 5 символов)"})
     if len(reason) > 500:
         raise ValidationError({"reason": "Причина слишком длинная"})
+    color = str(color or "").strip().lower()
+    if not color:
+        raise ValidationError({"color": "Выберите цвет продукции"})
 
     day = timezone.localdate()
     row, _ = AlwaysOnDailyAnalytics.objects.select_for_update().get_or_create(
@@ -487,6 +504,21 @@ def subtract_today(camera: str, amount, reason: str, user) -> dict:
         raise ValidationError({
             "amount": f"Нельзя вычесть больше текущего итога ({before})",
         })
+    available_color = int((row.model_per_color or {}).get(color, 0))
+    if amount > available_color:
+        raise ValidationError({
+            "amount": f"Для цвета доступно только {available_color}",
+        })
+
+    from . import production
+
+    production.record_correction(
+        camera=camera,
+        color=color,
+        amount=amount,
+        reason=reason,
+        user=user,
+    )
     row.adjustment -= amount
     row.save(update_fields=["adjustment", "updated_at"])
     log_event(
@@ -494,7 +526,8 @@ def subtract_today(camera: str, amount, reason: str, user) -> dict:
         f"AI 24/7 · {camera}: итог уменьшен на {amount}. Причина: {reason}",
         user=user,
         payload={
-            "camera": camera, "day": day.isoformat(), "amount": amount,
+            "camera": camera, "day": day.isoformat(), "color": color,
+            "amount": amount,
             "before": before, "after": row.total, "reason": reason,
             "model_total": row.model_total, "adjustment": row.adjustment,
         },

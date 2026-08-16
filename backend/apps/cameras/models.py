@@ -258,6 +258,160 @@ class AlwaysOnDailyAnalytics(models.Model):
         return max(0, self.model_total + self.adjustment)
 
 
+class AlwaysOnColorProductMapping(models.Model):
+    """Warehouse product selected in advance for one camera/color pair."""
+
+    camera = models.CharField(max_length=32)
+    color = models.CharField(max_length=32)
+    product = models.ForeignKey(
+        "catalog.Product",
+        on_delete=models.PROTECT,
+        related_name="always_on_color_mappings",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="always_on_color_mapping_updates",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["camera", "color"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["camera", "color"],
+                name="cameras_one_product_per_camera_color",
+            ),
+        ]
+
+
+class AlwaysOnProductionRun(models.Model):
+    """A contiguous interval in which an always-on model counted one color."""
+
+    camera = models.CharField(max_length=32, db_index=True)
+    business_day = models.DateField(db_index=True)
+    color = models.CharField(max_length=32)
+    started_at = models.DateTimeField(db_index=True)
+    last_counted_at = models.DateTimeField()
+    ended_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    model_bags = models.PositiveIntegerField(default=0)
+    is_approximate = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-started_at"]
+        indexes = [
+            models.Index(
+                fields=["camera", "-started_at"],
+                name="aon_run_camera_started_idx",
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["camera", "color"],
+                condition=Q(ended_at__isnull=True),
+                name="cameras_one_open_run_per_color",
+            ),
+        ]
+
+
+class AlwaysOnProductionCorrection(models.Model):
+    """Audited manual change to a production color total."""
+
+    camera = models.CharField(max_length=32)
+    business_day = models.DateField(db_index=True)
+    color = models.CharField(max_length=32)
+    delta = models.IntegerField()
+    reason = models.CharField(max_length=500)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="always_on_production_corrections",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["camera", "business_day", "color"],
+                name="aon_corr_camera_day_color_idx",
+            ),
+        ]
+
+
+class AlwaysOnStockBatch(models.Model):
+    """Idempotent warehouse posting scheduled for one production day."""
+
+    SCHEDULED = "scheduled"
+    BLOCKED = "blocked"
+    POSTED = "posted"
+    EMPTY = "empty"
+    FAILED = "failed"
+    STATUSES = (
+        (SCHEDULED, "Scheduled"),
+        (BLOCKED, "Blocked"),
+        (POSTED, "Posted"),
+        (EMPTY, "Empty"),
+        (FAILED, "Failed"),
+    )
+
+    camera = models.CharField(max_length=32)
+    business_day = models.DateField()
+    scheduled_for = models.DateTimeField()
+    status = models.CharField(max_length=12, choices=STATUSES, default=SCHEDULED)
+    total_bags = models.PositiveIntegerField(default=0)
+    last_error = models.CharField(max_length=500, blank=True, default="")
+    attempts = models.PositiveIntegerField(default=0)
+    posted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-business_day", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["camera", "business_day"],
+                name="cameras_one_stock_batch_per_day",
+            ),
+        ]
+
+
+class AlwaysOnStockPosting(models.Model):
+    """One product receipt produced by an automatic daily stock batch."""
+
+    batch = models.ForeignKey(
+        AlwaysOnStockBatch,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    color = models.CharField(max_length=32)
+    product = models.ForeignKey("catalog.Product", on_delete=models.PROTECT)
+    detected_bags = models.PositiveIntegerField()
+    correction_bags = models.IntegerField(default=0)
+    posted_bags = models.PositiveIntegerField()
+    receipt = models.OneToOneField(
+        "warehouse.StockReceipt",
+        on_delete=models.PROTECT,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["color"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["batch", "color"],
+                name="cameras_one_stock_posting_per_color",
+            ),
+        ]
+
+
 class AlwaysOnCountArchive(models.Model):
     """Закрытый период 24/7-счёта: что было накоплено на момент обнуления.
 

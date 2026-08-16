@@ -246,6 +246,7 @@ class WagonNumberCameraSettingsSerializer(serializers.Serializer):
 class AlwaysOnAnalyticsSubtractSerializer(serializers.Serializer):
     amount = serializers.JSONField(required=False, allow_null=True)
     reason = serializers.JSONField(required=False, allow_null=True)
+    color = serializers.CharField(max_length=32)
 
     def validate(self, attrs):
         raw_amount = attrs.get("amount")
@@ -266,7 +267,10 @@ class AlwaysOnAnalyticsSubtractSerializer(serializers.Serializer):
             )
         if len(reason) > 500:
             raise serializers.ValidationError({"reason": "Причина слишком длинная"})
-        return {"amount": amount, "reason": reason}
+        color = " ".join(str(attrs.get("color") or "").split()).lower()
+        if not color:
+            raise serializers.ValidationError({"color": "Выберите цвет продукции"})
+        return {"amount": amount, "reason": reason, "color": color}
 
 
 class AlwaysOnAnalyticsArchiveSerializer(serializers.Serializer):
@@ -281,6 +285,28 @@ class AlwaysOnAnalyticsArchiveSerializer(serializers.Serializer):
         if len(note) > 500:
             raise serializers.ValidationError("Примечание слишком длинное")
         return note
+
+
+class AlwaysOnProductMappingItemSerializer(serializers.Serializer):
+    color = serializers.CharField(max_length=32)
+    product = serializers.IntegerField(min_value=1, allow_null=True)
+
+    def validate_color(self, value):
+        color = " ".join(value.split()).lower()
+        if not color:
+            raise serializers.ValidationError("Укажите цвет")
+        return color
+
+
+class AlwaysOnProductMappingsSerializer(serializers.Serializer):
+    camera = serializers.CharField(max_length=32)
+    mappings = AlwaysOnProductMappingItemSerializer(many=True)
+
+    def validate_mappings(self, rows):
+        colors = [row["color"] for row in rows]
+        if len(colors) != len(set(colors)):
+            raise serializers.ValidationError("Цвет передан повторно")
+        return rows
 
 
 class ShippingBoardSettingsSerializer(serializers.Serializer):

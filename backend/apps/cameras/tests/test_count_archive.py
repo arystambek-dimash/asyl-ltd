@@ -1,7 +1,7 @@
 """Обнуление 24/7-счётчика переносит накопленное в архив, а не теряет его."""
-import pytest
 from datetime import timedelta
 
+import pytest
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -50,17 +50,17 @@ def test_archive_moves_the_total_and_resets_the_counter(boss):
     assert archive.archived_by == boss
 
 
-def test_archive_resets_the_cursor_so_counting_restarts_from_zero(boss):
-    """Без сброса курсора первая же разница вернула бы архив обратно."""
+def test_archive_keeps_raw_cursor_baseline_and_counts_only_new_bags(boss):
+    """CRM archive does not reset camera-PC; only its real delta is new."""
     _enable()
     analytics.record_snapshot(_snapshot(100))
     analytics.archive_camera("cam3", "", boss)
-    assert not AlwaysOnCounterCursor.objects.filter(camera="cam3").exists()
+    assert AlwaysOnCounterCursor.objects.filter(camera="cam3").exists()
 
     # Воркер продолжает считать со своего числа — оно уже в архиве.
     analytics.record_snapshot(_snapshot(140))
 
-    assert analytics.today_payload()["all_time_total"] == 140
+    assert analytics.today_payload()["all_time_total"] == 40
 
 
 def test_archived_days_stay_out_of_the_current_total(boss):
@@ -105,7 +105,7 @@ def test_second_archive_does_not_borrow_days_from_the_first(boss):
     _enable()
     analytics.record_snapshot(_snapshot(100))
     first = analytics.archive_camera("cam3", "первый", boss)
-    analytics.record_snapshot(_snapshot(40))
+    analytics.record_snapshot(_snapshot(140))
     second = analytics.archive_camera("cam3", "второй", boss)
 
     assert sum(row["total"] for row in first["day_rows"]) == 100
@@ -136,7 +136,7 @@ def test_deleting_one_archive_does_not_touch_another(boss):
     _enable()
     analytics.record_snapshot(_snapshot(100))
     first = analytics.archive_camera("cam3", "первый", boss)
-    analytics.record_snapshot(_snapshot(40))
+    analytics.record_snapshot(_snapshot(140))
     second = analytics.archive_camera("cam3", "второй", boss)
 
     analytics.delete_archive(second["id"], boss)
@@ -184,7 +184,7 @@ def test_archive_is_append_only(boss):
     _enable()
     analytics.record_snapshot(_snapshot(100))
     analytics.archive_camera("cam3", "первый", boss)
-    analytics.record_snapshot(_snapshot(40))
+    analytics.record_snapshot(_snapshot(140))
     analytics.archive_camera("cam3", "второй", boss)
 
     totals = sorted(AlwaysOnCountArchive.objects.values_list("total", flat=True))
@@ -244,7 +244,7 @@ def test_colours_and_total_agree_after_a_manual_correction(boss):
     """Ручная поправка не должна разводить сумму цветов и итог по смыслу."""
     _enable()
     analytics.record_snapshot(_snapshot(100, colors={"Red_50": 60, "Blue_50": 40}))
-    analytics.subtract_today("cam3", 1, "просыпали мешок", boss)
+    analytics.subtract_today("cam3", 1, "просыпали мешок", boss, "red")
 
     payload = analytics.today_payload()
 

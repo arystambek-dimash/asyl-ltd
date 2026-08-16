@@ -2,17 +2,19 @@
 
 from typing import ClassVar
 
-from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .. import ai, analytics, health, recordings
+from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
+
+from .. import ai, analytics, health, production, recordings
 from ..models import MonoblockCameraSettings
 from ..serializers import (
     AlwaysOnAnalyticsArchiveSerializer,
     AlwaysOnAnalyticsSubtractSerializer,
+    AlwaysOnProductMappingsSerializer,
     CameraSourcesSerializer,
     ShippingBoardSettingsSerializer,
     WagonNumberCameraSettingsSerializer,
@@ -231,6 +233,7 @@ class AlwaysOnAnalyticsSubtractView(APIView):
                 serializer.validated_data["amount"],
                 serializer.validated_data["reason"],
                 request.user,
+                serializer.validated_data["color"],
             )
         )
 
@@ -256,6 +259,36 @@ class AlwaysOnAnalyticsArchiveView(APIView):
 
     def delete(self, request, archive_id: int):
         return Response(analytics.delete_archive(archive_id, request.user))
+
+
+class AlwaysOnProductionView(APIView):
+    """Production periods, colour routes and scheduled warehouse receipts."""
+
+    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+
+    def get(self, request):
+        camera = request.query_params.get("camera")
+        if not camera:
+            raise ValidationError({"camera": "Выберите камеру"})
+        return Response(production.production_payload(camera))
+
+    def put(self, request):
+        serializer = AlwaysOnProductMappingsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return Response(production.save_mappings(
+            serializer.validated_data["camera"],
+            serializer.validated_data["mappings"],
+            request.user,
+        ))
+
+    patch = put
+
+
+class AlwaysOnStockRetryView(APIView):
+    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+
+    def post(self, request, batch_id: int):
+        return Response(production.retry_batch(batch_id))
 
 
 class ShippingBoardSettingsView(APIView):

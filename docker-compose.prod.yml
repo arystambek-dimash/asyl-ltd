@@ -56,6 +56,7 @@ x-backend-environment: &backend-environment
   CAMERA_EXPECTED_COUNT: ${CAMERA_EXPECTED_COUNT:-10}
   CAMERA_MINIMUM_ONLINE_COUNT: ${CAMERA_MINIMUM_ONLINE_COUNT:-5}
   CAMERA_MONITOR_INTERVAL_SECONDS: ${CAMERA_MONITOR_INTERVAL_SECONDS:-30}
+  AI_STOCK_POST_INTERVAL_SECONDS: ${AI_STOCK_POST_INTERVAL_SECONDS:-60}
   CAMERA_HEALTH_STALE_SECONDS: ${CAMERA_HEALTH_STALE_SECONDS:-180}
   CAMERA_FAILURE_THRESHOLD: ${CAMERA_FAILURE_THRESHOLD:-3}
   CAMERA_DEGRADED_THRESHOLD: ${CAMERA_DEGRADED_THRESHOLD:-3}
@@ -232,6 +233,23 @@ services:
       redis:
         condition: service_started
       go2rtc:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - data
+      - default
+
+  ai-stock-monitor:
+    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    environment:
+      <<: *backend-environment
+      DJANGO_COLLECTSTATIC: "0"
+    entrypoint: []
+    command: ["python", "manage.py", "post_always_on_stock"]
+    depends_on:
+      backend:
         condition: service_healthy
     init: true
     restart: unless-stopped

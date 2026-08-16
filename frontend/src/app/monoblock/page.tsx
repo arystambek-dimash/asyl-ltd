@@ -35,6 +35,7 @@ import { playableCameras, type CameraFeed } from "@/components/camera-wall";
 import { CameraStream } from "@/components/camera-stream";
 import { ConveyorDevicesButton } from "@/components/conveyors/conveyor-devices-button";
 import { DetectionOverlay } from "@/components/detection-overlay";
+import { AlwaysOnProductionPanel } from "@/components/monoblock/always-on-production-panel";
 import { RequirePerm } from "@/components/require-perm";
 import { ShipmentLauncher } from "@/components/shipping/shipment-launcher";
 import { Button } from "@/components/ui/button";
@@ -55,6 +56,9 @@ import type {
   AlwaysOnDailyCameraAnalytics,
   AlwaysOnDetection,
   AlwaysOnProcessorStatus,
+  AlwaysOnProductMapping,
+  AlwaysOnProductionPayload,
+  AlwaysOnStockBatch,
   ConveyorStatus,
   ConveyorDevice,
   MonoblockCameraSettings,
@@ -79,7 +83,7 @@ const DETECTIONS_STALE_MS = 2_500;
 // Заказы/камеры/настройки меняются редко — не гоняем полный список заказов
 // каждые 3 секунды на экране, который висит открытым весь день.
 const SLOW_POLL_MS = 30_000;
-const ALWAYS_ON_MODAL_VIEWS = ["live", "analytics", "archive"] as const;
+const ALWAYS_ON_MODAL_VIEWS = ["live", "production", "analytics", "archive"] as const;
 const MONOBLOCK_PAGE_TABS = ["shipments", "monoblock"] as const;
 
 const COLOR_META: Record<string, { label: string; bar: string; dot: string }> = {
@@ -713,7 +717,12 @@ function AlwaysOnCard({
   const [liveProcessor, setLiveProcessor] = useState(processor);
   const [liveDaily, setLiveDaily] = useState<AlwaysOnDailyCameraAnalytics | undefined>(daily);
   const [liveDetail, setLiveDetail] = useState(detail || "");
+  const [production, setProduction] = useState<AlwaysOnProductionPayload | null>(null);
+  const [productionLoading, setProductionLoading] = useState(false);
+  const [productionError, setProductionError] = useState<string | null>(null);
+  const [productionSaving, setProductionSaving] = useState(false);
   const [correctionAmount, setCorrectionAmount] = useState("");
+  const [correctionColor, setCorrectionColor] = useState("");
   const [correctionReason, setCorrectionReason] = useState("");
   const [correctionError, setCorrectionError] = useState("");
   const [correcting, setCorrecting] = useState(false);
@@ -736,6 +745,7 @@ function AlwaysOnCard({
   // Разбивку за день считает бэкенд — тем же кодом, что и общую, поэтому
   // цифры сходятся. Локальный расчёт остаётся на случай старого ответа.
   const selectedColors = selectedPoint?.colors?.length ? selectedPoint.colors : dayColorBreakdown(selectedPoint);
+  const correctionAvailable = currentDaily?.colors?.find((item) => item.color === correctionColor)?.total ?? 0;
 
   useEffect(() => {
     setLiveProcessor(processor);
@@ -810,6 +820,63 @@ function AlwaysOnCard({
     };
   }, [open, modalView, showDetections, processor.cam]);
 
+  const loadProduction = useCallback(
+    async (showLoader = false) => {
+      if (showLoader) setProductionLoading(true);
+      setProductionError(null);
+      try {
+        const response = await api.get<AlwaysOnProductionPayload>(
+          `/cameras/always-on-production/?camera=${encodeURIComponent(processor.cam)}`,
+        );
+        setProduction(response.data);
+        return response.data;
+      } catch (cause) {
+        setProductionError(apiError(cause));
+        return null;
+      } finally {
+        if (showLoader) setProductionLoading(false);
+      }
+    },
+    [processor.cam],
+  );
+
+  // Журнал обновляем отдельно и заметно реже live-рамок. Приходы и настройки
+  // не должны раздувать уже существующий трёхсекундный polling аналитики.
+  useEffect(() => {
+    if (!open || modalView !== "production") return;
+    void loadProduction(true);
+    const timer = window.setInterval(() => void loadProduction(false), 15_000);
+    return () => window.clearInterval(timer);
+  }, [loadProduction, modalView, open]);
+
+  async function saveProductionMappings(mappings: AlwaysOnProductMapping[]) {
+    setProductionSaving(true);
+    setProductionError(null);
+    try {
+      const response = await api.put<AlwaysOnProductionPayload>("/cameras/always-on-production/", {
+        camera: processor.cam,
+        mappings: mappings.map(({ color, product }) => ({ color, product })),
+      });
+      setProduction(response.data);
+      showSuccess("Привязки цветов к товарам сохранены");
+    } catch (cause) {
+      setProductionError(apiError(cause));
+    } finally {
+      setProductionSaving(false);
+    }
+  }
+
+  async function retryProductionBatch(batch: AlwaysOnStockBatch) {
+    setProductionError(null);
+    try {
+      await api.post(`/cameras/always-on-production/batches/${batch.id}/retry/`);
+      await loadProduction(false);
+      showSuccess("Приёмка повторно проверена");
+    } catch (cause) {
+      setProductionError(apiError(cause));
+    }
+  }
+
   function showStream() {
     setStreamOnline(false);
     setModalView("live");
@@ -823,6 +890,7 @@ function AlwaysOnCard({
 
   function showCorrection() {
     setCorrectionAmount("");
+    setCorrectionColor(currentDaily?.colors?.[0]?.color ?? "");
     setCorrectionReason("");
     setCorrectionError("");
     setCorrectionOpen(true);
@@ -834,11 +902,13 @@ function AlwaysOnCard({
     try {
       await api.post<AlwaysOnDailyCameraAnalytics>(`/cameras/always-on-analytics/${processor.cam}/subtract/`, {
         amount: Number(correctionAmount),
+        color: correctionColor,
         reason: correctionReason.trim(),
       });
       const analyticsResponse = await api.get<AlwaysOnDailyAnalytics>("/cameras/always-on-analytics/");
       setLiveDaily(analyticsResponse.data.cameras.find((item) => item.camera === processor.cam));
       await onAnalyticsChanged();
+      await loadProduction(false);
       setCorrectionOpen(false);
     } catch (cause) {
       setCorrectionError(apiError(cause));
@@ -954,19 +1024,19 @@ function AlwaysOnCard({
         onClose={closeStream}
         eyebrow="AI 24/7 · мониторинг"
         title={camera?.zone || processor.cam}
-        description="Прямой эфир, накопленный результат и аналитика цветов модели. Фоновое видео не записывается."
+        description="Прямой эфир, журнал цветовых смен, аналитика и автоматический приход на склад. Фоновое видео не записывается."
         className="max-w-5xl"
         mobileFullscreen
       >
         <div
           {...modalTabs.tabListProps}
-          className="mb-4 flex w-full rounded-xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex"
+          className="mb-4 flex w-full gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex"
         >
           <button
             type="button"
             {...modalTabs.getTabProps("live")}
             className={cn(
-              "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
+              "flex shrink-0 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
               modalView === "live" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
             )}
           >
@@ -974,9 +1044,19 @@ function AlwaysOnCard({
           </button>
           <button
             type="button"
+            {...modalTabs.getTabProps("production")}
+            className={cn(
+              "flex shrink-0 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
+              modalView === "production" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
+            )}
+          >
+            <PackageCheck className="size-4" /> Выпуск и склад
+          </button>
+          <button
+            type="button"
             {...modalTabs.getTabProps("analytics")}
             className={cn(
-              "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
+              "flex shrink-0 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
               modalView === "analytics" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
             )}
           >
@@ -986,7 +1066,7 @@ function AlwaysOnCard({
             type="button"
             {...modalTabs.getTabProps("archive")}
             className={cn(
-              "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
+              "flex shrink-0 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
               modalView === "archive" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
             )}
           >
@@ -1112,6 +1192,17 @@ function AlwaysOnCard({
                 </button>
               </div>
             </aside>
+          </div>
+        ) : modalView === "production" ? (
+          <div {...modalTabs.getTabPanelProps("production")}>
+            <AlwaysOnProductionPanel
+              payload={production}
+              loading={productionLoading}
+              error={productionError}
+              saving={productionSaving}
+              onSave={saveProductionMappings}
+              onRetry={retryProductionBatch}
+            />
           </div>
         ) : modalView === "analytics" ? (
           <div
@@ -1575,7 +1666,13 @@ function AlwaysOnCard({
             </Button>
             <Button
               variant="destructive"
-              disabled={correcting || Number(correctionAmount) <= 0 || correctionReason.trim().length < 5}
+              disabled={
+                correcting ||
+                !correctionColor ||
+                Number(correctionAmount) <= 0 ||
+                Number(correctionAmount) > correctionAvailable ||
+                correctionReason.trim().length < 5
+              }
               onClick={() => void subtractCount()}
             >
               {correcting ? <LoaderCircle className="size-4 animate-spin" /> : <Minus className="size-4" />}
@@ -1597,13 +1694,37 @@ function AlwaysOnCard({
             </div>
           </div>
           <div className="grid gap-1.5">
+            <Label htmlFor={`correction-color-${processor.cam}`}>Цвет продукции</Label>
+            <select
+              id={`correction-color-${processor.cam}`}
+              value={correctionColor}
+              onChange={(event) => {
+                setCorrectionColor(event.target.value);
+                setCorrectionAmount("");
+              }}
+              className="h-10 w-full rounded-xl border bg-[var(--background)] px-3 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15"
+            >
+              <option value="">Выберите цвет</option>
+              {(currentDaily?.colors ?? [])
+                .filter((item) => item.total > 0)
+                .map((item) => (
+                  <option key={item.color} value={item.color}>
+                    {colorMeta(item.color).label} · {item.total} меш.
+                  </option>
+                ))}
+            </select>
+            <span className="text-xs text-[var(--muted-foreground)]">
+              Цвет нужен, чтобы складская корректировка попала в правильный товар.
+            </span>
+          </div>
+          <div className="grid gap-1.5">
             <Label htmlFor={`correction-amount-${processor.cam}`}>Сколько вычесть</Label>
             <Input
               id={`correction-amount-${processor.cam}`}
               type="number"
               inputMode="numeric"
               min={1}
-              max={todayTotal}
+              max={correctionAvailable}
               autoFocus
               value={correctionAmount}
               onChange={(event) => setCorrectionAmount(event.target.value)}
