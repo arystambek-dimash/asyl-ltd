@@ -193,4 +193,8 @@ class DepartmentAppMoveMigrationTests(TransactionTestCase):
                 ).exists()
 
         executor = MigrationExecutor(connection)
-        executor.migrate(self.migrate_to)
+        # An app-scoped migrate intentionally advances that app to its current
+        # leaf. Restoring a historical target here can become a mixed
+        # forward/backward plan whenever a newer employee migration is added.
+        # Finish at all current leaves instead; tearDown then remains a no-op.
+        executor.migrate(executor.loader.graph.leaf_nodes())
