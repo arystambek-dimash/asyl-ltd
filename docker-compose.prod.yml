@@ -277,7 +277,9 @@ services:
     healthcheck:
       test: ["CMD", "python", "manage.py", "monitor_legacy_conveyors", "--healthcheck"]
       interval: 2s
-      timeout: 1s
+      # Importing Django can exceed one second on the production host even
+      # though the monitor heartbeat itself is fresh.
+      timeout: 5s
       retries: 3
       start_period: 5s
     restart: unless-stopped
