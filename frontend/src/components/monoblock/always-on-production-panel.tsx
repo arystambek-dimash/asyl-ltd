@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   CalendarClock,
   Check,
+  ChevronDown,
   Clock3,
   LoaderCircle,
   PackageCheck,
@@ -255,16 +256,21 @@ export function AlwaysOnProductionPanel({
   onRetry,
 }: AlwaysOnProductionPanelProps) {
   const [draft, setDraft] = useState<AlwaysOnProductMapping[]>([]);
+  // Сопоставление цвет→товар скрыто под сворачиваемой секцией, чтобы не
+  // загромождать вкладку. Раскрываем автоматически, только пока остаются
+  // ненастроенные цвета — иначе оператор может не заметить, что приход ждёт
+  // настройки. После настройки всех цветов остаётся под кнопкой.
+  const [mappingOpen, setMappingOpen] = useState(false);
 
   useEffect(() => {
     if (!payload) return;
     const byColor = new Map(payload.mappings.map((row) => [normalizedColor(row.color), row]));
-    setDraft(
-      payload.available_colors.map((color) => {
-        const current = byColor.get(normalizedColor(color));
-        return current ?? { color, product: null, product_label: null };
-      }),
-    );
+    const nextDraft = payload.available_colors.map((color) => {
+      const current = byColor.get(normalizedColor(color));
+      return current ?? { color, product: null, product_label: null };
+    });
+    setDraft(nextDraft);
+    setMappingOpen(nextDraft.some((row) => row.product === null));
   }, [payload]);
 
   const dirty = useMemo(
@@ -469,129 +475,158 @@ export function AlwaysOnProductionPanel({
         </div>
       </section>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
-        <section className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <Warehouse className="size-4 text-blue-600" />
-                <h3 className="font-bold text-slate-900">Куда приходовать продукцию</h3>
-              </div>
-              <p className="mt-1 text-xs text-slate-500">Один раз сопоставьте распознанный цвет с товаром каталога.</p>
-            </div>
-            <Button size="sm" disabled={!dirty || saving} onClick={() => void onSave(draft)}>
-              {saving ? <LoaderCircle className="animate-spin" /> : <Save />}
-              {saving ? "Сохраняем…" : "Сохранить"}
-            </Button>
-          </div>
-
-          {missingColors.length > 0 && (
-            <div className="mt-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800">
-              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-              <span>
-                Не настроено: <b>{missingColors.join(", ")}</b>. Подсчёт и журнал продолжат работать, но складской
-                приход будет ждать настройки — мешки не потеряются.
-              </span>
-            </div>
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <button
+          type="button"
+          aria-expanded={mappingOpen}
+          onClick={() => setMappingOpen((open) => !open)}
+          className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition hover:bg-slate-50 sm:px-5"
+        >
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+            <Warehouse className="size-4.5" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block font-bold text-slate-900">Куда приходовать продукцию</span>
+            <span className="mt-0.5 block truncate text-xs text-slate-500">
+              Один раз сопоставьте распознанный цвет с товаром каталога.
+            </span>
+          </span>
+          {missingColors.length > 0 ? (
+            <span className="hidden shrink-0 items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-700 sm:inline-flex">
+              <AlertTriangle className="size-3.5" />
+              {missingColors.length} нужно настроить
+            </span>
+          ) : (
+            <span className="hidden shrink-0 items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700 sm:inline-flex">
+              <Check className="size-3.5" />
+              Всё настроено
+            </span>
           )}
+          <ChevronDown
+            className={cn(
+              "size-5 shrink-0 text-slate-400 transition-transform duration-200",
+              mappingOpen && "rotate-180",
+            )}
+          />
+        </button>
 
-          <div className="mt-4 space-y-3">
-            {draft.map((mapping) => {
-              const meta = colorMeta(mapping.color);
-              const candidates = productOptions(payload.products, mapping.color, mapping.product);
-              const hasMatchingProducts = payload.products.some(
-                (product) => normalizedColor(product.color) === normalizedColor(mapping.color),
-              );
-              return (
-                <label
-                  key={mapping.color}
-                  className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:grid-cols-[150px_minmax(0,1fr)] sm:items-center"
-                >
-                  <span className="flex items-center gap-2 text-sm font-bold text-slate-700">
-                    <span className={cn("size-3 rounded-full", meta.dot)} /> {meta.label}
-                  </span>
-                  <span>
-                    <Select
-                      aria-label={`Товар для цвета ${meta.label}`}
-                      value={mapping.product ?? ""}
-                      onChange={(event) => updateMapping(mapping.color, event.target.value)}
-                      className="bg-white"
-                    >
-                      <option value="">Не выбран — не приходовать</option>
-                      {candidates.map((product) => (
-                        <option key={product.id} value={product.id}>
-                          {product.label}
-                        </option>
-                      ))}
-                    </Select>
-                    <span className="mt-1 block text-[10px] text-slate-400">
-                      {hasMatchingProducts
-                        ? `Показаны товары цвета «${meta.label}»${candidates.length !== payload.products.length ? "" : "."}`
-                        : "В каталоге нет товара этого цвета — показан весь активный каталог."}
-                    </span>
-                  </span>
-                </label>
-              );
-            })}
-            {!draft.length && (
-              <div className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-400">
-                Цвета появятся здесь после первого распознавания модели.
+        {mappingOpen && (
+          <div className="border-t border-slate-100 px-4 pb-4 pt-4 sm:px-5 sm:pb-5">
+            {missingColors.length > 0 && (
+              <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                <span>
+                  Не настроено: <b>{missingColors.join(", ")}</b>. Подсчёт и журнал продолжат работать, но складской
+                  приход будет ждать настройки — мешки не потеряются.
+                </span>
               </div>
             )}
-          </div>
-        </section>
 
-        <section className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
-          <div className="flex items-center gap-2">
-            <PackageCheck className="size-4 text-emerald-600" />
-            <h3 className="font-bold text-slate-900">Предварительный приход</h3>
-          </div>
-          <p className="mt-1 text-xs text-slate-500">Что попадёт на склад при ближайшем закрытии смены.</p>
+            <div className={cn("space-y-3", missingColors.length > 0 && "mt-4")}>
+              {draft.map((mapping) => {
+                const meta = colorMeta(mapping.color);
+                const candidates = productOptions(payload.products, mapping.color, mapping.product);
+                const hasMatchingProducts = payload.products.some(
+                  (product) => normalizedColor(product.color) === normalizedColor(mapping.color),
+                );
+                return (
+                  <label
+                    key={mapping.color}
+                    className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:grid-cols-[150px_minmax(0,1fr)] sm:items-center"
+                  >
+                    <span className="flex items-center gap-2 text-sm font-bold text-slate-700">
+                      <span className={cn("size-3 rounded-full", meta.dot)} /> {meta.label}
+                    </span>
+                    <span>
+                      <Select
+                        aria-label={`Товар для цвета ${meta.label}`}
+                        value={mapping.product ?? ""}
+                        onChange={(event) => updateMapping(mapping.color, event.target.value)}
+                        className="bg-white"
+                      >
+                        <option value="">Не выбран — не приходовать</option>
+                        {candidates.map((product) => (
+                          <option key={product.id} value={product.id}>
+                            {product.label}
+                          </option>
+                        ))}
+                      </Select>
+                      <span className="mt-1 block text-[10px] text-slate-400">
+                        {hasMatchingProducts
+                          ? `Показаны товары цвета «${meta.label}»${candidates.length !== payload.products.length ? "" : "."}`
+                          : "В каталоге нет товара этого цвета — показан весь активный каталог."}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+              {!draft.length && (
+                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-400">
+                  Цвета появятся здесь после первого распознавания модели.
+                </div>
+              )}
+            </div>
 
-          <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
-            {(payload.preview ?? []).map((row, index) => {
-              const meta = colorMeta(row.color);
-              return (
-                <div key={row.color} className={cn("p-3", index > 0 && "border-t border-slate-200")}>
-                  <div className="flex items-center gap-2">
-                    <span className={cn("size-2.5 rounded-full", meta.dot)} />
-                    <span className="text-sm font-bold text-slate-700">{meta.label}</span>
-                    <span className="ml-auto text-lg font-black tabular-nums text-slate-900">{row.net_bags}</span>
-                    <span className="text-[10px] font-semibold uppercase text-slate-400">меш.</span>
-                  </div>
-                  <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-500">
-                    {row.configured ? (
-                      <>
-                        <Check className="size-3.5 text-emerald-500" />
-                        <span className="truncate">{row.product_label}</span>
-                      </>
-                    ) : (
-                      <>
-                        <AlertTriangle className="size-3.5 text-amber-500" />
-                        <span className="font-semibold text-amber-700">Товар не выбран</span>
-                      </>
-                    )}
-                  </div>
-                  {row.correction_bags !== 0 && (
-                    <div className="mt-1 text-[10px] text-slate-400">
-                      Модель {row.detected_bags} · поправка {row.correction_bags > 0 ? "+" : ""}
-                      {row.correction_bags}
-                    </div>
+            <div className="mt-4 flex justify-end">
+              <Button size="sm" disabled={!dirty || saving} onClick={() => void onSave(draft)}>
+                {saving ? <LoaderCircle className="animate-spin" /> : <Save />}
+                {saving ? "Сохраняем…" : "Сохранить"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+        <div className="flex items-center gap-2">
+          <PackageCheck className="size-4 text-emerald-600" />
+          <h3 className="font-bold text-slate-900">Предварительный приход</h3>
+        </div>
+        <p className="mt-1 text-xs text-slate-500">Что попадёт на склад при ближайшем закрытии смены.</p>
+
+        <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+          {(payload.preview ?? []).map((row, index) => {
+            const meta = colorMeta(row.color);
+            return (
+              <div key={row.color} className={cn("p-3", index > 0 && "border-t border-slate-200")}>
+                <div className="flex items-center gap-2">
+                  <span className={cn("size-2.5 rounded-full", meta.dot)} />
+                  <span className="text-sm font-bold text-slate-700">{meta.label}</span>
+                  <span className="ml-auto text-lg font-black tabular-nums text-slate-900">{row.net_bags}</span>
+                  <span className="text-[10px] font-semibold uppercase text-slate-400">меш.</span>
+                </div>
+                <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-500">
+                  {row.configured ? (
+                    <>
+                      <Check className="size-3.5 text-emerald-500" />
+                      <span className="truncate">{row.product_label}</span>
+                    </>
+                  ) : (
+                    <>
+                      <AlertTriangle className="size-3.5 text-amber-500" />
+                      <span className="font-semibold text-amber-700">Товар не выбран</span>
+                    </>
                   )}
                 </div>
-              );
-            })}
-            {!payload.preview.length && (
-              <div className="px-4 py-10 text-center text-sm text-slate-400">В текущей смене продукции пока нет.</div>
-            )}
-          </div>
-          <p className="mt-3 flex items-start gap-2 text-[11px] leading-relaxed text-slate-400">
-            <Clock3 className="mt-0.5 size-3.5 shrink-0" />
-            До {payload.close_time} значения могут меняться. После создания прихода партия фиксируется и повторно не
-            проводится.
-          </p>
-        </section>
-      </div>
+                {row.correction_bags !== 0 && (
+                  <div className="mt-1 text-[10px] text-slate-400">
+                    Модель {row.detected_bags} · поправка {row.correction_bags > 0 ? "+" : ""}
+                    {row.correction_bags}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {!payload.preview.length && (
+            <div className="px-4 py-10 text-center text-sm text-slate-400">В текущей смене продукции пока нет.</div>
+          )}
+        </div>
+        <p className="mt-3 flex items-start gap-2 text-[11px] leading-relaxed text-slate-400">
+          <Clock3 className="mt-0.5 size-3.5 shrink-0" />
+          До {payload.close_time} значения могут меняться. После создания прихода партия фиксируется и повторно не
+          проводится.
+        </p>
+      </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
         <div className="flex flex-wrap items-end justify-between gap-3">
