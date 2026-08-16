@@ -168,3 +168,142 @@ def test_display_archive_does_not_duplicate_the_production_ledger(boss):
         AlwaysOnProductionRun.objects.values_list("model_bags", flat=True)
     ) == 140
     assert analytics.today_payload()["all_time_total"] == 40
+
+
+def test_production_payload_returns_every_run_for_selected_day():
+    selected_day = _at(14, 10).date()
+    rows = []
+    for index in range(101):
+        started = _at(14, 8) + timedelta(seconds=index)
+        rows.append(AlwaysOnProductionRun(
+            camera="cam3",
+            business_day=selected_day,
+            color="red" if index % 2 == 0 else "blue",
+            started_at=started,
+            last_counted_at=started,
+            ended_at=started,
+            model_bags=1,
+        ))
+    AlwaysOnProductionRun.objects.bulk_create(rows)
+    _closed_run(camera="cam3", color="green", bags=3, day=15)
+    _closed_run(camera="cam4", color="red", bags=4, day=14)
+
+    result = production.production_payload("cam3", day="2026-08-14")
+
+    assert result["selected_day"] == "2026-08-14"
+    assert len(result["day_runs"]) == 101
+    assert {row["camera"] for row in result["day_runs"]} == {"cam3"}
+    assert {row["business_day"] for row in result["day_runs"]} == {"2026-08-14"}
+    assert [row["started_at"] for row in result["day_runs"]] == sorted(
+        row["started_at"] for row in result["day_runs"]
+    )
+    # Preserve the existing bounded journal contract for the settings screen.
+    assert len(result["runs"]) == 100
+
+
+def test_production_api_filters_day_and_rejects_bad_iso_date(
+    auth_client, admin_user,
+):
+    selected = _closed_run(camera="cam3", color="red", bags=7, day=14)
+    _closed_run(camera="cam3", color="blue", bags=8, day=15)
+
+    response = auth_client(admin_user).get(
+        "/api/cameras/always-on-production/?camera=cam3&day=2026-08-14",
+    )
+
+    assert response.status_code == 200
+    assert response.data["selected_day"] == "2026-08-14"
+    assert [row["id"] for row in response.data["day_runs"]] == [selected.pk]
+
+    invalid = auth_client(admin_user).get(
+        "/api/cameras/always-on-production/?camera=cam3&day=14.08.2026",
+    )
+    assert invalid.status_code == 400
+    assert "day" in invalid.data["detail"]
+
+
+def test_selected_analytics_day_uses_local_calendar_not_stock_business_day():
+    started = _at(16, 20)
+    run = AlwaysOnProductionRun.objects.create(
+        camera="cam3",
+        # After the 19:00 warehouse cutoff this is the next production day,
+        # while the analytics bar is still the calendar date 16 August.
+        business_day=_at(17, 10).date(),
+        color="red",
+        started_at=started,
+        last_counted_at=started + timedelta(minutes=2),
+        ended_at=started + timedelta(minutes=2),
+        model_bags=5,
+    )
+
+    calendar_day = production.production_payload("cam3", day="2026-08-16")
+    following_day = production.production_payload("cam3", day="2026-08-17")
+
+    assert [row["id"] for row in calendar_day["day_runs"]] == [run.pk]
+    assert following_day["day_runs"] == []
+
+
+def test_continuous_run_is_split_at_local_midnight_for_daily_analytics():
+    production.record_color_deltas("cam3", {"red": 2}, _at(16, 23, 59), 2)
+    production.record_color_deltas("cam3", {"red": 3}, _at(17, 0, 1), 3)
+
+    rows = list(AlwaysOnProductionRun.objects.order_by("started_at", "id"))
+    assert len(rows) == 2
+    assert [row.business_day.isoformat() for row in rows] == [
+        "2026-08-17", "2026-08-17",
+    ]
+    assert rows[0].model_bags == 2
+    assert rows[0].ended_at == _at(16, 23, 59)
+    assert rows[1].model_bags == 3
+    assert rows[1].started_at == _at(17, 0, 1)
+
+    first_day = production.production_payload("cam3", day="2026-08-16")
+    second_day = production.production_payload("cam3", day="2026-08-17")
+    assert [row["id"] for row in first_day["day_runs"]] == [rows[0].pk]
+    assert [row["id"] for row in second_day["day_runs"]] == [rows[1].pk]
+    assert first_day["day_runs"][0]["is_partial_for_day"] is False
+    assert second_day["day_runs"][0]["is_partial_for_day"] is False
+
+
+def test_legacy_cross_midnight_run_overlaps_both_calendar_days_with_flags():
+    started = _at(16, 23, 58)
+    legacy = AlwaysOnProductionRun.objects.create(
+        camera="cam3",
+        business_day=_at(17, 10).date(),
+        color="blue",
+        started_at=started,
+        last_counted_at=_at(17, 0, 2),
+        ended_at=_at(17, 0, 2),
+        model_bags=9,
+    )
+
+    first = production.production_payload("cam3", day="2026-08-16")["day_runs"]
+    second = production.production_payload("cam3", day="2026-08-17")["day_runs"]
+
+    assert [row["id"] for row in first] == [legacy.pk]
+    assert first[0]["starts_before_day"] is False
+    assert first[0]["ends_after_day"] is True
+    assert first[0]["is_partial_for_day"] is True
+    assert [row["id"] for row in second] == [legacy.pk]
+    assert second[0]["starts_before_day"] is True
+    assert second[0]["ends_after_day"] is False
+    assert second[0]["is_partial_for_day"] is True
+
+
+def test_run_counted_exactly_at_midnight_belongs_to_new_calendar_day():
+    midnight = _at(17, 0)
+    run = AlwaysOnProductionRun.objects.create(
+        camera="cam3",
+        business_day=midnight.date(),
+        color="green",
+        started_at=midnight,
+        last_counted_at=midnight,
+        ended_at=midnight,
+        model_bags=1,
+    )
+
+    previous = production.production_payload("cam3", day="2026-08-16")
+    current = production.production_payload("cam3", day="2026-08-17")
+
+    assert previous["day_runs"] == []
+    assert [row["id"] for row in current["day_runs"]] == [run.pk]

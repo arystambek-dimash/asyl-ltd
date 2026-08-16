@@ -731,6 +731,10 @@ export interface AlwaysOnProductionRun {
   model_bags: number;
   is_approximate: boolean;
   status: "active" | "closed";
+  /** Only present for `day_runs`: this interval overlaps a calendar-day edge. */
+  starts_before_day?: boolean;
+  ends_after_day?: boolean;
+  is_partial_for_day?: boolean;
 }
 export interface AlwaysOnProductMapping {
   color: string;
@@ -781,6 +785,10 @@ export interface AlwaysOnProductionPayload {
   close_time: string;
   current_business_day: string;
   next_run_at: string;
+  /** Запрошенная через `?day=` календарная дата аналитики. */
+  selected_day: string | null;
+  /** Полный журнал выбранного дня; `runs` остаётся короткой общей лентой. */
+  day_runs: AlwaysOnProductionRun[];
   fully_configured: boolean;
   available_colors: string[];
   mappings: AlwaysOnProductMapping[];

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AlwaysOnProductionPayload } from "@/lib/types";
-import { AlwaysOnProductionPanel } from "./always-on-production-panel";
+import { AlwaysOnDayRunLog, AlwaysOnProductionPanel } from "./always-on-production-panel";
 
 const payload: AlwaysOnProductionPayload = {
   camera: "cam1",
@@ -11,6 +11,8 @@ const payload: AlwaysOnProductionPayload = {
   close_time: "19:00",
   current_business_day: "2026-08-16",
   next_run_at: "2026-08-16T14:00:00Z",
+  selected_day: null,
+  day_runs: [],
   fully_configured: false,
   available_colors: ["red", "blue"],
   mappings: [{ color: "red", product: 1, product_label: "Мука красная · 50 кг" }],
@@ -73,5 +75,73 @@ describe("AlwaysOnProductionPanel", () => {
       { color: "red", product: 1, product_label: "Мука красная · 50 кг" },
       { color: "blue", product: 2, product_label: "Мука синяя · 25 кг" },
     ]);
+  });
+});
+
+describe("AlwaysOnDayRunLog", () => {
+  it("показывает точное время, активный период и приблизительную запись выбранного дня", () => {
+    render(
+      <AlwaysOnDayRunLog
+        day="2026-08-16"
+        timezone="Asia/Almaty"
+        loading={false}
+        error={null}
+        runs={[
+          payload.runs[0],
+          {
+            ...payload.runs[0],
+            id: 8,
+            color: "blue",
+            started_at: "2026-08-16T05:00:00Z",
+            last_counted_at: "2026-08-16T05:25:00Z",
+            ended_at: "2026-08-16T05:25:00Z",
+            model_bags: 41,
+            is_approximate: true,
+            status: "closed",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("09:30")).toBeInTheDocument();
+    expect(screen.getByText("идёт сейчас")).toBeInTheDocument();
+    expect(screen.getByText("10:25")).toBeInTheDocument();
+    expect(screen.getByText("≈ приблизительно")).toBeInTheDocument();
+    expect(screen.getByText("41")).toBeInTheDocument();
+  });
+
+  it("явно показывает пустой выбранный день", () => {
+    render(<AlwaysOnDayRunLog day="2026-08-15" timezone="Asia/Almaty" loading={false} error={null} runs={[]} />);
+
+    expect(screen.getByText(/15\.08\.2026/)).toHaveTextContent("Детализация времени");
+  });
+
+  it("не приписывает весь объём выбранному дню для сквозного периода", () => {
+    render(
+      <AlwaysOnDayRunLog
+        day="2026-08-17"
+        timezone="Asia/Almaty"
+        loading={false}
+        error={null}
+        runs={[
+          {
+            ...payload.runs[0],
+            id: 9,
+            started_at: "2026-08-16T18:58:00Z",
+            last_counted_at: "2026-08-16T19:02:00Z",
+            ended_at: "2026-08-16T19:02:00Z",
+            model_bags: 9,
+            status: "closed",
+            starts_before_day: true,
+            ends_after_day: false,
+            is_partial_for_day: true,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("с 00:00")).toBeInTheDocument();
+    expect(screen.getByText("сквозной период")).toBeInTheDocument();
+    expect(screen.queryByText("9")).not.toBeInTheDocument();
   });
 });

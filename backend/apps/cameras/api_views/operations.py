@@ -270,7 +270,10 @@ class AlwaysOnProductionView(APIView):
         camera = request.query_params.get("camera")
         if not camera:
             raise ValidationError({"camera": "Выберите камеру"})
-        return Response(production.production_payload(camera))
+        return Response(production.production_payload(
+            camera,
+            day=request.query_params.get("day"),
+        ))
 
     def put(self, request):
         serializer = AlwaysOnProductMappingsSerializer(data=request.data)

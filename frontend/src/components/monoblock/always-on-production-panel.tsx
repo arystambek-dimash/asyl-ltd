@@ -20,6 +20,7 @@ import type {
   AlwaysOnProductMapping,
   AlwaysOnProductionPayload,
   AlwaysOnProductionProduct,
+  AlwaysOnProductionRun,
   AlwaysOnStockBatch,
 } from "@/lib/types";
 import { cn, formatIsoDate } from "@/lib/utils";
@@ -121,6 +122,128 @@ interface AlwaysOnProductionPanelProps {
   saving: boolean;
   onSave: (mappings: AlwaysOnProductMapping[]) => void | Promise<void>;
   onRetry?: (batch: AlwaysOnStockBatch) => void | Promise<void>;
+}
+
+interface AlwaysOnDayRunLogProps {
+  day: string;
+  runs: AlwaysOnProductionRun[] | null;
+  timezone: string;
+  loading: boolean;
+  error?: string | null;
+  onRetry?: () => void;
+}
+
+/** Компактная лента для карточки выбранного дня в аналитике. */
+export function AlwaysOnDayRunLog({ day, runs, timezone, loading, error, onRetry }: AlwaysOnDayRunLogProps) {
+  const orderedRuns = useMemo(
+    () =>
+      [...(runs ?? [])].sort(
+        (left, right) => new Date(left.started_at).getTime() - new Date(right.started_at).getTime(),
+      ),
+    [runs],
+  );
+
+  return (
+    <section className="mt-3 overflow-hidden rounded-xl border border-blue-200/80 bg-white">
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-3 py-2.5">
+        <Activity className="size-3.5 text-blue-600" />
+        <h5 className="text-xs font-bold text-slate-700">Периоды цветов</h5>
+        <span className="text-[10px] text-slate-400">за выбранный календарный день</span>
+        {runs !== null && !loading && !error && (
+          <span className="ml-auto rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold tabular-nums text-slate-500">
+            {orderedRuns.length}
+          </span>
+        )}
+        <p className="basis-full pl-5.5 text-[10px] leading-relaxed text-slate-400">
+          Время первого и последнего мешка. Журнал сохраняется независимо от сдачи счётчика в архив.
+        </p>
+      </div>
+
+      {loading && runs === null ? (
+        <div className="flex min-h-20 items-center justify-center gap-2 px-3 py-5 text-xs text-slate-400">
+          <LoaderCircle className="size-4 animate-spin" /> Загружаем периоды дня…
+        </div>
+      ) : error ? (
+        <div role="alert" className="flex flex-wrap items-center gap-2 px-3 py-3 text-xs text-red-600">
+          <AlertTriangle className="size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">{error}</span>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2 py-1 font-semibold transition hover:bg-red-100"
+            >
+              <RefreshCw className="size-3" /> Повторить
+            </button>
+          )}
+        </div>
+      ) : orderedRuns.length ? (
+        <div className="divide-y divide-slate-100">
+          {orderedRuns.map((run) => {
+            const meta = colorMeta(run.color);
+            const active = run.status === "active";
+            const partial = Boolean(run.is_partial_for_day);
+            return (
+              <div
+                key={run.id}
+                className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 px-3 py-2.5 sm:grid-cols-[110px_minmax(0,1fr)_auto] sm:items-center"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className={cn("size-2.5 shrink-0 rounded-full", meta.dot, active && "animate-pulse")} />
+                  <span className="truncate text-xs font-bold text-slate-700">{meta.label}</span>
+                </div>
+                <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-slate-500 sm:col-span-1">
+                  <Clock3 className="size-3 shrink-0 text-slate-400" />
+                  <span className="font-semibold tabular-nums text-slate-700">
+                    {run.starts_before_day ? "с 00:00" : zonedDateTime(run.started_at, timezone, false)}
+                  </span>
+                  <span className="text-slate-300">—</span>
+                  {run.ends_after_day ? (
+                    <span className="font-semibold text-slate-700">до конца дня</span>
+                  ) : active ? (
+                    <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 font-bold text-emerald-700">
+                      идёт сейчас
+                    </span>
+                  ) : (
+                    <span className="font-semibold tabular-nums text-slate-700">
+                      {zonedDateTime(run.ended_at ?? run.last_counted_at, timezone, false)}
+                    </span>
+                  )}
+                  {run.is_approximate && (
+                    <span
+                      title="Время восстановлено по первому доступному замеру"
+                      className="rounded bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-700"
+                    >
+                      ≈ приблизительно
+                    </span>
+                  )}
+                </div>
+                <div className="row-start-1 text-right sm:col-start-3">
+                  {partial ? (
+                    <span
+                      title="Точное число мешков этой части берётся из итогов выбранного дня"
+                      className="inline-flex rounded-full bg-amber-50 px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-amber-700"
+                    >
+                      сквозной период
+                    </span>
+                  ) : (
+                    <>
+                      <span className="text-sm font-black tabular-nums text-slate-900">{run.model_bags}</span>
+                      <span className="ml-1 text-[10px] text-slate-400">меш.</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="px-3 py-4 text-center text-xs text-slate-400">
+          Детализация времени за {formatIsoDate(day)} недоступна. Журнал ведётся с момента обновления AI 24/7.
+        </p>
+      )}
+    </section>
+  );
 }
 
 export function AlwaysOnProductionPanel({

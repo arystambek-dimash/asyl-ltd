@@ -35,7 +35,7 @@ import { playableCameras, type CameraFeed } from "@/components/camera-wall";
 import { CameraStream } from "@/components/camera-stream";
 import { ConveyorDevicesButton } from "@/components/conveyors/conveyor-devices-button";
 import { DetectionOverlay } from "@/components/detection-overlay";
-import { AlwaysOnProductionPanel } from "@/components/monoblock/always-on-production-panel";
+import { AlwaysOnDayRunLog, AlwaysOnProductionPanel } from "@/components/monoblock/always-on-production-panel";
 import { RequirePerm } from "@/components/require-perm";
 import { ShipmentLauncher } from "@/components/shipping/shipment-launcher";
 import { Button } from "@/components/ui/button";
@@ -58,6 +58,7 @@ import type {
   AlwaysOnProcessorStatus,
   AlwaysOnProductMapping,
   AlwaysOnProductionPayload,
+  AlwaysOnProductionRun,
   AlwaysOnStockBatch,
   ConveyorStatus,
   ConveyorDevice,
@@ -721,6 +722,11 @@ function AlwaysOnCard({
   const [productionLoading, setProductionLoading] = useState(false);
   const [productionError, setProductionError] = useState<string | null>(null);
   const [productionSaving, setProductionSaving] = useState(false);
+  const [selectedProductionRuns, setSelectedProductionRuns] = useState<AlwaysOnProductionRun[] | null>(null);
+  const [selectedProductionTimezone, setSelectedProductionTimezone] = useState("Asia/Almaty");
+  const [selectedProductionLoading, setSelectedProductionLoading] = useState(false);
+  const [selectedProductionError, setSelectedProductionError] = useState<string | null>(null);
+  const [selectedProductionReload, setSelectedProductionReload] = useState(0);
   const [correctionAmount, setCorrectionAmount] = useState("");
   const [correctionColor, setCorrectionColor] = useState("");
   const [correctionReason, setCorrectionReason] = useState("");
@@ -848,6 +854,51 @@ function AlwaysOnCard({
     const timer = window.setInterval(() => void loadProduction(false), 15_000);
     return () => window.clearInterval(timer);
   }, [loadProduction, modalView, open]);
+
+  // Исторический день запрашиваем отдельно: полный ответ вкладки «Выпуск и
+  // склад» нельзя подменять дневным срезом. Текущий выбранный день обновляем,
+  // пока окно открыто — так строка «идёт сейчас» и количество не замирают.
+  useEffect(() => {
+    if (!open || modalView !== "analytics" || !selectedDay) {
+      setSelectedProductionRuns(null);
+      setSelectedProductionError(null);
+      setSelectedProductionLoading(false);
+      return;
+    }
+
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const pollCurrentDay = selectedDay === currentDaily?.day;
+
+    const pull = async (showLoader: boolean) => {
+      if (showLoader) {
+        setSelectedProductionRuns(null);
+        setSelectedProductionLoading(true);
+      }
+      setSelectedProductionError(null);
+      try {
+        const response = await api.get<AlwaysOnProductionPayload>(
+          `/cameras/always-on-production/?camera=${encodeURIComponent(processor.cam)}&day=${encodeURIComponent(selectedDay)}`,
+        );
+        if (disposed) return;
+        setSelectedProductionRuns(response.data.day_runs);
+        setSelectedProductionTimezone(response.data.timezone || "Asia/Almaty");
+      } catch (cause) {
+        if (!disposed) setSelectedProductionError(apiError(cause));
+      } finally {
+        if (!disposed) {
+          setSelectedProductionLoading(false);
+          if (pollCurrentDay) timer = setTimeout(() => void pull(false), 15_000);
+        }
+      }
+    };
+
+    void pull(true);
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [currentDaily?.day, modalView, open, processor.cam, selectedDay, selectedProductionReload]);
 
   async function saveProductionMappings(mappings: AlwaysOnProductMapping[]) {
     setProductionSaving(true);
@@ -1367,6 +1418,15 @@ function AlwaysOnCard({
                         <p className="mt-2 text-xs text-slate-400">В этот день модель ничего не распознала.</p>
                       )}
                     </div>
+
+                    <AlwaysOnDayRunLog
+                      day={selectedPoint.day}
+                      runs={selectedProductionRuns}
+                      timezone={selectedProductionTimezone}
+                      loading={selectedProductionLoading}
+                      error={selectedProductionError}
+                      onRetry={() => setSelectedProductionReload((value) => value + 1)}
+                    />
                   </div>
                 ) : (
                   <p className="mt-3 text-center text-xs text-slate-400">

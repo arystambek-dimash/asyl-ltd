@@ -168,6 +168,12 @@ def record_color_deltas(
             elapsed = observed_at - row.last_counted_at
             must_reopen = (
                 row.business_day != business_day
+                # Warehouse shifts span midnight, but analytics bars do not.
+                # Split here so each run and its bag count belongs to exactly
+                # one local calendar day while both halves retain the same
+                # 19:00-based business day for stock posting.
+                or _local(row.last_counted_at).date()
+                != _local(observed_at).date()
                 or elapsed > RUN_GAP
             )
             if must_reopen:
@@ -266,8 +272,13 @@ def _mapping_payload(mapping: AlwaysOnColorProductMapping | None, color: str) ->
     }
 
 
-def _run_payload(row: AlwaysOnProductionRun) -> dict:
-    return {
+def _run_payload(
+    row: AlwaysOnProductionRun,
+    *,
+    selected_start: datetime | None = None,
+    selected_end: datetime | None = None,
+) -> dict:
+    result = {
         "id": row.pk,
         "camera": row.camera,
         "business_day": row.business_day.isoformat(),
@@ -279,6 +290,15 @@ def _run_payload(row: AlwaysOnProductionRun) -> dict:
         "is_approximate": row.is_approximate,
         "status": "active" if row.ended_at is None else "closed",
     }
+    if selected_start is not None and selected_end is not None:
+        starts_before_day = row.started_at < selected_start
+        ends_after_day = row.last_counted_at >= selected_end
+        result.update({
+            "starts_before_day": starts_before_day,
+            "ends_after_day": ends_after_day,
+            "is_partial_for_day": starts_before_day or ends_after_day,
+        })
+    return result
 
 
 def _posting_payload(row: AlwaysOnStockPosting) -> dict:
@@ -335,8 +355,26 @@ def _day_totals(camera: str, business_day: date) -> dict[str, dict[str, int]]:
     }
 
 
-def production_payload(camera: str) -> dict:
+def _selected_day(value: date | str | None) -> date | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        raise ValidationError({"day": "Укажите дату в формате YYYY-MM-DD"})
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str):
+        raise ValidationError({"day": "Укажите дату в формате YYYY-MM-DD"})
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValidationError({
+            "day": "Укажите дату в формате YYYY-MM-DD",
+        }) from exc
+
+
+def production_payload(camera: str, day: date | str | None = None) -> dict:
     camera = ai.normalize(camera)
+    selected_day = _selected_day(day)
     now = timezone.now()
     close_stale_runs(now)
     current_day = business_day_for(now)
@@ -382,6 +420,42 @@ def production_payload(camera: str) -> dict:
         AlwaysOnProductionRun.objects.filter(camera=camera)
         .order_by("-started_at", "-id")[:100]
     )
+    # ``runs`` remains the compact recent journal used by the settings view.
+    # A selected analytics day must not silently lose intervals merely because
+    # more than 100 newer runs exist, so it has a separate complete query.
+    selected_start = (
+        timezone.make_aware(
+            datetime.combine(selected_day, time.min),
+            _default_timezone(),
+        )
+        if selected_day is not None
+        else None
+    )
+    selected_end = (
+        timezone.make_aware(
+            datetime.combine(selected_day + timedelta(days=1), time.min),
+            _default_timezone(),
+        )
+        if selected_day is not None
+        else None
+    )
+    day_runs = (
+        list(
+            AlwaysOnProductionRun.objects.filter(
+                camera=camera,
+                # Analytics chart days are calendar dates.  ``business_day``
+                # is a warehouse shift marker and changes at 19:00, so using
+                # it here would put a 20:00 interval under tomorrow's bar.
+                # Overlap also preserves legacy rows created before runs were
+                # split at local midnight.  ``gte`` keeps a legitimate first
+                # bag counted exactly at 00:00 in the new calendar day.
+                started_at__lt=selected_end,
+                last_counted_at__gte=selected_start,
+            ).order_by("started_at", "id")
+        )
+        if selected_day is not None
+        else []
+    )
     batches = list(
         AlwaysOnStockBatch.objects.filter(camera=camera)
         .prefetch_related("items__product", "items__receipt")
@@ -389,6 +463,15 @@ def production_payload(camera: str) -> dict:
     )
     return {
         "camera": camera,
+        "selected_day": selected_day.isoformat() if selected_day else None,
+        "day_runs": [
+            _run_payload(
+                row,
+                selected_start=selected_start,
+                selected_end=selected_end,
+            )
+            for row in day_runs
+        ],
         "timezone": settings.TIME_ZONE,
         "close_time": CLOSE_TIME.strftime("%H:%M"),
         "current_business_day": current_day.isoformat(),
