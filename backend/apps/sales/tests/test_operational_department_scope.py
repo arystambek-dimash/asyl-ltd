@@ -185,6 +185,10 @@ def test_camera_sessions_history_recordings_and_status_respect_client_ownership(
     scoped_api = _api(assigned)
     sessions_response = scoped_api.get("/api/cameras/ai/sessions/")
     history_response = scoped_api.get("/api/cameras/ai/history/")
+    post_board_history = scoped_api.get(
+        "/api/cameras/ai/history/",
+        {"post_board": "1"},
+    )
     foreign_history = scoped_api.get(
         "/api/cameras/ai/history/",
         {"order_id": foreign_order.pk},
@@ -197,8 +201,32 @@ def test_camera_sessions_history_recordings_and_status_respect_client_ownership(
         own_open.pk,
         own_closed.pk,
     }
+    assert post_board_history.status_code == 200
+    assert {row["id"] for row in post_board_history.data} == {
+        own_open.pk,
+        own_closed.pk,
+    }
     assert foreign_history.status_code == 200
     assert foreign_history.data == []
+
+    for method, path, service_name in (
+        ("post", "/api/cameras/cam2/ai/", "start"),
+        ("delete", "/api/cameras/cam2/ai/", "stop"),
+        ("post", "/api/cameras/cam2/ai/reset/", "reset"),
+        (
+            "post",
+            "/api/cameras/cam2/ai/conveyor/stop/",
+            "stop_conveyor",
+        ),
+    ):
+        with patch.object(counting, service_name) as service:
+            response = getattr(scoped_api, method)(
+                path,
+                {"order_id": foreign_order.pk},
+                format="json",
+            )
+        assert response.status_code == 404, service_name
+        service.assert_not_called()
 
     with patch.object(recordings, "list_segments", return_value=[]) as listing:
         foreign_metadata = scoped_api.get(
@@ -264,6 +292,83 @@ def test_camera_sessions_history_recordings_and_status_respect_client_ownership(
         own_closed.pk,
         foreign_recording.pk,
     }
+
+
+def test_camera_mutations_recheck_transferred_client_before_edge_side_effects(
+    user_with_perms,
+):
+    department_a = Department.objects.create(
+        code="camera-stale-a",
+        name="Камеры старого отдела",
+    )
+    department_b = Department.objects.create(
+        code="camera-stale-b",
+        name="Камеры нового отдела",
+    )
+    assigned = _employee(
+        user_with_perms,
+        "camera-stale-assigned-a",
+        ["shipping.load"],
+        department_a,
+    )
+    client = _owned_client("Camera transferred", department_a)
+    order = Order.objects.create(client=client, status="loading")
+    session = AiCountingSession.objects.create(
+        order=order,
+        camera="cam99",
+        status=AiCountingSession.ACTIVE,
+        started_by=assigned,
+    )
+    client.department = department_b
+    client.save(update_fields=["department"])
+
+    with patch.object(ai, "reset") as edge_reset:
+        with pytest.raises(PermissionDenied):
+            counting.reset(
+                "cam99",
+                order,
+                assigned,
+                expected_session_id=session.pk,
+            )
+        edge_reset.assert_not_called()
+
+    with (
+        patch.object(ai, "status") as edge_status,
+        patch.object(ai, "emergency_stop_conveyor") as edge_emergency_stop,
+    ):
+        with pytest.raises(PermissionDenied):
+            counting.stop_conveyor(
+                "cam99",
+                order,
+                assigned,
+                expected_session_id=session.pk,
+            )
+        edge_status.assert_not_called()
+        edge_emergency_stop.assert_not_called()
+
+    with (
+        patch.object(ai, "status") as edge_status,
+        patch.object(ai, "stop_conveyor") as edge_stop_conveyor,
+        patch.object(ai, "emergency_stop_conveyor") as edge_emergency_stop,
+        patch.object(ai, "delete") as edge_delete,
+    ):
+        with pytest.raises(PermissionDenied):
+            counting.stop(
+                "cam99",
+                order,
+                assigned,
+                expected_session_id=session.pk,
+            )
+        edge_status.assert_not_called()
+        edge_stop_conveyor.assert_not_called()
+        edge_emergency_stop.assert_not_called()
+        edge_delete.assert_not_called()
+
+    # The idempotent no-session response is still an order-owned read and must
+    # not disclose status/shipment data from a transferred client.
+    session.delete()
+    with pytest.raises(PermissionDenied):
+        counting.stop("cam99", order, assigned)
 
 
 def test_event_log_hides_foreign_order_events_but_unassigned_viewer_is_global(

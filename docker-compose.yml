@@ -21,16 +21,28 @@ services:
 
   backend:
     build: ./backend
-    environment:
+    environment: &backend-environment
       DB_NAME: asyl
       DB_USER: asyl
       DB_PASSWORD: asyl
       DB_HOST: db
       DB_PORT: "5432"
       DEBUG: "1"
+      APP_RELEASE: "${APP_RELEASE:-development}"
+      APP_ENVIRONMENT: "${APP_ENVIRONMENT:-development}"
+      APP_SERVICE: backend
+      LOG_FORMAT: "${LOG_FORMAT:-readable}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      SENTRY_BACKEND_DSN: "${SENTRY_BACKEND_DSN:-}"
+      SENTRY_ENABLE_LOGS: "${SENTRY_ENABLE_LOGS:-0}"
+      SENTRY_TRACES_SAMPLE_RATE: "${SENTRY_TRACES_SAMPLE_RATE:-0}"
+      SENTRY_PROFILES_SAMPLE_RATE: "${SENTRY_PROFILES_SAMPLE_RATE:-0}"
       ALLOWED_HOSTS: "*"  # сервер в локальной сети цеха — доступен по своему IP
       CORS_ALLOWED_ORIGINS: "http://localhost:3000"
       REDIS_URL: "redis://redis:6379/0"
+      # Keep broker queues isolated from Django cache keys while reusing the
+      # same Redis service. No Celery result backend is configured.
+      CELERY_BROKER_URL: "redis://redis:6379/1"
       SUPER_ADMIN_EMAIL: "${SUPER_ADMIN_EMAIL:-admin@asyl.local}"
       # Development-only default that still passes Django's validators.
       SUPER_ADMIN_PASS: "${SUPER_ADMIN_PASS:-Local-only-Q7v9-Pass!}"
@@ -79,11 +91,85 @@ services:
     ports:
       - "8000:8000"
 
+  celery-payments:
+    build: ./backend
+    environment:
+      <<: *backend-environment
+      APP_SERVICE: celery-payments
+      DJANGO_COLLECTSTATIC: "0"
+    entrypoint: []
+    command:
+      - celery
+      - -A
+      - config
+      - worker
+      - --loglevel=INFO
+      - --queues=payments
+      - --concurrency=1
+      - --prefetch-multiplier=1
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    stop_grace_period: 10m
+    healthcheck:
+      test: ["CMD", "python", "/app/apipay_monitor_healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  celery-beat:
+    build: ./backend
+    environment:
+      <<: *backend-environment
+      APP_SERVICE: celery-beat
+      DJANGO_COLLECTSTATIC: "0"
+      CELERY_BEAT_PID_FILE: /tmp/celerybeat/celerybeat.pid
+    entrypoint: []
+    command:
+      - celery
+      - -A
+      - config
+      - beat
+      - --loglevel=INFO
+      - --schedule=/tmp/celerybeat/celerybeat-schedule
+      - --pidfile=/tmp/celerybeat/celerybeat.pid
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    tmpfs:
+      - /tmp/celerybeat:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "python", "/app/celery_beat_healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
   frontend:
     build:
       context: ./frontend
       args:
         NEXT_PUBLIC_API_URL: http://localhost:8000/api
+        NEXT_PUBLIC_SENTRY_DSN: "${NEXT_PUBLIC_SENTRY_DSN:-}"
+        NEXT_PUBLIC_APP_RELEASE: "${APP_RELEASE:-development}"
+        NEXT_PUBLIC_APP_ENVIRONMENT: "${APP_ENVIRONMENT:-development}"
+        NEXT_PUBLIC_SENTRY_ENABLE_LOGS: "${NEXT_PUBLIC_SENTRY_ENABLE_LOGS:-0}"
+        NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE: "${NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE:-0}"
+        SENTRY_ORG: "${SENTRY_ORG:-}"
+        SENTRY_PROJECT: "${SENTRY_PROJECT_FRONTEND:-}"
+    environment:
+      APP_RELEASE: "${APP_RELEASE:-development}"
+      APP_ENVIRONMENT: "${APP_ENVIRONMENT:-development}"
+      APP_SERVICE: frontend-server
+      SENTRY_FRONTEND_SERVER_DSN: "${SENTRY_FRONTEND_SERVER_DSN:-}"
+      SENTRY_ENABLE_LOGS: "${SENTRY_FRONTEND_ENABLE_LOGS:-0}"
+      SENTRY_TRACES_SAMPLE_RATE: "${SENTRY_FRONTEND_TRACES_SAMPLE_RATE:-0}"
+      SENTRY_PROFILES_SAMPLE_RATE: "${SENTRY_FRONTEND_PROFILES_SAMPLE_RATE:-0}"
     depends_on:
       - backend
     ports:

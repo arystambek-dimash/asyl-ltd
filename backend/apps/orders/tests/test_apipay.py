@@ -78,7 +78,7 @@ def test_create_invoice_uses_api_key_and_required_payload(urlopen, settings):
     urlopen.return_value = UpstreamResponse({"id": 42, "status": "processing"})
     payment = _payment()
 
-    invoice = create_invoice(payment)
+    invoice = create_invoice(payment, user=None)
 
     request = urlopen.call_args.args[0]
     payload = json.loads(request.data)
@@ -108,7 +108,7 @@ def test_create_qr_invoice_persists_payment_links(urlopen, settings):
     })
     payment = _payment()
 
-    invoice = create_invoice(payment, channel="qr")
+    invoice = create_invoice(payment, channel="qr", user=None)
 
     request = urlopen.call_args.args[0]
     payload = json.loads(request.data)

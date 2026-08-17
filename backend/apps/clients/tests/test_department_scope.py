@@ -1,11 +1,12 @@
 from io import BytesIO
+from unittest.mock import patch
 
 import pytest
 from openpyxl import load_workbook
 
 from apps.catalog.models import Product
 from apps.clients.models import Client, Store
-from apps.orders.models import Order, OrderItem
+from apps.orders.models import Order, OrderItem, Payment
 from apps.sales.models import Department
 
 pytestmark = pytest.mark.django_db
@@ -66,7 +67,13 @@ def test_assigned_employee_can_only_list_pick_and_retrieve_owned_clients(
     assert api.get(f"/api/clients/{foreign.id}/").status_code == 404
     assert api.get(f"/api/clients/{foreign.id}/history/").status_code == 404
     assert api.get(f"/api/clients/{foreign.id}/statement/").status_code == 404
+    assert api.get(f"/api/clients/{foreign.id}/debt-detail/").status_code == 404
     assert api.get(f"/api/clients/{foreign.id}/prices/").status_code == 404
+    assert api.put(
+        f"/api/clients/{foreign.id}/prices/",
+        {"prices": []},
+        format="json",
+    ).status_code == 404
     assert api.patch(
         f"/api/clients/{foreign.id}/",
         {"phone": "changed"},
@@ -207,6 +214,77 @@ def test_store_endpoints_and_writes_follow_client_ownership(
     assert owned_store.client_id == owned_client.id
 
 
+def test_store_financial_projections_and_mutations_follow_client_ownership(
+    auth_client,
+    user_with_perms,
+):
+    first = _department("store-financial-first", "Первый")
+    second = _department("store-financial-second", "Второй")
+    owned_client = _client("Свой долг", first)
+    foreign_client = _client("Чужой долг", second)
+    owned_store = Store.objects.create(
+        client=owned_client,
+        name="Свой магазин",
+        payment_schedule_type="monthly",
+        payment_days=[1],
+    )
+    foreign_store = Store.objects.create(
+        client=foreign_client,
+        name="Чужой магазин",
+        payment_schedule_type="monthly",
+        payment_days=[1],
+    )
+    product = Product.objects.create(
+        name="Долговой товар",
+        color="Blue",
+        weight_kg="25",
+    )
+    for client, store, amount in (
+        (owned_client, owned_store, "100.00"),
+        (foreign_client, foreign_store, "900.00"),
+    ):
+        order = Order.objects.create(
+            client=client,
+            store=store,
+            status="shipped",
+            settlement_intent="debt",
+        )
+        OrderItem.objects.create(
+            order=order,
+            product=product,
+            quantity=1,
+            unit_price=amount,
+        )
+    employee = user_with_perms(
+        "scoped-store-financial",
+        codes=["clients.edit", "clients.delete", "reports.view"],
+    )
+    _assign(employee, first)
+    api = auth_client(employee)
+
+    debts = api.get("/api/stores/debts/")
+    foreign_detail = api.get(f"/api/stores/{foreign_store.pk}/debt-detail/")
+    foreign_patch = api.patch(
+        f"/api/stores/{foreign_store.pk}/",
+        {"name": "Нельзя"},
+        format="json",
+    )
+    foreign_delete = api.delete(f"/api/stores/{foreign_store.pk}/")
+    with patch("apps.clients.views.detect_overdue", return_value=1) as detect:
+        overdue = api.post("/api/stores/check-overdue/", {}, format="json")
+
+    assert debts.status_code == 200
+    assert [row["store_id"] for row in debts.data] == [owned_store.pk]
+    assert foreign_detail.status_code == 404
+    assert foreign_patch.status_code == 404
+    assert foreign_delete.status_code == 404
+    assert overdue.status_code == 200
+    assert overdue.data == {"checked": 1, "overdue_notifications": 1}
+    assert [call.args[0].pk for call in detect.call_args_list] == [owned_store.pk]
+    foreign_store.refresh_from_db()
+    assert foreign_store.name == "Чужой магазин"
+
+
 def test_debt_client_department_filter_is_separate_from_order_department(
     auth_client,
     user_with_perms,
@@ -291,23 +369,77 @@ def test_all_clients_statement_contains_only_owned_clients(
     second = _department("statement-owner-second", "Второй")
     owned = _client("Разрешённый", first)
     foreign = _client("Запрещённый", second)
+    owned_product = Product.objects.create(
+        name="Свой товар",
+        color="Red",
+        weight_kg="50",
+    )
+    foreign_product = Product.objects.create(
+        name="Чужой товар",
+        color="Blue",
+        weight_kg="25",
+    )
+    owned_order = Order.objects.create(
+        client=owned,
+        status="shipped",
+        settlement_intent="debt",
+    )
+    foreign_order = Order.objects.create(
+        client=foreign,
+        status="shipped",
+        settlement_intent="debt",
+    )
+    OrderItem.objects.create(
+        order=owned_order,
+        product=owned_product,
+        quantity=1,
+        unit_price="100.00",
+    )
+    OrderItem.objects.create(
+        order=foreign_order,
+        product=foreign_product,
+        quantity=9,
+        unit_price="999.00",
+    )
+    Payment.objects.create(
+        order=owned_order,
+        amount="10.00",
+        method="cash",
+        status="confirmed",
+    )
+    Payment.objects.create(
+        order=foreign_order,
+        amount="888.00",
+        method="cash",
+        status="confirmed",
+    )
     employee = user_with_perms(
         "scoped-statement-reader",
         codes=["reports.export"],
     )
     _assign(employee, first)
 
-    response = auth_client(employee).get(
-        "/api/clients/statement/",
-        {"sections": "clients"},
-    )
+    response = auth_client(employee).get("/api/clients/statement/")
 
     assert response.status_code == 200
     workbook = load_workbook(BytesIO(response.content), data_only=True)
-    names = {
-        cell.value
-        for cell in workbook["Клиенты"]["B"]
-        if cell.value
-    }
-    assert owned.name in names
-    assert foreign.name not in names
+    for sheet_name in (
+        "Клиенты",
+        "Операции",
+        "Заказы",
+        "Позиции",
+        "Платежи",
+        "Долги",
+    ):
+        values = {
+            cell.value
+            for row in workbook[sheet_name].iter_rows()
+            for cell in row
+            if cell.value is not None
+        }
+        assert owned.name in values, sheet_name
+        assert foreign.name not in values, sheet_name
+        assert "Чужой товар" not in values, sheet_name
+    assert workbook["Сводка"]["B4"].value == 1
+    assert workbook["Сводка"]["B5"].value == 1
+    assert workbook["Сводка"]["B6"].value == 1

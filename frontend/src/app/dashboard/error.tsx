@@ -1,7 +1,14 @@
 "use client";
 
+import * as Sentry from "@sentry/nextjs";
+import { useEffect } from "react";
+
 /** Локальный error boundary дашборда: вместо белого экрана — кнопка повтора. */
-export default function DashboardError({ reset }: { error: Error; reset: () => void }) {
+export default function DashboardError({ error, reset }: { error: Error; reset: () => void }) {
+  useEffect(() => {
+    Sentry.captureException(error);
+  }, [error]);
+
   return (
     <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 px-4 text-center">
       <div className="text-sm font-medium">Не удалось отобразить дашборд</div>
@@ -9,6 +16,7 @@ export default function DashboardError({ reset }: { error: Error; reset: () => v
         Произошла ошибка на странице. Попробуйте обновить — если повторится, сообщите администратору.
       </div>
       <button
+        type="button"
         onClick={reset}
         className="mt-1 rounded-md border bg-[var(--card)] px-3 py-1.5 text-sm font-medium shadow-sm transition-colors hover:bg-[var(--accent)]"
       >

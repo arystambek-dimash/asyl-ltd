@@ -167,7 +167,7 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                 and invoice.status not in ("cancelled", "expired", "error", "superseded")
         ):
             try:
-                cancel_invoice(invoice)
+                cancel_invoice(invoice, user=request.user)
             except ApiPayAPIError as exc:
                 raise PaymentProviderError({
                     "detail": exc.message,

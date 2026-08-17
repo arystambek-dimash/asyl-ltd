@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { withSentryConfig } from "@sentry/nextjs";
 
 const securityHeaders = [
   {
@@ -52,4 +53,27 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+const canUploadSourceMaps = Boolean(
+  process.env.SENTRY_AUTH_TOKEN && process.env.SENTRY_ORG && process.env.SENTRY_PROJECT,
+);
+
+export default withSentryConfig(nextConfig, {
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+  telemetry: false,
+  silent: !canUploadSourceMaps,
+  release: {
+    name: process.env.NEXT_PUBLIC_APP_RELEASE || "development",
+    create: canUploadSourceMaps,
+    finalize: canUploadSourceMaps,
+  },
+  sourcemaps: {
+    disable: !canUploadSourceMaps,
+    deleteSourcemapsAfterUpload: true,
+  },
+  widenClientFileUpload: canUploadSourceMaps,
+  webpack: {
+    treeshake: { removeDebugLogging: true },
+  },
+});

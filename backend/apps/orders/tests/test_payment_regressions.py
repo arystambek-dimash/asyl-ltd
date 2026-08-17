@@ -156,7 +156,8 @@ def test_mixed_provider_failure_rejects_every_part(auth_client, accountant):
     """Сбой провайдера откатывает всю смешанную оплату, а не половину."""
     order = _order()
 
-    def issue(payment, *, channel, phone_number=None):
+    def issue(payment, *, channel, user, phone_number=None):
+        assert user == accountant
         raise ApiPayAPIError(503, "provider_unavailable", "Временно недоступно", {})
 
     with patch("apps.orders.views.create_invoice", side_effect=issue):
@@ -736,7 +737,7 @@ def test_create_response_cannot_overwrite_paid_and_keeps_qr_fields(
 
     api_request_mock.side_effect = paid_before_create_response
 
-    invoice = create_invoice(payment, channel="qr")
+    invoice = create_invoice(payment, channel="qr", user=None)
 
     payment.refresh_from_db()
     invoice.refresh_from_db()
@@ -778,7 +779,7 @@ def test_qr_recovery_search_preserves_existing_fields_without_post(
         }],
     }
 
-    invoice = create_invoice(payment, channel="qr")
+    invoice = create_invoice(payment, channel="qr", user=None)
 
     assert api_request_mock.call_count == 1
     assert api_request_mock.call_args.args[0] == "GET"
@@ -810,7 +811,7 @@ def test_create_money_response_confirms_payment_immediately(
         "amount": "100.00",
     }
 
-    invoice = create_invoice(payment, channel="phone")
+    invoice = create_invoice(payment, channel="phone", user=None)
 
     invoice.refresh_from_db()
     payment.refresh_from_db()
@@ -844,7 +845,7 @@ def test_create_error_payload_maps_provider_invoice_before_raising(
     )
 
     with pytest.raises(ApiPayAPIError):
-        create_invoice(payment, channel="phone")
+        create_invoice(payment, channel="phone", user=None)
 
     invoice = ApiPayInvoice.objects.get(payment=payment)
     payment.refresh_from_db()
@@ -881,7 +882,7 @@ def test_cancel_paid_response_confirms_instead_of_rejecting(
         },
     }
 
-    invoice = cancel_invoice(invoice)
+    invoice = cancel_invoice(invoice, user=None)
 
     invoice.refresh_from_db()
     payment.refresh_from_db()
@@ -1026,7 +1027,7 @@ def test_cancel_response_cannot_downgrade_paid_webhook(
 
     api_request_mock.side_effect = paid_before_cancel_response
 
-    invoice = cancel_invoice(invoice)
+    invoice = cancel_invoice(invoice, user=None)
 
     invoice.refresh_from_db()
     payment.refresh_from_db()
@@ -1080,7 +1081,7 @@ def test_concurrent_create_invoice_calls_provider_once_and_preserves_qr(
         close_old_connections()
         try:
             thread_payment = Payment.objects.get(pk=payment.pk)
-            return create_invoice(thread_payment, channel="qr").pk
+            return create_invoice(thread_payment, channel="qr", user=None).pk
         finally:
             close_old_connections()
 

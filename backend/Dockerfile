@@ -38,10 +38,13 @@ ENTRYPOINT ["/entrypoint.sh"]
 #   одновременный рестарт всех воркеров.
 # --limit-request-* ограничивают строку запроса, число и размер заголовков —
 #   отсекают заголовочные флуд-атаки на уровне сервера приложений.
+# Gunicorn access logs are disabled: their raw request target includes query
+# strings before application/Sentry privacy filters can remove them. Error logs
+# remain on stderr for structured incident diagnosis.
 CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", \
      "--workers", "3", "--worker-class", "gthread", "--threads", "8", \
      "--timeout", "60", "--graceful-timeout", "30", \
      "--keep-alive", "5", "--max-requests", "1000", "--max-requests-jitter", "100", \
      "--limit-request-line", "8190", "--limit-request-fields", "100", \
      "--limit-request-field_size", "16380", \
-     "--access-logfile", "-", "--error-logfile", "-"]
+     "--error-logfile", "-"]

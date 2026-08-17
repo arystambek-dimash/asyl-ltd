@@ -17,13 +17,13 @@ from apps.orders.apipay import (
 )
 from apps.orders.management.commands.reconcile_apipay_invoices import (
     _backoff_delay,
-    _request_budget_per_iteration,
 )
 from apps.orders.models import ApiPayInvoice, Order, OrderItem, Payment
 from apps.orders.reconciliation import (
     ReconciliationStats,
     reconcile_apipay_invoices,
 )
+from apps.orders.reconciliation_runner import _request_budget_per_iteration
 from apps.orders.refund_reconciliation import RefundReconciliationStats
 
 pytestmark = pytest.mark.django_db
@@ -265,7 +265,7 @@ def test_existing_ambiguous_qr_is_searched_and_never_posted(api_request):
     }
 
     with pytest.raises(ApiPayAPIError) as exc:
-        create_invoice(record.payment, channel="qr")
+        create_invoice(record.payment, channel="qr", user=None)
 
     assert exc.value.error_code == "apipay_issue_recovery_pending"
     assert api_request.call_count == 1

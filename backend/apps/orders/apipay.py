@@ -17,7 +17,7 @@ from django.db import connection, transaction
 from django.db.models import Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from apps.eventlog.services import log_event
 
@@ -28,7 +28,12 @@ from .models import (
     Payment,
     PaymentRefund,
 )
-from .services import create_client_payment, reject_payment, sync_payment_status
+from .services import (
+    assert_order_user_scope,
+    create_client_payment,
+    reject_payment,
+    sync_payment_status,
+)
 
 log = logging.getLogger(__name__)
 
@@ -144,6 +149,21 @@ def _invoice_issue_mutex(payment_id: int):
                 "SELECT pg_advisory_unlock(%s, %s)",
                 [namespace, lock_key],
             )
+
+
+@contextmanager
+def _provider_scope_fence(order_id: int, user):
+    """Serialize department transfer behind one authorized provider call.
+
+    The first local reservation transaction is deliberately short. Re-locking
+    Order -> Client immediately around the network call closes the gap in which
+    a stale department-scoped request could otherwise reach ApiPay after an
+    administrator transferred the client.
+    """
+    with transaction.atomic():
+        order = Order.all_objects.select_for_update().get(pk=order_id)
+        assert_order_user_scope(order, user)
+        yield order
 
 
 def normalize_phone(value: str) -> str:
@@ -262,6 +282,7 @@ def create_invoice(
     channel: str = "phone",
     phone_number: str | None = None,
     hydrate_money_response: bool = True,
+    user,
 ) -> ApiPayInvoice:
     """Create once, or search-only recover, an ApiPay invoice for a payment."""
     if channel not in {"phone", "qr"}:
@@ -278,6 +299,7 @@ def create_invoice(
                 .select_related("client__user")
                 .get(pk=payment.order_id)
             )
+            assert_order_user_scope(order, user)
             locked_payment = Payment.objects.select_for_update().get(
                 pk=payment.pk
             )
@@ -361,7 +383,8 @@ def create_invoice(
             # Neither channel is safe to POST again after an ambiguous first
             # response. Phone idempotency only rejects duplicates while the
             # previous provider invoice remains active.
-            recovered = recover_invoice_issue_mapping(record)
+            with _provider_scope_fence(order_id, user):
+                recovered = recover_invoice_issue_mapping(record)
             if recovered is not None:
                 return recovered
             record.refresh_from_db()
@@ -380,10 +403,26 @@ def create_invoice(
                 {},
             )
 
-        # Phase 2: no Order/Payment/Invoice row lock is held over the network.
+        # Phase 2 keeps only the Order -> Client authorization fence over the
+        # network. Monetary rows remain unlocked, while a department transfer
+        # cannot overtake this already-authorized provider side effect.
         path = "/invoices/qr" if channel == "qr" else "/invoices"
         try:
-            response = api_request("POST", path, request_payload)
+            with _provider_scope_fence(order_id, user):
+                response = api_request("POST", path, request_payload)
+        except PermissionDenied:
+            _save_invoice_issue_error(
+                record_id,
+                payment.pk,
+                ApiPayAPIError(
+                    409,
+                    "client_department_changed",
+                    "Клиент передан в другой отдел до создания счёта",
+                    {},
+                ),
+                ambiguous=False,
+            )
+            raise
         except ApiPayConfigurationError as exc:
             _save_invoice_issue_error(
                 record_id,
@@ -735,7 +774,12 @@ def start_order_payment(
         raise ValidationError({"detail": "Недопустимый способ оплаты по счёту."})
     payment = create_client_payment(order, payment_method, user, amount=amount)
     try:
-        return create_invoice(payment, channel=channel, phone_number=phone_number)
+        return create_invoice(
+            payment,
+            channel=channel,
+            phone_number=phone_number,
+            user=user,
+        )
     except (ApiPayAPIError, ApiPayConfigurationError, ValidationError):
         payment.refresh_from_db()
         unresolved = ApiPayInvoice.objects.filter(
@@ -1034,7 +1078,25 @@ def get_invoice_refunds(record: ApiPayInvoice) -> dict[str, Any]:
     return api_request("GET", f"/invoices/{record.invoice_id}/refunds")
 
 
-def cancel_invoice(record: ApiPayInvoice) -> ApiPayInvoice:
+def cancel_invoice(record: ApiPayInvoice, *, user) -> ApiPayInvoice:
+    order_id = Payment.objects.values_list("order_id", flat=True).get(
+        pk=record.payment_id
+    )
+    with _provider_scope_fence(order_id, user):
+        locked_record = (
+            ApiPayInvoice.objects.select_for_update()
+            .select_related("payment")
+            .get(pk=record.pk)
+        )
+        _cancel_invoice_locked(locked_record)
+
+    # Preserve the existing in-memory contract for callers that retain the
+    # instance supplied to this service.
+    record.refresh_from_db()
+    return record
+
+
+def _cancel_invoice_locked(record: ApiPayInvoice) -> ApiPayInvoice:
     if record.channel == "qr":
         raise ValidationError({
             "detail": (
@@ -1098,8 +1160,6 @@ def cancel_invoice(record: ApiPayInvoice) -> ApiPayInvoice:
             record,
             {"id": record.invoice_id, "status": "cancelling"},
         )
-    # Preserve the service's existing in-memory contract for callers that keep
-    # using the instance they passed in (for example the rejection workflow).
     record.refresh_from_db()
     return record
 
@@ -1137,11 +1197,26 @@ def _sync_refund_totals(payment: Payment, order: Order) -> None:
     sync_payment_status(order)
 
 
+def _fail_reserved_refund(
+    *, refund_id: int, payment_id: int, order_id: int
+) -> None:
+    """Release a reservation after local denial or definitive provider failure."""
+    with transaction.atomic():
+        order = Order.all_objects.select_for_update().get(pk=order_id)
+        payment = Payment.objects.select_for_update().get(pk=payment_id)
+        refund = PaymentRefund.objects.select_for_update().get(pk=refund_id)
+        refund.status = "failed"
+        refund.save(update_fields=["status", "updated_at"])
+        payment.order = order
+        _sync_refund_totals(payment, order)
+
+
 @transaction.atomic
 def create_cash_refund(
     payment: Payment, user, *, amount: object = None, reason: str = ""
 ) -> PaymentRefund:
     order = Order.all_objects.select_for_update().get(pk=payment.order_id)
+    assert_order_user_scope(order, user)
     payment = (
         Payment.objects.select_for_update()
         .get(pk=payment.pk)
@@ -1206,6 +1281,7 @@ def create_refund(
         order = Order.all_objects.select_for_update().get(
             pk=record.payment.order_id
         )
+        assert_order_user_scope(order, user)
         payment = Payment.objects.select_for_update().get(pk=record.payment_id)
         payment.order = order
         if payment.status != "confirmed":
@@ -1241,11 +1317,20 @@ def create_refund(
         )
         _sync_refund_totals(payment, order)
 
+    order_id = order.pk
     payload: dict[str, Any] = {"amount": float(value), "reason": reason[:500]}
     try:
-        response = api_request(
-            "POST", f"/invoices/{record.invoice_id}/refund", payload
+        with _provider_scope_fence(order_id, user):
+            response = api_request(
+                "POST", f"/invoices/{record.invoice_id}/refund", payload
+            )
+    except PermissionDenied:
+        _fail_reserved_refund(
+            refund_id=generic_refund.pk,
+            payment_id=record.payment_id,
+            order_id=order_id,
         )
+        raise
     except (ApiPayAPIError, ApiPayConfigurationError) as exc:
         # A 4xx response is definitive.  For a timeout/5xx the remote outcome
         # is ambiguous, so keep the amount reserved until webhook/reconciliation
@@ -1255,20 +1340,11 @@ def create_refund(
             or exc.status_code < 500
         )
         if definitive_failure:
-            with transaction.atomic():
-                order = Order.all_objects.select_for_update().get(
-                    pk=record.payment.order_id
-                )
-                payment = Payment.objects.select_for_update().get(
-                    pk=record.payment_id
-                )
-                generic_refund = PaymentRefund.objects.select_for_update().get(
-                    pk=generic_refund.pk
-                )
-                generic_refund.status = "failed"
-                generic_refund.save(update_fields=["status", "updated_at"])
-                payment.order = order
-                _sync_refund_totals(payment, order)
+            _fail_reserved_refund(
+                refund_id=generic_refund.pk,
+                payment_id=record.payment_id,
+                order_id=order_id,
+            )
         raise
 
     refund_payload = response.get("refund") or {}

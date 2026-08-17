@@ -23,7 +23,6 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from apps.conveyors import services as cloud_conveyors
 from apps.eventlog.services import log_event
 from apps.orders.models import Order
-from apps.sales.access import scope_by_client_department
 from apps.shipments.services import (
     assert_device_camera_change,
     begin_camera_loading,
@@ -91,6 +90,13 @@ def metadata(
         "session_started_by_name": session_started_by_name(session),
         "can_stop": can_control_session(session, user),
     }
+
+
+def _assert_order_department_scope(order_id: int, user) -> Order:
+    """Lock Order then Client and recheck ownership before edge effects."""
+    from apps.orders.services import lock_live_order
+
+    return lock_live_order(order_id, user)
 
 
 def _payload(value: object) -> dict:
@@ -696,18 +702,12 @@ def start(
     # sees the OPEN session and cannot strand it by moving/deleting the device.
     with transaction.atomic():
         _lock_device_camera(user, camera)
-        from apps.orders.services import lock_live_order
-
         # replace_items takes this same parent-row lock and refuses edits once
         # an OPEN session exists. The target therefore stays immutable from
         # reservation through the edge calls and final loading transition.
-        order = lock_live_order(order)
-        if not scope_by_client_department(
-            Order.objects.filter(pk=order.pk),
-            user,
-            client_path="client",
-        ).exists():
-            raise PermissionDenied("Заказ передан в другой отдел")
+        from apps.orders.services import lock_live_order
+
+        order = lock_live_order(order, user)
         existing = sessions.current_for_camera(camera)
         _assert_expected_session(existing, expected_session_id)
         _validate_start(order, camera)
@@ -1112,6 +1112,7 @@ def stop_conveyor(
             raise ai.AiError(409, "Активная AI-сессия не найдена")
         if session.order_id != order.pk:
             raise sessions.AiSessionBusy(session)
+        _assert_order_department_scope(session.order_id, user)
 
         # OFF is intentionally less restrictive than start/reset/complete:
         # any scoped shipping operator may de-energize it.
@@ -1193,6 +1194,7 @@ def _stop_cloud(
             raise ai.AiError(409, "AI session changed during completion")
         if locked.order_id != order.pk:
             raise sessions.AiSessionBusy(locked)
+        _assert_order_department_scope(locked.order_id, user)
         if not can_control_session(locked, user):
             raise PermissionDenied(
                 "Only the employee who started loading or an administrator "
@@ -1249,7 +1251,7 @@ def _stop_cloud(
         if locked is None or locked.pk != session.pk:
             raise ai.AiError(409, "AI session changed during completion")
         _assert_expected_session(locked, expected_session_id)
-        locked_order = Order.objects.select_for_update().get(pk=order.pk)
+        locked_order = _assert_order_department_scope(order.pk, user)
         device = cloud_conveyors.cloud_device_for(camera, lock=True)
         if (
             device is None
@@ -1365,57 +1367,67 @@ def stop(
     # A physical output is stopped and read back before the loading transition.
     # Failure keeps ownership open and visible; it is never downgraded to a
     # cleanup warning.
-    preflight_session = sessions.current_for_camera(camera)
-    _assert_expected_session(preflight_session, expected_session_id)
-    preflight_session_id = (
-        preflight_session.pk if preflight_session is not None else None
-    )
-    if preflight_session is not None:
-        if preflight_session.order_id != order.pk:
-            raise sessions.AiSessionBusy(preflight_session)
-        if not can_control_session(preflight_session, user):
-            raise PermissionDenied(
-                "Завершить отгрузку может только начавший её сотрудник "
-                "или администратор"
+    cloud_preflight = False
+    with transaction.atomic():
+        preflight_session = _locked_open_session(camera)
+        _assert_expected_session(preflight_session, expected_session_id)
+        preflight_session_id = (
+            preflight_session.pk if preflight_session is not None else None
+        )
+        if preflight_session is not None:
+            if preflight_session.order_id != order.pk:
+                raise sessions.AiSessionBusy(preflight_session)
+            _assert_order_department_scope(preflight_session.order_id, user)
+            if not can_control_session(preflight_session, user):
+                raise PermissionDenied(
+                    "Завершить отгрузку может только начавший её сотрудник "
+                    "или администратор"
+                )
+            cloud_preflight = (
+                preflight_session.conveyor_transport
+                == AiCountingSession.CONVEYOR_CLOUD
             )
-        if (
-            preflight_session.conveyor_transport
-            == AiCountingSession.CONVEYOR_CLOUD
-        ):
-            return _stop_cloud(
-                camera,
-                order,
-                user,
-                preflight_session,
-                complete_order=complete_order,
-                expected_session_id=expected_session_id,
-            )
-        if preflight_session.conveyor_enabled and complete_order:
-            # Normal completion must prove the target before stopping. Manual
-            # cancellation is intentionally deferred until the OPEN row is
-            # locked below: that lock serializes with STARTING -> ACTIVE and
-            # guarantees a delayed post-commit ON loses to emergency OFF.
-            goal_snapshot = _payload(ai.status(camera))
-            _assert_conveyor_goal_reached(
-                preflight_session,
-                goal_snapshot,
-            )
-            stopped = ai.stop_conveyor(camera, preflight_session.pk)
-            _assert_conveyor_confirmed_off(preflight_session, stopped)
+            if (
+                preflight_session.conveyor_enabled
+                and complete_order
+                and not cloud_preflight
+            ):
+                # Normal completion must prove the target before stopping.
+                # Keep Order -> Client ownership locked across the edge calls
+                # so a department transfer cannot race a physical side effect.
+                goal_snapshot = _payload(ai.status(camera))
+                _assert_conveyor_goal_reached(
+                    preflight_session,
+                    goal_snapshot,
+                )
+                stopped = ai.stop_conveyor(camera, preflight_session.pk)
+                _assert_conveyor_confirmed_off(preflight_session, stopped)
+
+    if cloud_preflight:
+        return _stop_cloud(
+            camera,
+            order,
+            user,
+            preflight_session,
+            complete_order=complete_order,
+            expected_session_id=expected_session_id,
+        )
 
     with transaction.atomic():
         session = _locked_open_session(camera)
         # A second concurrent stop re-evaluates the OPEN predicate after the
         # first transaction commits and reaches this idempotent branch.
         if session is None:
-            response = {"running": False, **metadata(None, order.pk, camera, user)}
-            if complete_order:
-                order.refresh_from_db(fields=["status"])
-                if order.status == "loaded":
-                    response.update(
-                        order_status="loaded",
-                        bags_loaded=order.shipment.bags_loaded,
-                    )
+            locked_order = _assert_order_department_scope(order.pk, user)
+            response = {
+                "running": False,
+                **metadata(None, locked_order.pk, camera, user),
+            }
+            if complete_order and locked_order.status == "loaded":
+                response.update(
+                    order_status="loaded",
+                    bags_loaded=locked_order.shipment.bags_loaded,
+                )
             return response
         if preflight_session_id is None or session.pk != preflight_session_id:
             raise ai.AiError(
@@ -1425,6 +1437,7 @@ def stop(
         _assert_expected_session(session, expected_session_id)
         if session.order_id != order.pk:
             raise sessions.AiSessionBusy(session)
+        locked_order = _assert_order_department_scope(session.order_id, user)
         if not can_control_session(session, user):
             raise PermissionDenied(
                 "Остановить отгрузку может только начавший её сотрудник или администратор"
@@ -1435,7 +1448,6 @@ def stop(
             stopped = ai.emergency_stop_conveyor(camera, session.pk)
             _assert_conveyor_physical_off(session, stopped)
 
-        locked_order = Order.objects.select_for_update().get(pk=order.pk)
         if complete_order and (
             session.status != AiCountingSession.ACTIVE
             or locked_order.status != "loading"
@@ -1582,6 +1594,7 @@ def reset(
             if session is not None:
                 raise sessions.AiSessionBusy(session)
             raise ai.AiError(409, "Активная AI-сессия не найдена")
+        _assert_order_department_scope(session.order_id, user)
         if not can_control_session(session, user):
             raise PermissionDenied(
                 "Сбросить счётчик может только начавший отгрузку сотрудник или администратор"

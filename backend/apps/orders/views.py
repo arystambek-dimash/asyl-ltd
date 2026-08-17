@@ -99,7 +99,7 @@ def _notify_document_invoice(order, payment: Payment) -> None:
     )
 
 
-def _issue_provider_payment(payment: Payment, *, phone_number=None):
+def _issue_provider_payment(payment: Payment, *, user, phone_number=None):
     """Создать обязательный внешний счёт для QR/счёта на оплату."""
     channel = PROVIDER_METHOD_CHANNELS.get(payment.method)
     if channel is None:
@@ -131,6 +131,7 @@ def _issue_provider_payment(payment: Payment, *, phone_number=None):
         payment,
         channel=channel,
         phone_number=phone_number if channel == "phone" else None,
+        user=user,
     )
 
 
@@ -173,7 +174,9 @@ def _issue_mixed_provider_payments(payments, parts, user):
         for payment in online:
             part = part_by_method.get(payment.method, {})
             record = _issue_provider_payment(
-                payment, phone_number=part.get("phone_number")
+                payment,
+                phone_number=part.get("phone_number"),
+                user=user,
             )
             if record is not None:
                 issued.append(record)
@@ -187,7 +190,7 @@ def _issue_mixed_provider_payments(payments, parts, user):
                 and record.status not in PROVIDER_CLOSED_STATUSES
             ):
                 try:
-                    cancel_invoice(record)
+                    cancel_invoice(record, user=user)
                 except (ApiPayAPIError, ValidationError):
                     pass
             record.refresh_from_db()
@@ -205,7 +208,7 @@ def _issue_mixed_provider_payments(payments, parts, user):
 def _restore_payment_and_provider(payment: Payment, user):
     payment = restore_rejected_payment(payment, user)
     try:
-        _issue_provider_payment(payment)
+        _issue_provider_payment(payment, user=user)
     except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
         payment.refresh_from_db()
         if (
@@ -244,7 +247,7 @@ def _reject_payment_with_provider(payment: Payment, user, *, reason: str):
                 ),
                 "code": "qr_cancel_unsupported",
             })
-        cancel_invoice(invoice)
+        cancel_invoice(invoice, user=user)
         payment.refresh_from_db()
         invoice.refresh_from_db()
         if (
@@ -558,7 +561,9 @@ class PaymentProviderIssueView(APIView):
         )
         try:
             _issue_provider_payment(
-                payment, phone_number=request.data.get("phone_number")
+                payment,
+                phone_number=request.data.get("phone_number"),
+                user=request.user,
             )
         except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
             raise _provider_error(exc) from exc
@@ -1237,7 +1242,9 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         if method in PROVIDER_METHOD_CHANNELS and not document_invoice:
             try:
                 _issue_provider_payment(
-                    payment, phone_number=phone_number
+                    payment,
+                    phone_number=phone_number,
+                    user=request.user,
                 )
             except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
                 _reject_created_payments([payment], request.user)

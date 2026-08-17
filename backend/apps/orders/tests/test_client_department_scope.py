@@ -2,14 +2,28 @@ from decimal import Decimal
 
 import pytest
 from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied
 
 from apps.catalog.models import Product
 from apps.clients.models import Client, Store
 from apps.eventlog.models import EventLog
-from apps.orders.models import Order, OrderItem, Payment
+from apps.orders import apipay as apipay_services
+from apps.orders.apipay import (
+    cancel_invoice,
+    create_cash_refund,
+    create_invoice,
+    create_refund,
+)
+from apps.orders.models import (
+    ApiPayInvoice,
+    Order,
+    OrderItem,
+    Payment,
+    PaymentRefund,
+    StatusChangeRequest,
+)
 from apps.sales.models import Department
 from apps.warehouse.models import StockItem
-
 
 pytestmark = pytest.mark.django_db
 
@@ -42,10 +56,15 @@ def ownership_scope(user_with_perms):
             "orders.view",
             "orders.create",
             "orders.edit",
+            "orders.confirm",
+            "orders.correct_price",
             "payments.view",
             "payments.create",
             "payments.confirm",
             "reports.view",
+            "shipping.load",
+            "shipping.rollback",
+            "train.load",
         ],
     )
     user.employee.sales_department = first_department
@@ -114,6 +133,10 @@ def test_order_scope_covers_list_detail_and_trash(
     assert preview.data["count"] == 1
     assert [row["id"] for row in preview.data["results"]] == [first.pk]
     assert api.post(f"/api/orders/{second.pk}/restore/").status_code == 400
+    assert api.delete(f"/api/orders/{second.pk}/purge/").status_code == 400
+    second.refresh_from_db()
+    assert second.deleted_at == deleted_at
+    assert second.purged_at is None
 
 
 def test_unassigned_and_superuser_keep_global_order_access(
@@ -368,3 +391,308 @@ def test_top_level_payment_actions_hide_foreign_department_ids(
     assert received.status == "received"
     assert rejected.status == "rejected"
     assert issuable.status == "received"
+
+
+def test_post_board_and_dashboard_projection_are_ownership_scoped(
+    auth_client,
+    ownership_scope,
+):
+    scope = ownership_scope
+    own = _order(
+        scope["first_client"],
+        department=scope["first_department"].code,
+        status="arrived",
+    )
+    foreign = _order(
+        scope["second_client"],
+        department=scope["first_department"].code,
+        status="arrived",
+    )
+    Payment.objects.create(order=own, amount="10.00", status="received")
+    Payment.objects.create(order=foreign, amount="90.00", status="received")
+    api = auth_client(scope["user"])
+
+    post_board = api.get("/api/orders/", {"post_board": "1"})
+    dashboard = api.get("/api/orders/dashboard-operational/")
+
+    assert post_board.status_code == 200
+    assert [row["id"] for row in post_board.data] == [own.pk]
+    assert dashboard.status_code == 200
+    assert [row["id"] for row in dashboard.data["queue"]] == [own.pk]
+    assert dashboard.data["attention"]["pending_payments"] == 1
+
+
+@pytest.mark.parametrize(
+    ("method", "suffix", "payload"),
+    [
+        ("patch", "", {"notes": "cross-tenant edit"}),
+        ("post", "repeat/", {}),
+        ("post", "correct-price/", {"total_amount": "1.00"}),
+        ("post", "train/", {"action": "start"}),
+        ("post", "loading-camera/", {"camera": ""}),
+        ("post", "payments/", {"amount": "1.00", "method": "cash"}),
+        ("get", "invoice-pdf/", None),
+        ("post", "payments/{payment}/receive/", {}),
+        ("post", "payments/{payment}/confirm/", {}),
+        ("post", "payments/{payment}/reopen/", {}),
+        ("post", "payments/{payment}/restore/", {}),
+        ("post", "payments/{payment}/reject/", {"reason": "no"}),
+        ("post", "confirm/", {}),
+        ("post", "reject/", {}),
+        ("post", "set-status/", {"status": "confirmed"}),
+        ("post", "rollback-shipment/", {"reason": "no"}),
+        ("get", "status-requests/", None),
+        ("post", "status-requests/{status_request}/approve/", {}),
+        ("post", "status-requests/{status_request}/reject/", {}),
+    ],
+)
+def test_foreign_order_detail_actions_are_hidden_before_action_logic(
+    auth_client,
+    ownership_scope,
+    method,
+    suffix,
+    payload,
+):
+    scope = ownership_scope
+    foreign = _order(
+        scope["second_client"],
+        department=scope["second_department"].code,
+    )
+    payment = Payment.objects.create(
+        order=foreign,
+        amount="10.00",
+        method="cash",
+        status="received",
+    )
+    status_request = StatusChangeRequest.objects.create(
+        order=foreign,
+        to_status="confirmed",
+    )
+    path = (
+        f"/api/orders/{foreign.pk}/"
+        + suffix.format(
+            payment=payment.pk,
+            status_request=status_request.pk,
+        )
+    )
+    api = auth_client(scope["user"])
+
+    if method == "get":
+        response = api.get(path)
+    else:
+        response = getattr(api, method)(path, payload, format="json")
+
+    assert response.status_code == 404
+    foreign.refresh_from_db()
+    payment.refresh_from_db()
+    status_request.refresh_from_db()
+    assert foreign.notes == ""
+    assert foreign.status == "draft"
+    assert payment.status == "received"
+    assert status_request.status == "pending"
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "payments/{payment}/receive/",
+        "payments/{payment}/confirm/",
+        "payments/{payment}/reopen/",
+        "payments/{payment}/restore/",
+        "payments/{payment}/reject/",
+        "status-requests/{status_request}/approve/",
+        "status-requests/{status_request}/reject/",
+    ],
+)
+def test_nested_child_ids_cannot_cross_from_foreign_to_owned_order(
+    auth_client,
+    ownership_scope,
+    suffix,
+):
+    scope = ownership_scope
+    own = _order(
+        scope["first_client"],
+        department=scope["first_department"].code,
+    )
+    foreign = _order(
+        scope["second_client"],
+        department=scope["second_department"].code,
+    )
+    payment = Payment.objects.create(
+        order=foreign,
+        amount="10.00",
+        method="cash",
+        status="received",
+    )
+    status_request = StatusChangeRequest.objects.create(
+        order=foreign,
+        to_status="confirmed",
+    )
+    path = (
+        f"/api/orders/{own.pk}/"
+        + suffix.format(
+            payment=payment.pk,
+            status_request=status_request.pk,
+        )
+    )
+
+    response = auth_client(scope["user"]).post(
+        path,
+        {"reason": "cross-tenant child"},
+        format="json",
+    )
+
+    assert response.status_code == 404
+    payment.refresh_from_db()
+    status_request.refresh_from_db()
+    assert payment.status == "received"
+    assert status_request.status == "pending"
+
+
+def test_locked_provider_and_refund_services_recheck_department_ownership(
+    ownership_scope,
+    monkeypatch,
+):
+    scope = ownership_scope
+    order = _order(
+        scope["first_client"],
+        department=scope["first_department"].code,
+        status="shipped",
+    )
+    issue_payment = Payment.objects.create(
+        order=order,
+        amount="10.00",
+        method="invoice",
+        status="received",
+    )
+    cash_payment = Payment.objects.create(
+        order=order,
+        amount="20.00",
+        method="cash",
+        status="confirmed",
+    )
+    provider_payment = Payment.objects.create(
+        order=order,
+        amount="30.00",
+        method="invoice",
+        status="confirmed",
+    )
+    provider_invoice = ApiPayInvoice.objects.create(
+        payment=provider_payment,
+        invoice_id=123456,
+        idempotency_key=f"scope-refund-{provider_payment.pk}",
+        status="paid",
+        channel="phone",
+    )
+    scope["first_client"].department = scope["second_department"]
+    scope["first_client"].save(update_fields=["department"])
+
+    def unexpected_provider_call(*args, **kwargs):
+        pytest.fail("department rejection must happen before an ApiPay call")
+
+    monkeypatch.setattr("apps.orders.apipay.api_request", unexpected_provider_call)
+
+    with pytest.raises(PermissionDenied):
+        create_invoice(issue_payment, user=scope["user"])
+    with pytest.raises(PermissionDenied):
+        create_cash_refund(
+            cash_payment,
+            scope["user"],
+            amount="1.00",
+            reason="scope changed",
+        )
+    with pytest.raises(PermissionDenied):
+        create_refund(
+            provider_invoice,
+            scope["user"],
+            amount="1.00",
+            reason="scope changed",
+        )
+    with pytest.raises(PermissionDenied):
+        cancel_invoice(provider_invoice, user=scope["user"])
+
+    assert not ApiPayInvoice.objects.filter(payment=issue_payment).exists()
+    assert not PaymentRefund.objects.filter(
+        payment__in=[cash_payment, provider_payment]
+    ).exists()
+
+
+@pytest.mark.parametrize("operation", ["invoice", "refund"])
+def test_provider_side_effect_rechecks_scope_after_local_reservation(
+    ownership_scope,
+    monkeypatch,
+    operation,
+):
+    scope = ownership_scope
+    order = _order(
+        scope["first_client"],
+        department=scope["first_department"].code,
+        status="shipped",
+    )
+    payment = Payment.objects.create(
+        order=order,
+        amount="30.00",
+        method="invoice",
+        status="confirmed" if operation == "refund" else "received",
+    )
+    provider_invoice = None
+    if operation == "refund":
+        provider_invoice = ApiPayInvoice.objects.create(
+            payment=payment,
+            invoice_id=654321,
+            idempotency_key=f"scope-gap-refund-{payment.pk}",
+            status="paid",
+            channel="phone",
+        )
+
+    original_scope_check = apipay_services.assert_order_user_scope
+    checks = 0
+
+    def transfer_after_first_scope_check(locked_order, user):
+        nonlocal checks
+        checks += 1
+        original_scope_check(locked_order, user)
+        if checks == 1:
+            Client.objects.filter(pk=locked_order.client_id).update(
+                department=scope["second_department"]
+            )
+
+    def unexpected_provider_call(*args, **kwargs):
+        pytest.fail("the second scope fence must reject before an ApiPay call")
+
+    monkeypatch.setattr(
+        apipay_services,
+        "assert_order_user_scope",
+        transfer_after_first_scope_check,
+    )
+    monkeypatch.setattr(
+        apipay_services,
+        "api_request",
+        unexpected_provider_call,
+    )
+
+    with pytest.raises(PermissionDenied):
+        if operation == "invoice":
+            create_invoice(
+                payment,
+                user=scope["user"],
+                phone_number="87771234567",
+            )
+        else:
+            create_refund(
+                provider_invoice,
+                scope["user"],
+                amount="1.00",
+                reason="scope moved between phases",
+            )
+
+    assert checks == 2
+    if operation == "invoice":
+        payment.refresh_from_db()
+        assert payment.status == "rejected"
+        assert ApiPayInvoice.objects.get(payment=payment).status == "error"
+    else:
+        payment.refresh_from_db()
+        refund = PaymentRefund.objects.get(payment=payment)
+        assert refund.status == "failed"
+        assert payment.pending_refund_amount == Decimal(0)

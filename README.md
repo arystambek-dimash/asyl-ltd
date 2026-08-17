@@ -526,6 +526,8 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 | `frontend` | Next.js standalone |
 | `go2rtc` | 32 статических слота cam1..cam32 + динамические потоки от бэкенда; ffmpeg-транскод только если кодек не H.264 |
 | `camera-monitor` | тот же образ backend, `manage.py monitor_cameras` |
+| `celery-payments` | Celery worker только очереди `payments`, concurrency/prefetch = 1; сверка ApiPay |
+| `celery-beat` | периодически ставит сверку ApiPay в Redis с expiry; schedule/pid живут в отдельном tmpfs |
 | `db` / `redis` | PostgreSQL 16 / Redis 7 — в изолированной internal-сети `data` |
 | `db-backup` | ежедневный `pg_dump` + бэкап перед каждым деплоем |
 | `wireguard` | туннель до цехового ПК (NVR + ai_service :8890) |
@@ -551,6 +553,65 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 деплой и проверки написаны с ретраями; троттлинг DRF выключен под pytest;
 go2rtc rate-limit'ить нельзя (живое видео).
 
+### Наблюдаемость
+
+- **Backend Sentry** включается только непустым `SENTRY_BACKEND_DSN`. События
+  получают единые `APP_RELEASE`, `APP_ENVIRONMENT` и тег `APP_SERVICE`;
+  web-процесс и каждый monitor-контейнер имеют своё имя сервиса. По умолчанию
+  ошибки отправляются, а tracing/profiling выключены (`…_SAMPLE_RATE=0`).
+- SDK не отправляет default PII, тела/заголовки HTTP-запросов, query params,
+  cookie, database query data, локальные переменные и source-context строки
+  stack frames. Query string и fragment рекурсивно удаляются из URL-подобных
+  значений event, breadcrumb, transaction/span и structured log;
+  `request.headers`, cookies и
+  query string, всё request body/form/files и response body/data дополнительно
+  удаляются fail-closed перед отправкой. В остальных
+  вложенных данных нормализованные поля паролей, токенов, private/API keys,
+  credentials, Authorization, ApiPay, camera/AI и conveyor credentials
+  рекурсивно заменяются на `[Filtered]`. Это страховка, а не повод писать
+  секреты в сообщения логов — строку уже сформированного сообщения невозможно
+  надёжно очистить по имени поля.
+- В production Django пишет по одному JSON-объекту на строку stdout с полями
+  `timestamp`, `level`, `logger`, `message`, `exception`, `service`,
+  `environment`, `release`. Локально формат остаётся читаемым; для JSON можно
+  задать `LOG_FORMAT=json`. Gunicorn access log выключен, потому что raw request
+  target содержит query string до применения privacy-фильтров; error log
+  остаётся на stderr. Docker хранит только `10m × 3` на сервис: это
+  ограниченная локальная диагностика, а не долговечное централизованное
+  хранилище. Подключение удалённого sink остаётся отдельной инфраструктурной
+  операцией.
+- **Sentry Logs** не включаются вместе с error tracking автоматически.
+  `SENTRY_ENABLE_LOGS=1` (и отдельные frontend-флаги) разрешается только после
+  проверки privacy и бюджета ingestion: объём рабочих monitor-логов значительно
+  выше объёма исключений.
+- **Frontend Sentry** по умолчанию только браузерный: публичный
+  `NEXT_PUBLIC_SENTRY_DSN` встраивается при сборке, необработанные browser/React
+  ошибки и оба App Router error boundary отправляются напрямую из браузера.
+  Axios-ошибки глобально не перехватываются, чтобы частые poller-сбои не создавали
+  шторм событий. Replay и profiling выключены, tracing по умолчанию равен 0.
+- `SENTRY_FRONTEND_SERVER_DSN` оставлен пустым. Frontend-контейнер намеренно
+  находится только во внутренней сети `edge` и не имеет выхода к hosted Sentry;
+  server/edge reporting допустим только после добавления контролируемого relay
+  или узкого egress без снятия сетевой изоляции целиком.
+- Source maps загружаются только когда build одновременно получил
+  `SENTRY_ORG`, `SENTRY_PROJECT` и `SENTRY_AUTH_TOKEN`. Токен передаётся в
+  `frontend/Dockerfile` как BuildKit secret `sentry_auth_token`, не как build arg
+  или ENV, и не попадает в образ. После успешной загрузки карты удаляются из
+  `.next`.
+- Production release — полный Git SHA. Deploy-скрипт экспортирует его как
+  `APP_RELEASE` (с `EXPECTED_SHA` как fail-safe fallback в Compose), а frontend
+  build получает тот же SHA как `NEXT_PUBLIC_APP_RELEASE`, чтобы
+  backend/browser события и source maps совпадали. При rollback скрипт
+  экспортирует SHA предыдущего checkout вместе с предыдущими digest images.
+
+После включения проектов в Sentry нужно создать минимум два внешних правила:
+уведомление о новой/regressed production issue и внешний uptime-check публичных
+frontend/API адресов. Репозиторий не может доказать состояние этих правил в
+Sentry, поэтому выпуск observability считается проверенным только после
+синтетического browser/backend exception и тестового health outage. Camera
+DEGRADED/OUTAGE/RECOVERY по-прежнему доставляются независимо через существующие
+`CAMERA_ALERT_*` webhook/Telegram с durable retry-аудитом.
+
 ### Throttling (уровень Django)
 
 `anon 60/мин`, `user 600/мин`, `login 10/мин`, `register 5/мин`
@@ -570,9 +631,16 @@ go2rtc rate-limit'ить нельзя (живое видео).
 - Подпись `X-Webhook-Signature` проверяется как HMAC-SHA256 от исходного тела
   запроса. Секреты задаются только через `APIPAY_API_KEY` и
   `APIPAY_WEBHOOK_SECRET` в `.env`.
-- Денежные webhook-события применяются идемпотентно через durable inbox
-  `ApiPayWebhookEvent`; фоновый `payment-monitor` восстанавливает пропущенные
-  статусы счетов и возвратов через API ApiPay.
+- Денежные webhook-события остаются быстрым путём и применяются идемпотентно
+  через durable inbox `ApiPayWebhookEvent`. Периодическая задача Celery в
+  выделенной очереди `payments` восстанавливает пропущенные статусы счетов и
+  возвратов через API ApiPay. Один worker, prefetch=1, expiring beat-сообщения и
+  Redis-lease не допускают параллельных итераций; повтор выполняется с прежним
+  ограниченным backoff только после безопасной для повтора ошибки сверки.
+- Результаты задач не сохраняются; источники истины — транзакционные записи и
+  heartbeat worker-а. Для ручной диагностики/аварийного fallback после остановки
+  Celery остаётся `python manage.py reconcile_apipay_invoices --once` (без
+  `--once` доступен прежний непрерывный loop).
 
 ---
 

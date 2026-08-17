@@ -4,8 +4,56 @@ import sys
 from pathlib import Path
 from typing import cast
 
+from config.observability import (
+    build_logging_config,
+    env_flag,
+    initialize_sentry,
+    sample_rate_from_env,
+)
+
 BASE_DIR = Path(__file__).resolve().parents[2]
 TESTING = "pytest" in sys.modules or os.environ.get("PYTEST_RUNNING") == "1"
+
+APP_RELEASE = os.environ.get("APP_RELEASE", "development").strip() or "development"
+_DEFAULT_APP_ENVIRONMENT = (
+    "development" if os.environ.get("DEBUG", "1") == "1" else "production"
+)
+APP_ENVIRONMENT = (
+    os.environ.get("APP_ENVIRONMENT", _DEFAULT_APP_ENVIRONMENT).strip()
+    or _DEFAULT_APP_ENVIRONMENT
+)
+APP_SERVICE = os.environ.get("APP_SERVICE", "backend").strip() or "backend"
+LOG_FORMAT = os.environ.get("LOG_FORMAT", "readable").strip() or "readable"
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").strip().upper() or "INFO"
+
+SENTRY_BACKEND_DSN = os.environ.get("SENTRY_BACKEND_DSN", "").strip()
+SENTRY_ENABLE_LOGS = env_flag(os.environ.get("SENTRY_ENABLE_LOGS", "0"))
+SENTRY_TRACES_SAMPLE_RATE = sample_rate_from_env(
+    os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0"),
+    name="SENTRY_TRACES_SAMPLE_RATE",
+)
+SENTRY_PROFILES_SAMPLE_RATE = sample_rate_from_env(
+    os.environ.get("SENTRY_PROFILES_SAMPLE_RATE", "0"),
+    name="SENTRY_PROFILES_SAMPLE_RATE",
+)
+
+LOGGING = build_logging_config(
+    log_format=LOG_FORMAT,
+    level=LOG_LEVEL,
+    service=APP_SERVICE,
+    environment=APP_ENVIRONMENT,
+    release=APP_RELEASE,
+)
+
+initialize_sentry(
+    dsn=SENTRY_BACKEND_DSN,
+    release=APP_RELEASE,
+    environment=APP_ENVIRONMENT,
+    service=APP_SERVICE,
+    enable_logs=SENTRY_ENABLE_LOGS,
+    traces_sample_rate=SENTRY_TRACES_SAMPLE_RATE,
+    profiles_sample_rate=SENTRY_PROFILES_SAMPLE_RATE,
+)
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -169,6 +217,78 @@ if _redis_url:
             "LOCATION": _redis_url,
         }
     }
+
+# Celery is introduced narrowly for ApiPay reconciliation. Results are never
+# stored: the task's durable effects and the heartbeat are the source of truth.
+CELERY_BROKER_URL = (
+    os.environ.get("CELERY_BROKER_URL", "").strip()
+    or _redis_url
+    or "redis://localhost:6379/0"
+)
+CELERY_RESULT_BACKEND = None
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_TASK_STORE_ERRORS_EVEN_IF_IGNORED = False
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_EVENT_SERIALIZER = "json"
+CELERY_ENABLE_UTC = True
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_TASK_DEFAULT_QUEUE = "default"
+CELERY_TASK_ROUTES = {
+    "orders.reconcile_apipay": {"queue": "payments"},
+}
+
+try:
+    _apipay_reconcile_interval = max(
+        15,
+        int(os.environ.get("APIPAY_RECONCILE_INTERVAL_SECONDS", "30")),
+    )
+except ValueError:
+    _apipay_reconcile_interval = 30
+
+try:
+    _apipay_reconcile_max_backoff = max(
+        _apipay_reconcile_interval,
+        int(os.environ.get("APIPAY_MONITOR_MAX_BACKOFF_SECONDS", "300")),
+    )
+except ValueError:
+    _apipay_reconcile_max_backoff = max(_apipay_reconcile_interval, 300)
+try:
+    _apipay_task_lock_seconds = max(
+        _apipay_reconcile_max_backoff + _apipay_reconcile_interval + 60,
+        int(os.environ.get("APIPAY_RECONCILE_TASK_LOCK_SECONDS", "1200")),
+    )
+except ValueError:
+    _apipay_task_lock_seconds = max(
+        _apipay_reconcile_max_backoff + _apipay_reconcile_interval + 60,
+        1200,
+    )
+
+# A hard-killed late-acked task becomes visible no later than its singleton
+# lease expires. Fresh beat messages keep a replacement worker observable in
+# the meantime, and exactly one owner can claim work at this boundary.
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    "visibility_timeout": _apipay_task_lock_seconds,
+}
+
+CELERY_BEAT_SCHEDULE = {
+    "reconcile-apipay": {
+        "task": "orders.reconcile_apipay",
+        "schedule": _apipay_reconcile_interval,
+        "options": {
+            "queue": "payments",
+            # A delayed periodic message is obsolete once the next interval is
+            # due. Explicit task retries override this with their own expiry.
+            "expires": max(1, _apipay_reconcile_interval - 1),
+        },
+    },
+}
+# Persist last_run_at after every dispatch so the bounded beat schedule file
+# is both crash-safe and useful to operators during health diagnosis.
+CELERY_BEAT_SYNC_EVERY = 1
 
 APIPAY_API_KEY = os.environ.get("APIPAY_API_KEY", "").strip()
 APIPAY_WEBHOOK_SECRET = os.environ.get("APIPAY_WEBHOOK_SECRET", "").strip()

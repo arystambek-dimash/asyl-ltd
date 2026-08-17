@@ -32,6 +32,47 @@ There is no unsafe “skip backup” flag. Normal application deploys pull only
 the immutable backend/frontend release digests and run with `--pull never`, so
 an unrelated mutable infrastructure tag cannot change during a release.
 
+## Automatic release rollback
+
+GitHub repository or organization secrets must provide `PROD_HOST`,
+`PROD_SSH_KEY`, `PROD_SSH_KNOWN_HOSTS` and `TRUCK_SCALE_API_URL`. They must be
+available to both the `deploy` and unattended `recovery` jobs; do not place
+them only in an approval-gated environment that recovery does not bind to.
+Populate the host-key secret from a separately verified production fingerprint
+(the workflow uses strict host-key checking; it does not trust the first key
+seen); for a non-default port, use the standard `[host]:port` known-hosts form.
+`PROD_PORT` and `PROD_USER` may be omitted only to use their explicit
+`22` and `ubuntu` defaults; the application path is derived as
+`/home/<PROD_USER>/asyl-ltd`. Missing required connection settings fail the
+workflow before any host mutation. The deploy and recovery jobs use a read-only
+GitHub token for repository/package access.
+
+Before changing the checkout or recreating application containers, the deploy
+records the running backend/frontend digest references and Git commit in the
+gitignored, host-only `.deploy-state/` directory (mode `0700`). That directory
+is not mounted into any container; the database backup container can write only
+archive data under `backups/`. The same pending state is reused by an SSH retry,
+so a partially started candidate can never become its own rollback target.
+Local compose, go2rtc, or nginx startup failure restores that recorded release
+immediately.
+
+GitHub Actions keeps the transaction pending while it checks the API and login
+flow through the public site. Either gate failing invokes the persisted rollback
+runner, restores the previous Git checkout (including bind-mounted nginx/go2rtc
+configuration), and re-pins both application images. Only after both gates pass
+does the workflow mark the candidate good and prune unused Docker images.
+If the main deploy job itself times out, an independent recovery job consumes
+the same durable transaction: it rolls back a candidate that failed before the
+public gates, or finishes finalization when both gates had already passed.
+
+This is an **application release rollback**, not a database restore. The backend
+runs Django migrations during container startup, so production migrations must
+follow the expand/contract rule: a previous application release must remain
+compatible with the migrated schema. Database and media archives are never
+restored automatically because doing so could discard writes accepted after the
+deploy began. Use the validated pre-deploy archives for a deliberate maintenance
+restore if a migration itself must be reversed.
+
 ## Pull a fresh local copy
 
 From the repository root:

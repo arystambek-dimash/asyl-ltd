@@ -6,10 +6,11 @@ from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
+from apps.clients.models import Client
 from apps.clients.services import is_payment_window_open
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
-from apps.sales.access import scope_by_client_department
+from apps.sales.access import assigned_department_id
 
 from .models import Order, OrderItem, Payment, StatusChangeRequest
 from .statuses import PUBLIC_MANUAL_STATUSES, PUBLIC_STATUS_LABELS, public_status_label
@@ -17,12 +18,24 @@ from .statuses import PUBLIC_MANUAL_STATUSES, PUBLIC_STATUS_LABELS, public_statu
 MAX_MONEY = Decimal("9999999999.99")
 
 
-def _assert_order_user_scope(order: Order, user) -> None:
-    if user is not None and not scope_by_client_department(
-        Order.all_objects.filter(pk=order.pk),
-        user,
-        client_path="client",
-    ).exists():
+def assert_order_user_scope(order: Order, user) -> None:
+    """Lock and verify the client owner after the caller locks ``order``.
+
+    Department reassignment locks the Client row. Taking the same row lock
+    here, strictly after the Order lock, prevents an operation authorized
+    against stale ownership from racing a client transfer.
+    """
+    if user is None:
+        return
+    department_id = assigned_department_id(user)
+    if department_id is None:
+        return
+    client = (
+        Client.objects.select_for_update()
+        .only("department_id")
+        .get(pk=order.client_id)
+    )
+    if client.department_id != department_id:
         raise PermissionDenied("Заказ передан в другой отдел")
 
 
@@ -47,7 +60,7 @@ def lock_live_order(order: Order | int, user=None) -> Order:
             "detail": "Заказ находится в архиве",
             "code": "order_not_active",
         })
-    _assert_order_user_scope(locked, user)
+    assert_order_user_scope(locked, user)
     return locked
 
 
@@ -1645,7 +1658,7 @@ def soft_delete_order(order: Order, user) -> Order:
         })
     if order.deleted_at is not None:
         raise ValidationError({"detail": "Заказ уже в корзине", "code": "already_deleted"})
-    _assert_order_user_scope(order, user)
+    assert_order_user_scope(order, user)
     _assert_no_open_ai_session(order)
     _assert_not_active_loading(order)
     order.deleted_at = timezone.now()
@@ -1672,7 +1685,7 @@ def restore_order(order: Order, user) -> Order:
         })
     if order.deleted_at is None:
         raise ValidationError({"detail": "Заказ не в корзине", "code": "not_deleted"})
-    _assert_order_user_scope(order, user)
+    assert_order_user_scope(order, user)
     order.deleted_at = None
     order.deleted_by = None
     order.save(update_fields=["deleted_at", "deleted_by"])
@@ -1706,7 +1719,7 @@ def purge_order(order: Order, user) -> None:
     if order.deleted_at is None:
         raise ValidationError(
             {"detail": "Сначала переместите заказ в корзину", "code": "not_deleted"})
-    _assert_order_user_scope(order, user)
+    assert_order_user_scope(order, user)
     _assert_no_open_ai_session(order)
     _assert_not_active_loading(order)
     must_retain_history = (
