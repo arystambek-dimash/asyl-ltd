@@ -12,6 +12,7 @@ def test_known_codes_are_present():
         "shipping.debt_override",
         "clients.set_price",
         "clients.manage_access",
+        "ai_247.manage",
         "reports.export",
         "employees.manage",
         "grain.delete",

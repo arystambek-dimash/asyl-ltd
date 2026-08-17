@@ -124,7 +124,7 @@ class MonoblockCameraSettings(models.Model):
     singleton = models.BooleanField(default=True, unique=True, editable=False)
     camera_sources = models.JSONField(default=list, blank=True)
     # Камеры, чьи модели работают 24/7 без публикации/записи видео.
-    # Настройка доступна только Django superuser.
+    # Изменение защищено отдельным правом ai_247.manage.
     always_on_camera_sources = models.JSONField(default=list, blank=True)
     # Одна камера высокого разрешения, закреплённая за будущим контуром
     # круглосуточного распознавания номеров вагонов.

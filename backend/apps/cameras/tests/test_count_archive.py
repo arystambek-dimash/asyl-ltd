@@ -151,22 +151,22 @@ def test_deleting_a_missing_archive_is_rejected(boss):
     assert exc.value.detail["code"] == "archive_not_found"
 
 
-def test_only_a_superuser_can_delete_an_archive(make_user, auth_client, boss):
+def test_deleting_an_archive_requires_ai_247_manage(
+    user_with_perms, auth_client, boss,
+):
     """Кнопка удаления доступна тем же, кто может архивировать."""
     _enable()
     analytics.record_snapshot(_snapshot(100))
     archive = analytics.archive_camera("cam3", "", boss)
-    plain = make_user(username="not-super")
+    loader = user_with_perms("archive-loader", codes=["shipping.load"])
 
-    denied = auth_client(plain).delete(
+    denied = auth_client(loader).delete(
         f"/api/cameras/always-on-analytics/archives/{archive['id']}/")
-    assert denied.status_code in (401, 403)
+    assert denied.status_code == 403
     assert AlwaysOnCountArchive.objects.filter(pk=archive["id"]).exists()
 
-    root = make_user(username="root-del")
-    root.is_superuser = True
-    root.save(update_fields=["is_superuser"])
-    allowed = auth_client(root).delete(
+    manager = user_with_perms("archive-manager", codes=["ai_247.manage"])
+    allowed = auth_client(manager).delete(
         f"/api/cameras/always-on-analytics/archives/{archive['id']}/")
     assert allowed.status_code == 200
     assert not AlwaysOnCountArchive.objects.filter(pk=archive["id"]).exists()

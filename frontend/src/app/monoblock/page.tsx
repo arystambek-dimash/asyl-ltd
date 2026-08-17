@@ -582,7 +582,7 @@ function AlwaysOnSettingsButton({
       <Modal
         open={open}
         onClose={() => setOpen(false)}
-        eyebrow="Только системный суперпользователь"
+        eyebrow="Требуется право «AI 24/7: Управление»"
         title="Постоянный AI-подсчёт"
         description="Модель остаётся прогретой и считает круглосуточно. В этом режиме видео не публикуется и не записывается."
         className="max-w-2xl"
@@ -682,12 +682,14 @@ function AlwaysOnCard({
   camera,
   detail,
   daily,
+  canManage,
   onAnalyticsChanged,
 }: {
   processor: AlwaysOnProcessorStatus;
   camera?: CameraFeed & { src: string };
   detail?: string;
   daily?: AlwaysOnDailyCameraAnalytics;
+  canManage: boolean;
   onAnalyticsChanged: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
@@ -901,6 +903,7 @@ function AlwaysOnCard({
   }, [currentDaily?.day, modalView, open, processor.cam, selectedDay, selectedProductionReload]);
 
   async function saveProductionMappings(mappings: AlwaysOnProductMapping[]) {
+    if (!canManage) return;
     setProductionSaving(true);
     setProductionError(null);
     try {
@@ -918,6 +921,7 @@ function AlwaysOnCard({
   }
 
   async function retryProductionBatch(batch: AlwaysOnStockBatch) {
+    if (!canManage) return;
     setProductionError(null);
     try {
       await api.post(`/cameras/always-on-production/batches/${batch.id}/retry/`);
@@ -940,6 +944,7 @@ function AlwaysOnCard({
   }
 
   function showCorrection() {
+    if (!canManage) return;
     setCorrectionAmount("");
     setCorrectionColor(currentDaily?.colors?.[0]?.color ?? "");
     setCorrectionReason("");
@@ -948,6 +953,7 @@ function AlwaysOnCard({
   }
 
   async function subtractCount() {
+    if (!canManage) return;
     setCorrecting(true);
     setCorrectionError("");
     try {
@@ -988,6 +994,7 @@ function AlwaysOnCard({
   }, [open, modalView, archives, loadArchives]);
 
   async function deleteArchive(row: AlwaysOnCountArchive) {
+    if (!canManage) return;
     setDeletingArchiveId(row.id);
     setDeleteArchiveError("");
     try {
@@ -1006,6 +1013,7 @@ function AlwaysOnCard({
   }
 
   async function archiveCount() {
+    if (!canManage) return;
     setArchiving(true);
     setArchiveError("");
     try {
@@ -1233,14 +1241,16 @@ function AlwaysOnCard({
                     {current.error || liveDetail}
                   </p>
                 )}
-                <button
-                  type="button"
-                  disabled={todayTotal <= 0}
-                  onClick={showCorrection}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2.5 text-xs font-semibold text-white/75 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-35"
-                >
-                  <Minus className="size-3.5" /> Уменьшить итог
-                </button>
+                {canManage && (
+                  <button
+                    type="button"
+                    disabled={todayTotal <= 0}
+                    onClick={showCorrection}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2.5 text-xs font-semibold text-white/75 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-35"
+                  >
+                    <Minus className="size-3.5" /> Уменьшить итог
+                  </button>
+                )}
               </div>
             </aside>
           </div>
@@ -1251,6 +1261,7 @@ function AlwaysOnCard({
               loading={productionLoading}
               error={productionError}
               saving={productionSaving}
+              canManage={canManage}
               onSave={saveProductionMappings}
               onRetry={retryProductionBatch}
             />
@@ -1463,25 +1474,29 @@ function AlwaysOnCard({
                     </div>
                   )}
                 </div>
-                <button
-                  type="button"
-                  disabled={todayTotal <= 0}
-                  onClick={showCorrection}
-                  className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
-                >
-                  <Minus className="size-3.5" /> Уменьшить итог за сегодня
-                </button>
-                <button
-                  type="button"
-                  disabled={allTimeTotal <= 0 || archiving}
-                  onClick={() => setArchiveOpen(true)}
-                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
-                >
-                  <Archive className="size-3.5" /> Обнулить и сдать в архив
-                </button>
-                <p className="mt-2 text-center text-[11px] leading-snug text-slate-400">
-                  Накопленное уйдёт в архив, счётчик начнётся с нуля. Дни останутся в истории.
-                </p>
+                {canManage && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={todayTotal <= 0}
+                      onClick={showCorrection}
+                      className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
+                    >
+                      <Minus className="size-3.5" /> Уменьшить итог за сегодня
+                    </button>
+                    <button
+                      type="button"
+                      disabled={allTimeTotal <= 0 || archiving}
+                      onClick={() => setArchiveOpen(true)}
+                      className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
+                    >
+                      <Archive className="size-3.5" /> Обнулить и сдать в архив
+                    </button>
+                    <p className="mt-2 text-center text-[11px] leading-snug text-slate-400">
+                      Накопленное уйдёт в архив, счётчик начнётся с нуля. Дни останутся в истории.
+                    </p>
+                  </>
+                )}
               </section>
             </div>
           </div>
@@ -1577,20 +1592,22 @@ function AlwaysOnCard({
                       </button>
                       {/* Корзинка прямо на строке: удаление, спрятанное внутри
                         раскрытой карточки, никто не находил. */}
-                      <button
-                        type="button"
-                        aria-label={`Удалить архив за ${fullDay(row.period_start)}`}
-                        title="Удалить запись — мешки вернутся в счёт"
-                        disabled={deletingArchiveId === row.id}
-                        onClick={() => setArchiveToDelete(row)}
-                        className="flex size-9 shrink-0 items-center justify-center self-center rounded-lg text-slate-300 transition hover:bg-red-50 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        {deletingArchiveId === row.id ? (
-                          <LoaderCircle className="size-4 animate-spin" />
-                        ) : (
-                          <Trash2 className="size-4" />
-                        )}
-                      </button>
+                      {canManage && (
+                        <button
+                          type="button"
+                          aria-label={`Удалить архив за ${fullDay(row.period_start)}`}
+                          title="Удалить запись — мешки вернутся в счёт"
+                          disabled={deletingArchiveId === row.id}
+                          onClick={() => setArchiveToDelete(row)}
+                          className="flex size-9 shrink-0 items-center justify-center self-center rounded-lg text-slate-300 transition hover:bg-red-50 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {deletingArchiveId === row.id ? (
+                            <LoaderCircle className="size-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="size-4" />
+                          )}
+                        </button>
+                      )}
                     </div>
 
                     {expanded && (
@@ -1689,19 +1706,21 @@ function AlwaysOnCard({
                           </p>
                         )}
 
-                        <button
-                          type="button"
-                          disabled={deletingArchiveId === row.id}
-                          onClick={() => setArchiveToDelete(row)}
-                          className="mt-4 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-400 transition hover:bg-red-50 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          {deletingArchiveId === row.id ? (
-                            <LoaderCircle className="size-3.5 animate-spin" />
-                          ) : (
-                            <Trash2 className="size-3.5" />
-                          )}
-                          Удалить запись
-                        </button>
+                        {canManage && (
+                          <button
+                            type="button"
+                            disabled={deletingArchiveId === row.id}
+                            onClick={() => setArchiveToDelete(row)}
+                            className="mt-4 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-400 transition hover:bg-red-50 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            {deletingArchiveId === row.id ? (
+                              <LoaderCircle className="size-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="size-3.5" />
+                            )}
+                            Удалить запись
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1713,9 +1732,9 @@ function AlwaysOnCard({
       </Modal>
 
       <Modal
-        open={correctionOpen}
+        open={canManage && correctionOpen}
         onClose={() => !correcting && setCorrectionOpen(false)}
-        eyebrow={`Суперадмин · ${camera?.zone || processor.cam}`}
+        eyebrow={`AI 24/7 · управление · ${camera?.zone || processor.cam}`}
         title="Уменьшить итог за сегодня"
         description="Используйте только для ложных срабатываний. Сырой результат модели не меняется, корректировка навсегда останется в журнале."
         className="max-w-lg"
@@ -1812,9 +1831,9 @@ function AlwaysOnCard({
       </Modal>
 
       <Modal
-        open={archiveOpen}
+        open={canManage && archiveOpen}
         onClose={() => !archiving && setArchiveOpen(false)}
-        eyebrow={`Суперадмин · ${camera?.zone || processor.cam}`}
+        eyebrow={`AI 24/7 · управление · ${camera?.zone || processor.cam}`}
         title="Обнулить счётчик и сдать в архив"
         description="Накопленное переносится в архив целиком: счётчик начнётся с нуля, а дни останутся в истории и на графике."
         className="max-w-lg"
@@ -1865,9 +1884,9 @@ function AlwaysOnCard({
       </Modal>
 
       <Modal
-        open={archiveToDelete !== null}
+        open={canManage && archiveToDelete !== null}
         onClose={() => deletingArchiveId === null && setArchiveToDelete(null)}
-        eyebrow={`Суперадмин · ${camera?.zone || processor.cam}`}
+        eyebrow={`AI 24/7 · управление · ${camera?.zone || processor.cam}`}
         title="Удалить запись архива?"
         description="Мешки не пропадут — они вернутся в текущий счёт, как будто период не закрывали."
         className="max-w-lg"
@@ -2392,6 +2411,13 @@ function SessionCard({
 
 function MonoblockPageInner() {
   const { me } = useAuth();
+  const isSuper = !!me?.is_superuser;
+  const canManageSystem = can(me, "sys_permissions.manage");
+  // Техническая учётная запись физического моноблока работает только с
+  // отгрузкой своей камеры. Общий производственный мониторинг предназначен
+  // сотрудникам, которые входят на эту же страницу по shipping.load.
+  const canViewAlwaysOn = can(me, "shipping.load") && !me?.is_monoblock;
+  const canManageAlwaysOn = canViewAlwaysOn && can(me, "ai_247.manage");
   const { data: orders, error, reload: reloadOrders } = useApi<Order[]>("/orders/?post_board=1");
   const { data: cameras, error: camerasError, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
   const {
@@ -2419,18 +2445,17 @@ function MonoblockPageInner() {
     error: alwaysOnSettingsError,
     reload: reloadAlwaysOnSettings,
     setData: setAlwaysOnSettings,
-  } = useApi<AlwaysOnCameraSettings>(me?.is_superuser ? "/cameras/always-on-settings/" : null);
+  } = useApi<AlwaysOnCameraSettings>(canViewAlwaysOn ? "/cameras/always-on-settings/" : null);
   const {
     data: alwaysOnAnalytics,
     error: alwaysOnAnalyticsError,
     reload: reloadAlwaysOnAnalytics,
-  } = useApi<AlwaysOnDailyAnalytics>(me?.is_superuser ? "/cameras/always-on-analytics/" : null);
-  const isSuper = !!me?.is_superuser;
+  } = useApi<AlwaysOnDailyAnalytics>(canViewAlwaysOn ? "/cameras/always-on-analytics/" : null);
   // Страница разделена на вкладки: «Отгрузки» (по умолчанию) — запуск сессий
   // и активные отгрузки, «AI 24/7» — сам моноблок с бесконечным циклом подсчёта.
-  // Вкладка AI видна только суперпользователю, остальным — сразу отгрузки.
+  // Технический аккаунт моноблока остаётся только на вкладке отгрузки.
   const [tab, setTab] = useState<(typeof MONOBLOCK_PAGE_TABS)[number]>("shipments");
-  const activeTab = isSuper ? tab : "shipments";
+  const activeTab = canViewAlwaysOn ? tab : "shipments";
   const pageTabs = useRovingTabs({
     tabs: MONOBLOCK_PAGE_TABS,
     active: activeTab,
@@ -2453,7 +2478,8 @@ function MonoblockPageInner() {
         reloadOrders(),
         reloadCameras(),
         reloadCameraSettings(),
-        ...(me?.is_superuser ? [reloadAlwaysOnSettings(), reloadAlwaysOnAnalytics(), reloadConveyorDevices()] : []),
+        ...(canViewAlwaysOn ? [reloadAlwaysOnSettings(), reloadAlwaysOnAnalytics()] : []),
+        ...(isSuper ? [reloadConveyorDevices()] : []),
       ]),
     SLOW_POLL_MS,
   );
@@ -2522,9 +2548,9 @@ function MonoblockPageInner() {
           {(error || auxiliaryError) && (
             <ErrorAlert message={error || auxiliaryError} onRetry={() => void reloadAll()} />
           )}
-          {(isSuper || can(me, "sys_permissions.manage")) && (
+          {(canViewAlwaysOn || canManageSystem) && (
             <div className="flex flex-wrap items-center gap-3">
-              {isSuper && (
+              {canViewAlwaysOn && (
                 <div
                   {...pageTabs.tabListProps}
                   className="grid w-full min-w-0 grid-cols-2 rounded-2xl border border-slate-200 bg-slate-100 p-1 xl:w-auto xl:grid-flow-col xl:grid-cols-none"
@@ -2572,13 +2598,15 @@ function MonoblockPageInner() {
                 </div>
               )}
               <div className="ml-auto flex items-center gap-2">
-                {isSuper && activeTab === "monoblock" ? (
-                  <AlwaysOnSettingsButton
-                    cameras={playable}
-                    settings={alwaysOnSettings}
-                    onSaved={setAlwaysOnSettings}
-                  />
-                ) : can(me, "sys_permissions.manage") ? (
+                {activeTab === "monoblock" ? (
+                  canManageAlwaysOn ? (
+                    <AlwaysOnSettingsButton
+                      cameras={playable}
+                      settings={alwaysOnSettings}
+                      onSaved={setAlwaysOnSettings}
+                    />
+                  ) : null
+                ) : canManageSystem ? (
                   <>
                     {isSuper && (
                       <>
@@ -2601,7 +2629,7 @@ function MonoblockPageInner() {
             </div>
           )}
 
-          <div {...(isSuper ? pageTabs.getTabPanelProps(activeTab) : {})} className="flex flex-col gap-7">
+          <div {...(canViewAlwaysOn ? pageTabs.getTabPanelProps(activeTab) : {})} className="flex flex-col gap-7">
             {activeTab === "monoblock" ? (
               !alwaysOnSettings?.camera_sources.length ? (
                 <div className="flex min-h-56 flex-col items-center justify-center rounded-[24px] border border-dashed border-slate-200 bg-slate-50/70 p-8 text-center">
@@ -2610,8 +2638,9 @@ function MonoblockPageInner() {
                   </span>
                   <p className="mt-3 text-sm font-semibold text-slate-600">Бесконечный цикл пока не запущен</p>
                   <p className="mt-1 max-w-sm text-xs text-slate-400">
-                    Выберите камеры в настройке «AI 24/7» — модель начнёт считать круглосуточно, без публикации и записи
-                    видео.
+                    {canManageAlwaysOn
+                      ? "Выберите камеры в настройке «AI 24/7» — модель начнёт считать круглосуточно, без публикации и записи видео."
+                      : "Камеры для постоянного подсчёта пока не настроены. Обратитесь к сотруднику с правом управления AI 24/7."}
                   </p>
                 </div>
               ) : (
@@ -2658,6 +2687,7 @@ function MonoblockPageInner() {
                           camera={playable.find((item) => item.src === source)}
                           detail={alwaysOnSettings.detail}
                           daily={alwaysOnAnalytics?.cameras.find((item) => item.camera === source)}
+                          canManage={canManageAlwaysOn}
                           onAnalyticsChanged={reloadAlwaysOnAnalytics}
                         />
                       );

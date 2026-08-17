@@ -444,17 +444,30 @@ def test_operator_cannot_change_monoblock_camera_allowlist(auth_client, operator
     assert not MonoblockCameraSettings.objects.exists()
 
 
-def test_always_on_settings_are_superuser_only(
+def test_always_on_settings_are_readable_to_loaders_and_managed_separately(
     auth_client,
-    superuser,
     boss,
     operator,
     client_user,
+    user_with_perms,
     monkeypatch,
 ):
-    for user in (boss, operator, client_user):
+    for user in (boss, operator):
         response = auth_client(user).get("/api/cameras/always-on-settings/")
-        assert response.status_code == 403
+        assert response.status_code == 200
+    assert (
+        auth_client(client_user).get("/api/cameras/always-on-settings/").status_code
+        == 403
+    )
+
+    denied = auth_client(boss).put(
+        "/api/cameras/always-on-settings/",
+        {"camera_sources": ["cam2"]},
+        format="json",
+    )
+    assert denied.status_code == 403
+
+    manager = user_with_perms("ai-247-manager", codes=["ai_247.manage"])
 
     monkeypatch.setattr(ai, "AI_KEY", "k")
     live = {
@@ -484,7 +497,7 @@ def test_always_on_settings_are_superuser_only(
         ),
         patch.object(ai, "configure_always_on", return_value=live) as configure,
     ):
-        response = auth_client(superuser).put(
+        response = auth_client(manager).put(
             "/api/cameras/always-on-settings/",
             {"camera_sources": ["2", "cam2"]},
             format="json",
@@ -496,7 +509,7 @@ def test_always_on_settings_are_superuser_only(
     configure.assert_called_once_with(["cam2"], "sub")
     row = MonoblockCameraSettings.objects.get(singleton=True)
     assert row.always_on_camera_sources == ["cam2"]
-    assert row.updated_by == superuser
+    assert row.updated_by == manager
     # 24/7 — фоновый режим камеры, а не отгрузка: он не создаёт владельца,
     # сессию заказа или какую-либо camera binding в CRM.
     assert AiCountingSession.objects.count() == 0

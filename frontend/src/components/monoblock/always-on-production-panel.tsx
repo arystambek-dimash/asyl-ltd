@@ -110,6 +110,7 @@ interface AlwaysOnProductionPanelProps {
   loading: boolean;
   error: string | null;
   saving: boolean;
+  canManage: boolean;
   onSave: (mappings: AlwaysOnProductMapping[]) => void | Promise<void>;
   onRetry?: (batch: AlwaysOnStockBatch) => void | Promise<void>;
 }
@@ -241,6 +242,7 @@ export function AlwaysOnProductionPanel({
   loading,
   error,
   saving,
+  canManage,
   onSave,
   onRetry,
 }: AlwaysOnProductionPanelProps) {
@@ -300,6 +302,7 @@ export function AlwaysOnProductionPanel({
   const nextRun = zonedDateTime(payload.next_run_at, timezone);
 
   function updateMapping(color: string, value: string) {
+    if (!canManage) return;
     const productId = value ? Number(value) : null;
     const product = payload?.products.find((row) => row.id === productId) ?? null;
     setDraft((current) =>
@@ -430,6 +433,7 @@ export function AlwaysOnProductionPanel({
                       <Select
                         aria-label={`Товар для цвета ${meta.label}`}
                         value={mapping.product ?? ""}
+                        disabled={!canManage}
                         onChange={(event) => updateMapping(mapping.color, event.target.value)}
                         className="bg-white"
                       >
@@ -456,12 +460,14 @@ export function AlwaysOnProductionPanel({
               )}
             </div>
 
-            <div className="mt-4 flex justify-end">
-              <Button size="sm" disabled={!dirty || saving} onClick={() => void onSave(draft)}>
-                {saving ? <LoaderCircle className="animate-spin" /> : <Save />}
-                {saving ? "Сохраняем…" : "Сохранить"}
-              </Button>
-            </div>
+            {canManage && (
+              <div className="mt-4 flex justify-end">
+                <Button size="sm" disabled={!dirty || saving} onClick={() => void onSave(draft)}>
+                  {saving ? <LoaderCircle className="animate-spin" /> : <Save />}
+                  {saving ? "Сохраняем…" : "Сохранить"}
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </section>
@@ -567,7 +573,7 @@ export function AlwaysOnProductionPanel({
                   {(batch.last_error || retryable) && (
                     <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
                       {batch.last_error && <p className="min-w-0 flex-1 text-xs text-red-600">{batch.last_error}</p>}
-                      {retryable && onRetry && (
+                      {canManage && retryable && onRetry && (
                         <Button variant="outline" size="sm" onClick={() => void onRetry(batch)}>
                           <RefreshCw /> Повторить сейчас
                         </Button>

@@ -51,7 +51,16 @@ const payload: AlwaysOnProductionPayload = {
 
 describe("AlwaysOnProductionPanel", () => {
   it("показывает настройки автоприхода без общего журнала цветов", () => {
-    render(<AlwaysOnProductionPanel payload={payload} loading={false} error={null} saving={false} onSave={vi.fn()} />);
+    render(
+      <AlwaysOnProductionPanel
+        payload={payload}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage
+        onSave={vi.fn()}
+      />,
+    );
 
     expect(screen.queryByText("Когда выпускался каждый цвет")).not.toBeInTheDocument();
     expect(screen.queryByText("идёт сейчас")).not.toBeInTheDocument();
@@ -64,7 +73,16 @@ describe("AlwaysOnProductionPanel", () => {
   it("предлагает товар совпадающего цвета и сохраняет выбранное сопоставление", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
-    render(<AlwaysOnProductionPanel payload={payload} loading={false} error={null} saving={false} onSave={onSave} />);
+    render(
+      <AlwaysOnProductionPanel
+        payload={payload}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage
+        onSave={onSave}
+      />,
+    );
 
     const blueSelect = screen.getByLabelText("Товар для цвета Синий");
     expect(within(blueSelect).getAllByRole("option")).toHaveLength(2);
@@ -77,6 +95,74 @@ describe("AlwaysOnProductionPanel", () => {
       { color: "red", product: 1, product_label: "Мука красная · 50 кг" },
       { color: "blue", product: 2, product_label: "Мука синяя · 25 кг" },
     ]);
+  });
+
+  it("оставляет настройки и повторный приход только для чтения без права управления", () => {
+    const onRetry = vi.fn();
+    render(
+      <AlwaysOnProductionPanel
+        payload={{
+          ...payload,
+          batches: [
+            {
+              id: 9,
+              camera: "cam1",
+              business_day: "2026-08-15",
+              scheduled_for: "2026-08-15T14:00:00Z",
+              status: "failed",
+              total_bags: 20,
+              last_error: "Склад временно недоступен",
+              attempts: 1,
+              posted_at: null,
+              items: [],
+            },
+          ],
+        }}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage={false}
+        onSave={vi.fn()}
+        onRetry={onRetry}
+      />,
+    );
+
+    expect(screen.getByLabelText("Товар для цвета Красный")).toBeDisabled();
+    expect(screen.getByLabelText("Товар для цвета Синий")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Сохранить" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Повторить сейчас" })).not.toBeInTheDocument();
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it("разрешает повторить ошибочный приход с правом управления", async () => {
+    const user = userEvent.setup();
+    const onRetry = vi.fn();
+    const batch = {
+      id: 9,
+      camera: "cam1",
+      business_day: "2026-08-15",
+      scheduled_for: "2026-08-15T14:00:00Z",
+      status: "failed" as const,
+      total_bags: 20,
+      last_error: "Склад временно недоступен",
+      attempts: 1,
+      posted_at: null,
+      items: [],
+    };
+    render(
+      <AlwaysOnProductionPanel
+        payload={{ ...payload, batches: [batch] }}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage
+        onSave={vi.fn()}
+        onRetry={onRetry}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Повторить сейчас" }));
+    expect(onRetry).toHaveBeenCalledWith(batch);
   });
 });
 

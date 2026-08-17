@@ -78,14 +78,23 @@ def test_superuser_can_subtract_with_reason_and_audit(auth_client, admin_user, b
     assert event.payload["reason"] == "Ложное срабатывание"
 
 
-def test_superuser_configures_color_to_product_route(auth_client, admin_user, boss):
+def test_loader_reads_production_but_only_manager_changes_route(
+    auth_client, admin_user, boss,
+):
     MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
     red = Product.objects.create(
         name="Робот Кука", color="Red", weight_kg="50", price="100",
     )
 
-    denied = auth_client(boss).get(
+    readable = auth_client(boss).get(
         "/api/cameras/always-on-production/?camera=cam3",
+    )
+    assert readable.status_code == 200
+
+    denied = auth_client(boss).put(
+        "/api/cameras/always-on-production/",
+        {"camera": "cam3", "mappings": [{"color": "red", "product": red.pk}]},
+        format="json",
     )
     assert denied.status_code == 403
 

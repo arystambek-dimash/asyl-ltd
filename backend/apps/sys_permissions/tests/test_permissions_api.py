@@ -15,6 +15,15 @@ def test_permissions_list(admin_client):
     response = admin_client.get("/api/permissions/")
     assert response.status_code == 200
     assert any(item["code"] == "orders.create" for item in response.data)
+    permission = next(
+        item for item in response.data if item["code"] == "ai_247.manage"
+    )
+    assert {key: permission[key] for key in ("code", "section", "action", "label")} == {
+        "code": "ai_247.manage",
+        "section": "ai_247",
+        "action": "manage",
+        "label": "AI 24/7: Управление",
+    }
 
 
 def test_permissions_list_requires_catalog_or_employee_management(

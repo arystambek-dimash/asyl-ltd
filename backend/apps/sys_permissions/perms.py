@@ -9,6 +9,7 @@ _SECTIONS = {
     "orders": ("Заказы", ["view", "create", "edit", "confirm", "correct_price"]),
     "payments": ("Оплаты", ["view", "create", "confirm"]),
     "shipping": ("Пост отгрузки", ["view", "arrive", "load", "ship", "rollback", "debt_override"]),
+    "ai_247": ("AI 24/7", ["manage"]),
     "train": ("Вагон", ["view", "load"]),
     "events": ("Журнал", ["view"]),
     "reports": ("Отчёты", ["view", "export"]),

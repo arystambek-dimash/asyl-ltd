@@ -7,7 +7,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
+from apps.common.permissions import HasPerm, IsStaff, IsSuperUser, PermAPIViewMixin
 
 from .. import ai, analytics, health, production, recordings
 from ..models import MonoblockCameraSettings
@@ -20,11 +20,38 @@ from ..serializers import (
     WagonNumberCameraSettingsSerializer,
 )
 
+ALWAYS_ON_READ_PERMISSIONS = ("shipping.load", "ai_247.manage")
+ALWAYS_ON_MANAGE_PERMISSION = "ai_247.manage"
 
-class AlwaysOnDetectionsView(APIView):
-    """Return lightweight live detection boxes for the administrator screen."""
 
-    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+class _HumanAlwaysOnReadPermission(HasPerm):
+    """Allow staff permissions, but never a technical MonoblockDevice account."""
+
+    def has_permission(self, request, view):
+        if getattr(request.user, "monoblock_device", None) is not None:
+            return False
+        return super().has_permission(request, view)
+
+
+class _AlwaysOnPermissionMixin(PermAPIViewMixin):
+    """Use the explicit method map and tighten read access to human users."""
+
+    def get_permissions(self):
+        method = self.request.method.lower()
+        if method in {"head", "options"}:
+            method = "get"
+        codes = self.required_perms.get(method)
+        if method != "get" or codes is None:
+            return super().get_permissions()
+        if isinstance(codes, str):
+            codes = (codes,)
+        return [_HumanAlwaysOnReadPermission(*codes)]
+
+
+class AlwaysOnDetectionsView(_AlwaysOnPermissionMixin, APIView):
+    """Return lightweight live detection boxes for the AI 24/7 monitor."""
+
+    required_perms: ClassVar[dict] = {"get": ALWAYS_ON_READ_PERMISSIONS}
 
     def get(self, request):
         try:
@@ -33,10 +60,13 @@ class AlwaysOnDetectionsView(APIView):
             return Response({"processors": []})
 
 
-class AlwaysOnCameraSettingsView(APIView):
+class AlwaysOnCameraSettingsView(_AlwaysOnPermissionMixin, APIView):
     """Store desired 24/7 processors and synchronize them with camera-PC."""
 
-    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+    required_perms: ClassVar[dict] = {
+        "get": ALWAYS_ON_READ_PERMISSIONS,
+        "put": ALWAYS_ON_MANAGE_PERMISSION,
+    }
 
     @staticmethod
     def _payload(row=None, live=None, sync_status="synced", detail=""):
@@ -209,8 +239,8 @@ class WagonNumberCameraSettingsView(APIView):
             )
 
 
-class AlwaysOnAnalyticsView(APIView):
-    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+class AlwaysOnAnalyticsView(_AlwaysOnPermissionMixin, APIView):
+    required_perms: ClassVar[dict] = {"get": ALWAYS_ON_READ_PERMISSIONS}
 
     def get(self, request):
         if ai.enabled():
@@ -221,8 +251,8 @@ class AlwaysOnAnalyticsView(APIView):
         return Response(analytics.today_payload())
 
 
-class AlwaysOnAnalyticsSubtractView(APIView):
-    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+class AlwaysOnAnalyticsSubtractView(_AlwaysOnPermissionMixin, APIView):
+    required_perms: ClassVar[dict] = {"post": ALWAYS_ON_MANAGE_PERMISSION}
 
     def post(self, request, cam: str):
         serializer = AlwaysOnAnalyticsSubtractSerializer(data=request.data)
@@ -238,8 +268,12 @@ class AlwaysOnAnalyticsSubtractView(APIView):
         )
 
 
-class AlwaysOnAnalyticsArchiveView(APIView):
-    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+class AlwaysOnAnalyticsArchiveView(_AlwaysOnPermissionMixin, APIView):
+    required_perms: ClassVar[dict] = {
+        "get": ALWAYS_ON_READ_PERMISSIONS,
+        "post": ALWAYS_ON_MANAGE_PERMISSION,
+        "delete": ALWAYS_ON_MANAGE_PERMISSION,
+    }
 
     def get(self, request, cam: str | None = None):
         return Response(
@@ -261,10 +295,14 @@ class AlwaysOnAnalyticsArchiveView(APIView):
         return Response(analytics.delete_archive(archive_id, request.user))
 
 
-class AlwaysOnProductionView(APIView):
+class AlwaysOnProductionView(_AlwaysOnPermissionMixin, APIView):
     """Production periods, colour routes and scheduled warehouse receipts."""
 
-    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+    required_perms: ClassVar[dict] = {
+        "get": ALWAYS_ON_READ_PERMISSIONS,
+        "put": ALWAYS_ON_MANAGE_PERMISSION,
+        "patch": ALWAYS_ON_MANAGE_PERMISSION,
+    }
 
     def get(self, request):
         camera = request.query_params.get("camera")
@@ -287,8 +325,8 @@ class AlwaysOnProductionView(APIView):
     patch = put
 
 
-class AlwaysOnStockRetryView(APIView):
-    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+class AlwaysOnStockRetryView(_AlwaysOnPermissionMixin, APIView):
+    required_perms: ClassVar[dict] = {"post": ALWAYS_ON_MANAGE_PERMISSION}
 
     def post(self, request, batch_id: int):
         return Response(production.retry_batch(batch_id))
