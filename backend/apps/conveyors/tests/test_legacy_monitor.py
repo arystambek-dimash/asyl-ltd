@@ -7,6 +7,7 @@ from io import StringIO
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from legacy_conveyor_monitor_healthcheck import check_heartbeat
 
 from apps.cameras import ai
 from apps.cameras.models import AiCountingSession
@@ -18,7 +19,6 @@ from apps.conveyors.legacy_monitor import (
     LegacyConveyorMonitor,
     LegacyPollTarget,
     LegacyStatusError,
-    check_heartbeat,
     claim_open_sessions,
     validate_legacy_status,
     write_heartbeat,

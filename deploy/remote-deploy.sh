@@ -372,8 +372,25 @@ running_release_matches() {
 show_container_failure() {
   echo "Current container state:" >&2
   docker compose -f "$COMPOSE_FILE" ps --all >&2 || true
-  echo "backend logs:" >&2
-  docker compose -f "$COMPOSE_FILE" logs --no-color --tail=200 backend >&2 || true
+
+  # Compose can abort on a transient unhealthy state which has already
+  # recovered by the time diagnostics run. Docker retains the latest probe
+  # attempts, so report any recent non-zero health result and the matching
+  # service logs without dumping every healthy container's output.
+  diag_services="$(docker compose -f "$COMPOSE_FILE" config --services 2>/dev/null)" || diag_services=""
+  for diag_service in $diag_services; do
+    diag_container_id="$(docker compose -f "$COMPOSE_FILE" ps -aq "$diag_service" 2>/dev/null)" || diag_container_id=""
+    [ -n "$diag_container_id" ] || continue
+    diag_container_state="$(docker inspect --format '{{.State.Status}}' "$diag_container_id" 2>/dev/null)" || diag_container_state="unknown"
+    diag_failed_health="$(docker inspect --format '{{if .State.Health}}{{range .State.Health.Log}}{{if ne .ExitCode 0}}{{.End}} exit={{.ExitCode}} {{.Output}}{{println}}{{end}}{{end}}{{end}}' "$diag_container_id" 2>/dev/null)" || diag_failed_health=""
+    if [ "$diag_container_state" != "running" ] || [ -n "$diag_failed_health" ]; then
+      echo "$diag_service diagnostics (state=$diag_container_state):" >&2
+      if [ -n "$diag_failed_health" ]; then
+        printf '%s\n' "$diag_failed_health" >&2
+      fi
+      docker compose -f "$COMPOSE_FILE" logs --no-color --tail=200 "$diag_service" >&2 || true
+    fi
+  done
 }
 
 rollback_release() {

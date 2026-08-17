@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import time
 import uuid
@@ -24,6 +23,7 @@ from typing import Any
 from django.conf import settings
 from django.db import connection, transaction
 from django.utils import timezone
+from legacy_conveyor_monitor_healthcheck import HEARTBEAT_VERSION
 
 from apps.cameras import ai
 from apps.cameras.models import AiCountingSession
@@ -40,9 +40,6 @@ from .services import (
 log = logging.getLogger(__name__)
 
 ADVISORY_LOCK_KEY = 0x4C45474143594252  # "LEGACYBR", signed bigint-safe.
-HEARTBEAT_VERSION = 1
-DEFAULT_HEARTBEAT_FILE = "/tmp/legacy-conveyor-monitor-heartbeat"
-DEFAULT_HEARTBEAT_MAX_AGE_SECONDS = 5.0
 MAX_LEGACY_TOTAL = 2_147_483_647
 
 
@@ -520,64 +517,3 @@ def write_heartbeat(
         os.replace(temporary, heartbeat)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def check_heartbeat(
-    path: str | Path,
-    *,
-    max_age_seconds: float = DEFAULT_HEARTBEAT_MAX_AGE_SECONDS,
-    now: float | None = None,
-    check_process: bool = True,
-) -> tuple[bool, str]:
-    """Validate a heartbeat without touching PostgreSQL or taking the lock."""
-
-    try:
-        raw = Path(path).read_text(encoding="utf-8")
-        payload = json.loads(raw)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        return False, f"heartbeat is unavailable: {exc}"
-    if not isinstance(payload, dict):
-        return False, "heartbeat has an invalid format"
-    version = payload.get("version")
-    if type(version) is not int or version != HEARTBEAT_VERSION:
-        return False, "heartbeat has an unsupported version"
-    if payload.get("state") != "ok":
-        return False, f"monitor reported state={payload.get('state')}"
-
-    timestamp = payload.get("timestamp")
-    if (
-        isinstance(timestamp, bool)
-        or not isinstance(timestamp, (int, float))
-        or not math.isfinite(float(timestamp))
-    ):
-        return False, "heartbeat timestamp is invalid"
-    checked_at = time.time() if now is None else now
-    age = checked_at - float(timestamp)
-    if age < -60:
-        return False, "heartbeat timestamp is unexpectedly in the future"
-    if age > max(0.1, float(max_age_seconds)):
-        return False, f"heartbeat is stale ({age:.1f}s)"
-
-    pid = payload.get("pid")
-    db_pid = payload.get("db_backend_pid")
-    if type(pid) is not int or pid <= 0:
-        return False, "heartbeat process id is invalid"
-    if type(db_pid) is not int or db_pid <= 0:
-        return False, "heartbeat database process id is invalid"
-    try:
-        parsed_boot_id = uuid.UUID(str(payload.get("boot_id")))
-    except (AttributeError, TypeError, ValueError):
-        return False, "heartbeat boot id is invalid"
-    if str(parsed_boot_id) != payload.get("boot_id"):
-        return False, "heartbeat boot id is invalid"
-
-    if check_process:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False, "monitor process is not running"
-        except PermissionError:
-            pass
-        except OSError as exc:
-            return False, f"monitor process check failed: {exc}"
-    return True, f"monitor heartbeat is healthy ({max(0.0, age):.1f}s)"

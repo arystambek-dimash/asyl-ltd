@@ -10,15 +10,17 @@ import time
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from legacy_conveyor_monitor_healthcheck import (
+    DEFAULT_HEARTBEAT_FILE,
+    DEFAULT_HEARTBEAT_MAX_AGE_SECONDS,
+    check_heartbeat,
+)
 
 from apps.cameras import ai
 from apps.conveyors.legacy_monitor import (
-    DEFAULT_HEARTBEAT_FILE,
-    DEFAULT_HEARTBEAT_MAX_AGE_SECONDS,
     AdvisoryLeader,
     LeadershipError,
     LegacyConveyorMonitor,
-    check_heartbeat,
     write_heartbeat,
 )
 

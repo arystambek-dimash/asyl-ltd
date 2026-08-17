@@ -648,11 +648,30 @@ class ProductionManifestTests(unittest.TestCase):
             'test: ["CMD", "python", "/app/celery_beat_healthcheck.py"]',
             compose,
         )
+        self.assertIn(
+            'test: ["CMD", "python", '
+            '"/app/legacy_conveyor_monitor_healthcheck.py"]',
+            compose,
+        )
+        self.assertNotIn(
+            '"monitor_legacy_conveyors", "--healthcheck"',
+            compose,
+        )
         self.assertEqual(
             compose.count(
                 "APP_RELEASE: ${APP_RELEASE:-${EXPECTED_SHA:-development}}"
             ),
             3,
+        )
+
+    def test_deploy_failure_reports_recent_health_probe_output(self) -> None:
+        deploy_script = REMOTE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("range .State.Health.Log", deploy_script)
+        self.assertIn("if ne .ExitCode 0", deploy_script)
+        self.assertIn(
+            'logs --no-color --tail=200 "$diag_service"',
+            deploy_script,
         )
 
     def test_frontend_build_wires_sentry_without_exposing_auth_token_as_arg(

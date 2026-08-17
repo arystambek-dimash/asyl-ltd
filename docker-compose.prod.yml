@@ -358,13 +358,15 @@ services:
         condition: service_healthy
     init: true
     healthcheck:
-      test: ["CMD", "python", "manage.py", "monitor_legacy_conveyors", "--healthcheck"]
-      interval: 2s
-      # Importing Django can exceed one second on the production host even
-      # though the monitor heartbeat itself is fresh.
-      timeout: 5s
+      # A stdlib-only probe avoids repeatedly importing Django/Celery/Sentry
+      # while all release containers compete for CPU during startup.
+      test: ["CMD", "python", "/app/legacy_conveyor_monitor_healthcheck.py"]
+      interval: 5s
+      timeout: 2s
       retries: 3
-      start_period: 5s
+      # The first heartbeat is deliberately `starting`; only a completed
+      # database/poll cycle publishes `ok`.
+      start_period: 60s
     restart: unless-stopped
     logging: *default-logging
     networks:
