@@ -29,6 +29,7 @@ import {
   Pencil,
   Trash2,
   KeyRound,
+  type LucideIcon,
 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { playableCameras, type CameraFeed } from "@/components/camera-wall";
@@ -44,6 +45,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { motion } from "motion/react";
+import { BentoGrid, BentoCard } from "@/components/ui/aceternity/bento-grid";
+import { colorMeta } from "@/lib/monoblock-colors";
 import { api, apiError } from "@/lib/api";
 import { orderedBagCount } from "@/lib/orders";
 import { showSuccess } from "@/lib/toast";
@@ -87,22 +91,12 @@ const SLOW_POLL_MS = 30_000;
 const ALWAYS_ON_MODAL_VIEWS = ["live", "production", "analytics", "archive"] as const;
 const MONOBLOCK_PAGE_TABS = ["shipments", "monoblock"] as const;
 
-const COLOR_META: Record<string, { label: string; bar: string; dot: string }> = {
-  red: { label: "Красный", bar: "bg-[#dc604d]", dot: "bg-[#dc604d]" },
-  blue: { label: "Синий", bar: "bg-[#4169d8]", dot: "bg-[#4169d8]" },
-  green: { label: "Зелёный", bar: "bg-[#42a779]", dot: "bg-[#42a779]" },
-  white: { label: "Белый", bar: "border border-slate-300 bg-slate-100", dot: "border border-slate-300 bg-white" },
-};
-
-function colorMeta(color: string) {
-  return (
-    COLOR_META[color.toLowerCase()] ?? {
-      label: color,
-      bar: "bg-slate-500",
-      dot: "bg-slate-500",
-    }
-  );
-}
+const MODAL_TABS: { key: (typeof ALWAYS_ON_MODAL_VIEWS)[number]; label: string; icon: LucideIcon }[] = [
+  { key: "live", label: "Прямой эфир", icon: Video },
+  { key: "production", label: "Выпуск и склад", icon: PackageCheck },
+  { key: "analytics", label: "Аналитика", icon: BarChart3 },
+  { key: "archive", label: "Архив", icon: Archive },
+];
 
 function CameraChoice({
   camera,
@@ -1091,46 +1085,32 @@ function AlwaysOnCard({
           {...modalTabs.tabListProps}
           className="mb-4 flex w-full gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex"
         >
-          <button
-            type="button"
-            {...modalTabs.getTabProps("live")}
-            className={cn(
-              "flex shrink-0 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
-              modalView === "live" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
-            )}
-          >
-            <Video className="size-4" /> Прямой эфир
-          </button>
-          <button
-            type="button"
-            {...modalTabs.getTabProps("production")}
-            className={cn(
-              "flex shrink-0 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
-              modalView === "production" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
-            )}
-          >
-            <PackageCheck className="size-4" /> Выпуск и склад
-          </button>
-          <button
-            type="button"
-            {...modalTabs.getTabProps("analytics")}
-            className={cn(
-              "flex shrink-0 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
-              modalView === "analytics" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
-            )}
-          >
-            <BarChart3 className="size-4" /> Аналитика
-          </button>
-          <button
-            type="button"
-            {...modalTabs.getTabProps("archive")}
-            className={cn(
-              "flex shrink-0 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
-              modalView === "archive" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800",
-            )}
-          >
-            <Archive className="size-4" /> Архив
-          </button>
+          {MODAL_TABS.map((tab) => {
+            const active = modalView === tab.key;
+            const Icon = tab.icon;
+            return (
+              <button
+                type="button"
+                key={tab.key}
+                {...modalTabs.getTabProps(tab.key)}
+                className={cn(
+                  "relative flex shrink-0 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
+                  active ? "text-slate-900" : "text-slate-500 hover:text-slate-800",
+                )}
+              >
+                {active && (
+                  <motion.span
+                    layoutId="modal-tab-pill"
+                    transition={{ type: "spring", stiffness: 420, damping: 34 }}
+                    className="absolute inset-0 rounded-lg bg-white shadow-sm motion-reduce:transition-none"
+                  />
+                )}
+                <span className="relative z-10 flex items-center gap-2">
+                  <Icon className="size-4" /> {tab.label}
+                </span>
+              </button>
+            );
+          })}
         </div>
 
         {modalView === "live" ? (
@@ -1267,26 +1247,25 @@ function AlwaysOnCard({
             />
           </div>
         ) : modalView === "analytics" ? (
-          <div
-            {...modalTabs.getTabPanelProps("analytics")}
-            className="overflow-hidden rounded-[22px] border border-slate-200 bg-[#f8fafc] shadow-[0_20px_55px_rgba(15,23,42,0.09)]"
-          >
-            <div className="grid grid-cols-2 border-b border-slate-200 bg-white sm:grid-cols-3">
-              <div className="border-r border-slate-200 p-3 sm:p-5">
+          <div {...modalTabs.getTabPanelProps("analytics")}>
+            <BentoGrid>
+              <BentoCard glow className="p-3 sm:p-5">
                 <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Сегодня</div>
                 <div className="mt-1 text-3xl font-black tabular-nums tracking-tight text-slate-900 sm:text-4xl">
                   {todayTotal}
                 </div>
                 <div className="mt-1 text-xs text-slate-400">мешков за текущий день</div>
-              </div>
-              <div className="p-3 sm:border-r sm:p-5">
+              </BentoCard>
+
+              <BentoCard glow className="p-3 sm:p-5">
                 <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">За всё время</div>
                 <div className="mt-1 text-3xl font-black tabular-nums tracking-tight text-blue-600 sm:text-4xl">
                   {allTimeTotal}
                 </div>
                 <div className="mt-1 text-xs text-slate-400">накоплено CRM</div>
-              </div>
-              <div className="col-span-2 border-t border-slate-200 p-3 sm:col-span-1 sm:border-t-0 sm:p-5">
+              </BentoCard>
+
+              <BentoCard glow className="p-3 sm:p-5">
                 <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Чаще всего</div>
                 {dominant ? (
                   <div className="mt-2 flex items-center gap-2">
@@ -1298,11 +1277,9 @@ function AlwaysOnCard({
                   <div className="mt-2 text-xl font-bold text-slate-300">Нет данных</div>
                 )}
                 <div className="mt-1 text-xs text-slate-400">по всем распознанным цветам</div>
-              </div>
-            </div>
+              </BentoCard>
 
-            <div className="grid gap-3 p-3 sm:gap-5 sm:p-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(260px,0.8fr)]">
-              <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">
+              <BentoCard colSpan={2} className="p-3 sm:p-5">
                 <div className="flex items-end justify-between gap-3">
                   <div>
                     <h3 className="font-bold text-slate-800">Подсчёт по дням</h3>
@@ -1353,100 +1330,14 @@ function AlwaysOnCard({
                     </div>
                   </div>
                 </div>
-
-                {selectedPoint ? (
-                  <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50/60 p-3 sm:p-4">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h4 className="font-bold text-slate-800">{fullDay(selectedPoint.day)}</h4>
-                      <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
-                        Выбран день
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedDay(null)}
-                        className="ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-slate-500 transition hover:bg-white hover:text-slate-700"
-                      >
-                        Закрыть
-                      </button>
-                    </div>
-
-                    <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                      <div className="rounded-lg bg-white p-2.5">
-                        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Итог</div>
-                        <div className="mt-0.5 text-xl font-black tabular-nums text-slate-900">
-                          {selectedPoint.total}
-                        </div>
-                      </div>
-                      <div className="rounded-lg bg-white p-2.5">
-                        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Модель</div>
-                        <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
-                          {selectedPoint.model_total}
-                        </div>
-                      </div>
-                      <div className="rounded-lg bg-white p-2.5">
-                        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Поправка</div>
-                        <div
-                          className={cn(
-                            "mt-0.5 text-xl font-black tabular-nums",
-                            selectedPoint.adjustment < 0 ? "text-amber-600" : "text-slate-300",
-                          )}
-                        >
-                          {selectedPoint.adjustment || 0}
-                        </div>
-                      </div>
-                      <div className="rounded-lg bg-white p-2.5">
-                        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Доля дня</div>
-                        <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
-                          {chartMax > 0 ? Math.round((selectedPoint.total * 100) / chartMax) : 0}%
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-3">
-                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                        Цвета за этот день
-                      </div>
-                      {selectedColors.length ? (
-                        <div className="mt-2 space-y-2">
-                          {selectedColors.map((item) => (
-                            <div key={item.color}>
-                              <div className="mb-1 flex items-center gap-2 text-xs">
-                                <span className={cn("size-2.5 rounded-full", colorMeta(item.color).dot)} />
-                                <span className="font-semibold text-slate-700">{colorMeta(item.color).label}</span>
-                                <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
-                                <span className="w-10 text-right tabular-nums text-slate-400">{item.percent}%</span>
-                              </div>
-                              <div className="h-1.5 overflow-hidden rounded-full bg-white">
-                                <div
-                                  className={cn("h-full rounded-full", colorMeta(item.color).bar)}
-                                  style={{ width: `${item.percent}%` }}
-                                />
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="mt-2 text-xs text-slate-400">В этот день модель ничего не распознала.</p>
-                      )}
-                    </div>
-
-                    <AlwaysOnDayRunLog
-                      day={selectedPoint.day}
-                      runs={selectedProductionRuns}
-                      timezone={selectedProductionTimezone}
-                      loading={selectedProductionLoading}
-                      error={selectedProductionError}
-                      onRetry={() => setSelectedProductionReload((value) => value + 1)}
-                    />
-                  </div>
-                ) : (
+                {!selectedPoint && (
                   <p className="mt-3 text-center text-xs text-slate-400">
                     Нажмите на столбик, чтобы посмотреть аналитику за день
                   </p>
                 )}
-              </section>
+              </BentoCard>
 
-              <section className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">
+              <BentoCard rowSpan={2} className="p-3 sm:p-5">
                 <h3 className="font-bold text-slate-800">Цвета продукции</h3>
                 <p className="mt-0.5 text-xs text-slate-400">За всё время по данным модели</p>
                 <div className="mt-5 space-y-4">
@@ -1475,12 +1366,12 @@ function AlwaysOnCard({
                   )}
                 </div>
                 {canManage && (
-                  <>
+                  <div className="mt-auto pt-5">
                     <button
                       type="button"
                       disabled={todayTotal <= 0}
                       onClick={showCorrection}
-                      className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
+                      className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
                     >
                       <Minus className="size-3.5" /> Уменьшить итог за сегодня
                     </button>
@@ -1495,10 +1386,95 @@ function AlwaysOnCard({
                     <p className="mt-2 text-center text-[11px] leading-snug text-slate-400">
                       Накопленное уйдёт в архив, счётчик начнётся с нуля. Дни останутся в истории.
                     </p>
-                  </>
+                  </div>
                 )}
-              </section>
-            </div>
+              </BentoCard>
+
+              {selectedPoint && (
+                <BentoCard colSpan={2} className="border-blue-200 bg-blue-50/60 p-3 sm:p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h4 className="font-bold text-slate-800">{fullDay(selectedPoint.day)}</h4>
+                    <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+                      Выбран день
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedDay(null)}
+                      className="ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-slate-500 transition hover:bg-white hover:text-slate-700"
+                    >
+                      Закрыть
+                    </button>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <div className="rounded-lg bg-white p-2.5">
+                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Итог</div>
+                      <div className="mt-0.5 text-xl font-black tabular-nums text-slate-900">{selectedPoint.total}</div>
+                    </div>
+                    <div className="rounded-lg bg-white p-2.5">
+                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Модель</div>
+                      <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
+                        {selectedPoint.model_total}
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-white p-2.5">
+                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Поправка</div>
+                      <div
+                        className={cn(
+                          "mt-0.5 text-xl font-black tabular-nums",
+                          selectedPoint.adjustment < 0 ? "text-amber-600" : "text-slate-300",
+                        )}
+                      >
+                        {selectedPoint.adjustment || 0}
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-white p-2.5">
+                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Доля дня</div>
+                      <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
+                        {chartMax > 0 ? Math.round((selectedPoint.total * 100) / chartMax) : 0}%
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3">
+                    <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                      Цвета за этот день
+                    </div>
+                    {selectedColors.length ? (
+                      <div className="mt-2 space-y-2">
+                        {selectedColors.map((item) => (
+                          <div key={item.color}>
+                            <div className="mb-1 flex items-center gap-2 text-xs">
+                              <span className={cn("size-2.5 rounded-full", colorMeta(item.color).dot)} />
+                              <span className="font-semibold text-slate-700">{colorMeta(item.color).label}</span>
+                              <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
+                              <span className="w-10 text-right tabular-nums text-slate-400">{item.percent}%</span>
+                            </div>
+                            <div className="h-1.5 overflow-hidden rounded-full bg-white">
+                              <div
+                                className={cn("h-full rounded-full", colorMeta(item.color).bar)}
+                                style={{ width: `${item.percent}%` }}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-xs text-slate-400">В этот день модель ничего не распознала.</p>
+                    )}
+                  </div>
+
+                  <AlwaysOnDayRunLog
+                    day={selectedPoint.day}
+                    runs={selectedProductionRuns}
+                    timezone={selectedProductionTimezone}
+                    loading={selectedProductionLoading}
+                    error={selectedProductionError}
+                    onRetry={() => setSelectedProductionReload((value) => value + 1)}
+                  />
+                </BentoCard>
+              )}
+            </BentoGrid>
           </div>
         ) : null}
 

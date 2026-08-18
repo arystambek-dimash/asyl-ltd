@@ -25,33 +25,8 @@ import type {
   AlwaysOnStockBatch,
 } from "@/lib/types";
 import { cn, formatIsoDate } from "@/lib/utils";
-
-const COLOR_META: Record<string, { label: string; dot: string; tint: string; line: string }> = {
-  red: {
-    label: "Красный",
-    dot: "bg-[#d2604d]",
-    tint: "border-[#d2604d]/25 bg-[#d2604d]/[0.07]",
-    line: "bg-[#d2604d]",
-  },
-  blue: {
-    label: "Синий",
-    dot: "bg-[#4669d8]",
-    tint: "border-[#4669d8]/25 bg-[#4669d8]/[0.07]",
-    line: "bg-[#4669d8]",
-  },
-  green: {
-    label: "Зелёный",
-    dot: "bg-[#48a57a]",
-    tint: "border-[#48a57a]/25 bg-[#48a57a]/[0.07]",
-    line: "bg-[#48a57a]",
-  },
-  white: {
-    label: "Белый",
-    dot: "border border-slate-300 bg-white",
-    tint: "border-slate-200 bg-slate-50",
-    line: "border border-slate-300 bg-white",
-  },
-};
+import { colorMeta, normalizedColor } from "@/lib/monoblock-colors";
+import { GlowingEffect } from "@/components/ui/aceternity/glowing-effect";
 
 const BATCH_META: Record<AlwaysOnStockBatch["status"], { label: string; className: string }> = {
   scheduled: { label: "Запланировано", className: "border-blue-200 bg-blue-50 text-blue-700" },
@@ -60,21 +35,6 @@ const BATCH_META: Record<AlwaysOnStockBatch["status"], { label: string; classNam
   empty: { label: "Нет продукции", className: "border-slate-200 bg-slate-50 text-slate-500" },
   failed: { label: "Ошибка", className: "border-red-200 bg-red-50 text-red-700" },
 };
-
-function normalizedColor(value: string | null | undefined) {
-  return (value ?? "").trim().toLowerCase();
-}
-
-function colorMeta(color: string) {
-  return (
-    COLOR_META[normalizedColor(color)] ?? {
-      label: color,
-      dot: "bg-slate-500",
-      tint: "border-slate-200 bg-slate-50",
-      line: "bg-slate-500",
-    }
-  );
-}
 
 /**
  * Порог «шума»: период другого цвета с числом мешков меньше этого значения
@@ -260,7 +220,7 @@ export function AlwaysOnDayRunLog({ day, runs, timezone, loading, error, onRetry
           )}
         </div>
       ) : visibleRuns.length ? (
-        <div className="divide-y divide-slate-100">
+        <div className="max-h-[19rem] divide-y divide-slate-100 overflow-y-auto overscroll-contain">
           {visibleRuns.map((run) => {
             const meta = colorMeta(run.color);
             const active = run.status === "active";
@@ -417,8 +377,17 @@ export function AlwaysOnProductionPanel({
         </div>
       )}
 
-      <section className="rounded-2xl bg-slate-950 p-4 text-white shadow-[0_16px_42px_rgba(15,23,42,0.12)] sm:p-5">
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.85fr)] lg:items-center">
+      <section className="relative rounded-2xl bg-slate-950 p-4 text-white shadow-[0_16px_42px_rgba(15,23,42,0.12)] sm:p-5">
+        <GlowingEffect
+          disabled={false}
+          glow
+          spread={40}
+          proximity={64}
+          inactiveZone={0.5}
+          borderWidth={2}
+          className="motion-reduce:hidden"
+        />
+        <div className="relative grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.85fr)] lg:items-center">
           <div>
             <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.14em] text-white/45">
               <CalendarClock className="size-3.5" /> Автоприход на склад
