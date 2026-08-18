@@ -76,6 +76,56 @@ function colorMeta(color: string) {
   );
 }
 
+/**
+ * Порог «шума»: период другого цвета с числом мешков меньше этого значения
+ * считается случайным вкраплением и приклеивается к предыдущему периоду.
+ */
+const NOISE_THRESHOLD = 7;
+
+/**
+ * «Поправленный» вид периодов: мелкие вкрапления другого цвета (< NOISE_THRESHOLD
+ * мешков) поглощаются предыдущим периодом — их мешки приплюсовываются к нему,
+ * а сам период исчезает. У поглощающего периода расширяем конец до конца
+ * поглощённого, чтобы диапазон времени соответствовал выросшему числу мешков.
+ *
+ * Порядок повторяет исходный алгоритм: сравнение идёт с ПРЕДЫДУЩИМ оставленным
+ * периодом, поэтому серия мелких вкраплений подряд склеивается в один якорь.
+ * Сквозные периоды (is_partial_for_day) не участвуют в сравнении по числу
+ * мешков — их model_bags не отражает реальность, поэтому они всегда остаются
+ * якорями и сами не поглощаются.
+ */
+export function smoothColorRuns(runs: AlwaysOnProductionRun[]): AlwaysOnProductionRun[] {
+  const result: AlwaysOnProductionRun[] = [];
+
+  for (const run of runs) {
+    const prev = result[result.length - 1];
+    const mergeable =
+      prev &&
+      !prev.is_partial_for_day &&
+      !run.is_partial_for_day &&
+      normalizedColor(prev.color) !== normalizedColor(run.color) &&
+      run.model_bags < NOISE_THRESHOLD;
+
+    if (mergeable) {
+      result[result.length - 1] = {
+        ...prev,
+        model_bags: prev.model_bags + run.model_bags,
+        // Диапазон времени тянем до конца поглощённого вкрапления.
+        last_counted_at: run.last_counted_at,
+        ended_at: run.ended_at ?? prev.ended_at,
+        ends_after_day: run.ends_after_day ?? prev.ends_after_day,
+        // Если поглотили активный «хвост» — период продолжает идти.
+        status: run.status === "active" ? run.status : prev.status,
+      };
+      continue;
+    }
+
+    result.push(run);
+  }
+
+  return result;
+}
+
 function zonedDateTime(value: string, timezone: string, withDate = true) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -124,8 +174,12 @@ interface AlwaysOnDayRunLogProps {
   onRetry?: () => void;
 }
 
+type DayRunView = "smoothed" | "raw";
+
 /** Компактная лента для карточки выбранного дня в аналитике. */
 export function AlwaysOnDayRunLog({ day, runs, timezone, loading, error, onRetry }: AlwaysOnDayRunLogProps) {
+  const [view, setView] = useState<DayRunView>("smoothed");
+
   const orderedRuns = useMemo(
     () =>
       [...(runs ?? [])].sort(
@@ -133,6 +187,10 @@ export function AlwaysOnDayRunLog({ day, runs, timezone, loading, error, onRetry
       ),
     [runs],
   );
+  const smoothedRuns = useMemo(() => smoothColorRuns(orderedRuns), [orderedRuns]);
+  const visibleRuns = view === "smoothed" ? smoothedRuns : orderedRuns;
+  const collapsedCount = orderedRuns.length - smoothedRuns.length;
+  const showToggle = runs !== null && !loading && !error && collapsedCount > 0;
 
   return (
     <section className="mt-3 overflow-hidden rounded-xl border border-blue-200/80 bg-white">
@@ -142,11 +200,44 @@ export function AlwaysOnDayRunLog({ day, runs, timezone, loading, error, onRetry
         <span className="text-[10px] text-slate-400">за выбранный календарный день</span>
         {runs !== null && !loading && !error && (
           <span className="ml-auto rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold tabular-nums text-slate-500">
-            {orderedRuns.length}
+            {visibleRuns.length}
           </span>
         )}
+        {showToggle && (
+          <div className="flex basis-full items-center gap-1 pl-5.5">
+            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+              <button
+                type="button"
+                onClick={() => setView("smoothed")}
+                aria-pressed={view === "smoothed"}
+                className={cn(
+                  "rounded-md px-2 py-1 text-[10px] font-bold transition",
+                  view === "smoothed" ? "bg-white text-slate-800 shadow-sm" : "text-slate-400 hover:text-slate-600",
+                )}
+              >
+                Поправленный
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("raw")}
+                aria-pressed={view === "raw"}
+                className={cn(
+                  "rounded-md px-2 py-1 text-[10px] font-bold transition",
+                  view === "raw" ? "bg-white text-slate-800 shadow-sm" : "text-slate-400 hover:text-slate-600",
+                )}
+              >
+                Сырой
+              </button>
+            </div>
+            {view === "smoothed" && (
+              <span className="text-[10px] text-slate-400">склеено вкраплений: {collapsedCount}</span>
+            )}
+          </div>
+        )}
         <p className="basis-full pl-5.5 text-[10px] leading-relaxed text-slate-400">
-          Время первого и последнего мешка. Журнал сохраняется независимо от сдачи счётчика в архив.
+          {view === "smoothed"
+            ? `Мелкие вкрапления другого цвета (< ${NOISE_THRESHOLD} меш.) приклеены к предыдущему периоду. Переключите на «Сырой», чтобы увидеть исходный журнал.`
+            : "Время первого и последнего мешка. Журнал сохраняется независимо от сдачи счётчика в архив."}
         </p>
       </div>
 
@@ -168,9 +259,9 @@ export function AlwaysOnDayRunLog({ day, runs, timezone, loading, error, onRetry
             </button>
           )}
         </div>
-      ) : orderedRuns.length ? (
+      ) : visibleRuns.length ? (
         <div className="divide-y divide-slate-100">
-          {orderedRuns.map((run) => {
+          {visibleRuns.map((run) => {
             const meta = colorMeta(run.color);
             const active = run.status === "active";
             const partial = Boolean(run.is_partial_for_day);
