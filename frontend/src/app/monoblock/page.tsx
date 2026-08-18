@@ -46,7 +46,7 @@ import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { motion } from "motion/react";
-import { BentoGrid, BentoCard } from "@/components/ui/aceternity/bento-grid";
+import { ColorDot, Eyebrow, Hairline, Metric, Panel, SectionHead } from "@/components/monoblock/ui";
 import { colorMeta } from "@/lib/monoblock-colors";
 import { api, apiError } from "@/lib/api";
 import { orderedBagCount } from "@/lib/orders";
@@ -1247,49 +1247,39 @@ function AlwaysOnCard({
             />
           </div>
         ) : modalView === "analytics" ? (
-          <div {...modalTabs.getTabPanelProps("analytics")}>
-            <BentoGrid>
-              <BentoCard glow className="p-3 sm:p-5">
-                <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Сегодня</div>
-                <div className="mt-1 text-3xl font-black tabular-nums tracking-tight text-slate-900 sm:text-4xl">
-                  {todayTotal}
-                </div>
-                <div className="mt-1 text-xs text-slate-400">мешков за текущий день</div>
-              </BentoCard>
-
-              <BentoCard glow className="p-3 sm:p-5">
-                <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">За всё время</div>
-                <div className="mt-1 text-3xl font-black tabular-nums tracking-tight text-blue-600 sm:text-4xl">
-                  {allTimeTotal}
-                </div>
-                <div className="mt-1 text-xs text-slate-400">накоплено CRM</div>
-              </BentoCard>
-
-              <BentoCard glow className="p-3 sm:p-5">
-                <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Чаще всего</div>
+          <div {...modalTabs.getTabPanelProps("analytics")} className="space-y-4">
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+              <Panel className="p-5">
+                <Metric label="Сегодня" value={todayTotal} unit="меш." size="lg" />
+              </Panel>
+              <Panel className="p-5">
+                <Metric label="За всё время" value={allTimeTotal} size="lg" accent="blue" />
+              </Panel>
+              <Panel className="col-span-2 p-5 sm:col-span-1">
+                <Eyebrow>Чаще всего</Eyebrow>
                 {dominant ? (
                   <div className="mt-2 flex items-center gap-2">
-                    <span className={cn("size-4 rounded-full", colorMeta(dominant.color).dot)} />
-                    <span className="text-xl font-black text-slate-900">{colorMeta(dominant.color).label}</span>
-                    <span className="ml-auto text-sm font-bold tabular-nums text-slate-500">{dominant.total}</span>
+                    <ColorDot className={colorMeta(dominant.color).dot} />
+                    <span className="text-2xl font-black tracking-tight text-slate-900">
+                      {colorMeta(dominant.color).label}
+                    </span>
+                    <span className="ml-auto text-sm font-semibold tabular-nums text-slate-400">{dominant.total}</span>
                   </div>
                 ) : (
-                  <div className="mt-2 text-xl font-bold text-slate-300">Нет данных</div>
+                  <div className="mt-2 text-2xl font-bold text-slate-300">—</div>
                 )}
-                <div className="mt-1 text-xs text-slate-400">по всем распознанным цветам</div>
-              </BentoCard>
+              </Panel>
+            </div>
 
-              <BentoCard colSpan={2} className="p-3 sm:p-5">
-                <div className="flex items-end justify-between gap-3">
-                  <div>
-                    <h3 className="font-bold text-slate-800">Подсчёт по дням</h3>
-                    <p className="mt-0.5 text-xs text-slate-400">Последние 14 календарных дней</p>
-                  </div>
-                  <span className="text-xs font-semibold text-slate-400">макс. {chartMax}</span>
-                </div>
-                <div className="mt-4 overflow-x-auto pb-1 sm:mt-5">
-                  <div className="h-56 min-w-[560px] rounded-xl border border-slate-100 bg-[linear-gradient(to_bottom,transparent_24%,#e2e8f0_25%,transparent_26%,transparent_49%,#e2e8f0_50%,transparent_51%,transparent_74%,#e2e8f0_75%,transparent_76%)] px-3 pt-4 sm:h-64">
-                    <div className="flex h-[173px] items-end gap-2 sm:h-[205px]">
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+              <Panel className="p-5 sm:p-6">
+                <SectionHead
+                  title="Подсчёт по дням"
+                  aside={<span className="text-[11px] font-medium tabular-nums text-slate-400">макс. {chartMax}</span>}
+                />
+                <div className="mt-5 overflow-x-auto pb-1">
+                  <div className="h-56 min-w-[520px] sm:h-64">
+                    <div className="flex h-[188px] items-end gap-2 sm:h-[216px]">
                       {(currentDaily?.history ?? []).map((item) => {
                         const active = item.day === selectedDay;
                         return (
@@ -1307,11 +1297,9 @@ function AlwaysOnCard({
                               </span>
                               <div
                                 className={cn(
-                                  "w-full max-w-9 rounded-t-md bg-gradient-to-t transition-all duration-500 group-hover:brightness-110",
-                                  active
-                                    ? "from-[#1d4ed8] to-[#4a7ff0] ring-2 ring-blue-400 ring-offset-1"
-                                    : "from-[#cf4f3e] to-[#e8755f]",
-                                  selectedDay && !active && "opacity-45",
+                                  "w-full max-w-8 rounded-md transition-all duration-500 group-hover:brightness-105",
+                                  active ? "bg-blue-600" : "bg-slate-200 group-hover:bg-slate-300",
+                                  selectedDay && !active && "opacity-60",
                                 )}
                                 style={{ height: item.total ? `${Math.max(4, (item.total * 100) / chartMax)}%` : 0 }}
                               />
@@ -1331,25 +1319,22 @@ function AlwaysOnCard({
                   </div>
                 </div>
                 {!selectedPoint && (
-                  <p className="mt-3 text-center text-xs text-slate-400">
-                    Нажмите на столбик, чтобы посмотреть аналитику за день
-                  </p>
+                  <p className="mt-4 text-center text-xs text-slate-400">Нажмите на столбик, чтобы раскрыть день</p>
                 )}
-              </BentoCard>
+              </Panel>
 
-              <BentoCard rowSpan={2} className="p-3 sm:p-5">
-                <h3 className="font-bold text-slate-800">Цвета продукции</h3>
-                <p className="mt-0.5 text-xs text-slate-400">За всё время по данным модели</p>
+              <Panel className="flex flex-col p-5 sm:p-6">
+                <SectionHead title="Цвета продукции" hint="За всё время по данным модели." />
                 <div className="mt-5 space-y-4">
                   {(currentDaily?.colors ?? []).map((item) => (
                     <div key={item.color}>
                       <div className="mb-1.5 flex items-center gap-2 text-sm">
-                        <span className={cn("size-2.5 rounded-full", colorMeta(item.color).dot)} />
-                        <span className="font-semibold text-slate-700">{colorMeta(item.color).label}</span>
+                        <ColorDot className={colorMeta(item.color).dot} />
+                        <span className="font-medium text-slate-600">{colorMeta(item.color).label}</span>
                         <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
-                        <span className="w-10 text-right text-xs tabular-nums text-slate-400">{item.percent}%</span>
+                        <span className="w-9 text-right text-xs tabular-nums text-slate-400">{item.percent}%</span>
                       </div>
-                      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                      <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
                         <div
                           className={cn("h-full rounded-full transition-all duration-500", colorMeta(item.color).bar)}
                           style={{ width: `${item.percent}%` }}
@@ -1358,147 +1343,114 @@ function AlwaysOnCard({
                     </div>
                   ))}
                   {!currentDaily?.colors?.length && (
-                    <div className="flex min-h-40 flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-slate-400">
-                      <BarChart3 className="mb-2 size-7 text-slate-300" />
-                      <span className="text-sm font-semibold">Цветов пока нет</span>
-                      <span className="mt-1 max-w-48 text-xs">Они появятся после первых распознаваний модели.</span>
-                    </div>
+                    <div className="py-10 text-center text-sm text-slate-400">Цветов пока нет</div>
                   )}
                 </div>
                 {canManage && (
-                  <div className="mt-auto pt-5">
+                  <div className="mt-auto flex flex-col gap-2 pt-6">
                     <button
                       type="button"
                       disabled={todayTotal <= 0}
                       onClick={showCorrection}
-                      className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
+                      className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
                     >
-                      <Minus className="size-3.5" /> Уменьшить итог за сегодня
+                      <Minus className="size-3.5" /> Уменьшить за сегодня
                     </button>
                     <button
                       type="button"
                       disabled={allTimeTotal <= 0 || archiving}
                       onClick={() => setArchiveOpen(true)}
-                      className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
+                      className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
                     >
-                      <Archive className="size-3.5" /> Обнулить и сдать в архив
+                      <Archive className="size-3.5" /> Сдать в архив
                     </button>
-                    <p className="mt-2 text-center text-[11px] leading-snug text-slate-400">
-                      Накопленное уйдёт в архив, счётчик начнётся с нуля. Дни останутся в истории.
-                    </p>
                   </div>
                 )}
-              </BentoCard>
+              </Panel>
+            </div>
 
-              {selectedPoint && (
-                <BentoCard colSpan={2} className="border-blue-200 bg-blue-50/60 p-3 sm:p-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h4 className="font-bold text-slate-800">{fullDay(selectedPoint.day)}</h4>
-                    <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
-                      Выбран день
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedDay(null)}
-                      className="ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-slate-500 transition hover:bg-white hover:text-slate-700"
-                    >
-                      Закрыть
-                    </button>
-                  </div>
+            {selectedPoint && (
+              <Panel className="p-5 sm:p-6">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h4 className="text-[15px] font-semibold tracking-tight text-slate-900">
+                    {fullDay(selectedPoint.day)}
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedDay(null)}
+                    className="ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-slate-400 transition hover:bg-slate-50 hover:text-slate-700"
+                  >
+                    Закрыть
+                  </button>
+                </div>
 
-                  <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    <div className="rounded-lg bg-white p-2.5">
-                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Итог</div>
-                      <div className="mt-0.5 text-xl font-black tabular-nums text-slate-900">{selectedPoint.total}</div>
-                    </div>
-                    <div className="rounded-lg bg-white p-2.5">
-                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Модель</div>
-                      <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
-                        {selectedPoint.model_total}
-                      </div>
-                    </div>
-                    <div className="rounded-lg bg-white p-2.5">
-                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Поправка</div>
-                      <div
-                        className={cn(
-                          "mt-0.5 text-xl font-black tabular-nums",
-                          selectedPoint.adjustment < 0 ? "text-amber-600" : "text-slate-300",
-                        )}
-                      >
-                        {selectedPoint.adjustment || 0}
-                      </div>
-                    </div>
-                    <div className="rounded-lg bg-white p-2.5">
-                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Доля дня</div>
-                      <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
-                        {chartMax > 0 ? Math.round((selectedPoint.total * 100) / chartMax) : 0}%
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-3">
-                    <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                      Цвета за этот день
-                    </div>
-                    {selectedColors.length ? (
-                      <div className="mt-2 space-y-2">
-                        {selectedColors.map((item) => (
-                          <div key={item.color}>
-                            <div className="mb-1 flex items-center gap-2 text-xs">
-                              <span className={cn("size-2.5 rounded-full", colorMeta(item.color).dot)} />
-                              <span className="font-semibold text-slate-700">{colorMeta(item.color).label}</span>
-                              <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
-                              <span className="w-10 text-right tabular-nums text-slate-400">{item.percent}%</span>
-                            </div>
-                            <div className="h-1.5 overflow-hidden rounded-full bg-white">
-                              <div
-                                className={cn("h-full rounded-full", colorMeta(item.color).bar)}
-                                style={{ width: `${item.percent}%` }}
-                              />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="mt-2 text-xs text-slate-400">В этот день модель ничего не распознала.</p>
-                    )}
-                  </div>
-
-                  <AlwaysOnDayRunLog
-                    day={selectedPoint.day}
-                    runs={selectedProductionRuns}
-                    timezone={selectedProductionTimezone}
-                    loading={selectedProductionLoading}
-                    error={selectedProductionError}
-                    onRetry={() => setSelectedProductionReload((value) => value + 1)}
+                <div className="mt-4 grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-4">
+                  <Metric label="Итог" value={selectedPoint.total} size="sm" />
+                  <Metric label="Модель" value={selectedPoint.model_total} size="sm" />
+                  <Metric
+                    label="Поправка"
+                    value={selectedPoint.adjustment || 0}
+                    size="sm"
+                    accent={selectedPoint.adjustment < 0 ? "amber" : "slate"}
                   />
-                </BentoCard>
-              )}
-            </BentoGrid>
+                  <Metric
+                    label="Доля дня"
+                    value={`${chartMax > 0 ? Math.round((selectedPoint.total * 100) / chartMax) : 0}%`}
+                    size="sm"
+                  />
+                </div>
+
+                {selectedColors.length > 0 && (
+                  <>
+                    <Hairline className="my-5" />
+                    <div className="grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
+                      {selectedColors.map((item) => (
+                        <div key={item.color}>
+                          <div className="flex items-center gap-2">
+                            <ColorDot className={colorMeta(item.color).dot} />
+                            <span className="text-xs font-medium text-slate-500">{colorMeta(item.color).label}</span>
+                            <span className="ml-auto text-xs tabular-nums text-slate-400">{item.percent}%</span>
+                          </div>
+                          <div className="mt-1 text-2xl font-black tabular-nums tracking-tight text-slate-900">
+                            {item.total}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                <Hairline className="my-5" />
+
+                <AlwaysOnDayRunLog
+                  day={selectedPoint.day}
+                  runs={selectedProductionRuns}
+                  timezone={selectedProductionTimezone}
+                  loading={selectedProductionLoading}
+                  error={selectedProductionError}
+                  onRetry={() => setSelectedProductionReload((value) => value + 1)}
+                />
+              </Panel>
+            )}
           </div>
         ) : null}
 
         {modalView === "archive" && (
-          <div
-            {...modalTabs.getTabPanelProps("archive")}
-            className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-5"
-          >
-            <div className="flex flex-wrap items-end justify-between gap-3">
-              <div>
-                <h3 className="font-bold text-slate-800">Закрытые периоды</h3>
-                <p className="mt-0.5 text-xs text-slate-400">
-                  Каждая строка — счёт, сданный в архив. Данные не меняются.
-                </p>
-              </div>
-              {archives !== null && archives.length > 0 && (
-                <div className="text-right">
-                  <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Всего в архиве</div>
-                  <div className="text-2xl font-black tabular-nums text-slate-900">
-                    {archives.reduce((sum, row) => sum + row.total, 0)}
-                  </div>
-                </div>
-              )}
-            </div>
+          <Panel {...modalTabs.getTabPanelProps("archive")} className="p-5 sm:p-6">
+            <SectionHead
+              title="Закрытые периоды"
+              hint="Каждая строка — счёт, сданный в архив. Данные не меняются."
+              aside={
+                archives !== null && archives.length > 0 ? (
+                  <Metric
+                    label="Всего"
+                    value={archives.reduce((sum, row) => sum + row.total, 0)}
+                    size="sm"
+                    className="text-right"
+                  />
+                ) : undefined
+              }
+            />
 
             {archivesError && (
               <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-[var(--destructive)]">
@@ -1587,75 +1539,56 @@ function AlwaysOnCard({
                     </div>
 
                     {expanded && (
-                      <div className="border-t border-blue-200/70 bg-white p-3 sm:p-4">
-                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                          <div className="rounded-lg bg-slate-50 p-2.5">
-                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Итог</div>
-                            <div className="mt-0.5 text-xl font-black tabular-nums text-slate-900">{row.total}</div>
-                          </div>
-                          <div className="rounded-lg bg-slate-50 p-2.5">
-                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Модель</div>
-                            <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
-                              {row.model_total}
-                            </div>
-                          </div>
-                          <div className="rounded-lg bg-slate-50 p-2.5">
-                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Поправка</div>
-                            <div
-                              className={cn(
-                                "mt-0.5 text-xl font-black tabular-nums",
-                                row.adjustment < 0 ? "text-amber-600" : "text-slate-300",
-                              )}
-                            >
-                              {row.adjustment || 0}
-                            </div>
-                          </div>
-                          <div className="rounded-lg bg-slate-50 p-2.5">
-                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                              В среднем
-                            </div>
-                            <div className="mt-0.5 text-xl font-black tabular-nums text-slate-700">
-                              {row.days > 0 ? Math.round(row.total / row.days) : 0}
-                            </div>
-                          </div>
+                      <div className="border-t border-slate-100 p-4 sm:p-5">
+                        <div className="grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-4">
+                          <Metric label="Итог" value={row.total} size="sm" />
+                          <Metric label="Модель" value={row.model_total} size="sm" />
+                          <Metric
+                            label="Поправка"
+                            value={row.adjustment || 0}
+                            size="sm"
+                            accent={row.adjustment < 0 ? "amber" : "slate"}
+                          />
+                          <Metric
+                            label="В среднем"
+                            value={row.days > 0 ? Math.round(row.total / row.days) : 0}
+                            size="sm"
+                          />
                         </div>
 
                         {row.colors.length > 0 && (
-                          <div className="mt-4">
-                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                              Цвета за период
-                            </div>
-                            <div className="mt-2 space-y-2">
+                          <>
+                            <Hairline className="my-4" />
+                            <div className="grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
                               {row.colors.map((item) => (
                                 <div key={item.color}>
-                                  <div className="mb-1 flex items-center gap-2 text-xs">
-                                    <span className={cn("size-2.5 rounded-full", colorMeta(item.color).dot)} />
-                                    <span className="font-semibold text-slate-700">{colorMeta(item.color).label}</span>
-                                    <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
-                                    <span className="w-12 text-right tabular-nums text-slate-400">{item.percent}%</span>
+                                  <div className="flex items-center gap-2">
+                                    <ColorDot className={colorMeta(item.color).dot} />
+                                    <span className="text-xs font-medium text-slate-500">
+                                      {colorMeta(item.color).label}
+                                    </span>
+                                    <span className="ml-auto text-xs tabular-nums text-slate-400">{item.percent}%</span>
                                   </div>
-                                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
-                                    <div
-                                      className={cn("h-full rounded-full", colorMeta(item.color).bar)}
-                                      style={{ width: `${item.percent}%` }}
-                                    />
+                                  <div className="mt-1 text-xl font-black tabular-nums tracking-tight text-slate-900">
+                                    {item.total}
                                   </div>
                                 </div>
                               ))}
                             </div>
-                          </div>
+                          </>
                         )}
 
                         {row.day_rows.length > 0 && (
-                          <div className="mt-4">
-                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">По дням</div>
+                          <>
+                            <Hairline className="my-4" />
+                            <Eyebrow>По дням</Eyebrow>
                             <div className="mt-2 space-y-1.5">
                               {row.day_rows.map((entry) => (
                                 <div key={entry.day} className="flex items-center gap-3 text-xs">
                                   <span className="w-20 shrink-0 font-medium text-slate-500">{fullDay(entry.day)}</span>
-                                  <div className="h-4 min-w-0 flex-1 overflow-hidden rounded bg-slate-100">
+                                  <div className="h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-100">
                                     <div
-                                      className="h-full rounded bg-gradient-to-r from-[#cf4f3e] to-[#e8755f]"
+                                      className="h-full rounded-full bg-slate-300"
                                       style={{ width: `${Math.max(2, (entry.total * 100) / dayMax)}%` }}
                                     />
                                   </div>
@@ -1673,7 +1606,7 @@ function AlwaysOnCard({
                                 </div>
                               ))}
                             </div>
-                          </div>
+                          </>
                         )}
 
                         {row.note && (
@@ -1703,7 +1636,7 @@ function AlwaysOnCard({
                 );
               })}
             </div>
-          </div>
+          </Panel>
         )}
       </Modal>
 

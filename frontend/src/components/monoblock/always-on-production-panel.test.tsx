@@ -81,9 +81,13 @@ describe("AlwaysOnProductionPanel", () => {
     expect(screen.queryByText("Когда выпускался каждый цвет")).not.toBeInTheDocument();
     expect(screen.queryByText("идёт сейчас")).not.toBeInTheDocument();
     expect(screen.getByText("126")).toBeInTheDocument();
-    expect(screen.getByText("Автоприход на склад")).toBeInTheDocument();
+    expect(screen.getByText("Автоприход")).toBeInTheDocument();
     expect(screen.getByText("19:00")).toBeInTheDocument();
-    expect(screen.getByText(/Не настроено:/)).toHaveTextContent("Синий");
+    // Служебные фразы убраны — статус про ненастроенные цвета показывается
+    // короткой плашкой (missingColors = [Синий] → «1 из 2»).
+    expect(screen.getByText("нужна настройка")).toBeInTheDocument();
+    expect(screen.getByText("1 из 2")).toBeInTheDocument();
+    expect(screen.getByLabelText("Товар для цвета Синий")).toBeInTheDocument();
   });
 
   it("предлагает товар совпадающего цвета и сохраняет выбранное сопоставление", async () => {
@@ -146,7 +150,7 @@ describe("AlwaysOnProductionPanel", () => {
     expect(screen.getByLabelText("Товар для цвета Красный")).toBeDisabled();
     expect(screen.getByLabelText("Товар для цвета Синий")).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Сохранить" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Повторить сейчас" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Повторить" })).not.toBeInTheDocument();
     expect(onRetry).not.toHaveBeenCalled();
   });
 
@@ -177,7 +181,7 @@ describe("AlwaysOnProductionPanel", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Повторить сейчас" }));
+    await user.click(screen.getByRole("button", { name: "Повторить" }));
     expect(onRetry).toHaveBeenCalledWith(batch);
   });
 });
@@ -217,7 +221,7 @@ describe("AlwaysOnDayRunLog", () => {
   it("явно показывает пустой выбранный день", () => {
     render(<AlwaysOnDayRunLog day="2026-08-15" timezone="Asia/Almaty" loading={false} error={null} runs={[]} />);
 
-    expect(screen.getByText(/15\.08\.2026/)).toHaveTextContent("Детализация времени");
+    expect(screen.getByText(/15\.08\.2026/)).toHaveTextContent("Детализация");
   });
 
   it("не приписывает весь объём выбранному дню для сквозного периода", () => {
@@ -265,9 +269,8 @@ describe("AlwaysOnDayRunLog", () => {
       />,
     );
 
-    // По умолчанию — поправленный: синее вкрапление (3 меш.) склеено с красным.
-    expect(screen.getByRole("button", { name: "Поправленный" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText("склеено вкраплений: 1")).toBeInTheDocument();
+    // По умолчанию — сглажено: синее вкрапление (3 меш.) склеено с красным.
+    expect(screen.getByRole("button", { name: "Сглажено" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("2463")).toBeInTheDocument();
     expect(screen.queryByText("2460")).not.toBeInTheDocument();
 
@@ -278,7 +281,6 @@ describe("AlwaysOnDayRunLog", () => {
     expect(screen.getByText("200")).toBeInTheDocument();
     expect(screen.getAllByText("меш.")).toHaveLength(3);
     expect(screen.queryByText("2463")).not.toBeInTheDocument();
-    expect(screen.queryByText("склеено вкраплений: 1")).not.toBeInTheDocument();
   });
 
   it("не показывает переключатель, когда склеивать нечего", () => {
@@ -292,7 +294,7 @@ describe("AlwaysOnDayRunLog", () => {
       />,
     );
 
-    expect(screen.queryByRole("button", { name: "Поправленный" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Сглажено" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Сырой" })).not.toBeInTheDocument();
   });
 });
