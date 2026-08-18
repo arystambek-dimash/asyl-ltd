@@ -58,19 +58,44 @@ SECURE_HSTS_PRELOAD = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
 
-CORS_ALLOWED_ORIGINS = [
-    value.strip()
-    for value in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",")
-    if value.strip()
+# Локальный Next.js dev-сервер (npm run dev) должен уметь ходить в prod-API,
+# когда во фронте NEXT_PUBLIC_API_URL указывает на прод. Аутентификация —
+# JWT Bearer (не куки), поэтому разрешение http-localhost не открывает доступ
+# к сессиям и безопасно как базовый дефолт. Доп. origin задаются через env.
+LOCAL_DEV_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
 ]
+
+
+def _origins_from_env(name):
+    return [
+        value.strip()
+        for value in os.environ.get(name, "").split(",")
+        if value.strip()
+    ]
+
+
+def _merge_origins(*groups):
+    merged = []
+    for group in groups:
+        for origin in group:
+            if origin not in merged:
+                merged.append(origin)
+    return merged
+
+
+CORS_ALLOWED_ORIGINS = _merge_origins(
+    LOCAL_DEV_ORIGINS,
+    _origins_from_env("CORS_ALLOWED_ORIGINS"),
+)
 
 CORS_ALLOW_CREDENTIALS = True
 
-CSRF_TRUSTED_ORIGINS = [
-    value.strip()
-    for value in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",")
-    if value.strip()
-]
+CSRF_TRUSTED_ORIGINS = _merge_origins(
+    LOCAL_DEV_ORIGINS,
+    _origins_from_env("CSRF_TRUSTED_ORIGINS"),
+)
 
 ALLOWED_HOSTS = [
     value.strip()
