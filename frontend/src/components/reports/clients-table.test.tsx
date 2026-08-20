@@ -8,13 +8,49 @@ const rows: ReportClientRow[] = [
   {
     id: 7,
     name: "Гани Таскен",
-    orders: 2,
-    bags: 15,
-    revenue_by_currency: { KZT: "15000.00" },
-    debt_amount_by_currency: { KZT: "10000.00" },
+    orders: 3,
+    bags: 17,
+    revenue_by_currency: { KZT: "17000.00" },
+    paid_amount_by_currency: { KZT: "9000.00" },
+    debt_amount_by_currency: { KZT: "6000.00" },
+    awaiting_amount_by_currency: { KZT: "2000.00" },
     order_list: [
-      { id: 117, date: "2026-07-28", bags: 10, total: "10000.00", currency: "KZT", on_debt: true },
-      { id: 118, date: "2026-07-27", bags: 5, total: "5000.00", currency: "KZT", on_debt: false },
+      {
+        id: 117,
+        date: "2026-07-28",
+        bags: 10,
+        total: "10000.00",
+        currency: "KZT",
+        paid_amount: "4000.00",
+        remaining_amount: "6000.00",
+        payment_status: "partial",
+        is_debt: true,
+        on_debt: true,
+      },
+      {
+        id: 118,
+        date: "2026-07-27",
+        bags: 5,
+        total: "5000.00",
+        currency: "KZT",
+        paid_amount: "5000.00",
+        remaining_amount: "0.00",
+        payment_status: "settled",
+        is_debt: false,
+        on_debt: false,
+      },
+      {
+        id: 119,
+        date: "2026-07-26",
+        bags: 2,
+        total: "2000.00",
+        currency: "KZT",
+        paid_amount: "0.00",
+        remaining_amount: "2000.00",
+        payment_status: "unpaid",
+        is_debt: false,
+        on_debt: false,
+      },
     ],
   },
 ];
@@ -34,9 +70,9 @@ describe("ClientsTable", () => {
 
     const order = screen.getByRole("link", { name: /№117/ });
     expect(order).toHaveAttribute("href", "/orders/117");
-    // «В долг» есть и в шапке таблицы, поэтому бейдж — это второе вхождение.
-    expect(screen.getAllByText("В долг")).toHaveLength(2);
+    expect(screen.getByText(/Частично оплачен/)).toBeInTheDocument();
     expect(screen.getByText("Оплачен")).toBeInTheDocument();
+    expect(screen.getByText(/Ожидает оплаты/)).toBeInTheDocument();
 
     await user.click(toggle);
     expect(screen.queryByRole("link", { name: /№117/ })).not.toBeInTheDocument();

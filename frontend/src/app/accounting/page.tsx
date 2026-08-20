@@ -830,7 +830,18 @@ function CashierInner() {
     summary?.income.cashless ?? "0",
     incomeCurrency,
   );
+  const grossIncomeTotal = amountForCurrency(
+    summary?.income.gross_by_currency ?? {},
+    summary?.income.gross ?? summary?.income.total ?? "0",
+    incomeCurrency,
+  );
+  const refundedTotal = amountForCurrency(
+    summary?.income.refunded_by_currency ?? {},
+    summary?.income.refunded ?? "0",
+    incomeCurrency,
+  );
   const otherIncomeCurrencies = otherCurrencyAmounts(incomeByCurrency, incomeCurrency);
+  const otherRefundCurrencies = otherCurrencyAmounts(summary?.income.refunded_by_currency ?? {}, incomeCurrency);
 
   const tabs: TabDef[] = [
     ...(canDebtEntry ? [{ key: "overview", label: canReports ? "Общее" : "Долги" }] : []),
@@ -879,16 +890,38 @@ function CashierInner() {
             <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {canReports && (
                 <SummaryCard
-                  title={isToday ? "Поступило сегодня" : hasDates ? "Поступило за период" : "Поступило за всё время"}
-                  tone="success"
+                  title={
+                    isToday
+                      ? "Чистое поступление сегодня"
+                      : hasDates
+                        ? "Чистое поступление за период"
+                        : "Чистое поступление за всё время"
+                  }
+                  tone={incomeTotal < 0 ? "destructive" : "success"}
                   value={money(incomeTotal, incomeCurrency)}
                   rows={[
-                    { label: "Наличные", value: money(cashTotal, incomeCurrency) },
-                    { label: "Безналичные", value: money(cashlessTotal, incomeCurrency) },
+                    { label: "Наличные, нетто", value: money(cashTotal, incomeCurrency) },
+                    { label: "Безналичные, нетто", value: money(cashlessTotal, incomeCurrency) },
                     ...otherIncomeCurrencies.map(([currency, value]) => ({
-                      label: "Также поступило",
+                      label: "Также чистыми",
                       value: money(value, currency),
                     })),
+                    ...(refundedTotal > 0
+                      ? [
+                          { label: "Поступило до возвратов", value: money(grossIncomeTotal, incomeCurrency) },
+                          { label: "Возвращено", value: money(refundedTotal, incomeCurrency) },
+                        ]
+                      : []),
+                    ...otherRefundCurrencies.flatMap(([currency, value]) => [
+                      {
+                        label: `Поступило до возвратов, ${currency}`,
+                        value: money(
+                          amountForCurrency(summary?.income.gross_by_currency ?? {}, "0", currency),
+                          currency,
+                        ),
+                      },
+                      { label: `Возвращено, ${currency}`, value: money(value, currency) },
+                    ]),
                   ]}
                 />
               )}
