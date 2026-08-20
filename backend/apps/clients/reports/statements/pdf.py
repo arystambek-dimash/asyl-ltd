@@ -2,14 +2,6 @@ from decimal import Decimal
 from html import escape
 from io import BytesIO
 
-from apps.orders.invoices import _register_fonts
-from apps.orders.labels import (
-    order_payment_method_label,
-    payment_method_label,
-    payment_status_label,
-    transport_label,
-)
-from apps.orders.statuses import public_status_label
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4, landscape
@@ -25,6 +17,15 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+
+from apps.orders.invoices import _register_fonts
+from apps.orders.labels import (
+    order_payment_method_label,
+    payment_method_label,
+    payment_status_label,
+    transport_label,
+)
+from apps.orders.statuses import public_status_label
 
 from .data import (
     StatementData,
@@ -140,6 +141,8 @@ def _cells(values, styles, *, right=()):
 
 def _reconciliation_block(styles, currency, opening, charged, paid):
     closing = opening + charged - paid
+    payment_movement = -paid
+    payment_colour = "#067647" if payment_movement <= 0 else "#B42318"
     rows = [
         [
             Paragraph(
@@ -155,9 +158,9 @@ def _reconciliation_block(styles, currency, opening, charged, paid):
             ),
         ],
         [
-            Paragraph("Оплачено (поступления)", styles.body),
+            Paragraph("Оплачено (поступления − возвраты)", styles.body),
             Paragraph(
-                f'<font color="#067647">{_signed(-paid)}</font>',
+                f'<font color="{payment_colour}">{_signed(payment_movement)}</font>',
                 styles.right,
             ),
         ],
@@ -188,6 +191,17 @@ def _reconciliation_block(styles, currency, opening, charged, paid):
 def _operation_description(operation: StatementOperation) -> tuple[str, str]:
     if operation.kind == "sale":
         return "Продажа / отгрузка", public_status_label(operation.order.status)
+
+    if operation.kind == "refund":
+        refund = operation.refund
+        if refund is None:
+            raise ValueError("Refund operation must contain a refund")
+        method = (
+            "ApiPay"
+            if refund.method == "apipay"
+            else payment_method_label(refund.method, archived_hint=True)
+        )
+        return "Возврат", method
 
     payment = operation.payment
     if payment is None:
@@ -226,7 +240,9 @@ def _ledger_rows(styles, data: StatementData, *, with_client: bool):
         operation_label, status_label = _operation_description(operation)
         payment = operation.payment
         description = (
-            payment.note or "Поступление оплаты"
+            operation.refund.reason or "Возврат оплаты"
+            if operation.refund is not None
+            else payment.note or "Поступление оплаты"
             if payment is not None
             else ", ".join(
                 f"{item.product_label} × {item.quantity}"

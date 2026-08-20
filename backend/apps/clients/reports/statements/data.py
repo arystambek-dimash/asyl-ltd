@@ -4,20 +4,18 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal, TypedDict
 
-from apps.orders.models import Order, Payment
-from apps.sales.models import Department
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
-from .sections import (
-    ALL_CLIENT_SECTIONS,
-    CLIENT_SECTIONS,
-    select_sections
-)
+from apps.orders.models import Order, Payment, PaymentRefund
+from apps.sales.models import Department
+
 from ...models import Client
+from .sections import ALL_CLIENT_SECTIONS, CLIENT_SECTIONS, select_sections
 
 BASE_CURRENCIES = ("KZT", "USD")
 PAYMENT_STAMP = Coalesce("confirmed_at", "paid_at")
+REFUND_STAMP = Coalesce("completed_at", "updated_at", "created_at")
 SALE_STAMP = Coalesce("shipment__shipped_at", "created_at")
 ZERO = Decimal(0)
 
@@ -41,9 +39,10 @@ def empty_currency_totals() -> CurrencyTotals:
 @dataclass(frozen=True, slots=True)
 class StatementOperation:
     occurred_at: datetime
-    kind: Literal["sale", "payment"]
+    kind: Literal["sale", "payment", "refund"]
     order: Order
     payment: Payment | None
+    refund: PaymentRefund | None
     amount: Decimal
 
 
@@ -55,6 +54,7 @@ class StatementData:
     sales_orders: list[Order]
     debt_orders: list[Order]
     payments: list[Payment]
+    refunds: list[PaymentRefund]
     operations: list[StatementOperation]
     opening: dict[str, Decimal]
     client_opening: dict[tuple[int, str], Decimal]
@@ -80,6 +80,15 @@ def department_name(data: StatementData, code: str) -> str:
 
 def _payments_in_period(queryset, date_from, date_to):
     queryset = queryset.annotate(_stamp=PAYMENT_STAMP)
+    if date_from:
+        queryset = queryset.filter(_stamp__date__gte=date_from)
+    if date_to:
+        queryset = queryset.filter(_stamp__date__lte=date_to)
+    return queryset.order_by("_stamp", "id")
+
+
+def _refunds_in_period(queryset, date_from, date_to):
+    queryset = queryset.annotate(_stamp=REFUND_STAMP)
     if date_from:
         queryset = queryset.filter(_stamp__date__gte=date_from)
     if date_to:
@@ -128,13 +137,16 @@ def _statement_orders(client=None, departments=None, client_ids=None):
 
 
 def _statement_payments(client=None, departments=None, client_ids=None):
-    queryset = Payment.objects.filter(
-        order__deleted_at__isnull=True,
-    ).select_related(
-        "order__client__user",
-        "recorded_by",
-        "received_by",
-        "confirmed_by",
+    queryset = (
+        Payment.objects.filter(order__deleted_at__isnull=True)
+        # Legacy service rows record debt classification, not received money.
+        .exclude(method="debt")
+        .select_related(
+            "order__client__user",
+            "recorded_by",
+            "received_by",
+            "confirmed_by",
+        )
     )
     if client is not None:
         queryset = queryset.filter(order__client=client)
@@ -142,6 +154,30 @@ def _statement_payments(client=None, departments=None, client_ids=None):
         queryset = queryset.filter(order__client_id__in=client_ids)
     if departments is not None:
         queryset = queryset.filter(order__department__in=departments)
+    return queryset
+
+
+def _statement_refunds(client=None, departments=None, client_ids=None):
+    # Refunds have their own recognition date. Filtering through Payment would
+    # move a later refund back to the original confirmation period. As with the
+    # payment queryset, the explicit deleted-order predicate is required because
+    # traversing ``payment__order`` does not apply Order's live manager.
+    queryset = PaymentRefund.objects.filter(
+        status="completed",
+        payment__order__deleted_at__isnull=True,
+    ).exclude(payment__method="debt").select_related(
+        "payment__order__client__user",
+        "payment__recorded_by",
+        "payment__received_by",
+        "payment__confirmed_by",
+        "requested_by",
+    )
+    if client is not None:
+        queryset = queryset.filter(payment__order__client=client)
+    if client_ids is not None:
+        queryset = queryset.filter(payment__order__client_id__in=client_ids)
+    if departments is not None:
+        queryset = queryset.filter(payment__order__department__in=departments)
     return queryset
 
 
@@ -156,7 +192,9 @@ def _current_debt_orders(queryset):
     ]
 
 
-def _client_opening_balances(orders_queryset, payments_queryset, date_from):
+def _client_opening_balances(
+        orders_queryset, payments_queryset, refunds_queryset, date_from,
+):
     balances: defaultdict[tuple[int, str], Decimal] = defaultdict(Decimal)
     if not date_from:
         return balances
@@ -176,7 +214,17 @@ def _client_opening_balances(orders_queryset, payments_queryset, date_from):
             )
     ):
         key = (payment.order.client_id, payment.order.currency)
-        balances[key] -= payment.net_amount
+        # Recognition is event based: the gross receipt belongs to the payment
+        # confirmation day; completed refunds are applied on their own day.
+        balances[key] -= payment.amount
+    for refund in (
+            refunds_queryset.annotate(
+                _stamp=REFUND_STAMP
+            )
+                    .filter(_stamp__date__lt=date_from)
+    ):
+        order = refund.payment.order
+        balances[(order.client_id, order.currency)] += refund.amount
     return balances
 
 
@@ -214,13 +262,20 @@ def _payment_stamp(payment):
     return payment.confirmed_at or payment.paid_at
 
 
-def _operations(sales_orders, payments) -> list[StatementOperation]:
+def _refund_stamp(refund: PaymentRefund):
+    # completed_at is canonical. The fallback keeps migrated/legacy completed
+    # rows visible instead of silently dropping money from a statement.
+    return refund.completed_at or refund.updated_at or refund.created_at
+
+
+def _operations(sales_orders, payments, refunds) -> list[StatementOperation]:
     operations = [
         StatementOperation(
             occurred_at=_sale_stamp(order),
             kind="sale",
             order=order,
             payment=None,
+            refund=None,
             amount=order.total_amount,
         )
         for order in sales_orders
@@ -231,16 +286,33 @@ def _operations(sales_orders, payments) -> list[StatementOperation]:
             kind="payment",
             order=payment.order,
             payment=payment,
-            amount=-payment.net_amount,
+            refund=None,
+            amount=-payment.amount,
         )
         for payment in payments
         if payment.status == "confirmed"
     ]
+    operations += [
+        StatementOperation(
+            occurred_at=_refund_stamp(refund),
+            kind="refund",
+            order=refund.payment.order,
+            payment=refund.payment,
+            refund=refund,
+            # The ledger balance is the client's debt: a cash outflow reopens
+            # the receivable and is therefore a positive balance movement.
+            amount=refund.amount,
+        )
+        for refund in refunds
+    ]
+    kind_order = {"sale": 0, "payment": 1, "refund": 2}
     operations.sort(
         key=lambda operation: (
             operation.occurred_at,
-            operation.kind == "payment",
-            operation.payment.id
+            kind_order[operation.kind],
+            operation.refund.id
+            if operation.refund is not None
+            else operation.payment.id
             if operation.payment is not None
             else operation.order.id,
         )
@@ -257,6 +329,7 @@ def _clients_for_statement(
         sales_orders,
         debt_orders,
         payments,
+        refunds,
         client_opening,
         client_ids,
 ):
@@ -271,6 +344,7 @@ def _clients_for_statement(
             *(order.client_id for order in sales_orders),
             *(order.client_id for order in debt_orders),
             *(payment.order.client_id for payment in payments),
+            *(refund.payment.order.client_id for refund in refunds),
             *(
                 client_id
                 for (client_id, _currency), balance in client_opening.items()
@@ -306,6 +380,11 @@ def build_statement_data(
         departments=departments,
         client_ids=client_ids,
     )
+    refunds_queryset = _statement_refunds(
+        client=client,
+        departments=departments,
+        client_ids=client_ids,
+    )
     orders = list(_orders_in_period(base_orders, date_from, date_to))
     sales_orders = list(
         _orders_in_period(
@@ -320,9 +399,13 @@ def build_statement_data(
     payments = list(
         _payments_in_period(payments_queryset, date_from, date_to)
     )
+    refunds = list(
+        _refunds_in_period(refunds_queryset, date_from, date_to)
+    )
     client_opening = _client_opening_balances(
         base_orders,
         payments_queryset,
+        refunds_queryset,
         date_from,
     )
     clients = _clients_for_statement(
@@ -334,6 +417,7 @@ def build_statement_data(
         sales_orders,
         debt_orders,
         payments,
+        refunds,
         client_opening,
         client_ids,
     )
@@ -379,7 +463,17 @@ def build_statement_data(
                 client_totals[(order.client_id, order.currency)],
                 department_totals[(order.department, order.currency)],
         ):
-            target["payments"] += payment.net_amount
+            target["payments"] += payment.amount
+    for refund in refunds:
+        order = refund.payment.order
+        for target in (
+                totals[order.currency],
+                client_totals[(order.client_id, order.currency)],
+                department_totals[(order.department, order.currency)],
+        ):
+            # ``payments`` remains the export's net received-money column.
+            # A completed refund is a negative receipt in its completion period.
+            target["payments"] -= refund.amount
 
     opening: defaultdict[str, Decimal] = defaultdict(Decimal)
 
@@ -418,7 +512,8 @@ def build_statement_data(
         sales_orders=sales_orders,
         debt_orders=debt_orders,
         payments=payments,
-        operations=_operations(sales_orders, payments),
+        refunds=refunds,
+        operations=_operations(sales_orders, payments, refunds),
         opening=opening,
         client_opening=client_opening,
         totals=totals,

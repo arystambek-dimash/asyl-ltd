@@ -2,13 +2,14 @@ from decimal import Decimal
 from io import BytesIO
 
 import pytest
+from django.utils import timezone
 from openpyxl import load_workbook
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
-from apps.sales.models import Department
 from apps.eventlog.models import EventLog
-from apps.orders.models import Order, OrderItem, Payment
+from apps.orders.models import Order, OrderItem, Payment, PaymentRefund
+from apps.sales.models import Department
 from apps.shipments.models import Shipment
 
 pytestmark = pytest.mark.django_db
@@ -58,8 +59,17 @@ def test_statement_renderers_use_the_prepared_snapshot_without_queries(
     order = Order.objects.create(client=client, status="shipped")
     OrderItem.objects.create(
         order=order, product=product, quantity=2, unit_price="100")
-    Payment.objects.create(
+    payment = Payment.objects.create(
         order=order, amount="50", method="cash", status="confirmed")
+    PaymentRefund.objects.create(
+        payment=payment,
+        amount="10",
+        method="cash",
+        status="completed",
+        reason="Проверка снимка",
+        completed_at=timezone.now(),
+    )
+    Payment.objects.filter(pk=payment.pk).update(refunded_amount="10")
     data = build_statement_data(client=client)
 
     with django_assert_num_queries(0):
@@ -157,6 +167,7 @@ def test_statement_period_matches_payment_recognition_day(auth_client, user_with
     подтверждённые в периоде, в выписку не попадали.
     """
     from datetime import timedelta
+
     from django.utils import timezone
 
     reporter = user_with_perms(
@@ -258,6 +269,7 @@ def test_statement_uses_creation_shipping_and_payment_dates_consistently(
     auth_client, user_with_perms,
 ):
     from datetime import timedelta
+
     from django.utils import timezone
 
     reporter = user_with_perms(
@@ -391,6 +403,7 @@ def test_statement_reconciliation_block_balances(auth_client, user_with_perms):
     выписка за месяц показывала бы клиента «с нуля» и расходилась с кассой.
     """
     from datetime import timedelta
+
     from django.utils import timezone
 
     reporter = user_with_perms(
@@ -452,6 +465,7 @@ def test_statement_opening_balance_carries_overpayment_negative(
     долг на всю сумму, хотя часть уже покрыта авансом.
     """
     from datetime import timedelta
+
     from django.utils import timezone
 
     reporter = user_with_perms(
@@ -480,6 +494,7 @@ def test_statement_without_date_from_has_zero_opening_balance(
 ):
     """Период открыт слева — вся история уже в ленте, входящий остаток нулевой."""
     from datetime import timedelta
+
     from django.utils import timezone
 
     reporter = user_with_perms(
@@ -503,6 +518,7 @@ def test_statement_without_date_from_has_zero_opening_balance(
 def test_statement_never_mixes_currencies(auth_client, user_with_perms):
     """KZT и USD считаются раздельно на всех уровнях выписки."""
     from datetime import timedelta
+
     from django.utils import timezone
 
     reporter = user_with_perms(
@@ -544,6 +560,7 @@ def test_statement_pending_payment_never_reduces_balance(
 ):
     """Неподтверждённая оплата не гасит долг: в ленту идут только confirmed."""
     from datetime import timedelta
+
     from django.utils import timezone
 
     reporter = user_with_perms(
@@ -567,11 +584,12 @@ def test_statement_pending_payment_never_reduces_balance(
     assert wb["Операции"].max_row == 9
 
 
-def test_statement_refund_reduces_paid_by_net_amount(
+def test_statement_refund_is_a_separate_ledger_event(
     auth_client, user_with_perms,
 ):
-    """Возврат уменьшает погашение: в ленту идёт net_amount, а не amount."""
+    """Gross receipt and refund remain separate, dated ledger movements."""
     from datetime import timedelta
+
     from django.utils import timezone
 
     reporter = user_with_perms(
@@ -583,6 +601,15 @@ def test_statement_refund_reduces_paid_by_net_amount(
         client, product, quantity=1, price="1000",
         shipped_at=now - timedelta(days=2))
     payment = _confirmed_payment(order, "800", now - timedelta(days=1))
+    PaymentRefund.objects.create(
+        payment=payment,
+        amount="300",
+        method="cash",
+        status="completed",
+        reason="Частичный возврат",
+        requested_by=reporter,
+        completed_at=now,
+    )
     Payment.objects.filter(pk=payment.pk).update(refunded_amount="300")
 
     response = auth_client(reporter).get(f"/api/clients/{client.pk}/statement/")
@@ -591,8 +618,203 @@ def test_statement_refund_reduces_paid_by_net_amount(
     # Погашено 800 − 300 = 500, остаток 1000 − 500 = 500.
     assert wb["Сводка"]["B15"].value == -500
     assert wb["Сводка"]["B16"].value == 500
-    assert wb["Операции"]["G10"].value == -500
+    assert wb["Операции"]["B10"].value == "Оплата"
+    assert wb["Операции"]["G10"].value == -800
+    assert wb["Операции"]["H10"].value == 200
+    assert wb["Операции"]["B11"].value == "Возврат"
+    assert wb["Операции"]["D11"].value == "Частичный возврат"
+    assert wb["Операции"]["G11"].value == 300
+    assert wb["Операции"]["H11"].value == 500
+
+
+def test_statement_recognizes_refunds_in_their_completion_period(
+    auth_client, user_with_perms,
+):
+    """A later refund must not rewrite the original payment period."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.clients.reports.statements.data import build_statement_data
+
+    reporter = user_with_perms(
+        "statement-refund-period", codes=["clients.view", "reports.export"])
+    client = Client.objects.create_with_user(
+        first_name="Период", last_name="Возврата", phone="61")
+    product = Product.objects.create(name="Мука", color="Red", weight_kg="50")
+    now = timezone.now()
+    order = _shipped_order(
+        client, product, quantity=1, price="1000",
+        shipped_at=now - timedelta(days=40))
+    payment = _confirmed_payment(order, "800", now - timedelta(days=39))
+    first = PaymentRefund.objects.create(
+        payment=payment,
+        amount="100",
+        method="cash",
+        status="completed",
+        reason="Первый возврат",
+        requested_by=reporter,
+        completed_at=now - timedelta(days=2),
+    )
+    second = PaymentRefund.objects.create(
+        payment=payment,
+        amount="200",
+        method="cash",
+        status="completed",
+        reason="Второй возврат",
+        requested_by=reporter,
+        completed_at=now - timedelta(days=1),
+    )
+    PaymentRefund.objects.create(
+        payment=payment,
+        amount="50",
+        method="apipay",
+        status="pending",
+        reason="Ещё не завершён",
+        requested_by=reporter,
+    )
+    Payment.objects.filter(pk=payment.pk).update(
+        refunded_amount="300", pending_refund_amount="50")
+
+    payment_period = build_statement_data(
+        client=client,
+        date_from=(now - timedelta(days=45)).date(),
+        date_to=(now - timedelta(days=35)).date(),
+    )
+    # A refund completed later cannot rewrite the period that received money.
+    assert payment_period.totals["KZT"]["payments"] == Decimal(800)
+    assert [(operation.kind, operation.amount) for operation in payment_period.operations] == [
+        ("sale", Decimal(1000)),
+        ("payment", Decimal(-800)),
+    ]
+
+    date_from = (now - timedelta(days=30)).date()
+    date_to = now.date()
+    data = build_statement_data(
+        client=client, date_from=date_from, date_to=date_to)
+
+    assert data.opening["KZT"] == Decimal(200)
+    assert data.totals["KZT"]["payments"] == Decimal(-300)
+    assert [refund.id for refund in data.refunds] == [first.id, second.id]
+    assert [(operation.kind, operation.amount) for operation in data.operations] == [
+        ("refund", Decimal(100)),
+        ("refund", Decimal(200)),
+    ]
+
+    response = auth_client(reporter).get(
+        f"/api/clients/{client.pk}/statement/"
+        f"?date_from={date_from.isoformat()}&date_to={date_to.isoformat()}"
+    )
+    assert response.status_code == 200
+    wb = load_workbook(BytesIO(response.content), data_only=True)
+    # Opening is sale 1000 minus gross payment 800. Refunds then reopen 300.
+    assert wb["Сводка"]["B13"].value == 200
+    assert wb["Сводка"]["B15"].value == 300
+    assert wb["Сводка"]["B16"].value == 500
+    assert wb["Операции"]["G9"].value == 100
+    assert wb["Операции"]["H9"].value == 300
+    assert wb["Операции"]["G10"].value == 200
     assert wb["Операции"]["H10"].value == 500
+
+
+def test_refund_only_statement_keeps_scope_and_soft_delete_rules():
+    from datetime import timedelta
+
+    from apps.clients.reports.statements.data import build_statement_data
+
+    now = timezone.now()
+    old = now - timedelta(days=40)
+    date_from = (now - timedelta(days=30)).date()
+    north = Department.objects.create(
+        code="refund-north", name="Север возвратов", color="#315FD5")
+    south = Department.objects.create(
+        code="refund-south", name="Юг возвратов", color="#1F9D6A")
+    product = Product.objects.create(name="Крупа", color="Blue", weight_kg="25")
+
+    def refund_for(first_name, department, *, deleted=False):
+        client = Client.objects.create_with_user(first_name=first_name)
+        order = _shipped_order(
+            client,
+            product,
+            quantity=1,
+            price="1000",
+            shipped_at=old,
+            department=department.code,
+        )
+        Order.objects.filter(pk=order.pk).update(
+            created_at=old, settlement_intent="instant")
+        payment = _confirmed_payment(order, "1000", old + timedelta(days=1))
+        refund = PaymentRefund.objects.create(
+            payment=payment,
+            amount="200",
+            method="cash",
+            status="completed",
+            reason="Возврат периода",
+            completed_at=now - timedelta(days=1),
+        )
+        Payment.objects.filter(pk=payment.pk).update(refunded_amount="200")
+        if deleted:
+            Order.objects.filter(pk=order.pk).update(deleted_at=now)
+        return client, refund
+
+    included_client, included_refund = refund_for("Видимый", north)
+    refund_for("Другой отдел", south)
+    refund_for("В корзине", north, deleted=True)
+
+    data = build_statement_data(
+        date_from=date_from,
+        date_to=now.date(),
+        departments=[north.code],
+    )
+
+    assert [client.id for client in data.clients] == [included_client.id]
+    assert [refund.id for refund in data.refunds] == [included_refund.id]
+    assert data.totals["KZT"]["payments"] == Decimal(-200)
+    assert [(operation.kind, operation.amount) for operation in data.operations] == [
+        ("refund", Decimal(200)),
+    ]
+
+
+def test_statement_ignores_legacy_debt_payment_and_its_refund():
+    from datetime import timedelta
+
+    from apps.clients.reports.statements.data import build_statement_data
+
+    now = timezone.now()
+    old = now - timedelta(days=40)
+    client = Client.objects.create_with_user(first_name="Служебный", last_name="Долг")
+    product = Product.objects.create(name="Соль", color="White", weight_kg="10")
+    order = _shipped_order(
+        client, product, quantity=1, price="1000", shipped_at=old)
+    Order.objects.filter(pk=order.pk).update(created_at=old)
+    payment = Payment.objects.create(
+        order=order,
+        amount="600",
+        method="debt",
+        status="confirmed",
+        confirmed_at=old + timedelta(days=1),
+    )
+    PaymentRefund.objects.create(
+        payment=payment,
+        amount="100",
+        method="cash",
+        status="completed",
+        reason="Возврат служебной строки",
+        completed_at=now - timedelta(days=1),
+    )
+    Payment.objects.filter(pk=payment.pk).update(refunded_amount="100")
+
+    data = build_statement_data(
+        client=client,
+        date_from=(now - timedelta(days=30)).date(),
+        date_to=now.date(),
+    )
+
+    assert data.opening["KZT"] == Decimal(1000)
+    assert data.payments == []
+    assert data.refunds == []
+    assert data.totals["KZT"]["payments"] == 0
+    assert data.operations == []
 
 
 def test_statement_sections_select_sheets(auth_client, user_with_perms):

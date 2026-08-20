@@ -432,7 +432,7 @@ def test_summary_report_uses_net_amount_after_refunds(
     auth_client, boss,
 ):
     order = _order(total="300.00")
-    Payment.objects.create(
+    cash = Payment.objects.create(
         order=order,
         amount="100.00",
         refunded_amount="40.00",
@@ -440,13 +440,29 @@ def test_summary_report_uses_net_amount_after_refunds(
         status="confirmed",
         confirmed_at=timezone.now(),
     )
-    Payment.objects.create(
+    invoice = Payment.objects.create(
         order=order,
         amount="200.00",
         refunded_amount="25.00",
         method="invoice",
         status="confirmed",
         confirmed_at=timezone.now(),
+    )
+    PaymentRefund.objects.create(
+        payment=cash,
+        amount="40.00",
+        method="cash",
+        status="completed",
+        reason="Cash refund",
+        completed_at=timezone.now(),
+    )
+    PaymentRefund.objects.create(
+        payment=invoice,
+        amount="25.00",
+        method="apipay",
+        status="completed",
+        reason="Provider refund",
+        completed_at=timezone.now(),
     )
 
     response = auth_client(boss).get("/api/reports/summary/")
@@ -457,6 +473,9 @@ def test_summary_report_uses_net_amount_after_refunds(
     assert income["cash"] == "60.00"
     assert income["cashless"] == "175.00"
     assert income["payments"] == 2
+    assert income["gross"] == "300.00"
+    assert income["refunded"] == "65.00"
+    assert income["refunds"] == 2
     # Возвраты вычтены и в раскладке по валютам.
     assert income["by_currency"] == {"KZT": "235.00"}
     assert response.data["days"][0]["received"] == "235.00"

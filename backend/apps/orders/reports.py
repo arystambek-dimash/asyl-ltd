@@ -1,49 +1,44 @@
-"""Сводный отчёт бухгалтерии: касса (поступления), отгрузки и долги.
+"""Сводный отчёт бухгалтерии: касса, отгрузки и текущие остатки.
 
-Правила счёта — единые для всех цифр отчёта:
-- Поступление — только оплата, подтверждённая кассой (status=confirmed);
-  день поступления — дата подтверждения (confirmed_at), а не дата записи.
-- Отгрузка — заказ в статусе shipped; день — фактический выезд
-  (shipment.shipped_at). Заказ, переведённый в shipped вручную, Shipment
-  не имеет — он ложится на день создания.
-- Служебный метод оплаты "debt" деньгами не является и в кассу не входит.
-- Удалённые (корзина) заказы не участвуют нигде: скоуп строится от
-  Order.objects (LiveOrderManager).
+Правила счёта:
+- подтверждённая оплата — приход на ``confirmed_at`` (fallback: ``paid_at``);
+- завершённый возврат — расход на ``PaymentRefund.completed_at``;
+- отгрузка относится к ``shipment.shipped_at`` (для legacy без Shipment — к
+  ``Order.created_at``);
+- периодический долг — текущий непогашенный остаток отгрузок выбранного
+  периода, а не первоначальный ``settlement_intent``;
+- служебный метод оплаты ``debt`` деньгами не является;
+- удалённые заказы исключены исходным ``Order.objects`` queryset.
 """
 from collections import defaultdict
 from decimal import Decimal
-from typing import TypedDict
 
-from django.db.models import Count, DecimalField, F, Q, Sum, Value
+from django.db.models import Count, DecimalField, Q, Sum
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
 
 from apps.common.money import (
     DEFAULT_CURRENCY,
     as_money_strings,
-    money_string as _d,
     primary_currency,
     sum_by_currency,
 )
+from apps.common.money import money_string as _d
+
 from .debt import debt_orders, order_remaining
-from .models import OrderItem, Payment
+from .models import Payment, PaymentRefund
 
 CASH_METHODS = ("cash",)
 CASHLESS_METHODS = ("card", "kaspi", "invoice")
 MONEY_METHODS = CASH_METHODS + CASHLESS_METHODS
 
-_ZERO = Decimal("0")
+REFUND_CASH_METHODS = ("cash",)
+REFUND_CASHLESS_METHODS = ("apipay",)
+REFUND_METHODS = REFUND_CASH_METHODS + REFUND_CASHLESS_METHODS
+
+_ZERO = Decimal(0)
 _MONEY = DecimalField(max_digits=14, decimal_places=2)
 
-
-class _ReportTotals(TypedDict):
-    revenue: Decimal
-    bags: int
-    orders: int
-    debt_amount: Decimal
-    cash: Decimal
-    cashless: Decimal
-    payments: int
 
 def _day_bounds(qs, date_from, date_to):
     if date_from:
@@ -53,114 +48,174 @@ def _day_bounds(qs, date_from, date_to):
     return qs
 
 
-def _income_by_day(orders_qs, date_from, date_to):
-    """Подтверждённые кассой оплаты по дням и валютам: наличные / безналичные."""
-    net = F("amount") - F("refunded_amount")
-    qs = (Payment.objects
-          .filter(status="confirmed", method__in=MONEY_METHODS,
-                  order__in=orders_qs)
-          .annotate(day=TruncDate(Coalesce("confirmed_at", "paid_at"))))
+def _payment_events_by_day(orders_qs, date_from, date_to):
+    """Gross money receipts, stamped by the actual confirmation event."""
+    qs = (
+        Payment.objects.filter(
+            status="confirmed",
+            method__in=MONEY_METHODS,
+            order__in=orders_qs,
+        )
+        .annotate(day=TruncDate(Coalesce("confirmed_at", "paid_at")))
+    )
     qs = _day_bounds(qs, date_from, date_to)
     return qs.values("day", "order__currency").annotate(
-        cash=Coalesce(Sum(net, filter=Q(method__in=CASH_METHODS)), _ZERO,
-                      output_field=_MONEY),
-        cashless=Coalesce(Sum(net, filter=Q(method__in=CASHLESS_METHODS)), _ZERO,
-                          output_field=_MONEY),
+        gross_cash=Coalesce(
+            Sum("amount", filter=Q(method__in=CASH_METHODS)),
+            _ZERO,
+            output_field=_MONEY,
+        ),
+        gross_cashless=Coalesce(
+            Sum("amount", filter=Q(method__in=CASHLESS_METHODS)),
+            _ZERO,
+            output_field=_MONEY,
+        ),
         payments=Count("id"),
     )
 
 
-def _shipped_by_day(orders_qs, date_from, date_to):
-    """Отгрузки по дням и валютам: сумма, мешки, заказы и доля в долг."""
-    line = F("quantity") * Coalesce(
-        F("unit_price"), Value(_ZERO), output_field=_MONEY)
-    qs = (OrderItem.objects
-          .filter(order__in=orders_qs.filter(status="shipped"))
-          .annotate(day=TruncDate(Coalesce("order__shipment__shipped_at",
-                                           "order__created_at"))))
+def _refund_events_by_day(orders_qs, date_from, date_to):
+    """Completed refund outflows, stamped by completion rather than payment day."""
+    qs = (
+        PaymentRefund.objects.filter(
+            status="completed",
+            completed_at__isnull=False,
+            method__in=REFUND_METHODS,
+            payment__order__in=orders_qs,
+        )
+        .annotate(day=TruncDate("completed_at"))
+    )
     qs = _day_bounds(qs, date_from, date_to)
-    return qs.values("day", "order__currency").annotate(
-        revenue=Coalesce(Sum(line, output_field=_MONEY), _ZERO, output_field=_MONEY),
-        bags=Coalesce(Sum("quantity"), 0),
-        orders=Count("order", distinct=True),
-        debt_amount=Coalesce(
-            Sum(line, filter=Q(order__settlement_intent="debt"), output_field=_MONEY),
-            _ZERO, output_field=_MONEY),
+    return qs.values("day", "payment__order__currency").annotate(
+        refund_cash=Coalesce(
+            Sum("amount", filter=Q(method__in=REFUND_CASH_METHODS)),
+            _ZERO,
+            output_field=_MONEY,
+        ),
+        refund_cashless=Coalesce(
+            Sum("amount", filter=Q(method__in=REFUND_CASHLESS_METHODS)),
+            _ZERO,
+            output_field=_MONEY,
+        ),
+        refunds=Count("id"),
     )
 
 
-def _clients_breakdown(orders_qs, date_from, date_to):
-    """Отгрузки периода по клиентам: итоги клиента и его заказы.
+def _computed_payment_status(total: Decimal, paid: Decimal) -> str:
+    """Match the canonical payment-state formula without trusting stored drift."""
+    if paid <= 0:
+        return "unpaid"
+    if total > 0 and paid >= total:
+        return "settled"
+    return "partial"
 
-    Правила те же, что и в остальном отчёте: только shipped, день — выезд
-    машины, валюты не складываются. Один запрос: строки по (клиент, заказ).
+
+def _period_shipped_snapshots(orders_qs, date_from, date_to) -> list[dict]:
+    """Load period shipments once and calculate their current financial split.
+
+    Items and payments are prefetched in two bulk queries. Consequently using
+    ``Order.total_amount``/``paid_total`` below never creates an N+1 and avoids
+    the item x payment multiplication produced by a naive joined aggregate.
     """
-    line = F("quantity") * Coalesce(
-        F("unit_price"), Value(_ZERO), output_field=_MONEY)
-    qs = (OrderItem.objects
-          .filter(order__in=orders_qs.filter(status="shipped"))
-          .annotate(day=TruncDate(Coalesce("order__shipment__shipped_at",
-                                           "order__created_at"))))
-    qs = _day_bounds(qs, date_from, date_to)
-    per_order = qs.values(
-        "order_id", "day", "order__currency", "order__settlement_intent",
-        "order__client_id", "order__client__user__first_name",
-        "order__client__user__last_name",
-    ).annotate(
-        total=Coalesce(Sum(line, output_field=_MONEY), _ZERO,
-                       output_field=_MONEY),
-        bags=Coalesce(Sum("quantity"), 0),
+    qs = (
+        orders_qs.filter(status="shipped")
+        .annotate(
+            day=TruncDate(Coalesce("shipment__shipped_at", "created_at"))
+        )
+        .select_related("client__user")
+        .prefetch_related("items", "payments")
     )
+    qs = _day_bounds(qs, date_from, date_to)
 
+    result = []
+    for order in qs:
+        total = max(_ZERO, order.total_amount)
+        paid = max(_ZERO, order.paid_total)
+        allocated_paid = min(paid, total)
+        remaining = max(_ZERO, total - paid)
+        is_debt = order.settlement_intent == "debt" and remaining > 0
+        debt = remaining if is_debt else _ZERO
+        awaiting = remaining - debt
+        result.append({
+            "order": order,
+            "day": order.day,
+            "currency": order.currency or DEFAULT_CURRENCY,
+            "bags": sum(item.quantity for item in order.items.all()),
+            "total": total,
+            "paid_amount": allocated_paid,
+            "remaining_amount": remaining,
+            "debt_amount": debt,
+            "awaiting_amount": awaiting,
+            "is_debt": is_debt,
+            "payment_status": _computed_payment_status(total, paid),
+        })
+    return result
+
+
+def _clients_breakdown(snapshots: list[dict]):
+    """Current paid/debt/awaiting split for shipments in the selected period."""
     clients: dict = {}
-    for row in per_order:
-        currency = row["order__currency"] or DEFAULT_CURRENCY
-        name = (f'{row["order__client__user__first_name"]} '
-                f'{row["order__client__user__last_name"]}').strip()
-        entry = clients.setdefault(row["order__client_id"], {
-            "id": row["order__client_id"], "name": name,
-            "orders": 0, "bags": 0,
+    for snapshot in snapshots:
+        order = snapshot["order"]
+        currency = snapshot["currency"]
+        entry = clients.setdefault(order.client_id, {
+            "id": order.client_id,
+            "name": order.client.name,
+            "orders": 0,
+            "bags": 0,
             "revenue_by_currency": defaultdict(lambda: _ZERO),
+            "paid_amount_by_currency": defaultdict(lambda: _ZERO),
             "debt_amount_by_currency": defaultdict(lambda: _ZERO),
+            "awaiting_amount_by_currency": defaultdict(lambda: _ZERO),
             "order_list": [],
         })
-        on_debt = row["order__settlement_intent"] == "debt"
         entry["orders"] += 1
-        entry["bags"] += row["bags"]
-        entry["revenue_by_currency"][currency] += row["total"]
-        if on_debt:
-            entry["debt_amount_by_currency"][currency] += row["total"]
+        entry["bags"] += snapshot["bags"]
+        entry["revenue_by_currency"][currency] += snapshot["total"]
+        entry["paid_amount_by_currency"][currency] += snapshot["paid_amount"]
+        entry["debt_amount_by_currency"][currency] += snapshot["debt_amount"]
+        entry["awaiting_amount_by_currency"][currency] += snapshot["awaiting_amount"]
         entry["order_list"].append({
-            "id": row["order_id"],
-            "date": row["day"].isoformat(),
-            "bags": row["bags"],
-            "total": _d(row["total"]),
+            "id": order.id,
+            "date": snapshot["day"].isoformat(),
+            "bags": snapshot["bags"],
+            "total": _d(snapshot["total"]),
+            "paid_amount": _d(snapshot["paid_amount"]),
+            "remaining_amount": _d(snapshot["remaining_amount"]),
             "currency": currency,
-            "on_debt": on_debt,
+            "is_debt": snapshot["is_debt"],
+            # Backward-compatible alias; unlike the old field it is a current
+            # state, not a copy of settlement_intent.
+            "on_debt": snapshot["is_debt"],
+            "payment_status": snapshot["payment_status"],
         })
 
     def revenue_key(entry):
-        # Только порядок строк: номиналы валют сравниваются как числа, в
-        # арифметике отчёта они по-прежнему не смешиваются.
         return max(entry["revenue_by_currency"].values(), default=_ZERO)
 
     result = sorted(clients.values(), key=revenue_key, reverse=True)
     for entry in result:
-        entry["order_list"].sort(key=lambda o: (o["date"], o["id"]),
-                                 reverse=True)
-        entry["revenue_by_currency"] = as_money_strings(
-            entry["revenue_by_currency"])
-        entry["debt_amount_by_currency"] = as_money_strings(
-            entry["debt_amount_by_currency"])
+        entry["order_list"].sort(
+            key=lambda order: (order["date"], order["id"]),
+            reverse=True,
+        )
+        currency = primary_currency(entry["revenue_by_currency"])
+        entry["currency"] = currency
+        for field in (
+            "revenue", "paid_amount", "debt_amount", "awaiting_amount",
+        ):
+            source = (
+                "revenue_by_currency"
+                if field == "revenue"
+                else f"{field}_by_currency"
+            )
+            entry[field] = _d(entry[source].get(currency, _ZERO))
+            entry[source] = as_money_strings(entry[source])
     return result
 
 
 def _debt_now(orders_qs):
-    """Снапшот дебиторки на сейчас — по правилам orders/debt.py.
-
-    Долг считается тем же helper'ом, что и остальные экраны, и раскладывается
-    по валютам: 1000 ₸ и 5 $ не дают «1005».
-    """
+    """Снапшот дебиторки на сейчас — по правилам orders/debt.py."""
     orders = list(
         orders_qs.filter(status="shipped", settlement_intent="debt")
         .prefetch_related("items", "payments")
@@ -169,9 +224,6 @@ def _debt_now(orders_qs):
     totals = sum_by_currency(outstanding, order_remaining)
     currency = primary_currency(totals)
 
-    # Просрочка определяется расписанием магазина на сегодняшний день.
-    # Считаем её на уже загруженном наборе долгов, чтобы дашборду не пришлось
-    # скачивать и агрегировать весь /clients/debts/ в браузере.
     from apps.clients.models import Store
     from apps.clients.services import is_payment_window_open
 
@@ -195,135 +247,261 @@ def _debt_now(orders_qs):
         "orders": len(outstanding),
         "overdue_by_currency": as_money_strings(overdue_totals),
         "overdue_currency": overdue_currency,
-        "overdue_clients": len({
-            order.client_id for order in overdue_orders
-        }),
+        "overdue_clients": len({order.client_id for order in overdue_orders}),
+    }
+
+
+def _shipping_currency_row():
+    return {
+        "revenue": _ZERO,
+        "paid_amount": _ZERO,
+        "debt_amount": _ZERO,
+        "awaiting_amount": _ZERO,
+    }
+
+
+def _income_currency_row():
+    return {
+        "gross_cash": _ZERO,
+        "gross_cashless": _ZERO,
+        "refund_cash": _ZERO,
+        "refund_cashless": _ZERO,
     }
 
 
 def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
-    """Собрать отчёт по «живым» заказам скоупа: дни, итоги, долг."""
+    """Собрать отчёт по живым заказам скоупа."""
     days: dict = {}
 
     def day_row(day):
         return days.setdefault(day, {
             "date": day.isoformat(),
-            "orders": 0, "bags": 0,
-            "revenue": _ZERO, "debt_amount": _ZERO,
-            "cash": _ZERO, "cashless": _ZERO, "payments": 0,
+            "orders": 0,
+            "bags": 0,
+            "payments": 0,
+            "refunds": 0,
             "revenue_by_currency": defaultdict(lambda: _ZERO),
+            "paid_amount_by_currency": defaultdict(lambda: _ZERO),
             "debt_amount_by_currency": defaultdict(lambda: _ZERO),
-            "cash_by_currency": defaultdict(lambda: _ZERO),
-            "cashless_by_currency": defaultdict(lambda: _ZERO),
-            "received_by_currency": defaultdict(lambda: _ZERO),
+            "awaiting_amount_by_currency": defaultdict(lambda: _ZERO),
+            "gross_cash_by_currency": defaultdict(lambda: _ZERO),
+            "gross_cashless_by_currency": defaultdict(lambda: _ZERO),
+            "refund_cash_by_currency": defaultdict(lambda: _ZERO),
+            "refund_cashless_by_currency": defaultdict(lambda: _ZERO),
         })
 
-    # Валюты не складываются: суммы копятся отдельно по каждой (KZT/USD), а
-    # плоское поле остаётся для совместимости и показывает основную валюту.
-    by_currency: dict[str, dict[str, Decimal]] = defaultdict(
-        lambda: {"revenue": _ZERO, "debt_amount": _ZERO,
-                 "cash": _ZERO, "cashless": _ZERO}
-    )
+    shipped_by_currency = defaultdict(_shipping_currency_row)
+    snapshots = _period_shipped_snapshots(orders_qs, date_from, date_to)
+    total_bags = 0
+    for snapshot in snapshots:
+        row = day_row(snapshot["day"])
+        currency = snapshot["currency"]
+        row["orders"] += 1
+        row["bags"] += snapshot["bags"]
+        total_bags += snapshot["bags"]
+        for field in (
+            "revenue", "paid_amount", "debt_amount", "awaiting_amount",
+        ):
+            value = snapshot["total"] if field == "revenue" else snapshot[field]
+            row[f"{field}_by_currency"][currency] += value
+            shipped_by_currency[currency][field] += value
 
-    def accumulate(currency: str, field: str, value: Decimal) -> None:
-        by_currency[currency or DEFAULT_CURRENCY][field] += value
+    income_by_currency = defaultdict(_income_currency_row)
+    payments_total = 0
+    for event in _payment_events_by_day(orders_qs, date_from, date_to):
+        row = day_row(event["day"])
+        currency = event["order__currency"] or DEFAULT_CURRENCY
+        row["gross_cash_by_currency"][currency] += event["gross_cash"]
+        row["gross_cashless_by_currency"][currency] += event["gross_cashless"]
+        row["payments"] += event["payments"]
+        income_by_currency[currency]["gross_cash"] += event["gross_cash"]
+        income_by_currency[currency]["gross_cashless"] += event["gross_cashless"]
+        payments_total += event["payments"]
 
-    for r in _shipped_by_day(orders_qs, date_from, date_to):
-        row = day_row(r["day"])
-        currency = r["order__currency"]
-        row["orders"] += r["orders"]
-        row["bags"] += r["bags"]
-        row["revenue"] += r["revenue"]
-        row["debt_amount"] += r["debt_amount"]
-        row["revenue_by_currency"][currency] += r["revenue"]
-        row["debt_amount_by_currency"][currency] += r["debt_amount"]
-        accumulate(currency, "revenue", r["revenue"])
-        accumulate(currency, "debt_amount", r["debt_amount"])
+    refunds_total = 0
+    for event in _refund_events_by_day(orders_qs, date_from, date_to):
+        row = day_row(event["day"])
+        currency = event["payment__order__currency"] or DEFAULT_CURRENCY
+        row["refund_cash_by_currency"][currency] += event["refund_cash"]
+        row["refund_cashless_by_currency"][currency] += event["refund_cashless"]
+        row["refunds"] += event["refunds"]
+        income_by_currency[currency]["refund_cash"] += event["refund_cash"]
+        income_by_currency[currency]["refund_cashless"] += event["refund_cashless"]
+        refunds_total += event["refunds"]
 
-    for r in _income_by_day(orders_qs, date_from, date_to):
-        row = day_row(r["day"])
-        currency = r["order__currency"]
-        row["cash"] += r["cash"]
-        row["cashless"] += r["cashless"]
-        row["payments"] += r["payments"]
-        row["cash_by_currency"][currency] += r["cash"]
-        row["cashless_by_currency"][currency] += r["cashless"]
-        row["received_by_currency"][currency] += r["cash"] + r["cashless"]
-        accumulate(currency, "cash", r["cash"])
-        accumulate(currency, "cashless", r["cashless"])
-
-    total: _ReportTotals = {
-        "revenue": _ZERO, "bags": 0, "orders": 0, "debt_amount": _ZERO,
-        "cash": _ZERO, "cashless": _ZERO, "payments": 0,
-    }
-    for row in days.values():
-        total["revenue"] += row["revenue"]
-        total["bags"] += row["bags"]
-        total["orders"] += row["orders"]
-        total["debt_amount"] += row["debt_amount"]
-        total["cash"] += row["cash"]
-        total["cashless"] += row["cashless"]
-        total["payments"] += row["payments"]
-
-    day_list = [
-        {**row,
-         "revenue": _d(row["revenue"]), "debt_amount": _d(row["debt_amount"]),
-         "cash": _d(row["cash"]), "cashless": _d(row["cashless"]),
-         "received": _d(row["cash"] + row["cashless"]),
-         "revenue_by_currency": as_money_strings(row["revenue_by_currency"]),
-         "debt_amount_by_currency": as_money_strings(
-             row["debt_amount_by_currency"]),
-         "cash_by_currency": as_money_strings(row["cash_by_currency"]),
-         "cashless_by_currency": as_money_strings(row["cashless_by_currency"]),
-         "received_by_currency": as_money_strings(row["received_by_currency"])}
-        for row in sorted(days.values(), key=lambda r: r["date"], reverse=True)
-    ]
-
-    income_by_currency = {
-        currency: sums["cash"] + sums["cashless"]
-        for currency, sums in by_currency.items()
-    }
     revenue_by_currency = {
-        currency: sums["revenue"] for currency, sums in by_currency.items()
+        currency: values["revenue"]
+        for currency, values in shipped_by_currency.items()
     }
-    income_currency = primary_currency(income_by_currency)
     revenue_currency = primary_currency(revenue_by_currency)
-    income_totals = by_currency.get(
-        income_currency,
-        {"cash": _ZERO, "cashless": _ZERO},
+    revenue_totals = shipped_by_currency.get(
+        revenue_currency, _shipping_currency_row()
     )
-    revenue_totals = by_currency.get(
-        revenue_currency,
-        {"revenue": _ZERO, "debt_amount": _ZERO},
+
+    gross_by_currency = {
+        currency: values["gross_cash"] + values["gross_cashless"]
+        for currency, values in income_by_currency.items()
+    }
+    refunded_by_currency = {
+        currency: values["refund_cash"] + values["refund_cashless"]
+        for currency, values in income_by_currency.items()
+    }
+    net_by_currency = {
+        currency: gross_by_currency[currency] - refunded_by_currency[currency]
+        for currency in income_by_currency
+    }
+    income_activity = {
+        currency: gross_by_currency[currency] + refunded_by_currency[currency]
+        for currency in income_by_currency
+    }
+    income_currency = primary_currency(income_activity)
+    income_totals = income_by_currency.get(
+        income_currency, _income_currency_row()
     )
+    income_cash = income_totals["gross_cash"] - income_totals["refund_cash"]
+    income_cashless = (
+        income_totals["gross_cashless"] - income_totals["refund_cashless"]
+    )
+
+    day_list = []
+    for row in sorted(days.values(), key=lambda value: value["date"], reverse=True):
+        income_currencies = {
+            *row["gross_cash_by_currency"],
+            *row["gross_cashless_by_currency"],
+            *row["refund_cash_by_currency"],
+            *row["refund_cashless_by_currency"],
+        }
+        cash_by_currency = {
+            currency: (
+                row["gross_cash_by_currency"].get(currency, _ZERO)
+                - row["refund_cash_by_currency"].get(currency, _ZERO)
+            )
+            for currency in income_currencies
+        }
+        cashless_by_currency = {
+            currency: (
+                row["gross_cashless_by_currency"].get(currency, _ZERO)
+                - row["refund_cashless_by_currency"].get(currency, _ZERO)
+            )
+            for currency in income_currencies
+        }
+        gross_received_by_currency = {
+            currency: (
+                row["gross_cash_by_currency"].get(currency, _ZERO)
+                + row["gross_cashless_by_currency"].get(currency, _ZERO)
+            )
+            for currency in income_currencies
+        }
+        day_refunded_by_currency = {
+            currency: (
+                row["refund_cash_by_currency"].get(currency, _ZERO)
+                + row["refund_cashless_by_currency"].get(currency, _ZERO)
+            )
+            for currency in income_currencies
+        }
+        received_by_currency = {
+            currency: (
+                cash_by_currency[currency] + cashless_by_currency[currency]
+            )
+            for currency in income_currencies
+        }
+        day_list.append({
+            "date": row["date"],
+            "orders": row["orders"],
+            "bags": row["bags"],
+            "revenue": _d(row["revenue_by_currency"].get(revenue_currency, _ZERO)),
+            "paid_amount": _d(
+                row["paid_amount_by_currency"].get(revenue_currency, _ZERO)
+            ),
+            "debt_amount": _d(
+                row["debt_amount_by_currency"].get(revenue_currency, _ZERO)
+            ),
+            "awaiting_amount": _d(
+                row["awaiting_amount_by_currency"].get(revenue_currency, _ZERO)
+            ),
+            "cash": _d(cash_by_currency.get(income_currency, _ZERO)),
+            "cashless": _d(cashless_by_currency.get(income_currency, _ZERO)),
+            "received": _d(received_by_currency.get(income_currency, _ZERO)),
+            "gross_received": _d(
+                gross_received_by_currency.get(income_currency, _ZERO)
+            ),
+            "refunded": _d(
+                day_refunded_by_currency.get(income_currency, _ZERO)
+            ),
+            "payments": row["payments"],
+            "refunds": row["refunds"],
+            "revenue_by_currency": as_money_strings(row["revenue_by_currency"]),
+            "paid_amount_by_currency": as_money_strings(
+                row["paid_amount_by_currency"]
+            ),
+            "debt_amount_by_currency": as_money_strings(
+                row["debt_amount_by_currency"]
+            ),
+            "awaiting_amount_by_currency": as_money_strings(
+                row["awaiting_amount_by_currency"]
+            ),
+            "cash_by_currency": as_money_strings(cash_by_currency),
+            "cashless_by_currency": as_money_strings(cashless_by_currency),
+            "received_by_currency": as_money_strings(received_by_currency),
+            "gross_received_by_currency": as_money_strings(
+                gross_received_by_currency
+            ),
+            "refunded_by_currency": as_money_strings(
+                day_refunded_by_currency
+            ),
+        })
+
     return {
         "from": date_from.isoformat() if date_from else None,
         "to": date_to.isoformat() if date_to else None,
         "income": {
-            "total": _d(
-                income_totals["cash"] + income_totals["cashless"]
+            "total": _d(income_cash + income_cashless),
+            "gross": _d(
+                income_totals["gross_cash"] + income_totals["gross_cashless"]
             ),
-            "cash": _d(income_totals["cash"]),
-            "cashless": _d(income_totals["cashless"]),
-            "payments": total["payments"],
+            "refunded": _d(
+                income_totals["refund_cash"] + income_totals["refund_cashless"]
+            ),
+            "cash": _d(income_cash),
+            "cashless": _d(income_cashless),
+            "payments": payments_total,
+            "refunds": refunds_total,
             "currency": income_currency,
-            "by_currency": as_money_strings(income_by_currency),
-            "cash_by_currency": as_money_strings(
-                {c: s["cash"] for c, s in by_currency.items()}),
-            "cashless_by_currency": as_money_strings(
-                {c: s["cashless"] for c, s in by_currency.items()}),
+            "by_currency": as_money_strings(net_by_currency),
+            "gross_by_currency": as_money_strings(gross_by_currency),
+            "refunded_by_currency": as_money_strings(refunded_by_currency),
+            "cash_by_currency": as_money_strings({
+                currency: values["gross_cash"] - values["refund_cash"]
+                for currency, values in income_by_currency.items()
+            }),
+            "cashless_by_currency": as_money_strings({
+                currency: values["gross_cashless"] - values["refund_cashless"]
+                for currency, values in income_by_currency.items()
+            }),
         },
         "shipped": {
             "revenue": _d(revenue_totals["revenue"]),
-            "orders": total["orders"],
-            "bags": total["bags"],
+            "paid_amount": _d(revenue_totals["paid_amount"]),
             "debt_amount": _d(revenue_totals["debt_amount"]),
+            "awaiting_amount": _d(revenue_totals["awaiting_amount"]),
+            "orders": len(snapshots),
+            "bags": total_bags,
             "currency": revenue_currency,
             "revenue_by_currency": as_money_strings(revenue_by_currency),
-            "debt_amount_by_currency": as_money_strings(
-                {c: s["debt_amount"] for c, s in by_currency.items()}),
+            "paid_amount_by_currency": as_money_strings({
+                currency: values["paid_amount"]
+                for currency, values in shipped_by_currency.items()
+            }),
+            "debt_amount_by_currency": as_money_strings({
+                currency: values["debt_amount"]
+                for currency, values in shipped_by_currency.items()
+            }),
+            "awaiting_amount_by_currency": as_money_strings({
+                currency: values["awaiting_amount"]
+                for currency, values in shipped_by_currency.items()
+            }),
         },
         "debt_now": _debt_now(orders_qs),
-        "clients": _clients_breakdown(orders_qs, date_from, date_to),
+        "clients": _clients_breakdown(snapshots),
         "days": day_list,
     }

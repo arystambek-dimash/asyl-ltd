@@ -220,10 +220,15 @@ def _finish(
 
 def _reconciliation(opening: Decimal, charged: Decimal, paid: Decimal, currency: str):
     """Строки блока сверки. Замыкающая строка обязана равняться сумме трёх."""
+    net_payment_movement = -paid
     return [
         (f"Остаток на начало периода, {currency}", _money(opening), None),
         ("Начислено (отгрузки)", _money(charged), "debit"),
-        ("Оплачено (поступления)", _money(-paid), "credit"),
+        (
+            "Оплачено (поступления − возвраты)",
+            _money(net_payment_movement),
+            "credit" if net_payment_movement <= 0 else "debit",
+        ),
         ("Остаток на конец периода", _money(opening + charged - paid), None),
     ]
 
@@ -251,6 +256,19 @@ def _operation_display(operation):
             payment.note or "Поступление оплаты",
             _method_label(payment.method),
             payment.confirmed_by or payment.received_by or payment.recorded_by,
+        )
+    if operation.kind == "refund":
+        refund = operation.refund
+        if refund is None:
+            raise ValueError("Refund statement operation has no refund")
+        method = "ApiPay" if refund.method == "apipay" else _method_label(
+            refund.method
+        )
+        return (
+            "Возврат",
+            refund.reason or "Возврат оплаты",
+            method,
+            refund.requested_by,
         )
     raise ValueError(f"Unknown statement operation kind: {operation.kind}")
 

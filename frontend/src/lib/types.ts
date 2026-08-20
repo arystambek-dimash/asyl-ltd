@@ -79,15 +79,27 @@ export interface ReportDay {
   orders: number;
   bags: number;
   revenue: string;
+  /** Сколько стоимости отгрузок этого дня уже погашено на момент запроса. */
+  paid_amount: string;
+  /** Текущий остаток именно заказов, оформленных в долг. */
   debt_amount: string;
+  /** Непогашенный остаток заказов без отсрочки (не является дебиторкой). */
+  awaiting_amount: string;
   cash: string;
   cashless: string;
+  gross_received: string;
+  refunded: string;
   received: string;
   payments: number;
+  refunds: number;
   revenue_by_currency: Record<string, string>;
+  paid_amount_by_currency: Record<string, string>;
   debt_amount_by_currency: Record<string, string>;
+  awaiting_amount_by_currency: Record<string, string>;
   cash_by_currency: Record<string, string>;
   cashless_by_currency: Record<string, string>;
+  gross_received_by_currency: Record<string, string>;
+  refunded_by_currency: Record<string, string>;
   received_by_currency: Record<string, string>;
 }
 
@@ -97,6 +109,11 @@ export interface ReportClientOrder {
   bags: number;
   total: string;
   currency: string;
+  paid_amount: string;
+  remaining_amount: string;
+  payment_status: "unpaid" | "partial" | "settled";
+  is_debt: boolean;
+  /** @deprecated Совместимый alias is_debt, это не исторический intent. */
   on_debt: boolean;
 }
 
@@ -106,7 +123,10 @@ export interface ReportClientRow {
   orders: number;
   bags: number;
   revenue_by_currency: Record<string, string>;
+  paid_amount_by_currency: Record<string, string>;
+  /** Снимок текущего остатка по debt-заказам, отгруженным в период. */
   debt_amount_by_currency: Record<string, string>;
+  awaiting_amount_by_currency: Record<string, string>;
   order_list: ReportClientOrder[];
 }
 
@@ -118,20 +138,31 @@ export interface ReportSummary {
     total: string;
     cash: string;
     cashless: string;
+    gross: string;
+    refunded: string;
     payments: number;
+    refunds: number;
     currency: string;
     by_currency: Record<string, string>;
     cash_by_currency: Record<string, string>;
     cashless_by_currency: Record<string, string>;
+    gross_by_currency: Record<string, string>;
+    refunded_by_currency: Record<string, string>;
   };
   shipped: {
     revenue: string;
     orders: number;
     bags: number;
+    /** Погашенная часть выбранных отгрузок на момент запроса. */
+    paid_amount: string;
+    /** Текущий долг выбранных отгрузок, а не первоначальный способ расчёта. */
     debt_amount: string;
+    awaiting_amount: string;
     currency: string;
     revenue_by_currency: Record<string, string>;
+    paid_amount_by_currency: Record<string, string>;
     debt_amount_by_currency: Record<string, string>;
+    awaiting_amount_by_currency: Record<string, string>;
   };
   debt_now: {
     total: string;
