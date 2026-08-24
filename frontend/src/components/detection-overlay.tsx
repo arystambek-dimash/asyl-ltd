@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import type { AlwaysOnDetection } from "@/lib/types";
+import { useVideoBox } from "@/lib/use-video-box";
 
 /**
  * Цвет рамки = цвет мешка, который распознала модель.
@@ -119,59 +120,6 @@ function useStale(updatedAt: number | undefined, staleAfterMs: number | undefine
 
   if (!updatedAt || !staleAfterMs) return false;
   return now - updatedAt >= staleAfterMs;
-}
-
-/**
- * Область, которую реально занимает кадр внутри контейнера.
- *
- * Видео рисуется с `object-contain`: при несовпадении пропорций сверху/снизу
- * или по бокам остаются поля, и рамки, растянутые на весь контейнер, съехали
- * бы с мешков. Пропорции берём у самого элемента (`videoWidth/videoHeight`).
- */
-function useVideoBox(container: HTMLElement | null) {
-  const [box, setBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
-
-  useEffect(() => {
-    if (!container) return;
-    // Видео — сосед оверлея, а не его потомок: оба лежат в общем relative-боксе
-    // карточки. Искать его внутри себя бессмысленно — так рамки не рисовались
-    // вообще, хотя координаты приходили.
-    const parent = container.parentElement;
-    const video = parent?.querySelector("video");
-    if (!parent || !video) return;
-
-    const measure = () => {
-      const { videoWidth, videoHeight } = video;
-      const { clientWidth, clientHeight } = parent;
-      if (!videoWidth || !videoHeight || !clientWidth || !clientHeight) return setBox(null);
-      const scale = Math.min(clientWidth / videoWidth, clientHeight / videoHeight);
-      const width = videoWidth * scale;
-      const height = videoHeight * scale;
-      setBox({
-        left: (clientWidth - width) / 2,
-        top: (clientHeight - height) / 2,
-        width,
-        height,
-      });
-    };
-
-    measure();
-    video.addEventListener("loadedmetadata", measure);
-    video.addEventListener("resize", measure);
-    // Наблюдаем за родителем: размеры самого оверлея мы же и задаём, и
-    // подписка на него дала бы петлю измерение → resize → измерение.
-    // ResizeObserver есть не везде — без него рамки просто не подстроятся
-    // под смену размера окна, но отрисуются.
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
-    observer?.observe(parent);
-    return () => {
-      video.removeEventListener("loadedmetadata", measure);
-      video.removeEventListener("resize", measure);
-      observer?.disconnect();
-    };
-  }, [container]);
-
-  return box;
 }
 
 /**

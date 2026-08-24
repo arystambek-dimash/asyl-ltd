@@ -5,9 +5,10 @@ from unittest.mock import patch
 
 import pytest
 from django.core import signing
+from django.core.cache import cache
 from django.utils import timezone
 
-from apps.cameras import ai, recordings
+from apps.cameras import ai, recordings, services
 from apps.cameras.models import (
     AiCountingSession,
     MonoblockCameraSettings,
@@ -44,6 +45,15 @@ LINE_CONFIG = {
 def ai_key(monkeypatch):
     monkeypatch.setattr(ai, "AI_KEY", "test-key")
     MonoblockCameraSettings.objects.create(camera_sources=["cam2", "cam3"])
+    keys = (
+        ai.ALWAYS_ON_CACHE_KEY,
+        ai.DETECTIONS_CACHE_KEY,
+        services.CACHE_KEY,
+        services.LAST_GOOD_CACHE_KEY,
+    )
+    cache.delete_many(keys)
+    yield
+    cache.delete_many(keys)
 
 
 @pytest.fixture
@@ -594,6 +604,12 @@ def test_superuser_puts_valid_counting_line(api_client, superuser):
         "ok": True, "saved": True, "applied_to_processor": True,
         **LINE_CONFIG,
     }
+    old_line = {**LINE_CONFIG, "line": {"x1": 0, "y1": 0.5, "x2": 1, "y2": 0.5}}
+    inventory = [{"src": "cam2", "line_config": old_line}, {"src": "cam3", "line_config": None}]
+    cache.set(services.CACHE_KEY, inventory, services.CACHE_TTL)
+    cache.set(services.LAST_GOOD_CACHE_KEY, inventory, services.LAST_GOOD_TTL)
+    cache.set(ai.ALWAYS_ON_CACHE_KEY, {"processors": [{"cam": "cam2", "line": "old"}]}, 30)
+    cache.set(ai.DETECTIONS_CACHE_KEY, {"processors": [{"cam": "cam2", "line": "old"}]}, 30)
     api_client.force_authenticate(superuser)
     with patch.object(ai, "_request", return_value=(200, upstream)) as request:
         response = api_client.put(
@@ -603,6 +619,33 @@ def test_superuser_puts_valid_counting_line(api_client, superuser):
     assert response.status_code == 200
     assert response.data == upstream
     request.assert_called_once_with("PUT", "/cameras/cam2/line", body)
+    assert cache.get(ai.ALWAYS_ON_CACHE_KEY) is None
+    assert cache.get(ai.DETECTIONS_CACHE_KEY) is None
+    for key in (services.CACHE_KEY, services.LAST_GOOD_CACHE_KEY):
+        refreshed = cache.get(key)
+        assert refreshed[0]["line_config"] == LINE_CONFIG
+        assert refreshed[1]["line_config"] is None
+
+
+def test_fast_detection_snapshot_keeps_the_applied_counting_line():
+    status = {
+        "processors": [
+            {
+                "cam": "cam2",
+                "running": True,
+                "total": 7,
+                "detections": [],
+                "detection_frame": {"width": 1920, "height": 1080},
+                "line": "0.08,0.61,0.93,0.58",
+                "direction": "negative",
+            }
+        ]
+    }
+    with patch.object(ai, "always_on_status", return_value=status):
+        payload = ai.always_on_detections_cached()
+
+    assert payload["processors"][0]["line"] == "0.08,0.61,0.93,0.58"
+    assert payload["processors"][0]["direction"] == "negative"
 
 
 @pytest.mark.parametrize("coordinate", [-0.01, 1.01])
@@ -692,6 +735,11 @@ def test_saved_but_not_live_503_is_returned_once_without_field_loss(
         "direction": "any",
         "detail": "saved, live processor update pending",
     }
+    inventory = [{"src": "cam2", "line_config": None}]
+    cache.set(services.CACHE_KEY, inventory, services.CACHE_TTL)
+    cache.set(services.LAST_GOOD_CACHE_KEY, inventory, services.LAST_GOOD_TTL)
+    cache.set(ai.ALWAYS_ON_CACHE_KEY, {"processors": [{"cam": "cam2", "line": "old"}]}, 30)
+    cache.set(ai.DETECTIONS_CACHE_KEY, {"processors": [{"cam": "cam2", "line": "old"}]}, 30)
     api_client.force_authenticate(superuser)
     with patch.object(ai, "_request", return_value=(503, upstream)) as request:
         response = api_client.put(
@@ -701,6 +749,10 @@ def test_saved_but_not_live_503_is_returned_once_without_field_loss(
     assert response.status_code == 503
     assert response.data == upstream
     request.assert_called_once()
+    assert cache.get(ai.ALWAYS_ON_CACHE_KEY) is None
+    assert cache.get(ai.DETECTIONS_CACHE_KEY) is None
+    assert cache.get(services.CACHE_KEY)[0]["line_config"]["line"] == LINE_CONFIG["line"]
+    assert cache.get(services.LAST_GOOD_CACHE_KEY)[0]["line_config"]["line"] == LINE_CONFIG["line"]
 
 
 @pytest.mark.parametrize("upstream_status", [400, 401, 404])

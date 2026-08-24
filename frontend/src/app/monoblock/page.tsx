@@ -35,6 +35,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { playableCameras, type CameraFeed } from "@/components/camera-wall";
 import { CameraStream } from "@/components/camera-stream";
 import { ConveyorDevicesButton } from "@/components/conveyors/conveyor-devices-button";
+import { CameraCountingLineOverlay } from "@/components/camera-counting-line-overlay";
 import { DetectionOverlay } from "@/components/detection-overlay";
 import { AlwaysOnDayRunLog, AlwaysOnProductionPanel } from "@/components/monoblock/always-on-production-panel";
 import { RequirePerm } from "@/components/require-perm";
@@ -50,6 +51,7 @@ import { ColorDot, Eyebrow, Hairline, Metric, Panel, SectionHead } from "@/compo
 import { colorMeta } from "@/lib/monoblock-colors";
 import { api, apiError } from "@/lib/api";
 import { orderedBagCount } from "@/lib/orders";
+import { resolveCountingLine } from "@/lib/camera-counting-line";
 import { showSuccess } from "@/lib/toast";
 import { can } from "@/lib/can";
 import type {
@@ -709,6 +711,8 @@ function AlwaysOnCard({
   const [liveBoxes, setLiveBoxes] = useState<{
     detections?: AlwaysOnDetection[];
     frame?: { width?: number; height?: number } | null;
+    line?: AlwaysOnProcessorStatus["line"];
+    direction?: AlwaysOnProcessorStatus["direction"];
     at: number;
   } | null>(null);
   const [liveProcessor, setLiveProcessor] = useState(processor);
@@ -734,6 +738,13 @@ function AlwaysOnCard({
   const [archiving, setArchiving] = useState(false);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const current = open ? liveProcessor : processor;
+  const countingLine = resolveCountingLine(
+    {
+      line: liveBoxes?.line ?? current.line,
+      direction: liveBoxes?.direction ?? current.direction,
+    },
+    camera?.line_config,
+  );
   const currentDaily = open ? liveDaily : daily;
   const todayTotal = currentDaily?.total ?? 0;
   const allTimeTotal = currentDaily?.all_time_total ?? todayTotal;
@@ -806,6 +817,8 @@ function AlwaysOnCard({
         setLiveBoxes({
           detections: row?.detections,
           frame: row?.detection_frame,
+          line: row?.line,
+          direction: row?.direction,
           at: Date.now(),
         });
       } catch {
@@ -1126,15 +1139,20 @@ function AlwaysOnCard({
                   className="absolute inset-0 size-full object-contain"
                 />
               ) : null}
-              {/* Всегда-включённый поток идёт без вжатых рамок, поэтому
-                  показываем работу модели оверлеем поверх видео. */}
+              {/* Всегда-включённый поток идёт без вжатых рамок и линии,
+                  поэтому весь слой модели собирает браузер поверх видео. */}
               {streamOnline && showDetections && (
-                <DetectionOverlay
-                  detections={liveBoxes?.detections ?? current.detections}
-                  frame={liveBoxes?.frame ?? current.detection_frame}
-                  staleAfterMs={DETECTIONS_STALE_MS}
-                  updatedAt={liveBoxes?.at}
-                />
+                <>
+                  <DetectionOverlay
+                    detections={liveBoxes?.detections ?? current.detections}
+                    frame={liveBoxes?.frame ?? current.detection_frame}
+                    staleAfterMs={DETECTIONS_STALE_MS}
+                    updatedAt={liveBoxes?.at}
+                  />
+                  {countingLine && (
+                    <CameraCountingLineOverlay line={countingLine.line} direction={countingLine.direction} />
+                  )}
+                </>
               )}
               {!streamOnline && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950 text-white/45">
@@ -1161,7 +1179,7 @@ function AlwaysOnCard({
                   )}
                 >
                   <ScanLine className="size-3.5" />
-                  {showDetections ? "Рамки модели" : "Рамки скрыты"}
+                  {showDetections ? "Рамки и линия" : "Слой скрыт"}
                   {showDetections && current.detections?.length ? (
                     <span className="tabular-nums">· {current.detections.length}</span>
                   ) : null}

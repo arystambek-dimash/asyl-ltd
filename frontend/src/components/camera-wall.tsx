@@ -31,6 +31,7 @@ import { useAuth } from "@/store/auth";
 
 const CAMERA_REFRESH_MS = 30 * 1000;
 const RETRY_MAX_MS = 60 * 1000;
+const LINE_SYNC_MS = 3 * 1000;
 
 export interface CameraCountingLine {
   configured: boolean;
@@ -45,6 +46,18 @@ interface CameraCountingLineSave extends CameraCountingLine {
   saved?: boolean;
   applied_to_processor?: boolean;
   detail?: string;
+}
+
+function countingLineSignature(config: CameraCountingLine | null | undefined) {
+  const line = config?.line;
+  return [
+    config?.updated_at ?? "",
+    config?.direction ?? "any",
+    line?.x1 ?? "",
+    line?.y1 ?? "",
+    line?.x2 ?? "",
+    line?.y2 ?? "",
+  ].join("|");
 }
 
 /** Камера из живого инвентаря сети (бэкенд строит его из ai_service). */
@@ -190,19 +203,37 @@ export function CameraWall() {
   const canRename = can(me, "sys_permissions.manage");
   const canConfigureLine = !!me?.is_superuser;
   const lineRequestId = useRef(0);
+  const lineDirty = useRef(false);
+  const lineServerSignature = useRef("");
   const [lineCamera, setLineCamera] = useState<(CameraFeed & { src: string }) | null>(null);
+  const [linePendingRemote, setLinePendingRemote] = useState<CameraCountingLine | null>(null);
   const [lineDraft, setLineDraft] = useState<NormalizedLine>(defaultCountingLine());
   const [lineDirection, setLineDirection] = useState<LineDirection>("any");
+  const [lineAuthoritative, setLineAuthoritative] = useState(false);
   const [loadingLine, setLoadingLine] = useState(false);
   const [savingLine, setSavingLine] = useState(false);
   const [lineError, setLineError] = useState("");
   const [lineNotice, setLineNotice] = useState("");
+  const lineCameraSource = lineCamera?.src ?? null;
 
   const updateCameraLine = useCallback((src: string, config: CameraCountingLine) => {
     setCameras((current) =>
       current.map((camera) => (camera.src === src ? { ...camera, line_config: config } : camera)),
     );
   }, []);
+
+  const acceptLineConfig = useCallback(
+    (src: string, config: CameraCountingLine) => {
+      setLineDraft(config.line ? { ...config.line } : defaultCountingLine());
+      setLineDirection(config.direction ?? "any");
+      setLineAuthoritative(true);
+      lineDirty.current = false;
+      lineServerSignature.current = countingLineSignature(config);
+      setLinePendingRemote(null);
+      updateCameraLine(src, config);
+    },
+    [updateCameraLine],
+  );
 
   async function configureLine(camera: CameraFeed & { src: string }) {
     if (!canConfigureLine || !/^cam[1-9]\d*$/.test(camera.src)) return;
@@ -211,6 +242,10 @@ export function CameraWall() {
     setLineCamera(camera);
     setLineDraft(current?.line ? { ...current.line } : defaultCountingLine());
     setLineDirection(current?.direction ?? "any");
+    setLineAuthoritative(false);
+    lineDirty.current = false;
+    lineServerSignature.current = countingLineSignature(current);
+    setLinePendingRemote(null);
     setLineError("");
     setLineNotice("");
     setLoadingLine(true);
@@ -220,9 +255,7 @@ export function CameraWall() {
       });
       if (lineRequestId.current !== requestId) return;
       const config = response.data;
-      setLineDraft(config.line ? { ...config.line } : defaultCountingLine());
-      setLineDirection(config.direction ?? "any");
-      updateCameraLine(camera.src, config);
+      acceptLineConfig(camera.src, config);
     } catch (cause) {
       if (lineRequestId.current === requestId) setLineError(apiError(cause));
     } finally {
@@ -230,9 +263,75 @@ export function CameraWall() {
     }
   }
 
+  // An editor can stay open while another administrator calibrates the same
+  // camera. Poll the exact lightweight endpoint: clean drafts follow remote
+  // changes automatically, while dirty drafts surface a conflict instead of
+  // being silently overwritten.
+  useEffect(() => {
+    if (!lineCameraSource) return;
+    let disposed = false;
+    let inFlight = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const schedule = () => {
+      if (disposed) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void pull(), LINE_SYNC_MS);
+    };
+    const pull = async () => {
+      if (disposed || document.visibilityState !== "visible" || inFlight) return;
+      inFlight = true;
+      const requestId = ++lineRequestId.current;
+      try {
+        const response = await api.get<CameraCountingLine>(
+          `/cameras/${encodeURIComponent(lineCameraSource)}/counting-line`,
+          { timeout: 10_000 },
+        );
+        if (disposed || lineRequestId.current !== requestId) return;
+        const remote = response.data;
+        const remoteSignature = countingLineSignature(remote);
+        if (remoteSignature === lineServerSignature.current) return;
+        updateCameraLine(lineCameraSource, remote);
+        if (lineDirty.current) {
+          setLinePendingRemote((current) => (countingLineSignature(current) === remoteSignature ? current : remote));
+        } else {
+          acceptLineConfig(lineCameraSource, remote);
+          setLineError("");
+          setLineNotice("Линия обновлена из настроек камеры.");
+        }
+      } catch {
+        // The initial load already exposes connectivity errors. Background
+        // sync is best-effort and retries without replacing a usable draft.
+      } finally {
+        inFlight = false;
+        schedule();
+      }
+    };
+    const pullNow = () => {
+      if (document.visibilityState !== "visible") return;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      void pull();
+    };
+
+    timer = setTimeout(() => void pull(), LINE_SYNC_MS);
+    document.addEventListener("visibilitychange", pullNow);
+    window.addEventListener("online", pullNow);
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", pullNow);
+      window.removeEventListener("online", pullNow);
+    };
+  }, [acceptLineConfig, lineCameraSource, updateCameraLine]);
+
   function closeLineEditor() {
     lineRequestId.current += 1;
+    lineDirty.current = false;
+    lineServerSignature.current = "";
     setLineCamera(null);
+    setLinePendingRemote(null);
+    setLineAuthoritative(false);
     setLineError("");
     setLineNotice("");
   }
@@ -249,7 +348,9 @@ export function CameraWall() {
   }
 
   async function saveCountingLine() {
-    if (!lineCamera || !canConfigureLine || !validCountingLine(lineDraft)) return;
+    if (!lineCamera || !lineAuthoritative || linePendingRemote || !canConfigureLine || !validCountingLine(lineDraft))
+      return;
+    lineRequestId.current += 1; // an older sync GET may not roll this save back
     setSavingLine(true);
     setLineError("");
     setLineNotice("");
@@ -260,9 +361,7 @@ export function CameraWall() {
         { timeout: 12_000 },
       );
       const config = savedConfig(response.data);
-      updateCameraLine(lineCamera.src, config);
-      setLineDraft(config.line ?? lineDraft);
-      setLineDirection(config.direction);
+      acceptLineConfig(lineCamera.src, config);
       setLineNotice(
         response.data.applied_to_processor === false
           ? "Линия сохранена. Она применится при следующем запуске модели."
@@ -272,9 +371,7 @@ export function CameraWall() {
       const payload = (cause as AxiosError<CameraCountingLineSave>).response?.data;
       if (payload?.saved) {
         const config = savedConfig(payload);
-        updateCameraLine(lineCamera.src, config);
-        setLineDraft(config.line ?? lineDraft);
-        setLineDirection(config.direction);
+        acceptLineConfig(lineCamera.src, config);
         setLineNotice("Линия сохранена. Работающая модель получит её после перезапуска.");
       } else {
         setLineError(apiError(cause));
@@ -631,7 +728,9 @@ export function CameraWall() {
               Закрыть
             </Button>
             <Button
-              disabled={loadingLine || savingLine || !validCountingLine(lineDraft)}
+              disabled={
+                loadingLine || savingLine || !lineAuthoritative || !!linePendingRemote || !validCountingLine(lineDraft)
+              }
               onClick={() => void saveCountingLine()}
               className="min-w-36 bg-sky-600 text-white hover:bg-sky-700"
             >
@@ -655,13 +754,15 @@ export function CameraWall() {
               line={lineDraft}
               direction={lineDirection}
               ready={tokenReady}
-              disabled={loadingLine || savingLine}
+              disabled={loadingLine || savingLine || !lineAuthoritative}
               onLineChange={(line) => {
+                lineDirty.current = true;
                 setLineDraft(line);
                 setLineNotice("");
                 setLineError("");
               }}
               onDirectionChange={(direction) => {
+                lineDirty.current = true;
                 setLineDirection(direction);
                 setLineNotice("");
                 setLineError("");
@@ -676,6 +777,40 @@ export function CameraWall() {
               <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 Линия слишком короткая. Протяните её между двумя разными точками.
               </p>
+            )}
+            {linePendingRemote && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <p className="font-medium">Линию изменил другой пользователь.</p>
+                <p className="mt-1 text-xs text-amber-800/80">
+                  Ваш черновик сохранён на экране. Выберите, какую версию продолжить редактировать.
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (!lineCamera) return;
+                      acceptLineConfig(lineCamera.src, linePendingRemote);
+                      setLineNotice("Загружена новая настройка камеры.");
+                    }}
+                  >
+                    Загрузить новую
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      lineServerSignature.current = countingLineSignature(linePendingRemote);
+                      setLinePendingRemote(null);
+                      setLineNotice("Оставлен ваш черновик. Сохранение заменит новую настройку.");
+                    }}
+                  >
+                    Оставить мой вариант
+                  </Button>
+                </div>
+              </div>
             )}
             {lineNotice && (
               <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">

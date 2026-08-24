@@ -11,7 +11,7 @@ from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
 from apps.orders.models import Order
 from apps.sales.access import scope_by_client_department
 
-from .. import ai, counting, sessions
+from .. import ai, counting, services, sessions
 from ..models import AiCountingSession
 from ..serializers import CameraAiActionSerializer
 
@@ -178,7 +178,17 @@ class CameraCountingLineView(APIView):
     def put(self, request, cam: str):
         # save_counting_line performs one PUT only. A 503 with saved=true is
         # deliberately passed to the browser without an automatic retry.
-        return _ai_proxy_response(lambda: ai.save_counting_line(cam, request.data))
+        def save():
+            upstream_status, payload = ai.save_counting_line(cam, request.data)
+            if payload.get("saved") is True:
+                # A durable save is authoritative even when applying it to a
+                # live processor returned 503. Inventory should show the saved
+                # value, while fresh processor polls reveal what is applied.
+                services.update_cached_counting_line(cam, payload)
+                ai.invalidate_counting_line_caches()
+            return upstream_status, payload
+
+        return _ai_proxy_response(save)
 
 
 class CameraAiView(APIView):

@@ -471,6 +471,10 @@ def always_on_detections_cached() -> dict:
                 "total": row.get("total"),
                 "detections": row.get("detections") or [],
                 "detection_frame": row.get("detection_frame"),
+                # The 24/7 stream is intentionally clean. The browser needs
+                # the processor's applied line to build the same model layer.
+                "line": row.get("line"),
+                "direction": row.get("direction"),
                 "last_frame_at": row.get("last_frame_at"),
             }
             for row in status.get("processors", [])
@@ -494,6 +498,11 @@ def cached_always_on_status() -> dict | None:
 
 def invalidate_always_on_cache() -> None:
     cache.delete(ALWAYS_ON_CACHE_KEY)
+
+
+def invalidate_counting_line_caches() -> None:
+    """Drop processor snapshots that may still carry the previous line."""
+    cache.delete_many([ALWAYS_ON_CACHE_KEY, DETECTIONS_CACHE_KEY])
 
 
 def configure_always_on(cameras: list[str], source: str = "sub") -> dict:

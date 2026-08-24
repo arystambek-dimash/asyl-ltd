@@ -67,6 +67,15 @@ ZONES = {
 }
 
 CAMERA_PATH_RE = re.compile(r"^cam(?:[1-9][0-9]*|_[A-Za-z0-9]{4,32})$")
+COUNTING_LINE_CONFIG_FIELDS = (
+    "cam",
+    "configured",
+    "coordinate_space",
+    "line",
+    "line_spec",
+    "direction",
+    "updated_at",
+)
 
 
 def normalize_camera_path(value: str) -> str:
@@ -77,6 +86,43 @@ def normalize_camera_path(value: str) -> str:
     if not CAMERA_PATH_RE.fullmatch(path):
         raise ValueError("unknown camera path")
     return path
+
+
+def update_cached_counting_line(camera: str, payload: dict) -> None:
+    """Patch inventory snapshots after an authoritative line save.
+
+    Camera discovery is intentionally cached for minutes because it can probe
+    the shop-floor network. A line edit must not inherit that delay, so update
+    only the matching camera in both snapshots without triggering discovery.
+    """
+    camera = normalize_camera_path(camera)
+    config = {
+        field: payload.get(field)
+        for field in COUNTING_LINE_CONFIG_FIELDS
+        if field in payload
+    }
+    if config.get("configured") is not True or not isinstance(
+        config.get("line"), dict
+    ):
+        return
+
+    for key, timeout in (
+        (CACHE_KEY, CACHE_TTL),
+        (LAST_GOOD_CACHE_KEY, LAST_GOOD_TTL),
+    ):
+        snapshot = cache.get(key)
+        if not isinstance(snapshot, list):
+            continue
+        changed = False
+        updated = []
+        for item in snapshot:
+            if isinstance(item, dict) and item.get("src") == camera:
+                updated.append({**item, "line_config": dict(config)})
+                changed = True
+            else:
+                updated.append(item)
+        if changed:
+            cache.set(key, updated, timeout)
 
 
 def _offline_view(cameras: list[dict]) -> list[dict]:

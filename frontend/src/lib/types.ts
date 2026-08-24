@@ -1,3 +1,5 @@
+import type { LineDirection, NormalizedLine } from "@/lib/camera-counting-line";
+
 export interface Me {
   id: number;
   username: string;
@@ -657,6 +659,9 @@ export interface AlwaysOnProcessorStatus {
   detections?: AlwaysOnDetection[];
   /** Размер кадра модели — по нему пиксельные рамки переводятся в доли. */
   detection_frame?: { width?: number; height?: number } | null;
+  /** Фактически применённая процессором линия подсчёта. */
+  line?: string | NormalizedLine | null;
+  direction?: LineDirection;
   per_color?: Record<string, number>;
   last_frame_at?: string | null;
   error?: string | null;
