@@ -10,10 +10,9 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
-
+from apps.grain import scale
 from apps.grain import statuses as st
 from apps.grain.models import GrainMovement, Wagon
-from apps.grain import scale
 
 pytestmark = pytest.mark.django_db
 
@@ -42,12 +41,17 @@ def _weigh(auth_client, user, wagon_id, path, weight):
         age_seconds=Decimal("0.2"),
         updated_at="2026-08-12T10:00:00Z",
     )
-    with patch.object(scale, "read_truck_scale", return_value=reading):
-        return auth_client(user).post(
+    with patch.object(
+        scale, "read_truck_scale", return_value=reading
+    ) as read_scale:
+        response = auth_client(user).post(
             f"/api/grain/wagons/{wagon_id}/{path}/",
             {},
             format="json",
         )
+    if read_scale.called:
+        read_scale.assert_called_once_with(scale.TRUCK_SCALE_KEY)
+    return response
 
 
 def test_passage_net_is_exit_minus_entry(auth_client, gate_operator):

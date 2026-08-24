@@ -724,26 +724,86 @@ class ProductionManifestTests(unittest.TestCase):
             workflow,
         )
 
-    def test_scale_endpoint_secret_is_forwarded_to_production(self) -> None:
+    def test_scale_endpoint_secrets_are_forwarded_to_production(self) -> None:
         workflow = (
             REPO_ROOT / ".github" / "workflows" / "deploy-production.yml"
         ).read_text(encoding="utf-8")
         deploy_script = REMOTE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn(
+            "WAGON_SCALE_API_URL: ${{ secrets.WAGON_SCALE_API_URL }}",
+            workflow,
+        )
+        self.assertIn(
             "TRUCK_SCALE_API_URL: ${{ secrets.TRUCK_SCALE_API_URL }}",
             workflow,
         )
-        self.assertIn('test -n "$TRUCK_SCALE_API_URL"', workflow)
+        self.assertIn(
+            'fail_if_empty WAGON_SCALE_API_URL "$WAGON_SCALE_API_URL"',
+            workflow,
+        )
+        self.assertNotIn(
+            'fail_if_empty TRUCK_SCALE_API_URL "$TRUCK_SCALE_API_URL"',
+            workflow,
+        )
+        self.assertGreaterEqual(
+            workflow.count('test -n "$WAGON_SCALE_API_URL"'), 2
+        )
+        self.assertNotIn('test -n "$TRUCK_SCALE_API_URL"', workflow)
+        self.assertIn("IFS= read -r WAGON_SCALE_API_URL_B64", workflow)
         self.assertIn("IFS= read -r TRUCK_SCALE_API_URL_B64", workflow)
-        self.assertIn("export GHCR_TOKEN TRUCK_SCALE_API_URL_B64", workflow)
+        self.assertIn(
+            "export GHCR_TOKEN WAGON_SCALE_API_URL_B64 "
+            "TRUCK_SCALE_API_URL_B64",
+            workflow,
+        )
         self.assertNotIn("GHCR_TOKEN='$GHCR_TOKEN'", workflow)
+        self.assertNotIn(
+            "WAGON_SCALE_API_URL_B64='$WAGON_SCALE_API_URL_B64'",
+            workflow,
+        )
         self.assertNotIn(
             "TRUCK_SCALE_API_URL_B64='$TRUCK_SCALE_API_URL_B64'",
             workflow,
         )
         self.assertIn('base64 -d)', deploy_script)
+        self.assertIn("export WAGON_SCALE_API_URL", deploy_script)
         self.assertIn("export TRUCK_SCALE_API_URL", deploy_script)
+        self.assertGreaterEqual(
+            workflow.count("IFS= read -r WAGON_SCALE_API_URL_B64"),
+            3,
+        )
+        self.assertGreaterEqual(
+            workflow.count(
+                "export GHCR_TOKEN WAGON_SCALE_API_URL_B64 "
+                "TRUCK_SCALE_API_URL_B64"
+            ),
+            3,
+        )
+
+    def test_scale_compose_configuration_routes_by_hardware(self) -> None:
+        compose = PROD_COMPOSE.read_text(encoding="utf-8")
+        deploy_script = REMOTE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "WAGON_SCALE_API_URL: "
+            "${WAGON_SCALE_API_URL-http://desktop-t5p32d3:8000/api/v1/weight}",
+            compose,
+        )
+        self.assertNotIn(
+            "WAGON_SCALE_API_URL-${TRUCK_SCALE_API_URL",
+            compose,
+        )
+        self.assertIn(
+            "TRUCK_SCALE_API_URL: ${TRUCK_SCALE_API_URL-}", compose
+        )
+        self.assertIn(
+            "if ! grep -q 'WAGON_SCALE_API_URL' \"$COMPOSE_FILE\"; then",
+            deploy_script,
+        )
+        self.assertIn(
+            'TRUCK_SCALE_API_URL="${WAGON_SCALE_API_URL:-}"', deploy_script
+        )
 
     def test_failed_public_gate_rolls_back_before_success_only_cleanup(self) -> None:
         workflow = (

@@ -923,7 +923,7 @@ export interface TruckScalePreview {
   age_seconds: string | null;
   updated_at: string | null;
   observed_at: string;
-  poll_after_ms: number;
+  refresh_mode: "manual";
 }
 
 export interface GrainWeighing {

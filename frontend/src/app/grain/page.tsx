@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { ArrowRight, Camera, Check, Plus, ScanLine, TrainFront } from "lucide-react";
 import { GrainToolbar } from "@/components/grain/grain-toolbar";
 import { AppShell } from "@/components/layout/app-shell";
@@ -521,6 +522,7 @@ function ExpectedIntakes({
 }
 
 function GrainPageInner() {
+  const router = useRouter();
   const { me } = useAuth();
   const canSupply = can(me, "grain.supply");
   const canArrive = can(me, "grain.arrive");
@@ -689,6 +691,7 @@ function GrainPageInner() {
               setNotice(`Вывоз ${wagon.number || `#${wagon.id}`} оформлен — взвесьте пустую машину на въезде.`);
               setTab("on_site");
               refreshAll();
+              router.push(`/grain/wagons/${wagon.id}`);
             }}
           />
         )}

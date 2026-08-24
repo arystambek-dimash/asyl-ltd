@@ -68,13 +68,16 @@ services:
       THROTTLE_CONVEYOR_DEVICE: "${THROTTLE_CONVEYOR_DEVICE:-180/min}"
       THROTTLE_CONVEYOR_AI: "${THROTTLE_CONVEYOR_AI:-6000/min}"
       # Пусто по умолчанию: локальная разработка не должна читать production
-      # весы. Для интеграционной проверки задайте адрес в .env.
+      # весы. Для интеграционной проверки задайте адреса в .env.
+      WAGON_SCALE_API_URL: "${WAGON_SCALE_API_URL:-}"
+      # Автовесы относятся только к «Оформить вывоз». Пустое значение
+      # отключает этот источник и не позволяет взять вес с вагонных весов.
       TRUCK_SCALE_API_URL: "${TRUCK_SCALE_API_URL:-}"
       TRUCK_SCALE_TIMEOUT_SECONDS: "${TRUCK_SCALE_TIMEOUT_SECONDS:-3}"
       TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS: "${TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS:-1}"
       TRUCK_SCALE_MAX_AGE_SECONDS: "${TRUCK_SCALE_MAX_AGE_SECONDS:-5}"
       TRUCK_SCALE_MAX_WEIGHT_KG: "${TRUCK_SCALE_MAX_WEIGHT_KG:-100000}"
-      THROTTLE_TRUCK_SCALE_PREVIEW: "${THROTTLE_TRUCK_SCALE_PREVIEW:-120/min}"
+      THROTTLE_TRUCK_SCALE_PREVIEW: "${THROTTLE_TRUCK_SCALE_PREVIEW:-30/min}"
       CAMERA_PLAYBACK_URL: "${CAMERA_PLAYBACK_URL:-}"
       GO2RTC_API_URL: "${GO2RTC_API_URL:-}"
       APIPAY_API_KEY: "${APIPAY_API_KEY:-}"

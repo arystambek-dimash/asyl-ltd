@@ -38,7 +38,16 @@ vi.mock("@/components/require-perm", () => ({
   RequirePerm: ({ children }: { children: ReactNode }) => children,
 }));
 vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ children }: { children: ReactNode }) => <main>{children}</main>,
+  AppShell: ({ children, actions }: { children: ReactNode; actions?: ReactNode }) => (
+    <main>
+      {actions}
+      {children}
+    </main>
+  ),
+}));
+vi.mock("@/components/grain/live-scale-status", () => ({
+  LiveScaleStatus: ({ active, scaleKey, label }: { active: boolean; scaleKey: "wagon" | "truck"; label: string }) =>
+    active ? <div aria-label={`Весы ${label}`} data-scale-key={scaleKey} /> : null,
 }));
 vi.mock("next/link", () => ({
   default: ({ children, ...props }: ComponentProps<"a">) => <a {...props}>{children}</a>,
@@ -152,6 +161,16 @@ describe("StageAction automatic scale capture", () => {
       expect(wagonReloadMock).toHaveBeenCalledOnce();
       expect(timelineReloadMock).toHaveBeenCalledOnce();
     });
+  });
+
+  it.each([
+    ["passage", "Вывоз", "truck"],
+    ["intake", "Вагоны", "wagon"],
+  ] as const)("shows only the %s scale in the page actions", async (direction, label, scaleKey) => {
+    await renderStage(wagon({ direction }));
+
+    expect(screen.getByLabelText(`Весы ${label}`)).toHaveAttribute("data-scale-key", scaleKey);
+    expect(screen.queryAllByLabelText(/^Весы /)).toHaveLength(1);
   });
 
   it("shows loading and the backend error without losing the action", async () => {

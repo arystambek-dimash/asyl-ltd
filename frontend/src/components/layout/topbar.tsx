@@ -109,7 +109,7 @@ export function Topbar({
         : me.position || "Сотрудник";
 
   return (
-    <header className="flex min-h-16 flex-wrap items-center gap-2 border-b px-4 py-2 sm:h-16 sm:flex-nowrap sm:px-8 sm:py-0">
+    <header className="flex min-h-16 flex-wrap items-center gap-2 border-b px-4 py-2 sm:px-8 lg:h-16 lg:flex-nowrap lg:py-0">
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <button
           type="button"
@@ -139,7 +139,7 @@ export function Topbar({
         )}
       </div>
       {actions && (
-        <div className="order-3 flex w-full items-center justify-end overflow-x-auto pt-1 sm:order-none sm:w-auto sm:overflow-visible sm:pt-0">
+        <div className="order-3 flex w-full items-center justify-start overflow-x-auto pt-1 lg:order-none lg:w-auto lg:justify-end lg:overflow-visible lg:pt-0">
           {actions}
         </div>
       )}

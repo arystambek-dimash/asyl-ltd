@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Camera, Check, LoaderCircle, Scale, TrainFront, Trash2, Warehouse } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
+import { LiveScaleStatus } from "@/components/grain/live-scale-status";
 import { RequirePerm } from "@/components/require-perm";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -418,7 +419,19 @@ function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
   const canDelete = can(me, "grain.delete") && isGrainWagonDeleteSupported(wagon.status);
 
   return (
-    <AppShell title="Приход и проход" section="Работа">
+    <AppShell
+      title="Приход и проход"
+      section="Работа"
+      actions={
+        can(me, "grain.weigh") ? (
+          <LiveScaleStatus
+            active
+            scaleKey={wagon.direction === "passage" ? "truck" : "wagon"}
+            label={wagon.direction === "passage" ? "Вывоз" : "Вагоны"}
+          />
+        ) : undefined
+      }
+    >
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <Link
           href="/grain"

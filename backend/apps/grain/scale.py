@@ -18,16 +18,29 @@ from rest_framework.exceptions import APIException
 MAX_RESPONSE_BYTES = 32 * 1024
 WEIGHT_QUANTUM = Decimal("0.01")
 
+# The Grain screen handles two mirrored routes on different physical scales:
+# railway wagons arrive with grain, while trucks collect outgoing cargo.
+# Configuration and audit names describe the hardware, not the business flow.
+WAGON_SCALE_KEY = "wagon"
+TRUCK_SCALE_KEY = "truck"
+DEFAULT_SCALE_KEY = WAGON_SCALE_KEY
+SCALE_KEYS = frozenset({WAGON_SCALE_KEY, TRUCK_SCALE_KEY})
+
+_URL_SETTING_BY_SCALE = {
+    WAGON_SCALE_KEY: "WAGON_SCALE_API_URL",
+    TRUCK_SCALE_KEY: "TRUCK_SCALE_API_URL",
+}
+
 
 class TruckScaleDisabled(APIException):
     status_code = 503
-    default_detail = "Автомобильные весы не настроены."
+    default_detail = "Весы не настроены."
     default_code = "truck_scale_disabled"
 
 
 class TruckScaleUnavailable(APIException):
     status_code = 503
-    default_detail = "Автомобильные весы сейчас недоступны."
+    default_detail = "Весы сейчас недоступны."
     default_code = "truck_scale_unreachable"
 
 
@@ -68,14 +81,18 @@ class ScaleObservation:
     updated_at: str | None
 
 
-def _api_url() -> str:
-    value = getattr(settings, "TRUCK_SCALE_API_URL", "")
+def _api_url(scale_key: str = DEFAULT_SCALE_KEY) -> str:
+    try:
+        setting_name = _URL_SETTING_BY_SCALE[scale_key]
+    except KeyError as exc:
+        raise ValueError(f"Unknown truck scale: {scale_key}") from exc
+    value = getattr(settings, setting_name, "")
     return value.strip() if isinstance(value, str) else ""
 
 
-def enabled() -> bool:
+def enabled(scale_key: str = DEFAULT_SCALE_KEY) -> bool:
     """Whether production explicitly configured the scale integration."""
-    return bool(_api_url())
+    return bool(_api_url(scale_key))
 
 
 def _validated_api_url(url: str) -> str:
@@ -88,7 +105,7 @@ def _validated_api_url(url: str) -> str:
         _ = parsed.port
     except ValueError as exc:
         raise TruckScaleUnavailable(
-            "Адрес автомобильных весов настроен некорректно."
+            "Адрес весов настроен некорректно."
         ) from exc
     if (
         parsed.scheme not in ("http", "https")
@@ -98,7 +115,7 @@ def _validated_api_url(url: str) -> str:
         or "#" in url
     ):
         raise TruckScaleUnavailable(
-            "Адрес автомобильных весов настроен некорректно."
+            "Адрес весов настроен некорректно."
         )
     return url
 
@@ -235,9 +252,11 @@ def _normalized_preview_weight(weight: Decimal | None) -> Decimal | None:
         raise TruckScaleMalformedResponse() from exc
 
 
-def read_truck_scale_observation() -> ScaleObservation:
+def read_truck_scale_observation(
+    scale_key: str = DEFAULT_SCALE_KEY,
+) -> ScaleObservation:
     """Read display state without weakening the authoritative capture path."""
-    url = _api_url()
+    url = _api_url(scale_key)
     if not url:
         raise TruckScaleDisabled()
 
@@ -303,9 +322,9 @@ def read_truck_scale_observation() -> ScaleObservation:
     )
 
 
-def read_truck_scale() -> ScaleReading:
+def read_truck_scale(scale_key: str = DEFAULT_SCALE_KEY) -> ScaleReading:
     """Fetch one fresh, stable scale reading; never retry or accept stale data."""
-    url = _api_url()
+    url = _api_url(scale_key)
     if not url:
         raise TruckScaleDisabled()
 

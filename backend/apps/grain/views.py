@@ -4,7 +4,7 @@ from config.throttles import TruckScalePreviewRateThrottle
 from django.db import transaction
 from rest_framework import viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -13,7 +13,7 @@ from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
 from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.models import EventLog
 
-from . import services
+from . import scale, services
 from . import statuses as st
 from .models import GrainSupply, Silo, SiloType, Wagon
 from .scale_preview import get_scale_preview
@@ -37,8 +37,10 @@ class TruckScaleReadingView(PermAPIViewMixin, APIView):
         throttles.append(TruckScalePreviewRateThrottle())
         return throttles
 
-    def get(self, request):
-        response = Response(get_scale_preview())
+    def get(self, request, scale_key=scale.DEFAULT_SCALE_KEY):
+        if scale_key not in scale.SCALE_KEYS:
+            raise NotFound("Весовая не найдена.")
+        response = Response(get_scale_preview(scale_key))
         response["Cache-Control"] = "no-store, max-age=0"
         return response
 

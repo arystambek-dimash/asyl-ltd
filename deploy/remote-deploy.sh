@@ -84,12 +84,25 @@ if [ "$DEPLOY_ACTION" != "deploy" ] && [ -z "$EXPECTED_SHA" ]; then
   exit 1
 fi
 
-if [ -n "${TRUCK_SCALE_API_URL_B64:-}" ]; then
-  TRUCK_SCALE_API_URL="$(printf '%s' "$TRUCK_SCALE_API_URL_B64" | base64 -d)"
-  if ! printf '%s\n' "$TRUCK_SCALE_API_URL" \
+if [ "${WAGON_SCALE_API_URL_B64+x}" = x ]; then
+  WAGON_SCALE_API_URL="$(printf '%s' "$WAGON_SCALE_API_URL_B64" | base64 -d)"
+  if [ -z "$WAGON_SCALE_API_URL" ] || ! printf '%s\n' "$WAGON_SCALE_API_URL" \
     | grep -Eq '^https?://[^[:space:]]+/[^[:space:]]*$'; then
-    echo "TRUCK_SCALE_API_URL must be an absolute HTTP(S) URL." >&2
+    echo "WAGON_SCALE_API_URL must be an absolute HTTP(S) URL." >&2
     exit 1
+  fi
+  export WAGON_SCALE_API_URL
+fi
+if [ "${TRUCK_SCALE_API_URL_B64+x}" = x ]; then
+  TRUCK_SCALE_API_URL="$(
+    printf '%s' "$TRUCK_SCALE_API_URL_B64" | base64 -d
+  )"
+  if [ -n "$TRUCK_SCALE_API_URL" ]; then
+    if ! printf '%s\n' "$TRUCK_SCALE_API_URL" \
+      | grep -Eq '^https?://[^[:space:]]+/[^[:space:]]*$'; then
+      echo "TRUCK_SCALE_API_URL must be an absolute HTTP(S) URL." >&2
+      exit 1
+    fi
   fi
   export TRUCK_SCALE_API_URL
 fi
@@ -411,6 +424,14 @@ rollback_release() {
   ensure_image_available "$STATE_PREVIOUS_BACKEND_IMAGE_REF" || return 1
   ensure_image_available "$STATE_PREVIOUS_FRONTEND_IMAGE_REF" || return 1
   git checkout --detach "$STATE_PREVIOUS_GIT_SHA" || return 1
+
+  # Releases before the wagon/truck split used TRUCK_SCALE_API_URL for the
+  # railway scale. Preserve that meaning only while restoring such a release;
+  # the candidate itself must never fall back across physical scales.
+  if ! grep -q 'WAGON_SCALE_API_URL' "$COMPOSE_FILE"; then
+    TRUCK_SCALE_API_URL="${WAGON_SCALE_API_URL:-}"
+    export TRUCK_SCALE_API_URL
+  fi
 
   BACKEND_IMAGE_REF="$STATE_PREVIOUS_BACKEND_IMAGE_REF"
   FRONTEND_IMAGE_REF="$STATE_PREVIOUS_FRONTEND_IMAGE_REF"

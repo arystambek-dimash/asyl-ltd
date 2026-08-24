@@ -100,6 +100,7 @@ jobs:
       PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
       GHCR_USER: ${{ github.actor }}
       GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      WAGON_SCALE_API_URL: ${{ secrets.WAGON_SCALE_API_URL }}
       TRUCK_SCALE_API_URL: ${{ secrets.TRUCK_SCALE_API_URL }}
       BACKEND_IMAGE_REF: ghcr.io/${{ github.repository }}-backend@${{ needs.build.outputs.backend_digest }}
       FRONTEND_IMAGE_REF: ghcr.io/${{ github.repository }}-frontend@${{ needs.build.outputs.frontend_digest }}
@@ -123,7 +124,7 @@ jobs:
           fail_if_empty PROD_USER "$PROD_USER"
           fail_if_empty PROD_SSH_KEY "$PROD_SSH_KEY"
           fail_if_empty PROD_SSH_KNOWN_HOSTS "$PROD_SSH_KNOWN_HOSTS"
-          fail_if_empty TRUCK_SCALE_API_URL "$TRUCK_SCALE_API_URL"
+          fail_if_empty WAGON_SCALE_API_URL "$WAGON_SCALE_API_URL"
           fail_if_empty BACKEND_IMAGE_REF "$BACKEND_IMAGE_REF"
           fail_if_empty FRONTEND_IMAGE_REF "$FRONTEND_IMAGE_REF"
 
@@ -148,13 +149,14 @@ jobs:
           test -n "$PROD_USER"
           test -n "$PROD_SSH_KEY"
           test -n "$PROD_SSH_KNOWN_HOSTS"
-          test -n "$TRUCK_SCALE_API_URL"
+          test -n "$WAGON_SCALE_API_URL"
           test -n "$BACKEND_IMAGE_REF"
           test -n "$FRONTEND_IMAGE_REF"
 
-          # Use a single-line transport encoding for the endpoint. Both it and
-          # the registry token are streamed over SSH stdin, never embedded in
-          # the remote process command line.
+          # Use single-line transport encoding for both endpoints. They and the
+          # registry token are streamed over SSH stdin, never embedded in the
+          # remote process command line.
+          WAGON_SCALE_API_URL_B64=$(printf '%s' "$WAGON_SCALE_API_URL" | base64 | tr -d '\n')
           TRUCK_SCALE_API_URL_B64=$(printf '%s' "$TRUCK_SCALE_API_URL" | base64 | tr -d '\n')
 
           install -m 700 -d ~/.ssh
@@ -199,12 +201,13 @@ jobs:
           # a host-only directory. The worktree is not changed until that
           # runner has acquired flock and persisted rollback state.
           deploy() {
-            printf '%s\n%s\n' "$GHCR_TOKEN" "$TRUCK_SCALE_API_URL_B64" \
+            printf '%s\n%s\n%s\n' "$GHCR_TOKEN" "$WAGON_SCALE_API_URL_B64" "$TRUCK_SCALE_API_URL_B64" \
               | run_ssh \
               "set -eu \
                && IFS= read -r GHCR_TOKEN \
+               && IFS= read -r WAGON_SCALE_API_URL_B64 \
                && IFS= read -r TRUCK_SCALE_API_URL_B64 \
-               && export GHCR_TOKEN TRUCK_SCALE_API_URL_B64 \
+               && export GHCR_TOKEN WAGON_SCALE_API_URL_B64 TRUCK_SCALE_API_URL_B64 \
                && cd '$PROD_APP_DIR' \
                && state_dir=.deploy-state \
                && test ! -L \"\$state_dir\" \
@@ -340,6 +343,7 @@ jobs:
             ''|*[!A-Za-z0-9_.-]*) echo "::error::PROD_USER contains unsupported characters."; exit 1 ;;
           esac
 
+          WAGON_SCALE_API_URL_B64=$(printf '%s' "$WAGON_SCALE_API_URL" | base64 | tr -d '\n')
           TRUCK_SCALE_API_URL_B64=$(printf '%s' "$TRUCK_SCALE_API_URL" | base64 | tr -d '\n')
           install -m 700 -d ~/.ssh
           printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/asyl_ltd_deploy_key
@@ -378,12 +382,13 @@ jobs:
             # The candidate runner is copied outside the Git checkout before
             # containers change. It remains available after rollback restores
             # the previous commit, including during this feature's first run.
-            printf '%s\n%s\n' "$GHCR_TOKEN" "$TRUCK_SCALE_API_URL_B64" \
+            printf '%s\n%s\n%s\n' "$GHCR_TOKEN" "$WAGON_SCALE_API_URL_B64" "$TRUCK_SCALE_API_URL_B64" \
               | run_ssh \
               "set -eu \
                && IFS= read -r GHCR_TOKEN \
+               && IFS= read -r WAGON_SCALE_API_URL_B64 \
                && IFS= read -r TRUCK_SCALE_API_URL_B64 \
-               && export GHCR_TOKEN TRUCK_SCALE_API_URL_B64 \
+               && export GHCR_TOKEN WAGON_SCALE_API_URL_B64 TRUCK_SCALE_API_URL_B64 \
                && cd '$PROD_APP_DIR' \
                && runner=./.deploy-state/release-state.runner \
                && test -f \"\$runner\" && test ! -L \"\$runner\" && test -x \"\$runner\" \
@@ -519,6 +524,7 @@ jobs:
       PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
       GHCR_USER: ${{ github.actor }}
       GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      WAGON_SCALE_API_URL: ${{ secrets.WAGON_SCALE_API_URL }}
       TRUCK_SCALE_API_URL: ${{ secrets.TRUCK_SCALE_API_URL }}
       BACKEND_IMAGE_REF: ghcr.io/${{ github.repository }}-backend@${{ needs.build.outputs.backend_digest }}
       FRONTEND_IMAGE_REF: ghcr.io/${{ github.repository }}-frontend@${{ needs.build.outputs.frontend_digest }}
@@ -534,7 +540,7 @@ jobs:
           test -n "$PROD_USER"
           test -n "$PROD_SSH_KEY"
           test -n "$PROD_SSH_KNOWN_HOSTS"
-          test -n "$TRUCK_SCALE_API_URL"
+          test -n "$WAGON_SCALE_API_URL"
           test "$PROD_APP_DIR" = "/home/$PROD_USER/asyl-ltd"
 
           case "$PROD_HOST" in
@@ -547,6 +553,7 @@ jobs:
             ''|*[!A-Za-z0-9_.-]*) echo "::error::PROD_USER contains unsupported characters."; exit 1 ;;
           esac
 
+          WAGON_SCALE_API_URL_B64=$(printf '%s' "$WAGON_SCALE_API_URL" | base64 | tr -d '\n')
           TRUCK_SCALE_API_URL_B64=$(printf '%s' "$TRUCK_SCALE_API_URL" | base64 | tr -d '\n')
           install -m 700 -d ~/.ssh
           printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/asyl_ltd_deploy_key
@@ -581,12 +588,13 @@ jobs:
           }
 
           recover() {
-            printf '%s\n%s\n' "$GHCR_TOKEN" "$TRUCK_SCALE_API_URL_B64" \
+            printf '%s\n%s\n%s\n' "$GHCR_TOKEN" "$WAGON_SCALE_API_URL_B64" "$TRUCK_SCALE_API_URL_B64" \
               | run_ssh \
               "set -eu \
                && IFS= read -r GHCR_TOKEN \
+               && IFS= read -r WAGON_SCALE_API_URL_B64 \
                && IFS= read -r TRUCK_SCALE_API_URL_B64 \
-               && export GHCR_TOKEN TRUCK_SCALE_API_URL_B64 \
+               && export GHCR_TOKEN WAGON_SCALE_API_URL_B64 TRUCK_SCALE_API_URL_B64 \
                && cd '$PROD_APP_DIR' \
                && state=./.deploy-state/release-state \
                && transaction_runner=\"\$state.runner\" \

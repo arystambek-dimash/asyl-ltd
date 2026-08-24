@@ -33,14 +33,19 @@ export function GrainToolbar({
   if (!canWeigh && items.length === 0) return null;
 
   return (
-    <div className="flex items-center gap-2">
-      <LiveScaleStatus active={canWeigh} />
+    <div className="flex min-w-0 items-center gap-2">
+      {canWeigh && (
+        <div className="flex shrink-0 items-center gap-1.5" role="group" aria-label="Текущий вес">
+          <LiveScaleStatus active scaleKey="wagon" label="Вагоны" />
+          <LiveScaleStatus active scaleKey="truck" label="Вывоз" />
+        </div>
+      )}
       <ActionMenu
         items={items}
         label="Операции с зерном"
         triggerText="Операции"
         triggerIcon={Plus}
-        className="h-9 bg-[var(--primary)] px-4 text-sm text-[var(--primary-foreground)] hover:bg-[var(--primary)]/90 hover:text-[var(--primary-foreground)]"
+        className="h-9 bg-[var(--primary)] px-2 text-sm text-[var(--primary-foreground)] hover:bg-[var(--primary)]/90 hover:text-[var(--primary-foreground)] [&>span]:hidden [&>svg:last-child]:hidden xl:px-4 xl:[&>span]:inline xl:[&>svg:last-child]:block"
       />
     </div>
   );

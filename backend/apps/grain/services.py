@@ -12,6 +12,7 @@ from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
 from apps.eventlog.services import log_event
+
 from . import scale
 from . import statuses as st
 from .models import (
@@ -315,6 +316,7 @@ def _record_weighing(
         kind=kind,
         weight_kg=weight_kg,
         source=source,
+        scale_number=scale_number,
         previous_weight_kg=previous,
         manual_reason=manual_reason,
         **scale_payload,
@@ -367,13 +369,19 @@ def record_scale_weight(
     """
     _ensure_scale_action_ready(wagon, action)
     expected_status = wagon.status
-    reading = scale.read_truck_scale()
+    scale_key = (
+        scale.TRUCK_SCALE_KEY
+        if wagon.is_passage
+        else scale.WAGON_SCALE_KEY
+    )
+    reading = scale.read_truck_scale(scale_key)
     return _store_scale_weight(
         wagon.pk,
         action,
         reading,
         user,
         expected_status=expected_status,
+        scale_key=scale_key,
     )
 
 
@@ -385,6 +393,7 @@ def _store_scale_weight(
     user,
     *,
     expected_status: str,
+    scale_key: str,
 ) -> Wagon:
     # Lock only the wagon row. Nullable joins cannot be locked by PostgreSQL,
     # and related objects are loaded lazily where a transition needs them.
@@ -395,8 +404,19 @@ def _store_scale_weight(
             "wagon_changed_during_scale_read",
         )
     _ensure_scale_action_ready(wagon, action)
+    expected_scale_key = (
+        scale.TRUCK_SCALE_KEY
+        if wagon.is_passage
+        else scale.WAGON_SCALE_KEY
+    )
+    if scale_key != expected_scale_key:
+        raise _error(
+            "Маршрут рейса изменился во время чтения весов — повторите взвешивание",
+            "wagon_changed_during_scale_read",
+        )
     kwargs = {
         "source": "scale",
+        "scale_number": scale_key,
         "scale_age_seconds": reading.age_seconds,
         "scale_updated_at": reading.updated_at,
     }
@@ -1295,9 +1315,8 @@ def delete_wagon(
 # Датчика прибытия поезда на территории нет. Его роль играет детектор таблички
 # вагона: табличка в кадре означает, что состав встал под разгрузку.
 #
-# Модель находит табличку, но НЕ читает цифры — OCR появится отдельно. Поэтому
-# рейс заводится без номера: важен сам факт и время заезда, а номер допишет
-# оператор или будущий OCR.
+# Модель находит табличку, а номер используется только при подтверждённом OCR.
+# Если OCR не уверен, рейс безопасно остаётся без номера и его допишет оператор.
 
 # Пауза без детекций, после которой следующая табличка считается новым
 # составом. Пока табличка видна раз за разом — это один и тот же поезд,

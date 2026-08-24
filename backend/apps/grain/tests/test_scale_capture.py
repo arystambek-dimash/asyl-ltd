@@ -1,13 +1,11 @@
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
-
 from apps.eventlog.models import EventLog
-from apps.grain import services
+from apps.grain import scale, services
 from apps.grain import statuses as st
 from apps.grain.models import GrainSupply, Wagon, WeighingRecord
-from apps.grain import scale
 
 pytestmark = pytest.mark.django_db
 
@@ -62,15 +60,17 @@ def test_gross_reads_scale_once_rounds_to_whole_kg_and_records_provenance(
 
     assert response.status_code == 200, response.data
     assert response.data["gross_weight_kg"] == 91_501
-    assert read_scale.call_count == 1
+    read_scale.assert_called_once_with(scale.WAGON_SCALE_KEY)
     weighing = WeighingRecord.objects.get(wagon=wagon)
     assert weighing.weight_kg == 91_501
     assert weighing.source == "scale"
+    assert weighing.scale_number == scale.WAGON_SCALE_KEY
     assert weighing.manual_reason == ""
     payload = EventLog.objects.filter(
         event_type="grain_weighing",
         payload__wagon_id=wagon.pk,
     ).latest("id").payload
+    assert payload["scale_number"] == scale.WAGON_SCALE_KEY
     assert payload["scale_age_seconds"] == "0.4"
     assert payload["scale_updated_at"] == "2026-08-12T10:00:00Z"
 
@@ -216,7 +216,7 @@ def test_state_change_during_scale_read_rejects_sample_without_weighing(
 ):
     wagon = _arrived_wagon(weigher)
 
-    def change_state_while_reading():
+    def change_state_while_reading(_scale_key):
         Wagon.objects.filter(pk=wagon.pk).update(status=st.BLOCKED)
         return _reading("90000")
 
@@ -291,9 +291,66 @@ def test_entry_and_exit_actions_use_one_scale_read_each(auth_client, weigher):
     assert exit_response.status_code == 200, exit_response.data
     assert exit_response.data["net_weight_kg"] == 18_000
     assert exit_response.data["status"] == st.COMPLETED
-    assert read_scale.call_count == 2
+    assert read_scale.call_args_list == [
+        call(scale.TRUCK_SCALE_KEY),
+        call(scale.TRUCK_SCALE_KEY),
+    ]
     assert set(
         WeighingRecord.objects.filter(wagon=wagon).values_list(
-            "source", flat=True
+            "scale_number", flat=True
         )
-    ) == {"scale"}
+    ) == {scale.TRUCK_SCALE_KEY}
+
+
+def test_simple_intake_entry_uses_wagon_scale(auth_client, weigher):
+    wagon = _arrived_wagon(
+        weigher,
+        workflow="simple",
+        expected_weight_kg=18_000,
+    )
+    # Simple intake normally has a silo from its prepared supply. The scale
+    # selection happens before the transition validates that assignment.
+    with patch.object(
+        scale,
+        "read_truck_scale",
+        return_value=_reading("30000"),
+    ) as read_scale:
+        response = auth_client(weigher).post(
+            f"/api/grain/wagons/{wagon.pk}/entry-weight/", {}, format="json"
+        )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "silo_required"
+    read_scale.assert_called_once_with(scale.WAGON_SCALE_KEY)
+    assert not wagon.weighings.exists()
+
+
+def test_unconfigured_truck_scale_never_changes_passage(
+    auth_client, weigher
+):
+    wagon = _arrived_wagon(
+        weigher,
+        workflow="simple",
+        expected_weight_kg=18_000,
+    )
+    wagon.direction = Wagon.PASSAGE
+    wagon.supply = None
+    wagon.cargo_name = "Отруби"
+    wagon.save(update_fields=["direction", "supply", "cargo_name"])
+
+    with patch.object(
+        scale,
+        "read_truck_scale",
+        side_effect=scale.TruckScaleDisabled(),
+    ) as read_scale:
+        response = auth_client(weigher).post(
+            f"/api/grain/wagons/{wagon.pk}/entry-weight/", {}, format="json"
+        )
+
+    assert response.status_code == 503
+    assert response.data["code"] == "truck_scale_disabled"
+    read_scale.assert_called_once_with(scale.TRUCK_SCALE_KEY)
+    wagon.refresh_from_db()
+    assert wagon.status == st.ARRIVED
+    assert wagon.gross_weight_kg is None
+    assert not wagon.weighings.exists()

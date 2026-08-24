@@ -105,7 +105,7 @@ REST_FRAMEWORK = {
             "THROTTLE_PORTAL_ORDER_CREATE", "10/min"
         ),
         "truck_scale_preview": os.environ.get(
-            "THROTTLE_TRUCK_SCALE_PREVIEW", "120/min"
+            "THROTTLE_TRUCK_SCALE_PREVIEW", "30/min"
         ),
         "conveyor_device": os.environ.get(
             "THROTTLE_CONVEYOR_DEVICE", "180/min"
@@ -297,6 +297,10 @@ APIPAY_BASE_URL = os.environ.get(
 ).rstrip("/")
 APIPAY_TIMEOUT_SECONDS = float(os.environ.get("APIPAY_TIMEOUT_SECONDS", "10"))
 
+# Railway wagons and outgoing trucks use different physical scale PCs. Both
+# fail closed: falling back to the other scale could record another vehicle's
+# weight on the current trip.
+WAGON_SCALE_API_URL = os.environ.get("WAGON_SCALE_API_URL", "").strip()
 TRUCK_SCALE_API_URL = os.environ.get("TRUCK_SCALE_API_URL", "").strip()
 try:
     TRUCK_SCALE_TIMEOUT_SECONDS = float(
