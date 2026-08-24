@@ -83,7 +83,7 @@ import { useAuth } from "@/store/auth";
 const SESSION_POLL_MS = 3_000;
 // Рамки тянем чаще остального: мешок пересекает кадр за секунды, и на общем
 // трёхсекундном опросе рамка заметно отставала от него.
-const DETECTIONS_POLL_MS = 1_000;
+const DETECTIONS_POLL_MS = 250;
 // Рамка старше этого времени описывает уже уехавший мешок — гасим её, чтобы
 // она не висела на пустом месте при обрыве связи или остановке модели.
 const DETECTIONS_STALE_MS = 2_500;
@@ -709,10 +709,11 @@ function AlwaysOnCard({
   // Рамки живут отдельно от остального состояния: их опрашиваем чаще, чтобы
   // они держались мешка, и помечаем временем — устаревшие гасим.
   const [liveBoxes, setLiveBoxes] = useState<{
-    detections?: AlwaysOnDetection[];
+    detections: AlwaysOnDetection[];
     frame?: { width?: number; height?: number } | null;
     line?: AlwaysOnProcessorStatus["line"];
     direction?: AlwaysOnProcessorStatus["direction"];
+    revision?: string | null;
     at: number;
   } | null>(null);
   const [liveProcessor, setLiveProcessor] = useState(processor);
@@ -814,16 +815,42 @@ function AlwaysOnCard({
         const { data } = await api.get<{ processors: AlwaysOnProcessorStatus[] }>("/cameras/always-on-detections/");
         if (disposed) return;
         const row = data.processors.find((item) => item.cam === processor.cam);
-        setLiveBoxes({
-          detections: row?.detections,
-          frame: row?.detection_frame,
-          line: row?.line,
-          direction: row?.direction,
-          at: Date.now(),
+        const revision = row?.last_frame_at ?? (row ? null : "processor-missing");
+        setLiveBoxes((previous) => {
+          // Four quick browser polls can hit the same one-second backend
+          // snapshot. Do not rerender the whole card until that snapshot (or
+          // its applied line) actually changes.
+          if (
+            revision &&
+            revision === previous?.revision &&
+            row?.line === previous.line &&
+            row?.direction === previous.direction
+          ) {
+            return previous;
+          }
+          return {
+            // A successful snapshot without this processor is authoritative.
+            // An explicit empty list prevents the initial, now-stale settings
+            // snapshot from reappearing through a nullish fallback.
+            detections: row?.detections ?? [],
+            frame: row?.detection_frame,
+            line: row?.line,
+            direction: row?.direction,
+            revision,
+            at: Date.now(),
+          };
         });
       } catch {
-        // Обрыв связи — не повод оставлять рамку на экране: она уже неверна.
-        if (!disposed) setLiveBoxes(null);
+        // Null means that the first fast poll has not completed yet. Once a
+        // poll fails, keep an explicit empty snapshot so initial detections do
+        // not reappear behind an unavailable endpoint.
+        if (!disposed) {
+          setLiveBoxes((previous) =>
+            previous?.revision === "unavailable"
+              ? previous
+              : { detections: [], revision: "unavailable", at: Date.now() },
+          );
+        }
       } finally {
         if (!disposed) timer = setTimeout(() => void pull(), DETECTIONS_POLL_MS);
       }
@@ -1144,7 +1171,7 @@ function AlwaysOnCard({
               {streamOnline && showDetections && (
                 <>
                   <DetectionOverlay
-                    detections={liveBoxes?.detections ?? current.detections}
+                    detections={liveBoxes ? liveBoxes.detections : current.detections}
                     frame={liveBoxes?.frame ?? current.detection_frame}
                     staleAfterMs={DETECTIONS_STALE_MS}
                     updatedAt={liveBoxes?.at}

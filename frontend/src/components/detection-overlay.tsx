@@ -41,6 +41,17 @@ type DrawableBox = {
   confidence: number | null;
 };
 
+function visibleBox(x: number, y: number, w: number, h: number) {
+  if (w <= 0 || h <= 0) return null;
+  if (x >= 0 && y >= 0 && x + w <= 1 && y + h <= 1) return { x, y, w, h };
+  const left = Math.max(0, x);
+  const top = Math.max(0, y);
+  const right = Math.min(1, x + w);
+  const bottom = Math.min(1, y + h);
+  if (right <= left || bottom <= top) return null;
+  return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
 /**
  * Привести рамки к долям кадра, поняв любой формат AI-сервиса.
  *
@@ -83,14 +94,13 @@ export function normalizeDetections(
 
     if (!coords.every(Number.isFinite)) return [];
     const [x, y, w, h] = coords;
+    const visible = visibleBox(x, y, w, h);
+    if (!visible) return [];
     const label = raw?.label ?? (typeof raw?.class_name === "string" ? raw.class_name : undefined);
     const confidence = Number(raw?.confidence);
     return [
       {
-        x,
-        y,
-        w,
-        h,
+        ...visible,
         label: String(label ?? ""),
         color: bagColor(label),
         counted: Boolean(raw?.counted),
@@ -153,6 +163,7 @@ export function DetectionOverlay({
   const box = useVideoBox(container);
   const stale = useStale(updatedAt, staleAfterMs);
   const drawable = stale ? [] : normalizeDetections(detections, frame);
+  const labelOccurrences = new Map<string, number>();
 
   return (
     <div
@@ -167,38 +178,44 @@ export function DetectionOverlay({
     >
       {!drawable.length ? null : (
         <>
-          {drawable.map((box, index) => (
-            <div
-              // Ключ без координат: с ними React считал сдвинувшуюся рамку
-              // новым элементом, пересоздавал её и анимация не запускалась —
-              // рамка прыгала вместо того, чтобы ехать за мешком.
-              key={`${box.label}-${index}`}
-              // Плавный переход длиной с интервал опроса: рамка догоняет
-              // мешок непрерывно, а не прыгает на его новое место рывком.
-              className="absolute rounded-[3px] transition-[left,top,width,height,opacity] duration-1000 ease-linear"
-              style={{
-                left: `${box.x * 100}%`,
-                top: `${box.y * 100}%`,
-                width: `${box.w * 100}%`,
-                height: `${box.h * 100}%`,
-                borderColor: box.color,
-                // Засчитанный мешок выделяется толщиной и свечением — видно
-                // не только что модель его нашла, но и что счётчик его принял.
-                borderWidth: box.counted ? 3 : 1.5,
-                borderStyle: "solid",
-                boxShadow: box.counted ? `0 0 0 1px #fff, 0 0 12px ${box.color}` : undefined,
-              }}
-            >
-              <span
-                className="absolute -top-[18px] left-0 whitespace-nowrap rounded-[3px] px-1 text-[10px] font-bold leading-4 text-white"
-                style={{ backgroundColor: box.color }}
+          {drawable.map((box) => {
+            // YOLO orders rows by confidence, so different classes can swap
+            // positions between snapshots. Preserve their DOM nodes by label
+            // instead of remounting them merely because the array reordered.
+            const occurrence = labelOccurrences.get(box.label) ?? 0;
+            labelOccurrences.set(box.label, occurrence + 1);
+            return (
+              <div
+                key={`${box.label}-${occurrence}`}
+                // A one-second tween made the overlay follow an already old
+                // HTTP snapshot for another full second. Keep only a short
+                // visual softening so the box reaches the freshest position
+                // while it still corresponds to the visible moving bag.
+                className="absolute rounded-[3px] transition-[left,top,width,height,opacity] duration-150 ease-linear"
+                style={{
+                  left: `${box.x * 100}%`,
+                  top: `${box.y * 100}%`,
+                  width: `${box.w * 100}%`,
+                  height: `${box.h * 100}%`,
+                  borderColor: box.color,
+                  // Засчитанный мешок выделяется толщиной и свечением — видно
+                  // не только что модель его нашла, но и что счётчик его принял.
+                  borderWidth: box.counted ? 3 : 1.5,
+                  borderStyle: "solid",
+                  boxShadow: box.counted ? `0 0 0 1px #fff, 0 0 12px ${box.color}` : undefined,
+                }}
               >
-                {box.counted && "✓ "}
-                {box.label}
-                {box.confidence === null ? "" : ` ${Math.round(box.confidence * 100)}%`}
-              </span>
-            </div>
-          ))}
+                <span
+                  className="absolute -top-[18px] left-0 whitespace-nowrap rounded-[3px] px-1 text-[10px] font-bold leading-4 text-white"
+                  style={{ backgroundColor: box.color }}
+                >
+                  {box.counted && "✓ "}
+                  {box.label}
+                  {box.confidence === null ? "" : ` ${Math.round(box.confidence * 100)}%`}
+                </span>
+              </div>
+            );
+          })}
         </>
       )}
     </div>

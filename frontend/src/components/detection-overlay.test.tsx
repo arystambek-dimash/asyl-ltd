@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { DetectionOverlay, bagColor, normalizeDetections } from "./detection-overlay";
 import type { AlwaysOnDetection } from "@/lib/types";
 
@@ -59,6 +59,22 @@ describe("DetectionOverlay", () => {
     // Засчитанный выделен толщиной — по нему видно работу счётчика.
     expect(counted.style.borderWidth).toBe("3px");
     expect(seen.style.borderWidth).toBe("1.5px");
+  });
+
+  it("keeps each box mounted when the processor changes detection order", () => {
+    const { rerender } = render(
+      <DetectionOverlay detections={[box({ label: "Red_50" }), box({ label: "Blue_50", x: 0.6 })]} />,
+    );
+    const redBefore = screen.getByText(/Red_50/).parentElement;
+    const blueBefore = screen.getByText(/Blue_50/).parentElement;
+
+    // Model output is confidence-ordered, so two otherwise continuous tracks
+    // can swap rows between polls. Remounting here defeats the CSS transition
+    // and makes both boxes visibly jump instead of moving smoothly.
+    rerender(<DetectionOverlay detections={[box({ label: "Blue_50", x: 0.62 }), box({ label: "Red_50", x: 0.12 })]} />);
+
+    expect(screen.getByText(/Red_50/).parentElement).toBe(redBefore);
+    expect(screen.getByText(/Blue_50/).parentElement).toBe(blueBefore);
   });
 
   it("renders nothing when the model reported no bags", () => {
@@ -157,8 +173,10 @@ describe("DetectionOverlay — привязка к видео", () => {
     // Найдя видео, оверлей задаёт себе явную геометрию кадра. Пока видео
     // искали внутри себя, эффект выходил раньше и стили оставались пустыми —
     // рамки существовали, но были привязаны не к кадру.
-    expect(overlay.style.width).not.toBe("");
-    expect(overlay.style.height).not.toBe("");
+    expect(overlay.style.left).toBe("0px");
+    expect(overlay.style.top).toBe("75px");
+    expect(overlay.style.width).toBe("800px");
+    expect(overlay.style.height).toBe("450px");
     expect(overlay.querySelector("video")).toBeNull();
   });
 
@@ -220,6 +238,26 @@ describe("normalizeDetections — форматы AI-сервиса", () => {
       }),
     ).toEqual([]);
   });
+
+  it("clips a partly out-of-frame box to visible normalized bounds", () => {
+    const [drawn] = normalizeDetections([{ x: -0.1, y: 0.8, w: 0.4, h: 0.4, label: "Red_50" }] as never);
+
+    expect(drawn.x).toBe(0);
+    expect(drawn.y).toBeCloseTo(0.8);
+    expect(drawn.w).toBeCloseTo(0.3);
+    expect(drawn.h).toBeCloseTo(0.2);
+  });
+
+  it("drops boxes with no visible positive-area intersection", () => {
+    const invalid = [
+      { x: 1.1, y: 0.1, w: 0.2, h: 0.2, label: "Right" },
+      { x: 0.1, y: -0.4, w: 0.2, h: 0.2, label: "Above" },
+      { x: 0.5, y: 0.5, w: -0.2, h: 0.2, label: "Inverted" },
+      { x: 0.5, y: 0.5, w: 0.2, h: 0, label: "Flat" },
+    ] as never;
+
+    expect(normalizeDetections(invalid)).toEqual([]);
+  });
 });
 
 describe("DetectionOverlay — устаревшие рамки", () => {
@@ -240,6 +278,23 @@ describe("DetectionOverlay — устаревшие рамки", () => {
     render(<DetectionOverlay detections={[box()]} updatedAt={Date.now()} staleAfterMs={2_500} />);
 
     expect(screen.getByText(/Red_50/)).toBeInTheDocument();
+  });
+
+  it("removes a fresh box when the stale deadline passes without another response", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-24T10:00:00Z"));
+      render(<DetectionOverlay detections={[box()]} updatedAt={Date.now()} staleAfterMs={2_500} />);
+      expect(screen.getByText(/Red_50/)).toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(2_499));
+      expect(screen.getByText(/Red_50/)).toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.queryByText(/Red_50/)).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("never expires when no threshold is given", () => {
