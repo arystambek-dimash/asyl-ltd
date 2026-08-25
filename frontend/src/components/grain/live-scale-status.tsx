@@ -58,15 +58,7 @@ function displayState(data: TruckScalePreview | null, loading: boolean, error: s
   };
 }
 
-export function LiveScaleStatus({
-  active,
-  scaleKey,
-  label,
-}: {
-  active: boolean;
-  scaleKey: "wagon" | "truck";
-  label: string;
-}) {
+export function LiveScaleStatus({ active, scaleKey, label }: { active: boolean; scaleKey: "truck"; label: string }) {
   const { data, loading, error, reload } = useApi<TruckScalePreview>(
     active ? `/truck-scales/${scaleKey}/reading/` : null,
   );

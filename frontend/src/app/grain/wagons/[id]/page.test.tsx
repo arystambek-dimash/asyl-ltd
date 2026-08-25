@@ -46,7 +46,7 @@ vi.mock("@/components/layout/app-shell", () => ({
   ),
 }));
 vi.mock("@/components/grain/live-scale-status", () => ({
-  LiveScaleStatus: ({ active, scaleKey, label }: { active: boolean; scaleKey: "wagon" | "truck"; label: string }) =>
+  LiveScaleStatus: ({ active, scaleKey, label }: { active: boolean; scaleKey: "truck"; label: string }) =>
     active ? <div aria-label={`Весы ${label}`} data-scale-key={scaleKey} /> : null,
 }));
 vi.mock("next/link", () => ({
@@ -136,18 +136,6 @@ describe("StageAction automatic scale capture", () => {
       /Получить вес гружёной/,
       "/grain/wagons/7/exit-weight/",
     ],
-    [
-      "legacy gross",
-      wagon({ workflow: "legacy", direction: "intake" }),
-      /Получить вес брутто/,
-      "/grain/wagons/7/gross/",
-    ],
-    [
-      "legacy tare",
-      wagon({ workflow: "legacy", direction: "intake", status: "unloading_completed" }),
-      /Получить вес тары/,
-      "/grain/wagons/7/tare/",
-    ],
   ])("sends an empty POST for %s", async (_name, value, buttonName, endpoint) => {
     const user = userEvent.setup();
     await renderStage(value as GrainWagon);
@@ -164,13 +152,30 @@ describe("StageAction automatic scale capture", () => {
   });
 
   it.each([
-    ["passage", "Вывоз", "truck"],
-    ["intake", "Вагоны", "wagon"],
-  ] as const)("shows only the %s scale in the page actions", async (direction, label, scaleKey) => {
-    await renderStage(wagon({ direction }));
+    ["simple entry", wagon({ direction: "intake" })],
+    ["simple exit", wagon({ direction: "intake", status: "at_silo", status_label: "На разгрузке" })],
+    ["legacy gross", wagon({ workflow: "legacy", direction: "intake" })],
+    ["legacy tare", wagon({ workflow: "legacy", direction: "intake", status: "unloading_completed" })],
+  ])("keeps %s intake weighing disabled until wagon scales exist", async (_name, value) => {
+    await renderStage(value as GrainWagon);
 
-    expect(screen.getByLabelText(`Весы ${label}`)).toHaveAttribute("data-scale-key", scaleKey);
+    expect(screen.getByText("Вагонные весы пока не подключены")).toBeInTheDocument();
+    expect(screen.getByText(/Весы машин вывоза здесь не используются/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Получить.*вес|Получить вес/ })).not.toBeInTheDocument();
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it("shows the truck scale only for an export trip", async () => {
+    await renderStage(wagon({ direction: "passage" }));
+
+    expect(screen.getByLabelText("Весы Вывоз")).toHaveAttribute("data-scale-key", "truck");
     expect(screen.queryAllByLabelText(/^Весы /)).toHaveLength(1);
+  });
+
+  it("does not show a scale widget for intake wagons", async () => {
+    await renderStage(wagon({ direction: "intake" }));
+
+    expect(screen.queryByLabelText(/^Весы /)).not.toBeInTheDocument();
   });
 
   it("shows loading and the backend error without losing the action", async () => {

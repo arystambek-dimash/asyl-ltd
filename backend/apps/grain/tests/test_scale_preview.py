@@ -76,15 +76,15 @@ def test_reading_endpoint_allows_grain_weigher(api_client, user_with_perms):
     assert response.data["capturable"] is True
     assert response.data["refresh_mode"] == "manual"
     assert "no-store" in response["Cache-Control"]
-    read_scale.assert_called_once_with(scale.WAGON_SCALE_KEY)
+    read_scale.assert_called_once_with(scale.TRUCK_SCALE_KEY)
 
 
-@pytest.mark.parametrize("url", [WAGON_READING_URL, READING_URL])
-def test_wagon_preview_routes_remain_compatible(
+@pytest.mark.parametrize("url", [TRUCK_READING_URL, READING_URL])
+def test_truck_preview_routes_remain_compatible(
     api_client, user_with_perms, url
 ):
     user = user_with_perms(
-        f"preview-wagon-{url.count('/')}",
+        f"preview-truck-{url.count('/')}",
         codes=["grain.weigh"],
     )
     api_client.force_authenticate(user)
@@ -92,31 +92,31 @@ def test_wagon_preview_routes_remain_compatible(
     with patch.object(
         scale_preview.scale,
         "read_truck_scale_observation",
-        return_value=observation(weight_kg=Decimal("68000.00")),
+        return_value=observation(weight_kg=Decimal("12000.00")),
     ) as read_scale:
         response = api_client.get(url)
 
     assert response.status_code == 200
-    assert response.data["weight_kg"] == "68000.00"
-    read_scale.assert_called_once_with(scale.WAGON_SCALE_KEY)
+    assert response.data["weight_kg"] == "12000.00"
+    read_scale.assert_called_once_with(scale.TRUCK_SCALE_KEY)
 
 
-def test_truck_preview_uses_only_truck_scale(
+def test_wagon_preview_uses_only_wagon_scale(
     api_client, user_with_perms
 ):
-    user = user_with_perms("preview-truck", codes=["grain.weigh"])
+    user = user_with_perms("preview-wagon", codes=["grain.weigh"])
     api_client.force_authenticate(user)
 
     with patch.object(
         scale_preview.scale,
         "read_truck_scale_observation",
-        return_value=observation(weight_kg=Decimal("12000.00")),
+        return_value=observation(weight_kg=Decimal("68000.00")),
     ) as read_scale:
-        response = api_client.get(TRUCK_READING_URL)
+        response = api_client.get(WAGON_READING_URL)
 
     assert response.status_code == 200
-    assert response.data["weight_kg"] == "12000.00"
-    read_scale.assert_called_once_with(scale.TRUCK_SCALE_KEY)
+    assert response.data["weight_kg"] == "68000.00"
+    read_scale.assert_called_once_with(scale.WAGON_SCALE_KEY)
 
 
 def test_unknown_scale_preview_is_404_before_scale_io(
@@ -192,7 +192,7 @@ def test_preview_is_micro_cached_across_operator_requests():
 
     assert first == second
     assert first["weight_kg"] == "3660.00"
-    read_scale.assert_called_once_with(scale.WAGON_SCALE_KEY)
+    read_scale.assert_called_once_with(scale.TRUCK_SCALE_KEY)
 
 
 def test_preview_caches_are_isolated_by_physical_scale():

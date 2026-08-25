@@ -40,36 +40,26 @@ describe("LiveScaleStatus", () => {
     mocks.reload.mockResolvedValue(undefined);
   });
 
-  it("shows the current stable wagon weight without starting periodic polling", () => {
-    mockApi(preview());
-
-    render(<LiveScaleStatus active scaleKey="wagon" label="Вагоны" />);
-
-    expect(mocks.useApi).toHaveBeenCalledWith("/truck-scales/wagon/reading/");
-    expect(screen.getByText("3,66 т")).toBeInTheDocument();
-    expect(screen.getByText("Вагоны · Снимок стабилен")).toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "Весы «Вагоны»: 3,66 т, Снимок стабилен" })).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Весы «Вагоны»: 3,66 т, Снимок стабилен");
-  });
-
-  it("uses the explicit truck endpoint and identifies its source", () => {
+  it("shows the current stable truck weight without starting periodic polling", () => {
     mockApi(preview());
 
     render(<LiveScaleStatus active scaleKey="truck" label="Вывоз" />);
 
     expect(mocks.useApi).toHaveBeenCalledWith("/truck-scales/truck/reading/");
+    expect(screen.getByText("3,66 т")).toBeInTheDocument();
     expect(screen.getByText("Вывоз · Снимок стабилен")).toBeInTheDocument();
-    expect(screen.getByLabelText(/Весы «Вывоз»/)).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Весы «Вывоз»: 3,66 т, Снимок стабилен" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Весы «Вывоз»: 3,66 т, Снимок стабилен");
   });
 
   it("refreshes only when the operator explicitly asks", async () => {
     const user = userEvent.setup();
     mockApi(preview());
 
-    render(<LiveScaleStatus active scaleKey="wagon" label="Вагоны" />);
+    render(<LiveScaleStatus active scaleKey="truck" label="Вывоз" />);
 
     expect(mocks.reload).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Обновить весы «Вагоны»" }));
+    await user.click(screen.getByRole("button", { name: "Обновить весы «Вывоз»" }));
     expect(mocks.reload).toHaveBeenCalledOnce();
   });
 
@@ -83,10 +73,10 @@ describe("LiveScaleStatus", () => {
       }),
     );
 
-    render(<LiveScaleStatus active scaleKey="wagon" label="Вагоны" />);
+    render(<LiveScaleStatus active scaleKey="truck" label="Вывоз" />);
 
     expect(screen.getByText("≈ 3,66 т")).toBeInTheDocument();
-    expect(screen.getByText("Вагоны · Снимок меняется")).toBeInTheDocument();
+    expect(screen.getByText("Вывоз · Снимок меняется")).toBeInTheDocument();
   });
 
   it.each([
@@ -105,26 +95,26 @@ describe("LiveScaleStatus", () => {
       }),
     );
 
-    render(<LiveScaleStatus active scaleKey="wagon" label="Вагоны" />);
+    render(<LiveScaleStatus active scaleKey="truck" label="Вывоз" />);
 
     expect(screen.queryByText(/3,66 т/)).not.toBeInTheDocument();
     expect(screen.getByText("—,— т")).toBeInTheDocument();
-    expect(screen.getByText(`Вагоны · ${label}`)).toBeInTheDocument();
+    expect(screen.getByText(`Вывоз · ${label}`)).toBeInTheDocument();
   });
 
   it("hides a retained reading after a CRM network error", () => {
     mockApi(preview(), "Сеть недоступна");
 
-    render(<LiveScaleStatus active scaleKey="wagon" label="Вагоны" />);
+    render(<LiveScaleStatus active scaleKey="truck" label="Вывоз" />);
 
     expect(screen.queryByText(/3,66 т/)).not.toBeInTheDocument();
-    expect(screen.getByText("Вагоны · Нет связи с CRM")).toBeInTheDocument();
+    expect(screen.getByText("Вывоз · Нет связи с CRM")).toBeInTheDocument();
   });
 
   it("does not fetch or render without weighing permission", () => {
     mockApi(null);
 
-    const { container } = render(<LiveScaleStatus active={false} scaleKey="wagon" label="Вагоны" />);
+    const { container } = render(<LiveScaleStatus active={false} scaleKey="truck" label="Вывоз" />);
 
     expect(mocks.useApi).toHaveBeenCalledWith(null);
     expect(container).toBeEmptyDOMElement();

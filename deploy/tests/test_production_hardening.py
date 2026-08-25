@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import stat
@@ -344,6 +345,39 @@ exit 0
             )
             up_command = next(command for command in commands if " up -d " in command)
             self.assertIn("--pull never", up_command)
+
+    def test_both_scale_urls_may_be_explicitly_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            environment, _, _ = self._environment(
+                Path(temporary),
+                running_services="db-backup",
+            )
+            environment["WAGON_SCALE_API_URL_B64"] = ""
+            environment["TRUCK_SCALE_API_URL_B64"] = ""
+
+            result = self._run(environment)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_nonempty_scale_url_must_be_absolute_http(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            environment, docker_log, _ = self._environment(
+                Path(temporary),
+                running_services="db-backup",
+            )
+            environment["WAGON_SCALE_API_URL_B64"] = base64.b64encode(
+                b"file:///etc/passwd"
+            ).decode()
+            environment["TRUCK_SCALE_API_URL_B64"] = ""
+
+            result = self._run(environment)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "WAGON_SCALE_API_URL must be empty or an absolute HTTP(S) URL",
+                result.stderr,
+            )
+            self.assertFalse(docker_log.exists())
 
     def test_deploy_records_previous_release_before_candidate_start(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -738,7 +772,7 @@ class ProductionManifestTests(unittest.TestCase):
             "TRUCK_SCALE_API_URL: ${{ secrets.TRUCK_SCALE_API_URL }}",
             workflow,
         )
-        self.assertIn(
+        self.assertNotIn(
             'fail_if_empty WAGON_SCALE_API_URL "$WAGON_SCALE_API_URL"',
             workflow,
         )
@@ -746,9 +780,7 @@ class ProductionManifestTests(unittest.TestCase):
             'fail_if_empty TRUCK_SCALE_API_URL "$TRUCK_SCALE_API_URL"',
             workflow,
         )
-        self.assertGreaterEqual(
-            workflow.count('test -n "$WAGON_SCALE_API_URL"'), 2
-        )
+        self.assertNotIn('test -n "$WAGON_SCALE_API_URL"', workflow)
         self.assertNotIn('test -n "$TRUCK_SCALE_API_URL"', workflow)
         self.assertIn("IFS= read -r WAGON_SCALE_API_URL_B64", workflow)
         self.assertIn("IFS= read -r TRUCK_SCALE_API_URL_B64", workflow)
@@ -769,6 +801,12 @@ class ProductionManifestTests(unittest.TestCase):
         self.assertIn('base64 -d)', deploy_script)
         self.assertIn("export WAGON_SCALE_API_URL", deploy_script)
         self.assertIn("export TRUCK_SCALE_API_URL", deploy_script)
+        self.assertIn(
+            'if [ -n "$WAGON_SCALE_API_URL" ]; then', deploy_script
+        )
+        self.assertIn(
+            'if [ -n "$TRUCK_SCALE_API_URL" ]; then', deploy_script
+        )
         self.assertGreaterEqual(
             workflow.count("IFS= read -r WAGON_SCALE_API_URL_B64"),
             3,
@@ -786,24 +824,25 @@ class ProductionManifestTests(unittest.TestCase):
         deploy_script = REMOTE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn(
-            "WAGON_SCALE_API_URL: "
-            "${WAGON_SCALE_API_URL-http://desktop-t5p32d3:8000/api/v1/weight}",
-            compose,
-        )
-        self.assertNotIn(
-            "WAGON_SCALE_API_URL-${TRUCK_SCALE_API_URL",
+            "WAGON_SCALE_API_URL: ${WAGON_SCALE_API_URL-}",
             compose,
         )
         self.assertIn(
-            "TRUCK_SCALE_API_URL: ${TRUCK_SCALE_API_URL-}", compose
+            "TRUCK_SCALE_API_URL: "
+            "${TRUCK_SCALE_API_URL-http://desktop-t5p32d3:8000/api/v1/weight}",
+            compose,
+        )
+        self.assertNotIn(
+            "WAGON_SCALE_API_URL-${TRUCK_SCALE_API_URL", compose
+        )
+        self.assertNotIn(
+            'TRUCK_SCALE_API_URL="${WAGON_SCALE_API_URL:-}"', deploy_script
         )
         self.assertIn(
             "if ! grep -q 'WAGON_SCALE_API_URL' \"$COMPOSE_FILE\"; then",
             deploy_script,
         )
-        self.assertIn(
-            'TRUCK_SCALE_API_URL="${WAGON_SCALE_API_URL:-}"', deploy_script
-        )
+        self.assertIn('TRUCK_SCALE_API_URL=""', deploy_script)
 
     def test_failed_public_gate_rolls_back_before_success_only_cleanup(self) -> None:
         workflow = (

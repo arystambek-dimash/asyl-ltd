@@ -59,13 +59,15 @@ def assert_error(exc_info, *, status, code):
 
 
 def test_enabled_reads_current_setting_dynamically(settings):
+    assert scale.DEFAULT_SCALE_KEY == scale.TRUCK_SCALE_KEY
     assert scale.enabled() is True
-    assert scale.enabled(scale.TRUCK_SCALE_KEY) is True
+    assert scale.enabled(scale.WAGON_SCALE_KEY) is True
 
-    settings.WAGON_SCALE_API_URL = "   "
+    settings.TRUCK_SCALE_API_URL = "   "
     assert scale.enabled() is False
+    assert scale.enabled(scale.WAGON_SCALE_KEY) is True
 
-    settings.WAGON_SCALE_API_URL = "http://other.test/weight"
+    settings.TRUCK_SCALE_API_URL = "http://other.test/weight"
     assert scale.enabled() is True
 
 
@@ -98,8 +100,23 @@ def test_missing_truck_scale_fails_closed_without_using_wagon_scale(settings):
         scale.read_truck_scale(scale.TRUCK_SCALE_KEY)
 
     request_open.assert_not_called()
-    assert scale.enabled() is True
+    assert scale.enabled() is False
+    assert scale.enabled(scale.WAGON_SCALE_KEY) is True
     assert scale.enabled(scale.TRUCK_SCALE_KEY) is False
+    assert_error(exc_info, status=503, code="truck_scale_disabled")
+
+
+def test_missing_wagon_scale_fails_closed_without_using_truck_scale(settings):
+    settings.WAGON_SCALE_API_URL = ""
+
+    with open_patch() as request_open, pytest.raises(
+        scale.TruckScaleDisabled
+    ) as exc_info:
+        scale.read_truck_scale(scale.WAGON_SCALE_KEY)
+
+    request_open.assert_not_called()
+    assert scale.enabled() is True
+    assert scale.enabled(scale.WAGON_SCALE_KEY) is False
     assert_error(exc_info, status=503, code="truck_scale_disabled")
 
 
@@ -111,7 +128,7 @@ def test_unknown_scale_key_is_rejected_before_io():
 
 
 def test_disabled_fails_without_network_request(settings):
-    settings.WAGON_SCALE_API_URL = ""
+    settings.TRUCK_SCALE_API_URL = ""
     with open_patch() as urlopen, \
          pytest.raises(scale.TruckScaleDisabled) as exc_info:
         scale.read_truck_scale()
@@ -136,7 +153,7 @@ def test_disabled_fails_without_network_request(settings):
     ],
 )
 def test_unsafe_or_malformed_configured_url_is_rejected_before_io(settings, url):
-    settings.WAGON_SCALE_API_URL = url
+    settings.TRUCK_SCALE_API_URL = url
     with open_patch() as request_open, \
          pytest.raises(scale.TruckScaleUnavailable) as exc_info:
         scale.read_truck_scale()
@@ -147,14 +164,14 @@ def test_unsafe_or_malformed_configured_url_is_rejected_before_io(settings, url)
 
 @pytest.mark.parametrize("scheme", ["http", "https"])
 def test_http_and_https_urls_are_accepted(settings, scheme):
-    settings.WAGON_SCALE_API_URL = (
+    settings.TRUCK_SCALE_API_URL = (
         f"{scheme}://scale.test/api/v1/weight?site=1"
     )
     upstream = response()
     with open_patch(return_value=upstream) as request_open:
         scale.read_truck_scale()
 
-    assert request_open.call_args.args[0].full_url == settings.WAGON_SCALE_API_URL
+    assert request_open.call_args.args[0].full_url == settings.TRUCK_SCALE_API_URL
 
 
 def test_secure_opener_disables_environment_proxies_and_redirects():
@@ -213,7 +230,7 @@ def test_success_returns_exact_decimals_and_uses_bounded_get_request():
         updated_at="2026-08-10T10:20:30+05:00",
     )
     request = urlopen.call_args.args[0]
-    assert request.full_url == "http://wagon-scale.test/api/v1/weight"
+    assert request.full_url == "http://truck-scale.test/api/v1/weight"
     assert request.get_method() == "GET"
     assert request.get_header("Accept") == "application/json"
     assert urlopen.call_args.kwargs == {"timeout": 1.25}

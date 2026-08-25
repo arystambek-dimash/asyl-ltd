@@ -43,10 +43,16 @@ vi.mock("@/components/layout/app-shell", () => ({
   ),
 }));
 vi.mock("@/components/grain/grain-toolbar", () => ({
-  GrainToolbar: ({ onPassage }: { onPassage: () => void }) => (
-    <button type="button" onClick={onPassage}>
-      Открыть вывоз
-    </button>
+  GrainToolbar: ({ direction, onPassage }: { direction: "intake" | "passage"; onPassage: () => void }) => (
+    <div aria-label="Панель операций" data-direction={direction}>
+      {direction === "passage" ? (
+        <button type="button" onClick={onPassage}>
+          Открыть вывоз
+        </button>
+      ) : (
+        <span>Операции прихода</span>
+      )}
+    </div>
   ),
 }));
 vi.mock("@/components/grain/wagon-number-camera", () => ({
@@ -85,6 +91,8 @@ describe("Grain passage creation", () => {
     render(<GrainPage />);
 
     expect(pagedApiMock).toHaveBeenCalledWith("/grain/wagons/?scope=on_site&direction=intake", 50);
+    expect(screen.getByLabelText("Панель операций")).toHaveAttribute("data-direction", "intake");
+    expect(screen.queryByRole("button", { name: "Открыть вывоз" })).not.toBeInTheDocument();
     expect(screen.getByRole("tablist", { name: "Направление рейса" })).toBeInTheDocument();
     expect(screen.getByRole("tablist", { name: "Статус рейсов" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Ожидаются" })).toBeInTheDocument();
@@ -98,6 +106,8 @@ describe("Grain passage creation", () => {
     await waitFor(() =>
       expect(pagedApiMock).toHaveBeenCalledWith("/grain/wagons/?scope=on_site&direction=passage", 50),
     );
+    expect(screen.getByLabelText("Панель операций")).toHaveAttribute("data-direction", "passage");
+    expect(screen.getByRole("button", { name: "Открыть вывоз" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Ожидаются" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Камера проходной" })).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "На территории" })).toHaveAttribute("aria-selected", "true");
@@ -108,6 +118,7 @@ describe("Grain passage creation", () => {
     const user = userEvent.setup();
     render(<GrainPage />);
 
+    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
     await user.click(screen.getByRole("button", { name: "Открыть вывоз" }));
     await user.type(screen.getByLabelText("Номер машины"), "123 ABC");
     await user.click(screen.getByRole("button", { name: /Оформить вывоз/ }));

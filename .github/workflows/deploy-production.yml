@@ -124,7 +124,6 @@ jobs:
           fail_if_empty PROD_USER "$PROD_USER"
           fail_if_empty PROD_SSH_KEY "$PROD_SSH_KEY"
           fail_if_empty PROD_SSH_KNOWN_HOSTS "$PROD_SSH_KNOWN_HOSTS"
-          fail_if_empty WAGON_SCALE_API_URL "$WAGON_SCALE_API_URL"
           fail_if_empty BACKEND_IMAGE_REF "$BACKEND_IMAGE_REF"
           fail_if_empty FRONTEND_IMAGE_REF "$FRONTEND_IMAGE_REF"
 
@@ -149,13 +148,13 @@ jobs:
           test -n "$PROD_USER"
           test -n "$PROD_SSH_KEY"
           test -n "$PROD_SSH_KNOWN_HOSTS"
-          test -n "$WAGON_SCALE_API_URL"
           test -n "$BACKEND_IMAGE_REF"
           test -n "$FRONTEND_IMAGE_REF"
 
-          # Use single-line transport encoding for both endpoints. They and the
-          # registry token are streamed over SSH stdin, never embedded in the
-          # remote process command line.
+          # Both scale endpoints are optional, but explicit empty values must
+          # still reach the host to disable a stale source deterministically.
+          # They and the registry token are streamed over SSH stdin, never
+          # embedded in the remote process command line.
           WAGON_SCALE_API_URL_B64=$(printf '%s' "$WAGON_SCALE_API_URL" | base64 | tr -d '\n')
           TRUCK_SCALE_API_URL_B64=$(printf '%s' "$TRUCK_SCALE_API_URL" | base64 | tr -d '\n')
 
@@ -540,7 +539,6 @@ jobs:
           test -n "$PROD_USER"
           test -n "$PROD_SSH_KEY"
           test -n "$PROD_SSH_KNOWN_HOSTS"
-          test -n "$WAGON_SCALE_API_URL"
           test "$PROD_APP_DIR" = "/home/$PROD_USER/asyl-ltd"
 
           case "$PROD_HOST" in

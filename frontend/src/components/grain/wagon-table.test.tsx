@@ -136,7 +136,7 @@ describe("WagonTable", () => {
     renderTable([wagon({ id: 1, number: "Поезд-1" })]);
 
     const row = screen.getByRole("row", { name: /Поезд-1/ });
-    expect(within(row).getAllByText("ждёт весов")).toHaveLength(2);
+    expect(within(row).getAllByText("весы не подключены")).toHaveLength(2);
     expect(within(row).getByText("после разгрузки")).toBeInTheDocument();
   });
 
@@ -146,7 +146,7 @@ describe("WagonTable", () => {
       wagon({ id: 2, number: "123 ABC", direction: "passage", cargo_name: "Отруби" }),
     ]);
 
-    expect(screen.getByRole("link", { name: /Внести вес на въезде/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Весы вагонов не подключены/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Взвесить пустую/ })).toBeInTheDocument();
   });
 

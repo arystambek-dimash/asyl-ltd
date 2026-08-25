@@ -35,9 +35,10 @@ an unrelated mutable infrastructure tag cannot change during a release.
 ## Automatic release rollback
 
 GitHub repository or organization secrets must provide `PROD_HOST`,
-`PROD_SSH_KEY`, `PROD_SSH_KNOWN_HOSTS` and `WAGON_SCALE_API_URL`.
-`TRUCK_SCALE_API_URL` is optional until the separate export scale is ready;
-an empty value disables only truck weighing. Secrets must be
+`PROD_SSH_KEY` and `PROD_SSH_KNOWN_HOSTS`. `WAGON_SCALE_API_URL` and
+`TRUCK_SCALE_API_URL` are both optional and fail closed independently. Leave
+the wagon value empty until railway scales are installed; configure the truck
+value for the «Оформить вывоз» scale. Secrets must be
 available to both the `deploy` and unattended `recovery` jobs; do not place
 them only in an approval-gated environment that recovery does not bind to.
 Populate the host-key secret from a separately verified production fingerprint

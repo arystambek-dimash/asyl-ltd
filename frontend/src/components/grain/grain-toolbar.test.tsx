@@ -4,12 +4,13 @@ import { describe, expect, it, vi } from "vitest";
 import { GrainToolbar } from "./grain-toolbar";
 
 vi.mock("./live-scale-status", () => ({
-  LiveScaleStatus: ({ active, scaleKey, label }: { active: boolean; scaleKey: "wagon" | "truck"; label: string }) =>
+  LiveScaleStatus: ({ active, scaleKey, label }: { active: boolean; scaleKey: "truck"; label: string }) =>
     active ? <div aria-label={`Весы ${label}`} data-scale-key={scaleKey} /> : null,
 }));
 
 function renderToolbar(overrides: Partial<React.ComponentProps<typeof GrainToolbar>> = {}) {
   const props = {
+    direction: "intake" as const,
     canArrive: true,
     canSupply: true,
     canWeigh: true,
@@ -23,21 +24,28 @@ function renderToolbar(overrides: Partial<React.ComponentProps<typeof GrainToolb
 }
 
 describe("GrainToolbar", () => {
-  it("keeps export visible and groups only intake actions in the dropdown", async () => {
+  it("shows only intake operations in the intake segment", async () => {
     const user = userEvent.setup();
-    const { props } = renderToolbar();
+    renderToolbar();
 
-    expect(screen.getByRole("group", { name: "Текущий вес" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Весы Вагоны")).toHaveAttribute("data-scale-key", "wagon");
-    expect(screen.getByLabelText("Весы Вывоз")).toHaveAttribute("data-scale-key", "truck");
-    await user.click(screen.getByRole("button", { name: "Оформить вывоз" }));
-    expect(props.onPassage).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText(/^Весы /)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Оформить вывоз" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Операции прихода" }));
-
-    expect(screen.queryByRole("menuitem", { name: "Оформить вывоз" })).not.toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Принять поезд" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Новый приход" })).toBeInTheDocument();
+  });
+
+  it("shows only the truck scale and export button in the export segment", async () => {
+    const user = userEvent.setup();
+    const { props } = renderToolbar({ direction: "passage" });
+
+    expect(screen.getByRole("group", { name: "Текущий вес вывоза" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Весы Вывоз")).toHaveAttribute("data-scale-key", "truck");
+    expect(screen.queryByRole("button", { name: "Операции прихода" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Оформить вывоз" }));
+    expect(props.onPassage).toHaveBeenCalledOnce();
   });
 
   it("preserves permission filtering and calls the selected action", async () => {
@@ -54,17 +62,20 @@ describe("GrainToolbar", () => {
     expect(props.onPassage).not.toHaveBeenCalled();
   });
 
-  it("shows only the scale when the employee can weigh but cannot create operations", () => {
-    renderToolbar({ canArrive: false, canSupply: false });
+  it("shows only the truck scale in export when the employee cannot create a trip", () => {
+    renderToolbar({ direction: "passage", canArrive: false, canSupply: false });
 
-    expect(screen.getByLabelText("Весы Вагоны")).toBeInTheDocument();
     expect(screen.getByLabelText("Весы Вывоз")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Оформить вывоз" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Операции прихода" })).not.toBeInTheDocument();
   });
 
   it("renders nothing when no relevant permission is present", () => {
-    const { container } = renderToolbar({ canArrive: false, canSupply: false, canWeigh: false });
-    expect(container).toBeEmptyDOMElement();
+    const intake = renderToolbar({ canArrive: false, canSupply: false, canWeigh: true });
+    expect(intake.container).toBeEmptyDOMElement();
+    intake.unmount();
+
+    const passage = renderToolbar({ direction: "passage", canArrive: false, canSupply: true, canWeigh: false });
+    expect(passage.container).toBeEmptyDOMElement();
   });
 });

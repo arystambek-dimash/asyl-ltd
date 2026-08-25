@@ -297,9 +297,9 @@ APIPAY_BASE_URL = os.environ.get(
 ).rstrip("/")
 APIPAY_TIMEOUT_SECONDS = float(os.environ.get("APIPAY_TIMEOUT_SECONDS", "10"))
 
-# Railway wagons and outgoing trucks use different physical scale PCs. Both
-# fail closed: falling back to the other scale could record another vehicle's
-# weight on the current trip.
+# Railway wagons and outgoing trucks have independent optional scale slots;
+# wagon hardware is not installed yet. Both fail closed: falling back to the
+# other slot could record a different vehicle's weight on the current trip.
 WAGON_SCALE_API_URL = os.environ.get("WAGON_SCALE_API_URL", "").strip()
 TRUCK_SCALE_API_URL = os.environ.get("TRUCK_SCALE_API_URL", "").strip()
 try:

@@ -37,9 +37,9 @@ function WagonStatusBadge({ wagon }: { wagon: Pick<GrainWagon, "status" | "statu
  */
 const WAGON_STEPS = [
   { label: "Заезд", icon: Camera },
-  { label: "Весы на въезде", icon: Scale },
+  { label: "Входные весы (позже)", icon: Scale },
   { label: "Разгрузка", icon: Warehouse },
-  { label: "Весы на выезде", icon: TrainFront },
+  { label: "Выходные весы (позже)", icon: TrainFront },
 ] as const;
 
 /** Проход: машина заезжает пустой, грузится и уезжает — разгрузки нет. */
@@ -99,9 +99,15 @@ function wagonCta(wagon: GrainWagon, me: Me | null) {
   const passage = wagon.direction === "passage";
   if (wagon.workflow === "simple") {
     if (wagon.status === "arrived" && can(me, "grain.weigh"))
-      return { label: passage ? "Взвесить пустую" : "Внести вес на въезде", variant: "default" as const };
+      return {
+        label: passage ? "Взвесить пустую" : "Весы вагонов не подключены",
+        variant: passage ? ("default" as const) : ("outline" as const),
+      };
     if (wagon.status === "at_silo" && can(me, "grain.weigh"))
-      return { label: passage ? "Взвесить гружёную" : "Внести вес на выезде", variant: "default" as const };
+      return {
+        label: passage ? "Взвесить гружёную" : "Весы вагонов не подключены",
+        variant: passage ? ("default" as const) : ("outline" as const),
+      };
     if (wagon.status === "weight_discrepancy" && can(me, "grain.inventory"))
       return { label: "Разобрать расхождение", variant: "destructive" as const };
   }
@@ -137,10 +143,10 @@ function StageCell({ wagon }: { wagon: GrainWagon }) {
   );
 }
 
-/** Вес с единицами или подпись «ждёт весов», чтобы пустая ячейка не молчала. */
-function WeightCell({ value }: { value: number | null | undefined }) {
+/** Вес с единицами или честная подпись о состоянии источника. */
+function WeightCell({ value, pendingLabel }: { value: number | null | undefined; pendingLabel: string }) {
   if (value == null) {
-    return <span className="text-[13px] text-[var(--muted-foreground)]">ждёт весов</span>;
+    return <span className="text-[13px] text-[var(--muted-foreground)]">{pendingLabel}</span>;
   }
   return <span className="font-semibold tabular-nums">{formatKg(value)}</span>;
 }
@@ -247,10 +253,16 @@ export function WagonTable({
                       <WagonStatusBadge wagon={wagon} />
                     </TD>
                     <TD className="text-right">
-                      <WeightCell value={wagon.entry_weight_kg ?? wagon.gross_weight_kg} />
+                      <WeightCell
+                        value={wagon.entry_weight_kg ?? wagon.gross_weight_kg}
+                        pendingLabel={passage ? "ждёт весов" : "весы не подключены"}
+                      />
                     </TD>
                     <TD className="text-right">
-                      <WeightCell value={wagon.exit_weight_kg ?? wagon.tare_weight_kg} />
+                      <WeightCell
+                        value={wagon.exit_weight_kg ?? wagon.tare_weight_kg}
+                        pendingLabel={passage ? "ждёт весов" : "весы не подключены"}
+                      />
                     </TD>
                     <TD className="text-right">
                       {wagon.net_weight_kg != null ? (

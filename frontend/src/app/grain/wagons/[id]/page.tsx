@@ -45,6 +45,21 @@ function ScaleCaptureButton({ busy, label, onClick }: { busy: boolean; label: st
   );
 }
 
+function WagonScalePending() {
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+      <TrainFront className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <div>
+        <p className="font-semibold">Вагонные весы пока не подключены</p>
+        <p className="mt-1 text-amber-900/80">
+          Получение веса для прихода станет доступно после подключения отдельного оборудования. Весы машин вывоза здесь
+          не используются.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 /** Крупное действие текущего этапа — оператору не нужно искать кнопки. */
 function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () => void }) {
   const { me } = useAuth();
@@ -85,34 +100,36 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
   let body: React.ReactNode = null;
   const passage = wagon.direction === "passage";
   if (wagon.workflow === "simple" && wagon.status === "arrived" && can(me, "grain.weigh")) {
-    body = (
+    body = passage ? (
       <>
         <div className="rounded-xl border border-sky-100 bg-sky-50 p-3 text-sm text-sky-950">
-          {passage
-            ? `Поставьте пустую машину на весы перед погрузкой «${wagon.cargo_name || "груза"}». Система сама получит текущий вес.`
-            : `Поставьте поезд на входные весы. Система сама получит полный вес и покажет маршрут к силосу «${wagon.assigned_silo_name}».`}
+          Поставьте пустую машину на весы перед погрузкой «{wagon.cargo_name || "груза"}». Система сама получит текущий
+          вес.
         </div>
         <ScaleCaptureButton
           busy={busy}
-          label={passage ? "Получить вес пустой и отправить на погрузку" : "Получить входной вес и направить к силосу"}
+          label="Получить вес пустой и отправить на погрузку"
           onClick={() => void act("entry-weight")}
         />
       </>
+    ) : (
+      <WagonScalePending />
     );
   } else if (wagon.workflow === "simple" && wagon.status === "at_silo" && can(me, "grain.weigh")) {
-    body = (
+    body = passage ? (
       <>
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-          {passage
-            ? `После погрузки «${wagon.cargo_name || "груза"}» поставьте машину на весы. Система получит вес, рассчитает вывезенное нетто и завершит рейс.`
-            : `Перед выездом поставьте поезд на весы. Система получит контрольный вес и рассчитает фактическое нетто.`}
+          После погрузки «{wagon.cargo_name || "груза"}» поставьте машину на весы. Система получит вес, рассчитает
+          вывезенное нетто и завершит рейс.
         </div>
         <ScaleCaptureButton
           busy={busy}
-          label={passage ? "Получить вес гружёной и завершить вывоз" : "Получить выходной вес и рассчитать нетто"}
+          label="Получить вес гружёной и завершить вывоз"
           onClick={() => void act("exit-weight")}
         />
       </>
+    ) : (
+      <WagonScalePending />
     );
   } else if (wagon.workflow === "simple" && wagon.status === "weight_discrepancy" && can(me, "grain.inventory")) {
     body = (
@@ -167,13 +184,15 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
       </>
     );
   } else if (wagon.status === "arrived" && can(me, "grain.weigh")) {
-    body = (
+    body = passage ? (
       <>
         <div className="rounded-xl border border-sky-100 bg-sky-50 p-3 text-sm text-sky-950">
-          Поставьте вагон на весы. Система сама получит текущее брутто и сохранит его.
+          Поставьте машину на весы. Система сама получит текущее брутто и сохранит его.
         </div>
         <ScaleCaptureButton busy={busy} label="Получить вес брутто" onClick={() => void act("gross")} />
       </>
+    ) : (
+      <WagonScalePending />
     );
   } else if (wagon.status === "lab_pending" && can(me, "grain.lab")) {
     body = (
@@ -274,13 +293,15 @@ function StageAction({ wagon, onChanged }: { wagon: GrainWagon; onChanged: () =>
     (wagon.status === "unloading_completed" || wagon.status === "reweighing_required") &&
     can(me, "grain.weigh")
   ) {
-    body = (
+    body = passage ? (
       <>
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-          После разгрузки поставьте вагон на весы. Система сама получит тару и рассчитает нетто.
+          После разгрузки поставьте машину на весы. Система сама получит тару и рассчитает нетто.
         </div>
         <ScaleCaptureButton busy={busy} label="Получить вес тары" onClick={() => void act("tare")} />
       </>
+    ) : (
+      <WagonScalePending />
     );
   } else if (wagon.status === "weight_discrepancy" && can(me, "grain.inventory")) {
     body = (
@@ -423,12 +444,8 @@ function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
       title="Приход и вывоз"
       section="Работа"
       actions={
-        can(me, "grain.weigh") ? (
-          <LiveScaleStatus
-            active
-            scaleKey={wagon.direction === "passage" ? "truck" : "wagon"}
-            label={wagon.direction === "passage" ? "Вывоз" : "Вагоны"}
-          />
+        wagon.direction === "passage" && can(me, "grain.weigh") ? (
+          <LiveScaleStatus active scaleKey="truck" label="Вывоз" />
         ) : undefined
       }
     >

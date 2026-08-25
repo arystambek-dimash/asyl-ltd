@@ -464,7 +464,7 @@ function ArrivalForm({
           Отмена
         </Button>
         <Button disabled={busy || !number.trim() || !supply} onClick={() => void submit()}>
-          {busy ? "Регистрация…" : "Передать на входные весы"}
+          {busy ? "Регистрация…" : "Зарегистрировать приход"}
         </Button>
       </div>
     </div>
@@ -599,11 +599,12 @@ function GrainPageInner() {
       section="Работа"
       description={
         direction === "intake"
-          ? "Приход: поезд привозит зерно, взвешивается на въезде и после разгрузки на выезде."
+          ? "Приход: поезд привозит зерно. Вагонные весы пока не подключены; весы машин вывоза здесь не используются."
           : "Вывоз: машина заезжает пустой, забирает груз и повторно взвешивается перед выездом."
       }
       actions={
         <GrainToolbar
+          direction={direction}
           canArrive={canArrive}
           canSupply={canSupply}
           canWeigh={canWeigh}
@@ -728,7 +729,7 @@ function GrainPageInner() {
             onDone={(wagon) => {
               setArriveOpen(false);
               setDirection("intake");
-              setNotice(`Поезд ${wagon.number} направлен на входные весы.`);
+              setNotice(`Поезд ${wagon.number} зарегистрирован. Вагонные весы пока не подключены.`);
               setTab("on_site");
               refreshAll();
             }}

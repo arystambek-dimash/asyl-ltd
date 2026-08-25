@@ -18,12 +18,14 @@ from rest_framework.exceptions import APIException
 MAX_RESPONSE_BYTES = 32 * 1024
 WEIGHT_QUANTUM = Decimal("0.01")
 
-# The Grain screen handles two mirrored routes on different physical scales:
-# railway wagons arrive with grain, while trucks collect outgoing cargo.
-# Configuration and audit names describe the hardware, not the business flow.
+# The Grain screen supports two independent hardware slots: railway wagons
+# arrive with grain, while trucks collect outgoing cargo. A slot may be empty
+# until its scale is installed; configuration never falls back across slots.
 WAGON_SCALE_KEY = "wagon"
 TRUCK_SCALE_KEY = "truck"
-DEFAULT_SCALE_KEY = WAGON_SCALE_KEY
+# The legacy singular `/truck-scale/reading/` endpoint remains a truck alias.
+# New callers should always choose one of the explicit plural scale routes.
+DEFAULT_SCALE_KEY = TRUCK_SCALE_KEY
 SCALE_KEYS = frozenset({WAGON_SCALE_KEY, TRUCK_SCALE_KEY})
 
 _URL_SETTING_BY_SCALE = {

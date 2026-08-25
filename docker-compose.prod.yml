@@ -55,12 +55,12 @@ x-backend-environment: &backend-environment
   CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS: ${CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS:-750}
   THROTTLE_CONVEYOR_DEVICE: ${THROTTLE_CONVEYOR_DEVICE:-180/min}
   THROTTLE_CONVEYOR_AI: ${THROTTLE_CONVEYOR_AI:-6000/min}
-  # Весы доступны серверу по Tailscale. Браузер к ним не обращается: preview
-  # и фиксацию делает Grain backend. Single `-` сохраняет пустую kill-switch.
-  WAGON_SCALE_API_URL: ${WAGON_SCALE_API_URL-http://desktop-t5p32d3:8000/api/v1/weight}
-  # Автовесы относятся только к «Оформить вывоз». Пока отдельный ПК не задан,
-  # источник отключён и никогда не подменяется вагонными весами.
-  TRUCK_SCALE_API_URL: ${TRUCK_SCALE_API_URL-}
+  # Весов вагонов пока нет. Явно пустое значение не позволяет случайно взять
+  # вес машины для операции прихода.
+  WAGON_SCALE_API_URL: ${WAGON_SCALE_API_URL-}
+  # Автовесы относятся только к «Оформить вывоз» и доступны backend через
+  # Tailscale. Single `-` сохраняет явно пустую аварийную kill-switch.
+  TRUCK_SCALE_API_URL: ${TRUCK_SCALE_API_URL-http://desktop-t5p32d3:8000/api/v1/weight}
   TRUCK_SCALE_TIMEOUT_SECONDS: ${TRUCK_SCALE_TIMEOUT_SECONDS:-3}
   TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS: ${TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS:-1}
   TRUCK_SCALE_MAX_AGE_SECONDS: ${TRUCK_SCALE_MAX_AGE_SECONDS:-5}
