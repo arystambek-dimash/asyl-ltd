@@ -73,7 +73,7 @@ function staffSections(): NavSection[] {
         // Силосы имеют отдельное право независимо от зернового процесса.
         { href: "/warehouse/silos", label: "Силосы", icon: Warehouse, perm: "silos.view" },
         // Проходная вагонов: заявки, приход, взвешивание и выход.
-        { href: "/grain", label: "Приход и проход", icon: Wheat, perm: "grain.view" },
+        { href: "/grain", label: "Приход и вывоз", icon: Wheat, perm: "grain.view" },
         { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
         { href: "/stores", label: "Магазины", icon: Store, perm: "clients.view" },
         { href: "/catalog/products", label: "Товары", icon: Package, perm: "catalog.view" },

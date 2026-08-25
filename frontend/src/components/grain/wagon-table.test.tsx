@@ -94,6 +94,23 @@ describe("WagonTable", () => {
     expect(screen.queryByText(/заехал пустым, уехал гружёным/)).not.toBeInTheDocument();
   });
 
+  it("shows only the selected direction and uses its empty-state route", () => {
+    const wagons = [
+      wagon({ id: 1, number: "Поезд-1" }),
+      wagon({ id: 2, number: "123 ABC", direction: "passage", cargo_name: "Отруби" }),
+    ];
+    const { rerender } = render(<WagonTable wagons={wagons} me={me} emptyText="Нет вывоза" direction="passage" />);
+
+    expect(screen.getByText("123 ABC")).toBeInTheDocument();
+    expect(screen.queryByText("Поезд-1")).not.toBeInTheDocument();
+    expect(screen.queryByText("Приход")).not.toBeInTheDocument();
+
+    rerender(<WagonTable wagons={wagons.slice(0, 1)} me={me} emptyText="Нет вывоза" direction="passage" />);
+    expect(screen.getByText("Нет вывоза")).toBeInTheDocument();
+    expect(screen.getByText("Погрузка")).toBeInTheDocument();
+    expect(screen.queryByText("Разгрузка")).not.toBeInTheDocument();
+  });
+
   it("shows both weights and the net result for a finished passage", () => {
     renderTable([
       wagon({

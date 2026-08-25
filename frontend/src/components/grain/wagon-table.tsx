@@ -162,26 +162,30 @@ export function WagonTable({
   wagons,
   me,
   emptyText,
+  direction,
   onDeleted,
 }: {
   wagons: GrainWagon[];
   me: Me | null;
   emptyText: string;
+  /** Ограничивает таблицу одним направлением, даже пока меняется API-запрос. */
+  direction?: GrainWagon["direction"];
   /** Задан — появляется удаление (дополнительно требуется grain.delete). */
   onDeleted?: () => void;
 }) {
   const [pendingDelete, setPendingDelete] = useState<GrainWagon | null>(null);
   const canDelete = Boolean(onDeleted) && can(me, "grain.delete");
+  const visibleWagons = direction ? wagons.filter((wagon) => (wagon.direction ?? "intake") === direction) : wagons;
 
-  if (!wagons.length) {
-    return <FlowEmptyState text={emptyText} />;
+  if (!visibleWagons.length) {
+    return <FlowEmptyState text={emptyText} direction={direction} />;
   }
 
   const groups = (["intake", "passage"] as const)
     .map((direction) => ({
       direction,
       ...GROUP_META[direction],
-      rows: wagons.filter((wagon) => (wagon.direction ?? "intake") === direction),
+      rows: visibleWagons.filter((wagon) => (wagon.direction ?? "intake") === direction),
     }))
     .filter((group) => group.rows.length > 0);
 
@@ -314,13 +318,15 @@ export function WagonTable({
 }
 
 /** Пустое состояние с объяснением маршрута — вместо постоянного баннера. */
-export function FlowEmptyState({ text }: { text: string }) {
+export function FlowEmptyState({ text, direction = "intake" }: { text: string; direction?: GrainWagon["direction"] }) {
+  const steps = direction === "passage" ? PASSAGE_STEPS : WAGON_STEPS;
+
   return (
     <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-6 py-12 text-center">
       <Clock3 className="mx-auto size-8 text-slate-300" />
       <p className="mt-3 text-sm font-semibold text-slate-700">{text}</p>
       <div className="mx-auto mt-6 flex max-w-md items-center justify-between gap-1">
-        {WAGON_STEPS.map((step, index) => {
+        {steps.map((step, index) => {
           const Icon = step.icon;
           return (
             <div key={step.label} className="flex flex-1 items-center">

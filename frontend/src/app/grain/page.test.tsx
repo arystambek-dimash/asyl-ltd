@@ -8,6 +8,7 @@ import GrainPage from "./page";
 const postMock = vi.hoisted(() => vi.fn());
 const pushMock = vi.hoisted(() => vi.fn());
 const reloadMock = vi.hoisted(() => vi.fn());
+const pagedApiMock = vi.hoisted(() => vi.fn());
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: pushMock }),
@@ -23,16 +24,7 @@ vi.mock("@/lib/use-api", () => ({
   useApi: () => ({ data: [], loading: false, error: "", reload: reloadMock }),
 }));
 vi.mock("@/lib/use-paged-api", () => ({
-  usePagedApi: () => ({
-    items: [],
-    count: 0,
-    hasMore: false,
-    loading: false,
-    loadingMore: false,
-    error: "",
-    reload: reloadMock,
-    loadMore: vi.fn(),
-  }),
+  usePagedApi: (url: string | null, pageSize: number) => pagedApiMock(url, pageSize),
 }));
 vi.mock("@/store/auth", () => ({
   useAuth: () => ({
@@ -75,6 +67,41 @@ describe("Grain passage creation", () => {
     postMock.mockResolvedValue({ data: { id: 91, number: "123 ABC" } });
     pushMock.mockReset();
     reloadMock.mockReset();
+    pagedApiMock.mockReset();
+    pagedApiMock.mockReturnValue({
+      items: [],
+      count: 0,
+      hasMore: false,
+      loading: false,
+      loadingMore: false,
+      error: "",
+      reload: reloadMock,
+      loadMore: vi.fn(),
+    });
+  });
+
+  it("loads separate intake and export tables with contextual tabs", async () => {
+    const user = userEvent.setup();
+    render(<GrainPage />);
+
+    expect(pagedApiMock).toHaveBeenCalledWith("/grain/wagons/?scope=on_site&direction=intake", 50);
+    expect(screen.getByRole("tablist", { name: "Направление рейса" })).toBeInTheDocument();
+    expect(screen.getByRole("tablist", { name: "Статус рейсов" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Ожидаются" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Камера проходной" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Ожидаются" }));
+    expect(screen.getByRole("tab", { name: "Ожидаются" })).toHaveAttribute("aria-selected", "true");
+
+    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+
+    await waitFor(() =>
+      expect(pagedApiMock).toHaveBeenCalledWith("/grain/wagons/?scope=on_site&direction=passage", 50),
+    );
+    expect(screen.queryByRole("tab", { name: "Ожидаются" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Камера проходной" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "На территории" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Завершённые" })).toBeInTheDocument();
   });
 
   it("opens the newly created passage card for immediate weighing", async () => {

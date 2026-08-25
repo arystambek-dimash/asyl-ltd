@@ -23,16 +23,19 @@ function renderToolbar(overrides: Partial<React.ComponentProps<typeof GrainToolb
 }
 
 describe("GrainToolbar", () => {
-  it("collects all allowed grain actions in one accessible dropdown", async () => {
+  it("keeps export visible and groups only intake actions in the dropdown", async () => {
     const user = userEvent.setup();
-    renderToolbar();
+    const { props } = renderToolbar();
 
     expect(screen.getByRole("group", { name: "Текущий вес" })).toBeInTheDocument();
     expect(screen.getByLabelText("Весы Вагоны")).toHaveAttribute("data-scale-key", "wagon");
     expect(screen.getByLabelText("Весы Вывоз")).toHaveAttribute("data-scale-key", "truck");
-    await user.click(screen.getByRole("button", { name: "Операции с зерном" }));
+    await user.click(screen.getByRole("button", { name: "Оформить вывоз" }));
+    expect(props.onPassage).toHaveBeenCalledOnce();
 
-    expect(screen.getByRole("menuitem", { name: "Оформить вывоз" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Операции прихода" }));
+
+    expect(screen.queryByRole("menuitem", { name: "Оформить вывоз" })).not.toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Принять поезд" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Новый приход" })).toBeInTheDocument();
   });
@@ -41,8 +44,8 @@ describe("GrainToolbar", () => {
     const user = userEvent.setup();
     const { props } = renderToolbar({ canArrive: false, canWeigh: false });
 
-    await user.click(screen.getByRole("button", { name: "Операции с зерном" }));
-    expect(screen.queryByRole("menuitem", { name: "Оформить вывоз" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Оформить вывоз" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Операции прихода" }));
     expect(screen.queryByRole("menuitem", { name: "Принять поезд" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("menuitem", { name: "Новый приход" }));
@@ -56,7 +59,8 @@ describe("GrainToolbar", () => {
 
     expect(screen.getByLabelText("Весы Вагоны")).toBeInTheDocument();
     expect(screen.getByLabelText("Весы Вывоз")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Операции с зерном" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Оформить вывоз" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Операции прихода" })).not.toBeInTheDocument();
   });
 
   it("renders nothing when no relevant permission is present", () => {

@@ -117,7 +117,7 @@ function AssignmentModal({
     <Modal
       open
       onClose={onClose}
-      eyebrow="Приход и проход · Только суперадмин"
+      eyebrow="Приход и вывоз · Только суперадмин"
       title="Камера номера вагона"
       description="Выберите одну камеру проходной. Её основной поток будет закреплён за круглосуточным распознаванием номеров."
       className="max-w-3xl"
@@ -241,7 +241,7 @@ function CameraPanel({
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300">Камера процесса</p>
-              <h2 className="mt-2 text-2xl font-bold tracking-tight">Приход и проход</h2>
+              <h2 className="mt-2 text-2xl font-bold tracking-tight">Приход и вывоз</h2>
             </div>
             <span
               className={cn(

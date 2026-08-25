@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Camera, Check, Plus, ScanLine, TrainFront } from "lucide-react";
+import { ArrowRight, Camera, Check, Plus, ScanLine, TrainFront, Truck } from "lucide-react";
 import { GrainToolbar } from "@/components/grain/grain-toolbar";
 import { AppShell } from "@/components/layout/app-shell";
 import { WagonNumberCameraWorkspace } from "@/components/grain/wagon-number-camera";
@@ -26,6 +26,24 @@ import { usePagedApi } from "@/lib/use-paged-api";
 import { useAuth } from "@/store/auth";
 
 type GrainTab = "expected" | "on_site" | "finished" | "camera";
+type GrainDirection = GrainWagon["direction"];
+
+const DIRECTION_TABS = [
+  { key: "intake", label: "Приход", icon: TrainFront },
+  { key: "passage", label: "Вывоз", icon: Truck },
+];
+
+const INTAKE_TABS = [
+  { key: "expected", label: "Ожидаются" },
+  { key: "on_site", label: "На территории" },
+  { key: "finished", label: "Завершённые" },
+  { key: "camera", label: "Камера проходной", icon: ScanLine },
+];
+
+const PASSAGE_TABS = [
+  { key: "on_site", label: "На территории" },
+  { key: "finished", label: "Завершённые" },
+];
 
 function GrainTypeCreator({ onCreated, onCancel }: { onCreated: (type: GrainType) => void; onCancel: () => void }) {
   const [name, setName] = useState("");
@@ -527,6 +545,7 @@ function GrainPageInner() {
   const canSupply = can(me, "grain.supply");
   const canArrive = can(me, "grain.arrive");
   const canWeigh = can(me, "grain.weigh");
+  const [direction, setDirection] = useState<GrainDirection>("intake");
   const [tab, setTab] = useState<GrainTab>("on_site");
   const [supplyOpen, setSupplyOpen] = useState(false);
   const [arriveOpen, setArriveOpen] = useState(false);
@@ -535,11 +554,11 @@ function GrainPageInner() {
   const [notice, setNotice] = useState("");
 
   const supplies = usePagedApi<GrainSupply>(
-    tab === "expected" ? "/grain/supplies/?status=expected&awaiting_arrival=1" : null,
+    direction === "intake" && tab === "expected" ? "/grain/supplies/?status=expected&awaiting_arrival=1" : null,
     50,
   );
   const wagons = usePagedApi<GrainWagon>(
-    tab === "on_site" || tab === "finished" ? `/grain/wagons/?scope=${tab}` : null,
+    tab === "on_site" || tab === "finished" ? `/grain/wagons/?scope=${tab}&direction=${direction}` : null,
     50,
   );
   const arrivalSupplies = usePagedApi<GrainSupply>(
@@ -553,39 +572,70 @@ function GrainPageInner() {
     void arrivalSupplies.reload();
   }
 
+  function selectDirection(next: GrainDirection) {
+    if (next !== direction) setNotice("");
+    setDirection(next);
+    if (next === "passage" && (tab === "expected" || tab === "camera")) setTab("on_site");
+  }
+
   function openArrival(supply?: GrainSupply) {
+    selectDirection("intake");
     setArrivalSupply(supply?.id ?? null);
     setArriveOpen(true);
   }
 
+  function openPassage() {
+    selectDirection("passage");
+    setPassageOpen(true);
+  }
+
+  function changeDirection(key: string) {
+    if (key === "intake" || key === "passage") selectDirection(key);
+  }
+
   return (
     <AppShell
-      title="Приход и проход"
+      title="Приход и вывоз"
       section="Работа"
-      description="Приход — привозят зерно в силос. Проход — забирают отруби и увозят. Оба рейса взвешиваются на въезде и на выезде."
+      description={
+        direction === "intake"
+          ? "Приход: поезд привозит зерно, взвешивается на въезде и после разгрузки на выезде."
+          : "Вывоз: машина заезжает пустой, забирает груз и повторно взвешивается перед выездом."
+      }
       actions={
-        tab !== "camera" ? (
-          <GrainToolbar
-            canArrive={canArrive}
-            canSupply={canSupply}
-            canWeigh={canWeigh}
-            onPassage={() => setPassageOpen(true)}
-            onArrival={() => openArrival()}
-            onSupply={() => setSupplyOpen(true)}
-          />
-        ) : undefined
+        <GrainToolbar
+          canArrive={canArrive}
+          canSupply={canSupply}
+          canWeigh={canWeigh}
+          onPassage={openPassage}
+          onArrival={() => openArrival()}
+          onSupply={() => {
+            selectDirection("intake");
+            setSupplyOpen(true);
+          }}
+        />
       }
     >
       <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-[var(--card)] p-2">
+          <Tabs
+            tabs={DIRECTION_TABS}
+            active={direction}
+            onChange={changeDirection}
+            variant="segment"
+            label="Направление рейса"
+            className="w-full sm:w-auto [&>button]:flex-1 sm:[&>button]:min-w-36"
+          />
+          <p className="hidden pr-2 text-xs text-[var(--muted-foreground)] lg:block">
+            {direction === "intake" ? "Таблица поездов на приём зерна" : "Таблица машин на вывоз груза"}
+          </p>
+        </div>
+
         <Tabs
-          tabs={[
-            { key: "expected", label: "Ожидаются" },
-            { key: "on_site", label: "На территории" },
-            { key: "finished", label: "Завершённые" },
-            { key: "camera", label: "Камера проходной", icon: ScanLine },
-          ]}
+          tabs={direction === "intake" ? INTAKE_TABS : PASSAGE_TABS}
           active={tab}
           onChange={(key) => setTab(key as GrainTab)}
+          label="Статус рейсов"
         />
 
         {notice && (
@@ -614,7 +664,16 @@ function GrainPageInner() {
             <WagonTable
               wagons={wagons.items}
               me={me}
-              emptyText={tab === "on_site" ? "На территории никого нет" : "Завершённых рейсов пока нет"}
+              direction={direction}
+              emptyText={
+                direction === "intake"
+                  ? tab === "on_site"
+                    ? "На территории нет поездов на приём"
+                    : "Завершённых приходов пока нет"
+                  : tab === "on_site"
+                    ? "На территории нет машин на вывоз"
+                    : "Завершённых вывозов пока нет"
+              }
               onDeleted={() => {
                 setNotice(tab === "finished" ? "Рейс удалён, остаток силоса пересчитан." : "Активный рейс удалён.");
                 refreshAll();
@@ -644,6 +703,7 @@ function GrainPageInner() {
             onCancel={() => setSupplyOpen(false)}
             onDone={() => {
               setSupplyOpen(false);
+              setDirection("intake");
               setTab("expected");
               setNotice("Приход создан. Ожидаем номер от камеры проходной.");
               refreshAll();
@@ -667,6 +727,7 @@ function GrainPageInner() {
             onCancel={() => setArriveOpen(false)}
             onDone={(wagon) => {
               setArriveOpen(false);
+              setDirection("intake");
               setNotice(`Поезд ${wagon.number} направлен на входные весы.`);
               setTab("on_site");
               refreshAll();
@@ -688,6 +749,7 @@ function GrainPageInner() {
             onCancel={() => setPassageOpen(false)}
             onDone={(wagon) => {
               setPassageOpen(false);
+              setDirection("passage");
               setNotice(`Вывоз ${wagon.number || `#${wagon.id}`} оформлен — взвесьте пустую машину на въезде.`);
               setTab("on_site");
               refreshAll();
@@ -702,7 +764,7 @@ function GrainPageInner() {
 
 export default function GrainPage() {
   return (
-    <RequirePerm perm="grain.view" title="Приход и проход">
+    <RequirePerm perm="grain.view" title="Приход и вывоз">
       <GrainPageInner />
     </RequirePerm>
   );

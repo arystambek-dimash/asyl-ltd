@@ -405,7 +405,7 @@ function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   if (!wagon) {
     return (
-      <AppShell title="Приход и проход" section="Работа">
+      <AppShell title="Приход и вывоз" section="Работа">
         <DataGate loading={loading} error={error} onRetry={reload} />
       </AppShell>
     );
@@ -420,7 +420,7 @@ function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   return (
     <AppShell
-      title="Приход и проход"
+      title="Приход и вывоз"
       section="Работа"
       actions={
         can(me, "grain.weigh") ? (
@@ -593,7 +593,7 @@ function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
 
 export default function GrainWagonPage(props: { params: Promise<{ id: string }> }) {
   return (
-    <RequirePerm perm="grain.view" title="Приход и проход">
+    <RequirePerm perm="grain.view" title="Приход и вывоз">
       <WagonPageInner {...props} />
     </RequirePerm>
   );

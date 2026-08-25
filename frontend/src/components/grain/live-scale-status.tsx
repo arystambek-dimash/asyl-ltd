@@ -81,7 +81,7 @@ export function LiveScaleStatus({
       role="group"
       aria-label={accessibleLabel}
       title={`${label}: ${display.label}`}
-      className="flex h-9 min-w-[140px] shrink-0 items-center gap-2 rounded-md border border-[#26382a] bg-[#101511] px-2.5 shadow-inner xl:min-w-[164px]"
+      className="flex h-9 min-w-[140px] shrink-0 items-center gap-2 rounded-md border border-[#26382a] bg-[#101511] px-2.5 shadow-inner 2xl:min-w-[164px]"
     >
       <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         Весы «{label}»: {display.value}, {display.label}
@@ -110,7 +110,7 @@ export function LiveScaleStatus({
         >
           {display.value}
         </div>
-        <div className="mt-1 max-w-[82px] truncate text-[9px] font-medium uppercase tracking-wide text-slate-400 xl:max-w-[110px]">
+        <div className="mt-1 max-w-[82px] truncate text-[9px] font-medium uppercase tracking-wide text-slate-400 2xl:max-w-[110px]">
           {label} · {display.label}
         </div>
       </div>

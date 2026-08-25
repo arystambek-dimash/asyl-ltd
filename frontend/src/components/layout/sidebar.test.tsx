@@ -83,7 +83,7 @@ describe("подсветка активного пункта", () => {
     const silos = screen.getByRole("link", { name: "Силосы" });
     expect(silos).toHaveAttribute("href", "/warehouse/silos");
     expect(silos).toHaveClass(activeClass);
-    expect(screen.getByRole("link", { name: "Приход и проход" })).toHaveAttribute("href", "/grain");
+    expect(screen.getByRole("link", { name: "Приход и вывоз" })).toHaveAttribute("href", "/grain");
   });
 
   it("прячет вкладки склада и силосов без соответствующих прав", () => {
@@ -91,7 +91,7 @@ describe("подсветка активного пункта", () => {
 
     expect(screen.queryByRole("link", { name: "Склад" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Силосы" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Приход и проход" })).toHaveAttribute("href", "/grain");
+    expect(screen.getByRole("link", { name: "Приход и вывоз" })).toHaveAttribute("href", "/grain");
   });
 
   it("показывает кассу сотруднику, который может вносить оплаты", () => {

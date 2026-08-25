@@ -33,12 +33,14 @@ export function Tabs({
   onChange,
   variant = "underline",
   className,
+  label = "Разделы",
 }: {
   tabs: TabDef[];
   active: string;
   onChange: (key: string) => void;
   variant?: "underline" | "segment";
   className?: string;
+  label?: string;
 }) {
   function moveFocus(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     let nextIndex: number | null = null;
@@ -60,7 +62,7 @@ export function Tabs({
   return (
     <div
       role="tablist"
-      aria-label="Разделы"
+      aria-label={label}
       className={cn(
         segment
           ? "inline-flex rounded-md border border-[var(--border)] bg-[var(--muted)] p-0.5"

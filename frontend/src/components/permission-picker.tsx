@@ -8,7 +8,7 @@ const PERM_SECTION_LABELS: Record<string, string> = {
   warehouse: "Склад",
   silos: "Силосы",
   tasks: "Задачи",
-  grain: "Приход и проход",
+  grain: "Приход и вывоз",
   orders: "Заказы",
   payments: "Оплаты",
   shipping: "Пост отгрузки",

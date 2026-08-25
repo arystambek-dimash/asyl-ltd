@@ -3,6 +3,7 @@
 import { Plus, TrainFront, Truck } from "lucide-react";
 import { LiveScaleStatus } from "@/components/grain/live-scale-status";
 import { ActionMenu, type ActionMenuItem } from "@/components/ui/action-menu";
+import { Button } from "@/components/ui/button";
 
 export function GrainToolbar({
   canArrive,
@@ -21,16 +22,13 @@ export function GrainToolbar({
 }) {
   const items: ActionMenuItem[] = [];
   if (canArrive) {
-    items.push(
-      { key: "passage", label: "Оформить вывоз", icon: Truck, onSelect: onPassage },
-      { key: "arrival", label: "Принять поезд", icon: TrainFront, onSelect: onArrival },
-    );
+    items.push({ key: "arrival", label: "Принять поезд", icon: TrainFront, onSelect: onArrival });
   }
   if (canSupply) {
     items.push({ key: "supply", label: "Новый приход", icon: Plus, onSelect: onSupply });
   }
 
-  if (!canWeigh && items.length === 0) return null;
+  if (!canWeigh && !canArrive && items.length === 0) return null;
 
   return (
     <div className="flex min-w-0 items-center gap-2">
@@ -40,13 +38,26 @@ export function GrainToolbar({
           <LiveScaleStatus active scaleKey="truck" label="Вывоз" />
         </div>
       )}
-      <ActionMenu
-        items={items}
-        label="Операции с зерном"
-        triggerText="Операции"
-        triggerIcon={Plus}
-        className="h-9 bg-[var(--primary)] px-2 text-sm text-[var(--primary-foreground)] hover:bg-[var(--primary)]/90 hover:text-[var(--primary-foreground)] [&>span]:hidden [&>svg:last-child]:hidden xl:px-4 xl:[&>span]:inline xl:[&>svg:last-child]:block"
-      />
+      {canArrive && (
+        <Button
+          size="sm"
+          aria-label="Оформить вывоз"
+          title="Оформить вывоз"
+          className="size-9 shrink-0 p-0 2xl:h-9 2xl:w-auto 2xl:px-3"
+          onClick={onPassage}
+        >
+          <Truck className="size-4" /> <span className="hidden 2xl:inline">Оформить вывоз</span>
+        </Button>
+      )}
+      {items.length > 0 && (
+        <ActionMenu
+          items={items}
+          label="Операции прихода"
+          triggerText="Приход"
+          triggerIcon={Plus}
+          className="h-9 shrink-0 border bg-[var(--background)] px-2 text-sm text-[var(--foreground)] shadow-xs hover:bg-[var(--accent)] [&>span]:hidden [&>svg:last-child]:hidden 2xl:px-3 2xl:[&>span]:inline 2xl:[&>svg:last-child]:block"
+        />
+      )}
     </div>
   );
 }
