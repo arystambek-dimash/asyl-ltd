@@ -18,10 +18,17 @@ pytestmark = pytest.mark.django_db
 
 
 def live(total, *, mode="always_on", running=True, camera="cam3", per_color=None):
-    return {"processors": [{
-        "cam": camera, "total": total, "mode": mode, "running": running,
-        "per_color": per_color or {},
-    }]}
+    return {
+        "processors": [
+            {
+                "cam": camera,
+                "total": total,
+                "mode": mode,
+                "running": running,
+                "per_color": per_color or {},
+            }
+        ]
+    }
 
 
 @pytest.mark.parametrize("value", [None, {}, [], True, float("inf"), float("nan")])
@@ -58,13 +65,15 @@ def test_superuser_can_subtract_with_reason_and_audit(auth_client, admin_user, b
 
     forbidden = auth_client(boss).post(
         "/api/cameras/always-on-analytics/cam3/subtract/",
-        {"amount": 2, "color": "red", "reason": "Ложное срабатывание"}, format="json",
+        {"amount": 2, "color": "red", "reason": "Ложное срабатывание"},
+        format="json",
     )
     assert forbidden.status_code == 403
 
     response = auth_client(admin_user).post(
         "/api/cameras/always-on-analytics/cam3/subtract/",
-        {"amount": 2, "color": "red", "reason": "Ложное срабатывание"}, format="json",
+        {"amount": 2, "color": "red", "reason": "Ложное срабатывание"},
+        format="json",
     )
     assert response.status_code == 200
     assert response.data["model_total"] == 12
@@ -79,11 +88,16 @@ def test_superuser_can_subtract_with_reason_and_audit(auth_client, admin_user, b
 
 
 def test_loader_reads_production_but_only_manager_changes_route(
-    auth_client, admin_user, boss,
+    auth_client,
+    admin_user,
+    boss,
 ):
     MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
     red = Product.objects.create(
-        name="Робот Кука", color="Red", weight_kg="50", price="100",
+        name="Робот Кука",
+        color="Red",
+        weight_kg="50",
+        price="100",
     )
 
     readable = auth_client(boss).get(
@@ -111,11 +125,17 @@ def test_loader_reads_production_but_only_manager_changes_route(
     assert next(
         item for item in response.data["mappings"] if item["color"] == "red"
     ) == {
-        "color": "red", "product": red.pk, "product_label": str(red),
+        "color": "red",
+        "product": red.pk,
+        "product_label": str(red),
     }
-    assert AlwaysOnColorProductMapping.objects.get(
-        camera="cam3", color="red",
-    ).product == red
+    assert (
+        AlwaysOnColorProductMapping.objects.get(
+            camera="cam3",
+            color="red",
+        ).product
+        == red
+    )
 
     mismatch = auth_client(admin_user).put(
         "/api/cameras/always-on-production/",
@@ -126,7 +146,8 @@ def test_loader_reads_production_but_only_manager_changes_route(
 
 
 def test_today_endpoint_returns_real_total_and_rejects_excess_subtraction(
-        auth_client, admin_user, monkeypatch):
+    auth_client, admin_user
+):
     MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3", "cam5"])
     AlwaysOnDailyAnalytics.objects.create(
         camera="cam3",
@@ -134,16 +155,20 @@ def test_today_endpoint_returns_real_total_and_rejects_excess_subtraction(
         model_total=10,
         model_per_color={"red": 8, "blue": 2},
     )
-    monkeypatch.setattr(ai, "AI_KEY", "key")
-    with patch.object(ai, "always_on_status", return_value={
-        "processors": [
-            {"cam": "cam3", "total": 8, "mode": "always_on", "running": True,
-             "per_color": {"Red_50": 5, "Blue_50": 3}},
-            {"cam": "cam5", "total": 5, "mode": "always_on", "running": True,
-             "per_color": {"Blue_25": 5}},
-        ],
-    }):
-        response = auth_client(admin_user).get("/api/cameras/always-on-analytics/")
+    AlwaysOnDailyAnalytics.objects.create(
+        camera="cam3",
+        day=timezone.localdate(),
+        model_total=8,
+        model_per_color={"red": 5, "blue": 3},
+    )
+    AlwaysOnDailyAnalytics.objects.create(
+        camera="cam5",
+        day=timezone.localdate(),
+        model_total=5,
+        model_per_color={"blue": 5},
+    )
+
+    response = auth_client(admin_user).get("/api/cameras/always-on-analytics/")
 
     assert response.status_code == 200
     assert response.data["total"] == 13
@@ -159,7 +184,8 @@ def test_today_endpoint_returns_real_total_and_rejects_excess_subtraction(
 
     too_much = auth_client(admin_user).post(
         "/api/cameras/always-on-analytics/cam3/subtract/",
-        {"amount": 9, "color": "red", "reason": "Проверка ограничения"}, format="json",
+        {"amount": 9, "color": "red", "reason": "Проверка ограничения"},
+        format="json",
     )
     assert too_much.status_code == 400
 
@@ -175,13 +201,23 @@ def test_reconcile_never_switches_off_on_an_unreadable_camera_list(malformed):
     from apps.cameras import continuous
 
     MonoblockCameraSettings.objects.update_or_create(
-        singleton=True, defaults={"always_on_camera_sources": ["cam3"]},
+        singleton=True,
+        defaults={"always_on_camera_sources": ["cam3"]},
     )
 
-    with patch.object(
-        ai, "always_on_status",
-        return_value={"cameras": malformed, "source": "sub", "processors": []},
-    ), patch.object(ai, "configure_always_on") as configure:
+    with (
+        patch.object(
+            ai,
+            "always_on_status",
+            return_value={"cameras": malformed, "source": "sub", "processors": []},
+        ),
+        patch.object(ai, "configure_always_on") as configure,
+        patch.object(
+            continuous.event_sync,
+            "sync_camera",
+            return_value=continuous.event_sync.SyncResult(False, 0, 0, 0, None, False),
+        ),
+    ):
         continuous.reconcile()
 
     configure.assert_not_called()
@@ -193,15 +229,31 @@ def test_reconcile_still_pushes_the_desired_set_when_the_pc_disagrees():
     from apps.cameras import continuous
 
     MonoblockCameraSettings.objects.update_or_create(
-        singleton=True, defaults={"always_on_camera_sources": ["cam3"]},
+        singleton=True,
+        defaults={"always_on_camera_sources": ["cam3"]},
     )
 
-    with patch.object(
-        ai, "always_on_status",
-        return_value={"cameras": [], "source": "sub", "processors": []},
-    ), patch.object(ai, "configure_always_on", return_value={
-        "cameras": ["cam3"], "source": "sub", "processors": [],
-    }) as configure:
+    with (
+        patch.object(
+            ai,
+            "always_on_status",
+            return_value={"cameras": [], "source": "sub", "processors": []},
+        ),
+        patch.object(
+            ai,
+            "configure_always_on",
+            return_value={
+                "cameras": ["cam3"],
+                "source": "sub",
+                "processors": [],
+            },
+        ) as configure,
+        patch.object(
+            continuous.event_sync,
+            "sync_camera",
+            return_value=continuous.event_sync.SyncResult(False, 0, 0, 0, None, False),
+        ),
+    ):
         continuous.reconcile()
 
     configure.assert_called_once_with(["cam3"], "sub")

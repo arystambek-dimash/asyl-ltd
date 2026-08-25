@@ -25,10 +25,16 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from . import ai, alerts, services
-from .models import CameraHealthState, CameraIncident
+from .models import (
+    AlwaysOnCounterCursor,
+    CameraHealthState,
+    CameraIncident,
+    MonoblockCameraSettings,
+)
 
 log = logging.getLogger(__name__)
 
@@ -52,9 +58,7 @@ EXPECTED_COUNT = max(
 )
 MINIMUM_ONLINE_COUNT = max(
     SITE_MINIMUM_ONLINE_FLOOR,
-    _positive_int(
-        "CAMERA_MINIMUM_ONLINE_COUNT", max(1, (EXPECTED_COUNT + 1) // 2)
-    ),
+    _positive_int("CAMERA_MINIMUM_ONLINE_COUNT", max(1, (EXPECTED_COUNT + 1) // 2)),
 )
 FAILURE_THRESHOLD = _positive_int("CAMERA_FAILURE_THRESHOLD", 3)
 DEGRADED_THRESHOLD = _positive_int("CAMERA_DEGRADED_THRESHOLD", 3)
@@ -178,7 +182,9 @@ def _go2rtc_frame(stream: str) -> tuple[bool, str]:
         f"{services.GO2RTC_API}/api/frame.jpeg?{query}", method="GET"
     )
     try:
-        with urllib.request.urlopen(request, timeout=GO2RTC_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(
+            request, timeout=GO2RTC_TIMEOUT_SECONDS
+        ) as response:
             prefix = response.read(3)
             content_type = response.headers.get_content_type()
         if response.status == 200 and prefix == b"\xff\xd8\xff":
@@ -221,12 +227,19 @@ def probe_once(now: datetime | None = None) -> Observation:
             inventory = inventory_future.result()
         except Exception as exc:
             log.exception("Unexpected camera inventory probe error")
-            inventory = {"configured": True, "reachable": False, "error": type(exc).__name__}
+            inventory = {
+                "configured": True,
+                "reachable": False,
+                "error": type(exc).__name__,
+            }
         try:
             go2rtc, go2rtc_names = go2rtc_future.result()
         except Exception as exc:
             log.exception("Unexpected go2rtc catalog probe error")
-            go2rtc, go2rtc_names = {"reachable": False, "error": type(exc).__name__}, set()
+            go2rtc, go2rtc_names = (
+                {"reachable": False, "error": type(exc).__name__},
+                set(),
+            )
 
     rtsp_online = [stream for stream in streams if statuses.get(stream) == "online"]
     minimum_online = min(MINIMUM_ONLINE_COUNT, len(streams))
@@ -307,7 +320,9 @@ def probe_once(now: datetime | None = None) -> Observation:
             )
 
     frame_failures = [
-        stream for stream in frame_candidates if frame_health.get(stream, {}).get("ok") is False
+        stream
+        for stream in frame_candidates
+        if frame_health.get(stream, {}).get("ok") is False
     ]
     usable = (
         [stream for stream in frame_candidates if stream not in frame_failures]
@@ -458,7 +473,9 @@ def record_observation(
     """Debounce and persist an observation; return transition incident id."""
 
     now = now or timezone.now()
-    state, _ = CameraHealthState.objects.select_for_update().get_or_create(singleton=True)
+    state, _ = CameraHealthState.objects.select_for_update().get_or_create(
+        singleton=True
+    )
     previous = state.status
     transition_incident_id: int | None = None
 
@@ -476,13 +493,14 @@ def record_observation(
         state.failure_streak += 1
         if state.first_failure_at is None:
             state.first_failure_at = now
-        if previous != CameraHealthState.OUTAGE and state.failure_streak >= FAILURE_THRESHOLD:
+        if (
+            previous != CameraHealthState.OUTAGE
+            and state.failure_streak >= FAILURE_THRESHOLD
+        ):
             state.status = CameraHealthState.OUTAGE
             state.outage_started_at = state.first_failure_at
             state.last_changed_at = now
-            incident, transitioned = _record_outage_incident(
-                state, observation, now
-            )
+            incident, transitioned = _record_outage_incident(state, observation, now)
             if transitioned:
                 transition_incident_id = incident.pk
         elif previous == CameraHealthState.OUTAGE:
@@ -555,7 +573,14 @@ def _alert_payload(incident: CameraIncident, event: str) -> dict:
     online = details.get("online_count", 0)
     expected = details.get("expected_count", incident.expected_count)
     if event == "camera_recovery":
-        duration = max(0, int(((incident.resolved_at or timezone.now()) - incident.started_at).total_seconds()))
+        duration = max(
+            0,
+            int(
+                (
+                    (incident.resolved_at or timezone.now()) - incident.started_at
+                ).total_seconds()
+            ),
+        )
         message = (
             f"КАМЕРЫ ВОССТАНОВЛЕНЫ: доступно {online}/{expected}. "
             f"Длительность инцидента: {duration} сек."
@@ -578,7 +603,9 @@ def _alert_payload(incident: CameraIncident, event: str) -> dict:
         "severity": severity,
         "incident_id": incident.pk,
         "started_at": incident.started_at.isoformat(),
-        "resolved_at": incident.resolved_at.isoformat() if incident.resolved_at else None,
+        "resolved_at": incident.resolved_at.isoformat()
+        if incident.resolved_at
+        else None,
         "online_count": online,
         "expected_count": expected,
         "components": details.get("components", {}),
@@ -650,19 +677,13 @@ def deliver_pending_alerts(now: datetime | None = None) -> None:
         # Keep externally visible event order intact. A recovery is sent only
         # after every transition that actually occurred has been delivered.
         transitions_delivered = (
-            (
-                not incident.degraded_details
-                or incident.degraded_alert_sent_at is not None
-                or incident.degraded_alert_superseded_at is not None
-            )
-            and (not incident.outage_details or incident.outage_alert_sent_at is not None)
-        )
-        if (
-            transitions_delivered
-            and (
-                incident.recovery_alert_attempted_at is None
-                or incident.recovery_alert_attempted_at <= retry_before
-            )
+            not incident.degraded_details
+            or incident.degraded_alert_sent_at is not None
+            or incident.degraded_alert_superseded_at is not None
+        ) and (not incident.outage_details or incident.outage_alert_sent_at is not None)
+        if transitions_delivered and (
+            incident.recovery_alert_attempted_at is None
+            or incident.recovery_alert_attempted_at <= retry_before
         ):
             _deliver_incident(incident, event="camera_recovery", now=now)
 
@@ -681,6 +702,7 @@ def state_payload(
     now: datetime | None = None,
     max_age: int | None = None,
     required_since: datetime | None = None,
+    require_events: bool = False,
 ) -> dict:
     """Serializable state with stale-heartbeat detection for API/deploy gates."""
 
@@ -709,6 +731,83 @@ def state_payload(
         and state.status != CameraHealthState.OUTAGE
     )
     effective_status = "unavailable" if stale else state.status
+    desired_event_cameras = set(MonoblockCameraSettings.always_on_sources())
+    pending_drain_cameras = set(
+        AlwaysOnCounterCursor.objects.exclude(event_sync_supported=False)
+        .filter(
+            Q(event_drain_required_at__isnull=False)
+            | Q(event_stop_drain_requested_at__isnull=False)
+            | ~Q(event_sync_error="")
+            | Q(
+                last_event_id__isnull=False,
+                event_caught_up_at__isnull=True,
+            )
+        )
+        .values_list("camera", flat=True)
+    )
+    event_cameras = sorted(desired_event_cameras | pending_drain_cameras)
+    cursor_by_camera = {
+        row.camera: row
+        for row in AlwaysOnCounterCursor.objects.filter(
+            camera__in=event_cameras
+        )
+    }
+    event_rows = []
+    event_sync_blocking = False
+    for camera in event_cameras:
+        cursor = cursor_by_camera.get(camera)
+        if cursor is None or cursor.event_sync_supported is None:
+            sync_status = "pending"
+            detail = "event journal has not been probed"
+            event_sync_blocking = True
+        elif cursor.event_sync_supported is False:
+            if require_events and camera in desired_event_cameras:
+                sync_status = "unsupported"
+                detail = "durable /events support is required for this health gate"
+                event_sync_blocking = True
+            else:
+                sync_status = "legacy"
+                detail = "camera service returned 404 for /events"
+        elif cursor.event_sync_error or cursor.event_sync_failed_at is not None:
+            sync_status = "error"
+            detail = cursor.event_sync_error or "event journal sync failed"
+            event_sync_blocking = True
+        elif not cursor.event_boundary_validated:
+            sync_status = "pending"
+            detail = "initial event boundary has not been validated"
+            event_sync_blocking = True
+        elif cursor.event_caught_up_at is None:
+            sync_status = "catching_up"
+            detail = "event journal backlog is being imported"
+            event_sync_blocking = True
+        elif required_since and cursor.event_caught_up_at < required_since:
+            sync_status = "stale"
+            detail = "event journal has not been synchronized by this release"
+            event_sync_blocking = True
+        else:
+            caught_up_age = max(
+                0,
+                int((now - cursor.event_caught_up_at).total_seconds()),
+            )
+            if caught_up_age > max_age:
+                sync_status = "stale"
+                detail = "event journal cursor is stale"
+                event_sync_blocking = True
+            else:
+                sync_status = "synced"
+                detail = ""
+        event_rows.append(
+            {
+                "camera": camera,
+                "desired": camera in desired_event_cameras,
+                "status": sync_status,
+                "last_event_id": cursor.last_event_id if cursor else None,
+                "journal_id": cursor.event_journal_id if cursor else None,
+                "last_event_at": cursor.last_event_at if cursor else None,
+                "caught_up_at": cursor.event_caught_up_at if cursor else None,
+                "detail": detail,
+            }
+        )
     incident = CameraIncident.objects.filter(resolved_at__isnull=True).first()
     return {
         "status": effective_status,
@@ -730,6 +829,11 @@ def state_payload(
         "streams": state.streams,
         "detail": state.last_error,
         "incident_id": incident.pk if incident else None,
+        "event_sync": {
+            "blocking": event_sync_blocking,
+            "required": require_events,
+            "cameras": event_rows,
+        },
     }
 
 
@@ -738,6 +842,7 @@ def exit_code(payload: dict, *, fail_on_degraded: bool = False) -> int:
         payload.get("stale")
         or payload.get("confirming_outage")
         or payload.get("status") in ("unavailable", "initializing")
+        or (payload.get("event_sync") or {}).get("blocking")
     ):
         return 2
     if payload.get("status") == CameraHealthState.OUTAGE:

@@ -503,6 +503,11 @@ exit 0
                 if f"backend={PREVIOUS_BACKEND}" in line and " up -d " in line
             )
             self.assertIn(f"release={PREVIOUS_SHA}", rollback_start)
+            self.assertIn("--scale ai-stock-monitor=0", rollback_start)
+            self.assertIn(
+                "ai-stock-monitor is intentionally disabled after rollback",
+                result.stderr,
+            )
 
     def test_rollback_pulls_missing_previous_images_by_digest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -850,12 +855,16 @@ class ProductionManifestTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         deploy_script = REMOTE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
 
+        deploy = workflow.index("- name: Deploy over SSH")
+        camera_gate = workflow.index("./deploy/health/wait-for-camera-health.sh")
         api_gate = workflow.index("- name: Health check")
         frontend_gate = workflow.index("- name: Frontend redirect safety gate")
         rollback = workflow.index("- name: Roll back failed release")
         finalize = workflow.index(
             "- name: Finalize healthy release and clean Docker artifacts"
         )
+        self.assertLess(deploy, camera_gate)
+        self.assertLess(camera_gate, api_gate)
         self.assertLess(api_gate, frontend_gate)
         self.assertLess(frontend_gate, rollback)
         self.assertLess(rollback, finalize)
@@ -870,6 +879,10 @@ class ProductionManifestTests(unittest.TestCase):
             workflow,
         )
         self.assertNotIn("cd /home/ubuntu/asyl-ltd", workflow)
+        self.assertIn("candidate_health_epoch=$(run_ssh date +%s)", workflow)
+        self.assertIn("candidate_health_epoch=$((candidate_health_epoch + 1))", workflow)
+        self.assertIn("CAMERA_HEALTH_REQUIRE_SINCE_EPOCH", workflow)
+        self.assertIn("CAMERA_HEALTH_REQUIRE_EVENTS=1", workflow)
         self.assertEqual(workflow.count("APP_DIR='$PROD_APP_DIR'"), 4)
         self.assertIn("if: ${{ failure() }}", workflow)
         self.assertGreaterEqual(

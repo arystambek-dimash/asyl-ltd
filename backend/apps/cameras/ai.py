@@ -181,9 +181,11 @@ def validate_counting_line(payload) -> dict:
         if any(name not in line for name in names):
             raise AiError(400, "Укажите координаты x1, y1, x2, y2")
         coordinates = [line[name] for name in names]
-    elif (isinstance(line, Sequence)
-          and not isinstance(line, (str, bytes, bytearray))
-          and len(line) == 4):
+    elif (
+        isinstance(line, Sequence)
+        and not isinstance(line, (str, bytes, bytearray))
+        and len(line) == 4
+    ):
         coordinates = list(line)
     else:
         raise AiError(400, "Линия должна содержать четыре координаты")
@@ -191,10 +193,14 @@ def validate_counting_line(payload) -> dict:
     values: list[float] = []
     for coordinate in coordinates:
         if isinstance(coordinate, bool) or not isinstance(coordinate, Real):
-            raise AiError(400, "Координаты линии должны быть конечными числами от 0 до 1")
+            raise AiError(
+                400, "Координаты линии должны быть конечными числами от 0 до 1"
+            )
         value = float(coordinate)
         if not math.isfinite(value) or value < 0 or value > 1:
-            raise AiError(400, "Координаты линии должны быть конечными числами от 0 до 1")
+            raise AiError(
+                400, "Координаты линии должны быть конечными числами от 0 до 1"
+            )
         values.append(value)
     if values[:2] == values[2:]:
         raise AiError(400, "Начальная и конечная точки линии не должны совпадать")
@@ -291,8 +297,7 @@ def legacy_status(camera: str, *, timeout_seconds: float) -> dict | None:
     ):
         raise ValueError("timeout_seconds must be a positive finite number")
     configured_timeout = (
-        int(getattr(settings, "CONVEYOR_LEGACY_BRIDGE_REQUEST_TIMEOUT_MS", 350))
-        / 1000
+        int(getattr(settings, "CONVEYOR_LEGACY_BRIDGE_REQUEST_TIMEOUT_MS", 350)) / 1000
     )
     effective_timeout = min(float(timeout_seconds), configured_timeout)
     return _call(
@@ -423,9 +428,42 @@ def _normalize_always_on(payload: dict | None) -> dict:
 def always_on_status() -> dict:
     """Desired 24/7 cameras and their live inference-only processors."""
     payload = _call("GET", "/always-on")
-    return _normalize_always_on(payload) if payload is not None else {
-        "cameras": [], "source": "sub", "processors": [],
-    }
+    return (
+        _normalize_always_on(payload)
+        if payload is not None
+        else {
+            "cameras": [],
+            "source": "sub",
+            "processors": [],
+        }
+    )
+
+
+def count_events(
+    cam: str,
+    after_id: int,
+    limit: int = 500,
+) -> dict | None:
+    """Read one ordered page from the camera-PC durable count journal.
+
+    ``None`` means an explicit HTTP 404 from an older camera service.  Network
+    failures and every other error remain exceptions so callers never mistake
+    an uncertain event stream for permission to fall back to snapshots.
+    """
+
+    camera = normalize(cam)
+    if isinstance(after_id, bool) or not isinstance(after_id, int) or after_id < 0:
+        raise ValueError("after_id must be a non-negative integer")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
+        raise ValueError("limit must be between 1 and 500")
+    query = urllib.parse.urlencode(
+        {
+            "after_id": after_id,
+            "limit": limit,
+            "cam": camera,
+        }
+    )
+    return _call("GET", f"/events?{query}", none_on_404=True)
 
 
 def always_on_status_cached() -> dict:
@@ -513,14 +551,17 @@ def configure_always_on(cameras: list[str], source: str = "sub") -> dict:
     try:
         # Актуальный Windows-агент использует явное имя camera_sources.
         payload = _call(
-            "PUT", "/always-on",
+            "PUT",
+            "/always-on",
             {"camera_sources": normalized, "source": source},
         )
     except AiError as exc:
         if exc.status != 422:
             raise
         payload = _call(
-            "PUT", "/always-on", {"cameras": normalized, "source": source},
+            "PUT",
+            "/always-on",
+            {"cameras": normalized, "source": source},
         )
     status = _normalize_always_on(payload)
     cache.set(ALWAYS_ON_CACHE_KEY, status, ALWAYS_ON_TTL)

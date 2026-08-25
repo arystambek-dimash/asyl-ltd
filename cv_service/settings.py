@@ -247,6 +247,7 @@ class Settings:
     always_on_state_path: Path = Path("data/always-on.json")
     camera_roles_state_path: Path = Path("data/camera-roles.json")
     counting_lines_state_path: Path = Path("data/counting-lines.json")
+    event_db_path: Path = Path("data/count-events.sqlite3")
     wagon_frame_max_bytes: int = 12 * 1024 * 1024
     conveyor_controllers: dict[str, ConveyorControllerSettings] = field(default_factory=dict)
     conveyor_cloud_cameras: tuple[str, ...] = ()
@@ -396,6 +397,12 @@ class Settings:
                 os.getenv(
                     "AI_COUNTING_LINES_STATE_PATH",
                     str(base / "data" / "counting-lines.json"),
+                )
+            ),
+            event_db_path=Path(
+                os.getenv(
+                    "AI_EVENT_DB_PATH",
+                    str(base / "data" / "count-events.sqlite3"),
                 )
             ),
             wagon_frame_max_bytes=_positive_int(

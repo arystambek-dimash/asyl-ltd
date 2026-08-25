@@ -441,8 +441,10 @@ rollback_release() {
   export BACKEND_IMAGE_REF FRONTEND_IMAGE_REF APP_RELEASE
 
   docker compose -f "$COMPOSE_FILE" config --quiet || return 1
+  echo "WARNING: ai-stock-monitor is intentionally disabled after rollback; " \
+       "deploy an event-aware release to restore automatic stock posting." >&2
   if ! docker compose -f "$COMPOSE_FILE" up -d --remove-orphans \
-    --pull never --wait --wait-timeout 180; then
+    --scale ai-stock-monitor=0 --pull never --wait --wait-timeout 180; then
     show_container_failure
     return 1
   fi

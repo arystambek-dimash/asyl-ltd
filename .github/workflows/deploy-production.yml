@@ -245,6 +245,21 @@ jobs:
             deploy
           fi
 
+          # Compose cannot gate camera-monitor because it is a long-running
+          # Django command without a container healthcheck. This durable probe
+          # also blocks while the /events cursor is pending, stale or failed,
+          # so an incomplete backlog can never be finalized as a healthy
+          # release. Any non-zero exit reaches the existing rollback step.
+          # Take the boundary from the production host after container startup
+          # to avoid clock skew and any final heartbeat from the old monitor.
+          candidate_health_epoch=$(run_ssh date +%s)
+          candidate_health_epoch=$((candidate_health_epoch + 1))
+          run_ssh \
+            "cd '$PROD_APP_DIR' \
+             && CAMERA_HEALTH_REQUIRE_SINCE_EPOCH='$candidate_health_epoch' \
+                CAMERA_HEALTH_REQUIRE_EVENTS=1 \
+                ./deploy/health/wait-for-camera-health.sh"
+
       - name: Health check
         run: |
           set -euo pipefail

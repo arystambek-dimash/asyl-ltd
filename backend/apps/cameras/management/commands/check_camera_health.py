@@ -28,6 +28,11 @@ class Command(BaseCommand):
             action="store_true",
             help="Return exit 4 when at least one expected stream is unavailable",
         )
+        parser.add_argument(
+            "--require-events",
+            action="store_true",
+            help="Reject desired always-on cameras that return 404 for /events",
+        )
 
     def handle(self, *args, **options):
         required_since = (
@@ -36,7 +41,9 @@ class Command(BaseCommand):
             else None
         )
         payload = health.state_payload(
-            max_age=max(1, options["max_age"]), required_since=required_since
+            max_age=max(1, options["max_age"]),
+            required_since=required_since,
+            require_events=options["require_events"],
         )
         self.stdout.write(json.dumps(payload, cls=DjangoJSONEncoder, sort_keys=True))
         code = health.exit_code(

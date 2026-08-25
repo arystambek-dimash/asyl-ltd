@@ -11,6 +11,7 @@ CAMERA_HEALTH_WAIT_SECONDS="${CAMERA_HEALTH_WAIT_SECONDS:-210}"
 CAMERA_HEALTH_POLL_SECONDS="${CAMERA_HEALTH_POLL_SECONDS:-10}"
 CAMERA_HEALTH_MAX_AGE="${CAMERA_HEALTH_MAX_AGE:-180}"
 CAMERA_HEALTH_REQUIRE_SINCE_EPOCH="${CAMERA_HEALTH_REQUIRE_SINCE_EPOCH:-}"
+CAMERA_HEALTH_REQUIRE_EVENTS="${CAMERA_HEALTH_REQUIRE_EVENTS:-0}"
 
 case "$GO2RTC_WAIT_SECONDS:$CAMERA_HEALTH_WAIT_SECONDS:$CAMERA_HEALTH_POLL_SECONDS:$CAMERA_HEALTH_MAX_AGE" in
   *[!0-9:]* | *::* | :* | *:)
@@ -38,6 +39,14 @@ case "$CAMERA_HEALTH_REQUIRE_SINCE_EPOCH" in
       echo "CAMERA_HEALTH_REQUIRE_SINCE_EPOCH must be a positive Unix timestamp." >&2
       exit 64
     fi
+    ;;
+esac
+
+case "$CAMERA_HEALTH_REQUIRE_EVENTS" in
+  0 | 1) ;;
+  *)
+    echo "CAMERA_HEALTH_REQUIRE_EVENTS must be 0 or 1." >&2
+    exit 64
     ;;
 esac
 
@@ -82,17 +91,17 @@ wait_for_monitor() {
   attempt=1
   last_rc=2
 
+  set -- python manage.py check_camera_health --max-age "$CAMERA_HEALTH_MAX_AGE"
+  if [ -n "$CAMERA_HEALTH_REQUIRE_SINCE_EPOCH" ]; then
+    set -- "$@" --require-since-epoch "$CAMERA_HEALTH_REQUIRE_SINCE_EPOCH"
+  fi
+  if [ "$CAMERA_HEALTH_REQUIRE_EVENTS" -eq 1 ]; then
+    set -- "$@" --require-events
+  fi
+
   while [ "$attempt" -le "$attempts" ]; do
     set +e
-    if [ -n "$CAMERA_HEALTH_REQUIRE_SINCE_EPOCH" ]; then
-      output="$(compose exec -T camera-monitor \
-        python manage.py check_camera_health \
-          --max-age "$CAMERA_HEALTH_MAX_AGE" \
-          --require-since-epoch "$CAMERA_HEALTH_REQUIRE_SINCE_EPOCH" 2>&1)"
-    else
-      output="$(compose exec -T camera-monitor \
-        python manage.py check_camera_health --max-age "$CAMERA_HEALTH_MAX_AGE" 2>&1)"
-    fi
+    output="$(compose exec -T camera-monitor "$@" 2>&1)"
     rc=$?
     set -e
     last_rc=$rc

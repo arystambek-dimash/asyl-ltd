@@ -107,7 +107,7 @@ if ($cloudCameraList.Count -gt 0) {
 $source = [IO.Path]::GetFullPath($SourceRoot)
 foreach ($required in @(
     'ai_service.py', 'app.py', 'cloud_conveyor.py', 'contracts.py', 'conveyor.py', 'processor.py', 'runtime.py',
-    'security.py', 'settings.py', 'state.py', 'requirements.txt'
+    'event_journal.py', 'event_journal_verify.py', 'security.py', 'settings.py', 'state.py', 'requirements.txt'
 )) {
     if (-not (Test-Path -LiteralPath (Join-Path $source $required) -PathType Leaf)) {
         throw "cv_service source is incomplete: $required"
@@ -156,6 +156,7 @@ if ((Test-Path -LiteralPath $InstallRoot) -and (((Get-Item -LiteralPath $Install
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 $installedPackage = Join-Path $InstallRoot 'cv_service'
 $stateRoot = Join-Path $InstallRoot 'state'
+$eventDbPath = Join-Path $stateRoot 'count-events.sqlite3'
 $legacyCameraRolesPath = Join-Path $installedPackage 'data\camera-roles.json'
 $cameraRolesStatePath = Join-Path $stateRoot 'camera-roles.json'
 $countingLinesStatePath = Join-Path $stateRoot 'counting-lines.json'
@@ -171,6 +172,32 @@ function Assert-CompatibleCameraRoleState {
             throw "Refusing to overwrite differing camera-role states: legacy=$legacyCameraRolesPath durable=$cameraRolesStatePath"
         }
     }
+}
+
+# Refuse an unknown/partial SQLite before stopping the working service. This
+# verifier is stdlib-only and opens the existing target read-only; it never
+# creates, upgrades or rewrites a journal whose continuity is not proven.
+if (Test-Path -LiteralPath $eventDbPath -PathType Leaf) {
+    & $PythonPath (Join-Path $source 'event_journal_verify.py') $eventDbPath
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Existing count-event journal is incompatible; service was not stopped.'
+    }
+}
+$legacyDatabaseArtifacts = @()
+if (Test-Path -LiteralPath $installedPackage -PathType Container) {
+    $legacyDatabaseArtifacts = @(
+        Get-ChildItem -LiteralPath $installedPackage -Recurse -File -Force |
+            Where-Object {
+                $_.Name -match '(?i)\.(?:sqlite|sqlite3|db)(?:-(?:wal|shm))?$'
+            }
+    )
+}
+if ($legacyDatabaseArtifacts.Count -gt 0) {
+    throw (
+        'Refusing to delete database artifacts from the old cv_service package; ' +
+        'migrate and verify them in sibling state first: ' +
+        (($legacyDatabaseArtifacts | ForEach-Object { $_.FullName }) -join ', ')
+    )
 }
 
 # Older canonical installs kept this state below cv_service/data. Validate a
@@ -210,6 +237,7 @@ if (Test-Path -LiteralPath $legacyCameraRolesPath -PathType Leaf) {
         }
     }
 }
+New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 if (Test-Path -LiteralPath $installedPackage) {
     Remove-Item -LiteralPath $installedPackage -Recurse -Force
@@ -244,6 +272,7 @@ $serviceEnvironment = [ordered]@{
     AI_ALWAYS_ON_STATE_PATH = (Join-Path $InstallRoot 'state\always-on.json')
     AI_CAMERA_ROLES_STATE_PATH = $cameraRolesStatePath
     AI_COUNTING_LINES_STATE_PATH = $countingLinesStatePath
+    AI_EVENT_DB_PATH = $eventDbPath
     AI_CONVEYOR_CONTROLLERS_JSON = $ConveyorControllersJson
     AI_CONVEYOR_CLOUD_CAMERAS = ($cloudCameraList -join ',')
     AI_CONVEYOR_CLOUD_API_URL = $ConveyorCloudApiUrl

@@ -45,6 +45,7 @@ Assert-True ($aiInstallerText -match 'AI_SERVICE_API_KEY_SHA256') 'AI service di
 Assert-True ($aiInstallerText -match 'AI_ALWAYS_ON_STATE_PATH') 'Durable always-on AI state path is not installed.'
 Assert-True ($aiInstallerText -match 'AI_CAMERA_ROLES_STATE_PATH') 'Durable camera-role state path is not installed.'
 Assert-True ($aiInstallerText -match 'AI_COUNTING_LINES_STATE_PATH') 'Durable counting-line state path is not installed.'
+Assert-True ($aiInstallerText -match 'AI_EVENT_DB_PATH') 'Durable count-event journal path is not installed.'
 Assert-True ($aiInstallerText -match 'AI_CONVEYOR_CONTROLLERS_JSON') 'Conveyor controller mapping is not installed.'
 Assert-True ($aiInstallerText -match 'AI_CONVEYOR_CLOUD_CAMERAS') 'Cloud conveyor camera mapping is not installed.'
 Assert-True ($aiInstallerText -match 'AI_CONVEYOR_CLOUD_API_URL') 'Cloud conveyor canonical endpoint is not installed.'
@@ -54,6 +55,11 @@ Assert-True ($aiInstallerText -match 'AI_CONVEYOR_NO_PROGRESS_SECONDS') 'Conveyo
 Assert-True ($aiInstallerText -match 'AI_CONVEYOR_MAX_RUN_SECONDS') 'Conveyor max-run watchdog is not installed.'
 Assert-True ($aiInstallerText -match "'conveyor.py'") 'Conveyor module is not validated before install.'
 Assert-True ($aiInstallerText -match "'cloud_conveyor.py'") 'Cloud conveyor module is not validated before install.'
+Assert-True ($aiInstallerText -match "'event_journal.py'") 'Count-event journal module is not validated before install.'
+Assert-True ($aiInstallerText -match "'event_journal_verify.py'") 'Read-only journal verifier is not validated before install.'
+Assert-True (
+    $aiInstallerText -match "eventDbPath = Join-Path \`$stateRoot 'count-events.sqlite3'"
+) 'Count-event journal must live in the sibling durable state directory.'
 Assert-True ($aiInstallerText -match 'data\\camera-roles\.json') 'Known legacy camera-role state is not migrated.'
 Assert-True (
     $aiInstallerText -match 'Get-FileHash' -and
@@ -62,14 +68,24 @@ Assert-True (
 $legacyRoleMoveIndex = $aiInstallerText.IndexOf('[IO.File]::Move($migrationTemporary, $cameraRolesStatePath)')
 $installedPackageRemovalIndex = $aiInstallerText.IndexOf('Remove-Item -LiteralPath $installedPackage -Recurse -Force')
 $aiStopIndex = $aiInstallerText.IndexOf('Stop-ScheduledTask -TaskName $taskName')
+$eventJournalVerifyIndex = $aiInstallerText.IndexOf("Join-Path `$source 'event_journal_verify.py'")
+$legacyDatabaseGuardIndex = $aiInstallerText.IndexOf('legacyDatabaseArtifacts')
 $aiQuiesceGuardIndex = $aiInstallerText.IndexOf('Existing AI service did not quiesce before state migration')
 Assert-True (
+    $eventJournalVerifyIndex -ge 0 -and
+    $eventJournalVerifyIndex -lt $aiStopIndex -and
+    $legacyDatabaseGuardIndex -gt $eventJournalVerifyIndex -and
+    $legacyDatabaseGuardIndex -lt $aiStopIndex -and
     $aiStopIndex -ge 0 -and
     $aiQuiesceGuardIndex -gt $aiStopIndex -and
     $legacyRoleMoveIndex -gt $aiQuiesceGuardIndex -and
     $legacyRoleMoveIndex -ge 0 -and
     $installedPackageRemovalIndex -gt $legacyRoleMoveIndex
-) 'AI service must quiesce before legacy state moves and the old package is deleted.'
+) 'Journal must verify before stop; AI must quiesce before state moves/package deletion.'
+Assert-True (
+    $aiInstallerText -match '\\\.\(\?:sqlite\|sqlite3\|db\)' -and
+    $aiInstallerText -match 'Refusing to delete database artifacts'
+) 'Old-package SQLite/DB/WAL/SHM artifacts are not guarded before deletion.'
 Assert-True (
     $aiInstallerText -match 'aiQuiesceDeadline' -and
     $aiInstallerText -match 'Get-NetTCPConnection -State Listen -LocalPort 8890'

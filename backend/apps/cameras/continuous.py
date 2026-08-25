@@ -4,14 +4,63 @@ import logging
 from datetime import timedelta
 
 from django.core.cache import cache
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.grain import services as grain_services
 
-from . import ai, analytics
-from .models import MonoblockCameraSettings
+from . import ai, analytics, event_sync
+from .models import AlwaysOnCounterCursor, MonoblockCameraSettings
 
 log = logging.getLogger(__name__)
+
+
+def _draining_event_sources() -> set[str]:
+    return set(
+        AlwaysOnCounterCursor.objects.exclude(event_sync_supported=False)
+        .filter(
+            Q(event_drain_required_at__isnull=False)
+            | Q(event_stop_drain_requested_at__isnull=False)
+            | ~Q(event_sync_error="")
+            | Q(
+                last_event_id__isnull=False,
+                event_caught_up_at__isnull=True,
+            )
+        )
+        .values_list("camera", flat=True)
+    )
+
+
+def _record_counts(current: dict, desired: list[str]) -> None:
+    """Use durable events when supported and snapshots only for explicit 404s."""
+
+    legacy_snapshot_cameras: set[str] = set()
+    for camera in desired:
+        try:
+            result = event_sync.sync_camera(camera)
+        except (ai.AiUnavailable, ai.AiError, event_sync.EventSyncError) as exc:
+            # An uncertain journal is never permission to use the aggregate
+            # snapshot: the next successful page would then count it twice.
+            log.warning("Camera event sync failed camera=%s: %s", camera, exc)
+            event_sync.mark_sync_failure(camera, exc)
+            continue
+        if not result.supported:
+            legacy_snapshot_cameras.add(camera)
+            continue
+        if result.processed or result.ignored or not result.caught_up:
+            log.info(
+                "Camera events synchronized camera=%s processed=%s ignored=%s "
+                "cursor=%s pages=%s caught_up=%s",
+                camera,
+                result.processed,
+                result.ignored,
+                result.last_event_id,
+                result.pages,
+                result.caught_up,
+            )
+
+    if legacy_snapshot_cameras:
+        analytics.record_snapshot(current, cameras=legacy_snapshot_cameras)
 
 
 def reconcile() -> dict:
@@ -32,11 +81,43 @@ def reconcile() -> dict:
             "состояние неизвестно, синхронизация отложена",
             current_sources,
         )
-        analytics.record_snapshot(current)
+        _record_counts(current, sorted(set(desired) | _draining_event_sources()))
         return current
-    if sorted(current_sources) != desired or current_source != "sub":
+    normalized_current_sources: set[str] = set()
+    for source in current_sources:
+        try:
+            normalized_current_sources.add(ai.normalize(source))
+        except ai.AiError:
+            continue
+    desired_sources = set(desired)
+    removed_sources = normalized_current_sources - desired_sources
+    if removed_sources:
+        # Mark event cameras for a final drain before stopping them.  If that
+        # drain fails, later monitor iterations keep retrying even though the
+        # camera is no longer part of the live configuration.
+        for camera in removed_sources:
+            event_sync.request_stop_drain(camera)
+
+    if normalized_current_sources != desired_sources or current_source != "sub":
         current = ai.configure_always_on(desired, "sub")
-    analytics.record_snapshot(current)
+        for camera in removed_sources:
+            event_sync.confirm_stop_drain(camera)
+    stopped_pending_sources = set(
+        AlwaysOnCounterCursor.objects.filter(
+            event_stop_drain_requested_at__isnull=False,
+            event_stop_confirmed_at__isnull=True,
+        ).values_list("camera", flat=True)
+    ) - normalized_current_sources - desired_sources
+    for camera in stopped_pending_sources:
+        # Recovery after a process crash between the remote stop response and
+        # its second durable barrier: the live configuration itself confirms
+        # that this camera is now stopped.
+        event_sync.confirm_stop_drain(camera)
+    draining_sources = _draining_event_sources()
+    _record_counts(
+        current,
+        sorted(desired_sources | removed_sources | draining_sources),
+    )
     return current
 
 
@@ -86,13 +167,16 @@ def poll_wagon_plate() -> dict:
 
     number = scan.get("number") or ""
     wagon = grain_services.register_detected_arrival(
-        camera_source=camera, number=number,
+        camera_source=camera,
+        number=number,
     )
     if wagon is None:
         # Тот же состав всё ещё под камерой — рейс уже заведён.
         return {"seen": True, "number": number, "created": None}
     log.info(
         "Камера %s зафиксировала прибытие состава: рейс #%s, вагон %s",
-        camera, wagon.pk, wagon.number or "не распознан",
+        camera,
+        wagon.pk,
+        wagon.number or "не распознан",
     )
     return {"seen": True, "number": number, "created": wagon.pk}

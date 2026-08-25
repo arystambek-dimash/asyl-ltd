@@ -26,6 +26,7 @@ def cloud_settings(**overrides) -> Settings:
     values = {
         "api_key_sha256": DIGEST,
         "model_path": Path("best.pt"),
+        "event_db_path": Path(":memory:"),
         "conveyor_cloud_cameras": ("cam2",),
         "conveyor_cloud_api_key": TOKEN,
         "conveyor_io_timeout_seconds": 0.05,

@@ -6,7 +6,12 @@ from django.core.management import call_command
 from django.utils import timezone
 
 from apps.cameras import alerts, health
-from apps.cameras.models import CameraHealthState, CameraIncident
+from apps.cameras.models import (
+    AlwaysOnCounterCursor,
+    CameraHealthState,
+    CameraIncident,
+    MonoblockCameraSettings,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -18,9 +23,15 @@ def observation(status, online, expected=10):
         online_count=online,
         components={
             "mediamtx": {"reachable": online > 0},
-            "go2rtc": {"reachable": status != CameraHealthState.OUTAGE, "frame": online > 0},
+            "go2rtc": {
+                "reachable": status != CameraHealthState.OUTAGE,
+                "frame": online > 0,
+            },
         },
-        streams={f"cam{i}": "online" if i <= online else "offline" for i in range(1, expected + 1)},
+        streams={
+            f"cam{i}": "online" if i <= online else "offline"
+            for i in range(1, expected + 1)
+        },
         error="no video" if status == CameraHealthState.OUTAGE else "",
     )
 
@@ -38,7 +49,10 @@ def test_probe_healthy_exercises_rtsp_and_real_go2rtc_frame(monkeypatch):
     monkeypatch.setattr(
         health,
         "_go2rtc_catalog",
-        lambda: ({"reachable": True, "configured_streams": 3}, {"cam1", "cam2", "cam3"}),
+        lambda: (
+            {"reachable": True, "configured_streams": 3},
+            {"cam1", "cam2", "cam3"},
+        ),
     )
     frame = patch.object(health, "_go2rtc_frame", return_value=(True, ""))
     with frame as frame_probe:
@@ -47,7 +61,11 @@ def test_probe_healthy_exercises_rtsp_and_real_go2rtc_frame(monkeypatch):
     assert result.status == CameraHealthState.HEALTHY
     assert result.online_count == 3
     assert result.components["go2rtc"]["frame"] is True
-    assert {call.args[0] for call in frame_probe.call_args_list} == {"cam1", "cam2", "cam3"}
+    assert {call.args[0] for call in frame_probe.call_args_list} == {
+        "cam1",
+        "cam2",
+        "cam3",
+    }
 
 
 def test_expected_stream_override_cannot_reduce_protected_site_baseline(monkeypatch):
@@ -68,7 +86,9 @@ def test_probe_detects_one_missing_go2rtc_browser_stream(monkeypatch):
     monkeypatch.delenv("CAMERA_EXPECTED_STREAMS", raising=False)
     monkeypatch.setattr(health, "_probe_rtsp", lambda stream: (stream, "online"))
     monkeypatch.setattr(
-        health, "_inventory_component", lambda now: {"configured": False, "reachable": None}
+        health,
+        "_inventory_component",
+        lambda now: {"configured": False, "reachable": None},
     )
     monkeypatch.setattr(
         health,
@@ -90,7 +110,9 @@ def test_probe_detects_frozen_individual_go2rtc_stream(monkeypatch):
     monkeypatch.delenv("CAMERA_EXPECTED_STREAMS", raising=False)
     monkeypatch.setattr(health, "_probe_rtsp", lambda stream: (stream, "online"))
     monkeypatch.setattr(
-        health, "_inventory_component", lambda now: {"configured": False, "reachable": None}
+        health,
+        "_inventory_component",
+        lambda now: {"configured": False, "reachable": None},
     )
     monkeypatch.setattr(
         health,
@@ -122,7 +144,11 @@ def test_rotating_frame_probe_keeps_recent_failure_until_recheck(monkeypatch):
         components={
             "go2rtc": {
                 "frame_health": {
-                    failed: {"ok": False, "checked_at": now.isoformat(), "error": "timeout"}
+                    failed: {
+                        "ok": False,
+                        "checked_at": now.isoformat(),
+                        "error": "timeout",
+                    }
                 }
             }
         },
@@ -130,7 +156,9 @@ def test_rotating_frame_probe_keeps_recent_failure_until_recheck(monkeypatch):
     )
     monkeypatch.setattr(health, "_probe_rtsp", lambda stream: (stream, "online"))
     monkeypatch.setattr(
-        health, "_inventory_component", lambda checked: {"configured": False, "reachable": None}
+        health,
+        "_inventory_component",
+        lambda checked: {"configured": False, "reachable": None},
     )
     monkeypatch.setattr(
         health,
@@ -155,7 +183,9 @@ def test_probe_one_camera_down_is_degraded_not_full_outage(monkeypatch):
 
     monkeypatch.setattr(health, "_probe_rtsp", rtsp)
     monkeypatch.setattr(
-        health, "_inventory_component", lambda now: {"configured": False, "reachable": None}
+        health,
+        "_inventory_component",
+        lambda now: {"configured": False, "reachable": None},
     )
     monkeypatch.setattr(
         health,
@@ -177,10 +207,15 @@ def test_probe_severe_partial_loss_is_treated_as_outage(monkeypatch):
     monkeypatch.setattr(
         health,
         "_probe_rtsp",
-        lambda stream: (stream, "online" if int(stream.removeprefix("cam")) <= 4 else "offline"),
+        lambda stream: (
+            stream,
+            "online" if int(stream.removeprefix("cam")) <= 4 else "offline",
+        ),
     )
     monkeypatch.setattr(
-        health, "_inventory_component", lambda now: {"configured": False, "reachable": None}
+        health,
+        "_inventory_component",
+        lambda now: {"configured": False, "reachable": None},
     )
     monkeypatch.setattr(
         health,
@@ -201,10 +236,14 @@ def test_probe_go2rtc_failure_is_full_outage(monkeypatch, api_reachable, frame):
     monkeypatch.delenv("CAMERA_EXPECTED_STREAMS", raising=False)
     monkeypatch.setattr(health, "_probe_rtsp", lambda stream: (stream, "online"))
     monkeypatch.setattr(
-        health, "_inventory_component", lambda now: {"configured": False, "reachable": None}
+        health,
+        "_inventory_component",
+        lambda now: {"configured": False, "reachable": None},
     )
     monkeypatch.setattr(
-        health, "_go2rtc_catalog", lambda: ({"reachable": api_reachable}, {"cam1", "cam2"})
+        health,
+        "_go2rtc_catalog",
+        lambda: ({"reachable": api_reachable}, {"cam1", "cam2"}),
     )
     monkeypatch.setattr(health, "_go2rtc_frame", lambda stream: (frame, "failed"))
 
@@ -220,7 +259,8 @@ def test_outage_and_recovery_are_debounced(monkeypatch):
 
     for offset in range(2):
         state, incident_id = health.record_observation(
-            observation(CameraHealthState.OUTAGE, 0), started + timedelta(seconds=offset * 30)
+            observation(CameraHealthState.OUTAGE, 0),
+            started + timedelta(seconds=offset * 30),
         )
         assert state.status == CameraHealthState.INITIALIZING
         assert incident_id is None
@@ -308,7 +348,9 @@ def test_alert_is_sent_once_per_transition(monkeypatch):
     )
     with sender as send:
         health.deliver_pending_alerts(now)
-        health.deliver_pending_alerts(now + timedelta(seconds=health.ALERT_RETRY_SECONDS + 1))
+        health.deliver_pending_alerts(
+            now + timedelta(seconds=health.ALERT_RETRY_SECONDS + 1)
+        )
     assert send.call_count == 1
     incident = CameraIncident.objects.get()
     assert incident.outage_alert_sent_at == now
@@ -323,7 +365,9 @@ def test_unconfigured_alert_is_throttled_and_kept_pending(monkeypatch):
         alerts,
         "send",
         return_value=alerts.Delivery(
-            configured=False, delivered=False, errors=("no alert destination configured",)
+            configured=False,
+            delivered=False,
+            errors=("no alert destination configured",),
         ),
     )
     with sender as send:
@@ -453,9 +497,7 @@ def test_fresh_zero_camera_probe_stays_pending_until_outage_confirmed(monkeypatc
     state, _ = health.record_observation(
         observation(CameraHealthState.HEALTHY, 10), now - timedelta(seconds=30)
     )
-    state, _ = health.record_observation(
-        observation(CameraHealthState.OUTAGE, 0), now
-    )
+    state, _ = health.record_observation(observation(CameraHealthState.OUTAGE, 0), now)
     payload = health.state_payload(state, now=now, max_age=180)
     assert payload["recorded_status"] == CameraHealthState.HEALTHY
     assert payload["observed_status"] == CameraHealthState.OUTAGE
@@ -531,3 +573,87 @@ def test_check_command_uses_contract_exit_code_for_missing_heartbeat():
     with pytest.raises(SystemExit) as exc:
         call_command("check_camera_health", max_age=180)
     assert exc.value.code == 2
+
+
+def test_camera_health_gate_includes_durable_event_sync_failures():
+    now = timezone.now()
+    state = CameraHealthState.objects.create(
+        status=CameraHealthState.HEALTHY,
+        observed_status=CameraHealthState.HEALTHY,
+        expected_count=10,
+        online_count=10,
+        last_checked_at=now,
+    )
+    MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
+    cursor = AlwaysOnCounterCursor.objects.create(
+        camera="cam3",
+        last_event_id=9,
+        event_compat_total=0,
+        event_sync_supported=True,
+        event_boundary_validated=True,
+        event_caught_up_at=now,
+    )
+
+    healthy = health.state_payload(state, now=now, max_age=180)
+    assert healthy["event_sync"]["cameras"][0]["status"] == "synced"
+    assert health.exit_code(healthy) == 0
+
+    previous_release = health.state_payload(
+        state,
+        now=now + timedelta(seconds=2),
+        max_age=180,
+        required_since=now + timedelta(seconds=1),
+    )
+    assert previous_release["event_sync"]["cameras"][0]["status"] == "stale"
+    assert "this release" in previous_release["event_sync"]["cameras"][0]["detail"]
+    assert health.exit_code(previous_release) == 2
+
+    cursor.event_sync_error = "malformed event page"
+    cursor.event_sync_failed_at = now
+    cursor.event_caught_up_at = None
+    cursor.save(
+        update_fields=[
+            "event_sync_error",
+            "event_sync_failed_at",
+            "event_caught_up_at",
+            "updated_at",
+        ]
+    )
+    failed = health.state_payload(state, now=now, max_age=180)
+    assert failed["event_sync"]["cameras"][0]["status"] == "error"
+    assert health.exit_code(failed) == 2
+
+    MonoblockCameraSettings.objects.update(always_on_camera_sources=[])
+    removed_but_not_drained = health.state_payload(state, now=now, max_age=180)
+    assert removed_but_not_drained["event_sync"]["cameras"][0]["desired"] is False
+    assert removed_but_not_drained["event_sync"]["blocking"] is True
+
+
+def test_deploy_gate_requires_events_while_default_health_allows_legacy():
+    now = timezone.now()
+    state = CameraHealthState.objects.create(
+        status=CameraHealthState.HEALTHY,
+        observed_status=CameraHealthState.HEALTHY,
+        expected_count=10,
+        online_count=10,
+        last_checked_at=now,
+    )
+    MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
+    AlwaysOnCounterCursor.objects.create(
+        camera="cam3",
+        event_sync_supported=False,
+    )
+
+    ordinary = health.state_payload(state, now=now, max_age=180)
+    assert ordinary["event_sync"]["cameras"][0]["status"] == "legacy"
+    assert health.exit_code(ordinary) == 0
+
+    deploy = health.state_payload(
+        state,
+        now=now,
+        max_age=180,
+        require_events=True,
+    )
+    assert deploy["event_sync"]["required"] is True
+    assert deploy["event_sync"]["cameras"][0]["status"] == "unsupported"
+    assert health.exit_code(deploy) == 2

@@ -17,6 +17,12 @@ from fastapi.testclient import TestClient
 from cv_service.app import create_app
 from cv_service.contracts import Detection, ProcessorOptions
 from cv_service.conveyor import ConveyorActuator, ConveyorConflictError
+from cv_service.event_journal import (
+    CountEvent,
+    CountEventJournal,
+    JournalIntegrityError,
+    JournalTransientError,
+)
 from cv_service.processor import (
     CameraProcessor,
     DroppingFrameQueue,
@@ -235,6 +241,7 @@ def make_settings(max_processors=2, **overrides):
         "model_path": Path("best.pt"),
         "model_device": "cpu",
         "max_active_processors": max_processors,
+        "event_db_path": Path(":memory:"),
     }
     values.update(overrides)
     return Settings(**values)
@@ -255,6 +262,77 @@ def make_manager(
     )
 
 
+def test_manager_close_joins_worker_without_timeout_before_journal_close():
+    order = []
+
+    class Processor:
+        conveyor_transport = "direct"
+
+        def control_session(self):
+            raise AssertionError("direct close must not wait for accounting lock")
+
+        def close(self):
+            order.append("processor")
+
+    class Closable:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            order.append(self.name)
+
+    class StopEvent:
+        def set(self):
+            order.append("stop")
+
+    class Worker:
+        def join(self, *args, **kwargs):
+            assert args == ()
+            assert kwargs == {}
+            order.append("worker")
+
+    class Journal:
+        def close(self):
+            assert order[-1] == "worker"
+            order.append("journal")
+
+    manager = ProcessorManager.__new__(ProcessorManager)
+    manager._lock = threading.RLock()
+    manager.processors = {"cam3": Processor()}
+    manager.cloud_conveyor = Closable("cloud")
+    manager.conveyor = Closable("conveyor")
+    manager._stop = StopEvent()
+    manager._worker = Worker()
+    manager.event_journal = Journal()
+
+    manager.close()
+
+    assert order == [
+        "conveyor", "cloud", "processor", "stop", "worker", "journal",
+    ]
+
+
+def test_manager_does_not_retry_permanent_journal_error(monkeypatch):
+    calls = []
+
+    class Journal:
+        def append(self, count_event):
+            calls.append(count_event)
+            raise JournalIntegrityError("event_key replay changed contents")
+
+    manager = ProcessorManager.__new__(ProcessorManager)
+    manager.event_journal = Journal()
+    monkeypatch.setattr(
+        "cv_service.processor.time.sleep",
+        lambda _seconds: pytest.fail("permanent errors must not retry"),
+    )
+    crossing = object()
+
+    with pytest.raises(JournalIntegrityError, match="replay changed"):
+        manager.record_count_event(crossing)
+    assert calls == [crossing]
+
+
 @pytest.fixture
 def service():
     manager = make_manager()
@@ -269,6 +347,7 @@ def auth():
 @pytest.mark.parametrize(
     "path", [
         "/health",
+        "/events",
         "/cameras",
         "/cameras/cam2/line",
         "/processors",
@@ -299,6 +378,77 @@ def test_health_has_startup_proof_and_no_browser_cors(service):
         "ocr": False,
     }
     assert "access-control-allow-origin" not in response.headers
+
+
+def test_health_returns_degraded_without_waiting_for_processor_lock(service):
+    manager, client = service
+    manager.event_journal._last_write_error = "database is locked"
+    manager.statuses = lambda: (_ for _ in ()).throw(
+        AssertionError("health must not acquire processor status locks")
+    )
+
+    response = client.get("/health", headers=auth())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
+    assert response.json()["event_journal"] == {
+        "available": False,
+        "journal_id": manager.event_journal.journal_id,
+        "error": "database is locked",
+    }
+    assert response.json()["counting"] is None
+
+
+def test_events_endpoint_exposes_durable_cursor_contract(service):
+    manager, client = service
+    event_id = manager.record_count_event(CountEvent(
+        created_at="2026-08-25T08:30:00.000+00:00",
+        cam="cam3",
+        source="sub",
+        mode="always_on",
+        generation=4,
+        frame=812,
+        track_id=23,
+        class_id=0,
+        class_name="Red_50",
+        confidence=0.91,
+        direction="positive",
+        point_x=120.5,
+        point_y=241.0,
+        weight_kg=50.0,
+        total_after=2_292,
+        total_weight_after=114_600.0,
+    ))
+
+    response = client.get(
+        "/events?after_id=0&limit=500&cam=cam3", headers=auth(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload) == {
+        "journal_id", "events", "next_after_id", "has_more",
+    }
+    assert payload["journal_id"] == manager.event_journal.journal_id
+    assert payload["next_after_id"] == event_id
+    assert payload["has_more"] is False
+    assert payload["events"][0]["id"] == event_id
+    assert payload["events"][0]["total_after"] == 2_292
+
+    empty = client.get(
+        f"/events?after_id={event_id}&limit=500&cam=cam3", headers=auth(),
+    ).json()
+    assert empty["events"] == []
+    assert empty["next_after_id"] == event_id
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["after_id=-1", "limit=0", "limit=501", "cam=CAM3"],
+)
+def test_events_endpoint_rejects_invalid_cursor_query(service, query):
+    _manager, client = service
+    assert client.get(f"/events?{query}", headers=auth()).status_code == 400
 
 
 def test_delete_recordings_is_authenticated_and_deletes_exact_segments(service):
@@ -1630,6 +1780,192 @@ def test_detection_overlay_marks_the_bag_that_was_counted():
 
     assert processor.total == 1
     assert processor._detection_overlay()[0]["counted"] is True
+
+
+def test_real_crossing_retries_lost_commit_ack_without_new_frame(
+    tmp_path, monkeypatch,
+):
+    journal = CountEventJournal(tmp_path / "count-events.sqlite3")
+
+    class LostCommitAcknowledgementOnce:
+        def __init__(self):
+            self.calls = []
+
+        def append(self, count_event):
+            event_id = journal.append(count_event)
+            self.calls.append(count_event.event_key)
+            if len(self.calls) == 1:
+                raise JournalTransientError(
+                    "simulated lost COMMIT acknowledgement"
+                )
+            return event_id
+
+    proxy = LostCommitAcknowledgementOnce()
+    manager = ProcessorManager.__new__(ProcessorManager)
+    manager.event_journal = proxy
+    manager._class_ids = {"Red_50": 0}
+    sleeps = []
+    monkeypatch.setattr("cv_service.processor.time.sleep", sleeps.append)
+    processor = _overlay_processor()
+    processor.camera = "cam3"
+    processor.mode = "always_on"
+    processor.manager = manager
+    processor.options = ProcessorOptions(
+        source="sub", line="0,0.5,1,0.5", direction="any",
+    )
+    frame = SimpleNamespace(shape=(100, 100, 3))
+    try:
+        processor.apply_inference(
+            frame,
+            time.monotonic(),
+            [Detection(40, 30, 60, 45, 0.8, "Red_50")],
+            1.0,
+            1,
+        )
+        processor.apply_inference(
+            frame,
+            time.monotonic(),
+            [Detection(40, 55, 60, 70, 0.9, "Red_50")],
+            1.0,
+            1,
+        )
+
+        assert processor.total == 1
+        assert sleeps == [0.1]
+        assert len(proxy.calls) == 2
+        assert proxy.calls[0] == proxy.calls[1]
+        page = journal.page(after_id=0, limit=500, cam="cam3")
+        assert len(page["events"]) == 1
+        assert page["events"][0] == {
+            "id": 1,
+            "created_at": page["events"][0]["created_at"],
+            "cam": "cam3",
+            "source": "sub",
+            "mode": "always_on",
+            "generation": 0,
+            "frame": 2,
+            "track_id": 1,
+            "class_id": 0,
+            "class_name": "Red_50",
+            "confidence": 0.9,
+            "direction": "positive",
+            "point_x": 50.0,
+            "point_y": 62.5,
+            "weight_kg": 50.0,
+            "total_after": 1,
+            "total_weight_after": 50.0,
+        }
+    finally:
+        journal.close()
+
+
+def test_session_handoff_appends_new_generation_without_mutating_old_event(
+    tmp_path,
+):
+    journal = CountEventJournal(tmp_path / "count-events.sqlite3")
+    manager = ProcessorManager.__new__(ProcessorManager)
+    manager.event_journal = journal
+    manager._class_ids = {"Red_50": 0}
+    processor = _overlay_processor()
+    processor.manager = manager
+    processor.camera = "cam3"
+    processor.mode = "session"
+    processor._accounting_generation = 0
+    processor.source_stream = processor.settings.source_stream("cam3", "sub")
+    processor.publisher = SimpleNamespace(pause=lambda: None, resume=lambda: None)
+    processor.options = ProcessorOptions(
+        source="sub", line="0,0.5,1,0.5", direction="any",
+    )
+    frame = SimpleNamespace(shape=(100, 100, 3))
+
+    def cross_line():
+        processor.apply_inference(
+            frame,
+            time.monotonic(),
+            [Detection(40, 30, 60, 45, 0.8, "Red_50")],
+            1.0,
+            1,
+        )
+        processor.apply_inference(
+            frame,
+            time.monotonic(),
+            [Detection(40, 55, 60, 70, 0.9, "Red_50")],
+            1.0,
+            1,
+        )
+
+    try:
+        cross_line()
+        first_before_handoff = dict(
+            journal.page(after_id=0, limit=500, cam="cam3")["events"][0]
+        )
+
+        processor.start_always_on(
+            ProcessorOptions(
+                source="sub", line="0,0.5,1,0.5", direction="any",
+            ),
+            force_session_handoff=True,
+        )
+        assert processor.total == 0
+        cross_line()
+
+        events = journal.page(after_id=0, limit=500, cam="cam3")["events"]
+        assert len(events) == 2
+        assert events[0] == first_before_handoff
+        assert [
+            (item["id"], item["mode"], item["generation"], item["total_after"])
+            for item in events
+        ] == [
+            (1, "session", 0, 1),
+            (2, "always_on", 1, 1),
+        ]
+    finally:
+        journal.close()
+
+
+def test_journal_failure_leaves_crossing_retryable_and_count_unchanged(tmp_path):
+    journal = CountEventJournal(tmp_path / "count-events.sqlite3")
+    processor = _overlay_processor()
+    processor.camera = "cam3"
+    processor.mode = "always_on"
+    processor.manager = SimpleNamespace(
+        class_id_for=lambda _class_name: 0,
+        record_count_event=journal.append,
+    )
+    frame = SimpleNamespace(shape=(100, 100, 3))
+    before = Detection(40, 30, 60, 45, 0.8, "Red_50")
+    crossed = Detection(40, 55, 60, 70, 0.9, "Red_50")
+    try:
+        journal._connection.execute(
+            """
+            CREATE TRIGGER fail_count_event_insert
+            BEFORE INSERT ON count_events
+            BEGIN SELECT RAISE(ABORT, 'simulated full disk'); END
+            """
+        )
+        processor.apply_inference(
+            frame, time.monotonic(), [before], 1.0, 1,
+        )
+        with pytest.raises(RuntimeError, match="simulated full disk"):
+            processor.apply_inference(
+                frame, time.monotonic(), [crossed], 1.0, 1,
+            )
+
+        assert processor.total == 0
+        assert journal.page(after_id=0, limit=500)["events"] == []
+        assert journal.health()["available"] is False
+        assert "simulated full disk" in journal.health()["error"]
+        assert all(not track.counted for track in processor.tracker.tracks.values())
+
+        journal._connection.execute("DROP TRIGGER fail_count_event_insert")
+        processor.apply_inference(
+            frame, time.monotonic(), [crossed], 1.0, 1,
+        )
+        assert processor.total == 1
+        assert len(journal.page(after_id=0, limit=500)["events"]) == 1
+        assert journal.health()["available"] is True
+    finally:
+        journal.close()
 
 
 def test_detection_overlay_is_empty_before_the_first_frame():

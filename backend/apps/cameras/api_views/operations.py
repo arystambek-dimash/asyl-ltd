@@ -9,7 +9,7 @@ from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm, IsStaff, IsSuperUser, PermAPIViewMixin
 
-from .. import ai, analytics, health, production, recordings
+from .. import ai, analytics, event_sync, health, production, recordings
 from ..models import MonoblockCameraSettings
 from ..serializers import (
     AlwaysOnAnalyticsArchiveSerializer,
@@ -106,9 +106,7 @@ class AlwaysOnCameraSettingsView(_AlwaysOnPermissionMixin, APIView):
                 )
             )
         except (ai.AiUnavailable, ai.AiError) as exc:
-            return Response(
-                self._payload(row, sync_status="pending", detail=str(exc))
-            )
+            return Response(self._payload(row, sync_status="pending", detail=str(exc)))
 
     def put(self, request):
         serializer = CameraSourcesSerializer(data=request.data)
@@ -127,6 +125,15 @@ class AlwaysOnCameraSettingsView(_AlwaysOnPermissionMixin, APIView):
                     "code": "always_on_capacity_exceeded",
                 }
             )
+
+        previous_sources = set(row.always_on_camera_sources or [])
+        removed_sources = previous_sources - set(sources)
+        if removed_sources:
+            # The PUT stops processors immediately.  Preserve a durable final
+            # drain request first so the monitor will ingest crossings made
+            # since its previous 30-second poll from the stopped SQLite log.
+            for camera in removed_sources:
+                event_sync.request_stop_drain(camera)
 
         row.always_on_camera_sources = sources
         row.updated_by = request.user
@@ -148,6 +155,8 @@ class AlwaysOnCameraSettingsView(_AlwaysOnPermissionMixin, APIView):
             )
         try:
             live = ai.configure_always_on(sources, "sub")
+            for camera in removed_sources:
+                event_sync.confirm_stop_drain(camera)
             return Response(self._payload(row, live))
         except (ai.AiUnavailable, ai.AiError) as exc:
             return Response(
@@ -201,9 +210,7 @@ class WagonNumberCameraSettingsView(APIView):
                 )
             )
         except (ai.AiUnavailable, ai.AiError) as exc:
-            return Response(
-                self._payload(row, sync_status="pending", detail=str(exc))
-            )
+            return Response(self._payload(row, sync_status="pending", detail=str(exc)))
 
     def put(self, request):
         serializer = WagonNumberCameraSettingsSerializer(data=request.data)
@@ -243,11 +250,9 @@ class AlwaysOnAnalyticsView(_AlwaysOnPermissionMixin, APIView):
     required_perms: ClassVar[dict] = {"get": ALWAYS_ON_READ_PERMISSIONS}
 
     def get(self, request):
-        if ai.enabled():
-            try:
-                analytics.record_snapshot(ai.always_on_status_cached())
-            except (ai.AiUnavailable, ai.AiError):
-                pass
+        # Counting is owned by the single camera monitor.  A read request must
+        # not race its event cursor or apply a cached aggregate snapshot after
+        # the durable /events cutover.
         return Response(analytics.today_payload())
 
 
@@ -283,6 +288,30 @@ class AlwaysOnAnalyticsArchiveView(_AlwaysOnPermissionMixin, APIView):
     def post(self, request, cam: str):
         serializer = AlwaysOnAnalyticsArchiveSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        if ai.enabled():
+            event_sync.require_fresh_drain(cam)
+            try:
+                sync = event_sync.sync_camera(cam)
+            except (ai.AiUnavailable, ai.AiError, event_sync.EventSyncError) as exc:
+                event_sync.mark_sync_failure(cam, exc)
+                raise ValidationError(
+                    {
+                        "detail": (
+                            "Архивирование отложено: журнал событий AI "
+                            "ещё не синхронизирован"
+                        ),
+                        "code": "camera_events_not_synced",
+                    }
+                ) from exc
+            if sync.supported and not sync.caught_up:
+                raise ValidationError(
+                    {
+                        "detail": (
+                            "Архивирование отложено: журнал событий AI ещё догружается"
+                        ),
+                        "code": "camera_events_not_caught_up",
+                    }
+                )
         return Response(
             analytics.archive_camera(
                 cam,
@@ -308,19 +337,23 @@ class AlwaysOnProductionView(_AlwaysOnPermissionMixin, APIView):
         camera = request.query_params.get("camera")
         if not camera:
             raise ValidationError({"camera": "Выберите камеру"})
-        return Response(production.production_payload(
-            camera,
-            day=request.query_params.get("day"),
-        ))
+        return Response(
+            production.production_payload(
+                camera,
+                day=request.query_params.get("day"),
+            )
+        )
 
     def put(self, request):
         serializer = AlwaysOnProductMappingsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        return Response(production.save_mappings(
-            serializer.validated_data["camera"],
-            serializer.validated_data["mappings"],
-            request.user,
-        ))
+        return Response(
+            production.save_mappings(
+                serializer.validated_data["camera"],
+                serializer.validated_data["mappings"],
+                request.user,
+            )
+        )
 
     patch = put
 

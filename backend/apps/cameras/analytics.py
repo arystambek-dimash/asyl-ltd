@@ -16,6 +16,8 @@ from .models import (
     MonoblockCameraSettings,
 )
 
+EVENT_ARCHIVE_MAX_SYNC_AGE = timedelta(seconds=60)
+
 
 def _processor_total(processor: dict) -> int | None:
     value = processor.get("total")
@@ -70,6 +72,51 @@ def _color_delta(current: dict[str, int], previous: dict) -> dict[str, int]:
     return result
 
 
+def record_model_delta(
+    *,
+    camera: str,
+    color_delta: dict[str, int],
+    total_delta: int,
+    observed_at: datetime,
+) -> None:
+    """Apply one authoritative count delta to both CRM ledgers.
+
+    The caller must already be inside the transaction that owns the camera
+    cursor.  Keeping this helper free of its own cursor decisions lets snapshot
+    compatibility and the durable event importer share exactly the same CRM
+    accounting path.
+    """
+
+    if not transaction.get_connection().in_atomic_block:
+        raise RuntimeError("camera count delta requires an atomic transaction")
+    if total_delta <= 0:
+        return
+
+    # The daily aggregate remains the fast source for charts.  The append-only
+    # production ledger is deliberately separate: display archives may be
+    # created/deleted by an administrator, while warehouse receipts must never
+    # be duplicated or lost because of those presentation actions.
+    from . import production
+
+    production.record_color_deltas(
+        camera=camera,
+        color_deltas=color_delta,
+        total_delta=total_delta,
+        observed_at=observed_at,
+    )
+
+    row, _ = AlwaysOnDailyAnalytics.objects.select_for_update().get_or_create(
+        camera=camera,
+        day=timezone.localdate(observed_at),
+    )
+    merged_colors = dict(row.model_per_color or {})
+    for color, value in color_delta.items():
+        merged_colors[color] = int(merged_colors.get(color, 0)) + value
+    row.model_total += total_delta
+    row.model_per_color = merged_colors
+    row.save(update_fields=["model_total", "model_per_color", "updated_at"])
+
+
 @transaction.atomic
 def _record_processor(processor: dict, observed_at: datetime) -> None:
     camera = processor.get("cam")
@@ -82,8 +129,8 @@ def _record_processor(processor: dict, observed_at: datetime) -> None:
         return
     colors = _processor_colors(processor)
 
-    authoritative = (
-            processor.get("mode") == "always_on" and bool(processor.get("running"))
+    authoritative = processor.get("mode") == "always_on" and bool(
+        processor.get("running")
     )
     if not authoritative:
         return
@@ -96,6 +143,10 @@ def _record_processor(processor: dict, observed_at: datetime) -> None:
             "last_mode": str(processor.get("mode") or ""),
         },
     )
+    # Event mode is a one-way cutover.  A timeout or an older cached snapshot
+    # must never make the same physical crossing enter CRM for a second time.
+    if cursor.last_event_id is not None:
+        return
     if created:
         delta = total
         color_delta = colors
@@ -109,43 +160,42 @@ def _record_processor(processor: dict, observed_at: datetime) -> None:
     cursor.last_total = total
     cursor.last_per_color = colors
     cursor.last_mode = str(processor.get("mode") or "")[:16]
-    cursor.save(update_fields=["last_total", "last_per_color", "last_mode", "updated_at"])
+    cursor.save(
+        update_fields=["last_total", "last_per_color", "last_mode", "updated_at"]
+    )
 
     if delta <= 0:
         return
 
-    # The daily aggregate remains the fast source for charts.  The append-only
-    # production ledger is deliberately separate: display archives may be
-    # created/deleted by an administrator, while warehouse receipts must never
-    # be duplicated or lost because of those presentation actions.
-    from . import production
-
-    production.record_color_deltas(
+    record_model_delta(
         camera=camera,
-        color_deltas=color_delta,
+        color_delta=color_delta,
         total_delta=delta,
         observed_at=observed_at,
     )
 
-    row, _ = AlwaysOnDailyAnalytics.objects.select_for_update().get_or_create(
-        camera=camera, day=timezone.localdate(observed_at),
-    )
-    merged_colors = dict(row.model_per_color or {})
-    for color, value in color_delta.items():
-        merged_colors[color] = int(merged_colors.get(color, 0)) + value
-    row.model_total += delta
-    row.model_per_color = merged_colors
-    row.save(update_fields=["model_total", "model_per_color", "updated_at"])
 
-
-def record_snapshot(live: dict, observed_at: datetime | None = None) -> None:
+def record_snapshot(
+    live: dict,
+    observed_at: datetime | None = None,
+    *,
+    cameras: set[str] | None = None,
+) -> None:
     observed_at = observed_at or timezone.now()
     processors = live.get("processors") if isinstance(live, dict) else None
     if not isinstance(processors, list):
         return
     for processor in processors:
-        if isinstance(processor, dict):
-            _record_processor(processor, observed_at)
+        if not isinstance(processor, dict):
+            continue
+        if cameras is not None:
+            try:
+                camera = ai.normalize(processor.get("cam"))
+            except ai.AiError:
+                continue
+            if camera not in cameras:
+                continue
+        _record_processor(processor, observed_at)
 
 
 def _row_payload(row: AlwaysOnDailyAnalytics | None, camera: str, day: date) -> dict:
@@ -210,11 +260,15 @@ def _color_payload(colors: dict[str, int]) -> list[dict]:
     ]
 
 
-def _history_payload(rows_by_day: dict[date, AlwaysOnDailyAnalytics], start: date, end: date) -> list[dict]:
+def _history_payload(
+    rows_by_day: dict[date, AlwaysOnDailyAnalytics], start: date, end: date
+) -> list[dict]:
     result = []
     current = start
     while current <= end:
-        result.append(_row_payload(rows_by_day.get(current), "", current) | {"camera": None})
+        result.append(
+            _row_payload(rows_by_day.get(current), "", current) | {"camera": None}
+        )
         current += timedelta(days=1)
     return result
 
@@ -225,9 +279,14 @@ def today_payload() -> dict:
     desired = MonoblockCameraSettings.always_on_sources()
     # Архивные дни остаются в базе ради истории, но в текущий счёт не входят:
     # их мешки уже посчитаны и перенесены в архив.
-    all_rows = list(AlwaysOnDailyAnalytics.objects.filter(
-        camera__in=desired, archived_at__isnull=True))
-    rows_by_camera: dict[str, list[AlwaysOnDailyAnalytics]] = {camera: [] for camera in desired}
+    all_rows = list(
+        AlwaysOnDailyAnalytics.objects.filter(
+            camera__in=desired, archived_at__isnull=True
+        )
+    )
+    rows_by_camera: dict[str, list[AlwaysOnDailyAnalytics]] = {
+        camera: [] for camera in desired
+    }
     for row in all_rows:
         rows_by_camera.setdefault(row.camera, []).append(row)
 
@@ -238,7 +297,8 @@ def today_payload() -> dict:
         colors = _merge_colors(camera_rows)
         color_items = _color_payload(colors)
         cameras.append(
-            _row_payload(by_day.get(day), camera, day) | {
+            _row_payload(by_day.get(day), camera, day)
+            | {
                 "all_time_total": sum(row.total for row in camera_rows),
                 "history": _history_payload(by_day, history_start, day),
                 "colors": color_items,
@@ -250,23 +310,41 @@ def today_payload() -> dict:
     for row in all_rows:
         if row.day < history_start:
             continue
-        item = aggregate_by_day.setdefault(row.day, {
-            "day": row.day.isoformat(), "model_total": 0, "model_per_color": {},
-            "adjustment": 0, "total": 0, "updated_at": None,
-        })
+        item = aggregate_by_day.setdefault(
+            row.day,
+            {
+                "day": row.day.isoformat(),
+                "model_total": 0,
+                "model_per_color": {},
+                "adjustment": 0,
+                "total": 0,
+                "updated_at": None,
+            },
+        )
         item["model_total"] += row.model_total
         item["adjustment"] += row.adjustment
         item["total"] += row.total
-        item["updated_at"] = max(filter(None, [item["updated_at"], row.updated_at]), default=None)
+        item["updated_at"] = max(
+            filter(None, [item["updated_at"], row.updated_at]), default=None
+        )
         for color, value in (row.model_per_color or {}).items():
-            item["model_per_color"][color] = item["model_per_color"].get(color, 0) + int(value)
+            item["model_per_color"][color] = item["model_per_color"].get(
+                color, 0
+            ) + int(value)
     history = []
     current = history_start
     while current <= day:
-        item = aggregate_by_day.get(current, {
-            "day": current.isoformat(), "model_total": 0, "model_per_color": {},
-            "adjustment": 0, "total": 0, "updated_at": None,
-        })
+        item = aggregate_by_day.get(
+            current,
+            {
+                "day": current.isoformat(),
+                "model_total": 0,
+                "model_per_color": {},
+                "adjustment": 0,
+                "total": 0,
+                "updated_at": None,
+            },
+        )
         history.append(item | {"colors": _color_payload(item["model_per_color"])})
         current += timedelta(days=1)
     all_colors = _merge_colors(all_rows)
@@ -281,7 +359,9 @@ def today_payload() -> dict:
         "adjustment": sum(row.adjustment for row in all_rows),
         "history": history,
         "colors": _color_payload(all_colors),
-        "dominant_color": _color_payload(all_colors)[0]["color"] if all_colors else None,
+        "dominant_color": _color_payload(all_colors)[0]["color"]
+        if all_colors
+        else None,
         "cameras": cameras,
     }
 
@@ -297,16 +377,39 @@ def archive_camera(camera: str, note: str, user) -> dict:
     camera = ai.normalize(camera)
     note = " ".join(str(note or "").split())[:500]
 
+    # Serialize archive boundaries with event ingestion.  The API performs a
+    # fresh journal drain immediately before entering here; this lock keeps a
+    # concurrent page from being split across the old and new display period.
+    cursor = (
+        AlwaysOnCounterCursor.objects.select_for_update().filter(camera=camera).first()
+    )
+    if cursor is not None and cursor.event_sync_supported is True:
+        if (
+            cursor.event_caught_up_at is None
+            or cursor.event_sync_error
+            or cursor.event_sync_failed_at is not None
+            or timezone.now() - cursor.event_caught_up_at
+            > EVENT_ARCHIVE_MAX_SYNC_AGE
+        ):
+            raise ValidationError(
+                {
+                    "detail": "Сначала дождитесь синхронизации событий AI",
+                    "code": "camera_events_not_synced",
+                }
+            )
+
     rows = list(
         AlwaysOnDailyAnalytics.objects.select_for_update()
         .filter(camera=camera, archived_at__isnull=True)
         .order_by("day")
     )
     if not rows:
-        raise ValidationError({
-            "detail": "Архивировать нечего — счётчик уже пуст",
-            "code": "nothing_to_archive",
-        })
+        raise ValidationError(
+            {
+                "detail": "Архивировать нечего — счётчик уже пуст",
+                "code": "nothing_to_archive",
+            }
+        )
 
     now = timezone.now()
     archive = AlwaysOnCountArchive.objects.create(
@@ -327,23 +430,26 @@ def archive_camera(camera: str, note: str, user) -> dict:
     today = timezone.localdate()
     closed = [row for row in rows if row.day != today]
     if closed:
-        AlwaysOnDailyAnalytics.objects.filter(
-            pk__in=[row.pk for row in closed]
-        ).update(archived_at=now, archive=archive)
+        AlwaysOnDailyAnalytics.objects.filter(pk__in=[row.pk for row in closed]).update(
+            archived_at=now, archive=archive
+        )
     live_today = next((row for row in rows if row.day == today), None)
     if live_today is not None:
         # Живую строку обнуляем, но её вклад сохраняем снимком — иначе
         # разбивка архива по дням потеряла бы день закрытия.
-        archive.day_rows = [{
-            "day": today.isoformat(),
-            "model_total": live_today.model_total,
-            "adjustment": live_today.adjustment,
-            "total": live_today.total,
-            "model_per_color": _normalized_colors(live_today.model_per_color),
-        }]
+        archive.day_rows = [
+            {
+                "day": today.isoformat(),
+                "model_total": live_today.model_total,
+                "adjustment": live_today.adjustment,
+                "total": live_today.total,
+                "model_per_color": _normalized_colors(live_today.model_per_color),
+            }
+        ]
         archive.save(update_fields=["day_rows"])
         AlwaysOnDailyAnalytics.objects.filter(pk=live_today.pk).update(
-            model_total=0, model_per_color={}, adjustment=0)
+            model_total=0, model_per_color={}, adjustment=0
+        )
     # Сырой счётчик на camera-PC здесь не сбрасывается. Поэтому сохраняем его
     # baseline: если было 100, а после архива стало 140, в новый период должно
     # попасть только 40. Удаление cursor раньше повторно засчитывало все 140 и
@@ -352,13 +458,15 @@ def archive_camera(camera: str, note: str, user) -> dict:
     log_event(
         "always_on_count_archived",
         f"AI 24/7 · {camera}: счётчик обнулён, {archive.total} мешков "
-        f"перенесены в архив"
-        + (f". Примечание: {note}" if note else ""),
+        f"перенесены в архив" + (f". Примечание: {note}" if note else ""),
         user=user,
         payload={
-            "camera": camera, "archive_id": archive.pk,
-            "total": archive.total, "model_total": archive.model_total,
-            "adjustment": archive.adjustment, "days": archive.days,
+            "camera": camera,
+            "archive_id": archive.pk,
+            "total": archive.total,
+            "model_total": archive.model_total,
+            "adjustment": archive.adjustment,
+            "days": archive.days,
             "period_start": archive.period_start.isoformat(),
             "period_end": archive.period_end.isoformat(),
             "note": note,
@@ -380,14 +488,17 @@ def _archive_day_rows(archive: AlwaysOnCountArchive) -> list[dict]:
         for row in archive.daily_rows.all()
     ]
     for snapshot in archive.day_rows or []:
-        rows.append({
-            "day": snapshot.get("day"),
-            "model_total": snapshot.get("model_total", 0),
-            "adjustment": snapshot.get("adjustment", 0),
-            "total": snapshot.get("total", 0),
-            "colors": _color_payload(
-                _normalized_colors(snapshot.get("model_per_color"))),
-        })
+        rows.append(
+            {
+                "day": snapshot.get("day"),
+                "model_total": snapshot.get("model_total", 0),
+                "adjustment": snapshot.get("adjustment", 0),
+                "total": snapshot.get("total", 0),
+                "colors": _color_payload(
+                    _normalized_colors(snapshot.get("model_per_color"))
+                ),
+            }
+        )
     return sorted(rows, key=lambda item: item["day"] or "", reverse=True)
 
 
@@ -405,7 +516,8 @@ def _archive_payload(archive: AlwaysOnCountArchive) -> dict:
         "day_rows": _archive_day_rows(archive),
         "note": archive.note,
         "archived_by_name": (
-            archive.archived_by.username if archive.archived_by else None),
+            archive.archived_by.username if archive.archived_by else None
+        ),
         "created_at": archive.created_at,
     }
 
@@ -422,16 +534,21 @@ def delete_archive(archive_id: int, user) -> dict:
     строка уже занята новыми мешками. Его вклад лежал снимком в day_rows,
     поэтому он прибавляется к этой строке, а не подменяет её.
     """
-    archive = (AlwaysOnCountArchive.objects.select_for_update()
-               .filter(pk=archive_id).first())
+    archive = (
+        AlwaysOnCountArchive.objects.select_for_update().filter(pk=archive_id).first()
+    )
     if archive is None:
-        raise ValidationError({
-            "detail": "Запись архива не найдена", "code": "archive_not_found",
-        })
+        raise ValidationError(
+            {
+                "detail": "Запись архива не найдена",
+                "code": "archive_not_found",
+            }
+        )
 
     restored_days = archive.daily_rows.count()
     AlwaysOnDailyAnalytics.objects.filter(archive=archive).update(
-        archived_at=None, archive=None)
+        archived_at=None, archive=None
+    )
 
     # Снимок дня закрытия: возвращаем его мешки в ту же дату.
     for snapshot in archive.day_rows or []:
@@ -439,7 +556,8 @@ def delete_archive(archive_id: int, user) -> dict:
         if not day:
             continue
         row, _ = AlwaysOnDailyAnalytics.objects.select_for_update().get_or_create(
-            camera=archive.camera, day=day,
+            camera=archive.camera,
+            day=day,
         )
         row.model_total += int(snapshot.get("model_total") or 0)
         row.adjustment += int(snapshot.get("adjustment") or 0)
@@ -447,8 +565,9 @@ def delete_archive(archive_id: int, user) -> dict:
         for color, value in _normalized_colors(snapshot.get("model_per_color")).items():
             merged[color] = int(merged.get(color, 0)) + value
         row.model_per_color = merged
-        row.save(update_fields=["model_total", "adjustment", "model_per_color",
-                                "updated_at"])
+        row.save(
+            update_fields=["model_total", "adjustment", "model_per_color", "updated_at"]
+        )
         restored_days += 1
 
     payload = _archive_payload(archive)
@@ -459,8 +578,10 @@ def delete_archive(archive_id: int, user) -> dict:
         f"{payload['total']} мешков возвращены в счёт",
         user=user,
         payload={
-            "camera": archive.camera, "archive_id": archive_id,
-            "total": payload["total"], "days": restored_days,
+            "camera": archive.camera,
+            "archive_id": archive_id,
+            "total": payload["total"],
+            "days": restored_days,
             "period_start": payload["period_start"],
             "period_end": payload["period_end"],
         },
@@ -469,9 +590,9 @@ def delete_archive(archive_id: int, user) -> dict:
 
 
 def archives_payload(camera: str | None = None) -> list[dict]:
-    rows = (AlwaysOnCountArchive.objects
-            .select_related("archived_by")
-            .prefetch_related("daily_rows"))
+    rows = AlwaysOnCountArchive.objects.select_related("archived_by").prefetch_related(
+        "daily_rows"
+    )
     if camera:
         rows = rows.filter(camera=ai.normalize(camera))
     return [_archive_payload(row) for row in rows]
@@ -480,6 +601,9 @@ def archives_payload(camera: str | None = None) -> list[dict]:
 @transaction.atomic
 def subtract_today(camera: str, amount, reason: str, user, color: str) -> dict:
     camera = ai.normalize(camera)
+    # Production corrections acquire cursor→batch.  Take the cursor before
+    # this function locks the daily row to preserve that global lock order.
+    AlwaysOnCounterCursor.objects.select_for_update().get_or_create(camera=camera)
     try:
         amount = int(amount)
     except (TypeError, ValueError):
@@ -497,18 +621,23 @@ def subtract_today(camera: str, amount, reason: str, user, color: str) -> dict:
 
     day = timezone.localdate()
     row, _ = AlwaysOnDailyAnalytics.objects.select_for_update().get_or_create(
-        camera=camera, day=day,
+        camera=camera,
+        day=day,
     )
     before = row.total
     if amount > before:
-        raise ValidationError({
-            "amount": f"Нельзя вычесть больше текущего итога ({before})",
-        })
+        raise ValidationError(
+            {
+                "amount": f"Нельзя вычесть больше текущего итога ({before})",
+            }
+        )
     available_color = int((row.model_per_color or {}).get(color, 0))
     if amount > available_color:
-        raise ValidationError({
-            "amount": f"Для цвета доступно только {available_color}",
-        })
+        raise ValidationError(
+            {
+                "amount": f"Для цвета доступно только {available_color}",
+            }
+        )
 
     from . import production
 
@@ -526,10 +655,15 @@ def subtract_today(camera: str, amount, reason: str, user, color: str) -> dict:
         f"AI 24/7 · {camera}: итог уменьшен на {amount}. Причина: {reason}",
         user=user,
         payload={
-            "camera": camera, "day": day.isoformat(), "color": color,
+            "camera": camera,
+            "day": day.isoformat(),
+            "color": color,
             "amount": amount,
-            "before": before, "after": row.total, "reason": reason,
-            "model_total": row.model_total, "adjustment": row.adjustment,
+            "before": before,
+            "after": row.total,
+            "reason": reason,
+            "model_total": row.model_total,
+            "adjustment": row.adjustment,
         },
     )
     return _row_payload(row, camera, day)

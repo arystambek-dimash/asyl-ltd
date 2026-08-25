@@ -66,6 +66,7 @@ def settings_for(config=None, **overrides):
         "model_path": Path("best.pt"),
         "model_device": "cpu",
         "prewarm_timeout": 0.3,
+        "event_db_path": Path(":memory:"),
         "conveyor_controllers": {"cam2": config} if config else {},
         "conveyor_heartbeat_seconds": 0.02,
         "conveyor_stale_ai_seconds": 0.25,

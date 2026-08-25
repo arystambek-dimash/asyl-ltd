@@ -15,6 +15,12 @@ from typing import Any
 from .cloud_conveyor import CloudConveyorObserver
 from .contracts import ControlledSessionOptions, Detection, ProcessorOptions
 from .conveyor import ConveyorConflictError, ConveyorSupervisor
+from .event_journal import (
+    CountEvent,
+    CountEventJournal,
+    JournalTransientError,
+    class_weight_kg,
+)
 from .runtime import decode_jpeg
 from .settings import Settings, parse_camera, parse_line
 from .state import LINE_DIRECTIONS, line_payload
@@ -261,6 +267,13 @@ class Track:
     counted: bool = False
 
 
+@dataclass(frozen=True)
+class LineCrossing:
+    detection: Detection
+    track_id: int
+    direction: str
+
+
 class LineTracker:
     def __init__(self):
         self.tracks: dict[int, Track] = {}
@@ -285,6 +298,23 @@ class LineTracker:
         line: tuple[float, float, float, float],
         direction: str,
         shape,
+    ) -> list[Detection]:
+        return self.update_with_callback(
+            detections,
+            line,
+            direction,
+            shape,
+            before_count=None,
+        )
+
+    def update_with_callback(
+        self,
+        detections: list[Detection],
+        line: tuple[float, float, float, float],
+        direction: str,
+        shape,
+        *,
+        before_count: Callable[[LineCrossing], None] | None,
     ) -> list[Detection]:
         self.frame_index += 1
         counted: list[Detection] = []
@@ -319,6 +349,16 @@ class LineTracker:
                 else:
                     movement = "positive" if match.side < side else "negative"
                 if crossed and not match.counted and (direction == "any" or direction == movement):
+                    crossing = LineCrossing(
+                        detection=detection,
+                        track_id=match.identifier,
+                        direction=movement,
+                    )
+                    # The durable journal owns the financial boundary. If its
+                    # commit fails, leave this track on the pre-crossing side
+                    # so a later frame can retry instead of losing the bag.
+                    if before_count is not None:
+                        before_count(crossing)
                     match.counted = True
                     counted.append(detection)
                 match.center = center
@@ -599,7 +639,10 @@ class CameraProcessor:
 
     def close(self) -> None:
         self._stop.set()
-        self._decoder_thread.join(timeout=3)
+        # A decoder that can still submit frames is not stopped. Shutdown is
+        # deliberately fail-closed: keep the journal alive until intake has
+        # actually ended instead of timing out and losing a detected crossing.
+        self._decoder_thread.join()
         self.publisher.close()
 
     def mark_dropped(self) -> None:
@@ -674,19 +717,43 @@ class CameraProcessor:
             if not self.running:
                 self.latest_counted = frozenset()
                 return
-            counted = self.tracker.update(
-                detections,
-                parse_line(self.options.line or self.settings.default_line),
-                self.options.direction,
-                frame.shape,
+            line = parse_line(self.options.line or self.settings.default_line)
+            update_with_callback = getattr(
+                self.tracker, "update_with_callback", None,
             )
+            if update_with_callback is None:
+                # Compatibility for focused test doubles. The production
+                # LineTracker always commits through the callback before it
+                # marks a crossing counted.
+                counted = self.tracker.update(
+                    detections,
+                    line,
+                    self.options.direction,
+                    frame.shape,
+                )
+                for detection in counted:
+                    self._commit_crossing(
+                        LineCrossing(
+                            detection=detection,
+                            track_id=0,
+                            direction=self.options.direction,
+                        ),
+                        accounting_generation,
+                    )
+            else:
+                counted = update_with_callback(
+                    detections,
+                    line,
+                    self.options.direction,
+                    frame.shape,
+                    before_count=lambda crossing: self._commit_crossing(
+                        crossing,
+                        accounting_generation,
+                    ),
+                )
             # Какие именно рамки этого кадра попали в счётчик — по ним оверлей
             # отличает засчитанный мешок от просто замеченного.
             self.latest_counted = frozenset(id(detection) for detection in counted)
-            for detection in counted:
-                self.total += 1
-                self.per_color[detection.label] += 1
-                self.confidence_sums[detection.label] += detection.confidence
             if controlled:
                 assert self.session_id is not None
                 if self.total >= self.target_total:
@@ -727,6 +794,49 @@ class CameraProcessor:
                     self._session_ai_captured_at = control_update[2]
                     self._last_control_progress_sequence = control_update[4]
                     self._session_ai_ready.set()
+
+    def _commit_crossing(
+        self,
+        crossing: LineCrossing,
+        accounting_generation: int,
+    ) -> None:
+        """Durably record one crossing before exposing it in live counters."""
+
+        detection = crossing.detection
+        next_total = self.total + 1
+        weight_kg = class_weight_kg(detection.label)
+        total_weight_after = weight_kg + sum(
+            class_weight_kg(label) * count
+            for label, count in self.per_color.items()
+        )
+        manager = getattr(self, "manager", None)
+        recorder = getattr(manager, "record_count_event", None)
+        if recorder is not None:
+            recorder(CountEvent(
+                created_at=utc_now(),
+                cam=self.camera,
+                source=self.options.source,
+                mode=self.mode,
+                generation=accounting_generation,
+                frame=getattr(self.tracker, "frame_index", 0),
+                track_id=crossing.track_id,
+                class_id=manager.class_id_for(detection.label),
+                class_name=detection.label,
+                confidence=detection.confidence,
+                direction=crossing.direction,
+                point_x=detection.center[0],
+                point_y=detection.center[1],
+                weight_kg=weight_kg,
+                total_after=next_total,
+                total_weight_after=total_weight_after,
+            ))
+
+        self.total = next_total
+        self.per_color[detection.label] = self.per_color.get(detection.label, 0) + 1
+        self.confidence_sums[detection.label] = (
+            self.confidence_sums.get(detection.label, 0.0)
+            + detection.confidence
+        )
 
     def _detection_overlay(self) -> list[dict]:
         """Рамки последнего кадра в долях кадра — для отрисовки в браузере.
@@ -1072,6 +1182,7 @@ class ProcessorManager:
         wagon_detector=None,
         conveyor_supervisor=None,
         cloud_conveyor_observer=None,
+        event_journal=None,
     ):
         self.settings = settings
         self.model = model
@@ -1093,6 +1204,16 @@ class ProcessorManager:
             if cloud_conveyor_observer is not None
             else CloudConveyorObserver(settings)
         )
+        self.event_journal = (
+            event_journal
+            if event_journal is not None
+            else CountEventJournal(settings.event_db_path)
+        )
+        classes = self.model.metadata().get("classes", [])
+        self._class_ids = {
+            str(class_name): class_id
+            for class_id, class_name in enumerate(classes)
+        }
         self.processors: dict[str, CameraProcessor] = {}
         self.always_on_cameras: set[str] = set()
         self.always_on_source = "sub"
@@ -1103,6 +1224,41 @@ class ProcessorManager:
         self._stop = threading.Event()
         self._worker = threading.Thread(target=self._inference_loop, name="inference", daemon=True)
         self._worker.start()
+
+    def class_id_for(self, class_name: str) -> int:
+        try:
+            return self._class_ids[class_name]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"model class is not registered: {class_name}"
+            ) from exc
+
+    def record_count_event(self, event: CountEvent) -> int:
+        # The callback must not return until this exact crossing is durable.
+        # That keeps the track on its pre-crossing side while SQLite is
+        # unavailable. CountEvent.event_key makes a retry safe even if COMMIT
+        # succeeded but its acknowledgement was lost.
+        while True:
+            try:
+                return self.event_journal.append(event)
+            except JournalTransientError:
+                time.sleep(0.1)
+
+    def count_events(
+        self,
+        *,
+        after_id: int,
+        limit: int,
+        cam: str | None = None,
+    ) -> dict:
+        return self.event_journal.page(
+            after_id=after_id,
+            limit=limit,
+            cam=cam,
+        )
+
+    def event_journal_health(self) -> dict:
+        return self.event_journal.health()
 
     def submit(
         self,
@@ -1803,12 +1959,16 @@ class ProcessorManager:
     def close(self) -> None:
         with self._lock:
             processors = list(self.processors.values())
+        # Direct outputs must de-energize before any processor accounting lock:
+        # a durable SQLite retry intentionally holds that lock fail-closed.
+        self.conveyor.close()
         for processor in processors:
+            if getattr(processor, "conveyor_transport", "direct") != "cloud":
+                continue
             session_id, target_total, _goal_reached = processor.control_session()
             if (
                 session_id is not None
                 and target_total is not None
-                and getattr(processor, "conveyor_transport", "direct") == "cloud"
             ):
                 self.cloud_conveyor.terminate(
                     processor.camera,
@@ -1818,10 +1978,12 @@ class ProcessorManager:
                     "shutdown",
                 )
         # Cloud is observation-only. Drain terminal callbacks before stopping
-        # inference; direct outputs are separately de-energized and verified.
+        # inference; direct outputs were already de-energized and verified.
         self.cloud_conveyor.close()
-        self.conveyor.close()
-        self._stop.set()
-        self._worker.join(timeout=3)
         for processor in processors:
             processor.close()
+        self._stop.set()
+        # queue.get wakes within 0.2s. A running crossing may be blocked in
+        # durable retry; wait for its commit before closing the journal.
+        self._worker.join()
+        self.event_journal.close()

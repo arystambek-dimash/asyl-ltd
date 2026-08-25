@@ -78,6 +78,26 @@ def create_app(manager: ProcessorManager) -> FastAPI:
 
     @app.get("/health")
     def health():
+        journal = manager.event_journal_health()
+        if not journal["available"]:
+            return with_startup({
+                "status": "degraded",
+                "model": manager.model.metadata(),
+                "mediamtx": {
+                    "available": None,
+                    "error": "not checked while event journal is unavailable",
+                },
+                "event_journal": journal,
+                "processors": len(manager.processors),
+                "counting": None,
+                "last_frames": {},
+                "capabilities": {
+                    "wagon_plate": manager.wagon_plate_capability(),
+                    "count_events": True,
+                    "conveyor_control": manager.conveyor.capability(),
+                    "conveyor_cloud_observation": manager.cloud_conveyor.capability(),
+                },
+            })
         statuses = manager.statuses()
         try:
             inventory = manager.mediamtx.camera_inventory()
@@ -86,18 +106,38 @@ def create_app(manager: ProcessorManager) -> FastAPI:
             mediamtx = {"available": False, "error": str(exc)}
         processors_healthy = all(item["processor_alive"] for item in statuses)
         return with_startup({
-            "status": "ok" if mediamtx["available"] and processors_healthy else "degraded",
+            "status": (
+                "ok"
+                if mediamtx["available"]
+                and processors_healthy
+                and journal["available"]
+                else "degraded"
+            ),
             "model": manager.model.metadata(),
             "mediamtx": mediamtx,
+            "event_journal": journal,
             "processors": len(statuses),
             "counting": sum(bool(item["running"]) for item in statuses),
             "last_frames": {item["cam"]: item["last_frame_at"] for item in statuses},
             "capabilities": {
                 "wagon_plate": manager.wagon_plate_capability(),
+                "count_events": True,
                 "conveyor_control": manager.conveyor.capability(),
                 "conveyor_cloud_observation": manager.cloud_conveyor.capability(),
             },
         })
+
+    @app.get("/events")
+    def count_events(
+        after_id: int = 0,
+        limit: int = 500,
+        cam: str | None = None,
+    ):
+        return manager.count_events(
+            after_id=after_id,
+            limit=limit,
+            cam=camera_id(cam) if cam is not None else None,
+        )
 
     @app.get("/cameras")
     def cameras():

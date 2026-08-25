@@ -128,9 +128,7 @@ class MonoblockCameraSettings(models.Model):
     always_on_camera_sources = models.JSONField(default=list, blank=True)
     # Одна камера высокого разрешения, закреплённая за будущим контуром
     # круглосуточного распознавания номеров вагонов.
-    wagon_number_camera_source = models.CharField(
-        max_length=32, blank=True, default=""
-    )
+    wagon_number_camera_source = models.CharField(max_length=32, blank=True, default="")
     camera_names = models.JSONField(default=dict, blank=True)
     # Сколько календарных дней держать завершённые заказы на живом борде.
     # 1 означает «только сегодня».
@@ -148,15 +146,17 @@ class MonoblockCameraSettings(models.Model):
     def allowed_sources(cls) -> set[str]:
         row = cls.objects.filter(singleton=True).only("camera_sources").first()
         configured = {
-            source for source in (row.camera_sources if row else [])
+            source
+            for source in (row.camera_sources if row else [])
             if isinstance(source, str) and source
         }
         # Камера, закреплённая за физическим моноблоком, всегда разрешена для
         # его рабочего процесса, даже если администратор убрал её из старого
         # общего списка операторов.
         configured.update(
-            MonoblockDevice.objects.filter(is_active=True)
-            .values_list("camera_source", flat=True)
+            MonoblockDevice.objects.filter(is_active=True).values_list(
+                "camera_source", flat=True
+            )
         )
         return configured
 
@@ -172,20 +172,19 @@ class MonoblockCameraSettings(models.Model):
 
     @classmethod
     def always_on_sources(cls) -> list[str]:
-        row = cls.objects.filter(singleton=True).only(
-            "always_on_camera_sources"
-        ).first()
+        row = (
+            cls.objects.filter(singleton=True).only("always_on_camera_sources").first()
+        )
         sources = row.always_on_camera_sources if row else []
-        return [
-            source for source in sources
-            if isinstance(source, str) and source
-        ]
+        return [source for source in sources if isinstance(source, str) and source]
 
     @classmethod
     def wagon_number_source(cls) -> str:
-        row = cls.objects.filter(singleton=True).only(
-            "wagon_number_camera_source"
-        ).first()
+        row = (
+            cls.objects.filter(singleton=True)
+            .only("wagon_number_camera_source")
+            .first()
+        )
         source = row.wagon_number_camera_source if row else ""
         return source if isinstance(source, str) else ""
 
@@ -194,15 +193,19 @@ class MonoblockDevice(models.Model):
     """Отдельная учётная запись физического моноблока и одна его камера."""
 
     user = models.OneToOneField(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
         related_name="monoblock_device",
     )
     name = models.CharField(max_length=80)
     camera_source = models.CharField(max_length=32, unique=True)
     is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="created_monoblock_devices",
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_monoblock_devices",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -221,7 +224,66 @@ class AlwaysOnCounterCursor(models.Model):
     last_total = models.PositiveIntegerField(default=0)
     last_per_color = models.JSONField(default=dict, blank=True)
     last_mode = models.CharField(max_length=16, blank=True, default="")
+    # ``NULL`` keeps compatibility with camera-PC builds that only expose
+    # aggregate snapshots.  The first successful /events response switches
+    # this camera permanently to the durable event stream, including when the
+    # first page is empty and the high-water mark is therefore zero.
+    last_event_id = models.PositiveBigIntegerField(null=True, blank=True)
+    event_journal_id = models.CharField(max_length=64, null=True, blank=True)
+    last_event_at = models.DateTimeField(null=True, blank=True)
+    event_caught_up_at = models.DateTimeField(null=True, blank=True)
+    # NULL: not probed since this schema was installed; False: explicit 404
+    # legacy service; True: durable event journal is the sole count source.
+    event_sync_supported = models.BooleanField(null=True, blank=True)
+    event_boundary_validated = models.BooleanField(default=False)
+    event_drain_required_at = models.DateTimeField(null=True, blank=True)
+    event_stop_drain_requested_at = models.DateTimeField(null=True, blank=True)
+    event_stop_confirmed_at = models.DateTimeField(null=True, blank=True)
+    event_compat_total = models.PositiveIntegerField(null=True, blank=True)
+    event_sync_error = models.CharField(max_length=500, blank=True, default="")
+    event_sync_failed_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            # Old backend images know only ``last_total``.  During an image
+            # rollback they must not apply snapshots behind a frozen event
+            # cursor and make a later re-rollout count the same crossings
+            # twice.  New event ingestion advances both fields atomically.
+            models.CheckConstraint(
+                condition=(
+                    Q(last_event_id__isnull=True)
+                    | (
+                        Q(event_compat_total__isnull=False)
+                        & Q(last_total=models.F("event_compat_total"))
+                    )
+                ),
+                name="cameras_event_cursor_compat_total",
+            ),
+        ]
+
+
+class AlwaysOnImportedEvent(models.Model):
+    """One durable camera-PC count event applied to CRM at most once."""
+
+    camera = models.CharField(max_length=32)
+    upstream_event_id = models.PositiveBigIntegerField()
+    occurred_at = models.DateTimeField(db_index=True)
+    source = models.CharField(max_length=16)
+    mode = models.CharField(max_length=16)
+    class_name = models.CharField(max_length=100, blank=True, default="")
+    total_after = models.PositiveBigIntegerField(null=True, blank=True)
+    applied_to_analytics = models.BooleanField(default=False)
+    imported_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["upstream_event_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["camera", "upstream_event_id"],
+                name="cameras_one_imported_event_per_camera_id",
+            ),
+        ]
 
 
 class AlwaysOnDailyAnalytics(models.Model):
@@ -239,8 +301,11 @@ class AlwaysOnDailyAnalytics(models.Model):
     # Прямая ссылка на закрытие: по одной метке времени дни двух архивов
     # надёжно не разделить, а разбивка по дням нужна именно по каждому.
     archive = models.ForeignKey(
-        "cameras.AlwaysOnCountArchive", null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="daily_rows",
+        "cameras.AlwaysOnCountArchive",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="daily_rows",
     )
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -433,8 +498,11 @@ class AlwaysOnCountArchive(models.Model):
     day_rows = models.JSONField(default=list, blank=True)
     note = models.CharField(max_length=500, blank=True, default="")
     archived_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="always_on_archives",
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="always_on_archives",
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
