@@ -67,6 +67,11 @@ services:
       CONVEYOR_MAX_RUN_SECONDS: "${CONVEYOR_MAX_RUN_SECONDS:-300}"
       THROTTLE_CONVEYOR_DEVICE: "${THROTTLE_CONVEYOR_DEVICE:-180/min}"
       THROTTLE_CONVEYOR_AI: "${THROTTLE_CONVEYOR_AI:-6000/min}"
+      # Inbound camera-PC webhook. An empty local value intentionally leaves
+      # the endpoint fail-closed; production requires its own secret below.
+      VEHICLE_PLATE_WEBHOOK_TOKEN: "${VEHICLE_PLATE_WEBHOOK_TOKEN:-}"
+      VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES: "${VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES:-65536}"
+      THROTTLE_VEHICLE_PLATE_WEBHOOK: "${THROTTLE_VEHICLE_PLATE_WEBHOOK:-120/min}"
       # Пусто по умолчанию: локальная разработка не должна читать production
       # весы. Для интеграционной проверки задайте адреса в .env.
       WAGON_SCALE_API_URL: "${WAGON_SCALE_API_URL:-}"

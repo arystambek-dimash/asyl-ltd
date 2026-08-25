@@ -1,19 +1,44 @@
 from django.urls import path
+
+from .vehicle_plate_events import VehiclePlateEventListView, VehiclePlateWebhookView
 from .views import (
-    CameraAiRecordingVideoView, CameraAiRecordingView, CameraAiResetView,
-    CameraAiSessionHistoryView, CameraAiSessionListView, CameraAiView,
-    CameraConveyorStopView,
-    CameraAuthView, CameraCountingLineView, CameraHealthView, CameraListView, CameraTokenView,
     AlwaysOnAnalyticsArchiveView,
-    AlwaysOnAnalyticsSubtractView, AlwaysOnAnalyticsView,
+    AlwaysOnAnalyticsSubtractView,
+    AlwaysOnAnalyticsView,
     AlwaysOnCameraSettingsView,
-    AlwaysOnDetectionsView, MonoblockCameraSettingsView, ShippingBoardSettingsView,
-    AlwaysOnProductionView, AlwaysOnStockRetryView,
-    MonoblockDeviceDetailView, MonoblockDeviceListView,
+    AlwaysOnDetectionsView,
+    AlwaysOnProductionView,
+    AlwaysOnStockRetryView,
+    CameraAiRecordingVideoView,
+    CameraAiRecordingView,
+    CameraAiResetView,
+    CameraAiSessionHistoryView,
+    CameraAiSessionListView,
+    CameraAiView,
+    CameraAuthView,
+    CameraConveyorStopView,
+    CameraCountingLineView,
+    CameraHealthView,
+    CameraListView,
+    CameraTokenView,
+    MonoblockCameraSettingsView,
+    MonoblockDeviceDetailView,
+    MonoblockDeviceListView,
+    ShippingBoardSettingsView,
     WagonNumberCameraSettingsView,
 )
 
 urlpatterns = [
+    path(
+        "integrations/vehicle-plate-events",
+        VehiclePlateWebhookView.as_view(),
+        name="vehicle-plate-events-webhook",
+    ),
+    path(
+        "vehicle-plate-events",
+        VehiclePlateEventListView.as_view(),
+        name="vehicle-plate-events-list",
+    ),
     path("cameras/", CameraListView.as_view()),
     path("cameras/token/", CameraTokenView.as_view()),
     path("cameras/auth/", CameraAuthView.as_view()),

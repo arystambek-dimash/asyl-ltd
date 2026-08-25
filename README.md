@@ -618,6 +618,14 @@ DEGRADED/OUTAGE/RECOVERY по-прежнему доставляются неза
 (config/throttles.py, поверх nginx-лимитов). Единый обработчик ошибок
 (`config/exceptions.py`) нормализует ответы к `{"detail", "code"}`.
 
+### Номера автомобилей с camera-PC
+
+AI на ПК камер передаёт только подтверждённые метаданные номера в защищённый
+HTTPS webhook `https://asyl-ltd.kz/api/integrations/vehicle-plate-events`
+(без завершающего `/`). Настройка токена, точный JSON-контракт, проверка и
+откат описаны в [deploy/vehicle-plate-events.md](deploy/vehicle-plate-events.md).
+Фото и видео для этой интеграции не передаются и не сохраняются.
+
 ### ApiPay / Kaspi Pay
 
 - «Kaspi Pay · QR» создаётся через `POST /invoices/qr`; «Счёт на оплату»

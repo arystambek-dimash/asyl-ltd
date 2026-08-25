@@ -100,6 +100,15 @@ describe("подсветка активного пункта", () => {
     expect(screen.getByRole("link", { name: "Касса" })).toHaveAttribute("href", "/accounting");
     expect(screen.queryByRole("link", { name: "Отчёты" })).not.toBeInTheDocument();
   });
+
+  it("показывает журнал машин только с правом просмотра событий", () => {
+    const { rerender } = render(<Sidebar me={{ ...factoryUser, permissions: ["events.view"] }} />);
+
+    expect(screen.getByRole("link", { name: "Журнал машин" })).toHaveAttribute("href", "/vehicle-plate-events");
+
+    rerender(<Sidebar me={{ ...factoryUser, permissions: [] }} />);
+    expect(screen.queryByRole("link", { name: "Журнал машин" })).not.toBeInTheDocument();
+  });
 });
 
 describe("mobile Sidebar", () => {

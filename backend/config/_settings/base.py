@@ -113,6 +113,9 @@ REST_FRAMEWORK = {
         "conveyor_ai": os.environ.get(
             "THROTTLE_CONVEYOR_AI", "6000/min"
         ),
+        "vehicle_plate_webhook": os.environ.get(
+            "THROTTLE_VEHICLE_PLATE_WEBHOOK", "120/min"
+        ),
     },
     "NUM_PROXIES": int(os.environ.get("THROTTLE_NUM_PROXIES", "0")),
 }
@@ -410,6 +413,27 @@ if (
     raise ValueError(
         "CONVEYOR_AI_CALLBACK_TOKEN_SHA256 must be a lowercase SHA-256 digest"
     )
+
+# Dedicated inbound credential for vehicle-plate events. It deliberately does
+# not reuse AI_SERVICE_API_KEY (outbound backend -> camera-PC) or conveyor
+# credentials. An empty value keeps the webhook fail-closed until provisioned.
+VEHICLE_PLATE_WEBHOOK_TOKEN = os.environ.get(
+    "VEHICLE_PLATE_WEBHOOK_TOKEN", ""
+).strip()
+if VEHICLE_PLATE_WEBHOOK_TOKEN and (
+    len(VEHICLE_PLATE_WEBHOOK_TOKEN) < 32
+    or len(VEHICLE_PLATE_WEBHOOK_TOKEN) > 512
+    or any(ord(char) < 33 or ord(char) > 126 for char in VEHICLE_PLATE_WEBHOOK_TOKEN)
+):
+    raise ValueError(
+        "VEHICLE_PLATE_WEBHOOK_TOKEN must contain 32-512 printable ASCII characters"
+    )
+VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES = _bounded_int_env(
+    "VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES",
+    64 * 1024,
+    1024,
+    256 * 1024,
+)
 CONVEYOR_DEVICE_SYNC_MS = _bounded_int_env(
     "CONVEYOR_DEVICE_SYNC_MS", 500, 100, 500
 )

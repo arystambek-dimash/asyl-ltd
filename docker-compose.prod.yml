@@ -55,6 +55,11 @@ x-backend-environment: &backend-environment
   CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS: ${CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS:-750}
   THROTTLE_CONVEYOR_DEVICE: ${THROTTLE_CONVEYOR_DEVICE:-180/min}
   THROTTLE_CONVEYOR_AI: ${THROTTLE_CONVEYOR_AI:-6000/min}
+  # A distinct host-only secret for the inbound camera-PC webhook. Requiring
+  # it at Compose validation prevents an accidentally unauthenticated rollout.
+  VEHICLE_PLATE_WEBHOOK_TOKEN: ${VEHICLE_PLATE_WEBHOOK_TOKEN:?set VEHICLE_PLATE_WEBHOOK_TOKEN}
+  VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES: ${VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES:-65536}
+  THROTTLE_VEHICLE_PLATE_WEBHOOK: ${THROTTLE_VEHICLE_PLATE_WEBHOOK:-120/min}
   # Весов вагонов пока нет. Явно пустое значение не позволяет случайно взять
   # вес машины для операции прихода.
   WAGON_SCALE_API_URL: ${WAGON_SCALE_API_URL-}

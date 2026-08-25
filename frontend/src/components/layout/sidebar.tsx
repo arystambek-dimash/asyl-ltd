@@ -10,6 +10,7 @@ import {
   ClipboardList,
   Users,
   Truck,
+  CarFront,
   ScrollText,
   ListChecks,
   BarChart3,
@@ -85,6 +86,7 @@ function staffSections(): NavSection[] {
     {
       title: "Управление",
       items: [
+        { href: "/vehicle-plate-events", label: "Журнал машин", icon: CarFront, perm: "events.view" },
         { href: "/events", label: "Журнал", icon: ScrollText, perm: "events.view" },
         {
           href: "/management/employees",

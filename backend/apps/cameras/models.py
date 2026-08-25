@@ -286,6 +286,55 @@ class AlwaysOnImportedEvent(models.Model):
         ]
 
 
+class VehiclePlateEvent(models.Model):
+    """Metadata-only vehicle plate observation received from the camera PC.
+
+    The edge service owns detection/OCR and retains no media in this table.
+    ``event_id`` is the durable idempotency boundary between retries from the
+    camera PC and CRM ingestion.
+    """
+
+    RECEIVED = "received"
+    PROCESSED = "processed"
+    FAILED = "failed"
+    PROCESSING_STATUSES = (
+        (RECEIVED, "Received"),
+        (PROCESSED, "Processed"),
+        (FAILED, "Failed"),
+    )
+
+    event_id = models.UUIDField(unique=True)
+    vehicle_number = models.CharField(max_length=8)
+    camera = models.CharField(max_length=32)
+    source = models.CharField(max_length=4)
+    detected_at = models.DateTimeField()
+    received_at = models.DateTimeField(auto_now_add=True)
+    stationary_seconds = models.DecimalField(max_digits=8, decimal_places=3)
+    confirmation_votes = models.PositiveSmallIntegerField()
+    detector_confidence = models.DecimalField(max_digits=5, decimal_places=4)
+    ocr_confidence = models.DecimalField(max_digits=5, decimal_places=4)
+    payload_json = models.JSONField(default=dict)
+    processing_status = models.CharField(
+        max_length=16,
+        choices=PROCESSING_STATUSES,
+        default=RECEIVED,
+    )
+
+    class Meta:
+        ordering = ["-detected_at", "-id"]
+        indexes = [
+            models.Index(
+                fields=["vehicle_number"],
+                name="plate_vehicle_number_idx",
+            ),
+            models.Index(fields=["detected_at"], name="plate_detected_at_idx"),
+            models.Index(
+                fields=["camera", "-detected_at"],
+                name="plate_camera_detected_idx",
+            ),
+        ]
+
+
 class AlwaysOnDailyAnalytics(models.Model):
     """Накопленный 24/7-счёт за день и аудируемая ручная поправка."""
 

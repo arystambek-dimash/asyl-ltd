@@ -31,6 +31,9 @@ jobs:
           CAMERA_PASS: ci-compose-camera
           APIPAY_API_KEY: ci-compose-apipay
           APIPAY_WEBHOOK_SECRET: ci-compose-webhook
+          # Non-secret shape-only value: production reads the real token only
+          # from the protected host .env, never from CI.
+          VEHICLE_PLATE_WEBHOOK_TOKEN: ci-compose-vehicle-plate-token-32-chars
           BACKEND_IMAGE_REF: ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           FRONTEND_IMAGE_REF: ghcr.io/arystambek-dimash/asyl-ltd-frontend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
         run: docker compose -f docker-compose.prod.yml config --quiet
