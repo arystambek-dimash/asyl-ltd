@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import http.client
 import json
+import logging
 import math
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from threading import Lock
+from time import monotonic
 from typing import Any
+from uuid import uuid4
 
 from django.conf import settings
+from django.core.cache import cache, caches
+from django.db import DatabaseError, connection
 from rest_framework.exceptions import APIException
 
 MAX_RESPONSE_BYTES = 32 * 1024
@@ -27,6 +35,30 @@ TRUCK_SCALE_KEY = "truck"
 # New callers should always choose one of the explicit plural scale routes.
 DEFAULT_SCALE_KEY = TRUCK_SCALE_KEY
 SCALE_KEYS = frozenset({WAGON_SCALE_KEY, TRUCK_SCALE_KEY})
+
+CAPTURE_LOCK_PREFIX = "grain:authoritative-scale-capture:v1"
+# Outlive the 60-second Gunicorn request ceiling plus cleanup/release grace.
+CAPTURE_LOCK_MIN_SECONDS = 90
+CAPTURE_LOCK_MARGIN_SECONDS = 15
+CAPTURE_DB_TIMEOUT_MAX_SECONDS = 5
+CAPTURE_DB_TIMEOUT_GRACE_SECONDS = 5
+CAPTURE_ADVISORY_NAMESPACE = 0x4153594C
+_CAPTURE_ADVISORY_IDS = {
+    WAGON_SCALE_KEY: 1,
+    TRUCK_SCALE_KEY: 2,
+}
+_CAPTURE_LEASE_DEADLINE: ContextVar[float | None] = ContextVar(
+    "grain_scale_capture_lease_deadline",
+    default=None,
+)
+_LOCAL_CAPTURE_LOCK_GUARD = Lock()
+_COMPARE_AND_DELETE = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('del', KEYS[1])
+end
+return 0
+"""
+log = logging.getLogger(__name__)
 
 _URL_SETTING_BY_SCALE = {
     WAGON_SCALE_KEY: "WAGON_SCALE_API_URL",
@@ -50,6 +82,18 @@ class TruckScaleNotReady(APIException):
     status_code = 409
     default_detail = "Весы ещё не готовы зафиксировать вес."
     default_code = "truck_scale_not_ready"
+
+
+class TruckScaleCaptureBusy(APIException):
+    status_code = 409
+    default_detail = "Весы уже фиксируют другое взвешивание."
+    default_code = "truck_scale_capture_busy"
+
+
+class TruckScaleApplyUnavailable(APIException):
+    status_code = 503
+    default_detail = "Не удалось безопасно сохранить показание весов."
+    default_code = "truck_scale_apply_unavailable"
 
 
 class TruckScaleMalformedResponse(APIException):
@@ -81,6 +125,171 @@ class ScaleObservation:
     stale: bool
     age_seconds: Decimal | None
     updated_at: str | None
+
+
+def authoritative_capture_lock_key(scale_key: str) -> str:
+    if scale_key not in SCALE_KEYS:
+        raise ValueError(f"Unknown truck scale: {scale_key}")
+    return f"{CAPTURE_LOCK_PREFIX}:{scale_key}"
+
+
+def _capture_lock_seconds() -> int:
+    try:
+        timeout = math.ceil(float(settings.TRUCK_SCALE_TIMEOUT_SECONDS))
+    except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+        raise TruckScaleUnavailable() from exc
+    if timeout <= 0:
+        raise TruckScaleUnavailable()
+    return max(CAPTURE_LOCK_MIN_SECONDS, timeout + CAPTURE_LOCK_MARGIN_SECONDS)
+
+
+def authoritative_db_timeout_ms() -> int:
+    """Bound each PostgreSQL apply statement inside the remaining lease."""
+
+    try:
+        scale_timeout = math.ceil(float(settings.TRUCK_SCALE_TIMEOUT_SECONDS))
+    except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+        raise TruckScaleUnavailable() from exc
+    remaining_seconds = _capture_lock_seconds() - scale_timeout
+    lease_deadline = _CAPTURE_LEASE_DEADLINE.get()
+    if lease_deadline is not None:
+        remaining_seconds = min(
+            remaining_seconds,
+            lease_deadline - monotonic(),
+        )
+    budget_seconds = min(
+        CAPTURE_DB_TIMEOUT_MAX_SECONDS,
+        remaining_seconds - CAPTURE_DB_TIMEOUT_GRACE_SECONDS,
+    )
+    if budget_seconds <= 0:
+        raise TruckScaleApplyUnavailable("Истёк безопасный срок сохранения веса.")
+    return max(1, math.floor(budget_seconds * 1000))
+
+
+def configure_authoritative_db_timeouts() -> None:
+    """Apply transaction-local PostgreSQL limits before any blocking write."""
+
+    if connection.vendor != "postgresql":
+        return
+    if not connection.in_atomic_block:
+        raise DatabaseError("Authoritative DB timeouts require an atomic block")
+    timeout_ms = authoritative_db_timeout_ms()
+    with connection.cursor() as cursor:
+        cursor.execute(f"SET LOCAL lock_timeout = '{timeout_ms}ms'")
+        cursor.execute(f"SET LOCAL statement_timeout = '{timeout_ms}ms'")
+
+
+def _claim_database_capture(scale_key: str) -> bool:
+    """Try a PostgreSQL session lock that survives Redis lease expiry."""
+
+    if connection.vendor != "postgresql":
+        return False
+    advisory_id = _CAPTURE_ADVISORY_IDS[scale_key]
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_try_advisory_lock(%s, %s)",
+                [CAPTURE_ADVISORY_NAMESPACE, advisory_id],
+            )
+            row = cursor.fetchone()
+    except DatabaseError as exc:
+        connection.close()
+        raise TruckScaleUnavailable(
+            "Не удалось заблокировать весы в базе данных."
+        ) from exc
+    if row != (True,):
+        raise TruckScaleCaptureBusy()
+    return True
+
+
+def _release_database_capture(scale_key: str) -> None:
+    advisory_id = _CAPTURE_ADVISORY_IDS[scale_key]
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_unlock(%s, %s)",
+                [CAPTURE_ADVISORY_NAMESPACE, advisory_id],
+            )
+            row = cursor.fetchone()
+        if row != (True,):
+            log.error("PostgreSQL scale advisory lock was not owned at release")
+    except DatabaseError:
+        # Closing the exact session is the fail-closed release for a
+        # session-level advisory lock. PostgreSQL also releases it on worker
+        # death, independently of the finite Redis lease.
+        log.exception("Could not release PostgreSQL scale advisory lock")
+        connection.close()
+
+
+def _redis_release_owned_capture(lock_key: str, owner: str) -> bool | None:
+    backend = caches["default"]
+    adapter = getattr(backend, "_cache", None)
+    get_client = getattr(adapter, "get_client", None)
+    serializer = getattr(adapter, "_serializer", None)
+    if not callable(get_client) or serializer is None:
+        return None
+
+    key = backend.make_and_validate_key(lock_key)
+    client = get_client(key, write=True)
+    encoded_owner = serializer.dumps(owner)
+    return bool(client.eval(_COMPARE_AND_DELETE, 1, key, encoded_owner))
+
+
+def _claim_capture_lock(lock_key: str, owner: str, timeout: int) -> bool:
+    backend = caches["default"]
+    adapter = getattr(backend, "_cache", None)
+    if callable(getattr(adapter, "get_client", None)):
+        return bool(cache.add(lock_key, owner, timeout=timeout))
+    # LocMemCache is process-local and its add is atomic. Guard both add and
+    # compare-delete so local/test threads cannot delete a reacquired owner.
+    with _LOCAL_CAPTURE_LOCK_GUARD:
+        return bool(cache.add(lock_key, owner, timeout=timeout))
+
+
+def _release_capture_lock(lock_key: str, owner: str) -> None:
+    try:
+        released = _redis_release_owned_capture(lock_key, owner)
+        if released is not None:
+            return
+        with _LOCAL_CAPTURE_LOCK_GUARD:
+            if cache.get(lock_key) == owner:
+                cache.delete(lock_key)
+    except Exception:  # pragma: no cover - cache outage during best-effort release
+        log.exception("Could not release authoritative scale capture lock")
+
+
+@contextmanager
+def authoritative_capture(scale_key: str = DEFAULT_SCALE_KEY):
+    """Serialize one authoritative physical read through its atomic apply.
+
+    Production Redis provides a cross-worker lease and owner-safe Lua release.
+    Local/test LocMemCache uses an equivalent process-local guarded fallback.
+    """
+
+    lock_key = authoritative_capture_lock_key(scale_key)
+    owner = uuid4().hex
+    lock_seconds = _capture_lock_seconds()
+    lease_deadline = monotonic() + lock_seconds
+    try:
+        acquired = _claim_capture_lock(lock_key, owner, lock_seconds)
+    except Exception as exc:
+        raise TruckScaleUnavailable("Не удалось заблокировать весы.") from exc
+    if not acquired:
+        raise TruckScaleCaptureBusy()
+    deadline_token = _CAPTURE_LEASE_DEADLINE.set(lease_deadline)
+    database_locked = False
+    try:
+        database_locked = _claim_database_capture(scale_key)
+        yield
+    finally:
+        try:
+            if database_locked:
+                _release_database_capture(scale_key)
+        finally:
+            try:
+                _release_capture_lock(lock_key, owner)
+            finally:
+                _CAPTURE_LEASE_DEADLINE.reset(deadline_token)
 
 
 def _api_url(scale_key: str = DEFAULT_SCALE_KEY) -> str:

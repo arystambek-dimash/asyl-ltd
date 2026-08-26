@@ -128,7 +128,7 @@ def test_passage_list_is_filterable_by_direction(auth_client, gate_operator):
         "/api/grain/wagons/?direction=intake")
 
     assert passages.status_code == 200
-    assert [row["number"] for row in passages.data] == ["111 AAA 02"]
+    assert [row["number"] for row in passages.data] == ["111AAA02"]
     assert all(row["direction"] == "intake" for row in intakes.data)
 
 

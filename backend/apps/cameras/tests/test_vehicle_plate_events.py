@@ -520,6 +520,11 @@ def test_internal_list_returns_paginated_contract(auth_client, user_with_perms):
         "detector_confidence": 0.91,
         "ocr_confidence": 0.96,
         "processing_status": "received",
+        "processing_attempts": 0,
+        "processing_action": "",
+        "processing_error": "",
+        "processing_started_at": None,
+        "processed_at": None,
     }
     assert first.pk not in {item["id"] for item in response.data["results"]}
     assert response["Cache-Control"] == "no-store"

@@ -72,6 +72,12 @@ services:
       VEHICLE_PLATE_WEBHOOK_TOKEN: "${VEHICLE_PLATE_WEBHOOK_TOKEN:-}"
       VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES: "${VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES:-65536}"
       THROTTLE_VEHICLE_PLATE_WEBHOOK: "${THROTTLE_VEHICLE_PLATE_WEBHOOK:-120/min}"
+      # Local development never drives a physical export workflow unless it is
+      # explicitly enabled. Production is also fail-closed by default.
+      VEHICLE_PLATE_AUTO_EXPORT_ENABLED: "${VEHICLE_PLATE_AUTO_EXPORT_ENABLED:-0}"
+      VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME: "${VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME:-Отруби}"
+      VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS: "${VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS:-15}"
+      VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS: "${VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS:-60}"
       # Пусто по умолчанию: локальная разработка не должна читать production
       # весы. Для интеграционной проверки задайте адреса в .env.
       WAGON_SCALE_API_URL: "${WAGON_SCALE_API_URL:-}"

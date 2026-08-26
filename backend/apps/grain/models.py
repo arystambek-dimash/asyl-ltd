@@ -11,7 +11,7 @@ from django.conf import settings
 from django.db import models
 from django.db.models import Sum
 
-from .statuses import EXPECTED, WAGON_STATUSES
+from .statuses import EXPECTED, ON_SITE_STATUSES, WAGON_STATUSES
 
 
 class GrainSettings(models.Model):
@@ -181,6 +181,13 @@ class Wagon(models.Model):
         on_delete=models.SET_NULL,
         related_name="grain_wagon",
     )
+    exit_vehicle_plate_event = models.OneToOneField(
+        "cameras.VehiclePlateEvent",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="grain_exit_wagon",
+    )
     status = models.CharField(max_length=30, default=EXPECTED)
     unplanned = models.BooleanField(default=False)
     # Вес по документам на конкретный вагон (для проверки расхождений).
@@ -229,6 +236,17 @@ class Wagon(models.Model):
             models.CheckConstraint(
                 name="wagon_direction_valid",
                 condition=models.Q(direction__in=["intake", "passage"]),
+            ),
+            models.UniqueConstraint(
+                fields=["number"],
+                condition=(
+                    models.Q(
+                        direction="passage",
+                        status__in=sorted(ON_SITE_STATUSES),
+                    )
+                    & ~models.Q(number="")
+                ),
+                name="grain_one_active_passage_plate",
             ),
         ]
 

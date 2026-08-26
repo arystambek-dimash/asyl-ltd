@@ -691,6 +691,7 @@ function GrainPageInner() {
     arriveOpen ? "/grain/supplies/?status=expected&awaiting_arrival=1" : null,
     100,
   );
+  useVisiblePolling(wagons.reload, 10_000, tab === "on_site" || tab === "finished");
 
   function refreshAll() {
     void supplies.reload();
@@ -726,7 +727,7 @@ function GrainPageInner() {
       description={
         direction === "intake"
           ? "Приход: поезд привозит зерно. Вагонные весы пока не подключены; весы машин вывоза здесь не используются."
-          : "Вывоз: машина заезжает пустой, забирает груз и повторно взвешивается перед выездом."
+          : "Вывоз: камера автоматически создаёт рейс и фиксирует оба веса; ручное оформление остаётся резервным вариантом."
       }
       actions={
         <GrainToolbar

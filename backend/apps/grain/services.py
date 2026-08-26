@@ -4,13 +4,16 @@
 резервом и оприходованием — два вагона не займут одно и то же место.
 """
 
+import re
+from dataclasses import dataclass
 from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
 
-from django.db import IntegrityError, transaction
+from django.conf import settings
+from django.db import InterfaceError, IntegrityError, OperationalError, transaction
 from django.utils import timezone
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import APIException, NotFound, ValidationError
 
 from apps.cameras.models import VehiclePlateEvent
 from apps.eventlog.services import log_event
@@ -35,6 +38,13 @@ VEHICLE_PLATE_SOURCE = "main"
 VEHICLE_PLATE_MAX_AGE = timedelta(minutes=5)
 VEHICLE_PLATE_MAX_FUTURE = timedelta(minutes=1)
 VEHICLE_PLATE_CANDIDATE_LIMIT = 5
+VEHICLE_PLATE_AUTO_MAX_FUTURE = timedelta(seconds=5)
+KZ_VEHICLE_PLATE_RE = re.compile(r"^[0-9]{3}[A-Z]{3}[0-9]{2}$")
+
+AUTO_ACTION_ENTRY = "entry"
+AUTO_ACTION_EXIT = "exit"
+AUTO_ACTION_IGNORED = "ignored"
+AUTO_ACTION_MANUAL_ENTRY = "manual_entry"
 
 
 def _error(detail: str, code: str) -> ValidationError:
@@ -377,20 +387,20 @@ def record_scale_weight(
     """
     _ensure_scale_action_ready(wagon, action)
     expected_status = wagon.status
-    scale_key = (
-        scale.TRUCK_SCALE_KEY
-        if wagon.is_passage
-        else scale.WAGON_SCALE_KEY
-    )
-    reading = scale.read_truck_scale(scale_key)
-    return _store_scale_weight(
-        wagon.pk,
-        action,
-        reading,
-        user,
-        expected_status=expected_status,
-        scale_key=scale_key,
-    )
+    scale_key = scale.TRUCK_SCALE_KEY if wagon.is_passage else scale.WAGON_SCALE_KEY
+    with scale.authoritative_capture(scale_key):
+        reading = scale.read_truck_scale(scale_key)
+        try:
+            return _store_scale_weight(
+                wagon.pk,
+                action,
+                reading,
+                user,
+                expected_status=expected_status,
+                scale_key=scale_key,
+            )
+        except (OperationalError, InterfaceError) as exc:
+            raise scale.TruckScaleApplyUnavailable() from exc
 
 
 @transaction.atomic
@@ -403,6 +413,7 @@ def _store_scale_weight(
     expected_status: str,
     scale_key: str,
 ) -> Wagon:
+    scale.configure_authoritative_db_timeouts()
     # Lock only the wagon row. Nullable joins cannot be locked by PostgreSQL,
     # and related objects are loaded lazily where a transition needs them.
     wagon = Wagon.objects.select_for_update(of=("self",)).get(pk=wagon_id)
@@ -413,9 +424,7 @@ def _store_scale_weight(
         )
     _ensure_scale_action_ready(wagon, action)
     expected_scale_key = (
-        scale.TRUCK_SCALE_KEY
-        if wagon.is_passage
-        else scale.WAGON_SCALE_KEY
+        scale.TRUCK_SCALE_KEY if wagon.is_passage else scale.WAGON_SCALE_KEY
     )
     if scale_key != expected_scale_key:
         raise _error(
@@ -961,9 +970,15 @@ def inventory_wagon(wagon: Wagon, user, allocations: list[dict] | None = None) -
 
 
 @transaction.atomic
-def register_exit(wagon: Wagon, user, note: str = "") -> Wagon:
+def register_exit(
+    wagon: Wagon,
+    user,
+    note: str = "",
+    *,
+    occurred_at=None,
+) -> Wagon:
     ensure_transition(wagon, st.EXITED)
-    wagon.exited_at = timezone.now()
+    wagon.exited_at = occurred_at or timezone.now()
     wagon.exit_note = note
     wagon.save(update_fields=["exited_at", "exit_note"])
     _set_status(wagon, st.EXITED, user, f"Вагон {wagon.number} выехал")
@@ -1066,6 +1081,7 @@ def vehicle_plate_candidates(*, now=None) -> list[VehiclePlateEvent]:
             source=VEHICLE_PLATE_SOURCE,
             processing_status=VehiclePlateEvent.RECEIVED,
             grain_wagon__isnull=True,
+            grain_exit_wagon__isnull=True,
             detected_at__gte=oldest,
             detected_at__lte=newest,
             received_at__gte=oldest,
@@ -1087,9 +1103,7 @@ def _parse_vehicle_plate_event_id(raw_event_id) -> UUID:
 def _locked_vehicle_plate_event(raw_event_id) -> VehiclePlateEvent:
     event_id = _parse_vehicle_plate_event_id(raw_event_id)
     event = (
-        VehiclePlateEvent.objects.select_for_update()
-        .filter(event_id=event_id)
-        .first()
+        VehiclePlateEvent.objects.select_for_update().filter(event_id=event_id).first()
     )
     if event is None:
         raise _error(
@@ -1114,6 +1128,14 @@ def _locked_vehicle_plate_event(raw_event_id) -> VehiclePlateEvent:
     return event
 
 
+def normalize_passage_number(raw_number) -> str:
+    """Canonicalize a Kazakhstan plate without rewriting free-form fallback IDs."""
+
+    number = (raw_number or "").strip()
+    compact = re.sub(r"[\s-]+", "", number.upper())
+    return compact if KZ_VEHICLE_PLATE_RE.fullmatch(compact) else number
+
+
 @transaction.atomic
 def create_passage(
     user,
@@ -1135,7 +1157,7 @@ def create_passage(
         number_source = "camera"
         number_camera_source = plate_event.camera
     else:
-        number = (number or "").strip()
+        number = normalize_passage_number(number)
         number_source = "manual"
         number_camera_source = ""
 
@@ -1153,20 +1175,42 @@ def create_passage(
         "vehicle_plate_event": plate_event,
         "note": note or "",
     }
-    if plate_event is None:
-        wagon = Wagon.objects.create(**create_values)
-    else:
-        try:
-            with transaction.atomic():
-                wagon = Wagon.objects.create(**create_values)
-        except IntegrityError as exc:
+    try:
+        with transaction.atomic():
+            wagon = Wagon.objects.create(**create_values)
+    except IntegrityError as exc:
+        if (
+            number
+            and Wagon.objects.filter(
+                direction=Wagon.PASSAGE,
+                number=number,
+                status__in=st.ON_SITE_STATUSES,
+            ).exists()
+        ):
             raise _error(
-                "Событие номера машины уже использовано",
-                "vehicle_plate_event_unavailable",
+                f"Машина {number} уже находится на территории",
+                "passage_already_on_site",
             ) from exc
+        raise _error(
+            "Событие номера машины уже использовано",
+            "vehicle_plate_event_unavailable",
+        ) from exc
 
+    if plate_event is not None:
         plate_event.processing_status = VehiclePlateEvent.PROCESSED
-        plate_event.save(update_fields=["processing_status"])
+        plate_event.processing_action = AUTO_ACTION_MANUAL_ENTRY
+        plate_event.processing_error = ""
+        plate_event.processing_started_at = None
+        plate_event.processed_at = timezone.now()
+        plate_event.save(
+            update_fields=[
+                "processing_status",
+                "processing_action",
+                "processing_error",
+                "processing_started_at",
+                "processed_at",
+            ]
+        )
 
     _log(
         wagon,
@@ -1183,13 +1227,20 @@ def create_passage(
 
 
 @transaction.atomic
-def record_passage_entry_weight(wagon: Wagon, weight_kg: int, user, **kwargs) -> Wagon:
+def record_passage_entry_weight(
+    wagon: Wagon,
+    weight_kg: int,
+    user,
+    *,
+    occurred_at=None,
+    **kwargs,
+) -> Wagon:
     """Весы на въезде: машина пустая. Дальше её грузят."""
     if not wagon.is_passage:
         raise _error("Это приход, а не проход", "not_passage")
     ensure_transition(wagon, st.AT_SILO)
     wagon.gross_weight_kg = _record_weighing(wagon, "gross", weight_kg, user, **kwargs)
-    wagon.silo_arrived_at = timezone.now()
+    wagon.silo_arrived_at = occurred_at or timezone.now()
     wagon.unloading_started_at = wagon.silo_arrived_at
     wagon.save(
         update_fields=["gross_weight_kg", "silo_arrived_at", "unloading_started_at"]
@@ -1206,7 +1257,14 @@ def record_passage_entry_weight(wagon: Wagon, weight_kg: int, user, **kwargs) ->
 
 
 @transaction.atomic
-def record_passage_exit_weight(wagon: Wagon, weight_kg: int, user, **kwargs) -> Wagon:
+def record_passage_exit_weight(
+    wagon: Wagon,
+    weight_kg: int,
+    user,
+    *,
+    occurred_at=None,
+    **kwargs,
+) -> Wagon:
     """Весы на выезде: машина гружёная. Нетто = выезд − заезд, цикл закрыт."""
     if not wagon.is_passage:
         raise _error("Это приход, а не проход", "not_passage")
@@ -1217,13 +1275,19 @@ def record_passage_exit_weight(wagon: Wagon, weight_kg: int, user, **kwargs) -> 
     # Обратная приходу проверка: гружёная машина обязана быть тяжелее пустой.
     if exit_weight <= wagon.gross_weight_kg:
         raise _error(
-            "Вес на выезде должен быть больше веса на въезде: "
-            "машина уезжает гружёной",
+            "Вес на выезде должен быть больше веса на въезде: машина уезжает гружёной",
             "bad_exit_weight",
         )
     wagon.tare_weight_kg = exit_weight
     wagon.net_weight_kg = wagon.computed_net_kg()
-    wagon.save(update_fields=["tare_weight_kg", "net_weight_kg"])
+    wagon.unloading_finished_at = occurred_at or timezone.now()
+    wagon.save(
+        update_fields=[
+            "tare_weight_kg",
+            "net_weight_kg",
+            "unloading_finished_at",
+        ]
+    )
     _set_status(
         wagon,
         st.TARE_WEIGHED,
@@ -1243,7 +1307,577 @@ def record_passage_exit_weight(wagon: Wagon, weight_kg: int, user, **kwargs) -> 
         f"Проход {wagon.number or f'#{wagon.pk}'}: вывоз зафиксирован",
     )
     _set_status(wagon, st.EXIT_ALLOWED, user, "Выезд разрешён")
-    return register_exit(wagon, user, note="Выезд после загрузки")
+    return register_exit(
+        wagon,
+        user,
+        note="Выезд после загрузки",
+        occurred_at=occurred_at,
+    )
+
+
+# ── Автоматический вывоз по событиям номера ─────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class VehiclePlateAutomationResult:
+    status: str
+    action: str = ""
+    error: str = ""
+    retryable: bool = False
+    wagon_id: int | None = None
+    weight_kg: int | None = None
+
+    def as_payload(self) -> dict:
+        payload = {
+            "status": self.status,
+            "action": self.action or None,
+            "error": self.error or None,
+            "wagon_id": self.wagon_id,
+            "weight_kg": self.weight_kg,
+        }
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class _AutomationClaim:
+    event_id: int
+    action: str
+    attempt: int
+
+
+def _auto_event_is_fresh(event: VehiclePlateEvent, now) -> bool:
+    oldest = now - timedelta(
+        seconds=settings.VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS
+    )
+    newest = now + VEHICLE_PLATE_AUTO_MAX_FUTURE
+    return (
+        oldest <= event.detected_at <= newest and oldest <= event.received_at <= newest
+    )
+
+
+def _auto_processing_lease() -> timedelta:
+    timeout = float(settings.TRUCK_SCALE_TIMEOUT_SECONDS)
+    return timedelta(seconds=max(5.0, timeout + 2.0))
+
+
+def _lock_auto_lane_mutex(event: VehiclePlateEvent) -> None:
+    # Every event is committed before automation starts. The oldest durable row
+    # on this physical lane is therefore a stable mutex shared by all plates
+    # and retries. Two vehicles must never sample the same scale concurrently.
+    (
+        VehiclePlateEvent.objects.select_for_update()
+        .filter(
+            camera=event.camera,
+            source=event.source,
+        )
+        .order_by("id")
+        .first()
+    )
+
+
+def _event_wagon(event: VehiclePlateEvent, action: str) -> Wagon | None:
+    field = (
+        "exit_vehicle_plate_event_id"
+        if action == AUTO_ACTION_EXIT
+        else "vehicle_plate_event_id"
+    )
+    return Wagon.objects.filter(**{field: event.pk}).first()
+
+
+def _terminal_automation_result(
+    event: VehiclePlateEvent,
+    *,
+    already_processed: bool = True,
+) -> VehiclePlateAutomationResult:
+    if event.processing_status == VehiclePlateEvent.FAILED:
+        return VehiclePlateAutomationResult(
+            status="manual_required",
+            action=event.processing_action,
+            error=event.processing_error or "automation_failed",
+        )
+    if event.processing_action == AUTO_ACTION_IGNORED:
+        return VehiclePlateAutomationResult(
+            status="ignored",
+            action=AUTO_ACTION_IGNORED,
+            error=event.processing_error,
+        )
+    action = event.processing_action
+    wagon = _event_wagon(event, action)
+    weight = None
+    if wagon is not None:
+        weight = (
+            wagon.exit_weight_kg
+            if action == AUTO_ACTION_EXIT
+            else wagon.entry_weight_kg
+        )
+    return VehiclePlateAutomationResult(
+        status="already_processed" if already_processed else "processed",
+        action=action,
+        wagon_id=wagon.pk if wagon is not None else None,
+        weight_kg=weight,
+    )
+
+
+def _finish_auto_event(
+    event: VehiclePlateEvent,
+    *,
+    status: str,
+    action: str,
+    error: str = "",
+    now=None,
+) -> None:
+    event.processing_status = status
+    event.processing_action = action
+    event.processing_error = error[:64]
+    event.processing_started_at = None
+    event.processed_at = now or timezone.now()
+    event.save(
+        update_fields=[
+            "processing_status",
+            "processing_attempts",
+            "processing_action",
+            "processing_error",
+            "processing_started_at",
+            "processed_at",
+        ]
+    )
+
+
+def _locked_auto_intent(
+    event: VehiclePlateEvent,
+) -> tuple[str | None, Wagon | None, str]:
+    passages = list(
+        Wagon.objects.select_for_update(of=("self",))
+        .filter(
+            direction=Wagon.PASSAGE,
+            number=event.vehicle_number,
+            status__in=st.ON_SITE_STATUSES,
+        )
+        .order_by("id")[:2]
+    )
+    if not passages:
+        unidentified = (
+            Wagon.objects.select_for_update(of=("self",))
+            .filter(
+                direction=Wagon.PASSAGE,
+                number__regex=r"^\s*$",
+                status__in=st.ON_SITE_STATUSES,
+            )
+            .order_by("id")
+            .first()
+        )
+        if unidentified is not None:
+            return None, unidentified, "unidentified_active_passage"
+        cooldown = timedelta(
+            seconds=settings.VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS
+        )
+        recent_completed = (
+            Wagon.objects.select_for_update(of=("self",))
+            .filter(
+                direction=Wagon.PASSAGE,
+                number=event.vehicle_number,
+                number_source="camera",
+                vehicle_plate_event__isnull=False,
+                status=st.COMPLETED,
+                exited_at__isnull=False,
+                exited_at__gte=event.detected_at - cooldown,
+            )
+            .order_by("-exited_at", "-id")
+            .first()
+        )
+        if recent_completed is not None:
+            return None, recent_completed, "recent_completed_passage"
+        return AUTO_ACTION_ENTRY, None, ""
+    if len(passages) != 1:
+        return None, None, "ambiguous_active_passage"
+
+    wagon = passages[0]
+    camera_owned = (
+        wagon.number_source == "camera" and wagon.vehicle_plate_event_id is not None
+    )
+    valid_state = (
+        camera_owned
+        and wagon.status == st.AT_SILO
+        and wagon.entry_weight_kg is not None
+        and wagon.exit_weight_kg is None
+        and wagon.arrived_at is not None
+    )
+    if not valid_state:
+        return None, wagon, "passage_state_mismatch"
+    minimum_exit_at = wagon.arrived_at + timedelta(
+        seconds=settings.VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS
+    )
+    if event.detected_at < minimum_exit_at:
+        return None, wagon, "entry_exit_too_close"
+    if event.vehicle_number != wagon.number:
+        return None, wagon, "passage_state_mismatch"
+    return AUTO_ACTION_EXIT, wagon, ""
+
+
+@transaction.atomic
+def _begin_vehicle_plate_automation(
+    event_pk: int,
+    *,
+    now,
+    allow_capture: bool,
+) -> VehiclePlateAutomationResult | _AutomationClaim:
+    hint = VehiclePlateEvent.objects.get(pk=event_pk)
+    _lock_auto_lane_mutex(hint)
+    event = VehiclePlateEvent.objects.select_for_update().get(pk=event_pk)
+
+    if event.processing_status in (
+        VehiclePlateEvent.PROCESSED,
+        VehiclePlateEvent.FAILED,
+    ):
+        return _terminal_automation_result(event)
+
+    if event.camera != VEHICLE_PLATE_CAMERA or event.source != VEHICLE_PLATE_SOURCE:
+        event.processing_attempts += 1
+        _finish_auto_event(
+            event,
+            status=VehiclePlateEvent.PROCESSED,
+            action=AUTO_ACTION_IGNORED,
+            error="wrong_lane",
+            now=now,
+        )
+        return _terminal_automation_result(event, already_processed=False)
+
+    # The live reading belongs only to the HTTP request that created this
+    # durable row. A duplicate cannot safely reconstruct the missed physical
+    # capture window after a crash between INSERT and processing.
+    if event.processing_status == VehiclePlateEvent.RECEIVED and not allow_capture:
+        event.processing_attempts += 1
+        _finish_auto_event(
+            event,
+            status=VehiclePlateEvent.FAILED,
+            action=event.processing_action,
+            error="capture_window_missed",
+            now=now,
+        )
+        return _terminal_automation_result(event, already_processed=False)
+
+    if not _auto_event_is_fresh(event, now):
+        event.processing_attempts += 1
+        _finish_auto_event(
+            event,
+            status=VehiclePlateEvent.FAILED,
+            action=event.processing_action,
+            error="event_stale",
+            now=now,
+        )
+        return _terminal_automation_result(event, already_processed=False)
+
+    lease_cutoff = now - _auto_processing_lease()
+    if event.processing_status == VehiclePlateEvent.PROCESSING:
+        if (
+            event.processing_started_at is not None
+            and event.processing_started_at >= lease_cutoff
+        ):
+            return VehiclePlateAutomationResult(
+                status="retry",
+                action=event.processing_action,
+                error="automation_busy",
+                retryable=True,
+            )
+        _finish_auto_event(
+            event,
+            status=VehiclePlateEvent.FAILED,
+            action=event.processing_action,
+            error="processing_interrupted",
+            now=now,
+        )
+        return _terminal_automation_result(event, already_processed=False)
+
+    other_processing = (
+        VehiclePlateEvent.objects.select_for_update()
+        .filter(
+            camera=event.camera,
+            source=event.source,
+            processing_status=VehiclePlateEvent.PROCESSING,
+        )
+        .exclude(pk=event.pk)
+        .order_by("detected_at", "id")
+        .first()
+    )
+    if other_processing is not None:
+        if (
+            other_processing.processing_started_at is not None
+            and other_processing.processing_started_at < lease_cutoff
+        ):
+            _finish_auto_event(
+                other_processing,
+                status=VehiclePlateEvent.FAILED,
+                action=other_processing.processing_action,
+                error="processing_interrupted",
+                now=now,
+            )
+        event.processing_attempts += 1
+        _finish_auto_event(
+            event,
+            status=VehiclePlateEvent.FAILED,
+            action=event.processing_action,
+            error="lane_busy",
+            now=now,
+        )
+        return _terminal_automation_result(event, already_processed=False)
+
+    action, _wagon, error = _locked_auto_intent(event)
+    if error:
+        event.processing_attempts += 1
+        _finish_auto_event(
+            event,
+            status=VehiclePlateEvent.FAILED,
+            action=event.processing_action,
+            error=error,
+            now=now,
+        )
+        return _terminal_automation_result(event, already_processed=False)
+
+    event.processing_status = VehiclePlateEvent.PROCESSING
+    event.processing_attempts += 1
+    event.processing_action = action or ""
+    event.processing_error = ""
+    event.processing_started_at = now
+    event.processed_at = None
+    event.save(
+        update_fields=[
+            "processing_status",
+            "processing_attempts",
+            "processing_action",
+            "processing_error",
+            "processing_started_at",
+            "processed_at",
+        ]
+    )
+    return _AutomationClaim(
+        event_id=event.pk,
+        action=action or "",
+        attempt=event.processing_attempts,
+    )
+
+
+def _safe_scale_error(exc: APIException) -> str:
+    code = exc.get_codes()
+    if not isinstance(code, str):
+        code = getattr(exc, "default_code", "truck_scale_error")
+    normalized = re.sub(r"[^a-z0-9_]+", "_", str(code).lower()).strip("_")
+    return (normalized or "truck_scale_error")[:64]
+
+
+@transaction.atomic
+def _record_auto_scale_failure(
+    claim: _AutomationClaim,
+    *,
+    error: str,
+    now,
+) -> VehiclePlateAutomationResult:
+    hint = VehiclePlateEvent.objects.get(pk=claim.event_id)
+    _lock_auto_lane_mutex(hint)
+    event = VehiclePlateEvent.objects.select_for_update().get(pk=claim.event_id)
+    if event.processing_status in (
+        VehiclePlateEvent.PROCESSED,
+        VehiclePlateEvent.FAILED,
+    ):
+        return _terminal_automation_result(event)
+    if (
+        event.processing_status != VehiclePlateEvent.PROCESSING
+        or event.processing_action != claim.action
+        or event.processing_attempts != claim.attempt
+    ):
+        return VehiclePlateAutomationResult(
+            status="manual_required",
+            action=event.processing_action,
+            error="automation_state_changed",
+        )
+    _finish_auto_event(
+        event,
+        status=VehiclePlateEvent.FAILED,
+        action=event.processing_action,
+        error=error,
+        now=now,
+    )
+    return _terminal_automation_result(event, already_processed=False)
+
+
+def _auto_scale_kwargs(reading: scale.ScaleReading) -> dict:
+    return {
+        "source": "scale",
+        "scale_number": scale.TRUCK_SCALE_KEY,
+        "scale_age_seconds": reading.age_seconds,
+        "scale_updated_at": reading.updated_at,
+    }
+
+
+@transaction.atomic
+def _apply_vehicle_plate_automation(
+    claim: _AutomationClaim,
+    *,
+    reading: scale.ScaleReading,
+    weight_kg: int,
+    user,
+) -> VehiclePlateAutomationResult:
+    scale.configure_authoritative_db_timeouts()
+    hint = VehiclePlateEvent.objects.get(pk=claim.event_id)
+    _lock_auto_lane_mutex(hint)
+    event = VehiclePlateEvent.objects.select_for_update().get(pk=claim.event_id)
+    if event.processing_status in (
+        VehiclePlateEvent.PROCESSED,
+        VehiclePlateEvent.FAILED,
+    ):
+        return _terminal_automation_result(event)
+    if (
+        event.processing_status != VehiclePlateEvent.PROCESSING
+        or event.processing_action != claim.action
+        or event.processing_attempts != claim.attempt
+    ):
+        return VehiclePlateAutomationResult(
+            status="manual_required",
+            action=event.processing_action,
+            error="automation_state_changed",
+        )
+
+    action, wagon, intent_error = _locked_auto_intent(event)
+    if intent_error or action != claim.action:
+        _finish_auto_event(
+            event,
+            status=VehiclePlateEvent.FAILED,
+            action=event.processing_action,
+            error=intent_error or "passage_state_changed",
+        )
+        return _terminal_automation_result(event, already_processed=False)
+
+    kwargs = _auto_scale_kwargs(reading)
+    if action == AUTO_ACTION_ENTRY:
+        try:
+            with transaction.atomic():
+                wagon = Wagon.objects.create(
+                    supply=None,
+                    number=event.vehicle_number,
+                    direction=Wagon.PASSAGE,
+                    workflow="simple",
+                    cargo_name=settings.VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME,
+                    status=st.ARRIVED,
+                    arrived_at=event.detected_at,
+                    arrived_by=user,
+                    number_source="camera",
+                    number_camera_source=event.camera,
+                    vehicle_plate_event=event,
+                    note="Автоматически оформлено по событию камеры",
+                )
+        except IntegrityError:
+            _finish_auto_event(
+                event,
+                status=VehiclePlateEvent.FAILED,
+                action=action,
+                error="ambiguous_active_passage",
+            )
+            return _terminal_automation_result(event, already_processed=False)
+        _log(
+            wagon,
+            "passage",
+            f"Проход {wagon.number}: автоматический заезд за «{wagon.cargo_name}»",
+            user,
+            cargo_name=wagon.cargo_name,
+            vehicle_plate_event_id=str(event.event_id),
+            camera_source=event.camera,
+            auto=True,
+        )
+        record_passage_entry_weight(
+            wagon,
+            weight_kg,
+            user,
+            occurred_at=event.detected_at,
+            **kwargs,
+        )
+    else:
+        if wagon is None or weight_kg <= (wagon.entry_weight_kg or 0):
+            _finish_auto_event(
+                event,
+                status=VehiclePlateEvent.FAILED,
+                action=action or AUTO_ACTION_EXIT,
+                error="exit_weight_not_greater",
+            )
+            return _terminal_automation_result(event, already_processed=False)
+        try:
+            with transaction.atomic():
+                wagon.exit_vehicle_plate_event = event
+                wagon.save(update_fields=["exit_vehicle_plate_event"])
+        except IntegrityError:
+            _finish_auto_event(
+                event,
+                status=VehiclePlateEvent.FAILED,
+                action=action or AUTO_ACTION_EXIT,
+                error="vehicle_plate_event_unavailable",
+            )
+            return _terminal_automation_result(event, already_processed=False)
+        record_passage_exit_weight(
+            wagon,
+            weight_kg,
+            user,
+            occurred_at=event.detected_at,
+            **kwargs,
+        )
+
+    _finish_auto_event(
+        event,
+        status=VehiclePlateEvent.PROCESSED,
+        action=action or "",
+    )
+    return VehiclePlateAutomationResult(
+        status="processed",
+        action=action or "",
+        wagon_id=wagon.pk if wagon is not None else None,
+        weight_kg=weight_kg,
+    )
+
+
+def process_vehicle_plate_event(
+    event_pk: int,
+    *,
+    user=None,
+    allow_capture: bool = False,
+) -> VehiclePlateAutomationResult:
+    """Process one webhook delivery with at most one live truck-scale read.
+
+    Only the request that inserted the durable event may claim its physical
+    capture. A short committed lease lets a concurrent duplicate observe the
+    in-flight attempt without reading again. Capture failures are terminal for
+    that UUID, and no database lock is held during physical HTTP I/O.
+    """
+
+    if not settings.VEHICLE_PLATE_AUTO_EXPORT_ENABLED:
+        return VehiclePlateAutomationResult(status="disabled")
+
+    claim_or_result = _begin_vehicle_plate_automation(
+        event_pk,
+        now=timezone.now(),
+        allow_capture=allow_capture,
+    )
+    if isinstance(claim_or_result, VehiclePlateAutomationResult):
+        return claim_or_result
+
+    try:
+        with scale.authoritative_capture(scale.TRUCK_SCALE_KEY):
+            reading = scale.read_truck_scale(scale.TRUCK_SCALE_KEY)
+            weight_kg = _whole_scale_weight_kg(reading)
+            return _apply_vehicle_plate_automation(
+                claim_or_result,
+                reading=reading,
+                weight_kg=weight_kg,
+                user=user,
+            )
+    except APIException as exc:
+        return _record_auto_scale_failure(
+            claim_or_result,
+            error=_safe_scale_error(exc),
+            now=timezone.now(),
+        )
+    except (OperationalError, InterfaceError):
+        return _record_auto_scale_failure(
+            claim_or_result,
+            error="truck_scale_apply_unavailable",
+            now=timezone.now(),
+        )
 
 
 # ── Удаление рейса ─────────────────────────────────────────────────────────
@@ -1333,9 +1967,11 @@ def delete_wagon(
         )
 
     label = wagon.number or f"#{wagon.pk}"
-    reservation = SiloReservation.objects.filter(wagon=wagon).values(
-        "id", "silo_id", "amount_kg", "active"
-    ).first()
+    reservation = (
+        SiloReservation.objects.filter(wagon=wagon)
+        .values("id", "silo_id", "amount_kg", "active")
+        .first()
+    )
     income_movements = list(
         wagon.movements.filter(movement_type="income")
         .select_related("silo")
@@ -1374,10 +2010,7 @@ def delete_wagon(
             movement.silo,
             -movement.delta_kg,
             "expense",
-            note=(
-                f"Откат прихода рейса {label}"
-                + (f": {reason}" if reason else "")
-            ),
+            note=(f"Откат прихода рейса {label}" + (f": {reason}" if reason else "")),
             user=user,
             supply=movement.supply,
             batch_number=f"DELETE-WAGON-{wagon.pk}",
@@ -1453,7 +2086,10 @@ def _open_camera_wagon() -> Wagon | None:
 
 @transaction.atomic
 def register_detected_arrival(
-    user=None, *, camera_source: str = "", number: str = "",
+    user=None,
+    *,
+    camera_source: str = "",
+    number: str = "",
 ) -> Wagon | None:
     """Открыть приход по табличке вагона. Повторную детекцию игнорирует.
 
@@ -1478,7 +2114,8 @@ def register_detected_arrival(
         if expected is not None:
             return _arrive_expected_wagon(expected, user, camera_source)
         if Wagon.objects.filter(
-            number=number, status__in=st.ON_SITE_STATUSES,
+            number=number,
+            status__in=st.ON_SITE_STATUSES,
         ).exists():
             # Этот вагон уже на территории — повторная детекция его таблички.
             return None
@@ -1514,8 +2151,11 @@ def register_detected_arrival(
         wagon,
         "arrival",
         f"Камера зафиксировала прибытие состава (рейс #{wagon.pk})"
-        + (f": вагон {number}" if number
-           else ". Номер не распознан — укажите его вручную."),
+        + (
+            f": вагон {number}"
+            if number
+            else ". Номер не распознан — укажите его вручную."
+        ),
         user,
         camera_source=camera_source,
         number=number,
@@ -1531,9 +2171,14 @@ def _arrive_expected_wagon(wagon: Wagon, user, camera_source: str) -> Wagon:
     wagon.arrived_by = user
     wagon.number_source = "camera"
     wagon.number_camera_source = camera_source or ""
-    wagon.save(update_fields=[
-        "arrived_at", "arrived_by", "number_source", "number_camera_source",
-    ])
+    wagon.save(
+        update_fields=[
+            "arrived_at",
+            "arrived_by",
+            "number_source",
+            "number_camera_source",
+        ]
+    )
     _set_status(
         wagon,
         st.ARRIVED,

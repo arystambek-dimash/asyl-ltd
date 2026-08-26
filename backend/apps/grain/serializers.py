@@ -276,6 +276,8 @@ class WagonSerializer(serializers.ModelSerializer):
         ]
 
     def get_status_label(self, wagon: Wagon) -> str:
+        if wagon.is_passage and wagon.status == "at_silo":
+            return "На территории · погрузка"
         return WAGON_STATUS_LABELS.get(wagon.status, wagon.status)
 
     def get_weight_difference_kg(self, wagon: Wagon):

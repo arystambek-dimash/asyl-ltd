@@ -295,10 +295,12 @@ class VehiclePlateEvent(models.Model):
     """
 
     RECEIVED = "received"
+    PROCESSING = "processing"
     PROCESSED = "processed"
     FAILED = "failed"
     PROCESSING_STATUSES = (
         (RECEIVED, "Received"),
+        (PROCESSING, "Processing"),
         (PROCESSED, "Processed"),
         (FAILED, "Failed"),
     )
@@ -319,6 +321,11 @@ class VehiclePlateEvent(models.Model):
         choices=PROCESSING_STATUSES,
         default=RECEIVED,
     )
+    processing_attempts = models.PositiveIntegerField(default=0)
+    processing_action = models.CharField(max_length=16, blank=True, default="")
+    processing_error = models.CharField(max_length=64, blank=True, default="")
+    processing_started_at = models.DateTimeField(null=True, blank=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-detected_at", "-id"]

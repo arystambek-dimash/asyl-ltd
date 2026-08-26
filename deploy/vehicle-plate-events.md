@@ -129,6 +129,145 @@ The internal CRM journal is available through `GET /api/vehicle-plate-events`
 to staff with `events.view`; it supports the documented date, camera, plate and
 pagination filters. It contains metadata only.
 
+## Automatic truck-export weighing
+
+Production can apply fresh `cam1` / `main` plate events directly to the truck
+export workflow. This is deliberately a fail-closed v1 integration: the camera
+payload does not claim whether an observation is an entry or an exit, so the
+backend derives the action only from the current, locked CRM state for that
+vehicle number.
+
+That inference remains a v1 limitation: the event has no explicit entry/exit
+phase or shared visit identifier. It also correlates the two observations by
+the OCR-normalized plate, so an OCR mismatch on the second pass cannot safely
+close the first trip and may look like a different vehicle. Enable automation
+only after both real passes have been validated at this ROI; otherwise keep it
+off and use the manual workflow.
+
+This mode relies on one physical-site assumption: the configured `cam1` ROI is
+the truck scale itself. The first confirmed stop is the empty truck's entry
+weighing; the truck then leaves that ROI to load while remaining on site; its
+second distinct stop in the same ROI is the loaded truck's final weighing. It
+must not be enabled if `cam1` observes a general driveway, if a truck can leave
+and re-enter the ROI merely to reposition, or if the second ROI visit is not
+the final weighing. Leaving the entry ROI does not by itself change the CRM
+trip to outside or completed.
+
+For an eligible fresh event, the backend performs this sequence:
+
+1. A first `cam1` / `main` event for a plate with no active export trip triggers
+   one live read from the configured truck scale. A fresh, stable positive
+   reading creates the export, records its entry weight and entry time, and
+   leaves the trip on site for loading.
+2. A second distinct event for the same plate can become the final weighing
+   only when exactly one compatible active export exists and the configured
+   minimum trip time has passed. One live scale read records the exit weight;
+   it must be greater than the entry weight. The backend then calculates net
+   export weight and completes the trip.
+3. The event UUID remains the idempotency boundary. Concurrent delivery of the
+   same UUID is protected by a short processing lease and cannot start a
+   second parallel scale read or create a duplicate trip or weighing. A
+   lane-global mutex serializes different plate events on `cam1` / `main`.
+   Automatic and explicit operator weighing share two capture barriers: a
+   finite Redis lease and a PostgreSQL session advisory lock acquired before
+   the live read and held through the atomic apply. PostgreSQL releases the
+   advisory lock when its worker connection dies, so Redis TTL expiry cannot
+   admit a second reader. Apply transactions also set transaction-local
+   `lock_timeout` and `statement_timeout` below the remaining Redis lease
+   budget; a blocked write fails closed instead of applying an old sample.
+
+There is no periodic scale polling or automatic scale retry. Each eligible
+plate event gets at most one authoritative live scale request for its entire
+lifetime. A processed duplicate performs no read. If the scale attempt fails,
+the event becomes permanently `manual_required`; retrying the same UUID cannot
+read a later value that may belong to another vehicle. Once the freshness
+window expires, the backend likewise never associates the current scale value
+with the old camera event.
+
+The settings are backend-only environment variables; none belongs in the
+browser:
+
+```dotenv
+# Django, local Compose and production Compose all default to 0.
+# Set 1 on the production host only after the physical preflight below.
+VEHICLE_PLATE_AUTO_EXPORT_ENABLED=1
+VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME=Отруби
+VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS=15
+VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS=60
+```
+
+`VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME` is the explicit server-side cargo used
+for automatically created exports. Configure it to the site's real outgoing
+product rather than relying on a frontend form default. The event-age setting
+must remain short because `/api/v1/weight` exposes the current scale value, not
+a historical sample. The minimum trip interval is a safety guard against
+treating an immediate ROI re-entry as a loaded exit. The same interval is also
+a cooldown after a completed camera-created export: another event for that
+plate during the cooldown is sent to manual review instead of opening a new
+trip.
+
+Processing results are recorded on the plate event. Successful actions are
+`entry` or `exit`; `manual_entry` identifies the existing operator-selected
+fallback, while `ignored` is used for an event outside the configured lane.
+Permanent safety failures such as a stale event, ambiguous active trip,
+incompatible trip state, entry/exit observations that are too close, or an
+exit weight not greater than the entry weight do not mutate the trip and
+require operator review. An unavailable, not-ready, stale or malformed scale,
+or a capture mutex already owned by another manual or automatic weighing, is
+also a one-shot permanent `manual_required` result. The accepted webhook still
+returns its normal `201` for a new event or `200` for a duplicate, so the
+camera-PC outbox does not retry and accidentally capture another vehicle's
+later weight.
+
+A new automatic entry is also blocked while any on-site export has a blank or
+unknown plate: that open trip may belong to the newly observed truck. The
+event becomes `manual_required` with `unidentified_active_passage`, without a
+scale read or trip mutation. An operator must identify, complete or otherwise
+safely resolve the existing trip before automation may create another entry.
+
+Only a database/unexpected server failure or a concurrent duplicate of the
+same UUID while its original request is still in flight can return a temporary
+5xx. An expired processing lease becomes `processing_interrupted` and requires
+manual recovery; it is never reclaimed for a second scale read. A different
+event that finds the lane/capture mutex busy also goes directly to manual
+recovery with a normal successful webhook response.
+
+When `VEHICLE_PLATE_AUTO_EXPORT_ENABLED=0`, webhook ingestion itself remains
+successful: new events receive the normal `201`, duplicates receive `200`, and
+the events stay available for the existing manual candidate flow. Disabled
+automation does not return a retryable error, so the camera-PC outbox does not
+retry an already accepted event forever.
+
+The existing manual export form and explicit entry/exit weighing actions are
+the recovery path. Operators must use them when automation is disabled, an
+event is marked failed, the freshness window has elapsed, the plate is
+ambiguous, or the physical route did not follow the assumption above. Manual
+recovery must not reuse a stale event's current scale reading.
+
+### Disable or roll back automatic export
+
+1. Set `VEHICLE_PLATE_AUTO_EXPORT_ENABLED=0` in the protected production host
+   environment and redeploy/recreate the backend through the normal immutable
+   release path. This is the automation kill switch; it does not disable the
+   authenticated webhook or the vehicle journal.
+2. Confirm new plate events are still stored and that operators can use the
+   manual export and weighing controls. Do not stop or reset the camera-PC
+   database, bag counter, wagon integration, or truck scale.
+3. Leave already accepted events, trips and weighing records intact. Do not
+   delete them or reverse their migrations as part of an application rollback.
+4. If the application release itself must be rolled back, use the normal image
+   rollback described below while keeping the kill switch at `0`. Re-enable
+   automation only after the deployed code, `cam1` ROI geometry and both real
+   weighing passes have been verified again.
+
+Before explicitly setting `VEHICLE_PLATE_AUTO_EXPORT_ENABLED=1` on the
+production host, verify that `cam1/main` covers only the truck scale, the first
+pass is the empty entry, the second pass is the loaded final weighing, OCR
+returns the same normalized plate on both passes, the truck scale reports a
+fresh stable value, there are no unresolved on-site exports with blank plates,
+and the manual entry/exit controls still work. Keep the default `0` if any part
+of this physical preflight is uncertain.
+
 ## Safe rollout and rollback
 
 1. Create a separate production token and put it in the server `.env`; set the

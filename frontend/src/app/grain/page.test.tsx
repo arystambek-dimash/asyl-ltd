@@ -26,7 +26,8 @@ vi.mock("@/lib/use-api", () => ({
   useApi: (url: string | null) => useApiMock(url),
 }));
 vi.mock("@/lib/use-visible-polling", () => ({
-  useVisiblePolling: (poll: () => Promise<unknown>, intervalMs: number) => visiblePollingMock(poll, intervalMs),
+  useVisiblePolling: (poll: () => Promise<unknown>, intervalMs: number, active?: boolean) =>
+    visiblePollingMock(poll, intervalMs, active),
 }));
 vi.mock("@/lib/use-paged-api", () => ({
   usePagedApi: (url: string | null, pageSize: number) => pagedApiMock(url, pageSize),
@@ -105,9 +106,11 @@ describe("Grain passage creation", () => {
     expect(screen.getByRole("tablist", { name: "Статус рейсов" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Ожидаются" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Камера проходной" })).toBeInTheDocument();
+    expect(visiblePollingMock).toHaveBeenCalledWith(reloadMock, 10_000, true);
 
     await user.click(screen.getByRole("tab", { name: "Ожидаются" }));
     expect(screen.getByRole("tab", { name: "Ожидаются" })).toHaveAttribute("aria-selected", "true");
+    expect(visiblePollingMock).toHaveBeenCalledWith(reloadMock, 10_000, false);
 
     await user.click(screen.getByRole("tab", { name: "Вывоз" }));
 
@@ -120,6 +123,7 @@ describe("Grain passage creation", () => {
     expect(screen.queryByRole("tab", { name: "Камера проходной" })).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "На территории" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Завершённые" })).toBeInTheDocument();
+    expect(visiblePollingMock).toHaveBeenLastCalledWith(reloadMock, 10_000, true);
   });
 
   it("keeps the manual path when there are no camera candidates", async () => {
@@ -129,7 +133,7 @@ describe("Grain passage creation", () => {
     await user.click(screen.getByRole("tab", { name: "Вывоз" }));
     await user.click(screen.getByRole("button", { name: "Открыть вывоз" }));
     expect(useApiMock).toHaveBeenCalledWith("/grain/wagons/vehicle-plate-candidates/");
-    expect(visiblePollingMock).toHaveBeenCalledWith(expect.any(Function), 10_000);
+    expect(visiblePollingMock).toHaveBeenCalledWith(expect.any(Function), 10_000, undefined);
     expect(screen.queryByRole("region", { name: "Распознанные номера" })).not.toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Номер машины"), "123 ABC");

@@ -303,7 +303,7 @@ def test_manual_passage_stays_compatible_and_ignores_source_spoofing(
     )
 
     assert response.status_code == 201, response.data
-    assert response.data["number"] == "123 ABC 02"
+    assert response.data["number"] == "123ABC02"
     assert response.data["number_source"] == "manual"
     assert response.data["number_camera_source"] == ""
     wagon = Wagon.objects.get(pk=response.data["id"])

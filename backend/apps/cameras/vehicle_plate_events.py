@@ -242,6 +242,11 @@ class VehiclePlateEventSerializer(serializers.ModelSerializer):
             "detector_confidence",
             "ocr_confidence",
             "processing_status",
+            "processing_attempts",
+            "processing_action",
+            "processing_error",
+            "processing_started_at",
+            "processed_at",
         )
 
 
@@ -588,27 +593,87 @@ class VehiclePlateWebhookView(APIView):
             )
 
         canonical_event_id = str(event_id)
-        if not created:
-            _log_result(payload=payload, http_status=200, result="duplicate")
-            return Response(
-                {
-                    "ok": True,
-                    "duplicate": True,
-                    "event_id": canonical_event_id,
-                },
-                status=status.HTTP_200_OK,
-                headers={"Cache-Control": "no-store"},
+        try:
+            # Local import avoids making the camera ingestion model depend on
+            # Grain at module import time. The event is already committed before
+            # the one-shot physical capture; a failed capture remains available
+            # for manual review but is never retried against a later vehicle.
+            from apps.grain.services import process_vehicle_plate_event
+
+            automation = process_vehicle_plate_event(
+                event.pk,
+                allow_capture=created,
+            )
+        except DatabaseError:
+            log.exception(
+                "vehicle plate automation database error event_id=%s",
+                canonical_event_id,
+            )
+            _log_result(
+                payload=payload,
+                http_status=503,
+                result="automation_database_error",
+            )
+            return _error_response(
+                "Temporary automation storage error",
+                "temporary_automation_error",
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except Exception:  # pragma: no cover - final safety boundary
+            log.exception(
+                "vehicle plate automation failed event_id=%s",
+                canonical_event_id,
+            )
+            _log_result(
+                payload=payload,
+                http_status=503,
+                result="automation_error",
+            )
+            return _error_response(
+                "Temporary automation error",
+                "temporary_automation_error",
+                status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        _log_result(payload=payload, http_status=201, result="created")
+        if automation.retryable:
+            _log_result(
+                payload=payload,
+                http_status=503,
+                result="automation_retry",
+            )
+            response = Response(
+                {
+                    "ok": False,
+                    "duplicate": not created,
+                    "event_id": canonical_event_id,
+                    "detail": "Temporary vehicle automation error",
+                    "code": "vehicle_plate_automation_retry",
+                    "automation": automation.as_payload(),
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+            response["Cache-Control"] = "no-store"
+            return response
+
+        http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        result = "created" if created else "duplicate"
+        response_payload = {
+            "ok": True,
+            "duplicate": not created,
+            "event_id": canonical_event_id,
+        }
+        if created:
+            response_payload["vehicle_event_id"] = event.pk
+        # Preserve the original v1 response byte-for-byte while automation is
+        # disabled locally. Enabled production responses add only one optional
+        # backwards-compatible object.
+        if automation.status != "disabled":
+            response_payload["automation"] = automation.as_payload()
+            result = f"{result}_{automation.status}"
+        _log_result(payload=payload, http_status=http_status, result=result)
         return Response(
-            {
-                "ok": True,
-                "duplicate": False,
-                "event_id": canonical_event_id,
-                "vehicle_event_id": event.pk,
-            },
-            status=status.HTTP_201_CREATED,
+            response_payload,
+            status=http_status,
             headers={"Cache-Control": "no-store"},
         )
 
