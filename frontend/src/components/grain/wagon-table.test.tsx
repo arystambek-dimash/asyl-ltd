@@ -150,6 +150,23 @@ describe("WagonTable", () => {
     expect(screen.getByRole("link", { name: /Взвесить пустую/ })).toBeInTheDocument();
   });
 
+  it("shows the camera that supplied a recognized vehicle number", () => {
+    renderTable([
+      wagon({
+        id: 2,
+        number: "123ABC02",
+        direction: "passage",
+        cargo_name: "Отруби",
+        number_source: "camera",
+        number_camera_source: "cam1",
+      }),
+    ]);
+
+    const row = screen.getByRole("row", { name: /123ABC02/ });
+    expect(within(row).getByText("Камера cam1")).toBeInTheDocument();
+    expect(within(row).getByText("Отруби")).toBeInTheDocument();
+  });
+
   it("falls back to the empty state when there are no trips", () => {
     renderTable([]);
 

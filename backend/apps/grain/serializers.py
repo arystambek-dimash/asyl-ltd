@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from apps.cameras.models import VehiclePlateEvent
+
 from .models import (
     GrainMovement,
     GrainSettings,
@@ -305,6 +307,7 @@ class WagonBriefSerializer(WagonSerializer):
             "supply",
             "number",
             "number_source",
+            "number_camera_source",
             "workflow",
             "direction",
             "cargo_name",
@@ -332,6 +335,25 @@ class WagonBriefSerializer(WagonSerializer):
             "silo_arrived_at",
             "exited_at",
             "created_at",
+        ]
+
+
+class VehiclePlateCandidateSerializer(serializers.ModelSerializer):
+    """Minimal event projection exposed to gate operators."""
+
+    stationary_seconds = serializers.FloatField(read_only=True)
+    ocr_confidence = serializers.FloatField(read_only=True)
+
+    class Meta:
+        model = VehiclePlateEvent
+        fields = [
+            "event_id",
+            "vehicle_number",
+            "camera",
+            "source",
+            "detected_at",
+            "stationary_seconds",
+            "ocr_confidence",
         ]
 
 

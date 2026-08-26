@@ -244,6 +244,11 @@ export function WagonTable({
                                 .filter(Boolean)
                                 .join(" · ") || "Приход"}
                         </span>
+                        {wagon.number_source === "camera" && (
+                          <span className="mt-0.5 flex items-center gap-1 text-[11px] text-[var(--muted-foreground)]">
+                            <Camera className="size-3 shrink-0" /> Камера {wagon.number_camera_source || "не указана"}
+                          </span>
+                        )}
                       </Link>
                     </TD>
                     <TD>

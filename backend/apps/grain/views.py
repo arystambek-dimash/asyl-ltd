@@ -22,6 +22,7 @@ from .serializers import (
     GrainSupplySerializer,
     SiloSerializer,
     SiloTypeSerializer,
+    VehiclePlateCandidateSerializer,
     WagonBriefSerializer,
     WagonSerializer,
 )
@@ -157,6 +158,7 @@ class WagonViewSet(
         "arrive": "grain.arrive",
         "camera_arrive": "grain.arrive",
         "passage": "grain.arrive",
+        "vehicle_plate_candidates": "grain.arrive",
         "delete_wagon": "grain.delete",
         "approve": "grain.dispatch",
         "gross": "grain.weigh",
@@ -275,10 +277,20 @@ class WagonViewSet(
             number=request.data.get("number") or "",
             cargo_name=request.data.get("cargo_name") or "",
             note=request.data.get("note") or "",
-            number_source=request.data.get("number_source") or "manual",
-            number_camera_source=request.data.get("camera_source") or "",
+            vehicle_plate_event_id=request.data.get("vehicle_plate_event_id"),
         )
         return Response(WagonSerializer(wagon).data, status=201)
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="vehicle-plate-candidates",
+    )
+    def vehicle_plate_candidates(self, request):
+        events = services.vehicle_plate_candidates()
+        response = Response(VehiclePlateCandidateSerializer(events, many=True).data)
+        response["Cache-Control"] = "no-store"
+        return response
 
     @action(detail=True, methods=["post"], url_path="entry-weight")
     def entry_weight(self, request, pk=None):

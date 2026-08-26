@@ -6,11 +6,13 @@
 
 from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from uuid import UUID
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
+from apps.cameras.models import VehiclePlateEvent
 from apps.eventlog.services import log_event
 
 from . import scale
@@ -27,6 +29,12 @@ from .models import (
     Wagon,
     WeighingRecord,
 )
+
+VEHICLE_PLATE_CAMERA = "cam1"
+VEHICLE_PLATE_SOURCE = "main"
+VEHICLE_PLATE_MAX_AGE = timedelta(minutes=5)
+VEHICLE_PLATE_MAX_FUTURE = timedelta(minutes=1)
+VEHICLE_PLATE_CANDIDATE_LIMIT = 5
 
 
 def _error(detail: str, code: str) -> ValidationError:
@@ -1040,31 +1048,136 @@ def adjust_silo(
 # факта — вес на въезде и вес на выезде, нетто считает Wagon.computed_net_kg.
 
 
+def _vehicle_plate_time_bounds(now=None):
+    current = now or timezone.now()
+    return (
+        current - VEHICLE_PLATE_MAX_AGE,
+        current + VEHICLE_PLATE_MAX_FUTURE,
+    )
+
+
+def vehicle_plate_candidates(*, now=None) -> list[VehiclePlateEvent]:
+    """Return only fresh, unclaimed events for the configured truck lane."""
+
+    oldest, newest = _vehicle_plate_time_bounds(now)
+    return list(
+        VehiclePlateEvent.objects.filter(
+            camera=VEHICLE_PLATE_CAMERA,
+            source=VEHICLE_PLATE_SOURCE,
+            processing_status=VehiclePlateEvent.RECEIVED,
+            grain_wagon__isnull=True,
+            detected_at__gte=oldest,
+            detected_at__lte=newest,
+            received_at__gte=oldest,
+            received_at__lte=newest,
+        ).order_by("-detected_at", "-id")[:VEHICLE_PLATE_CANDIDATE_LIMIT]
+    )
+
+
+def _parse_vehicle_plate_event_id(raw_event_id) -> UUID:
+    try:
+        return UUID(str(raw_event_id))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise _error(
+            "Некорректный идентификатор события номера машины",
+            "bad_vehicle_plate_event_id",
+        ) from exc
+
+
+def _locked_vehicle_plate_event(raw_event_id) -> VehiclePlateEvent:
+    event_id = _parse_vehicle_plate_event_id(raw_event_id)
+    event = (
+        VehiclePlateEvent.objects.select_for_update()
+        .filter(event_id=event_id)
+        .first()
+    )
+    if event is None:
+        raise _error(
+            "Событие номера машины недоступно",
+            "vehicle_plate_event_unavailable",
+        )
+
+    oldest, newest = _vehicle_plate_time_bounds()
+    is_available = (
+        event.camera == VEHICLE_PLATE_CAMERA
+        and event.source == VEHICLE_PLATE_SOURCE
+        and event.processing_status == VehiclePlateEvent.RECEIVED
+        and oldest <= event.detected_at <= newest
+        and oldest <= event.received_at <= newest
+        and not Wagon.objects.filter(vehicle_plate_event=event).exists()
+    )
+    if not is_available:
+        raise _error(
+            "Событие номера машины недоступно или уже использовано",
+            "vehicle_plate_event_unavailable",
+        )
+    return event
+
+
 @transaction.atomic
-def create_passage(user, *, number="", cargo_name="", note="", **kwargs) -> Wagon:
+def create_passage(
+    user,
+    *,
+    number="",
+    cargo_name="",
+    note="",
+    vehicle_plate_event_id=None,
+) -> Wagon:
     """Зарегистрировать проход: машина уже на территории, ждёт входных весов."""
     cargo_name = (cargo_name or "").strip()
     if not cargo_name:
         raise _error("Укажите, что вывозят", "cargo_required")
-    wagon = Wagon.objects.create(
-        supply=None,
-        number=(number or "").strip(),
-        direction=Wagon.PASSAGE,
-        workflow="simple",
-        cargo_name=cargo_name,
-        status=st.ARRIVED,
-        arrived_at=timezone.now(),
-        arrived_by=user,
-        number_source=kwargs.get("number_source") or "manual",
-        number_camera_source=kwargs.get("number_camera_source") or "",
-        note=note or "",
-    )
+
+    plate_event = None
+    if vehicle_plate_event_id not in (None, ""):
+        plate_event = _locked_vehicle_plate_event(vehicle_plate_event_id)
+        number = plate_event.vehicle_number
+        number_source = "camera"
+        number_camera_source = plate_event.camera
+    else:
+        number = (number or "").strip()
+        number_source = "manual"
+        number_camera_source = ""
+
+    create_values = {
+        "supply": None,
+        "number": number,
+        "direction": Wagon.PASSAGE,
+        "workflow": "simple",
+        "cargo_name": cargo_name,
+        "status": st.ARRIVED,
+        "arrived_at": timezone.now(),
+        "arrived_by": user,
+        "number_source": number_source,
+        "number_camera_source": number_camera_source,
+        "vehicle_plate_event": plate_event,
+        "note": note or "",
+    }
+    if plate_event is None:
+        wagon = Wagon.objects.create(**create_values)
+    else:
+        try:
+            with transaction.atomic():
+                wagon = Wagon.objects.create(**create_values)
+        except IntegrityError as exc:
+            raise _error(
+                "Событие номера машины уже использовано",
+                "vehicle_plate_event_unavailable",
+            ) from exc
+
+        plate_event.processing_status = VehiclePlateEvent.PROCESSED
+        plate_event.save(update_fields=["processing_status"])
+
     _log(
         wagon,
         "passage",
         f"Проход {wagon.number or f'#{wagon.pk}'}: заезд за «{cargo_name}»",
         user,
         cargo_name=cargo_name,
+        vehicle_plate_event_id=(
+            str(plate_event.event_id) if plate_event is not None else None
+        ),
+        camera_source=number_camera_source,
     )
     return wagon
 

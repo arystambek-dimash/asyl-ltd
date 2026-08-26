@@ -961,6 +961,18 @@ export interface GrainAllocation {
   created_at: string;
 }
 
+/** Candidate from the gate camera, explicitly selected before creating a passage. */
+export interface VehiclePlateCandidate {
+  /** Stable external UUID; pass it as `vehicle_plate_event_id` when creating passage. */
+  event_id: string;
+  vehicle_number: string;
+  camera: string;
+  source: "main" | "sub";
+  detected_at: string;
+  stationary_seconds: number | string;
+  ocr_confidence: number | string;
+}
+
 export interface GrainWagon {
   id: number;
   supply: number | null;

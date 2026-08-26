@@ -174,6 +174,13 @@ class Wagon(models.Model):
     cargo_name = models.CharField(max_length=100, blank=True, default="")
     number_source = models.CharField(max_length=20, default="manual")
     number_camera_source = models.CharField(max_length=32, blank=True, default="")
+    vehicle_plate_event = models.OneToOneField(
+        "cameras.VehiclePlateEvent",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="grain_wagon",
+    )
     status = models.CharField(max_length=30, default=EXPECTED)
     unplanned = models.BooleanField(default=False)
     # Вес по документам на конкретный вагон (для проверки расхождений).
