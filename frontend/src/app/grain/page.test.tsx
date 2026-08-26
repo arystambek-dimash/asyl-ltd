@@ -62,7 +62,10 @@ vi.mock("@/components/grain/grain-toolbar", () => ({
   ),
 }));
 vi.mock("@/components/grain/wagon-number-camera", () => ({
-  WagonNumberCameraWorkspace: () => null,
+  WagonNumberCameraWorkspace: () => <section aria-label="Камера вагонов на приход" />,
+}));
+vi.mock("@/components/grain/vehicle-plate-camera", () => ({
+  VehiclePlateCameraWorkspace: () => <section aria-label="Камера машин на вывоз" />,
 }));
 vi.mock("@/components/grain/wagon-table", () => ({
   FlowEmptyState: () => null,
@@ -120,10 +123,35 @@ describe("Grain passage creation", () => {
     expect(screen.getByLabelText("Панель операций")).toHaveAttribute("data-direction", "passage");
     expect(screen.getByRole("button", { name: "Открыть вывоз" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Ожидаются" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "Камера проходной" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Камера проходной" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "На территории" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Завершённые" })).toBeInTheDocument();
     expect(visiblePollingMock).toHaveBeenLastCalledWith(reloadMock, 10_000, true);
+  });
+
+  it("keeps the intake and export camera tabs isolated", async () => {
+    const user = userEvent.setup();
+    render(<GrainPage />);
+
+    await user.click(screen.getByRole("tab", { name: "Камера проходной" }));
+    expect(screen.getByRole("region", { name: "Камера вагонов на приход" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    expect(screen.getByRole("tab", { name: "На территории" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("region", { name: "Камера вагонов на приход" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Камера машин на вывоз" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Камера проходной" }));
+    expect(screen.getByRole("region", { name: "Камера машин на вывоз" })).toBeInTheDocument();
+    expect(visiblePollingMock).toHaveBeenLastCalledWith(reloadMock, 10_000, false);
+
+    await user.click(screen.getByRole("tab", { name: "Приход" }));
+    expect(screen.getByRole("tab", { name: "Камера проходной" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("region", { name: "Камера вагонов на приход" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    expect(screen.getByRole("tab", { name: "Камера проходной" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("region", { name: "Камера машин на вывоз" })).toBeInTheDocument();
   });
 
   it("keeps the manual path when there are no camera candidates", async () => {

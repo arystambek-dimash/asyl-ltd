@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { ArrowRight, Camera, Check, Plus, ScanLine, TrainFront, Truck } from "lucide-react";
 import { GrainToolbar } from "@/components/grain/grain-toolbar";
 import { AppShell } from "@/components/layout/app-shell";
+import { VehiclePlateCameraWorkspace } from "@/components/grain/vehicle-plate-camera";
 import { WagonNumberCameraWorkspace } from "@/components/grain/wagon-number-camera";
 import { FlowEmptyState, WagonTable } from "@/components/grain/wagon-table";
 import { RequirePerm } from "@/components/require-perm";
@@ -45,6 +46,7 @@ const INTAKE_TABS = [
 const PASSAGE_TABS = [
   { key: "on_site", label: "На территории" },
   { key: "finished", label: "Завершённые" },
+  { key: "camera", label: "Камера проходной", icon: ScanLine },
 ];
 
 function GrainTypeCreator({ onCreated, onCancel }: { onCreated: (type: GrainType) => void; onCancel: () => void }) {
@@ -672,7 +674,11 @@ function GrainPageInner() {
   const canArrive = can(me, "grain.arrive");
   const canWeigh = can(me, "grain.weigh");
   const [direction, setDirection] = useState<GrainDirection>("intake");
-  const [tab, setTab] = useState<GrainTab>("on_site");
+  const [tabByDirection, setTabByDirection] = useState<Record<GrainDirection, GrainTab>>({
+    intake: "on_site",
+    passage: "on_site",
+  });
+  const tab = tabByDirection[direction];
   const [supplyOpen, setSupplyOpen] = useState(false);
   const [arriveOpen, setArriveOpen] = useState(false);
   const [passageOpen, setPassageOpen] = useState(false);
@@ -702,7 +708,14 @@ function GrainPageInner() {
   function selectDirection(next: GrainDirection) {
     if (next !== direction) setNotice("");
     setDirection(next);
-    if (next === "passage" && (tab === "expected" || tab === "camera")) setTab("on_site");
+  }
+
+  function selectStatusTab(key: string) {
+    setDirectionTab(direction, key as GrainTab);
+  }
+
+  function setDirectionTab(nextDirection: GrainDirection, nextTab: GrainTab) {
+    setTabByDirection((current) => ({ ...current, [nextDirection]: nextTab }));
   }
 
   function openArrival(supply?: GrainSupply) {
@@ -762,7 +775,7 @@ function GrainPageInner() {
         <Tabs
           tabs={direction === "intake" ? INTAKE_TABS : PASSAGE_TABS}
           active={tab}
-          onChange={(key) => setTab(key as GrainTab)}
+          onChange={selectStatusTab}
           label="Статус рейсов"
         />
 
@@ -773,7 +786,11 @@ function GrainPageInner() {
         )}
 
         {tab === "camera" ? (
-          <WagonNumberCameraWorkspace canManage={Boolean(me?.is_superuser)} />
+          direction === "intake" ? (
+            <WagonNumberCameraWorkspace canManage={Boolean(me?.is_superuser)} />
+          ) : (
+            <VehiclePlateCameraWorkspace />
+          )
         ) : tab === "expected" ? (
           <>
             {supplies.error && <ErrorAlert message={supplies.error} onRetry={refreshAll} />}
@@ -832,7 +849,7 @@ function GrainPageInner() {
             onDone={() => {
               setSupplyOpen(false);
               setDirection("intake");
-              setTab("expected");
+              setDirectionTab("intake", "expected");
               setNotice("Приход создан. Ожидаем номер от камеры проходной.");
               refreshAll();
             }}
@@ -857,7 +874,7 @@ function GrainPageInner() {
               setArriveOpen(false);
               setDirection("intake");
               setNotice(`Поезд ${wagon.number} зарегистрирован. Вагонные весы пока не подключены.`);
-              setTab("on_site");
+              setDirectionTab("intake", "on_site");
               refreshAll();
             }}
           />
@@ -879,7 +896,7 @@ function GrainPageInner() {
               setPassageOpen(false);
               setDirection("passage");
               setNotice(`Вывоз ${wagon.number || `#${wagon.id}`} оформлен — взвесьте пустую машину на въезде.`);
-              setTab("on_site");
+              setDirectionTab("passage", "on_site");
               refreshAll();
               router.push(`/grain/wagons/${wagon.id}`);
             }}
