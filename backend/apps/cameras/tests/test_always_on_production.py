@@ -68,6 +68,102 @@ def test_color_deltas_form_periods_and_close_after_a_gap():
     assert runs[1].ended_at is None
 
 
+def test_ordered_color_events_split_every_color_change_even_inside_gap():
+    start = _at(16, 10)
+    production.record_color_deltas(
+        "cam3", {"red": 2}, start, 2, ordered_color_event=True
+    )
+    production.record_color_deltas(
+        "cam3",
+        {"red": 3},
+        start + timedelta(minutes=1),
+        3,
+        ordered_color_event=True,
+    )
+    production.record_color_deltas(
+        "cam3",
+        {"green": 1},
+        start + timedelta(minutes=2),
+        1,
+        ordered_color_event=True,
+    )
+    production.record_color_deltas(
+        "cam3",
+        {"blue": 1},
+        start + timedelta(minutes=3),
+        1,
+        ordered_color_event=True,
+    )
+    production.record_color_deltas(
+        "cam3",
+        {"red": 1},
+        start + timedelta(minutes=4),
+        1,
+        ordered_color_event=True,
+    )
+
+    runs = list(AlwaysOnProductionRun.objects.order_by("started_at", "id"))
+    assert [row.color for row in runs] == ["red", "green", "blue", "red"]
+    assert [row.model_bags for row in runs] == [5, 1, 1, 1]
+    assert [row.ended_at for row in runs] == [
+        start + timedelta(minutes=1),
+        start + timedelta(minutes=2),
+        start + timedelta(minutes=3),
+        None,
+    ]
+    assert AlwaysOnProductionRun.objects.filter(ended_at__isnull=True).count() == 1
+
+
+def test_legacy_multi_color_snapshot_keeps_unordered_open_runs():
+    production.record_color_deltas(
+        "cam3",
+        {"red": 2, "blue": 1},
+        _at(16, 10),
+        3,
+    )
+
+    runs = AlwaysOnProductionRun.objects.filter(ended_at__isnull=True)
+    assert dict(runs.values_list("color", "model_bags")) == {"red": 2, "blue": 1}
+
+
+def test_first_ordered_event_does_not_revive_an_older_legacy_open_color():
+    start = _at(16, 10)
+    old_red = AlwaysOnProductionRun.objects.create(
+        camera="cam3",
+        business_day=start.date(),
+        color="red",
+        started_at=start,
+        last_counted_at=start,
+        model_bags=2,
+    )
+    legacy_current = AlwaysOnProductionRun.objects.create(
+        camera="cam3",
+        business_day=start.date(),
+        color="green",
+        started_at=start + timedelta(minutes=1),
+        last_counted_at=start + timedelta(minutes=1),
+        model_bags=1,
+    )
+
+    production.record_color_deltas(
+        "cam3",
+        {"red": 1},
+        start + timedelta(minutes=2),
+        1,
+        ordered_color_event=True,
+    )
+
+    runs = list(AlwaysOnProductionRun.objects.order_by("started_at", "id"))
+    assert [row.color for row in runs] == ["red", "green", "red"]
+    assert [row.model_bags for row in runs] == [2, 1, 1]
+    assert runs[0].pk == old_red.pk
+    assert runs[0].ended_at == start
+    assert runs[1].pk == legacy_current.pk
+    assert runs[1].ended_at == start + timedelta(minutes=1)
+    assert runs[2].ended_at is None
+    assert AlwaysOnProductionRun.objects.filter(ended_at__isnull=True).count() == 1
+
+
 def test_unclassified_delta_is_kept_instead_of_disappearing():
     production.record_color_deltas("cam3", {"red": 3}, _at(16, 10), 5)
 

@@ -24,56 +24,6 @@ const BATCH_META: Record<AlwaysOnStockBatch["status"], { label: string; classNam
   failed: { label: "Ошибка", className: "bg-red-50 text-red-600" },
 };
 
-/**
- * Порог «шума»: период другого цвета с числом мешков меньше этого значения
- * считается случайным вкраплением и приклеивается к предыдущему периоду.
- */
-const NOISE_THRESHOLD = 7;
-
-/**
- * «Поправленный» вид периодов: мелкие вкрапления другого цвета (< NOISE_THRESHOLD
- * мешков) поглощаются предыдущим периодом — их мешки приплюсовываются к нему,
- * а сам период исчезает. У поглощающего периода расширяем конец до конца
- * поглощённого, чтобы диапазон времени соответствовал выросшему числу мешков.
- *
- * Порядок повторяет исходный алгоритм: сравнение идёт с ПРЕДЫДУЩИМ оставленным
- * периодом, поэтому серия мелких вкраплений подряд склеивается в один якорь.
- * Сквозные периоды (is_partial_for_day) не участвуют в сравнении по числу
- * мешков — их model_bags не отражает реальность, поэтому они всегда остаются
- * якорями и сами не поглощаются.
- */
-export function smoothColorRuns(runs: AlwaysOnProductionRun[]): AlwaysOnProductionRun[] {
-  const result: AlwaysOnProductionRun[] = [];
-
-  for (const run of runs) {
-    const prev = result[result.length - 1];
-    const mergeable =
-      prev &&
-      !prev.is_partial_for_day &&
-      !run.is_partial_for_day &&
-      normalizedColor(prev.color) !== normalizedColor(run.color) &&
-      run.model_bags < NOISE_THRESHOLD;
-
-    if (mergeable) {
-      result[result.length - 1] = {
-        ...prev,
-        model_bags: prev.model_bags + run.model_bags,
-        // Диапазон времени тянем до конца поглощённого вкрапления.
-        last_counted_at: run.last_counted_at,
-        ended_at: run.ended_at ?? prev.ended_at,
-        ends_after_day: run.ends_after_day ?? prev.ends_after_day,
-        // Если поглотили активный «хвост» — период продолжает идти.
-        status: run.status === "active" ? run.status : prev.status,
-      };
-      continue;
-    }
-
-    result.push(run);
-  }
-
-  return result;
-}
-
 function zonedDateTime(value: string, timezone: string, withDate = true) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -122,61 +72,23 @@ interface AlwaysOnDayRunLogProps {
   onRetry?: () => void;
 }
 
-type DayRunView = "smoothed" | "raw";
-
 /** Компактная лента для карточки выбранного дня в аналитике. */
 export function AlwaysOnDayRunLog({ day, runs, timezone, loading, error, onRetry }: AlwaysOnDayRunLogProps) {
-  const [view, setView] = useState<DayRunView>("smoothed");
-
   const orderedRuns = useMemo(
     () =>
       [...(runs ?? [])].sort(
-        (left, right) => new Date(left.started_at).getTime() - new Date(right.started_at).getTime(),
+        (left, right) =>
+          new Date(left.started_at).getTime() - new Date(right.started_at).getTime() || left.id - right.id,
       ),
     [runs],
   );
-  const smoothedRuns = useMemo(() => smoothColorRuns(orderedRuns), [orderedRuns]);
-  const visibleRuns = view === "smoothed" ? smoothedRuns : orderedRuns;
-  const collapsedCount = orderedRuns.length - smoothedRuns.length;
-  const showToggle = runs !== null && !loading && !error && collapsedCount > 0;
 
   return (
     <section className="mt-4">
       <div className="flex flex-wrap items-center gap-2">
         <h5 className="text-[13px] font-semibold tracking-tight text-slate-800">Периоды цветов</h5>
-        {showToggle && (
-          <InfoHint
-            text={`Сглаженный вид: мелкие вкрапления другого цвета (< ${NOISE_THRESHOLD} меш.) приклеены к предыдущему периоду.`}
-          />
-        )}
         {runs !== null && !loading && !error && (
-          <span className="text-[11px] font-medium tabular-nums text-slate-400">{visibleRuns.length}</span>
-        )}
-        {showToggle && (
-          <div className="ml-auto inline-flex rounded-lg bg-slate-100 p-0.5">
-            <button
-              type="button"
-              onClick={() => setView("smoothed")}
-              aria-pressed={view === "smoothed"}
-              className={cn(
-                "rounded-md px-2.5 py-1 text-[11px] font-semibold transition",
-                view === "smoothed" ? "bg-white text-slate-800 shadow-sm" : "text-slate-400 hover:text-slate-600",
-              )}
-            >
-              Сглажено
-            </button>
-            <button
-              type="button"
-              onClick={() => setView("raw")}
-              aria-pressed={view === "raw"}
-              className={cn(
-                "rounded-md px-2.5 py-1 text-[11px] font-semibold transition",
-                view === "raw" ? "bg-white text-slate-800 shadow-sm" : "text-slate-400 hover:text-slate-600",
-              )}
-            >
-              Сырой
-            </button>
-          </div>
+          <span className="text-[11px] font-medium tabular-nums text-slate-400">{orderedRuns.length}</span>
         )}
       </div>
 
@@ -198,9 +110,9 @@ export function AlwaysOnDayRunLog({ day, runs, timezone, loading, error, onRetry
             </button>
           )}
         </div>
-      ) : visibleRuns.length ? (
+      ) : orderedRuns.length ? (
         <div className="mt-2 max-h-[19rem] divide-y divide-slate-100 overflow-y-auto overscroll-contain">
-          {visibleRuns.map((run) => {
+          {orderedRuns.map((run) => {
             const meta = colorMeta(run.color);
             const active = run.status === "active";
             const partial = Boolean(run.is_partial_for_day);

@@ -78,6 +78,7 @@ def record_model_delta(
     color_delta: dict[str, int],
     total_delta: int,
     observed_at: datetime,
+    ordered_color_event: bool = False,
 ) -> None:
     """Apply one authoritative count delta to both CRM ledgers.
 
@@ -103,6 +104,7 @@ def record_model_delta(
         color_deltas=color_delta,
         total_delta=total_delta,
         observed_at=observed_at,
+        ordered_color_event=ordered_color_event,
     )
 
     row, _ = AlwaysOnDailyAnalytics.objects.select_for_update().get_or_create(

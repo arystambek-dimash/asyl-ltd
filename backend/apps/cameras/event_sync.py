@@ -413,6 +413,7 @@ def apply_page(
                 color_delta=color_delta,
                 total_delta=1,
                 observed_at=event.occurred_at,
+                ordered_color_event=True,
             )
             compat_total += 1
             for color, value in color_delta.items():

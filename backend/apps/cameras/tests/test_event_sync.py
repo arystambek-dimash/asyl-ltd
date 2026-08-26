@@ -152,6 +152,42 @@ def test_replaying_an_applied_page_does_not_count_events_twice():
     assert sum(AlwaysOnProductionRun.objects.values_list("model_bags", flat=True)) == 2
 
 
+def test_ordered_event_colors_create_new_runs_and_replay_is_idempotent():
+    page = event_sync.parse_page(
+        _page(
+            [
+                _event(1, 1, class_name="Red_50"),
+                _event(2, 2, class_name="Green_50"),
+                _event(3, 3, class_name="Blue_50"),
+                _event(4, 4, class_name="Red_50"),
+            ]
+        ),
+        camera="cam3",
+        after_id=0,
+    )
+
+    assert event_sync.apply_page(
+        camera="cam3",
+        page=page,
+        requested_after_id=0,
+    )[:2] == (4, 0)
+    runs = list(AlwaysOnProductionRun.objects.order_by("started_at", "id"))
+    assert [row.color for row in runs] == ["red", "green", "blue", "red"]
+    assert [row.model_bags for row in runs] == [1, 1, 1, 1]
+    assert [row.ended_at for row in runs] == [_at(1), _at(2), _at(3), None]
+
+    assert event_sync.apply_page(
+        camera="cam3",
+        page=page,
+        requested_after_id=0,
+    )[:2] == (0, 0)
+    assert AlwaysOnImportedEvent.objects.count() == 4
+    assert AlwaysOnProductionRun.objects.count() == 4
+    row = AlwaysOnDailyAnalytics.objects.get(camera="cam3")
+    assert row.model_total == 4
+    assert row.model_per_color == {"red": 2, "green": 1, "blue": 1}
+
+
 def test_stale_concurrent_page_cannot_overwrite_the_newer_caught_up_state():
     old_page = event_sync.parse_page(
         _page([_event(1, 1)]),

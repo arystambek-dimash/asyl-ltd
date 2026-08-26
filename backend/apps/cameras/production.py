@@ -111,8 +111,17 @@ def record_color_deltas(
     color_deltas: dict[str, int] | None,
     observed_at: datetime,
     total_delta: int,
+    *,
+    ordered_color_event: bool = False,
 ) -> list[AlwaysOnProductionRun]:
-    """Append one counter delta to contiguous per-colour production runs."""
+    """Append one counter delta to contiguous per-colour production runs.
+
+    Durable journal events arrive in an authoritative order and contain one
+    detected colour.  For those events, a different colour ends every other
+    open run before the new run is recorded.  Legacy aggregate snapshots can
+    contain deltas for several colours without preserving their order, so they
+    deliberately keep the previous per-colour fallback behaviour.
+    """
 
     camera = ai.normalize(camera)
     observed_at = _aware(observed_at)
@@ -158,13 +167,38 @@ def record_color_deltas(
     if not normalized:
         return []
 
-    open_runs = {
-        row.color: row
-        for row in AlwaysOnProductionRun.objects.select_for_update().filter(
+    open_run_rows = list(
+        AlwaysOnProductionRun.objects.select_for_update().filter(
             camera=camera,
             ended_at__isnull=True,
         )
-    }
+    )
+    open_runs = {row.color: row for row in open_run_rows}
+    if ordered_color_event:
+        if len(normalized) != 1:
+            raise ValueError("ordered color event must resolve to exactly one color")
+        event_color = next(iter(normalized))
+
+        # A backend deployed over the legacy per-colour implementation may
+        # inherit several open rows.  Only the most recently counted row was
+        # the real current colour; an older row with the incoming colour must
+        # never be revived across an intervening colour.
+        current_row = max(
+            open_run_rows,
+            key=lambda row: (row.last_counted_at, row.pk),
+            default=None,
+        )
+        for row in open_run_rows:
+            if row == current_row:
+                continue
+            row.ended_at = row.last_counted_at
+            row.save(update_fields=["ended_at", "updated_at"])
+            open_runs.pop(row.color, None)
+        if current_row is not None and current_row.color != event_color:
+            current_row.ended_at = current_row.last_counted_at
+            current_row.save(update_fields=["ended_at", "updated_at"])
+            open_runs.pop(current_row.color, None)
+
     touched: list[AlwaysOnProductionRun] = []
     for color in sorted(normalized):
         bags = normalized[color]
