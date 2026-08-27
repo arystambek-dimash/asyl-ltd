@@ -48,22 +48,6 @@ jobs:
         shell: powershell
         run: .\deploy\camera-pc\tests\Invoke-StaticTests.ps1
 
-  cv-service:
-    name: Camera AI service contract
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: cv_service/requirements-test.txt
-      - name: Install lightweight API test dependencies
-        run: pip install -r cv_service/requirements-test.txt
-      - name: Test API, security and processor lifecycle
-        run: pytest -q cv_service/tests
-
   backend:
     name: Backend tests + audit
     runs-on: ubuntu-latest

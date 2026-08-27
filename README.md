@@ -390,6 +390,12 @@ docker compose -f docker-compose.prod.yml exec backend \
 
 ### cameras — камеры и AI-подсчёт
 
+Windows runtime, модели, тесты и установщик AI-сервиса принадлежат отдельному
+репозиторию
+[`bag-counter-cv-service`](https://github.com/arystambek-dimash/bag-counter-cv-service).
+Этот репозиторий хранит только CRM-клиент его HTTP-контракта и серверную
+оркестрацию; исходники edge-сервиса сюда не копируются.
+
 #### Живой просмотр
 
 - `POST /api/cameras/token/` (сотрудник) — ставит подписанную HttpOnly-cookie

@@ -7,10 +7,25 @@ function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
 }
 
+$requiredScripts = @(
+    'CameraPc.Common.psm1',
+    'install.ps1',
+    'mediamtx-supervisor.ps1',
+    'rollback.ps1',
+    'run-nvr-sync.ps1',
+    'status.ps1',
+    'update-mediamtx-config.ps1'
+)
+foreach ($requiredScript in $requiredScripts) {
+    Assert-True (Test-Path -LiteralPath (Join-Path $PackageRoot $requiredScript)) (
+        "Required camera agent script is missing: $requiredScript"
+    )
+}
+
 $scripts = @(Get-ChildItem -LiteralPath $PackageRoot -File -Recurse | Where-Object {
     $_.Extension -in @('.ps1', '.psm1')
 })
-Assert-True ($scripts.Count -ge 10) 'Expected camera agent and AI service scripts are missing.'
+Assert-True ($scripts.Count -ge 8) 'Expected camera agent scripts are missing.'
 foreach ($script in $scripts) {
     $tokens = $null
     $parseErrors = $null
@@ -37,58 +52,6 @@ $allText = ($scripts | ForEach-Object { Get-Content -LiteralPath $_.FullName -Ra
 Assert-True ($allText -notmatch '192\.168\.7') 'Stale legacy subnet is present in the versioned agent.'
 Assert-True ($allText -match 'Global\\ASYL-Camera-MediaMTX-Mutation') 'Shared global mutation mutex is missing.'
 Assert-True ((Get-Content -LiteralPath (Join-Path $PackageRoot 'install.ps1') -Raw) -match 'New-ScheduledTaskTrigger -AtStartup') 'AtStartup trigger is missing.'
-$aiInstallerText = Get-Content -LiteralPath (Join-Path $PackageRoot 'install-ai-service.ps1') -Raw -Encoding UTF8
-$aiRunnerText = Get-Content -LiteralPath (Join-Path $PackageRoot 'run-ai-service.ps1') -Raw -Encoding UTF8
-Assert-True ($aiInstallerText -match "taskName = 'ASYL-AI-Service'") 'AI boot task is missing.'
-Assert-True ($aiInstallerText -match 'New-ScheduledTaskTrigger -AtStartup') 'AI service AtStartup trigger is missing.'
-Assert-True ($aiInstallerText -match 'AI_SERVICE_API_KEY_SHA256') 'AI service digest is not installed.'
-Assert-True ($aiInstallerText -match 'AI_ALWAYS_ON_STATE_PATH') 'Durable always-on AI state path is not installed.'
-Assert-True ($aiInstallerText -match 'AI_CAMERA_ROLES_STATE_PATH') 'Durable camera-role state path is not installed.'
-Assert-True ($aiInstallerText -match 'AI_COUNTING_LINES_STATE_PATH') 'Durable counting-line state path is not installed.'
-Assert-True ($aiInstallerText -match 'AI_EVENT_DB_PATH') 'Durable count-event journal path is not installed.'
-Assert-True ($aiInstallerText -match "'event_journal.py'") 'Count-event journal module is not validated before install.'
-Assert-True ($aiInstallerText -match "'event_journal_verify.py'") 'Read-only journal verifier is not validated before install.'
-Assert-True (
-    $aiInstallerText -match "eventDbPath = Join-Path \`$stateRoot 'count-events.sqlite3'"
-) 'Count-event journal must live in the sibling durable state directory.'
-Assert-True ($aiInstallerText -match 'data\\camera-roles\.json') 'Known legacy camera-role state is not migrated.'
-Assert-True (
-    $aiInstallerText -match 'Get-FileHash' -and
-    $aiInstallerText -match 'Refusing to overwrite differing camera-role states'
-) 'Differing legacy/durable camera-role state is not rejected.'
-$legacyRoleMoveIndex = $aiInstallerText.IndexOf('[IO.File]::Move($migrationTemporary, $cameraRolesStatePath)')
-$installedPackageRemovalIndex = $aiInstallerText.IndexOf('Remove-Item -LiteralPath $installedPackage -Recurse -Force')
-$aiStopIndex = $aiInstallerText.IndexOf('Stop-ScheduledTask -TaskName $taskName')
-$eventJournalVerifyIndex = $aiInstallerText.IndexOf("Join-Path `$source 'event_journal_verify.py'")
-$legacyDatabaseGuardIndex = $aiInstallerText.IndexOf('legacyDatabaseArtifacts')
-$aiQuiesceGuardIndex = $aiInstallerText.IndexOf('Existing AI service did not quiesce before state migration')
-Assert-True (
-    $eventJournalVerifyIndex -ge 0 -and
-    $eventJournalVerifyIndex -lt $aiStopIndex -and
-    $legacyDatabaseGuardIndex -gt $eventJournalVerifyIndex -and
-    $legacyDatabaseGuardIndex -lt $aiStopIndex -and
-    $aiStopIndex -ge 0 -and
-    $aiQuiesceGuardIndex -gt $aiStopIndex -and
-    $legacyRoleMoveIndex -gt $aiQuiesceGuardIndex -and
-    $legacyRoleMoveIndex -ge 0 -and
-    $installedPackageRemovalIndex -gt $legacyRoleMoveIndex
-) 'Journal must verify before stop; AI must quiesce before state moves/package deletion.'
-Assert-True (
-    $aiInstallerText -match '\\\.\(\?:sqlite\|sqlite3\|db\)' -and
-    $aiInstallerText -match 'Refusing to delete database artifacts'
-) 'Old-package SQLite/DB/WAL/SHM artifacts are not guarded before deletion.'
-Assert-True (
-    $aiInstallerText -match 'aiQuiesceDeadline' -and
-    $aiInstallerText -match 'Get-NetTCPConnection -State Listen -LocalPort 8890'
-) 'AI service quiesce guard must be bounded and verify its listener is closed.'
-Assert-True ($aiInstallerText -match "'state.py'") 'Always-on state module is not validated before install.'
-Assert-True ($aiInstallerText -notmatch 'AI_SERVICE_API_KEY\s*=') 'AI installer stores a plaintext API key.'
-Assert-True ($aiRunnerText -match "Plaintext AI_SERVICE_API_KEY is forbidden") 'AI runner does not reject plaintext secrets.'
-Assert-True ($aiInstallerText -match 'New-NetFirewallRule' -and $aiInstallerText -match 'RemoteAddress \$BackendTailnetIp') 'AI service firewall is not restricted to backend Tailscale IP.'
-Assert-True ($aiInstallerText -match 'run-ai-service.ps1.*-ValidateOnly') 'Model/encoder validation before task registration is missing.'
-Assert-True ($aiInstallerText -match "State -ne 'Running'") 'AI installer must reject a completed/Ready long-running task.'
-Assert-True ($aiInstallerText -match 'Get-NetTCPConnection -State Listen -LocalPort 8890') 'AI installer does not verify the real listener.'
-Assert-True ($aiInstallerText -match 'unauthenticated health probe with 401') 'AI installer does not verify backend-only authentication.'
 $installerText = Get-Content -LiteralPath (Join-Path $PackageRoot 'install.ps1') -Raw -Encoding UTF8
 Assert-True ($installerText -match 'Protect-CameraAgentPath -Path \$InstallRoot') 'SYSTEM script InstallRoot ACL protection is missing.'
 Assert-True ($installerText -match 'Protect-CameraAgentPath -Path \$backupRoot') 'Backup ACL protection is missing.'
