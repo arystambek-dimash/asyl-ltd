@@ -223,6 +223,12 @@ class AlwaysOnImportedEvent(models.Model):
     source = models.CharField(max_length=16)
     mode = models.CharField(max_length=16)
     class_name = models.CharField(max_length=100, blank=True, default="")
+    color = models.CharField(max_length=100, null=True, blank=True)
+    color_confidence = models.FloatField(null=True, blank=True)
+    brand = models.CharField(max_length=100, null=True, blank=True)
+    brand_confidence = models.FloatField(null=True, blank=True)
+    sku = models.CharField(max_length=255, null=True, blank=True)
+    classification_status = models.CharField(max_length=32, null=True, blank=True)
     total_after = models.PositiveBigIntegerField(null=True, blank=True)
     applied_to_analytics = models.BooleanField(default=False)
     imported_at = models.DateTimeField(auto_now_add=True)
@@ -233,6 +239,26 @@ class AlwaysOnImportedEvent(models.Model):
             models.UniqueConstraint(
                 fields=["camera", "upstream_event_id"],
                 name="cameras_one_imported_event_per_camera_id",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(color_confidence__isnull=True)
+                    | (
+                        Q(color_confidence__gte=0)
+                        & Q(color_confidence__lte=1)
+                    )
+                ),
+                name="cameras_event_color_conf_01",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(brand_confidence__isnull=True)
+                    | (
+                        Q(brand_confidence__gte=0)
+                        & Q(brand_confidence__lte=1)
+                    )
+                ),
+                name="cameras_event_brand_conf_01",
             ),
         ]
 
@@ -300,6 +326,10 @@ class AlwaysOnDailyAnalytics(models.Model):
     day = models.DateField(db_index=True)
     model_total = models.PositiveIntegerField(default=0)
     model_per_color = models.JSONField(default=dict, blank=True)
+    # The database default is intentional: an automatic deploy rollback can
+    # run the previous image after this column exists. That older ORM doesn't
+    # include the column in INSERTs, so PostgreSQL must still supply `{}`.
+    model_per_brand = models.JSONField(default=dict, db_default={}, blank=True)
     adjustment = models.IntegerField(default=0)
     # Строка уехала в архив: в текущем счётчике её больше нет, но день
     # остаётся на графике и в истории. Обнуление счётчика — это перенос
@@ -497,6 +527,8 @@ class AlwaysOnCountArchive(models.Model):
     period_end = models.DateField()
     model_total = models.PositiveIntegerField(default=0)
     model_per_color = models.JSONField(default=dict, blank=True)
+    # Keep old-image INSERTs valid throughout the automatic rollback window.
+    model_per_brand = models.JSONField(default=dict, db_default={}, blank=True)
     adjustment = models.IntegerField(default=0)
     total = models.PositiveIntegerField(default=0)
     days = models.PositiveIntegerField(default=0)

@@ -2,11 +2,14 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
+from django.db import connection
+from django.db.migrations.loader import MigrationLoader
 from django.utils import timezone
 
 from apps.cameras import ai, analytics
 from apps.cameras.models import (
     AlwaysOnColorProductMapping,
+    AlwaysOnCountArchive,
     AlwaysOnCounterCursor,
     AlwaysOnDailyAnalytics,
     MonoblockCameraSettings,
@@ -45,10 +48,44 @@ def test_snapshot_accumulates_delta_without_double_counting_and_survives_reset()
     row = AlwaysOnDailyAnalytics.objects.get(camera="cam3", day=timezone.localdate())
     assert row.model_total == 9
     assert row.model_per_color == {"red": 6, "blue": 3}
+    assert row.model_per_brand == {"unclassified": 9}
     assert row.total == 9
     cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
     assert cursor.last_total == 2
     assert cursor.last_per_color == {"red": 1, "blue": 1}
+
+
+def test_brand_columns_keep_database_defaults_for_old_image_rollback():
+    loader = MigrationLoader(connection)
+    migration_apps = loader.project_state(
+        [("cameras", "0025_always_on_brand_analytics")]
+    ).apps
+    for runtime_model, model_name in (
+        (AlwaysOnDailyAnalytics, "AlwaysOnDailyAnalytics"),
+        (AlwaysOnCountArchive, "AlwaysOnCountArchive"),
+    ):
+        assert runtime_model._meta.get_field("model_per_brand").db_default == {}
+        migration_model = migration_apps.get_model("cameras", model_name)
+        assert migration_model._meta.get_field("model_per_brand").db_default == {}
+
+    # Automatic rollback restores the previous image without reversing schema
+    # migrations. Its historical ORM omits the new columns from INSERTs, so the
+    # permanent PostgreSQL defaults must keep both write paths valid.
+    old_apps = loader.project_state(
+        [("cameras", "0023_remove_legacy_esp_schema")]
+    ).apps
+    old_daily = old_apps.get_model("cameras", "AlwaysOnDailyAnalytics")
+    old_archive = old_apps.get_model("cameras", "AlwaysOnCountArchive")
+    day = timezone.localdate()
+    daily = old_daily.objects.create(camera="cam31", day=day)
+    archive = old_archive.objects.create(
+        camera="cam31",
+        period_start=day,
+        period_end=day,
+    )
+
+    assert AlwaysOnDailyAnalytics.objects.get(pk=daily.pk).model_per_brand == {}
+    assert AlwaysOnCountArchive.objects.get(pk=archive.pk).model_per_brand == {}
 
 
 def test_session_count_is_not_added_to_background_analytics():
@@ -188,6 +225,87 @@ def test_today_endpoint_returns_real_total_and_rejects_excess_subtraction(
         format="json",
     )
     assert too_much.status_code == 400
+
+
+def test_today_endpoint_returns_brand_breakdown_per_camera_and_day(
+    auth_client,
+    admin_user,
+):
+    today = timezone.localdate()
+    yesterday = today - timedelta(days=1)
+    MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3", "cam5"])
+    AlwaysOnDailyAnalytics.objects.create(
+        camera="cam3",
+        day=yesterday,
+        model_total=2,
+        model_per_brand={"korol": 2},
+    )
+    AlwaysOnDailyAnalytics.objects.create(
+        camera="cam3",
+        day=today,
+        model_total=4,
+        model_per_brand={"korol": 2, "unknown": 1, "unclassified": 1},
+    )
+    AlwaysOnDailyAnalytics.objects.create(
+        camera="cam5",
+        day=today,
+        model_total=3,
+        model_per_brand={"dikhan_baba": 3},
+    )
+
+    response = auth_client(admin_user).get("/api/cameras/always-on-analytics/")
+
+    assert response.status_code == 200
+    assert response.data["model_per_brand"] == {
+        "korol": 4,
+        "unknown": 1,
+        "unclassified": 1,
+        "dikhan_baba": 3,
+    }
+    assert response.data["dominant_brand"] == "korol"
+    assert sum(round(item["percent"] * 10) for item in response.data["brands"]) == 1000
+    cam3 = next(item for item in response.data["cameras"] if item["camera"] == "cam3")
+    assert cam3["dominant_brand"] == "korol"
+    assert cam3["model_per_brand"] == {
+        "korol": 2,
+        "unknown": 1,
+        "unclassified": 1,
+    }
+    assert {item["brand"]: item["total"] for item in cam3["brands"]} == {
+        "korol": 4,
+        "unknown": 1,
+        "unclassified": 1,
+    }
+    today_point = next(
+        item for item in cam3["history"] if item["day"] == today.isoformat()
+    )
+    assert today_point["model_per_brand"] == {
+        "korol": 2,
+        "unknown": 1,
+        "unclassified": 1,
+    }
+    assert sum(item["total"] for item in today_point["brands"]) == 4
+
+
+def test_legacy_daily_rows_are_reported_as_unclassified_brand(
+    auth_client,
+    admin_user,
+):
+    MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
+    AlwaysOnDailyAnalytics.objects.create(
+        camera="cam3",
+        day=timezone.localdate(),
+        model_total=7,
+        model_per_brand={},
+    )
+
+    response = auth_client(admin_user).get("/api/cameras/always-on-analytics/")
+
+    assert response.status_code == 200
+    assert response.data["brands"] == [
+        {"brand": "unclassified", "total": 7, "percent": 100.0}
+    ]
+    assert response.data["dominant_brand"] is None
 
 
 @pytest.mark.parametrize("malformed", [None, "cam3", {"cam3": True}, 3])

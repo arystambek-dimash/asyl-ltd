@@ -7,6 +7,7 @@ and the high-water cursor either all advance or all roll back.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -39,6 +40,12 @@ class CountEvent:
     mode: str
     class_name: str
     total_after: int
+    color: str | None = None
+    color_confidence: float | None = None
+    brand: str | None = None
+    brand_confidence: float | None = None
+    sku: str | None = None
+    classification_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +53,7 @@ class EventPage:
     events: tuple[CountEvent, ...]
     next_after_id: int
     has_more: bool
+    enrichment_pending: bool
     journal_id: str | None
 
 
@@ -63,6 +71,34 @@ def _plain_int(value: object, field: str, *, minimum: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise EventSyncError(f"AI /events: invalid {field}")
     return value
+
+
+def _optional_text(
+    raw: dict,
+    field: str,
+    *,
+    max_length: int,
+) -> str | None:
+    value = raw.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value or len(value) > max_length:
+        raise EventSyncError(f"AI /events: invalid event.{field}")
+    return value
+
+
+def _optional_confidence(raw: dict, field: str) -> float | None:
+    value = raw.get(field)
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or not 0.0 <= float(value) <= 1.0
+    ):
+        raise EventSyncError(f"AI /events: invalid event.{field}")
+    return float(value)
 
 
 def _parse_event(raw: object, *, camera: str, previous_id: int) -> CountEvent:
@@ -97,6 +133,16 @@ def _parse_event(raw: object, *, camera: str, previous_id: int) -> CountEvent:
         mode=mode,
         class_name=class_name,
         total_after=total_after,
+        color=_optional_text(raw, "color", max_length=100),
+        color_confidence=_optional_confidence(raw, "color_confidence"),
+        brand=_optional_text(raw, "brand", max_length=100),
+        brand_confidence=_optional_confidence(raw, "brand_confidence"),
+        sku=_optional_text(raw, "sku", max_length=255),
+        classification_status=_optional_text(
+            raw,
+            "classification_status",
+            max_length=32,
+        ),
     )
 
 
@@ -111,6 +157,9 @@ def parse_page(payload: object, *, camera: str, after_id: int) -> EventPage:
     has_more = payload.get("has_more")
     if not isinstance(has_more, bool):
         raise EventSyncError("AI /events: invalid has_more")
+    enrichment_pending = payload.get("enrichment_pending", False)
+    if not isinstance(enrichment_pending, bool):
+        raise EventSyncError("AI /events: invalid enrichment_pending")
     journal_id = payload.get("journal_id")
     if journal_id is not None and (
         not isinstance(journal_id, str)
@@ -132,12 +181,27 @@ def parse_page(payload: object, *, camera: str, after_id: int) -> EventPage:
         raise EventSyncError("AI /events: next_after_id skipped an event")
     if has_more and not events:
         raise EventSyncError("AI /events: has_more without cursor progress")
-    return EventPage(tuple(events), next_after_id, has_more, journal_id)
+    return EventPage(
+        tuple(events),
+        next_after_id,
+        has_more,
+        enrichment_pending,
+        journal_id,
+    )
 
 
 def _event_color(event: CountEvent) -> dict[str, int]:
-    color = event.class_name.split("_", 1)[0].strip().lower()
+    color = (event.color or event.class_name).split("_", 1)[0].strip().lower()
     return {color: 1} if color and len(color) <= 32 else {}
+
+
+def _event_brand(event: CountEvent) -> dict[str, int] | None:
+    """Return a classified brand, preserving absence as legacy data."""
+
+    if event.brand is None:
+        return None
+    brand = " ".join(event.brand.split()).lower()
+    return {brand: 1} if brand and len(brand) <= 100 else None
 
 
 @transaction.atomic
@@ -373,7 +437,7 @@ def apply_page(
                     "AI /events: initial counter boundary does not match CRM"
                 )
             cursor.event_boundary_validated = True
-        elif not page.has_more:
+        elif not page.has_more and not page.enrichment_pending:
             # A validated empty/ignored tail is itself a clean cutover point:
             # all historical aggregate counts remain in CRM and only future
             # journal events will be added.
@@ -390,6 +454,12 @@ def apply_page(
                 "source": event.source,
                 "mode": event.mode,
                 "class_name": event.class_name,
+                "color": event.color,
+                "color_confidence": event.color_confidence,
+                "brand": event.brand,
+                "brand_confidence": event.brand_confidence,
+                "sku": event.sku,
+                "classification_status": event.classification_status,
                 "total_after": event.total_after,
                 "applied_to_analytics": event.mode == "always_on",
             },
@@ -400,6 +470,12 @@ def apply_page(
                 or imported.source != event.source
                 or imported.mode != event.mode
                 or imported.class_name != event.class_name
+                or imported.color != event.color
+                or imported.color_confidence != event.color_confidence
+                or imported.brand != event.brand
+                or imported.brand_confidence != event.brand_confidence
+                or imported.sku != event.sku
+                or imported.classification_status != event.classification_status
                 or imported.total_after != event.total_after
             ):
                 raise EventSyncError("AI /events: replayed event changed contents")
@@ -411,6 +487,7 @@ def apply_page(
             analytics.record_model_delta(
                 camera=camera,
                 color_delta=color_delta,
+                brand_delta=_event_brand(event),
                 total_delta=1,
                 observed_at=event.occurred_at,
                 ordered_color_event=True,
@@ -441,10 +518,11 @@ def apply_page(
         )
     )
     drain_satisfied = ordinary_drain_satisfied and stop_drain_satisfied
+    stream_caught_up = not page.has_more and not page.enrichment_pending
     cursor.event_caught_up_at = (
-        synced_at if not page.has_more and drain_satisfied else None
+        synced_at if stream_caught_up and drain_satisfied else None
     )
-    if not page.has_more and drain_satisfied:
+    if stream_caught_up and drain_satisfied:
         cursor.event_drain_required_at = None
         cursor.event_stop_drain_requested_at = None
         cursor.event_stop_confirmed_at = None
@@ -535,7 +613,7 @@ def sync_camera(
                 ignored,
                 page_number,
                 cursor_id,
-                True,
+                not page.enrichment_pending,
             )
         if cursor_id <= after_id:
             raise EventSyncError("AI /events cursor did not advance")

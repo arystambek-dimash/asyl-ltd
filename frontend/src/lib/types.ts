@@ -604,12 +604,20 @@ export interface AlwaysOnColorAnalytics {
   total: number;
   percent: number;
 }
+export interface AlwaysOnBrandAnalytics {
+  brand: string;
+  total: number;
+  percent: number;
+}
 export interface AlwaysOnHistoryPoint {
   day: string;
   model_total: number;
   model_per_color: Record<string, number>;
+  model_per_brand: Record<string, number>;
   /** Готовая разбивка по цветам за этот день — считает бэкенд. */
   colors: AlwaysOnColorAnalytics[];
+  /** Бренды модели; legacy-данные приходят отдельным `unclassified`. */
+  brands: AlwaysOnBrandAnalytics[];
   adjustment: number;
   total: number;
   updated_at: string | null;
@@ -620,6 +628,7 @@ interface AlwaysOnArchiveDay {
   adjustment: number;
   total: number;
   colors: AlwaysOnColorAnalytics[];
+  brands: AlwaysOnBrandAnalytics[];
 }
 export interface AlwaysOnCountArchive {
   id: number;
@@ -631,6 +640,7 @@ export interface AlwaysOnCountArchive {
   total: number;
   days: number;
   colors: AlwaysOnColorAnalytics[];
+  brands: AlwaysOnBrandAnalytics[];
   /** Разбивка периода по дням — раскрывается по клику на строку архива. */
   day_rows: AlwaysOnArchiveDay[];
   note: string;
@@ -642,12 +652,15 @@ export interface AlwaysOnDailyCameraAnalytics {
   day: string;
   model_total: number;
   model_per_color: Record<string, number>;
+  model_per_brand: Record<string, number>;
   adjustment: number;
   total: number;
   all_time_total: number;
   history: AlwaysOnHistoryPoint[];
   colors: AlwaysOnColorAnalytics[];
+  brands: AlwaysOnBrandAnalytics[];
   dominant_color: string | null;
+  dominant_brand: string | null;
   updated_at: string | null;
 }
 export interface AlwaysOnDailyAnalytics {
@@ -660,6 +673,10 @@ export interface AlwaysOnDailyAnalytics {
   history: AlwaysOnHistoryPoint[];
   colors: AlwaysOnColorAnalytics[];
   dominant_color: string | null;
+  model_per_brand: Record<string, number>;
+  brands: AlwaysOnBrandAnalytics[];
+  /** Не выбирает `unknown`/`unclassified` как основной бренд. */
+  dominant_brand: string | null;
   cameras: AlwaysOnDailyCameraAnalytics[];
 }
 export interface AlwaysOnProductionRun {

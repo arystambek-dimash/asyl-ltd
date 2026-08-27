@@ -17,6 +17,9 @@ from .models import (
 )
 
 EVENT_ARCHIVE_MAX_SYNC_AGE = timedelta(seconds=60)
+LEGACY_BRAND = "unclassified"
+UNKNOWN_BRAND = "unknown"
+NON_DOMINANT_BRANDS = frozenset({LEGACY_BRAND, UNKNOWN_BRAND})
 
 
 def _processor_total(processor: dict) -> int | None:
@@ -72,10 +75,45 @@ def _color_delta(current: dict[str, int], previous: dict) -> dict[str, int]:
     return result
 
 
+def _normalize_brand(value: object) -> str:
+    if not isinstance(value, str):
+        return LEGACY_BRAND
+    brand = " ".join(value.split()).lower()
+    return brand if brand and len(brand) <= 100 else LEGACY_BRAND
+
+
+def _bounded_brand_delta(raw: dict[str, int] | None, total: int) -> dict[str, int]:
+    """Fit a brand split to the authoritative bag total.
+
+    Missing enrichment is kept separate from the classifier's explicit
+    ``unknown`` result so legacy periods are never presented as a prediction.
+    """
+
+    remaining = max(0, int(total))
+    result: dict[str, int] = {}
+    for raw_brand, raw_bags in (raw or {}).items():
+        if remaining <= 0 or isinstance(raw_bags, bool):
+            continue
+        try:
+            bags = max(0, int(raw_bags))
+        except (OverflowError, TypeError, ValueError):
+            continue
+        accepted = min(bags, remaining)
+        if not accepted:
+            continue
+        brand = _normalize_brand(raw_brand)
+        result[brand] = result.get(brand, 0) + accepted
+        remaining -= accepted
+    if remaining:
+        result[LEGACY_BRAND] = result.get(LEGACY_BRAND, 0) + remaining
+    return result
+
+
 def record_model_delta(
     *,
     camera: str,
     color_delta: dict[str, int],
+    brand_delta: dict[str, int] | None = None,
     total_delta: int,
     observed_at: datetime,
     ordered_color_event: bool = False,
@@ -114,9 +152,20 @@ def record_model_delta(
     merged_colors = dict(row.model_per_color or {})
     for color, value in color_delta.items():
         merged_colors[color] = int(merged_colors.get(color, 0)) + value
+    merged_brands = dict(row.model_per_brand or {})
+    for brand, value in _bounded_brand_delta(brand_delta, total_delta).items():
+        merged_brands[brand] = int(merged_brands.get(brand, 0)) + value
     row.model_total += total_delta
     row.model_per_color = merged_colors
-    row.save(update_fields=["model_total", "model_per_color", "updated_at"])
+    row.model_per_brand = merged_brands
+    row.save(
+        update_fields=[
+            "model_total",
+            "model_per_color",
+            "model_per_brand",
+            "updated_at",
+        ]
+    )
 
 
 @transaction.atomic
@@ -202,14 +251,18 @@ def record_snapshot(
 
 def _row_payload(row: AlwaysOnDailyAnalytics | None, camera: str, day: date) -> dict:
     colors = _normalized_colors(row.model_per_color if row else None)
+    model_total = row.model_total if row else 0
+    brands = _normalized_brands(row.model_per_brand if row else None, model_total)
     return {
         "camera": camera,
         "day": day.isoformat(),
-        "model_total": row.model_total if row else 0,
+        "model_total": model_total,
         "model_per_color": colors,
+        "model_per_brand": brands,
         # Готовая разбивка за день с процентами — её показывает клик по
         # столбику, и считается она там же, где общая, чтобы цифры сходились.
         "colors": _color_payload(colors),
+        "brands": _brand_payload(brands),
         "adjustment": row.adjustment if row else 0,
         "total": row.total if row else 0,
         "updated_at": row.updated_at if row else None,
@@ -234,17 +287,32 @@ def _merge_colors(rows) -> dict[str, int]:
     return result
 
 
-def _color_payload(colors: dict[str, int]) -> list[dict]:
-    """Доли цветов, дающие в сумме ровно 100%.
+def _normalized_brands(raw, model_total: int) -> dict[str, int]:
+    return _bounded_brand_delta(raw if isinstance(raw, dict) else None, model_total)
+
+
+def _merge_brands(rows) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for row in rows:
+        for brand, value in _normalized_brands(
+            row.model_per_brand,
+            row.model_total,
+        ).items():
+            result[brand] = result.get(brand, 0) + value
+    return result
+
+
+def _breakdown_payload(counts: dict[str, int], key: str) -> list[dict]:
+    """Return exact one-decimal shares that add up to 100%.
 
     Округление каждой доли по отдельности давало 72.3 + 21.3 + 6.5 = 100.1%.
     Считаем в десятых долях процента и раздаём остаток по наибольшему
     дробному хвосту (метод наибольших остатков), поэтому сумма сходится.
     """
-    total = sum(colors.values())
-    rows = sorted(colors.items(), key=lambda item: (-item[1], item[0]))
+    total = sum(counts.values())
+    rows = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     if not total:
-        return [{"color": color, "total": value, "percent": 0} for color, value in rows]
+        return [{key: name, "total": value, "percent": 0} for name, value in rows]
 
     # Работаем в целых десятых процента: 1000 = 100.00%.
     exact = [value * 1000 / total for _color, value in rows]
@@ -257,9 +325,28 @@ def _color_payload(colors: dict[str, int]) -> list[dict]:
         tenths[i] += 1
 
     return [
-        {"color": color, "total": value, "percent": tenths[index] / 10}
-        for index, (color, value) in enumerate(rows)
+        {key: name, "total": value, "percent": tenths[index] / 10}
+        for index, (name, value) in enumerate(rows)
     ]
+
+
+def _color_payload(colors: dict[str, int]) -> list[dict]:
+    return _breakdown_payload(colors, "color")
+
+
+def _brand_payload(brands: dict[str, int]) -> list[dict]:
+    return _breakdown_payload(brands, "brand")
+
+
+def _dominant_brand(items: list[dict]) -> str | None:
+    return next(
+        (
+            item["brand"]
+            for item in items
+            if item["brand"] not in NON_DOMINANT_BRANDS
+        ),
+        None,
+    )
 
 
 def _history_payload(
@@ -298,6 +385,8 @@ def today_payload() -> dict:
         by_day = {row.day: row for row in camera_rows}
         colors = _merge_colors(camera_rows)
         color_items = _color_payload(colors)
+        brands = _merge_brands(camera_rows)
+        brand_items = _brand_payload(brands)
         cameras.append(
             _row_payload(by_day.get(day), camera, day)
             | {
@@ -305,6 +394,8 @@ def today_payload() -> dict:
                 "history": _history_payload(by_day, history_start, day),
                 "colors": color_items,
                 "dominant_color": color_items[0]["color"] if color_items else None,
+                "brands": brand_items,
+                "dominant_brand": _dominant_brand(brand_items),
             }
         )
 
@@ -318,6 +409,7 @@ def today_payload() -> dict:
                 "day": row.day.isoformat(),
                 "model_total": 0,
                 "model_per_color": {},
+                "model_per_brand": {},
                 "adjustment": 0,
                 "total": 0,
                 "updated_at": None,
@@ -333,6 +425,13 @@ def today_payload() -> dict:
             item["model_per_color"][color] = item["model_per_color"].get(
                 color, 0
             ) + int(value)
+        for brand, value in _normalized_brands(
+            row.model_per_brand,
+            row.model_total,
+        ).items():
+            item["model_per_brand"][brand] = item["model_per_brand"].get(
+                brand, 0
+            ) + value
     history = []
     current = history_start
     while current <= day:
@@ -342,14 +441,25 @@ def today_payload() -> dict:
                 "day": current.isoformat(),
                 "model_total": 0,
                 "model_per_color": {},
+                "model_per_brand": {},
                 "adjustment": 0,
                 "total": 0,
                 "updated_at": None,
             },
         )
-        history.append(item | {"colors": _color_payload(item["model_per_color"])})
+        history.append(
+            item
+            | {
+                "colors": _color_payload(item["model_per_color"]),
+                "brands": _brand_payload(
+                    _normalized_brands(item["model_per_brand"], item["model_total"])
+                ),
+            }
+        )
         current += timedelta(days=1)
     all_colors = _merge_colors(all_rows)
+    all_brands = _merge_brands(all_rows)
+    brand_items = _brand_payload(all_brands)
     return {
         "day": day.isoformat(),
         "total": sum(item["total"] for item in cameras),
@@ -364,6 +474,9 @@ def today_payload() -> dict:
         "dominant_color": _color_payload(all_colors)[0]["color"]
         if all_colors
         else None,
+        "model_per_brand": all_brands,
+        "brands": brand_items,
+        "dominant_brand": _dominant_brand(brand_items),
         "cameras": cameras,
     }
 
@@ -420,6 +533,7 @@ def archive_camera(camera: str, note: str, user) -> dict:
         period_end=rows[-1].day,
         model_total=sum(row.model_total for row in rows),
         model_per_color=_merge_colors(rows),
+        model_per_brand=_merge_brands(rows),
         adjustment=sum(row.adjustment for row in rows),
         total=sum(row.total for row in rows),
         days=len(rows),
@@ -446,11 +560,18 @@ def archive_camera(camera: str, note: str, user) -> dict:
                 "adjustment": live_today.adjustment,
                 "total": live_today.total,
                 "model_per_color": _normalized_colors(live_today.model_per_color),
+                "model_per_brand": _normalized_brands(
+                    live_today.model_per_brand,
+                    live_today.model_total,
+                ),
             }
         ]
         archive.save(update_fields=["day_rows"])
         AlwaysOnDailyAnalytics.objects.filter(pk=live_today.pk).update(
-            model_total=0, model_per_color={}, adjustment=0
+            model_total=0,
+            model_per_color={},
+            model_per_brand={},
+            adjustment=0,
         )
     # Сырой счётчик на camera-PC здесь не сбрасывается. Поэтому сохраняем его
     # baseline: если было 100, а после архива стало 140, в новый период должно
@@ -486,6 +607,9 @@ def _archive_day_rows(archive: AlwaysOnCountArchive) -> list[dict]:
             "adjustment": row.adjustment,
             "total": row.total,
             "colors": _color_payload(_normalized_colors(row.model_per_color)),
+            "brands": _brand_payload(
+                _normalized_brands(row.model_per_brand, row.model_total)
+            ),
         }
         for row in archive.daily_rows.all()
     ]
@@ -498,6 +622,12 @@ def _archive_day_rows(archive: AlwaysOnCountArchive) -> list[dict]:
                 "total": snapshot.get("total", 0),
                 "colors": _color_payload(
                     _normalized_colors(snapshot.get("model_per_color"))
+                ),
+                "brands": _brand_payload(
+                    _normalized_brands(
+                        snapshot.get("model_per_brand"),
+                        int(snapshot.get("model_total") or 0),
+                    )
                 ),
             }
         )
@@ -515,6 +645,9 @@ def _archive_payload(archive: AlwaysOnCountArchive) -> dict:
         "total": archive.total,
         "days": archive.days,
         "colors": _color_payload(_normalized_colors(archive.model_per_color)),
+        "brands": _brand_payload(
+            _normalized_brands(archive.model_per_brand, archive.model_total)
+        ),
         "day_rows": _archive_day_rows(archive),
         "note": archive.note,
         "archived_by_name": (
@@ -561,14 +694,29 @@ def delete_archive(archive_id: int, user) -> dict:
             camera=archive.camera,
             day=day,
         )
-        row.model_total += int(snapshot.get("model_total") or 0)
+        snapshot_model_total = int(snapshot.get("model_total") or 0)
+        current_brands = _normalized_brands(row.model_per_brand, row.model_total)
+        row.model_total += snapshot_model_total
         row.adjustment += int(snapshot.get("adjustment") or 0)
         merged = dict(row.model_per_color or {})
         for color, value in _normalized_colors(snapshot.get("model_per_color")).items():
             merged[color] = int(merged.get(color, 0)) + value
         row.model_per_color = merged
+        merged_brands = dict(current_brands)
+        for brand, value in _normalized_brands(
+            snapshot.get("model_per_brand"),
+            snapshot_model_total,
+        ).items():
+            merged_brands[brand] = int(merged_brands.get(brand, 0)) + value
+        row.model_per_brand = merged_brands
         row.save(
-            update_fields=["model_total", "adjustment", "model_per_color", "updated_at"]
+            update_fields=[
+                "model_total",
+                "adjustment",
+                "model_per_color",
+                "model_per_brand",
+                "updated_at",
+            ]
         )
         restored_days += 1
 

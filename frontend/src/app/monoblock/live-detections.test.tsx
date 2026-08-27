@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -146,6 +146,71 @@ beforeEach(() => {
 });
 
 describe("AI 24/7 live detections", () => {
+  it("показывает бренд-разбивку и использует основной бренд из ответа сервера", async () => {
+    const user = userEvent.setup();
+    const brandedAnalytics = {
+      ...analytics,
+      total: 29,
+      all_time_total: 29,
+      model_all_time_total: 29,
+      model_per_brand: { future_brand: 12, korol: 9, dikhan_baba: 5, unknown: 2, unclassified: 1 },
+      brands: [
+        { brand: "future_brand", total: 12, percent: 41.4 },
+        { brand: "korol", total: 9, percent: 31 },
+        { brand: "dikhan_baba", total: 5, percent: 17.2 },
+        { brand: "unknown", total: 2, percent: 6.9 },
+        { brand: "unclassified", total: 1, percent: 3.5 },
+      ],
+      dominant_brand: "korol",
+      cameras: [
+        {
+          camera: "cam2",
+          day: "2026-08-24",
+          model_total: 29,
+          model_per_color: {},
+          model_per_brand: { future_brand: 12, korol: 9, dikhan_baba: 5, unknown: 2, unclassified: 1 },
+          adjustment: 0,
+          total: 29,
+          all_time_total: 29,
+          history: [],
+          colors: [],
+          brands: [
+            { brand: "future_brand", total: 12, percent: 41.4 },
+            { brand: "korol", total: 9, percent: 31 },
+            { brand: "dikhan_baba", total: 5, percent: 17.2 },
+            { brand: "unknown", total: 2, percent: 6.9 },
+            { brand: "unclassified", total: 1, percent: 3.5 },
+          ],
+          dominant_color: null,
+          dominant_brand: "korol",
+          updated_at: null,
+        },
+      ],
+    };
+    mocks.responses.set("/cameras/always-on-analytics/", brandedAnalytics);
+    mocks.apiGet.mockImplementation((url: unknown) => {
+      if (url === "/cameras/always-on-detections/") {
+        return Promise.resolve({ data: { processors: [processor] } });
+      }
+      if (url === "/cameras/always-on-settings/") return Promise.resolve({ data: alwaysOnSettings });
+      if (url === "/cameras/always-on-analytics/") return Promise.resolve({ data: brandedAnalytics });
+      return Promise.reject(new Error(`Unexpected GET ${String(url)}`));
+    });
+
+    render(<MonoblockPage />);
+    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
+    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await user.click(screen.getByRole("tab", { name: "Аналитика" }));
+
+    const dominantBrandPanel = screen.getByText("Основной бренд").parentElement as HTMLElement;
+    expect(within(dominantBrandPanel).getByText("Korol")).toBeInTheDocument();
+    expect(within(dominantBrandPanel).queryByText("Future Brand")).not.toBeInTheDocument();
+    expect(screen.getByText("Future Brand")).toBeInTheDocument();
+    expect(screen.getByText("Дихан Баба")).toBeInTheDocument();
+    expect(screen.getByText("Не распознано")).toBeInTheDocument();
+    expect(screen.getByText("Нет данных (старые)")).toBeInTheDocument();
+  });
+
   it("clears the last snapshot when the authoritative poll no longer contains this processor", async () => {
     const user = userEvent.setup();
     render(<MonoblockPage />);

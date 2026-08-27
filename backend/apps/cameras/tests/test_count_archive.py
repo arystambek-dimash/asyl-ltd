@@ -47,6 +47,10 @@ def test_archive_moves_the_total_and_resets_the_counter(boss):
     archive = AlwaysOnCountArchive.objects.get()
     assert archive.total == 100
     assert archive.model_per_color == {"red": 70, "blue": 30}
+    assert archive.model_per_brand == {"unclassified": 100}
+    assert result["brands"] == [
+        {"brand": "unclassified", "total": 100, "percent": 100.0}
+    ]
     assert archive.archived_by == boss
 
 
@@ -85,7 +89,9 @@ def test_archive_keeps_a_per_day_breakdown(boss):
     yesterday = timezone.localdate() - timedelta(days=1)
     AlwaysOnDailyAnalytics.objects.create(
         camera="cam3", day=yesterday, model_total=500,
-        model_per_color={"red": 300, "blue": 200})
+        model_per_color={"red": 300, "blue": 200},
+        model_per_brand={"korol": 300, "dikhan_baba": 180, "unknown": 20},
+    )
     analytics.record_snapshot(_snapshot(80, colors={"Red_50": 80}))
 
     result = analytics.archive_camera("cam3", "", boss)
@@ -97,7 +103,19 @@ def test_archive_keeps_a_per_day_breakdown(boss):
     # Сумма по дням сходится с итогом архива.
     assert sum(row["total"] for row in result["day_rows"]) == result["total"]
     # У каждого дня своя разбивка по цветам.
-    assert [c["color"] for c in by_day[yesterday.isoformat()]["colors"]] == ["red", "blue"]
+    assert [c["color"] for c in by_day[yesterday.isoformat()]["colors"]] == [
+        "red",
+        "blue",
+    ]
+    assert [b["brand"] for b in by_day[yesterday.isoformat()]["brands"]] == [
+        "korol",
+        "dikhan_baba",
+        "unknown",
+    ]
+    assert by_day[timezone.localdate().isoformat()]["brands"] == [
+        {"brand": "unclassified", "total": 80, "percent": 100.0}
+    ]
+    assert sum(item["total"] for item in result["brands"]) == result["model_total"]
 
 
 def test_second_archive_does_not_borrow_days_from_the_first(boss):
@@ -118,7 +136,9 @@ def test_deleting_an_archive_returns_its_bags_to_the_counter(boss):
     yesterday = timezone.localdate() - timedelta(days=1)
     AlwaysOnDailyAnalytics.objects.create(
         camera="cam3", day=yesterday, model_total=500,
-        model_per_color={"red": 500})
+        model_per_color={"red": 500},
+        model_per_brand={"korol": 480, "unknown": 20},
+    )
     analytics.record_snapshot(_snapshot(80, colors={"Red_50": 80}))
     archive = analytics.archive_camera("cam3", "ошибочное закрытие", boss)
     assert analytics.today_payload()["all_time_total"] == 0
@@ -127,6 +147,11 @@ def test_deleting_an_archive_returns_its_bags_to_the_counter(boss):
 
     payload = analytics.today_payload()
     assert payload["all_time_total"] == 580
+    assert payload["model_per_brand"] == {
+        "korol": 480,
+        "unknown": 20,
+        "unclassified": 80,
+    }
     # День закрытия тоже вернулся — его вклад лежал снимком.
     assert payload["total"] == 80
     assert not AlwaysOnCountArchive.objects.filter(pk=archive["id"]).exists()

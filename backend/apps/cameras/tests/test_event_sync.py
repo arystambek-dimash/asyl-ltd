@@ -31,8 +31,10 @@ def _event(
     mode: str = "always_on",
     camera: str = "cam3",
     class_name: str = "Red_50",
+    color: str | None = None,
+    brand: str | None = None,
 ) -> dict:
-    return {
+    event = {
         "id": event_id,
         "created_at": _at(second if second is not None else event_id).isoformat(),
         "cam": camera,
@@ -51,13 +53,32 @@ def _event(
         "total_after": total_after,
         "total_weight_after": float(event_id * 50),
     }
+    if color is not None:
+        event.update(
+            {
+                "color": color,
+                "color_confidence": 0.997,
+                "brand": brand or "unknown",
+                "brand_confidence": 0.91,
+                "sku": f"{color.split('_', 1)[0].lower()}_{brand or 'unknown'}",
+                "classification_status": "recognized",
+            }
+        )
+    return event
 
 
-def _page(events: list[dict], *, after_id: int = 0, has_more: bool = False) -> dict:
+def _page(
+    events: list[dict],
+    *,
+    after_id: int = 0,
+    has_more: bool = False,
+    enrichment_pending: bool = False,
+) -> dict:
     return {
         "events": events,
         "next_after_id": events[-1]["id"] if events else after_id,
         "has_more": has_more,
+        "enrichment_pending": enrichment_pending,
     }
 
 
@@ -188,6 +209,117 @@ def test_ordered_event_colors_create_new_runs_and_replay_is_idempotent():
     assert row.model_per_color == {"red": 2, "green": 1, "blue": 1}
 
 
+def test_classified_color_brand_and_sku_are_persisted_and_drive_analytics():
+    page = event_sync.parse_page(
+        _page(
+            [
+                _event(
+                    1,
+                    1,
+                    class_name="Red_50",
+                    color="Blue_50",
+                    brand="korol",
+                )
+            ]
+        ),
+        camera="cam3",
+        after_id=0,
+    )
+
+    assert event_sync.apply_page(
+        camera="cam3",
+        page=page,
+        requested_after_id=0,
+    )[:2] == (1, 0)
+
+    imported = AlwaysOnImportedEvent.objects.get()
+    assert imported.class_name == "Red_50"
+    assert imported.color == "Blue_50"
+    assert imported.color_confidence == pytest.approx(0.997)
+    assert imported.brand == "korol"
+    assert imported.brand_confidence == pytest.approx(0.91)
+    assert imported.sku == "blue_korol"
+    assert imported.classification_status == "recognized"
+    analytics_row = AlwaysOnDailyAnalytics.objects.get(camera="cam3")
+    assert analytics_row.model_per_color == {"blue": 1}
+    assert analytics_row.model_per_brand == {"korol": 1}
+    assert AlwaysOnProductionRun.objects.get(camera="cam3").color == "blue"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("color", ""),
+        ("brand", 123),
+        ("sku", "x" * 256),
+        ("classification_status", "x" * 33),
+        ("color_confidence", True),
+        ("color_confidence", float("nan")),
+        ("brand_confidence", 1.01),
+    ],
+)
+def test_invalid_classification_enrichment_is_rejected(field, value):
+    event = _event(1, 1)
+    event[field] = value
+
+    with pytest.raises(event_sync.EventSyncError, match=field):
+        event_sync.parse_page(_page([event]), camera="cam3", after_id=0)
+
+    assert not AlwaysOnImportedEvent.objects.exists()
+
+
+def test_replayed_event_cannot_change_classification_enrichment():
+    AlwaysOnCounterCursor.objects.create(
+        camera="cam3",
+        last_event_id=0,
+        event_compat_total=0,
+        event_sync_supported=True,
+        event_boundary_validated=True,
+    )
+    AlwaysOnImportedEvent.objects.create(
+        camera="cam3",
+        upstream_event_id=1,
+        occurred_at=_at(1),
+        source="sub",
+        mode="always_on",
+        class_name="Red_50",
+        color="Red_50",
+        color_confidence=0.9,
+        brand="korol",
+        brand_confidence=0.91,
+        sku="red_korol",
+        classification_status="recognized",
+        total_after=1,
+        applied_to_analytics=True,
+    )
+    page = event_sync.parse_page(
+        _page(
+            [
+                _event(
+                    1,
+                    1,
+                    class_name="Red_50",
+                    color="Blue_50",
+                    brand="korol",
+                )
+            ]
+        ),
+        camera="cam3",
+        after_id=0,
+    )
+
+    with pytest.raises(event_sync.EventSyncError, match="changed contents"):
+        event_sync.apply_page(
+            camera="cam3",
+            page=page,
+            requested_after_id=0,
+        )
+
+    cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
+    assert cursor.last_event_id == 0
+    assert not AlwaysOnDailyAnalytics.objects.exists()
+
+
 def test_stale_concurrent_page_cannot_overwrite_the_newer_caught_up_state():
     old_page = event_sync.parse_page(
         _page([_event(1, 1)]),
@@ -262,6 +394,9 @@ def test_session_event_is_durable_but_not_added_to_always_on_analytics():
     assert result.ignored == 1
     imported = AlwaysOnImportedEvent.objects.get()
     assert imported.mode == "session"
+    assert imported.color is None
+    assert imported.brand is None
+    assert imported.sku is None
     assert not imported.applied_to_analytics
     assert AlwaysOnCounterCursor.objects.get(camera="cam3").last_event_id == 1
     assert not AlwaysOnDailyAnalytics.objects.exists()
@@ -280,6 +415,18 @@ def test_sync_follows_pages_until_the_upstream_is_caught_up():
         ("cam3", 1, 500),
     ]
     assert result == event_sync.SyncResult(True, 2, 0, 2, 2, True)
+
+
+def test_pending_enrichment_does_not_claim_event_stream_is_caught_up():
+    response = _page([], enrichment_pending=True)
+    with patch.object(ai, "count_events", return_value=response):
+        result = event_sync.sync_camera("cam3")
+
+    assert result == event_sync.SyncResult(True, 0, 0, 1, 0, False)
+    cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
+    assert cursor.last_event_id == 0
+    assert cursor.event_boundary_validated is False
+    assert cursor.event_caught_up_at is None
 
 
 def test_explicit_404_keeps_legacy_snapshot_mode_only_before_cutover():

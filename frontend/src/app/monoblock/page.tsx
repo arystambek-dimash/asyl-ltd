@@ -47,6 +47,7 @@ import { Modal } from "@/components/ui/modal";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { motion } from "motion/react";
 import { ColorDot, Eyebrow, Hairline, Metric, Panel, SectionHead } from "@/components/monoblock/ui";
+import { brandMeta } from "@/lib/monoblock-brands";
 import { colorMeta } from "@/lib/monoblock-colors";
 import { api, apiError } from "@/lib/api";
 import { orderedBagCount } from "@/lib/orders";
@@ -749,6 +750,9 @@ function AlwaysOnCard({
   const inSession = current.mode === "session";
   const chartMax = Math.max(1, ...(currentDaily?.history ?? []).map((item) => item.total));
   const dominant = currentDaily?.colors?.[0];
+  const dominantBrand = currentDaily?.dominant_brand
+    ? (currentDaily.brands ?? []).find((item) => item.brand === currentDaily.dominant_brand)
+    : undefined;
   // Разбор одного дня: сам столбик уже несёт полную статистику, поэтому
   // выбранный день хранится ключом, а не копией — опрос обновляет данные,
   // не закрывая панель.
@@ -756,6 +760,7 @@ function AlwaysOnCard({
   // Разбивку за день считает бэкенд — тем же кодом, что и общую, поэтому
   // цифры сходятся. Локальный расчёт остаётся на случай старого ответа.
   const selectedColors = selectedPoint?.colors?.length ? selectedPoint.colors : dayColorBreakdown(selectedPoint);
+  const selectedBrands = selectedPoint?.brands ?? [];
   const correctionAvailable = currentDaily?.colors?.find((item) => item.color === correctionColor)?.total ?? 0;
 
   useEffect(() => {
@@ -1290,15 +1295,15 @@ function AlwaysOnCard({
           </div>
         ) : modalView === "analytics" ? (
           <div {...modalTabs.getTabPanelProps("analytics")} className="space-y-4">
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
               <Panel className="p-5">
                 <Metric label="Сегодня" value={todayTotal} unit="меш." size="lg" />
               </Panel>
               <Panel className="p-5">
                 <Metric label="За всё время" value={allTimeTotal} size="lg" accent="blue" />
               </Panel>
-              <Panel className="col-span-2 p-5 sm:col-span-1">
-                <Eyebrow>Чаще всего</Eyebrow>
+              <Panel className="p-5">
+                <Eyebrow>Основной цвет</Eyebrow>
                 {dominant ? (
                   <div className="mt-2 flex items-center gap-2">
                     <ColorDot className={colorMeta(dominant.color).dot} />
@@ -1306,6 +1311,22 @@ function AlwaysOnCard({
                       {colorMeta(dominant.color).label}
                     </span>
                     <span className="ml-auto text-sm font-semibold tabular-nums text-slate-400">{dominant.total}</span>
+                  </div>
+                ) : (
+                  <div className="mt-2 text-2xl font-bold text-slate-300">—</div>
+                )}
+              </Panel>
+              <Panel className="p-5">
+                <Eyebrow>Основной бренд</Eyebrow>
+                {dominantBrand ? (
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className={cn("size-2.5 shrink-0 rounded-full", brandMeta(dominantBrand.brand).dot)} />
+                    <span className="min-w-0 truncate text-xl font-black tracking-tight text-slate-900">
+                      {brandMeta(dominantBrand.brand).label}
+                    </span>
+                    <span className="ml-auto text-sm font-semibold tabular-nums text-slate-400">
+                      {dominantBrand.total}
+                    </span>
                   </div>
                 ) : (
                   <div className="mt-2 text-2xl font-bold text-slate-300">—</div>
@@ -1388,6 +1409,33 @@ function AlwaysOnCard({
                     <div className="py-10 text-center text-sm text-slate-400">Цветов пока нет</div>
                   )}
                 </div>
+
+                <Hairline className="my-6" />
+                <SectionHead title="Бренды" hint="По мешкам модели. Старые данные показаны отдельно." />
+                <div className="mt-5 space-y-4">
+                  {(currentDaily?.brands ?? []).map((item) => {
+                    const meta = brandMeta(item.brand);
+                    return (
+                      <div key={item.brand}>
+                        <div className="mb-1.5 flex items-center gap-2 text-sm">
+                          <span className={cn("size-2.5 shrink-0 rounded-full", meta.dot)} />
+                          <span className="min-w-0 truncate font-medium text-slate-600">{meta.label}</span>
+                          <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
+                          <span className="w-9 text-right text-xs tabular-nums text-slate-400">{item.percent}%</span>
+                        </div>
+                        <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                          <div
+                            className={cn("h-full rounded-full transition-all duration-500", meta.bar)}
+                            style={{ width: `${item.percent}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {(currentDaily?.brands ?? []).length === 0 && (
+                    <div className="py-6 text-center text-sm text-slate-400">Брендов пока нет</div>
+                  )}
+                </div>
                 {canManage && (
                   <div className="mt-auto flex flex-col gap-2 pt-6">
                     <button
@@ -1458,6 +1506,30 @@ function AlwaysOnCard({
                           </div>
                         </div>
                       ))}
+                    </div>
+                  </>
+                )}
+
+                {selectedBrands.length > 0 && (
+                  <>
+                    <Hairline className="my-5" />
+                    <Eyebrow>Бренды за день</Eyebrow>
+                    <div className="mt-3 grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
+                      {selectedBrands.map((item) => {
+                        const meta = brandMeta(item.brand);
+                        return (
+                          <div key={item.brand}>
+                            <div className="flex items-center gap-2">
+                              <span className={cn("size-2.5 shrink-0 rounded-full", meta.dot)} />
+                              <span className="min-w-0 truncate text-xs font-medium text-slate-500">{meta.label}</span>
+                              <span className="ml-auto text-xs tabular-nums text-slate-400">{item.percent}%</span>
+                            </div>
+                            <div className="mt-1 text-2xl font-black tabular-nums tracking-tight text-slate-900">
+                              {item.total}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </>
                 )}
@@ -1616,6 +1688,34 @@ function AlwaysOnCard({
                                   </div>
                                 </div>
                               ))}
+                            </div>
+                          </>
+                        )}
+
+                        {(row.brands ?? []).length > 0 && (
+                          <>
+                            <Hairline className="my-4" />
+                            <Eyebrow>Бренды периода</Eyebrow>
+                            <div className="mt-3 grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
+                              {(row.brands ?? []).map((item) => {
+                                const meta = brandMeta(item.brand);
+                                return (
+                                  <div key={item.brand}>
+                                    <div className="flex items-center gap-2">
+                                      <span className={cn("size-2.5 shrink-0 rounded-full", meta.dot)} />
+                                      <span className="min-w-0 truncate text-xs font-medium text-slate-500">
+                                        {meta.label}
+                                      </span>
+                                      <span className="ml-auto text-xs tabular-nums text-slate-400">
+                                        {item.percent}%
+                                      </span>
+                                    </div>
+                                    <div className="mt-1 text-xl font-black tabular-nums tracking-tight text-slate-900">
+                                      {item.total}
+                                    </div>
+                                  </div>
+                                );
+                              })}
                             </div>
                           </>
                         )}

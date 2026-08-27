@@ -80,7 +80,7 @@ def _event_color(event: AlwaysOnImportedEvent) -> str:
     # Keep this byte-for-byte compatible with event_sync._event_color followed
     # by production.record_color_deltas(total_delta=1): an absent/invalid
     # class is retained as one approximate, unclassified bag.
-    color = event.class_name.split("_", 1)[0].strip().lower()
+    color = (event.color or event.class_name).split("_", 1)[0].strip().lower()
     return color if color and len(color) <= 32 else "unclassified"
 
 

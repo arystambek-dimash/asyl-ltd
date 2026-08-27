@@ -7,7 +7,7 @@ import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
 
-from apps.cameras import production
+from apps.cameras import production, production_repair
 from apps.cameras.models import (
     AlwaysOnCounterCursor,
     AlwaysOnImportedEvent,
@@ -32,6 +32,7 @@ def _event(
     color: str,
     *,
     applied: bool = True,
+    classified_color: str | None = None,
 ) -> AlwaysOnImportedEvent:
     return AlwaysOnImportedEvent.objects.create(
         camera=CAMERA,
@@ -40,9 +41,23 @@ def _event(
         source="sub",
         mode="always_on",
         class_name=f"{color}_bag",
+        color=classified_color,
         total_after=event_id,
         applied_to_analytics=applied,
     )
+
+
+def test_repair_prefers_classified_color_and_keeps_legacy_fallback():
+    classified = _event(
+        1,
+        _at(13, 36),
+        "red",
+        classified_color="Blue_50",
+    )
+    legacy = _event(2, _at(13, 37), "green")
+
+    assert production_repair._event_color(classified) == "blue"
+    assert production_repair._event_color(legacy) == "green"
 
 
 def _cursor(*, event_count: int, last_event_id: int | None = None):
