@@ -66,6 +66,7 @@ export function CameraStream({
     let attempt = 0;
     let generation = 0;
     let hadMedia = false;
+    let mediaReady = false;
     let lastMediaAt = Date.now();
     let lastBytesReceived = -1;
 
@@ -127,7 +128,13 @@ export function CameraStream({
     };
 
     const markMediaPlaying = () => {
-      if (disposed || !pc || pc.connectionState !== "connected") return;
+      if (disposed || !remoteStream || video.srcObject !== remoteStream) return;
+      // `playing`/`loadeddata` can arrive while WebRTC is still transitioning
+      // from `connecting` to `connected`. Remember that media is ready so the
+      // connection-state callback can expose the video without waiting for a
+      // second media event that browsers are not required to emit.
+      mediaReady = true;
+      if (!pc || pc.connectionState !== "connected") return;
       hadMedia = true;
       lastMediaAt = Date.now();
       attempt = 0;
@@ -140,6 +147,7 @@ export function CameraStream({
       releaseConnection();
       const thisGeneration = generation;
       hadMedia = false;
+      mediaReady = false;
       lastMediaAt = Date.now();
       lastBytesReceived = -1;
 
@@ -186,6 +194,7 @@ export function CameraStream({
             if (disconnectedTimer) clearTimeout(disconnectedTimer);
             disconnectedTimer = null;
             lastMediaAt = Date.now();
+            if (mediaReady) markMediaPlaying();
             video.play().catch(() => {});
           } else if (thisPc.connectionState === "disconnected") {
             if (!disconnectedTimer) {

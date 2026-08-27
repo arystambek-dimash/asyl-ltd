@@ -1,13 +1,15 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, apiError, isCanceledRequest } from "@/lib/api";
+import type { LineDirection, NormalizedLine } from "@/lib/camera-counting-line";
+import type { AlwaysOnDetection } from "@/lib/types";
 
 /**
  * AI-подсчёт мешков на камере (ai_service через бэкенд-прокси).
  *
  * Состояние живёт на самом AI-сервисе и только опрашивается: перезагрузка
  * страницы или второй планшет видят ту же картину. Пока модель работает —
- * поллинг раз в 1.5 с (живой счётчик), иначе редкий (подхватить чужой запуск).
+ * поллинг раз в 0.5 с (живой счётчик и рамки), иначе редкий (подхватить чужой запуск).
  */
 export interface AiStatus {
   running: boolean;
@@ -25,6 +27,13 @@ export interface AiStatus {
   code?: string;
   /** Имя аннотированного потока в go2rtc/MediaMTX (cam2ai). */
   stream?: string;
+  /** Последние рамки модели — рисуем поверх базового camN без camNai. */
+  detections?: AlwaysOnDetection[];
+  detection_frame?: { width?: number; height?: number } | null;
+  /** Фактически применённая процессором линия подсчёта. */
+  line?: string | NormalizedLine | null;
+  direction?: LineDirection;
+  last_frame_at?: string | null;
   /** "запуск..." | "online" (legacy: "онлайн") | "переподключение: ..." */
   status?: string;
   fps?: number;
@@ -33,7 +42,10 @@ export interface AiStatus {
   per_color?: Record<string, number>;
 }
 
-const POLL_LIVE_MS = 1500;
+// Активная карточка рисует рамки поверх базового потока. Полторы секунды
+// заставляли их заметно отставать от движущегося мешка; два лёгких status
+// запроса в секунду сохраняют и счётчик, и оверлей визуально живыми.
+const POLL_LIVE_MS = 500;
 const POLL_BUSY_MS = 2500;
 const POLL_IDLE_MS = 10_000;
 

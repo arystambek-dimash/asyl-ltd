@@ -1903,6 +1903,7 @@ function SessionCard({
   onStopped: () => void;
 }) {
   const ai = useAiCounter(session.camera, session.order_id, true);
+  const [streamOnline, setStreamOnline] = useState(false);
   const live = !!ai.status?.running;
   const total = ai.status?.total ?? session.last_status?.total ?? 0;
   const orderTarget = order ? orderedBagCount(order) : null;
@@ -1910,13 +1911,33 @@ function SessionCard({
   const remaining = target !== null ? Math.max(0, target - total) : null;
   const goalReached = target !== null && total >= target;
   const canStop = ai.status?.can_stop ?? session.can_stop;
-  const stream = ai.status?.stream ?? (live ? `${session.camera}ai` : camera?.src);
+  // camNai зависит от отдельного RTSP publisher на ПК цеха. Счётчик может
+  // продолжать работать, когда этот publisher переподключается, и тогда
+  // карточка становилась полностью чёрной. Базовый camN уже контролируется
+  // сервером камер; рамки и линию собираем браузером поверх него.
+  const stream = camera?.src ?? session.camera;
+  const countingLine = resolveCountingLine(ai.status, camera?.line_config);
+  const detectionRevision = ai.status?.last_frame_at ?? null;
+  const [detectionFreshness, setDetectionFreshness] = useState<{
+    revision: string | null;
+    at?: number;
+  }>({ revision: null });
+  // last_frame_at приходит с часов ПК камеры. Для таймера устаревания важен
+  // локальный момент, когда браузер увидел новую ревизию, иначе clock skew
+  // может сразу скрыть свежую рамку или оставить старую висеть навсегда.
+  useEffect(() => {
+    setDetectionFreshness((current) =>
+      current.revision === detectionRevision
+        ? current
+        : { revision: detectionRevision, at: detectionRevision ? Date.now() : undefined },
+    );
+  }, [detectionRevision]);
   const isStarting = session.status === "starting";
   const needsRecovery =
     isStarting || ai.status?.code === "ai_reconciliation_required" || ai.status?.code === "ai_processor_stopped";
   const progress = target && target > 0 ? Math.min(100, Math.round((total / target) * 100)) : 0;
   const overrun = target !== null && total > target;
-  const liveLabel = ai.stale
+  const aiLabel = ai.stale
     ? "СВЯЗЬ ПОТЕРЯНА"
     : goalReached
       ? "ЦЕЛЬ ДОСТИГНУТА"
@@ -1925,6 +1946,7 @@ function SessionCard({
         : needsRecovery
           ? "ТРЕБУЕТ ЗАПУСКА"
           : "ЗАПУСК";
+  const liveLabel = streamOnline ? aiLabel : "ПОДКЛЮЧЕНИЕ ВИДЕО";
 
   async function runCommand(command: () => Promise<void>) {
     try {
@@ -1939,12 +1961,25 @@ function SessionCard({
   return (
     <article className="group overflow-hidden rounded-[22px] border border-slate-200/80 bg-white shadow-[0_12px_38px_rgba(44,65,103,0.07)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_48px_rgba(44,65,103,0.11)]">
       <div className="relative aspect-[16/8] overflow-hidden bg-[#172033]">
-        {stream ? (
-          <CameraStream src={stream} className="absolute inset-0 size-full object-cover" />
+        <CameraStream
+          src={stream}
+          onStateChange={setStreamOnline}
+          className="absolute inset-0 size-full object-cover"
+        />
+        {streamOnline ? (
+          <>
+            <DetectionOverlay
+              detections={ai.status?.detections}
+              frame={ai.status?.detection_frame}
+              staleAfterMs={DETECTIONS_STALE_MS}
+              updatedAt={detectionFreshness.at}
+            />
+            {countingLine && <CameraCountingLineOverlay line={countingLine.line} direction={countingLine.direction} />}
+          </>
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/35">
             <VideoOff className="size-6" />
-            <span className="text-xs">Поток запускается</span>
+            <span className="text-xs">Подключаем прямой поток…</span>
           </div>
         )}
         <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/60 to-transparent px-4 pb-8 pt-3">
@@ -1952,13 +1987,15 @@ function SessionCard({
             <span
               className={cn(
                 "size-2 rounded-full",
-                ai.stale
-                  ? "bg-red-400"
-                  : goalReached
-                    ? "bg-emerald-400"
-                    : live
-                      ? "animate-pulse bg-emerald-400"
-                      : "bg-amber-400",
+                !streamOnline
+                  ? "bg-amber-400"
+                  : ai.stale
+                    ? "bg-red-400"
+                    : goalReached
+                      ? "bg-emerald-400"
+                      : live
+                        ? "animate-pulse bg-emerald-400"
+                        : "bg-amber-400",
               )}
             />
             {liveLabel}

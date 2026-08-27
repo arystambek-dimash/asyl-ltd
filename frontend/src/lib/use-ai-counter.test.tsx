@@ -69,7 +69,7 @@ describe("useAiCounter polling scope", () => {
     expect(result.current.status?.total).toBe(1);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1_499);
+      await vi.advanceTimersByTimeAsync(499);
     });
     expect(mocks.get).toHaveBeenCalledTimes(1);
 
@@ -135,14 +135,14 @@ describe("useAiCounter polling scope", () => {
     expect(result.current.status?.total).toBe(7);
     expect(result.current.stale).toBe(false);
 
-    await act(() => vi.advanceTimersByTimeAsync(1_500));
+    await act(() => vi.advanceTimersByTimeAsync(500));
     expect(mocks.get).toHaveBeenCalledTimes(2);
     expect(result.current.status?.total).toBe(7);
     expect(result.current.running).toBe(true);
     expect(result.current.stale).toBe(true);
     expect(result.current.error).toBe("");
 
-    await act(() => vi.advanceTimersByTimeAsync(1_499));
+    await act(() => vi.advanceTimersByTimeAsync(499));
     expect(mocks.get).toHaveBeenCalledTimes(2);
     await act(() => vi.advanceTimersByTimeAsync(1));
     expect(mocks.get).toHaveBeenCalledTimes(3);
