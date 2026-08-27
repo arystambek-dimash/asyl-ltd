@@ -60,12 +60,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install-ai-service.ps1 `
 - `contracts.py` — `Detection(x1, y1, x2, y2, confidence, label)`.
 - `settings.py` — всё из env: `AI_INFERENCE_FPS` (8), `AI_OUTPUT_FPS` (12),
   `AI_MAX_ACTIVE_PROCESSORS` (2), `AI_MODEL_DEVICE` (`0`).
-- `conveyor.py` — отдельный Modbus/TCP I/O-thread. Inference только обновляет
-  cached total/heartbeat; сетевой I/O в `apply_inference` запрещён. Любой fault,
-  stale AI, target или shutdown имеет приоритет `OFF` и защёлкивает сессию.
-- `cloud_conveyor.py` — observation-only HTTPS worker для server-managed ESP.
-  Inference только coalesce-ит последнее состояние; HTTP выполняется отдельным
-  потоком. Этот режим не пишет локальный выход и не имеет readback.
 
 Метка класса — `Цвет_Вес`, например `Red_50`: `validate_classes` требует
 `.+_[1-9][0-9]*` и роняет запуск на чекпоинте с другими классами. CRM

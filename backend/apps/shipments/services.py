@@ -88,7 +88,7 @@ def _set_loading_camera_locked(order, camera: str, user=None):
     # Share the same camera-ownership mutex with AI start and device binding.
     # Taking it before the Order row also prevents A -> B / B -> A camera
     # swaps from acquiring conflicting order locks in opposite directions.
-    from apps.conveyors.services import lock_camera_binding
+    from apps.cameras.sessions import lock_camera_binding
 
     lock_camera_binding()
     order = _locked(order, user)
@@ -285,7 +285,7 @@ def record_count(order, bags, user):
 
 
 def _assert_no_open_ai_session(order) -> None:
-    """Manual completion must not bypass AI ownership or conveyor OFF proof."""
+    """Manual completion must not bypass an open AI counting session."""
     # Local import avoids a shipments -> cameras -> shipments import cycle.
     from apps.cameras.models import AiCountingSession
 

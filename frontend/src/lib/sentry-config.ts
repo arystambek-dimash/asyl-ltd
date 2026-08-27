@@ -23,7 +23,6 @@ const SENSITIVE_KEYS = new Set([
   "authorization",
   "auth",
   "camera_pass",
-  "conveyor_ai_callback_token_sha256",
   "connect.sid",
   "cookie",
   "credentials",

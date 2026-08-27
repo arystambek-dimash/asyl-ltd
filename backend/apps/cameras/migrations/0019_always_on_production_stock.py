@@ -59,7 +59,7 @@ def bootstrap_current_day_runs(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("cameras", "0018_ai_session_conveyor_observation"),
+        ("cameras", "0015_wagon_number_camera_source"),
         ("catalog", "0011_expand_product_weights"),
         ("warehouse", "0008_alter_stockmovement_reason"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),

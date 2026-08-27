@@ -18,22 +18,6 @@ class AiCountingSession(models.Model):
     CLOSED = "closed"
     FAILED = "failed"
     OPEN_STATUSES = (STARTING, ACTIVE)
-    CONVEYOR_NONE = ""
-    CONVEYOR_DIRECT = "direct"
-    CONVEYOR_CLOUD = "cloud"
-    OBSERVATION_NONE = ""
-    OBSERVATION_EDGE = "edge"
-    OBSERVATION_LEGACY_BRIDGE = "legacy_bridge"
-    CONVEYOR_TRANSPORT_CHOICES = (
-        (CONVEYOR_NONE, "No controller"),
-        (CONVEYOR_DIRECT, "Direct camera-PC controller"),
-        (CONVEYOR_CLOUD, "Cloud lease controller"),
-    )
-    CONVEYOR_OBSERVATION_CHOICES = (
-        (OBSERVATION_NONE, "No cloud observation source"),
-        (OBSERVATION_EDGE, "Camera-PC callback"),
-        (OBSERVATION_LEGACY_BRIDGE, "Backend legacy bridge"),
-    )
 
     order = models.ForeignKey(
         "orders.Order", on_delete=models.PROTECT, related_name="ai_counting_sessions"
@@ -58,39 +42,6 @@ class AiCountingSession(models.Model):
     activated_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     final_total = models.PositiveIntegerField(null=True, blank=True)
-    # Frozen order quantity used by the edge controller.  Reading OrderItem on
-    # every poll would make the physical stop depend on mutable CRM state; the
-    # session therefore keeps the exact target that was accepted at bind time.
-    # Zero is retained for legacy/test sessions that predate automatic control.
-    target_total = models.PositiveIntegerField(default=0, db_default=0)
-    # True only after the camera-PC explicitly reports a configured conveyor.
-    # Missing fields from an older camera service deliberately remain False so
-    # rolling deployments never pretend that a physical output is supervised.
-    conveyor_enabled = models.BooleanField(default=False, db_default=False)
-    # Frozen per order session. Reading mutable environment after a restart
-    # could otherwise switch an OPEN cloud session to the direct Modbus master.
-    conveyor_transport = models.CharField(
-        max_length=8,
-        choices=CONVEYOR_TRANSPORT_CHOICES,
-        blank=True,
-        default=CONVEYOR_NONE,
-        db_default="",
-    )
-    # Frozen independently from the physical transport. Updated camera PCs
-    # push authenticated observations themselves; explicitly allow-listed old
-    # installations are polled by the single backend bridge process instead.
-    # Keeping this durable prevents a rolling deploy from creating two masters.
-    conveyor_observation_mode = models.CharField(
-        max_length=16,
-        choices=CONVEYOR_OBSERVATION_CHOICES,
-        blank=True,
-        default=OBSERVATION_NONE,
-        db_default="",
-    )
-    # A legacy bridge process owns a random boot identity. A process restart or
-    # duplicate leader never adopts an already-running physical session; the
-    # mismatch is a terminal OFF fence.
-    legacy_bridge_boot_id = models.UUIDField(null=True, blank=True)
     # Имя аннотированного MediaMTX-потока (например cam2ai). Само видео
     # остаётся на ПК камер; в PostgreSQL хранится только ссылка на поток.
     recording_stream = models.CharField(max_length=64, blank=True, default="")

@@ -26,7 +26,6 @@ import { CameraStream, ensureCameraStreamToken } from "@/components/camera-strea
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
-import type { ConveyorStatus } from "@/lib/types";
 import { useAuth } from "@/store/auth";
 
 const CAMERA_REFRESH_MS = 30 * 1000;
@@ -75,8 +74,6 @@ export interface CameraFeed {
   note?: string;
   /** Сохранённая AI-сервисом линия подсчёта, если камера её поддерживает. */
   line_config?: CameraCountingLine | null;
-  /** Cached ESP32 state from the camera PC; absent on older deployments. */
-  conveyor?: ConveyorStatus | null;
 }
 
 /** Камеры, у которых есть поток для просмотра (locked не играют). */

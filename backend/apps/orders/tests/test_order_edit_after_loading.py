@@ -219,7 +219,7 @@ def test_confirmed_overpayment_is_preserved_after_shipped_edit(manager):
     assert StockItem.objects.get(product=product).bags == 95
 
 
-def test_open_ai_session_keeps_frozen_target_immutable(manager):
+def test_open_ai_session_blocks_item_edits(manager):
     product = _product(stock=100)
     order = _order(
         status="confirmed",
@@ -229,7 +229,6 @@ def test_open_ai_session_keeps_frozen_target_immutable(manager):
         order=order,
         camera="cam-safe-edit",
         status=AiCountingSession.STARTING,
-        target_total=10,
         started_by=manager,
     )
 
@@ -242,11 +241,10 @@ def test_open_ai_session_keeps_frozen_target_immutable(manager):
     assert response.status_code == 400
     assert response.data["code"] == "ai_session_active"
     assert order.items.get().quantity == 10
-    session.refresh_from_db()
-    assert session.target_total == 10
+    assert AiCountingSession.objects.filter(pk=session.pk).exists()
 
 
-def test_loaded_order_can_be_corrected_without_rewriting_physical_snapshot(manager):
+def test_loaded_order_can_be_corrected_without_rewriting_ai_snapshot(manager):
     product = _product(stock=100)
     order = _order(
         status="loaded",
@@ -257,7 +255,6 @@ def test_loaded_order_can_be_corrected_without_rewriting_physical_snapshot(manag
         order=order,
         camera="cam-loaded-edit",
         status=AiCountingSession.CLOSED,
-        target_total=2,
         final_total=2,
         started_by=manager,
         closed_by=manager,
@@ -276,7 +273,6 @@ def test_loaded_order_can_be_corrected_without_rewriting_physical_snapshot(manag
     shipment.refresh_from_db()
     session.refresh_from_db()
     assert shipment.bags_loaded == 2
-    assert session.target_total == 2
     assert session.final_total == 2
 
 

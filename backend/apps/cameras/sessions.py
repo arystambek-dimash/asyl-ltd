@@ -1,9 +1,8 @@
 """Order-bound lifecycle for per-camera AI counting slots."""
 
-from django.conf import settings
 from django.db import IntegrityError, transaction
 
-from .models import AiCountingSession
+from .models import AiCountingSession, MonoblockCameraSettings
 
 
 class AiSessionBusy(Exception):
@@ -33,23 +32,16 @@ def current_for_order(order_id: int, *, lock: bool = False) -> AiCountingSession
     return qs.order_by("started_at").first()
 
 
-def _observation_mode(camera: str, conveyor_transport: str) -> str:
-    """Freeze which process supplies cloud-conveyor counter observations."""
-    if conveyor_transport != AiCountingSession.CONVEYOR_CLOUD:
-        return AiCountingSession.OBSERVATION_NONE
-    legacy_cameras = getattr(settings, "CONVEYOR_LEGACY_BRIDGE_CAMERAS", ())
-    if camera in legacy_cameras:
-        return AiCountingSession.OBSERVATION_LEGACY_BRIDGE
-    return AiCountingSession.OBSERVATION_EDGE
+def lock_camera_binding() -> None:
+    """Serialize camera assignment changes with creation of AI sessions."""
+    row, _ = MonoblockCameraSettings.objects.get_or_create(singleton=True)
+    MonoblockCameraSettings.objects.select_for_update().get(pk=row.pk)
 
 
 def reserve(
     order,
     camera: str,
     user,
-    *,
-    target_total: int = 0,
-    conveyor_transport: str = AiCountingSession.CONVEYOR_NONE,
 ) -> tuple[AiCountingSession, bool]:
     """Atomically reserve a camera, or return the same owner session on it."""
     try:
@@ -59,11 +51,6 @@ def reserve(
                 camera=camera,
                 status=AiCountingSession.STARTING,
                 started_by=user,
-                target_total=target_total,
-                conveyor_transport=conveyor_transport,
-                conveyor_observation_mode=_observation_mode(
-                    camera, conveyor_transport,
-                ),
             )
         return session, True
     except IntegrityError:
@@ -83,10 +70,5 @@ def reserve(
                 camera=camera,
                 status=AiCountingSession.STARTING,
                 started_by=user,
-                target_total=target_total,
-                conveyor_transport=conveyor_transport,
-                conveyor_observation_mode=_observation_mode(
-                    camera, conveyor_transport,
-                ),
             )
         return session, True

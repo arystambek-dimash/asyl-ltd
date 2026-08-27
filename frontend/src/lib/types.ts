@@ -464,62 +464,11 @@ export interface ClientDebt {
   stores_count: number;
   overdue_count: number;
 }
-export type ConveyorState =
-  | "unconfigured"
-  | "off"
-  | "prepared"
-  | "armed"
-  | "arming"
-  | "starting"
-  | "running"
-  | "stopping"
-  | "goal_reached"
-  | "fault"
-  | "unknown";
-
-/**
- * Подтверждённое backend состояние привода конвейера.
- *
- * На время плавной раскатки принимаем как нейтральные register-поля
- * (`commanded`/`feedback`), так и boolean aliases от контроллера. UI никогда
- * не считает отправленную команду доказательством остановки — для этого есть
- * только feedback/verified_off.
- */
-export interface ConveyorStatus {
-  configured?: boolean;
-  enabled?: boolean;
-  state?: ConveyorState;
-  desired?: 0 | 1 | boolean | null;
-  commanded?: 0 | 1 | boolean | null;
-  feedback?: 0 | 1 | boolean | null;
-  commanded_on?: boolean | null;
-  feedback_on?: boolean | null;
-  verified_off?: boolean;
-  feedback_conflict?: boolean;
-  goal_reached?: boolean;
-  online?: boolean;
-  terminal?: boolean;
-  session_id?: number | string | null;
-  target_total?: number | null;
-  stop_reason?: string | null;
-  run_elapsed_seconds?: number | null;
-  progress_idle_seconds?: number | null;
-  no_progress_timeout_seconds?: number | null;
-  max_run_seconds?: number | null;
-  last_seen_at?: string | null;
-  last_contact_at?: string | null;
-  error?: string | null;
-}
-
 export interface AiCountingSnapshot {
   total?: number;
   weight?: number;
   status?: string;
   per_color?: Record<string, number>;
-  target_total?: number | null;
-  remaining?: number | null;
-  goal_reached?: boolean;
-  conveyor?: ConveyorStatus | null;
 }
 
 export interface AiCountingSession {
@@ -533,11 +482,6 @@ export interface AiCountingSession {
   started_by_id: number | null;
   started_by_name: string;
   can_stop: boolean;
-  target_total?: number | null;
-  remaining?: number | null;
-  goal_reached?: boolean;
-  conveyor_enabled?: boolean;
-  conveyor?: ConveyorStatus | null;
   last_status: AiCountingSnapshot;
 }
 export interface AiCountingHistory {
@@ -553,8 +497,6 @@ export interface AiCountingHistory {
   started_by_id: number | null;
   started_by_name: string;
   final_total: number | null;
-  target_total?: number | null;
-  conveyor_enabled?: boolean;
   last_status: AiCountingSnapshot;
   has_recording: boolean;
   recording_available_until: string | null;
@@ -591,42 +533,6 @@ export interface MonoblockDevice {
   is_active: boolean;
   created_at: string;
   updated_at: string;
-}
-
-/** Cloud-polled ESP32 bound to exactly one camera source. */
-export interface ConveyorDevice {
-  id: number;
-  public_id: string;
-  name: string;
-  camera_source: string;
-  is_active: boolean;
-  desired_state: 0 | 1;
-  command_revision: number;
-  command_session_id: number | null;
-  command_target_total: number | null;
-  command_terminal: boolean;
-  stop_reason: string;
-  last_seen_at: string | null;
-  output_state: 0 | 1 | null;
-  feedback_state: 0 | 1 | null;
-  fault: string | null;
-  firmware: string;
-  wifi_rssi: number | null;
-  last_ai_seen_at: string | null;
-  last_total: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface ConveyorDeviceCredential {
-  device_id: string;
-  token: string;
-  authorization: string;
-}
-
-/** POST response: credential is intentionally present only once. */
-export interface ConveyorDeviceEnrollment extends ConveyorDevice {
-  credential: ConveyorDeviceCredential;
 }
 /**
  * Рамка мешка на последнем кадре.

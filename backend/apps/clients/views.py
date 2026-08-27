@@ -2,7 +2,6 @@ from decimal import Decimal
 
 from django.db import transaction
 from django.db.models import Prefetch
-from django.db.models.deletion import ProtectedError
 from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -64,20 +63,6 @@ class ClientNoLongerAvailable(APIException):
     def __init__(self):
         super().__init__({
             "detail": "Клиент уже удалён",
-            "code": self.default_code,
-        })
-
-
-class ClientDeviceHistoryProtected(APIException):
-    status_code = status.HTTP_409_CONFLICT
-    default_code = "device_history_protected"
-
-    def __init__(self):
-        super().__init__({
-            "detail": (
-                "Нельзя удалить клиента: история ESP32 связана с его сессией "
-                "погрузки"
-            ),
             "code": self.default_code,
         })
 
@@ -242,72 +227,53 @@ class ClientViewSet(
             raise PermissionDenied("Удаление с историей доступно только суперадмину.")
         client_pk = self.get_object().pk
         from apps.cameras.models import AiCountingSession
-        from apps.conveyors.models import ConveyorDevice
         from apps.orders.models import Order as OrderModel
 
-        try:
-            with transaction.atomic():
-                # Existing Orders→Client→Orders again is deliberate.  It
-                # agrees with order-side services that write a Client FK and
-                # closes the insert gap once the Client row is held.
-                self._lock_client_orders(client_pk)
-                client = self._lock_client(client_pk, request.user)
-                portal_user = client.user
-                locked_orders = self._lock_client_orders(client_pk)
-                order_ids = [order.pk for order in locked_orders]
-                orders_count = len(order_ids)
-                if (
-                    AiCountingSession.objects.filter(
-                        order_id__in=order_ids,
-                        status__in=AiCountingSession.OPEN_STATUSES,
-                    ).exists()
-                    or any(
-                        order.status in ("arrived", "loading", "loaded")
-                        for order in locked_orders
-                    )
-                ):
-                    raise ValidationError({
-                        "detail": (
-                            "Сначала завершите или верните активные погрузки клиента"
-                        ),
-                        "code": "active_loading",
-                    })
-
-                # ConveyorDevice.command_session deliberately uses PROTECT:
-                # deleting that session would erase the provenance of the
-                # latest command.  Keep both histories intact and return a
-                # stable conflict instead of clearing the safety reference.
-                if ConveyorDevice.objects.filter(
-                    command_session__order_id__in=order_ids,
-                ).exists():
-                    raise ClientDeviceHistoryProtected()
-
-                log_event(
-                    "client",
-                    f"Клиент «{client.name}» удалён с историей "
-                    f"({orders_count} заказов)",
-                    user=request.user,
-                    payload={
-                        "client_id": client.pk,
-                        "client_name": client.name,
-                        "orders": orders_count,
-                        "action": "client_purged",
-                    },
+        with transaction.atomic():
+            # Existing Orders→Client→Orders again is deliberate. It agrees
+            # with order-side services that write a Client FK and closes the
+            # insert gap once the Client row is held.
+            self._lock_client_orders(client_pk)
+            client = self._lock_client(client_pk, request.user)
+            portal_user = client.user
+            locked_orders = self._lock_client_orders(client_pk)
+            order_ids = [order.pk for order in locked_orders]
+            orders_count = len(order_ids)
+            if (
+                AiCountingSession.objects.filter(
+                    order_id__in=order_ids,
+                    status__in=AiCountingSession.OPEN_STATUSES,
+                ).exists()
+                or any(
+                    order.status in ("arrived", "loading", "loaded")
+                    for order in locked_orders
                 )
-                AiCountingSession.objects.filter(order_id__in=order_ids).delete()
-                OrderModel.all_objects.filter(pk__in=order_ids).delete()
-                client.delete()
-                self._deactivate_portal_user(portal_user)
-        except ProtectedError as exc:
-            # Close the small check/delete race as well.  Only translate the
-            # ESP32 safety reference; unrelated future PROTECT relations must
-            # retain their own policy rather than being mislabeled.
-            if any(
-                isinstance(obj, ConveyorDevice) for obj in exc.protected_objects
             ):
-                raise ClientDeviceHistoryProtected() from exc
-            raise
+                raise ValidationError({
+                    "detail": (
+                        "Сначала завершите или верните активные погрузки клиента"
+                    ),
+                    "code": "active_loading",
+                })
+
+            log_event(
+                "client",
+                f"Клиент «{client.name}» удалён с историей "
+                f"({orders_count} заказов)",
+                user=request.user,
+                payload={
+                    "client_id": client.pk,
+                    "client_name": client.name,
+                    "orders": orders_count,
+                    "action": "client_purged",
+                },
+            )
+            AiCountingSession.objects.filter(order_id__in=order_ids).delete()
+            OrderModel.all_objects.filter(pk__in=order_ids).delete()
+            client.delete()
+            self._deactivate_portal_user(portal_user)
         return Response(status=204)
+
 
     @staticmethod
     def _lock_client(client_pk, user=None):

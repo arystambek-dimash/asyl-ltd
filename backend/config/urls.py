@@ -41,7 +41,6 @@ urlpatterns = [
     path("api/", include("apps.sys_permissions.urls")),
     path("api/", include("apps.employees.urls")),
     path("api/", include("apps.cameras.urls")),
-    path("api/", include("apps.conveyors.urls")),
     path("api/", include("apps.tasks.urls")),
     path("api/", include("apps.grain.urls")),
 ]

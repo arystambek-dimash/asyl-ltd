@@ -16,7 +16,6 @@ from .views import (
     CameraAiSessionListView,
     CameraAiView,
     CameraAuthView,
-    CameraConveyorStopView,
     CameraCountingLineView,
     CameraHealthView,
     CameraListView,
@@ -82,8 +81,4 @@ urlpatterns = [
     path("cameras/<str:cam>/counting-line", CameraCountingLineView.as_view()),
     path("cameras/<str:cam>/ai/", CameraAiView.as_view()),
     path("cameras/<str:cam>/ai/reset/", CameraAiResetView.as_view()),
-    path(
-        "cameras/<str:cam>/ai/conveyor/stop/",
-        CameraConveyorStopView.as_view(),
-    ),
 ]

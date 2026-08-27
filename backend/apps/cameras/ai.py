@@ -2,7 +2,6 @@ import http.client
 import json
 import math
 import re
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,8 +23,6 @@ WAGON_PLATE_MAX_BYTES = 12 * 1024 * 1024
 
 ALWAYS_ON_CACHE_KEY = "cameras:always-on-status:v1"
 ALWAYS_ON_TTL = 5
-SESSION_READY_POLL_SECONDS = 0.2
-
 DETECTIONS_CACHE_KEY = "cameras:always-on-detections:v1"
 DETECTIONS_TTL = 1
 
@@ -242,166 +239,10 @@ def status(cam: str) -> dict | None:
     return _call("GET", _path(cam), none_on_404=True)
 
 
-def _order_session_ready(payload: object, *, require_zero: bool) -> bool:
-    if not isinstance(payload, Mapping):
-        return False
-    # The oldest counter API omitted ``mode`` entirely.  It can still be an
-    # order worker; only an explicit non-session mode (notably always_on) is a
-    # mismatch.
-    if payload.get("running") is not True or payload.get("mode") not in (
-        None,
-        "session",
-    ):
-        return False
-    return not (require_zero and payload.get("total") != 0)
-
-
-def wait_for_order_session(
-    cam: str,
-    payload: dict | None,
-    *,
-    require_zero: bool = False,
-) -> dict:
-    """Wait for an asynchronously starting counter to become order-ready.
-
-    Shop-floor processors acknowledge POST before their decoder/publisher is
-    necessarily running.  Treat that response as accepted work and poll the
-    read-only status endpoint within the existing AI request timeout instead
-    of making the operator press Start a second time.
-    """
-    current = payload if isinstance(payload, dict) else {}
-    deadline = time.monotonic() + TIMEOUT
-    while not _order_session_ready(current, require_zero=require_zero):
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            detail = (
-                "AI-счётчик не подтвердил обнуление новой сессии"
-                if require_zero
-                else "AI-счётчик не подтвердил запуск сессии заказа"
-            )
-            raise AiError(503, detail)
-        time.sleep(min(SESSION_READY_POLL_SECONDS, remaining))
-        live = status(cam)
-        if live is not None:
-            current = live
-    return current
-
-
-def legacy_status(camera: str, *, timeout_seconds: float) -> dict | None:
-    """Bounded status poll used only by the server-side legacy bridge."""
-    if (
-        isinstance(timeout_seconds, bool)
-        or not isinstance(timeout_seconds, (int, float))
-        or not math.isfinite(float(timeout_seconds))
-        or timeout_seconds <= 0
-    ):
-        raise ValueError("timeout_seconds must be a positive finite number")
-    configured_timeout = (
-        int(getattr(settings, "CONVEYOR_LEGACY_BRIDGE_REQUEST_TIMEOUT_MS", 350)) / 1000
-    )
-    effective_timeout = min(float(timeout_seconds), configured_timeout)
-    return _call(
-        "GET",
-        _path(camera),
-        none_on_404=True,
-        timeout_seconds=effective_timeout,
-    )
-
-
 def start(cam: str, options: dict | None = None) -> dict:
     """Включить модель. options — source/line/direction, дефолты ai_service."""
     payload = _call("POST", _path(cam), body=options or {})
     assert payload is not None  # none_on_404 is false, so errors raise above
-    return payload
-
-
-def start_order_session(
-    cam: str,
-    session_id: int,
-    target_total: int,
-    *,
-    initialize_legacy_worker: bool,
-    conveyor_transport: str = "direct",
-) -> tuple[dict, bool]:
-    """Start the edge-supervised order session, with rolling compatibility.
-
-    The dedicated endpoint is intentionally separate from the historical
-    ``POST /processors/{cam}`` contract.  Old camera-PC installations return
-    404 and continue through the legacy start/reset path without ever claiming
-    that a conveyor is protected.  A configured controller is enabled only
-    after the updated edge service explicitly accepts the frozen target.
-    """
-    try:
-        body = {"session_id": session_id, "target_total": target_total}
-        if conveyor_transport == "cloud":
-            body["conveyor_transport"] = "cloud"
-        payload = _call(
-            "POST",
-            f"{_path(cam)}/session",
-            body,
-        )
-    except AiError as exc:
-        if exc.status != 404:
-            raise
-        if conveyor_transport == "cloud":
-            raise AiError(
-                503,
-                "AI-счётчик не поддерживает автоматическое управление ESP32",
-            ) from exc
-        if initialize_legacy_worker:
-            started = start(cam)
-            wait_for_order_session(cam, started)
-            payload = wait_for_order_session(
-                cam,
-                reset(cam),
-                require_zero=True,
-            )
-        else:
-            payload = status(cam)
-            current = payload if isinstance(payload, dict) else {}
-            if (
-                payload is None
-                or current.get("running") is not True
-                or current.get("mode") != "session"
-            ):
-                payload = start(cam)
-            payload = wait_for_order_session(cam, payload)
-        assert payload is not None
-        return payload, False
-    assert payload is not None
-    return wait_for_order_session(cam, payload), True
-
-
-def stop_conveyor(cam: str, session_id: int) -> dict:
-    """Fail-safe OFF command that leaves the AI counter/session running."""
-    payload = _call(
-        "POST",
-        f"{_path(cam)}/conveyor/stop",
-        {"session_id": session_id},
-    )
-    assert payload is not None
-    return payload
-
-
-def emergency_stop_conveyor(cam: str, session_id: int) -> dict:
-    """OFF-only recovery that does not depend on an in-memory AI binding."""
-    payload = _call(
-        "POST",
-        f"{_path(cam)}/conveyor/emergency-stop",
-        {"session_id": session_id},
-    )
-    assert payload is not None
-    return payload
-
-
-def start_conveyor(cam: str, session_id: int) -> dict:
-    """Energize a prepared edge session after CRM state is committed."""
-    payload = _call(
-        "POST",
-        f"{_path(cam)}/conveyor/start",
-        {"session_id": session_id},
-    )
-    assert payload is not None
     return payload
 
 

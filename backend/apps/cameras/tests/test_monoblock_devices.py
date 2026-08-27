@@ -19,7 +19,7 @@ def superuser(django_user_model):
 
 def _create_device(auth_client, superuser, **overrides):
     payload = {
-        "name": "Моноблок конвейера", "username": "mono-1",
+        "name": "Моноблок фасовки", "username": "mono-1",
         "password": "Complex-pass-123", "camera_source": "cam2",
         **overrides,
     }

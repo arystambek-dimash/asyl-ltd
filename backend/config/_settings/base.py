@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 from pathlib import Path
 from typing import cast
@@ -78,7 +77,6 @@ INSTALLED_APPS = [
     "apps.portal",
     "apps.notifications",
     "apps.cameras",
-    "apps.conveyors",
     "apps.tasks",
     "apps.grain",
 ]
@@ -106,12 +104,6 @@ REST_FRAMEWORK = {
         ),
         "truck_scale_preview": os.environ.get(
             "THROTTLE_TRUCK_SCALE_PREVIEW", "30/min"
-        ),
-        "conveyor_device": os.environ.get(
-            "THROTTLE_CONVEYOR_DEVICE", "180/min"
-        ),
-        "conveyor_ai": os.environ.get(
-            "THROTTLE_CONVEYOR_AI", "6000/min"
         ),
         "vehicle_plate_webhook": os.environ.get(
             "THROTTLE_VEHICLE_PLATE_WEBHOOK", "120/min"
@@ -403,20 +395,9 @@ def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int
     return value
 
 
-CONVEYOR_AI_CALLBACK_TOKEN_SHA256 = os.environ.get(
-    "CONVEYOR_AI_CALLBACK_TOKEN_SHA256", ""
-).strip().lower()
-if (
-    CONVEYOR_AI_CALLBACK_TOKEN_SHA256
-    and re.fullmatch(r"[0-9a-f]{64}", CONVEYOR_AI_CALLBACK_TOKEN_SHA256) is None
-):
-    raise ValueError(
-        "CONVEYOR_AI_CALLBACK_TOKEN_SHA256 must be a lowercase SHA-256 digest"
-    )
-
 # Dedicated inbound credential for vehicle-plate events. It deliberately does
-# not reuse AI_SERVICE_API_KEY (outbound backend -> camera-PC) or conveyor
-# credentials. An empty value keeps the webhook fail-closed until provisioned.
+# not reuse AI_SERVICE_API_KEY (outbound backend -> camera-PC). An empty value
+# keeps the webhook fail-closed until provisioned.
 VEHICLE_PLATE_WEBHOOK_TOKEN = os.environ.get(
     "VEHICLE_PLATE_WEBHOOK_TOKEN", ""
 ).strip()
@@ -452,78 +433,3 @@ VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS = _bounded_int_env(
 VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS = _bounded_int_env(
     "VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS", 60, 10, 86400
 )
-CONVEYOR_DEVICE_SYNC_MS = _bounded_int_env(
-    "CONVEYOR_DEVICE_SYNC_MS", 500, 100, 500
-)
-CONVEYOR_DEVICE_LEASE_MS = _bounded_int_env(
-    "CONVEYOR_DEVICE_LEASE_MS", 1200, CONVEYOR_DEVICE_SYNC_MS + 100, 1500
-)
-CONVEYOR_DEVICE_FRESH_MS = _bounded_int_env(
-    "CONVEYOR_DEVICE_FRESH_MS", 1500, CONVEYOR_DEVICE_LEASE_MS, 5000
-)
-CONVEYOR_AI_STALE_MS = _bounded_int_env(
-    "CONVEYOR_AI_STALE_MS", 1500, 500, 5000
-)
-CONVEYOR_COMMAND_TIMEOUT_SECONDS = _bounded_int_env(
-    "CONVEYOR_COMMAND_TIMEOUT_SECONDS", 5, 1, 10
-)
-CONVEYOR_NO_PROGRESS_SECONDS = _bounded_int_env(
-    "CONVEYOR_NO_PROGRESS_SECONDS", 15, 1, 30
-)
-CONVEYOR_MAX_RUN_SECONDS = _bounded_int_env(
-    "CONVEYOR_MAX_RUN_SECONDS", 300, 1, 900
-)
-
-_legacy_bridge_cameras = os.environ.get(
-    "CONVEYOR_LEGACY_BRIDGE_CAMERAS", ""
-)
-CONVEYOR_LEGACY_BRIDGE_CAMERAS = frozenset(
-    camera.strip() for camera in _legacy_bridge_cameras.split(",")
-    if camera.strip()
-)
-if any(
-    re.fullmatch(r"cam[1-9][0-9]*", camera) is None
-    for camera in CONVEYOR_LEGACY_BRIDGE_CAMERAS
-):
-    raise ValueError(
-        "CONVEYOR_LEGACY_BRIDGE_CAMERAS must be a comma-separated list of camN"
-    )
-CONVEYOR_LEGACY_BRIDGE_POLL_MS = _bounded_int_env(
-    "CONVEYOR_LEGACY_BRIDGE_POLL_MS", 250, 100, 500
-)
-CONVEYOR_LEGACY_BRIDGE_REQUEST_TIMEOUT_MS = _bounded_int_env(
-    "CONVEYOR_LEGACY_BRIDGE_REQUEST_TIMEOUT_MS", 350, 50, 400
-)
-CONVEYOR_LEGACY_BRIDGE_STALE_MS = _bounded_int_env(
-    "CONVEYOR_LEGACY_BRIDGE_STALE_MS", 750, 500, 1000
-)
-if (
-    CONVEYOR_LEGACY_BRIDGE_REQUEST_TIMEOUT_MS
-    + CONVEYOR_LEGACY_BRIDGE_POLL_MS
-    > CONVEYOR_LEGACY_BRIDGE_STALE_MS
-):
-    raise ValueError(
-        "legacy bridge request timeout plus poll interval must be at most "
-        "CONVEYOR_LEGACY_BRIDGE_STALE_MS"
-    )
-CONVEYOR_LEGACY_BRIDGE_DEVICE_SYNC_MS = _bounded_int_env(
-    "CONVEYOR_LEGACY_BRIDGE_DEVICE_SYNC_MS", 250, 100, 500
-)
-CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS = _bounded_int_env(
-    "CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS", 750, 200, 1000
-)
-if (
-    CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS
-    < CONVEYOR_LEGACY_BRIDGE_DEVICE_SYNC_MS + 100
-):
-    raise ValueError(
-        "CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS must exceed sync by 100 ms"
-    )
-if (
-    CONVEYOR_LEGACY_BRIDGE_STALE_MS
-    + CONVEYOR_LEGACY_BRIDGE_DEVICE_LEASE_MS
-    > 1500
-):
-    raise ValueError(
-        "legacy bridge stale window plus ESP lease must be at most 1500 ms"
-    )

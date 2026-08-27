@@ -16,7 +16,6 @@ from fastapi.testclient import TestClient
 
 from cv_service.app import create_app
 from cv_service.contracts import Detection, ProcessorOptions
-from cv_service.conveyor import ConveyorActuator, ConveyorConflictError
 from cv_service.event_journal import (
     CountEvent,
     CountEventJournal,
@@ -26,10 +25,8 @@ from cv_service.event_journal import (
 from cv_service.processor import (
     CameraProcessor,
     DroppingFrameQueue,
-    FrameContentProgress,
     LineTracker,
     ProcessorManager,
-    frame_content_fingerprint,
 )
 from cv_service.runtime import MediaMtxClient, select_h264_encoder, validate_classes
 from cv_service.settings import Settings, parse_camera, parse_line
@@ -107,10 +104,6 @@ class FakeProcessor:
         self.source_stream = manager.settings.source_stream(camera, options.source)
         self.running = False
         self.mode = "idle"
-        self.session_id = None
-        self.target_total = None
-        self.conveyor_transport = "direct"
-        self.goal_reached = False
         self.total = 0
         self.start_calls = 0
         self.closed = False
@@ -128,44 +121,16 @@ class FakeProcessor:
 
     def start_session(self, options):
         self.options = options
-        self.session_id = None
-        self.target_total = None
-        self.conveyor_transport = "direct"
-        self.goal_reached = False
         self.total = 0
         self.running = True
         self.mode = "session"
         self.start_calls += 1
-
-    def start_controlled_session(
-        self, options, *, session_id, target_total,
-        conveyor_transport="direct",
-    ):
-        self.options = options
-        self.session_id = session_id
-        self.target_total = target_total
-        self.conveyor_transport = conveyor_transport
-        self.goal_reached = False
-        self.total = 0
-        self.running = True
-        self.mode = "session"
-        self.start_calls += 1
-
-    def wait_for_session_ai(self, _session_id):
-        return None
-
-    def control_session(self):
-        return self.session_id, self.target_total, self.goal_reached
 
     def start_always_on(self, options, *, force_session_handoff=False):
         self.options = options
         if self.mode == "session" and not force_session_handoff:
             return
         if self.mode != "always_on" or force_session_handoff:
-            self.session_id = None
-            self.target_total = None
-            self.conveyor_transport = "direct"
-            self.goal_reached = False
             self.total = 0
         self.running = True
         self.mode = "always_on"
@@ -204,19 +169,6 @@ class FakeProcessor:
             "line": self.options.line or self.manager.settings.default_line,
             "direction": self.options.direction,
             "total": self.total,
-            "session_id": self.session_id,
-            "target_total": self.target_total,
-            "remaining": (
-                max(0, self.target_total - self.total)
-                if self.target_total is not None else None
-            ),
-            "goal_reached": self.goal_reached,
-            "conveyor_transport": self.conveyor_transport,
-            "conveyor": (
-                self.manager.cloud_conveyor.status(self.camera)
-                if self.conveyor_transport == "cloud"
-                else self.manager.conveyor.status(self.camera)
-            ),
             "per_color": {},
             "confidence_sums": {},
             "last_frame_at": None,
@@ -266,11 +218,6 @@ def test_manager_close_joins_worker_without_timeout_before_journal_close():
     order = []
 
     class Processor:
-        conveyor_transport = "direct"
-
-        def control_session(self):
-            raise AssertionError("direct close must not wait for accounting lock")
-
         def close(self):
             order.append("processor")
 
@@ -299,17 +246,13 @@ def test_manager_close_joins_worker_without_timeout_before_journal_close():
     manager = ProcessorManager.__new__(ProcessorManager)
     manager._lock = threading.RLock()
     manager.processors = {"cam3": Processor()}
-    manager.cloud_conveyor = Closable("cloud")
-    manager.conveyor = Closable("conveyor")
     manager._stop = StopEvent()
     manager._worker = Worker()
     manager.event_journal = Journal()
 
     manager.close()
 
-    assert order == [
-        "conveyor", "cloud", "processor", "stop", "worker", "journal",
-    ]
+    assert order == ["processor", "stop", "worker", "journal"]
 
 
 def test_manager_does_not_retry_permanent_journal_error(monkeypatch):
@@ -475,25 +418,6 @@ def test_camera_inventory_keeps_backend_compatible_devices(service):
     assert payload["devices"][0]["path"] == "cam2"
     assert payload["devices"][0]["sub"] == "cam2sub"
     assert payload["cameras"][0]["cam"] == "cam2"
-    assert payload["cameras"][0]["conveyor"] == {
-        "configured": False,
-        "enabled": False,
-        "session_id": None,
-        "target_total": None,
-        "state": "unconfigured",
-        "desired": 0,
-        "feedback": None,
-        "online": False,
-        "stop_reason": None,
-        "error": None,
-        "last_seen_at": None,
-        "goal_reached": False,
-        "terminal": False,
-        "run_elapsed_seconds": None,
-        "progress_idle_seconds": None,
-        "no_progress_timeout_seconds": None,
-        "max_run_seconds": None,
-    }
     assert payload["line_configs"] == {}
 
 
@@ -582,35 +506,6 @@ def test_counting_line_rejects_unknown_camera_without_writing(tmp_path):
             json={"line": [0.1, 0.2, 0.8, 0.9], "direction": "any"},
         ).status_code == 400
     assert not path.exists()
-
-
-def test_controlled_session_rejects_counting_line_edit_without_mutation(tmp_path):
-    path = tmp_path / "counting-lines.json"
-    manager = make_manager(line_state_store=CountingLineStateStore(path))
-    with TestClient(create_app(manager)) as client:
-        prepared = client.post(
-            "/processors/cam2/session",
-            headers=auth(),
-            json={"session_id": 41, "target_total": 5},
-        )
-        assert prepared.status_code == 200
-        processor = manager.get("cam2")
-        original_options = processor.options
-        original_state = processor.control_session()
-
-        response = client.put(
-            "/cameras/cam2/line",
-            headers=auth(),
-            json={"line": [0.1, 0.2, 0.8, 0.9], "direction": "down"},
-        )
-
-        assert response.status_code == 409
-        assert "controlled session" in response.json()["detail"]
-        assert not path.exists()
-        assert processor.options == original_options
-        assert processor.control_session() == original_state
-        assert processor.running is True
-        assert processor.mode == "session"
 
 
 @pytest.mark.parametrize("payload", [None, [], 7, "invalid"])
@@ -1119,10 +1014,10 @@ def test_frame_queue_keeps_only_latest_two_per_camera():
 
     first, second = Slot(), Slot()
     frames = DroppingFrameQueue(2)
-    assert frames.put_latest((first, "old", 1.0, 0, 7, None)) is None
-    assert frames.put_latest((second, "other", 2.0, 0, 3, None)) is None
-    assert frames.put_latest((first, "middle", 3.0, 0, 7, None)) is None
-    assert frames.put_latest((first, "new", 4.0, 0, 8, None)) is first
+    assert frames.put_latest((first, "old", 1.0, 0, 7)) is None
+    assert frames.put_latest((second, "other", 2.0, 0, 3)) is None
+    assert frames.put_latest((first, "middle", 3.0, 0, 7)) is None
+    assert frames.put_latest((first, "new", 4.0, 0, 8)) is first
     assert frames.qsize(first) == 2
     assert frames.qsize(second) == 1
     queued = [frames.get(0.01)[1] for _ in range(3)]
@@ -1140,10 +1035,6 @@ def test_stale_inference_from_previous_source_is_not_applied():
     processor.latest_detections = []
     processor.dropped_frames = 0
     processor.running = True
-    processor.session_id = None
-    processor.target_total = None
-    processor.goal_reached = False
-    processor._session_ai_ready = threading.Event()
     processor.tracker = LineTracker()
     processor.options = ProcessorOptions()
     processor.settings = make_settings()
@@ -1158,27 +1049,6 @@ def test_stale_inference_from_previous_source_is_not_applied():
     assert processor.latest_detections == []
     assert processor._last_inference_generation == -1
     assert processor.dropped_frames == 1
-
-
-def test_frame_content_progress_requires_two_distinct_frames_per_epoch():
-    progress = FrameContentProgress(stale_seconds=1.5)
-
-    assert progress.observe((1, 4), b"frame-a", 10.0) == (
-        False,
-        0,
-        "camera source liveness pending: waiting for changed image content",
-    )
-    repeated = progress.observe((1, 4), b"frame-a", 11.5)
-    assert repeated[0:2] == (False, 0)
-    assert "frozen" in repeated[2]
-    assert progress.observe((1, 4), b"frame-b", 11.6) == (True, 1, None)
-    assert progress.observe((1, 4), b"frame-b", 11.7)[0:2] == (False, 1)
-
-    # An accounting reopen resets the content baseline, but never the
-    # monotonic sequence. The first image of the new epoch is not motion.
-    progress.reset_epoch((1, 5))
-    assert progress.observe((1, 5), b"frame-c", 12.0)[0:2] == (False, 1)
-    assert progress.observe((1, 5), b"frame-d", 12.1) == (True, 2, None)
 
 
 class FingerprintFrame:
@@ -1198,16 +1068,7 @@ class FingerprintFrame:
         return FingerprintFrame(self.payload)
 
 
-def test_frame_fingerprint_ignores_low_bit_noise_but_detects_scene_change():
-    base = FingerprintFrame(bytes((0, 0, 0)))
-    low_bit_noise = FingerprintFrame(bytes((7, 0, 0)))
-    changed = FingerprintFrame(bytes((32, 0, 0)))
-
-    assert frame_content_fingerprint(base) == frame_content_fingerprint(low_bit_noise)
-    assert frame_content_fingerprint(base) != frame_content_fingerprint(changed)
-
-
-def test_accounting_epoch_discards_blocked_read_reopens_and_requires_motion(
+def test_accounting_epoch_discards_blocked_read_and_reopens_capture(
     monkeypatch,
 ):
     first_read_entered = threading.Event()
@@ -1260,22 +1121,14 @@ def test_accounting_epoch_discards_blocked_read_reopens_and_requires_motion(
     processor.source_stream = "cam2sub"
     processor._source_generation = 0
     processor._accounting_generation = 0
-    processor._accounting_progress_floor = 0
-    processor._last_control_progress_sequence = 0
-    processor._frame_content_progress = FrameContentProgress(1.5)
-    processor._frame_content_progress.reset_epoch((0, 0))
-    processor._source_liveness_error = ""
     processor._last_frame_generation = -1
     processor._last_frame_accounting_generation = -1
     processor._last_inference_generation = -1
     processor._last_inference_accounting_generation = -1
-    processor._session_ai_captured_at = None
-    processor._session_ai_ready = threading.Event()
     processor._last_inference_submit = 0.0
     processor._lock = threading.RLock()
     processor._stop = threading.Event()
     processor.mode = "session"
-    processor.session_id = 88
     processor.frames_seen = 0
     processor.dropped_frames = 0
     processor.camera_reconnects = 0
@@ -1303,62 +1156,13 @@ def test_accounting_epoch_discards_blocked_read_reopens_and_requires_motion(
     assert captures[0].released is True
     assert captures[1].released is True
     assert len(submitted) == 1
-    _processor, _frame, _captured_at, source_epoch, accounting_epoch, sequence = (
+    _processor, _frame, _captured_at, source_epoch, accounting_epoch = (
         submitted[0]
     )
     assert source_epoch == 0
     assert accounting_epoch == 1
-    assert sequence == 1
-    assert processor.frames_seen == 2  # baseline + changed frame after reopen
-    assert processor.dropped_frames >= 2  # old in-flight + new baseline
-
-
-def test_controlled_inference_requires_new_content_sequence_for_heartbeat():
-    processor = _accounting_processor()
-    processor.session_id = 89
-    processor.target_total = 5
-    processor._accounting_progress_floor = 4
-    processor._last_control_progress_sequence = 4
-    frame = SimpleNamespace(shape=(100, 100, 3))
-    detection = Detection(10, 10, 20, 20, 0.9, "Red_50")
-
-    processor.apply_inference(
-        frame,
-        time.monotonic(),
-        [detection],
-        1.0,
-        source_generation=processor._source_generation,
-        accounting_generation=processor._accounting_generation,
-        frame_progress_sequence=4,
-    )
-    assert processor.total == 0
-    assert processor.manager.updates == []
-    assert not processor._session_ai_ready.is_set()
-
-    processor.apply_inference(
-        frame,
-        time.monotonic(),
-        [detection],
-        1.0,
-        source_generation=processor._source_generation,
-        accounting_generation=processor._accounting_generation,
-        frame_progress_sequence=5,
-    )
-    assert processor.total == 1
-    assert len(processor.manager.updates) == 1
-    assert processor._session_ai_ready.is_set()
-
-    processor.apply_inference(
-        frame,
-        time.monotonic(),
-        [detection],
-        1.0,
-        source_generation=processor._source_generation,
-        accounting_generation=processor._accounting_generation,
-        frame_progress_sequence=5,
-    )
-    assert processor.total == 1
-    assert len(processor.manager.updates) == 1
+    assert processor.frames_seen == 1
+    assert processor.dropped_frames >= 1
 
 
 class CountEveryDetection:
@@ -1369,18 +1173,9 @@ class CountEveryDetection:
         return detections
 
 
-class CaptureAwareManager:
-    def __init__(self):
-        self.updates = []
-
-    def observe_conveyor_ai(self, camera, session_id, total, captured_at):
-        self.updates.append((camera, session_id, total, captured_at))
-        return True
-
-
 def _accounting_processor():
     processor = _overlay_processor()
-    processor.manager = CaptureAwareManager()
+    processor.manager = SimpleNamespace()
     processor.camera = "cam2"
     processor.mode = "session"
     processor.source_stream = processor.settings.source_stream("cam2", "sub")
@@ -1388,7 +1183,6 @@ def _accounting_processor():
     processor._accounting_generation = 0
     processor._last_frame_accounting_generation = -1
     processor._last_inference_accounting_generation = -1
-    processor._session_ai_captured_at = None
     processor.tracker = CountEveryDetection()
     return processor
 
@@ -1401,17 +1195,11 @@ def test_accounting_generation_fences_queued_results_across_boundaries(boundary)
     if boundary == "start":
         processor.running = False
         processor.mode = "idle"
-        processor.start_controlled_session(
-            ProcessorOptions(), session_id=71, target_total=3,
-        )
+        processor.start_session(ProcessorOptions())
     elif boundary == "reset":
-        processor.session_id = None
-        processor.target_total = None
         processor.total = 9
         processor.reset()
     else:
-        processor.session_id = 72
-        processor.target_total = 3
         processor.start_always_on(
             ProcessorOptions(), force_session_handoff=True,
         )
@@ -1428,127 +1216,7 @@ def test_accounting_generation_fences_queued_results_across_boundaries(boundary)
     assert processor._accounting_generation == queued_generation + 1
     assert processor.total == 0
     assert processor.latest_detections == []
-    assert processor.manager.updates == []
-    assert not processor._session_ai_ready.is_set()
     assert processor.dropped_frames == 1
-
-
-@pytest.mark.parametrize("captured_offset", [-2.01, 0.01])
-def test_controlled_processor_rejects_stale_and_future_captured_frames(
-    monkeypatch, captured_offset,
-):
-    now = 100.0
-    monkeypatch.setattr("cv_service.processor.time.monotonic", lambda: now)
-    processor = _accounting_processor()
-    processor.settings = make_settings(conveyor_stale_ai_seconds=2.0)
-    processor.session_id = 73
-    processor.target_total = 3
-
-    processor.apply_inference(
-        SimpleNamespace(shape=(100, 100, 3)),
-        now + captured_offset,
-        [Detection(10, 10, 20, 20, 0.9, "Red_50")],
-        1.0,
-        source_generation=processor._source_generation,
-        accounting_generation=processor._accounting_generation,
-    )
-
-    assert processor.total == 0
-    assert processor.manager.updates == []
-    assert not processor._session_ai_ready.is_set()
-    assert processor.dropped_frames == 1
-
-
-def test_controlled_processor_forwards_capture_time_and_marks_fresh_ready(monkeypatch):
-    now = 100.0
-    captured_at = 99.25
-    monkeypatch.setattr("cv_service.processor.time.monotonic", lambda: now)
-    processor = _accounting_processor()
-    processor.settings = make_settings(conveyor_stale_ai_seconds=2.0)
-    processor.session_id = 74
-    processor.target_total = 3
-
-    processor.apply_inference(
-        SimpleNamespace(shape=(100, 100, 3)),
-        captured_at,
-        [Detection(10, 10, 20, 20, 0.9, "Red_50")],
-        1.0,
-        source_generation=processor._source_generation,
-        accounting_generation=processor._accounting_generation,
-    )
-
-    assert processor.total == 1
-    assert processor.manager.updates == [("cam2", 74, 1, captured_at)]
-    assert processor._session_ai_captured_at == captured_at
-    assert processor._session_ai_ready.is_set()
-
-
-def test_session_readiness_expires_from_capture_time(monkeypatch):
-    moments = iter([100.0, 100.0, 102.0, 102.0])
-    monkeypatch.setattr(
-        "cv_service.processor.time.monotonic", lambda: next(moments),
-    )
-    processor = _accounting_processor()
-    processor.settings = make_settings(
-        prewarm_timeout=0.5,
-        conveyor_stale_ai_seconds=2.0,
-    )
-    processor.session_id = 75
-    processor.target_total = 3
-    processor._session_ai_captured_at = 99.0
-    processor._session_ai_ready.set()
-
-    with pytest.raises(RuntimeError, match="fresh inference"):
-        processor.wait_for_session_ai(75)
-
-    assert not processor._session_ai_ready.is_set()
-
-
-@pytest.mark.parametrize("captured_at", [97.99, 100.01, float("nan")])
-def test_actuator_rejects_nonfresh_capture_timestamps(captured_at):
-    clock = [100.0]
-    actuator = ConveyorActuator.__new__(ConveyorActuator)
-    actuator._condition = threading.Condition(threading.RLock())
-    actuator._closing = False
-    actuator._session_id = 76
-    actuator._clock = lambda: clock[0]
-    actuator.stale_ai_seconds = 2.0
-    actuator._ai_seen = False
-    actuator._last_ai_at = None
-    actuator._current_total = 0
-    actuator._target_total = 3
-    actuator._goal_reached = False
-
-    assert actuator.observe_ai(76, 1, captured_at) is False
-    assert actuator._ai_seen is False
-    assert actuator._last_ai_at is None
-    assert actuator._current_total == 0
-
-
-def test_actuator_watchdog_uses_capture_time_not_inference_completion():
-    clock = [100.0]
-    actuator = ConveyorActuator.__new__(ConveyorActuator)
-    actuator._condition = threading.Condition(threading.RLock())
-    actuator._closing = False
-    actuator._session_id = 77
-    actuator._clock = lambda: clock[0]
-    actuator.stale_ai_seconds = 2.0
-    actuator._ai_seen = False
-    actuator._last_ai_at = None
-    actuator._current_total = 0
-    actuator._target_total = 3
-    actuator._goal_reached = False
-    actuator._terminal = False
-    actuator._stop_reason = None
-    actuator._desired = False
-    actuator._run_started_at = None
-
-    assert actuator.observe_ai(77, 1, captured_at=99.0) is True
-    assert actuator._last_ai_at == 99.0
-    clock[0] = 101.0
-
-    with pytest.raises(ConveyorConflictError, match="not fresh"):
-        actuator.run(77)
 
 
 def test_line_tracker_counts_one_crossing_per_track():
@@ -1602,54 +1270,6 @@ def test_settings_reject_plaintext_key_and_parsers_are_strict(monkeypatch):
         validate_classes(["bag"])
 
 
-@pytest.mark.parametrize(
-    ("name", "value"),
-    [
-        ("AI_CONVEYOR_HEARTBEAT_SECONDS", "0.5001"),
-        ("AI_CONVEYOR_STALE_AI_SECONDS", "1.5001"),
-        ("AI_CONVEYOR_NO_PROGRESS_SECONDS", "30.0001"),
-        ("AI_CONVEYOR_MAX_RUN_SECONDS", "900.0001"),
-        ("AI_CONVEYOR_IO_TIMEOUT_SECONDS", "0.5001"),
-        ("AI_CONVEYOR_COMMAND_TIMEOUT_SECONDS", "5.0001"),
-    ],
-)
-def test_settings_reject_unsafe_conveyor_timeout_maxima(
-    monkeypatch,
-    name,
-    value,
-):
-    monkeypatch.setenv("AI_SERVICE_API_KEY_SHA256", DIGEST)
-    monkeypatch.delenv("AI_SERVICE_API_KEY", raising=False)
-    for variable in (
-        "AI_CONVEYOR_HEARTBEAT_SECONDS",
-        "AI_CONVEYOR_STALE_AI_SECONDS",
-        "AI_CONVEYOR_NO_PROGRESS_SECONDS",
-        "AI_CONVEYOR_MAX_RUN_SECONDS",
-        "AI_CONVEYOR_IO_TIMEOUT_SECONDS",
-        "AI_CONVEYOR_COMMAND_TIMEOUT_SECONDS",
-    ):
-        monkeypatch.delenv(variable, raising=False)
-    monkeypatch.setenv(name, value)
-
-    with pytest.raises(ValueError, match="must be at most"):
-        Settings.from_env()
-
-
-def test_conveyor_runtime_watchdog_defaults_are_bounded(monkeypatch):
-    monkeypatch.setenv("AI_SERVICE_API_KEY_SHA256", DIGEST)
-    monkeypatch.delenv("AI_SERVICE_API_KEY", raising=False)
-    for variable in (
-        "AI_CONVEYOR_NO_PROGRESS_SECONDS",
-        "AI_CONVEYOR_MAX_RUN_SECONDS",
-    ):
-        monkeypatch.delenv(variable, raising=False)
-
-    settings = Settings.from_env()
-
-    assert settings.conveyor_no_progress_seconds == 15.0
-    assert settings.conveyor_max_run_seconds == 300.0
-
-
 # ── Рамки детекций для оверлея в браузере ─────────────────────────────────
 # Всегда-включённый режим не публикует аннотированное видео, поэтому рамки
 # отдаются координатами, а рисует их интерфейс поверх обычного потока.
@@ -1668,10 +1288,6 @@ def _overlay_processor(*, running=True):
     processor.latest_counted = frozenset()
     processor.dropped_frames = 0
     processor.running = running
-    processor.session_id = None
-    processor.target_total = None
-    processor.goal_reached = False
-    processor._session_ai_ready = threading.Event()
     processor.tracker = LineTracker()
     processor.options = ProcessorOptions()
     processor.settings = make_settings()

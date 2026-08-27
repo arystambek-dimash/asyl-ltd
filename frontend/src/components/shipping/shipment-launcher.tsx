@@ -7,25 +7,9 @@ import type { CameraFeed } from "@/components/camera-wall";
 import { apiError } from "@/lib/api";
 import { orderedBagCount } from "@/lib/orders";
 import type { Order } from "@/lib/types";
-import type { ConveyorStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type PlayableCamera = CameraFeed & { src: string };
-
-function conveyorConfigured(status: ConveyorStatus | null | undefined): boolean {
-  return status?.configured === true || status?.enabled === true;
-}
-
-function conveyorReady(status: ConveyorStatus | null | undefined): boolean {
-  return (
-    conveyorConfigured(status) &&
-    status?.online === true &&
-    status.state === "off" &&
-    status.desired === 0 &&
-    status.feedback === 0 &&
-    !status.error
-  );
-}
 
 function SelectCard({
   kind,
@@ -122,16 +106,9 @@ export function ShipmentLauncher({
   const availableCameras = useMemo(
     () =>
       cameras.filter((camera) => {
-        // Поток с известным src ещё не означает живую камеру. Для удалённого
-        // запуска конвейера оператор может выбрать только подтверждённый online
-        // источник; backend всё равно повторно проверяет interlock перед стартом.
+        // Поток с известным src ещё не означает живую камеру: для запуска AI
+        // оператор может выбрать только подтверждённый online-источник.
         if (!camera.online) return false;
-        // A configured smart output is selectable only after boot OFF/readback.
-        // An unconfigured camera remains available in explicitly labelled
-        // AI-only/manual-conveyor mode for rolling compatibility.
-        if (conveyorConfigured(camera.conveyor) && !conveyorReady(camera.conveyor)) {
-          return false;
-        }
         const ownerId = cameraOwners[camera.src];
         if (ownerId != null) return ownerId === order?.id;
         return !busyCameras.includes(camera.src);
@@ -139,11 +116,6 @@ export function ShipmentLauncher({
     [busyCameras, cameraOwners, cameras, order?.id],
   );
   const camera = availableCameras.find((item) => item.src === cameraSrc) ?? null;
-  const selectedPhysicalCamera = cameraLocked
-    ? (cameras[0] ?? null)
-    : (cameras.find((item) => item.src === cameraSrc) ?? camera);
-  const hasSmartConveyor = conveyorConfigured(selectedPhysicalCamera?.conveyor);
-  const smartConveyorReady = conveyorReady(selectedPhysicalCamera?.conveyor);
   const onlineCameraCount = cameras.filter((item) => item.online).length;
   const camerasOnline = onlineCameraCount > 0;
   const cameraPlaceholder = !cameras.length
@@ -231,7 +203,7 @@ export function ShipmentLauncher({
               >
                 {availableCameras.map((item) => (
                   <option key={item.id} value={item.src}>
-                    {item.zone} · {conveyorReady(item.conveyor) ? "авто-конвейер" : "AI, конвейер вручную"}
+                    {item.zone} · AI-подсчёт
                   </option>
                 ))}
               </SelectCard>
@@ -286,11 +258,7 @@ export function ShipmentLauncher({
         </div>
 
         <p className="mt-5 max-w-[570px] text-center text-[14px] font-medium leading-relaxed text-[#415174] sm:text-[15px]">
-          {hasSmartConveyor && !smartConveyorReady
-            ? "ESP32 не подтвердил безопасный OFF — автоматический запуск заблокирован. Проверьте контроллер и контактор."
-            : smartConveyorReady
-              ? "Моноблок запустит AI и ESP32 для выбранных заказа и камеры. При достижении цели конвейер остановится автоматически."
-              : "ESP32 не требуется: Моноблок запустит AI для выбранных заказа и камеры. Конвейер запускайте и останавливайте вручную."}
+          Моноблок запустит AI-подсчёт для выбранных заказа и камеры.
         </p>
         {error && <p className="mt-2 text-center text-sm font-medium text-[var(--destructive)]">{error}</p>}
 

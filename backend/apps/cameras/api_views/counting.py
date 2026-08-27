@@ -272,25 +272,3 @@ class CameraAiResetView(APIView):
             )
 
         return _ai_response(reset, request.user)
-
-
-class CameraConveyorStopView(APIView):
-    """Fail-safe physical OFF without completing or releasing the order."""
-
-    def get_permissions(self):
-        return [HasPerm("shipping.load")]
-
-    def post(self, request, cam: str):
-        def stop():
-            order, validated = _action_input(
-                request,
-                missing_order_detail="Укажите заказ для остановки конвейера",
-            )
-            return counting.stop_conveyor(
-                cam,
-                order,
-                request.user,
-                expected_session_id=validated.get("session_id"),
-            )
-
-        return _ai_response(stop, request.user)

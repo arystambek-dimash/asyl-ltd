@@ -1210,10 +1210,9 @@ def replace_items(
     # Блокируем строку заказа: правка не должна гоняться со стартом загрузки
     # или выездом. Они берут ту же строку Order до снимка цели/списания склада.
     order = lock_live_order(order, user)
-    # A STARTING camera session has already frozen the physical conveyor
-    # target. The parent Order row is the shared serialization fence with
-    # counting.start, so item edits cannot race that snapshot even while the
-    # scale and camera-PC calls are still in flight.
+    # An open camera session owns the order's loading workflow. The parent
+    # Order row is the shared serialization fence with counting.start, so item
+    # edits cannot race the transition while camera-PC calls are in flight.
     from apps.cameras.models import AiCountingSession
     if AiCountingSession.objects.filter(
         order=order,
@@ -1421,8 +1420,8 @@ def _validate_manual_status(to_status: str, user) -> None:
     if to_status not in Order.STATUSES:
         raise ValidationError({"detail": "Неизвестный статус", "code": "bad_status"})
     # Внутренние физические этапы нельзя ставить сырым status override даже
-    # суперпользователю: иначе можно обойти AI/ESP32 ownership, Shipment и
-    # подтверждение OFF. Для них существуют отдельные доменные действия.
+    # суперпользователю: иначе можно обойти AI ownership и Shipment. Для этих
+    # переходов существуют отдельные доменные действия.
     if to_status not in PUBLIC_MANUAL_STATUSES:
         raise ValidationError({
             "detail": "Доступны статусы: " + ", ".join(

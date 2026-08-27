@@ -1,7 +1,0 @@
-# Shared BENCH-ONLY image for identical classic ESP32 relay boards. Security2
-# salt/verifier stay in the private sdkconfig.defaults.local used at build time.
-CONFIG_ASYL_FIRMWARE_VERSION="1.1.0-universal-bench-d15"
-CONFIG_ASYL_RELAY_GPIO=15
-# CONFIG_ASYL_RELAY_ACTIVE_HIGH is not set
-CONFIG_ASYL_BENCH_NO_PHYSICAL_FEEDBACK=y
-CONFIG_ASYL_PROVISION_BUTTON_GPIO=4

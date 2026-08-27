@@ -1,7 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, apiError, isCanceledRequest } from "@/lib/api";
-import type { ConveyorStatus } from "@/lib/types";
 
 /**
  * AI-подсчёт мешков на камере (ai_service через бэкенд-прокси).
@@ -32,10 +31,6 @@ export interface AiStatus {
   total?: number;
   weight?: number;
   per_color?: Record<string, number>;
-  target_total?: number | null;
-  remaining?: number | null;
-  goal_reached?: boolean;
-  conveyor?: ConveyorStatus | null;
 }
 
 const POLL_LIVE_MS = 1500;
@@ -50,7 +45,6 @@ function pollDelay(status: AiStatus | null): number {
 export function useAiCounter(cam: string | null, orderId: number | null, active: boolean) {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [busy, setBusy] = useState(false);
-  const [stoppingConveyor, setStoppingConveyor] = useState(false);
   const [commandError, setCommandError] = useState("");
   const [pollError, setPollError] = useState("");
   const [stale, setStale] = useState(false);
@@ -80,7 +74,6 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
     setPollError("");
     setStale(false);
     setBusy(false);
-    setStoppingConveyor(false);
     if (!active || !cam || !orderId) return;
 
     let disposed = false;
@@ -288,68 +281,6 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
       ),
     [act, actionBody, actionConfig, cam],
   );
-  const stopConveyor = useCallback(
-    async (expectedSessionId?: number | string | null) => {
-      if (
-        actionScope !== currentActionScope.current ||
-        !actionScope.active ||
-        !actionScope.cam ||
-        !actionScope.orderId
-      ) {
-        return;
-      }
-      const scope = scopeGeneration.current;
-      // Emergency OFF preempts queued UI commands. An already-running HTTP
-      // start may still finish server-side, but the edge terminal latch for
-      // this session makes its delayed ON lose to this OFF.
-      const generation = ++commandGeneration.current;
-      const command = ++latestCommand.current;
-      latestPoll.current += 1;
-      commandQueue.current = Promise.resolve();
-      setBusy(false);
-      setStoppingConveyor(true);
-      setCommandError("");
-      setPollError("");
-      try {
-        const response = await api.post<AiStatus>(
-          `/cameras/${cam}/ai/conveyor/stop/`,
-          actionBody(expectedSessionId),
-          actionConfig(expectedSessionId),
-        );
-        if (
-          actionScope === currentActionScope.current &&
-          scope === scopeGeneration.current &&
-          generation === commandGeneration.current &&
-          command === latestCommand.current
-        ) {
-          latestPoll.current += 1;
-          statusRef.current = response.data;
-          setStatus(response.data);
-          setStale(false);
-          reschedulePolling.current();
-        }
-      } catch (cause) {
-        if (
-          actionScope === currentActionScope.current &&
-          scope === scopeGeneration.current &&
-          generation === commandGeneration.current &&
-          command === latestCommand.current
-        ) {
-          setCommandError(apiError(cause));
-        }
-        throw cause;
-      } finally {
-        if (
-          actionScope === currentActionScope.current &&
-          scope === scopeGeneration.current &&
-          generation === commandGeneration.current
-        ) {
-          setStoppingConveyor(false);
-        }
-      }
-    },
-    [actionBody, actionConfig, actionScope, cam],
-  );
   const reset = useCallback(
     (expectedSessionId?: number | string | null) =>
       act(() =>
@@ -363,13 +294,11 @@ export function useAiCounter(cam: string | null, orderId: number | null, active:
     running,
     occupied,
     busy,
-    stoppingConveyor,
     stale,
     error: commandError || pollError,
     orderId,
     start,
     stop,
-    stopConveyor,
     reset,
   };
 }

@@ -1,11 +1,8 @@
-import uuid
-from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
 from django.core import signing
 from django.core.cache import cache
-from django.utils import timezone
 
 from apps.cameras import ai, services
 from apps.cameras.models import (
@@ -20,8 +17,6 @@ from apps.cameras.views import (
     CAM_TOKEN_SALT,
     CAM_TOKEN_VERSION,
 )
-from apps.conveyors.credentials import digest_token
-from apps.conveyors.models import ConveyorDevice
 
 pytestmark = pytest.mark.django_db
 
@@ -263,54 +258,6 @@ def test_camera_list_for_staff(auth_client, operator):
     assert resp.status_code == 200
     assert resp.data == payload
     assert resp.data[0]["line_config"] == line_config
-
-
-def test_camera_list_advertises_only_start_ready_cloud_automation(
-    auth_client, operator,
-):
-    payload = [{
-        "id": "nvr:cam2",
-        "name": "Камера 2",
-        "zone": "Конвейер",
-        "src": "cam2",
-        "kind": "nvr-channel",
-        "online": True,
-        # Simulate a stale upstream/cache snapshot.  Django's current ESP
-        # readiness must remain authoritative for the launcher.
-        "conveyor": {
-            "configured": True,
-            "enabled": True,
-            "online": False,
-            "state": "unknown",
-        },
-    }]
-    device = ConveyorDevice.objects.create(
-        name="Cloud ESP32",
-        camera_source="cam2",
-        secret_sha256=digest_token("L" * 43),
-        last_seen_at=timezone.now(),
-        last_boot_id=uuid.UUID("11111111-1111-4111-8111-111111111111"),
-        last_sequence=0,
-        last_ack_revision=1,
-        output_state=False,
-        feedback_state=False,
-    )
-
-    with patch.object(services, "discover_cameras", return_value=payload):
-        response = auth_client(operator).get("/api/cameras/")
-
-    assert response.status_code == 200
-    assert response.data[0]["conveyor"]["transport"] == "cloud"
-    assert response.data[0]["conveyor"]["online"] is True
-    assert response.data[0]["conveyor"]["state"] == "off"
-
-    device.last_seen_at = timezone.now() - timedelta(minutes=10)
-    device.save(update_fields=["last_seen_at"])
-    with patch.object(services, "discover_cameras", return_value=payload):
-        response = auth_client(operator).get("/api/cameras/")
-
-    assert response.status_code == 200
-    assert response.data[0]["conveyor"] is None
 
 
 def test_admin_camera_name_is_returned_everywhere(auth_client, boss, operator):

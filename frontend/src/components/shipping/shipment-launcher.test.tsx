@@ -8,18 +8,10 @@ import type { Order } from "@/lib/types";
 const camera = {
   id: "camera-2",
   name: "Camera 2",
-  zone: "Конвейер",
+  zone: "Пост погрузки",
   src: "cam2",
   kind: "nvr-channel",
   online: true,
-  conveyor: {
-    configured: true,
-    online: true,
-    state: "off",
-    desired: 0,
-    feedback: 0,
-    error: null,
-  },
 } satisfies CameraFeed & { src: string };
 
 const order: Order = {
@@ -39,7 +31,7 @@ const order: Order = {
 };
 
 describe("ShipmentLauncher", () => {
-  it("describes only the AI/ESP32 camera flow without a scale precondition", async () => {
+  it("starts AI counting without a scale precondition", async () => {
     const user = userEvent.setup();
     const onStart = vi.fn().mockResolvedValue(undefined);
     render(<ShipmentLauncher orders={[order]} cameras={[camera]} onStart={onStart} />);
@@ -47,27 +39,10 @@ describe("ShipmentLauncher", () => {
     await user.selectOptions(screen.getByLabelText("Заказ"), "401");
     await user.selectOptions(screen.getByLabelText("Камера"), "cam2");
 
-    expect(screen.getByText(/Моноблок запустит AI и ESP32 для выбранных заказа и камеры/)).toBeInTheDocument();
+    expect(screen.getByText(/Моноблок запустит AI-подсчёт для выбранных заказа и камеры/)).toBeInTheDocument();
     expect(screen.queryByText(/входн.*вес|весы/i)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Начатьотгрузку" }));
     expect(onStart).toHaveBeenCalledWith(order, camera);
-  });
-
-  it("starts AI when the selected camera has no ESP32 configured", async () => {
-    const user = userEvent.setup();
-    const onStart = vi.fn().mockResolvedValue(undefined);
-    const aiOnlyCamera = { ...camera, conveyor: undefined } as CameraFeed & { src: string };
-    render(<ShipmentLauncher orders={[order]} cameras={[aiOnlyCamera]} onStart={onStart} />);
-
-    await user.selectOptions(screen.getByLabelText("Заказ"), "401");
-    await user.selectOptions(screen.getByLabelText("Камера"), "cam2");
-
-    expect(screen.getByText(/ESP32 не требуется: Моноблок запустит AI/)).toBeInTheDocument();
-    const start = screen.getByRole("button", { name: "Начатьотгрузку" });
-    expect(start).toBeEnabled();
-    await user.click(start);
-
-    expect(onStart).toHaveBeenCalledWith(order, aiOnlyCamera);
   });
 });

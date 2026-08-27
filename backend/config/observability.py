@@ -36,7 +36,6 @@ _SENSITIVE_KEYS = frozenset(
         "authorization",
         "auth",
         "camera_pass",
-        "conveyor_ai_callback_token_sha256",
         "connect.sid",
         "cookie",
         "credentials",

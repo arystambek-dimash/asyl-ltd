@@ -213,11 +213,6 @@ def test_camera_sessions_history_recordings_and_status_respect_client_ownership(
         ("post", "/api/cameras/cam2/ai/", "start"),
         ("delete", "/api/cameras/cam2/ai/", "stop"),
         ("post", "/api/cameras/cam2/ai/reset/", "reset"),
-        (
-            "post",
-            "/api/cameras/cam2/ai/conveyor/stop/",
-            "stop_conveyor",
-        ),
     ):
         with patch.object(counting, service_name) as service:
             response = getattr(scoped_api, method)(
@@ -324,44 +319,16 @@ def test_camera_mutations_recheck_transferred_client_before_edge_side_effects(
 
     with patch.object(ai, "reset") as edge_reset:
         with pytest.raises(PermissionDenied):
-            counting.reset(
-                "cam99",
-                order,
-                assigned,
-                expected_session_id=session.pk,
-            )
+            counting.reset("cam99", order, assigned)
         edge_reset.assert_not_called()
 
     with (
         patch.object(ai, "status") as edge_status,
-        patch.object(ai, "emergency_stop_conveyor") as edge_emergency_stop,
-    ):
-        with pytest.raises(PermissionDenied):
-            counting.stop_conveyor(
-                "cam99",
-                order,
-                assigned,
-                expected_session_id=session.pk,
-            )
-        edge_status.assert_not_called()
-        edge_emergency_stop.assert_not_called()
-
-    with (
-        patch.object(ai, "status") as edge_status,
-        patch.object(ai, "stop_conveyor") as edge_stop_conveyor,
-        patch.object(ai, "emergency_stop_conveyor") as edge_emergency_stop,
         patch.object(ai, "delete") as edge_delete,
     ):
         with pytest.raises(PermissionDenied):
-            counting.stop(
-                "cam99",
-                order,
-                assigned,
-                expected_session_id=session.pk,
-            )
+            counting.stop("cam99", order, assigned)
         edge_status.assert_not_called()
-        edge_stop_conveyor.assert_not_called()
-        edge_emergency_stop.assert_not_called()
         edge_delete.assert_not_called()
 
     # The idempotent no-session response is still an order-owned read and must

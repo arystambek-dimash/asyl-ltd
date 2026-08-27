@@ -26,7 +26,6 @@ from .api_views.configuration import (
 from .api_views.counting import (
     CameraAiResetView,
     CameraAiView,
-    CameraConveyorStopView,
     CameraCountingLineView,
 )
 from .api_views.history import (
@@ -74,7 +73,6 @@ __all__ = [
     "CameraAiSessionListView",
     "CameraAiView",
     "CameraAuthView",
-    "CameraConveyorStopView",
     "CameraCountingLineView",
     "CameraHealthView",
     "CameraListView",

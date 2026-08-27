@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from .settings import parse_camera, parse_line
 
@@ -23,18 +23,6 @@ class ProcessorOptions(BaseModel):
         if value is not None:
             parse_line(value)
         return value
-
-
-class ControlledSessionOptions(ProcessorOptions):
-    session_id: StrictInt = Field(gt=0, le=2_147_483_647)
-    target_total: StrictInt = Field(gt=0, le=2_147_483_647)
-    conveyor_transport: Literal["direct", "cloud"] = "direct"
-
-
-class ConveyorCommandOptions(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    session_id: StrictInt = Field(gt=0, le=2_147_483_647)
 
 
 class CountingLineOptions(BaseModel):

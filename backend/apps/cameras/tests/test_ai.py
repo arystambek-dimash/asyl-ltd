@@ -439,6 +439,43 @@ def test_start_attaches_to_same_order_without_reset(api_client, loader, loading_
     assert resp.data["owned_by_order"] is True
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("post", "/api/cameras/cam2/ai/"),
+        ("delete", "/api/cameras/cam2/ai/"),
+        ("post", "/api/cameras/cam2/ai/reset/"),
+    ],
+)
+def test_stale_session_id_rejects_ai_mutation(
+    api_client,
+    loader,
+    loading_order,
+    method,
+    path,
+):
+    session = AiCountingSession.objects.create(
+        order=loading_order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+        started_by=loader,
+    )
+    api_client.force_authenticate(loader)
+
+    with patch.object(ai, "_request") as request:
+        response = getattr(api_client, method)(
+            path,
+            {"order_id": loading_order.pk, "session_id": session.pk + 1},
+            format="json",
+        )
+
+    assert response.status_code == 409
+    assert "AI-сессия изменилась" in response.data["detail"]
+    request.assert_not_called()
+    session.refresh_from_db()
+    assert session.status == AiCountingSession.ACTIVE
+
+
 def test_starting_retry_adopts_live_count_without_reset(api_client, loader):
     client = Client.objects.create_with_user(
         first_name="AI", last_name="Retry", phone="retry"

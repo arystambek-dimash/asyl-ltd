@@ -277,7 +277,7 @@ CRUD + действия: `confirm`, `reject`, `payments` (+ `receive/confirm/rej
 Поток **вагон**: `start_train_loading` (confirmed→loading) →
 `record_count` → `finish_train_loading` (→loaded) → `record_shipment` (→shipped).
 
-Monoblock/AI/ESP32 работает только с заказом, камерой, числом мешков и
+Monoblock/AI работает только с заказом, камерой, числом мешков и
 переходом `loading→loaded`; номер машины и физические весы для его запуска не
 нужны. Интеграция автовесов принадлежит отдельному приложению `grain`.
 
@@ -406,7 +406,7 @@ docker compose -f docker-compose.prod.yml exec backend \
 #### AI-подсчёт мешков (пост погрузки)
 
 Модель `AiCountingSession(order, camera, status: STARTING/ACTIVE/CLOSED/FAILED,
-target_total, conveyor_enabled, final_total, last_status JSON)` +
+final_total, last_status JSON)` +
 **UniqueConstraint: на камере максимум одна
 открытая сессия** — камеру нельзя занять двумя заказами даже при
 одновременных запросах.
@@ -421,27 +421,13 @@ target_total, conveyor_enabled, final_total, last_status JSON)` +
 
 - `GET` — статус: чужой заказ получает дешёвый DB-ответ «камера занята»
   (`busy`), не трогая GPU; владелец — живой статус от ai_service.
-- `POST` — привязать заказ и включить модель. Для ESP32 это двухфазная операция:
-  target фиксируется в БД, edge готовит AI при проверенном `OFF`, заказ переходит
-  в loading, затем отдельной командой включается привод.
+- `POST` — включить модель для заказа в `confirmed` или `arrived`; статус
+  `loading` допускается только при восстановлении той же сессии на той же камере.
   Таймаут ai_service — ситуация неоднозначная: владение сохраняется, чтобы
   второй заказ не стартовал на том же GPU; детерминированные ошибки (<500)
   сразу освобождают слот.
-- `POST …/conveyor/stop/` — терминально остановить привод без закрытия заказа.
-  `DELETE` сначала требует подтверждённый feedback `OFF`, затем фиксирует итог;
-  `POST …/reset/` доступен только для старой сессии без автоматики.
-- На camera-PC `total >= target_total`, stale/frozen AI, отсутствие прогресса,
-  предельное время хода, ошибка Modbus и shutdown независимо переводят выход в
-  терминальный `OFF`; браузер только отображает состояние.
-- Camera-PC постоянно переутверждает write/readback `OFF`. Сам Modbus/TCP не
-  имеет аутентификации: ESP32 `TCP/502` обязательно изолируется allowlist/VLAN
-  только для camera-PC, а аппаратный E-stop остаётся независимым.
-- Для удалённого ESP32 задайте камере transport `cloud`: camera-PC только
-  отправляет HTTPS-наблюдения, backend выдаёт короткие ON-lease, а ESP32 сам
-  опрашивает `/api/conveyors/v1/device/sync/`. Потеря Wi-Fi/API, reboot,
-  устаревший AI или достижение `target_total` дают терминальный OFF; старый ON
-  после восстановления связи не возобновляется. Настройка и протокол описаны в
-  `backend/apps/conveyors/README.md` и `firmware/esp32-conveyor/README.md`.
+- `DELETE` — выключить и зафиксировать итог; `POST …/reset/` — обнулить
+  счётчик под новую погрузку.
 - Коды ошибок: `ai_disabled` (503, фича не настроена), `ai_unavailable`
   (502, ПК не отвечает), `ai_busy` (409, камера занята другим заказом),
   `ai_error`, `ai_processor_stopped`.
@@ -567,7 +553,7 @@ go2rtc rate-limit'ить нельзя (живое видео).
   query string, всё request body/form/files и response body/data дополнительно
   удаляются fail-closed перед отправкой. В остальных
   вложенных данных нормализованные поля паролей, токенов, private/API keys,
-  credentials, Authorization, ApiPay, camera/AI и conveyor credentials
+  credentials, Authorization, ApiPay и camera/AI credentials
   рекурсивно заменяются на `[Filtered]`. Это страховка, а не повод писать
   секреты в сообщения логов — строку уже сформированного сообщения невозможно
   надёжно очистить по имени поля.
