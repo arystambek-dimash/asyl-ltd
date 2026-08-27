@@ -30,6 +30,7 @@ RUNNING = {
     "cam": "cam2", "running": True, "stream": "cam2ai", "status": "онлайн",
     "fps": 19.8, "total": 42, "weight": 2100, "per_color": {"Blue_50": 40},
 }
+RESET_READY = {**RUNNING, "total": 0}
 LINE_CONFIG = {
     "cam": "cam2",
     "configured": True,
@@ -101,7 +102,7 @@ def test_monoblock_start_binds_camera_and_moves_confirmed_order_to_loading(
     )
     api_client.force_authenticate(loader)
 
-    with patch.object(ai, "_request", return_value=(200, RUNNING)) as request:
+    with patch.object(ai, "_request", return_value=(200, RESET_READY)) as request:
         response = api_client.post(
             "/api/cameras/cam2/ai/",
             {"order_id": order.pk},
@@ -118,6 +119,56 @@ def test_monoblock_start_binds_camera_and_moves_confirmed_order_to_loading(
         ("POST", "/processors/cam2", {}),
         ("POST", "/processors/cam2/reset", None),
     ]
+
+
+def test_monoblock_waits_for_async_start_and_reset_acknowledgements(
+    api_client, loader, monkeypatch,
+):
+    client = Client.objects.create_with_user(
+        first_name="AI", last_name="Async", phone="async-start"
+    )
+    order = Order.objects.create(client=client, status="confirmed")
+    starting = {
+        **RUNNING,
+        "running": False,
+        "mode": "session",
+        "total": 19,
+    }
+    running = {**RUNNING, "mode": "session", "total": 19}
+    resetting = {**RUNNING, "mode": "session", "total": 19}
+    ready = {**RUNNING, "mode": "session", "total": 0}
+    monkeypatch.setattr(ai, "SESSION_READY_POLL_SECONDS", 0)
+    api_client.force_authenticate(loader)
+
+    with patch.object(
+        ai,
+        "_request",
+        side_effect=[
+            (200, starting),
+            (200, running),
+            (200, resetting),
+            (200, ready),
+        ],
+    ) as request:
+        response = api_client.post(
+            "/api/cameras/cam2/ai/",
+            {"order_id": order.pk},
+            format="json",
+        )
+
+    assert response.status_code == 200, response.data
+    assert response.data["running"] is True
+    assert response.data["total"] == 0
+    assert [item.args for item in request.call_args_list] == [
+        ("POST", "/processors/cam2", {}),
+        ("GET", "/processors/cam2", None),
+        ("POST", "/processors/cam2/reset", None),
+        ("GET", "/processors/cam2", None),
+    ]
+    session = AiCountingSession.objects.get(order=order)
+    order.refresh_from_db()
+    assert session.status == AiCountingSession.ACTIVE
+    assert order.status == "loading"
 
 
 def test_device_camera_conflict_is_rejected_before_worker_start(
@@ -179,7 +230,7 @@ def test_monoblock_start_ignores_scale_and_does_not_record_arrival(
         "read_truck_scale",
         side_effect=AssertionError("Monoblock must not read the physical scale"),
     ) as scale_read, patch.object(
-        ai, "_request", return_value=(200, RUNNING)
+        ai, "_request", return_value=(200, RESET_READY)
     ) as ai_request:
         response = api_client.post(
             "/api/cameras/cam2/ai/",
@@ -221,8 +272,8 @@ def test_numberless_retry_on_another_camera_never_reads_scale(
         "_request",
         side_effect=[
             (400, {"detail": "camera refused"}),
-            (200, {**RUNNING, "cam": "cam3", "stream": "cam3ai"}),
-            (200, {**RUNNING, "cam": "cam3", "stream": "cam3ai"}),
+            (200, {**RESET_READY, "cam": "cam3", "stream": "cam3ai"}),
+            (200, {**RESET_READY, "cam": "cam3", "stream": "cam3ai"}),
         ],
     ):
         refused = api_client.post(
@@ -267,7 +318,7 @@ def test_unstable_scale_cannot_block_monoblock(
         "read_truck_scale",
         side_effect=grain_scale.TruckScaleNotReady(),
     ) as scale_read, patch.object(
-        ai, "_request", return_value=(200, RUNNING)
+        ai, "_request", return_value=(200, RESET_READY)
     ) as ai_request:
         response = api_client.post(
             "/api/cameras/cam2/ai/",
@@ -344,7 +395,9 @@ def test_monoblock_starts_confirmed_train_without_arrival_step(api_client, loade
     )
     api_client.force_authenticate(loader)
 
-    with patch.object(ai, "_request", return_value=(200, {**RUNNING, "cam": "cam3"})):
+    with patch.object(
+        ai, "_request", return_value=(200, {**RESET_READY, "cam": "cam3"})
+    ):
         response = api_client.post(
             "/api/cameras/cam3/ai/",
             {"order_id": order.pk},
@@ -866,7 +919,7 @@ def test_start_accepts_order_id_from_query(api_client, loader, loading_order):
     Query support prevents body/proxy quirks from losing the order binding.
     """
     api_client.force_authenticate(loader)
-    with patch.object(ai, "_request", return_value=(200, RUNNING)):
+    with patch.object(ai, "_request", return_value=(200, RESET_READY)):
         resp = api_client.post(
             f"/api/cameras/cam2/ai/?order_id={loading_order.pk}",
             {},
@@ -915,7 +968,7 @@ def test_monoblock_stop_saves_ai_total_and_only_finishes_loading(
     OrderItem.objects.create(order=order, product=product, quantity=50)
     api_client.force_authenticate(loader)
 
-    with patch.object(ai, "_request", return_value=(200, RUNNING)):
+    with patch.object(ai, "_request", return_value=(200, RESET_READY)):
         started = api_client.post(
             "/api/cameras/cam2/ai/", {"order_id": order.pk}, format="json",
         )
@@ -980,7 +1033,7 @@ def test_monoblock_start_and_complete_never_read_physical_scale(
         "read_truck_scale",
         side_effect=AssertionError("Monoblock must not read Grain scales"),
     ) as read_scale:
-        with patch.object(ai, "_request", return_value=(200, RUNNING)):
+        with patch.object(ai, "_request", return_value=(200, RESET_READY)):
             started = api_client.post(
                 "/api/cameras/cam2/ai/",
                 {"order_id": order.pk},

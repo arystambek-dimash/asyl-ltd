@@ -335,6 +335,7 @@ def start(
             if initialize_worker:
                 live = ai.start(camera)
                 worker_may_be_running = True
+                ai.wait_for_order_session(camera, live)
                 live = ai.reset(camera)
             else:
                 live = ai.status(camera)
@@ -346,6 +347,11 @@ def start(
                 ):
                     live = ai.start(camera)
                 worker_may_be_running = live is not None
+            live = ai.wait_for_order_session(
+                camera,
+                live,
+                require_zero=initialize_worker,
+            )
             live_payload = _payload(live)
             if live_payload.get("running") is not True:
                 raise ai.AiError(503, "AI-сервис не подтвердил запуск счётчика")

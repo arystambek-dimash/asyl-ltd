@@ -2,6 +2,7 @@ import http.client
 import json
 import math
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -23,6 +24,7 @@ WAGON_PLATE_MAX_BYTES = 12 * 1024 * 1024
 
 ALWAYS_ON_CACHE_KEY = "cameras:always-on-status:v1"
 ALWAYS_ON_TTL = 5
+SESSION_READY_POLL_SECONDS = 0.2
 DETECTIONS_CACHE_KEY = "cameras:always-on-detections:v1"
 DETECTIONS_TTL = 1
 
@@ -237,6 +239,44 @@ def save_counting_line(cam: str, payload) -> tuple[int, dict]:
 def status(cam: str) -> dict | None:
     """Статус и живой счётчик; None — модель на камере не запущена."""
     return _call("GET", _path(cam), none_on_404=True)
+
+
+def _order_session_ready(payload: object, *, require_zero: bool) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    # Older camera-PC builds omit ``mode``. Only an explicit non-session mode
+    # (notably always_on) proves this is not the order counter we requested.
+    if payload.get("running") is not True or payload.get("mode") not in (
+        None,
+        "session",
+    ):
+        return False
+    return not (require_zero and payload.get("total") != 0)
+
+
+def wait_for_order_session(
+    cam: str,
+    payload: dict | None,
+    *,
+    require_zero: bool = False,
+) -> dict:
+    """Wait for an asynchronously starting camera-PC order counter."""
+    current = payload if isinstance(payload, dict) else {}
+    deadline = time.monotonic() + TIMEOUT
+    while not _order_session_ready(current, require_zero=require_zero):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            detail = (
+                "AI-счётчик не подтвердил обнуление новой сессии"
+                if require_zero
+                else "AI-счётчик не подтвердил запуск сессии заказа"
+            )
+            raise AiError(503, detail)
+        time.sleep(min(SESSION_READY_POLL_SECONDS, remaining))
+        live = status(cam)
+        if live is not None:
+            current = live
+    return current
 
 
 def start(cam: str, options: dict | None = None) -> dict:
