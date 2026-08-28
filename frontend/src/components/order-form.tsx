@@ -844,11 +844,22 @@ export function OrderForm({
           )}
         </div>
         {step < 3 ? (
-          <Button type="button" onClick={nextStep} disabled={!referenceDataReady || (step === 1 && (!client || !dept))}>
+          <Button
+            key="continue"
+            type="button"
+            onClick={(event) => {
+              // React must not reuse this clicked node as the submit button
+              // before the browser runs the click's default action.
+              event.preventDefault();
+              nextStep();
+            }}
+            disabled={!referenceDataReady || (step === 1 && (!client || !dept))}
+          >
             Продолжить <ArrowRight className="size-4" />
           </Button>
         ) : (
           <Button
+            key="submit"
             type="submit"
             disabled={
               busy ||

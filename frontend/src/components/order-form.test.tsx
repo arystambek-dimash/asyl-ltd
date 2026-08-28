@@ -133,6 +133,57 @@ describe("OrderForm reference data resilience", () => {
     expect(reloadClientPrices).toHaveBeenCalledOnce();
   });
 
+  it("does not create an order while advancing or going back to change currency", async () => {
+    const template = {
+      id: 12,
+      client: client.id,
+      department: department.code,
+      currency: "KZT",
+      truck_number: "",
+      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
+    } as Order;
+    const states = new Map<string, unknown>([
+      [
+        "/orders/form-options/",
+        apiState({
+          clients: [client],
+          products: [product],
+          stores: [],
+          departments: [department],
+        }),
+      ],
+      ["/client-prices/?client=1&currency=KZT", apiState<Record<string, string>>({ "2": "17.50" })],
+      ["/client-prices/?client=1&currency=USD", apiState<Record<string, string>>({ "2": "4.25" })],
+    ]);
+    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+
+    const user = userEvent.setup();
+    render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    const currencyStepContinue = screen.getByRole("button", { name: /Продолжить/ });
+    await user.click(currencyStepContinue);
+
+    expect(postMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /Создать заказ/ })).not.toBe(currencyStepContinue);
+    await user.click(screen.getByRole("button", { name: /Назад/ }));
+    await user.click(screen.getByRole("button", { name: /USD.*Доллары/ }));
+    expect(postMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    expect(postMock).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
+
+    expect(postMock).toHaveBeenCalledOnce();
+    expect(postMock).toHaveBeenCalledWith(
+      "/orders/",
+      expect.objectContaining({
+        currency: "USD",
+        prices: { "2": "4.25" },
+      }),
+    );
+  });
+
   it("requires an audit reason and sends it when a shipped order is corrected", async () => {
     const editing = {
       id: 10,
