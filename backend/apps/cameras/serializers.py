@@ -5,8 +5,6 @@ events and calls to the camera PC belong to the view/workflow layer, where
 they can be coordinated explicitly.
 """
 
-import math
-
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -14,66 +12,6 @@ from rest_framework import serializers
 
 from . import ai, services
 from .models import MonoblockDevice
-
-
-class ModelTestStartSerializer(serializers.Serializer):
-    bundle = serializers.RegexField(
-        r"^[a-z0-9][a-z0-9_-]{0,31}$",
-        max_length=32,
-        error_messages={"invalid": "Выберите доступный набор моделей"},
-    )
-    line = serializers.CharField(required=False, max_length=128)
-    direction = serializers.ChoiceField(
-        required=False,
-        choices=("any", "up", "down", "positive", "negative"),
-    )
-    inference_fps = serializers.FloatField(
-        required=False,
-        min_value=0.000001,
-        max_value=120,
-    )
-
-    def validate_line(self, value):
-        raw = value.split(",")
-        if len(raw) != 4:
-            raise serializers.ValidationError(
-                "Линия должна содержать четыре координаты"
-            )
-        try:
-            coordinates = [float(item) for item in raw]
-        except (TypeError, ValueError) as exc:
-            raise serializers.ValidationError(
-                "Координаты линии должны быть числами от 0 до 1"
-            ) from exc
-        if any(
-            not math.isfinite(coordinate) or not 0 <= coordinate <= 1
-            for coordinate in coordinates
-        ):
-            raise serializers.ValidationError(
-                "Координаты линии должны быть числами от 0 до 1"
-            )
-        if coordinates[:2] == coordinates[2:]:
-            raise serializers.ValidationError(
-                "Начальная и конечная точки линии не должны совпадать"
-            )
-        return ",".join(format(coordinate, ".12g") for coordinate in coordinates)
-
-    def validate_inference_fps(self, value):
-        if not math.isfinite(value):
-            raise serializers.ValidationError(
-                "Inference FPS должен быть конечным числом"
-            )
-        return value
-
-
-class ModelTestStatusQuerySerializer(serializers.Serializer):
-    after_event = serializers.IntegerField(required=False, default=0, min_value=0)
-    limit = serializers.IntegerField(
-        required=False,
-        default=100,
-        min_value=1,
-        max_value=500,
-    )
 
 
 class CameraRenameSerializer(serializers.Serializer):
