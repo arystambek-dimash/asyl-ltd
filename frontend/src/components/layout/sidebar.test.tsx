@@ -109,14 +109,6 @@ describe("подсветка активного пункта", () => {
     rerender(<Sidebar me={{ ...factoryUser, permissions: [] }} />);
     expect(screen.queryByRole("link", { name: "Журнал машин" })).not.toBeInTheDocument();
   });
-
-  it("показывает лабораторию моделей только superuser", () => {
-    const { rerender } = render(<Sidebar me={factoryUser} />);
-    expect(screen.queryByRole("link", { name: "Тест моделей" })).not.toBeInTheDocument();
-
-    rerender(<Sidebar me={{ ...factoryUser, is_superuser: true }} />);
-    expect(screen.getByRole("link", { name: "Тест моделей" })).toHaveAttribute("href", "/management/model-tests");
-  });
 });
 
 describe("mobile Sidebar", () => {

@@ -22,7 +22,6 @@ import {
   ScanLine,
   Warehouse,
   Wheat,
-  FlaskConical,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { can } from "@/lib/can";
@@ -36,7 +35,6 @@ interface NavItem {
   icon: React.ElementType;
   perm?: Perm;
   activePrefix?: string;
-  superuserOnly?: boolean;
 }
 interface NavSection {
   title: string;
@@ -95,12 +93,6 @@ function staffSections(): NavSection[] {
           label: "Сотрудники",
           icon: Settings,
           perm: "employees.view",
-        },
-        {
-          href: "/management/model-tests",
-          label: "Тест моделей",
-          icon: FlaskConical,
-          superuserOnly: true,
         },
       ],
     },
@@ -166,7 +158,7 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
   const visible = sections
     .map((s) => ({
       ...s,
-      items: s.items.filter((item) => (!item.superuserOnly || me.is_superuser) && hasNavPerm(me, item.perm)),
+      items: s.items.filter((item) => hasNavPerm(me, item.perm)),
     }))
     .filter((s) => s.items.length > 0);
 

@@ -23,11 +23,9 @@ from .views import (
     MonoblockCameraSettingsView,
     MonoblockDeviceDetailView,
     MonoblockDeviceListView,
-    ModelTestCollectionView,
-    ModelTestDetailView,
     ShippingBoardSettingsView,
-    WagonNumberCameraSettingsView,
     VehiclePlateRuntimeView,
+    WagonNumberCameraSettingsView,
 )
 
 urlpatterns = [
@@ -81,12 +79,6 @@ urlpatterns = [
     path("cameras/ai/history/", CameraAiSessionHistoryView.as_view()),
     path("cameras/ai/history/<int:pk>/recording/", CameraAiRecordingView.as_view()),
     path("cameras/ai/history/<int:pk>/recording/video/", CameraAiRecordingVideoView.as_view()),
-    path("cameras/model-tests/", ModelTestCollectionView.as_view(), name="model-tests"),
-    path(
-        "cameras/model-tests/<uuid:job_id>/",
-        ModelTestDetailView.as_view(),
-        name="model-test-detail",
-    ),
     path("cameras/<str:cam>/counting-line", CameraCountingLineView.as_view()),
     path(
         "cameras/<str:cam>/vehicle-plate-runtime/",

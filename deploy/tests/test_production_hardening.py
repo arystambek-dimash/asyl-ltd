@@ -964,35 +964,5 @@ class SecurityHeaderTests(unittest.TestCase):
             self.assertIn(header, headers)
 
 
-class ModelTestProxyTests(unittest.TestCase):
-    """Large superuser videos need a narrow route, never a global API limit."""
-
-    def test_model_test_upload_has_a_dedicated_streaming_location(self) -> None:
-        nginx = (
-            REPO_ROOT / "deploy" / "nginx" / "conf.d" / "asyl-ltd.conf"
-        ).read_text(encoding="utf-8")
-        model_tests = nginx.index("location ^~ /api/cameras/model-tests/")
-        generic_api = nginx.index("location /api/", model_tests)
-        self.assertLess(model_tests, generic_api)
-        block = nginx[model_tests:generic_api]
-        self.assertIn("client_max_body_size 512m;", block)
-        self.assertIn("client_body_timeout 600s;", block)
-        self.assertIn("proxy_read_timeout 660s;", block)
-        self.assertIn("proxy_send_timeout 600s;", block)
-        self.assertIn("proxy_request_buffering off;", block)
-        self.assertIn("limit_conn asyl_conn_per_ip 3;", block)
-
-    def test_backend_compose_receives_the_matching_upload_settings(self) -> None:
-        compose = PROD_COMPOSE.read_text(encoding="utf-8")
-        self.assertIn(
-            "AI_MODEL_TEST_MAX_UPLOAD_BYTES: ${AI_MODEL_TEST_MAX_UPLOAD_BYTES:-536870912}",
-            compose,
-        )
-        self.assertIn(
-            "AI_MODEL_TEST_UPLOAD_TIMEOUT: ${AI_MODEL_TEST_UPLOAD_TIMEOUT:-600}",
-            compose,
-        )
-
-
 if __name__ == "__main__":
     unittest.main()
