@@ -1,7 +1,6 @@
 from typing import ClassVar
 from urllib.parse import parse_qsl, urlsplit
 
-from apps.common.permissions import IsStaff
 from django.contrib.auth import get_user_model
 from django.core import signing
 from django.utils.crypto import constant_time_compare
@@ -9,6 +8,8 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from apps.common.permissions import IsStaff
 
 from .. import services
 
@@ -19,6 +20,7 @@ CAM_TOKEN_SALT = "cameras.stream-cookie.v2"
 CAM_TOKEN_VERSION = 1
 CAM_STREAM_PATH = "/go2rtc/api/ws"
 MAX_ORIGINAL_URI_LENGTH = 2048
+STAFF_ONLY_CAMERA_STREAM_SOURCES = frozenset({"cam1main"})
 
 
 def _camera_token_payload(user) -> dict:
@@ -71,6 +73,8 @@ def _camera_token_user(token: str):
 def _is_valid_camera_stream_source(source: str) -> bool:
     if not source or source.strip() != source:
         return False
+    if source in STAFF_ONLY_CAMERA_STREAM_SOURCES:
+        return True
     try:
         normalized_source = services.normalize_camera_path(source)
     except ValueError:

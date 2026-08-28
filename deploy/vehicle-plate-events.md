@@ -144,8 +144,10 @@ reach the browser.
 The video and AI badges are independent. `ВИДЕО: В ЭФИРЕ` confirms only the
 WebRTC stream; the AI badge separately reports whether the detector, shared
 OCR, automatic monitor, `cam1/main` assignment, ROI and CRM delivery are ready.
-The blue polygon is the current normalized camera-PC ROI, aligned to the actual
-`object-cover` video pixels.
+The editor uses the dedicated on-demand `cam1main` browser alias, which reads
+the same MediaMTX `/cam1` main stream as the vehicle monitor; the normal camera
+wall keeps its lower-bandwidth `cam1sub` alias. The blue polygon is therefore
+aligned to the exact `object-cover` video pixels evaluated by the model.
 
 The counters are cumulative since the monitor started. Watch which value stops
 increasing during a real stopped-truck check, from left to right:
@@ -158,9 +160,16 @@ increasing during a real stopped-truck check, from left to right:
 5. `Готово` increases after the configured matching-vote consensus confirms a
    normalized Kazakhstan plate.
 
-The UI deliberately does not provide ROI editing. Persist geometry through the
-camera-PC ROI contract and validate it against a real stopped vehicle before
-enabling automatic export.
+Superusers can edit the same polygon directly over the export-camera video.
+The browser sends normalized points to
+`PUT /api/cameras/cam1/vehicle-plate-runtime/`; the backend validates the
+3–12-point, non-degenerate polygon, fixes its source to `main`, and proxies it to the canonical camera-PC
+`PUT /cameras/cam1/vehicle-roi` contract. The camera-PC persists the geometry
+atomically and asks the running monitor to reload it immediately. A `503` with
+`code=roi_saved_refresh_pending` means the file was saved but the live monitor
+could not confirm the immediate refresh; the monitor's normal two-second ROI
+reload still picks it up after recovery. All GET and PUT responses are
+`no-store`, and non-superusers cannot change the polygon.
 
 ## Automatic truck-export weighing
 

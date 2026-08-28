@@ -38,6 +38,12 @@ webrtc:
     networks: [udp4]
 
 streams:
+  # ROI vehicle-plate editor must show the exact main stream consumed by the
+  # cam1/main monitor. Keep it under a dedicated browser alias so the normal
+  # cam1 camera-wall tile can continue using the lower-bandwidth substream.
+  cam1main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam1
+    - ffmpeg:cam1main#video=h264
   cam1:
     - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam1sub
     - ffmpeg:cam1#video=h264

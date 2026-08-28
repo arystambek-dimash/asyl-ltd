@@ -276,6 +276,16 @@ def vehicle_roi(cam: str) -> dict:
     )
 
 
+def save_vehicle_roi(cam: str, payload: dict) -> tuple[int, dict]:
+    """Forward one canonical ROI update with a bounded camera-PC timeout."""
+    return _request(
+        "PUT",
+        f"/cameras/{camera_id(cam)}/vehicle-roi",
+        payload,
+        timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
+    )
+
+
 def model_test_info() -> tuple[int, dict]:
     """Return the camera-PC model-test capability document unchanged."""
     return _request("GET", "/model-tests")

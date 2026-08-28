@@ -1,17 +1,35 @@
 "use client";
 
+import type { AxiosError } from "axios";
 import { useState } from "react";
-import { Focus, ScanLine, VideoOff } from "lucide-react";
+import { Check, Focus, PencilLine, ScanLine, VideoOff, X } from "lucide-react";
 import { CameraStream } from "@/components/camera-stream";
-import { isDrawableVehicleRoi, VehicleRoiOverlay, type VehicleRoiConfig } from "@/components/grain/vehicle-roi-overlay";
+import {
+  isDrawableVehicleRoi,
+  normalizeVehicleRoi,
+  VehicleRoiOverlay,
+  type NormalizedRoiPoint,
+  type VehicleRoiConfig,
+} from "@/components/grain/vehicle-roi-overlay";
+import { Button } from "@/components/ui/button";
+import { api, apiError } from "@/lib/api";
+import { showSuccess } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/store/auth";
 
 const VEHICLE_PLATE_CAMERA = "cam1";
 const VEHICLE_PLATE_OCR_SOURCE = "main";
+const VEHICLE_PLATE_VIDEO_STREAM = "cam1main";
 const VEHICLE_RUNTIME_URL = `/cameras/${VEHICLE_PLATE_CAMERA}/vehicle-plate-runtime/`;
 const VEHICLE_RUNTIME_POLL_MS = 5_000;
+const DEFAULT_VEHICLE_ROI: NormalizedRoiPoint[] = [
+  [0.25, 0.25],
+  [0.75, 0.25],
+  [0.9, 0.85],
+  [0.1, 0.85],
+];
 
 type VehiclePlateMonitor = {
   status: string;
@@ -50,6 +68,14 @@ export type VehiclePlateRuntime = {
   roi: VehicleRoiConfig;
 };
 
+type VehicleRoiSaveResponse = {
+  saved: true;
+  applied_to_monitor: boolean;
+  roi: VehicleRoiConfig;
+};
+
+type SaveNotice = { message: string; tone: "success" | "warning" };
+
 type RuntimePresentation = {
   label: string;
   detail: string;
@@ -62,6 +88,42 @@ const TONE_CLASSES: Record<RuntimePresentation["tone"], string> = {
   bad: "border-rose-400/25 bg-rose-400/10 text-rose-200",
   idle: "border-white/15 bg-white/[0.06] text-white/60",
 };
+
+function draftRoi(points: NormalizedRoiPoint[]): VehicleRoiConfig {
+  return {
+    configured: true,
+    enabled: true,
+    source: VEHICLE_PLATE_OCR_SOURCE,
+    coordinate_space: "normalized",
+    points: points.map(([x, y]) => ({ x, y })),
+  };
+}
+
+function polygonArea(points: NormalizedRoiPoint[]) {
+  let doubledArea = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    const next = points[(index + 1) % points.length];
+    doubledArea += current[0] * next[1] - next[0] * current[1];
+  }
+  return Math.abs(doubledArea) / 2;
+}
+
+function validRoiDraft(points: NormalizedRoiPoint[]) {
+  return points.length >= 3 && points.length <= 12 && polygonArea(points) >= 0.0001;
+}
+
+function acceptedSaveResponse(value: unknown): value is VehicleRoiSaveResponse {
+  if (!value || typeof value !== "object") return false;
+  const payload = value as Partial<VehicleRoiSaveResponse>;
+  const points = normalizeVehicleRoi(payload.roi?.points);
+  return (
+    payload.saved === true &&
+    typeof payload.applied_to_monitor === "boolean" &&
+    isDrawableVehicleRoi(payload.roi, VEHICLE_PLATE_OCR_SOURCE) &&
+    validRoiDraft(points)
+  );
+}
 
 export function vehicleAiPresentation(
   runtime: VehiclePlateRuntime | null,
@@ -189,25 +251,146 @@ function roiPresentation(runtime: VehiclePlateRuntime | null, error: string): Ru
  * this component only selects the logical stream name.
  */
 export function VehiclePlateCameraWorkspace() {
+  const canManageRoi = useAuth((state) => Boolean(state.me?.is_superuser));
   const [streamOnline, setStreamOnline] = useState(false);
+  const [editingRoi, setEditingRoi] = useState(false);
+  const [roiDraft, setRoiDraft] = useState<NormalizedRoiPoint[]>([]);
+  const [savingRoi, setSavingRoi] = useState(false);
+  const [roiSaveError, setRoiSaveError] = useState("");
+  const [saveNotice, setSaveNotice] = useState<SaveNotice | null>(null);
   const {
     data: runtime,
     loading: runtimeLoading,
     error: runtimeError,
     reload,
+    setData: setRuntime,
   } = useApi<VehiclePlateRuntime>(VEHICLE_RUNTIME_URL);
-  useVisiblePolling(reload, VEHICLE_RUNTIME_POLL_MS, !runtimeLoading);
+  useVisiblePolling(reload, VEHICLE_RUNTIME_POLL_MS, !runtimeLoading && !editingRoi && !savingRoi);
   const aiState = vehicleAiPresentation(runtime, runtimeLoading, runtimeError);
-  const roiState = roiPresentation(runtime, runtimeError);
+  const roiState = editingRoi
+    ? { label: "ROI РЕДАКТИРУЕТСЯ", detail: "Перетащите точки и сохраните новую зону.", tone: "warn" as const }
+    : roiPresentation(runtime, runtimeError);
+  const overlayRoi = editingRoi ? draftRoi(roiDraft) : runtimeError ? null : runtime?.roi;
+  const canSaveRoi = validRoiDraft(roiDraft) && !savingRoi;
+
+  function startRoiEditor() {
+    if (!canManageRoi || !runtime || runtimeLoading || runtimeError) return;
+    const serverPoints = normalizeVehicleRoi(runtime.roi.points);
+    setRoiDraft(serverPoints.length ? serverPoints : DEFAULT_VEHICLE_ROI);
+    setRoiSaveError("");
+    setSaveNotice(null);
+    setEditingRoi(true);
+  }
+
+  function cancelRoiEditor() {
+    setEditingRoi(false);
+    setRoiDraft([]);
+    setRoiSaveError("");
+  }
+
+  function acceptSavedRoi(payload: VehicleRoiSaveResponse) {
+    if (!runtime) return;
+    setRuntime({ ...runtime, roi: payload.roi });
+    setEditingRoi(false);
+    setRoiDraft([]);
+    setRoiSaveError("");
+    setSaveNotice(
+      payload.applied_to_monitor
+        ? {
+            message:
+              "ROI сохранён. ПК камер получил запрос на обновление; новая зона обычно применяется в течение 2 секунд.",
+            tone: "success",
+          }
+        : {
+            message: "ROI сохранён, но монитор пока не подтвердил обновление. Он перечитает зону после восстановления.",
+            tone: "warning",
+          },
+    );
+    if (payload.applied_to_monitor) showSuccess("ROI камеры сохранён");
+  }
+
+  async function saveRoi() {
+    if (!canManageRoi || !runtime || !canSaveRoi) return;
+    setSavingRoi(true);
+    setRoiSaveError("");
+    const body = {
+      points: roiDraft.map(([x, y]) => ({ x, y })),
+      enabled: true,
+      source: VEHICLE_PLATE_OCR_SOURCE,
+    };
+    try {
+      const response = await api.put<VehicleRoiSaveResponse>(VEHICLE_RUNTIME_URL, body, { timeout: 12_000 });
+      if (!acceptedSaveResponse(response.data)) throw new Error("invalid vehicle ROI response");
+      acceptSavedRoi(response.data);
+    } catch (cause) {
+      // A 503 may mean that the polygon was persisted while the live monitor
+      // refresh failed. Keep that authoritative value instead of rolling back.
+      const errorResponse = (cause as AxiosError<unknown>).response;
+      const partial = errorResponse?.data;
+      if (errorResponse?.status === 503 && acceptedSaveResponse(partial)) acceptSavedRoi(partial);
+      else setRoiSaveError(apiError(cause));
+    } finally {
+      setSavingRoi(false);
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-sky-700">Камера автоматического вывоза</p>
-        <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-          Камера проходной показывает машину, номер которой используется для автоматического рейса.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-sky-700">
+            Камера автоматического вывоза
+          </p>
+          <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+            Камера проходной показывает машину, номер которой используется для автоматического рейса.
+          </p>
+        </div>
+        {canManageRoi ? (
+          editingRoi ? (
+            <div className="flex flex-wrap items-center gap-2" aria-label="Действия редактора ROI">
+              <Button variant="outline" disabled={savingRoi} onClick={cancelRoiEditor}>
+                <X className="size-4" /> Отмена
+              </Button>
+              <Button disabled={!canSaveRoi} onClick={() => void saveRoi()}>
+                <Check className="size-4" /> {savingRoi ? "Сохранение…" : "Сохранить ROI"}
+              </Button>
+            </div>
+          ) : (
+            <Button
+              variant="outline"
+              disabled={!runtime || runtimeLoading || Boolean(runtimeError)}
+              onClick={startRoiEditor}
+            >
+              <PencilLine className="size-4" /> Изменить ROI
+            </Button>
+          )
+        ) : null}
       </div>
+
+      {editingRoi ? (
+        <p role="status" className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+          Перетащите голубые точки мышью или выберите точку клавишей Tab и двигайте стрелками. Shift + стрелка — крупный
+          шаг.
+        </p>
+      ) : null}
+      {roiSaveError ? (
+        <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+          {roiSaveError}
+        </p>
+      ) : null}
+      {saveNotice ? (
+        <p
+          role="status"
+          className={cn(
+            "rounded-xl border px-4 py-3 text-sm",
+            saveNotice.tone === "success"
+              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+              : "border-amber-200 bg-amber-50 text-amber-900",
+          )}
+        >
+          {saveNotice.message}
+        </p>
+      ) : null}
 
       <section
         aria-label="Камера проходной на вывоз"
@@ -216,11 +399,16 @@ export function VehiclePlateCameraWorkspace() {
         <div className="grid lg:aspect-[44/16] lg:grid-cols-[1.55fr_0.85fr]">
           <div className="relative aspect-video min-h-72 overflow-hidden bg-black lg:aspect-auto lg:min-h-0">
             <CameraStream
-              src={VEHICLE_PLATE_CAMERA}
+              src={VEHICLE_PLATE_VIDEO_STREAM}
               onStateChange={setStreamOnline}
               className="absolute inset-0 size-full object-cover"
             />
-            <VehicleRoiOverlay roi={runtimeError ? null : runtime?.roi} expectedSource={VEHICLE_PLATE_OCR_SOURCE} />
+            <VehicleRoiOverlay
+              roi={overlayRoi}
+              expectedSource={VEHICLE_PLATE_OCR_SOURCE}
+              editable={editingRoi}
+              onPointsChange={setRoiDraft}
+            />
             {!streamOnline && (
               <div className="absolute inset-0 z-[2] flex flex-col items-center justify-center gap-2 bg-black text-white/40">
                 <VideoOff className="size-7" />
@@ -234,7 +422,7 @@ export function VehiclePlateCameraWorkspace() {
                 ПРОХОДНАЯ · ВЫВОЗ
               </span>
               <span className="rounded-full bg-black/45 px-3 py-1.5 text-[10px] font-semibold text-white/65 backdrop-blur-md">
-                Камера {VEHICLE_PLATE_CAMERA} · OCR: {VEHICLE_PLATE_OCR_SOURCE}
+                Камера {VEHICLE_PLATE_CAMERA} · поток/OCR: {VEHICLE_PLATE_OCR_SOURCE}
               </span>
             </div>
 

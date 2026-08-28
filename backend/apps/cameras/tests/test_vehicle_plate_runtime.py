@@ -69,6 +69,14 @@ ROI = {
     "updated_at": "2026-08-28T04:00:00.000+00:00",
 }
 
+SAVED_ROI = {
+    "ok": True,
+    "saved": True,
+    "applied_to_monitor": True,
+    **ROI,
+    "private_debug": r"C:\secret\vehicle-rois.json",
+}
+
 
 @pytest.fixture(autouse=True)
 def ai_key(monkeypatch):
@@ -80,6 +88,14 @@ def grain_viewer(user_with_perms):
     return user_with_perms(
         "vehicle-runtime-grain-viewer",
         codes=["grain.view"],
+    )
+
+
+@pytest.fixture
+def superuser(django_user_model):
+    return django_user_model.objects.create_superuser(
+        username="vehicle-roi-root",
+        password="pass12345",
     )
 
 
@@ -102,10 +118,24 @@ def test_vehicle_runtime_ai_helpers_use_canonical_upstream_paths():
         timeout_seconds=ai.VEHICLE_RUNTIME_PROBE_TIMEOUT,
     )
 
+    update = {"points": ROI["points"], "enabled": True, "source": "main"}
+    with patch.object(ai, "_request", return_value=(200, SAVED_ROI)) as request:
+        assert ai.save_vehicle_roi("cam1", update) == (200, SAVED_ROI)
+    request.assert_called_once_with(
+        "PUT",
+        "/cameras/cam1/vehicle-roi",
+        update,
+        timeout_seconds=ai.VEHICLE_RUNTIME_PROBE_TIMEOUT,
+    )
+
 
 def test_vehicle_roi_rejects_noncanonical_camera_before_network():
     with patch.object(ai, "_request") as request, pytest.raises(ai.AiError):
         ai.vehicle_roi("1")
+    request.assert_not_called()
+
+    with patch.object(ai, "_request") as request, pytest.raises(ai.AiError):
+        ai.save_vehicle_roi("1", {"points": ROI["points"]})
     request.assert_not_called()
 
 
@@ -286,3 +316,171 @@ def test_vehicle_runtime_does_not_forward_upstream_error_detail(
         "code": "ai_error",
     }
     assert "secret" not in repr(response.data)
+
+
+def test_vehicle_roi_put_requires_superuser_and_is_never_cached(
+    api_client,
+    grain_viewer,
+):
+    api_client.force_authenticate(grain_viewer)
+    with patch.object(ai, "save_vehicle_roi") as save:
+        response = api_client.put(
+            "/api/cameras/cam1/vehicle-plate-runtime/",
+            {"points": ROI["points"], "enabled": True, "source": "main"},
+            format="json",
+        )
+
+    assert response.status_code == 403
+    assert response["Cache-Control"] == "no-store"
+    save.assert_not_called()
+
+
+def test_vehicle_roi_put_forwards_body_and_projects_safe_response(
+    api_client,
+    superuser,
+):
+    api_client.force_authenticate(superuser)
+    body = {"points": ROI["points"], "enabled": True, "source": "main"}
+    with patch.object(
+        ai, "save_vehicle_roi", return_value=(200, deepcopy(SAVED_ROI))
+    ) as save:
+        response = api_client.put(
+            "/api/cameras/cam1/vehicle-plate-runtime/", body, format="json"
+        )
+
+    assert response.status_code == 200
+    assert response["Cache-Control"] == "no-store"
+    assert response.data == {
+        "saved": True,
+        "applied_to_monitor": True,
+        "roi": ROI,
+    }
+    assert "secret" not in repr(response.data)
+    save.assert_called_once_with("cam1", body)
+
+
+def test_vehicle_roi_put_preserves_saved_refresh_pending_response(
+    api_client,
+    superuser,
+):
+    api_client.force_authenticate(superuser)
+    pending = {
+        **deepcopy(SAVED_ROI),
+        "applied_to_monitor": False,
+        "error": r"private monitor failure at C:\secret",
+    }
+    with patch.object(ai, "save_vehicle_roi", return_value=(503, pending)):
+        response = api_client.put(
+            "/api/cameras/cam1/vehicle-plate-runtime/",
+            {"points": ROI["points"], "enabled": True, "source": "main"},
+            format="json",
+        )
+
+    assert response.status_code == 503
+    assert response["Cache-Control"] == "no-store"
+    assert response.data["saved"] is True
+    assert response.data["applied_to_monitor"] is False
+    assert response.data["roi"] == ROI
+    assert response.data["code"] == "roi_saved_refresh_pending"
+    assert "secret" not in repr(response.data)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"points": [[0, 0], [1, 1]]},
+        {"points": [[0, 0], [0.5, 0.5], [1, 1]]},
+        {"points": [[False, 0], [1, 0], [1, 1]]},
+        {"points": [[0, 0], [1.1, 0], [1, 1]]},
+        {"points": [[0, 0], [1, 0], [1, 1]], "enabled": 1},
+        {"points": [[0, 0], [1, 0], [1, 1]], "source": 1},
+        {"points": [[0, 0], [1, 0], [1, 1]], "source": "sub"},
+        {
+            "points": [[0, 0], [1, 0], [1, 1]],
+            "coordinate_space": "normalized",
+        },
+    ],
+)
+def test_vehicle_roi_put_rejects_invalid_body_before_network(
+    api_client,
+    superuser,
+    body,
+):
+    api_client.force_authenticate(superuser)
+    with patch.object(ai, "save_vehicle_roi") as save:
+        response = api_client.put(
+            "/api/cameras/cam1/vehicle-plate-runtime/", body, format="json"
+        )
+
+    assert response.status_code == 400
+    assert response["Cache-Control"] == "no-store"
+    assert response.data == {
+        "detail": "Некорректная область распознавания",
+        "code": "invalid_vehicle_roi",
+    }
+    save.assert_not_called()
+
+
+def test_vehicle_roi_put_defaults_omitted_source_to_main(
+    api_client,
+    superuser,
+):
+    api_client.force_authenticate(superuser)
+    body = {"points": ROI["points"], "enabled": True}
+    expected = {**body, "source": "main"}
+    with patch.object(
+        ai, "save_vehicle_roi", return_value=(200, deepcopy(SAVED_ROI))
+    ) as save:
+        response = api_client.put(
+            "/api/cameras/cam1/vehicle-plate-runtime/", body, format="json"
+        )
+
+    assert response.status_code == 200
+    save.assert_called_once_with("cam1", expected)
+
+
+def test_vehicle_roi_put_maps_malformed_upstream_to_safe_502(
+    api_client,
+    superuser,
+):
+    api_client.force_authenticate(superuser)
+    malformed = {
+        **deepcopy(SAVED_ROI),
+        "points": "private malformed response",
+        "error": r"C:\secret\vehicle-rois.json",
+    }
+    with patch.object(ai, "save_vehicle_roi", return_value=(200, malformed)):
+        response = api_client.put(
+            "/api/cameras/cam1/vehicle-plate-runtime/",
+            {"points": ROI["points"], "enabled": True, "source": "main"},
+            format="json",
+        )
+
+    assert response.status_code == 502
+    assert response["Cache-Control"] == "no-store"
+    assert response.data == {
+        "detail": "AI-сервис вернул некорректный результат сохранения ROI",
+        "code": "ai_invalid_response",
+    }
+    assert "secret" not in repr(response.data)
+
+
+def test_vehicle_roi_put_rejects_saved_response_for_non_main_source(
+    api_client,
+    superuser,
+):
+    api_client.force_authenticate(superuser)
+    malformed = {**deepcopy(SAVED_ROI), "source": "sub"}
+    with patch.object(ai, "save_vehicle_roi", return_value=(200, malformed)):
+        response = api_client.put(
+            "/api/cameras/cam1/vehicle-plate-runtime/",
+            {"points": ROI["points"], "enabled": True, "source": "main"},
+            format="json",
+        )
+
+    assert response.status_code == 502
+    assert response.data == {
+        "detail": "AI-сервис вернул некорректный результат сохранения ROI",
+        "code": "ai_invalid_response",
+    }
