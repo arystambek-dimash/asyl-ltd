@@ -129,6 +129,39 @@ The internal CRM journal is available through `GET /api/vehicle-plate-events`
 to staff with `events.view`; it supports the documented date, camera, plate and
 pagination filters. It contains metadata only.
 
+### Operator diagnostics and ROI
+
+The export-camera tab in `/grain` reads
+`GET /api/cameras/cam1/vehicle-plate-runtime/` every five seconds while the tab
+is visible; callers need `grain.view`. The first request settles before polling
+starts, and each camera-PC probe has a two-second timeout. The backend obtains
+the live `/vehicle-number` and
+`/cameras/cam1/vehicle-roi` documents from camera-PC, validates them and returns
+only a `no-store` projection. Model paths, camera credentials, raw capture
+state, active-visit identifiers, recognized plate text and `last_error` never
+reach the browser.
+
+The video and AI badges are independent. `ВИДЕО: В ЭФИРЕ` confirms only the
+WebRTC stream; the AI badge separately reports whether the detector, shared
+OCR, automatic monitor, `cam1/main` assignment, ROI and CRM delivery are ready.
+The blue polygon is the current normalized camera-PC ROI, aligned to the actual
+`object-cover` video pixels.
+
+The counters are cumulative since the monitor started. Watch which value stops
+increasing during a real stopped-truck check, from left to right:
+
+1. `Кадры` increases when the `main` monitor receives frames.
+2. `Номера` increases when the vehicle detector finds a plate bbox.
+3. `Стоп` increases only after the plate centre is inside ROI and passes the
+   stationary gate.
+4. `OCR` increases when the cropped plate reaches PaddleOCR.
+5. `Готово` increases after the configured matching-vote consensus confirms a
+   normalized Kazakhstan plate.
+
+The UI deliberately does not provide ROI editing. Persist geometry through the
+camera-PC ROI contract and validate it against a real stopped vehicle before
+enabling automatic export.
+
 ## Automatic truck-export weighing
 
 Production can apply fresh `cam1` / `main` plate events directly to the truck

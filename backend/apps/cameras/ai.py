@@ -32,6 +32,7 @@ MODEL_TEST_CONTENT_TYPES = frozenset(
 
 WAGON_PLATE_TIMEOUT = 15
 WAGON_PLATE_MAX_BYTES = 12 * 1024 * 1024
+VEHICLE_RUNTIME_PROBE_TIMEOUT = 2.0
 
 ALWAYS_ON_CACHE_KEY = "cameras:always-on-status:v1"
 ALWAYS_ON_TTL = 5
@@ -248,6 +249,30 @@ def save_counting_line(cam: str, payload) -> tuple[int, dict]:
         "PUT",
         f"/cameras/{camera_id(cam)}/line",
         validate_counting_line(payload),
+    )
+
+
+def vehicle_number_info() -> dict:
+    """Return the live vehicle detector/OCR capability document."""
+    return (
+        _call(
+            "GET",
+            "/vehicle-number",
+            timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
+        )
+        or {}
+    )
+
+
+def vehicle_roi(cam: str) -> dict:
+    """Return one camera's canonical vehicle-plate ROI."""
+    return (
+        _call(
+            "GET",
+            f"/cameras/{camera_id(cam)}/vehicle-roi",
+            timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
+        )
+        or {}
     )
 
 

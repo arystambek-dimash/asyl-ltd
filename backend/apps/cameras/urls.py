@@ -27,6 +27,7 @@ from .views import (
     ModelTestDetailView,
     ShippingBoardSettingsView,
     WagonNumberCameraSettingsView,
+    VehiclePlateRuntimeView,
 )
 
 urlpatterns = [
@@ -87,6 +88,11 @@ urlpatterns = [
         name="model-test-detail",
     ),
     path("cameras/<str:cam>/counting-line", CameraCountingLineView.as_view()),
+    path(
+        "cameras/<str:cam>/vehicle-plate-runtime/",
+        VehiclePlateRuntimeView.as_view(),
+        name="vehicle-plate-runtime",
+    ),
     path("cameras/<str:cam>/ai/", CameraAiView.as_view()),
     path("cameras/<str:cam>/ai/reset/", CameraAiResetView.as_view()),
 ]
