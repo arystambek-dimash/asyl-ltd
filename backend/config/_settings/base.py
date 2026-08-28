@@ -395,6 +395,25 @@ def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int
     return value
 
 
+# Browser uploads are streamed through Django to the camera-PC model-test API.
+# Keep this edge limit aligned with deploy/nginx/conf.d/asyl-ltd.conf; the UI
+# receives the lower of this value and the camera-PC's advertised limit.
+AI_MODEL_TEST_MAX_UPLOAD_BYTES = _bounded_int_env(
+    "AI_MODEL_TEST_MAX_UPLOAD_BYTES",
+    512 * 1024 * 1024,
+    1024,
+    10 * 1024 * 1024 * 1024,
+)
+try:
+    AI_MODEL_TEST_UPLOAD_TIMEOUT = float(
+        os.environ.get("AI_MODEL_TEST_UPLOAD_TIMEOUT", "600")
+    )
+except (TypeError, ValueError):
+    AI_MODEL_TEST_UPLOAD_TIMEOUT = 600.0
+if not 1 <= AI_MODEL_TEST_UPLOAD_TIMEOUT <= 86400:
+    AI_MODEL_TEST_UPLOAD_TIMEOUT = 600.0
+
+
 # Dedicated inbound credential for vehicle-plate events. It deliberately does
 # not reuse AI_SERVICE_API_KEY (outbound backend -> camera-PC). An empty value
 # keeps the webhook fail-closed until provisioned.
