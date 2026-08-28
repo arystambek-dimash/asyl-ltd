@@ -439,6 +439,16 @@ final_total, last_status JSON)` +
   `ai_error`, `ai_processor_stopped`.
 - Права: смотреть — `IsStaff`, управлять — `HasPerm("shipping.load")`.
 
+#### Лаборатория моделей (только superuser)
+
+`/management/model-tests` загружает локальное видео через потоковый backend
+proxy и запускает только заранее разрешённый bundle на camera-PC. Во время
+расчёта видны upload/processing progress, после завершения — totals,
+distributions, latency и crossing events с переходом к таймкоду и bbox.
+Секрет AI-сервиса и пути к моделям в браузер не попадают. Контракт, лимиты,
+настройка candidate bundle и честные ограничения live-режима описаны в
+[deploy/model-tests.md](deploy/model-tests.md).
+
 #### Health-мониторинг и алерты
 
 Отдельный контейнер **camera-monitor** (`manage.py monitor_cameras`) раз в
@@ -486,6 +496,7 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 | `/train` | устаревшая ссылка; сервер перенаправляет на единый пост `/shipping` |
 | `/reports` | выручка и поступления по валютам, период и фильтр по отделу |
 | `/management/employees` | сотрудники, отделы и персональные системные права |
+| `/management/model-tests` | superuser-only лаборатория: drag-and-drop видео, bundle/config, live-прогресс и итоговые события моделей |
 | `/events` | журнал событий с фильтрами, группировка по дням |
 | `/portal/catalog`, `/portal/orders`, `…/new`, `…/[id]` | портал клиента: каталог с остатками, свои заказы, оплата card/kaspi, номер машины, запрос долга |
 

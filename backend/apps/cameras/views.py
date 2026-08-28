@@ -36,6 +36,7 @@ from .api_views.history import (
     CameraAiSessionHistoryView,
     CameraAiSessionListView,
 )
+from .api_views.model_tests import ModelTestCollectionView, ModelTestDetailView
 from .api_views.operations import (
     AlwaysOnAnalyticsArchiveView,
     AlwaysOnAnalyticsSubtractView,
@@ -80,6 +81,8 @@ __all__ = [
     "MonoblockCameraSettingsView",
     "MonoblockDeviceDetailView",
     "MonoblockDeviceListView",
+    "ModelTestCollectionView",
+    "ModelTestDetailView",
     "ShippingBoardSettingsView",
     "WagonNumberCameraSettingsView",
 ]

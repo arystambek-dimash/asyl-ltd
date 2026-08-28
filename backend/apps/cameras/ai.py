@@ -7,6 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from numbers import Real
 
 from django.conf import settings
@@ -18,6 +19,16 @@ TIMEOUT = settings.AI_SERVICE_TIMEOUT
 GO2RTC_API = settings.GO2RTC_API_URL
 MAX_JSON_RESPONSE_BYTES = 512 * 1024
 MAX_ERROR_JSON_RESPONSE_BYTES = 64 * 1024
+MODEL_TEST_UPLOAD_CHUNK_BYTES = 1024 * 1024
+MODEL_TEST_CONTENT_TYPES = frozenset(
+    {
+        "application/octet-stream",
+        "video/mp4",
+        "video/quicktime",
+        "video/x-matroska",
+        "video/x-msvideo",
+    }
+)
 
 WAGON_PLATE_TIMEOUT = 15
 WAGON_PLATE_MAX_BYTES = 12 * 1024 * 1024
@@ -46,6 +57,10 @@ class AiError(Exception):
         self.status = status
         self.detail = detail
         super().__init__(detail)
+
+
+class ModelTestUploadInvalid(AiError):
+    """The browser body ended before its declared Content-Length."""
 
 
 def enabled() -> bool:
@@ -234,6 +249,109 @@ def save_counting_line(cam: str, payload) -> tuple[int, dict]:
         f"/cameras/{camera_id(cam)}/line",
         validate_counting_line(payload),
     )
+
+
+def model_test_info() -> tuple[int, dict]:
+    """Return the camera-PC model-test capability document unchanged."""
+    return _request("GET", "/model-tests")
+
+
+def model_test_status(
+    job_id: str,
+    *,
+    after_event: int = 0,
+    limit: int = 100,
+) -> tuple[int, dict]:
+    query = urllib.parse.urlencode({"after_event": after_event, "limit": limit})
+    return _request("GET", f"/model-tests/{job_id}?{query}")
+
+
+def _model_test_connection(timeout_seconds: float):
+    try:
+        parsed = urllib.parse.urlsplit(AI_URL)
+        port = parsed.port
+    except ValueError as exc:
+        raise AiUnavailable("AI_SERVICE_URL имеет недопустимый формат") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise AiUnavailable("AI_SERVICE_URL имеет недопустимый формат")
+    connection_class = (
+        http.client.HTTPSConnection
+        if parsed.scheme == "https"
+        else http.client.HTTPConnection
+    )
+    connection = connection_class(
+        parsed.hostname,
+        port,
+        timeout=timeout_seconds,
+    )
+    base_path = parsed.path.rstrip("/")
+    return connection, f"{base_path}/model-tests"
+
+
+def upload_model_test(
+    body_stream,
+    *,
+    content_length: int,
+    content_type: str,
+    query: Mapping[str, object],
+) -> tuple[int, dict]:
+    """Stream one browser video to the trusted camera-PC without buffering.
+
+    The camera-PC deliberately requires a raw body with an exact length.  This
+    path is kept separate from ``_request`` so normal JSON calls cannot
+    accidentally read or duplicate a hundreds-of-megabytes video in memory.
+    """
+    query_string = urllib.parse.urlencode(query)
+    connection, path = _model_test_connection(settings.AI_MODEL_TEST_UPLOAD_TIMEOUT)
+    if query_string:
+        path = f"{path}?{query_string}"
+
+    try:
+        connection.putrequest("POST", path, skip_accept_encoding=True)
+        connection.putheader("X-Api-Key", AI_KEY)
+        connection.putheader("Content-Type", content_type)
+        connection.putheader("Content-Length", str(content_length))
+        connection.endheaders()
+
+        remaining = content_length
+        while remaining:
+            chunk = body_stream.read(min(MODEL_TEST_UPLOAD_CHUNK_BYTES, remaining))
+            if not isinstance(chunk, (bytes, bytearray, memoryview)) or not chunk:
+                raise ModelTestUploadInvalid(
+                    400, "Загрузка видео прервалась до конца файла"
+                )
+            if len(chunk) > remaining:
+                raise ModelTestUploadInvalid(
+                    400,
+                    "Получено больше данных, чем указано в Content-Length",
+                )
+            connection.send(chunk)
+            remaining -= len(chunk)
+
+        response = connection.getresponse()
+        with closing(response):
+            status = response.status
+            payload = _read_json_object(
+                response,
+                MAX_ERROR_JSON_RESPONSE_BYTES
+                if status >= 400
+                else MAX_JSON_RESPONSE_BYTES,
+                error_status=status if status >= 400 else None,
+            )
+            return status, payload
+    except (AiError, AiUnavailable):
+        raise
+    except (http.client.HTTPException, TimeoutError, OSError) as exc:
+        raise AiUnavailable(str(exc)) from exc
+    finally:
+        connection.close()
 
 
 def status(cam: str) -> dict | None:
