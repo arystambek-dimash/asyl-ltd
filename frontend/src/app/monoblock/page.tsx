@@ -36,7 +36,12 @@ import { playableCameras, type CameraFeed } from "@/components/camera-wall";
 import { CameraStream } from "@/components/camera-stream";
 import { CameraCountingLineOverlay } from "@/components/camera-counting-line-overlay";
 import { DetectionOverlay } from "@/components/detection-overlay";
-import { AlwaysOnDayRunLog, AlwaysOnProductionPanel } from "@/components/monoblock/always-on-production-panel";
+import {
+  AlwaysOnDayColorViewToggle,
+  AlwaysOnDayRunLog,
+  AlwaysOnProductionPanel,
+  type AlwaysOnDayColorView,
+} from "@/components/monoblock/always-on-production-panel";
 import { RequirePerm } from "@/components/require-perm";
 import { ShipmentLauncher } from "@/components/shipping/shipment-launcher";
 import { Button } from "@/components/ui/button";
@@ -64,7 +69,6 @@ import type {
   AlwaysOnProcessorStatus,
   AlwaysOnProductMapping,
   AlwaysOnProductionPayload,
-  AlwaysOnProductionRun,
   AlwaysOnStockBatch,
   MonoblockCameraSettings,
   MonoblockDevice,
@@ -721,8 +725,7 @@ function AlwaysOnCard({
   const [productionLoading, setProductionLoading] = useState(false);
   const [productionError, setProductionError] = useState<string | null>(null);
   const [productionSaving, setProductionSaving] = useState(false);
-  const [selectedProductionRuns, setSelectedProductionRuns] = useState<AlwaysOnProductionRun[] | null>(null);
-  const [selectedProductionTimezone, setSelectedProductionTimezone] = useState("Asia/Almaty");
+  const [selectedProductionDay, setSelectedProductionDay] = useState<AlwaysOnProductionPayload | null>(null);
   const [selectedProductionLoading, setSelectedProductionLoading] = useState(false);
   const [selectedProductionError, setSelectedProductionError] = useState<string | null>(null);
   const [selectedProductionReload, setSelectedProductionReload] = useState(0);
@@ -736,6 +739,7 @@ function AlwaysOnCard({
   const [archiveError, setArchiveError] = useState("");
   const [archiving, setArchiving] = useState(false);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [selectedDayColorView, setSelectedDayColorView] = useState<AlwaysOnDayColorView>("algorithm");
   const current = open ? liveProcessor : processor;
   const countingLine = resolveCountingLine(
     {
@@ -761,6 +765,44 @@ function AlwaysOnCard({
   // цифры сходятся. Локальный расчёт остаётся на случай старого ответа.
   const selectedColors = selectedPoint?.colors?.length ? selectedPoint.colors : dayColorBreakdown(selectedPoint);
   const selectedBrands = selectedPoint?.brands ?? [];
+  // Дневная детализация приходит отдельным запросом. Проверка даты не даёт
+  // на один рендер показать ответ предыдущего столбика после быстрого клика.
+  const selectedDayProduction =
+    selectedProductionDay?.selected_day === selectedPoint?.day ? selectedProductionDay : null;
+  const selectedRawRuns = selectedDayProduction?.day_runs ?? null;
+  const smoothing = selectedDayProduction?.run_smoothing;
+  const serverAlgorithmRuns = selectedDayProduction?.algorithm_day_runs;
+  const algorithmViewAvailable = Boolean(serverAlgorithmRuns && smoothing);
+  const selectedAlgorithmRuns = serverAlgorithmRuns && smoothing ? serverAlgorithmRuns : selectedRawRuns;
+  const rawRunsTotal = selectedRawRuns?.reduce((sum, run) => sum + run.model_bags, 0);
+  const runsMatchSelectedAnalytics = Boolean(
+    selectedPoint &&
+    selectedRawRuns &&
+    !selectedRawRuns.some((run) => run.is_partial_for_day) &&
+    rawRunsTotal === selectedPoint.model_total &&
+    (!smoothing ||
+      (smoothing.raw_model_total === selectedPoint.model_total &&
+        smoothing.algorithm_model_total === selectedPoint.model_total)),
+  );
+  const selectedVisibleRuns = selectedDayProduction
+    ? runsMatchSelectedAnalytics
+      ? selectedDayColorView === "algorithm"
+        ? selectedAlgorithmRuns
+        : selectedRawRuns
+      : []
+    : null;
+  const runMismatchMessage =
+    selectedDayProduction && !runsMatchSelectedAnalytics
+      ? "Периоды не показаны: журнал не совпадает с выбранным срезом аналитики — например, часть дня уже перенесена в архив."
+      : null;
+  // Старые интервалы могут пересекать границу дня, а append-only журнал —
+  // границу переноса в архив. В обоих случаях не смешиваем разные срезы.
+  const selectedVisibleColors =
+    runsMatchSelectedAnalytics && smoothing
+      ? selectedDayColorView === "algorithm" && algorithmViewAvailable
+        ? smoothing.algorithm_colors
+        : smoothing.raw_colors
+      : selectedColors;
   const correctionAvailable = currentDaily?.colors?.find((item) => item.color === correctionColor)?.total ?? 0;
 
   useEffect(() => {
@@ -773,6 +815,10 @@ function AlwaysOnCard({
   useEffect(() => {
     if (!open) setSelectedDay(null);
   }, [open]);
+
+  useEffect(() => {
+    setSelectedDayColorView("algorithm");
+  }, [selectedDay]);
 
   useEffect(() => {
     if (!open) return;
@@ -898,7 +944,7 @@ function AlwaysOnCard({
   // пока окно открыто — так строка «идёт сейчас» и количество не замирают.
   useEffect(() => {
     if (!open || modalView !== "analytics" || !selectedDay) {
-      setSelectedProductionRuns(null);
+      setSelectedProductionDay(null);
       setSelectedProductionError(null);
       setSelectedProductionLoading(false);
       return;
@@ -910,7 +956,7 @@ function AlwaysOnCard({
 
     const pull = async (showLoader: boolean) => {
       if (showLoader) {
-        setSelectedProductionRuns(null);
+        setSelectedProductionDay(null);
         setSelectedProductionLoading(true);
       }
       setSelectedProductionError(null);
@@ -919,8 +965,7 @@ function AlwaysOnCard({
           `/cameras/always-on-production/?camera=${encodeURIComponent(processor.cam)}&day=${encodeURIComponent(selectedDay)}`,
         );
         if (disposed) return;
-        setSelectedProductionRuns(response.data.day_runs);
-        setSelectedProductionTimezone(response.data.timezone || "Asia/Almaty");
+        setSelectedProductionDay(response.data);
       } catch (cause) {
         if (!disposed) setSelectedProductionError(apiError(cause));
       } finally {
@@ -1465,13 +1510,20 @@ function AlwaysOnCard({
                   <h4 className="text-[15px] font-semibold tracking-tight text-slate-900">
                     {fullDay(selectedPoint.day)}
                   </h4>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedDay(null)}
-                    className="ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-slate-400 transition hover:bg-slate-50 hover:text-slate-700"
-                  >
-                    Закрыть
-                  </button>
+                  <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                    <AlwaysOnDayColorViewToggle
+                      view={selectedDayColorView}
+                      nMin={smoothing?.n_min ?? 10}
+                      onChange={setSelectedDayColorView}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setSelectedDay(null)}
+                      className="rounded-lg px-2 py-1 text-xs font-semibold text-slate-400 transition hover:bg-slate-50 hover:text-slate-700"
+                    >
+                      Закрыть
+                    </button>
+                  </div>
                 </div>
 
                 <div className="mt-4 grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-4">
@@ -1490,12 +1542,16 @@ function AlwaysOnCard({
                   />
                 </div>
 
-                {selectedColors.length > 0 && (
+                {selectedVisibleColors.length > 0 && (
                   <>
                     <Hairline className="my-5" />
                     <div className="grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
-                      {selectedColors.map((item) => (
-                        <div key={item.color}>
+                      {selectedVisibleColors.map((item) => (
+                        <div
+                          key={item.color}
+                          role="group"
+                          aria-label={`${colorMeta(item.color).label}: ${item.total} мешков`}
+                        >
                           <div className="flex items-center gap-2">
                             <ColorDot className={colorMeta(item.color).dot} />
                             <span className="text-xs font-medium text-slate-500">{colorMeta(item.color).label}</span>
@@ -1538,10 +1594,11 @@ function AlwaysOnCard({
 
                 <AlwaysOnDayRunLog
                   day={selectedPoint.day}
-                  runs={selectedProductionRuns}
-                  timezone={selectedProductionTimezone}
+                  runs={selectedVisibleRuns}
+                  timezone={selectedDayProduction?.timezone || "Asia/Almaty"}
                   loading={selectedProductionLoading}
                   error={selectedProductionError}
+                  unavailableReason={runMismatchMessage}
                   onRetry={() => setSelectedProductionReload((value) => value + 1)}
                 />
               </Panel>

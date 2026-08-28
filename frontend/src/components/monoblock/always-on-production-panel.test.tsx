@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AlwaysOnProductionPayload, AlwaysOnProductionRun } from "@/lib/types";
-import { AlwaysOnDayRunLog, AlwaysOnProductionPanel } from "./always-on-production-panel";
+import { AlwaysOnDayColorViewToggle, AlwaysOnDayRunLog, AlwaysOnProductionPanel } from "./always-on-production-panel";
 
 function makeRun(overrides: Partial<AlwaysOnProductionRun>): AlwaysOnProductionRun {
   return {
@@ -187,6 +187,23 @@ describe("AlwaysOnProductionPanel", () => {
 });
 
 describe("AlwaysOnDayRunLog", () => {
+  it("не смешивает журнал с несовместимым срезом аналитики", () => {
+    render(
+      <AlwaysOnDayRunLog
+        day="2026-08-16"
+        timezone="UTC"
+        loading={false}
+        error={null}
+        unavailableReason="Периоды не показаны: часть дня уже перенесена в архив."
+        runs={[makeRun({ color: "red", model_bags: 140 })]}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("часть дня уже перенесена в архив");
+    expect(screen.queryByText("140")).not.toBeInTheDocument();
+    expect(screen.queryByText("Красный")).not.toBeInTheDocument();
+  });
+
   it("показывает точное время, активный период и приблизительную запись выбранного дня", () => {
     render(
       <AlwaysOnDayRunLog
@@ -315,5 +332,23 @@ describe("AlwaysOnDayRunLog", () => {
     expect(within(rows[3]).getByText("3")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Сглажено" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Сырой" })).not.toBeInTheDocument();
+  });
+});
+
+describe("AlwaysOnDayColorViewToggle", () => {
+  it("остаётся видимым и сообщает о выборе сырых данных", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const { rerender } = render(<AlwaysOnDayColorViewToggle view="algorithm" nMin={10} onChange={onChange} />);
+
+    expect(screen.getByRole("button", { name: "Алгоритм" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Сырые данные" })).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(screen.getByRole("button", { name: "Сырые данные" }));
+    expect(onChange).toHaveBeenCalledWith("raw");
+
+    rerender(<AlwaysOnDayColorViewToggle view="raw" nMin={10} onChange={onChange} />);
+    expect(screen.getByRole("button", { name: "Сырые данные" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Алгоритм" })).toHaveAttribute("aria-pressed", "false");
   });
 });

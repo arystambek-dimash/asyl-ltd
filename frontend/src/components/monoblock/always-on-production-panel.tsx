@@ -69,11 +69,69 @@ interface AlwaysOnDayRunLogProps {
   timezone: string;
   loading: boolean;
   error?: string | null;
+  unavailableReason?: string | null;
   onRetry?: () => void;
 }
 
+export type AlwaysOnDayColorView = "algorithm" | "raw";
+
+export function AlwaysOnDayColorViewToggle({
+  view,
+  nMin,
+  onChange,
+}: {
+  view: AlwaysOnDayColorView;
+  nMin: number;
+  onChange: (view: AlwaysOnDayColorView) => void;
+}) {
+  return (
+    <>
+      <span className="text-[11px] font-semibold text-slate-400">Цвета:</span>
+      <InfoHint
+        text={`Алгоритм объединяет соседние одинаковые периоды и меняет короткий период (< ${nMin} меш.) только между двумя периодами одного другого цвета. Сырые данные не меняются.`}
+      />
+      <div
+        role="group"
+        aria-label="Отображение цветовой аналитики"
+        className="inline-flex rounded-lg bg-slate-100 p-0.5"
+      >
+        <button
+          type="button"
+          aria-pressed={view === "algorithm"}
+          onClick={() => onChange("algorithm")}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-[11px] font-semibold transition",
+            view === "algorithm" ? "bg-white text-slate-800 shadow-sm" : "text-slate-400 hover:text-slate-600",
+          )}
+        >
+          Алгоритм
+        </button>
+        <button
+          type="button"
+          aria-pressed={view === "raw"}
+          onClick={() => onChange("raw")}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-[11px] font-semibold transition",
+            view === "raw" ? "bg-white text-slate-800 shadow-sm" : "text-slate-400 hover:text-slate-600",
+          )}
+        >
+          Сырые данные
+        </button>
+      </div>
+    </>
+  );
+}
+
 /** Компактная лента для карточки выбранного дня в аналитике. */
-export function AlwaysOnDayRunLog({ day, runs, timezone, loading, error, onRetry }: AlwaysOnDayRunLogProps) {
+export function AlwaysOnDayRunLog({
+  day,
+  runs,
+  timezone,
+  loading,
+  error,
+  unavailableReason,
+  onRetry,
+}: AlwaysOnDayRunLogProps) {
   const orderedRuns = useMemo(
     () =>
       [...(runs ?? [])].sort(
@@ -87,7 +145,7 @@ export function AlwaysOnDayRunLog({ day, runs, timezone, loading, error, onRetry
     <section className="mt-4">
       <div className="flex flex-wrap items-center gap-2">
         <h5 className="text-[13px] font-semibold tracking-tight text-slate-800">Периоды цветов</h5>
-        {runs !== null && !loading && !error && (
+        {runs !== null && !loading && !error && !unavailableReason && (
           <span className="text-[11px] font-medium tabular-nums text-slate-400">{orderedRuns.length}</span>
         )}
       </div>
@@ -109,6 +167,14 @@ export function AlwaysOnDayRunLog({ day, runs, timezone, loading, error, onRetry
               <RefreshCw className="size-3" /> Повторить
             </button>
           )}
+        </div>
+      ) : unavailableReason ? (
+        <div
+          role="status"
+          className="mt-3 flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-3 text-xs text-amber-800"
+        >
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <span>{unavailableReason}</span>
         </div>
       ) : orderedRuns.length ? (
         <div className="mt-2 max-h-[19rem] divide-y divide-slate-100 overflow-y-auto overscroll-contain">

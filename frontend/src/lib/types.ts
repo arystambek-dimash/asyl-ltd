@@ -695,6 +695,18 @@ export interface AlwaysOnProductionRun {
   ends_after_day?: boolean;
   is_partial_for_day?: boolean;
 }
+export interface AlwaysOnRunSmoothing {
+  n_min: number;
+  changed: boolean;
+  raw_run_count: number;
+  algorithm_run_count: number;
+  raw_model_total: number;
+  algorithm_model_total: number;
+  raw_model_per_color: Record<string, number>;
+  algorithm_model_per_color: Record<string, number>;
+  raw_colors: AlwaysOnColorAnalytics[];
+  algorithm_colors: AlwaysOnColorAnalytics[];
+}
 export interface AlwaysOnProductMapping {
   color: string;
   product: number | null;
@@ -748,6 +760,10 @@ export interface AlwaysOnProductionPayload {
   selected_day: string | null;
   /** Полный журнал выбранного дня; `runs` остаётся короткой общей лентой. */
   day_runs: AlwaysOnProductionRun[];
+  /** Те же периоды после read-only фильтра коротких «сэндвичей»; сырой журнал не меняется. */
+  algorithm_day_runs?: AlwaysOnProductionRun[];
+  /** Сравнение сырого и алгоритмического вида выбранного дня. */
+  run_smoothing?: AlwaysOnRunSmoothing;
   fully_configured: boolean;
   available_colors: string[];
   mappings: AlwaysOnProductMapping[];

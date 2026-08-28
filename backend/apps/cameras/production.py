@@ -41,6 +41,7 @@ RUN_GAP = timedelta(minutes=5)
 # normal monitor starts without making operators wait materially longer.
 EVENT_SETTLE_DELAY = timedelta(minutes=1)
 BASE_COLORS = ("red", "green", "blue")
+RUN_SMOOTHING_N_MIN = 10
 COLOR_LABELS = {
     "red": "Красный",
     "green": "Зелёный",
@@ -351,6 +352,142 @@ def _run_payload(
     return result
 
 
+def _is_run_smoothing_barrier(run: dict) -> bool:
+    """Return whether a display run must remain an exact, isolated anchor.
+
+    A partial legacy run carries the bag count for the whole cross-midnight
+    interval rather than only the selected calendar day.  Approximate rows do
+    not preserve an authoritative colour sequence either.  Neither is safe to
+    merge or use as a sandwich neighbour.
+    """
+
+    return bool(run.get("is_partial_for_day") or run.get("is_approximate"))
+
+
+def _merge_algorithm_runs(left: dict, right: dict) -> dict:
+    """Combine adjacent display runs without mutating either source payload."""
+
+    merged = dict(left)
+    merged["model_bags"] = int(left["model_bags"]) + int(right["model_bags"])
+    merged["last_counted_at"] = right["last_counted_at"]
+    merged["ended_at"] = right.get("ended_at")
+    merged["status"] = (
+        "active"
+        if left.get("status") == "active" or right.get("status") == "active"
+        else "closed"
+    )
+    if "ends_after_day" in left or "ends_after_day" in right:
+        merged["ends_after_day"] = bool(
+            left.get("ends_after_day") or right.get("ends_after_day")
+        )
+    return merged
+
+
+def _coalesce_algorithm_runs(runs: list[dict]) -> list[dict]:
+    """Coalesce adjacent equal colours, stopping at unreliable run barriers."""
+
+    result: list[dict] = []
+    for source in runs:
+        run = dict(source)
+        if (
+            result
+            and result[-1].get("color") == run.get("color")
+            and not _is_run_smoothing_barrier(result[-1])
+            and not _is_run_smoothing_barrier(run)
+        ):
+            result[-1] = _merge_algorithm_runs(result[-1], run)
+        else:
+            result.append(run)
+    return result
+
+
+def smooth_day_runs(
+    raw_runs: list[dict],
+    *,
+    n_min: int = RUN_SMOOTHING_N_MIN,
+) -> list[dict]:
+    """Return the supplied sandwich smoother as a read-only display view.
+
+    Normal runs follow the operator-provided algorithm exactly: adjacent equal
+    colours are first coalesced; then the smallest unlocked run below ``n_min``
+    is recoloured only when both neighbours have the same other colour.  A run
+    at an edge or party boundary is locked and retained.
+
+    The durable production rows remain the raw audit/warehouse source.  This
+    helper works on copies and additionally treats partial/approximate legacy
+    rows as hard barriers because their sequence or selected-day bag count is
+    not exact enough for smoothing.
+    """
+
+    runs = _coalesce_algorithm_runs(raw_runs)
+    locked: set[tuple[int, object, int]] = set()
+    while True:
+        candidates = [
+            index
+            for index, run in enumerate(runs)
+            if not _is_run_smoothing_barrier(run)
+            and int(run["model_bags"]) < n_min
+            and (index, run.get("color"), int(run["model_bags"])) not in locked
+        ]
+        if not candidates:
+            break
+
+        index = min(
+            candidates, key=lambda candidate: int(runs[candidate]["model_bags"])
+        )
+        run = runs[index]
+        color = run.get("color")
+        bags = int(run["model_bags"])
+        previous = runs[index - 1] if index > 0 else None
+        following = runs[index + 1] if index < len(runs) - 1 else None
+        if (
+            previous is not None
+            and following is not None
+            and not _is_run_smoothing_barrier(previous)
+            and not _is_run_smoothing_barrier(following)
+            and previous.get("color") == following.get("color")
+            and previous.get("color") != color
+        ):
+            recolored = dict(run)
+            recolored["color"] = previous["color"]
+            runs[index] = recolored
+            runs = _coalesce_algorithm_runs(runs)
+        else:
+            locked.add((index, color, bags))
+    return runs
+
+
+def _run_color_totals(runs: list[dict]) -> dict[str, int]:
+    totals: dict[str, int] = defaultdict(int)
+    for run in runs:
+        totals[str(run["color"])] += int(run["model_bags"])
+    return dict(sorted(totals.items()))
+
+
+def _run_smoothing_payload(raw_runs: list[dict]) -> tuple[list[dict], dict]:
+    algorithm_runs = smooth_day_runs(raw_runs)
+    raw_per_color = _run_color_totals(raw_runs)
+    algorithm_per_color = _run_color_totals(algorithm_runs)
+
+    # Reuse the analytics endpoint's largest-remainder rounding so toggling the
+    # selected-day cards cannot produce a different percentage convention.
+    from .analytics import _color_payload
+
+    metadata = {
+        "n_min": RUN_SMOOTHING_N_MIN,
+        "changed": algorithm_runs != raw_runs,
+        "raw_run_count": len(raw_runs),
+        "algorithm_run_count": len(algorithm_runs),
+        "raw_model_total": sum(raw_per_color.values()),
+        "algorithm_model_total": sum(algorithm_per_color.values()),
+        "raw_model_per_color": raw_per_color,
+        "algorithm_model_per_color": algorithm_per_color,
+        "raw_colors": _color_payload(raw_per_color),
+        "algorithm_colors": _color_payload(algorithm_per_color),
+    }
+    return algorithm_runs, metadata
+
+
 def _posting_payload(row: AlwaysOnStockPosting) -> dict:
     return {
         "id": row.pk,
@@ -524,17 +661,23 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
         .prefetch_related("items__product", "items__receipt")
         .order_by("-business_day", "-id")[:31]
     )
+    raw_day_runs = [
+        _run_payload(
+            row,
+            selected_start=selected_start,
+            selected_end=selected_end,
+        )
+        for row in day_runs
+    ]
+    algorithm_day_runs, run_smoothing = _run_smoothing_payload(raw_day_runs)
     return {
         "camera": camera,
         "selected_day": selected_day.isoformat() if selected_day else None,
-        "day_runs": [
-            _run_payload(
-                row,
-                selected_start=selected_start,
-                selected_end=selected_end,
-            )
-            for row in day_runs
-        ],
+        # The exact journal remains visible and backward-compatible.  The
+        # algorithm view is derived only for selected-day analytics.
+        "day_runs": raw_day_runs,
+        "algorithm_day_runs": algorithm_day_runs,
+        "run_smoothing": run_smoothing,
         "timezone": settings.TIME_ZONE,
         "close_time": CLOSE_TIME.strftime("%H:%M"),
         "current_business_day": current_day.isoformat(),

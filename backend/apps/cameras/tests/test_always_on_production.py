@@ -49,6 +49,33 @@ def _closed_run(*, camera="cam3", color="red", bags=10, day=16):
     )
 
 
+def _payload_run(
+    run_id: int,
+    color: str,
+    bags: int,
+    *,
+    partial: bool = False,
+    approximate: bool = False,
+) -> dict:
+    minute = run_id % 60
+    timestamp = f"2026-08-16T10:{minute:02d}:00+05:00"
+    return {
+        "id": run_id,
+        "camera": "cam3",
+        "business_day": "2026-08-16",
+        "color": color,
+        "started_at": timestamp,
+        "last_counted_at": timestamp,
+        "ended_at": timestamp,
+        "model_bags": bags,
+        "is_approximate": approximate,
+        "status": "closed",
+        "starts_before_day": partial,
+        "ends_after_day": False,
+        "is_partial_for_day": partial,
+    }
+
+
 def test_business_day_switches_exactly_at_nineteen():
     assert production.business_day_for(_at(16, 18, 59)).isoformat() == "2026-08-16"
     assert production.business_day_for(_at(16, 19, 0)).isoformat() == "2026-08-17"
@@ -180,6 +207,158 @@ def test_colour_breakdown_can_never_overstate_total_delta():
     )
 
     assert sum(AlwaysOnProductionRun.objects.values_list("model_bags", flat=True)) == 5
+
+
+def test_smooth_day_runs_matches_supplied_operator_sample_without_mutating_raw():
+    data = [
+        ("red", 82),
+        ("red", 391),
+        ("red", 1852),
+        ("red", 179),
+        ("red", 18),
+        ("red", 24),
+        ("red", 740),
+        ("red", 20),
+        ("blue", 23),
+        ("blue", 474),
+        ("green", 1),
+        ("green", 1),
+        ("blue", 269),
+        ("blue", 74),
+        ("green", 1),
+        ("green", 2),
+        ("green", 136),
+    ]
+    raw = [
+        _payload_run(index, color, bags)
+        for index, (color, bags) in enumerate(data, start=1)
+    ]
+    original = [dict(run) for run in raw]
+
+    result = production.smooth_day_runs(raw)
+
+    assert production._run_color_totals(raw) == {
+        "blue": 840,
+        "green": 141,
+        "red": 3306,
+    }
+    assert [(run["color"], run["model_bags"]) for run in result] == [
+        ("red", 3306),
+        ("blue", 842),
+        ("green", 139),
+    ]
+    assert sum(run["model_bags"] for run in result) == sum(
+        run["model_bags"] for run in raw
+    )
+    assert raw == original
+
+
+def test_smooth_day_runs_uses_strict_threshold_and_keeps_edges_and_boundaries():
+    exact_threshold = production.smooth_day_runs(
+        [
+            _payload_run(1, "red", 100),
+            _payload_run(2, "blue", 10),
+            _payload_run(3, "red", 100),
+        ]
+    )
+    edge = production.smooth_day_runs(
+        [
+            _payload_run(1, "blue", 9),
+            _payload_run(2, "red", 100),
+            _payload_run(3, "green", 9),
+        ]
+    )
+    unlike_neighbors = production.smooth_day_runs(
+        [
+            _payload_run(1, "red", 100),
+            _payload_run(2, "blue", 9),
+            _payload_run(3, "green", 100),
+        ]
+    )
+
+    assert [(run["color"], run["model_bags"]) for run in exact_threshold] == [
+        ("red", 100),
+        ("blue", 10),
+        ("red", 100),
+    ]
+    assert [(run["color"], run["model_bags"]) for run in edge] == [
+        ("blue", 9),
+        ("red", 100),
+        ("green", 9),
+    ]
+    assert [(run["color"], run["model_bags"]) for run in unlike_neighbors] == [
+        ("red", 100),
+        ("blue", 9),
+        ("green", 100),
+    ]
+
+
+def test_smooth_day_runs_repeats_after_smallest_sandwich_collapses():
+    result = production.smooth_day_runs(
+        [
+            _payload_run(1, "red", 100),
+            _payload_run(2, "blue", 4),
+            _payload_run(3, "green", 1),
+            _payload_run(4, "blue", 4),
+            _payload_run(5, "red", 100),
+        ]
+    )
+
+    assert [(run["color"], run["model_bags"]) for run in result] == [("red", 209)]
+
+
+@pytest.mark.parametrize("barrier", ["partial", "approximate"])
+def test_smooth_day_runs_never_uses_unreliable_rows_as_sandwich_neighbors(barrier):
+    middle = _payload_run(
+        2,
+        "blue",
+        1,
+        partial=barrier == "partial",
+        approximate=barrier == "approximate",
+    )
+
+    result = production.smooth_day_runs(
+        [
+            _payload_run(1, "red", 100),
+            middle,
+            _payload_run(3, "red", 100),
+        ]
+    )
+
+    assert [(run["color"], run["model_bags"]) for run in result] == [
+        ("red", 100),
+        ("blue", 1),
+        ("red", 100),
+    ]
+
+
+@pytest.mark.parametrize("barrier", ["partial", "approximate"])
+def test_smooth_day_runs_never_merges_with_or_across_unreliable_neighbor(barrier):
+    barrier_flags = {
+        "partial": barrier == "partial",
+        "approximate": barrier == "approximate",
+    }
+    as_neighbor = production.smooth_day_runs(
+        [
+            _payload_run(1, "red", 100, **barrier_flags),
+            _payload_run(2, "blue", 1),
+            _payload_run(3, "red", 100),
+        ]
+    )
+    same_color_boundary = production.smooth_day_runs(
+        [
+            _payload_run(1, "red", 100),
+            _payload_run(2, "red", 1, **barrier_flags),
+            _payload_run(3, "red", 100),
+        ]
+    )
+
+    assert [(run["color"], run["model_bags"]) for run in as_neighbor] == [
+        ("red", 100),
+        ("blue", 1),
+        ("red", 100),
+    ]
+    assert [run["model_bags"] for run in same_color_boundary] == [100, 1, 100]
 
 
 def test_daily_stock_post_is_exactly_once():
@@ -385,6 +564,60 @@ def test_production_payload_returns_every_run_for_selected_day():
     )
     # Preserve the existing bounded journal contract for the settings screen.
     assert len(result["runs"]) == 100
+
+
+def test_production_payload_keeps_raw_runs_and_adds_algorithm_analytics():
+    selected_day = _at(14, 10).date()
+    started = _at(14, 10)
+    rows = [
+        AlwaysOnProductionRun(
+            camera="cam3",
+            business_day=selected_day,
+            color=color,
+            started_at=started + timedelta(minutes=index),
+            last_counted_at=started + timedelta(minutes=index),
+            ended_at=started + timedelta(minutes=index),
+            model_bags=bags,
+        )
+        for index, (color, bags) in enumerate([("red", 100), ("blue", 2), ("red", 100)])
+    ]
+    AlwaysOnProductionRun.objects.bulk_create(rows)
+
+    result = production.production_payload("cam3", day="2026-08-14")
+
+    assert [(run["color"], run["model_bags"]) for run in result["day_runs"]] == [
+        ("red", 100),
+        ("blue", 2),
+        ("red", 100),
+    ]
+    assert [
+        (run["color"], run["model_bags"]) for run in result["algorithm_day_runs"]
+    ] == [("red", 202)]
+    assert result["run_smoothing"] == {
+        "n_min": 10,
+        "changed": True,
+        "raw_run_count": 3,
+        "algorithm_run_count": 1,
+        "raw_model_total": 202,
+        "algorithm_model_total": 202,
+        "raw_model_per_color": {"blue": 2, "red": 200},
+        "algorithm_model_per_color": {"red": 202},
+        "raw_colors": [
+            {"color": "red", "total": 200, "percent": 99.0},
+            {"color": "blue", "total": 2, "percent": 1.0},
+        ],
+        "algorithm_colors": [{"color": "red", "total": 202, "percent": 100.0}],
+    }
+    # The API algorithm is display-only: the durable stock ledger stays raw.
+    assert list(
+        AlwaysOnProductionRun.objects.order_by("started_at", "id").values_list(
+            "color", "model_bags"
+        )
+    ) == [("red", 100), ("blue", 2), ("red", 100)]
+    assert production._day_totals("cam3", selected_day) == {
+        "blue": {"detected_bags": 2, "correction_bags": 0, "net_bags": 2},
+        "red": {"detected_bags": 200, "correction_bags": 0, "net_bags": 200},
+    }
 
 
 def test_production_api_filters_day_and_rejects_bad_iso_date(
