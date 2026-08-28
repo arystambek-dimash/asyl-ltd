@@ -49,6 +49,7 @@ from .api_views.operations import (
     ShippingBoardSettingsView,
     WagonNumberCameraSettingsView,
 )
+from .api_views.vehicle_runtime import VehiclePlateRuntimeView
 
 __all__ = [
     "CAM_COOKIE",
@@ -85,4 +86,5 @@ __all__ = [
     "ModelTestDetailView",
     "ShippingBoardSettingsView",
     "WagonNumberCameraSettingsView",
+    "VehiclePlateRuntimeView",
 ]
