@@ -1,11 +1,16 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VehiclePlateCameraWorkspace, type VehiclePlateRuntime } from "./vehicle-plate-camera";
 
 const mocks = vi.hoisted(() => ({
   useApi: vi.fn(),
   reload: vi.fn(),
+  setData: vi.fn(),
   visiblePolling: vi.fn(),
+  put: vi.fn(),
+  apiError: vi.fn(),
+  showSuccess: vi.fn(),
+  auth: { isSuperuser: false },
 }));
 
 vi.mock("@/components/camera-stream", () => ({
@@ -13,6 +18,12 @@ vi.mock("@/components/camera-stream", () => ({
 }));
 vi.mock("@/lib/use-api", () => ({ useApi: mocks.useApi }));
 vi.mock("@/lib/use-visible-polling", () => ({ useVisiblePolling: mocks.visiblePolling }));
+vi.mock("@/lib/api", () => ({ api: { put: mocks.put }, apiError: mocks.apiError }));
+vi.mock("@/lib/toast", () => ({ showSuccess: mocks.showSuccess }));
+vi.mock("@/store/auth", () => ({
+  useAuth: (selector: (state: { me: { is_superuser: boolean } }) => unknown) =>
+    selector({ me: { is_superuser: mocks.auth.isSuperuser } }),
+}));
 
 function runtime(overrides: Partial<VehiclePlateRuntime> = {}): VehiclePlateRuntime {
   return {
@@ -60,7 +71,7 @@ function runtime(overrides: Partial<VehiclePlateRuntime> = {}): VehiclePlateRunt
 }
 
 function mockApi(data: VehiclePlateRuntime | null, error = "", loading = false) {
-  mocks.useApi.mockReturnValue({ data, error, loading, reload: mocks.reload });
+  mocks.useApi.mockReturnValue({ data, error, loading, reload: mocks.reload, setData: mocks.setData });
 }
 
 describe("VehiclePlateCameraWorkspace", () => {
@@ -68,7 +79,13 @@ describe("VehiclePlateCameraWorkspace", () => {
     mocks.useApi.mockReset();
     mocks.reload.mockReset();
     mocks.reload.mockResolvedValue(undefined);
+    mocks.setData.mockReset();
     mocks.visiblePolling.mockReset();
+    mocks.put.mockReset();
+    mocks.apiError.mockReset();
+    mocks.apiError.mockReturnValue("Не удалось сохранить ROI");
+    mocks.showSuccess.mockReset();
+    mocks.auth.isSuperuser = false;
     mockApi(runtime());
   });
 
@@ -76,8 +93,8 @@ describe("VehiclePlateCameraWorkspace", () => {
     render(<VehiclePlateCameraWorkspace />);
 
     expect(screen.getByRole("region", { name: "Камера проходной на вывоз" })).toBeInTheDocument();
-    expect(screen.getByTestId("protected-camera-stream")).toHaveAttribute("data-src", "cam1");
-    expect(screen.getByText("Камера cam1 · OCR: main")).toBeInTheDocument();
+    expect(screen.getByTestId("protected-camera-stream")).toHaveAttribute("data-src", "cam1main");
+    expect(screen.getByText("Камера cam1 · поток/OCR: main")).toBeInTheDocument();
     expect(mocks.useApi).toHaveBeenCalledWith("/cameras/cam1/vehicle-plate-runtime/");
     expect(mocks.visiblePolling).toHaveBeenCalledWith(mocks.reload, 5_000, true);
 
@@ -195,5 +212,122 @@ describe("VehiclePlateCameraWorkspace", () => {
     render(<VehiclePlateCameraWorkspace />);
 
     expect(mocks.visiblePolling).toHaveBeenCalledWith(mocks.reload, 5_000, false);
+  });
+
+  it("keeps ROI read-only for an ordinary grain user", () => {
+    render(<VehiclePlateCameraWorkspace />);
+
+    expect(screen.queryByRole("button", { name: "Изменить ROI" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("vehicle-roi-layer")).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("lets a superuser enter and cancel editing without changing the server ROI", () => {
+    mocks.auth.isSuperuser = true;
+    render(<VehiclePlateCameraWorkspace />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Изменить ROI" }));
+
+    expect(screen.getByRole("status")).toHaveTextContent("Перетащите голубые точки");
+    expect(screen.getByTestId("vehicle-roi-layer")).toHaveAttribute("aria-label", "Редактор зоны остановки");
+    expect(mocks.visiblePolling).toHaveBeenLastCalledWith(mocks.reload, 5_000, false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+
+    expect(screen.getByRole("button", { name: "Изменить ROI" })).toBeInTheDocument();
+    expect(mocks.put).not.toHaveBeenCalled();
+    expect(screen.getByTestId("vehicle-roi-layer")).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("saves canonical normalized points and commits the returned ROI", async () => {
+    mocks.auth.isSuperuser = true;
+    const current = runtime();
+    const savedRoi = {
+      ...current.roi,
+      points: [
+        { x: 0.2, y: 0.3 },
+        { x: 0.8, y: 0.3 },
+        { x: 0.9, y: 0.9 },
+        { x: 0.1, y: 0.9 },
+      ],
+      updated_at: "2026-08-28T11:00:00Z",
+    };
+    mockApi(current);
+    mocks.put.mockResolvedValue({ data: { saved: true, applied_to_monitor: true, roi: savedRoi } });
+    render(<VehiclePlateCameraWorkspace />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Изменить ROI" }));
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить ROI" }));
+
+    await waitFor(() =>
+      expect(mocks.put).toHaveBeenCalledWith(
+        "/cameras/cam1/vehicle-plate-runtime/",
+        {
+          points: [
+            { x: 0.2, y: 0.3 },
+            { x: 0.8, y: 0.3 },
+            { x: 0.9, y: 0.9 },
+            { x: 0.1, y: 0.9 },
+          ],
+          enabled: true,
+          source: "main",
+        },
+        { timeout: 12_000 },
+      ),
+    );
+    expect(mocks.setData).toHaveBeenCalledWith({ ...current, roi: savedRoi });
+    expect(screen.getByText(/ПК камер получил запрос на обновление/)).toBeInTheDocument();
+    expect(mocks.showSuccess).toHaveBeenCalledWith("ROI камеры сохранён");
+  });
+
+  it("keeps a ROI persisted by a 503 response and warns about delayed live refresh", async () => {
+    mocks.auth.isSuperuser = true;
+    const current = runtime();
+    const savedRoi = { ...current.roi, updated_at: "2026-08-28T11:00:00Z" };
+    mockApi(current);
+    mocks.put.mockRejectedValue({
+      response: { status: 503, data: { saved: true, applied_to_monitor: false, roi: savedRoi } },
+    });
+    render(<VehiclePlateCameraWorkspace />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Изменить ROI" }));
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить ROI" }));
+
+    expect(await screen.findByText(/ROI сохранён, но монитор пока не подтвердил обновление/)).toBeInTheDocument();
+    expect(mocks.setData).toHaveBeenCalledWith({ ...current, roi: savedRoi });
+    expect(mocks.apiError).not.toHaveBeenCalled();
+    expect(mocks.showSuccess).not.toHaveBeenCalled();
+  });
+
+  it("does not trust a saved-looking payload from a non-503 error", async () => {
+    mocks.auth.isSuperuser = true;
+    const current = runtime();
+    mockApi(current);
+    mocks.put.mockRejectedValue({
+      response: {
+        status: 400,
+        data: { saved: true, applied_to_monitor: false, roi: current.roi },
+      },
+    });
+    render(<VehiclePlateCameraWorkspace />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Изменить ROI" }));
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить ROI" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Не удалось сохранить ROI");
+    expect(mocks.setData).not.toHaveBeenCalled();
+    expect(mocks.apiError).toHaveBeenCalled();
+  });
+
+  it("keeps the editor open when saving fails before persistence", async () => {
+    mocks.auth.isSuperuser = true;
+    mocks.put.mockRejectedValue(new Error("offline"));
+    render(<VehiclePlateCameraWorkspace />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Изменить ROI" }));
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить ROI" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Не удалось сохранить ROI");
+    expect(screen.getByRole("button", { name: "Отмена" })).toBeInTheDocument();
+    expect(mocks.setData).not.toHaveBeenCalled();
   });
 });

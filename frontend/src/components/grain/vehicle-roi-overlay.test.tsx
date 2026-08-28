@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeVehicleRoi, VehicleRoiOverlay, type VehicleRoiConfig } from "./vehicle-roi-overlay";
 
 const originalVideoWidth = Object.getOwnPropertyDescriptor(HTMLVideoElement.prototype, "videoWidth");
@@ -144,5 +144,64 @@ describe("VehicleRoiOverlay", () => {
     );
 
     expect(screen.queryByTestId("vehicle-roi-polygon")).not.toBeInTheDocument();
+  });
+
+  it("exposes keyboard-accessible vertex controls only while editing", () => {
+    setVideoDimensions();
+    const onPointsChange = vi.fn();
+    render(
+      <div>
+        <video style={{ objectFit: "cover" }} />
+        <VehicleRoiOverlay roi={roi()} expectedSource="main" editable onPointsChange={onPointsChange} />
+      </div>,
+    );
+
+    const firstPoint = screen.getByRole("button", { name: "Точка ROI 1" });
+    fireEvent.keyDown(firstPoint, { key: "ArrowRight" });
+    expect(onPointsChange).toHaveBeenLastCalledWith([
+      [0.105, 0.2],
+      [0.6, 0.3],
+      [0.95, 0.9],
+    ]);
+
+    fireEvent.keyDown(firstPoint, { key: "ArrowUp", shiftKey: true });
+    expect(onPointsChange).toHaveBeenLastCalledWith([
+      [0.1, 0.18],
+      [0.6, 0.3],
+      [0.95, 0.9],
+    ]);
+  });
+
+  it("converts pointer movement inside the object-cover video box back to normalized coordinates", () => {
+    setVideoDimensions();
+    const onPointsChange = vi.fn();
+    render(
+      <div>
+        <video style={{ objectFit: "cover" }} />
+        <VehicleRoiOverlay roi={roi()} expectedSource="main" editable onPointsChange={onPointsChange} />
+      </div>,
+    );
+
+    const layer = screen.getByTestId("vehicle-roi-layer");
+    vi.spyOn(layer, "getBoundingClientRect").mockReturnValue({
+      x: 100,
+      y: 50,
+      left: 100,
+      top: 50,
+      right: 1100,
+      bottom: 550,
+      width: 1000,
+      height: 500,
+      toJSON: () => ({}),
+    });
+    const point = screen.getByRole("button", { name: "Точка ROI 2" });
+    fireEvent.pointerDown(point, { pointerId: 4 });
+    fireEvent.pointerMove(point, { pointerId: 4, clientX: 600, clientY: 425 });
+
+    expect(onPointsChange).toHaveBeenLastCalledWith([
+      [0.1, 0.2],
+      [0.5, 0.75],
+      [0.95, 0.9],
+    ]);
   });
 });

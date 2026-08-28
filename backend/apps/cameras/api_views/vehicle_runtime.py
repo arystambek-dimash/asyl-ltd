@@ -1,4 +1,4 @@
-"""Safe read-only projection of the camera-PC vehicle recognition runtime."""
+"""Safe projection and superuser ROI updates for vehicle recognition."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.permissions import PermAPIViewMixin
+from apps.common.permissions import IsSuperUser, PermAPIViewMixin
 
 from .. import ai
 
@@ -133,28 +133,11 @@ def _project_roi(value, camera: str) -> dict:
     source = _source(roi.get("source"), "roi.source")
     if roi.get("coordinate_space") != "normalized":
         raise VehicleRuntimeContractError("roi.coordinate_space must be normalized")
-    raw_points = roi.get("points")
-    if (
-        not isinstance(raw_points, Sequence)
-        or isinstance(raw_points, (str, bytes, bytearray))
-        or len(raw_points) > 12
-        or (configured and len(raw_points) < 3)
-        or (not configured and len(raw_points) != 0)
-    ):
-        raise VehicleRuntimeContractError("roi.points has an invalid shape")
-    points: list[dict[str, float]] = []
-    for index, raw_point in enumerate(raw_points):
-        point = _mapping(raw_point, f"roi.points[{index}]")
-        coordinates: dict[str, float] = {}
-        for axis in ("x", "y"):
-            raw_coordinate = point.get(axis)
-            if isinstance(raw_coordinate, bool) or not isinstance(raw_coordinate, Real):
-                raise VehicleRuntimeContractError("ROI coordinates must be numbers")
-            coordinate = float(raw_coordinate)
-            if not math.isfinite(coordinate) or not 0 <= coordinate <= 1:
-                raise VehicleRuntimeContractError("ROI coordinates must be normalized")
-            coordinates[axis] = coordinate
-        points.append(coordinates)
+    points = _project_points(
+        roi.get("points"),
+        "roi.points",
+        configured=configured,
+    )
     return {
         "cam": camera,
         "configured": configured,
@@ -163,6 +146,96 @@ def _project_roi(value, camera: str) -> dict:
         "coordinate_space": "normalized",
         "points": points,
         "updated_at": _text_or_none(roi.get("updated_at"), "roi.updated_at"),
+    }
+
+
+def _project_points(value, field: str, *, configured: bool = True) -> list[dict]:
+    raw_points = value
+    if not isinstance(raw_points, Sequence) or isinstance(
+        raw_points, (str, bytes, bytearray)
+    ):
+        raise VehicleRuntimeContractError(f"{field} must be an array")
+    if (configured and not 3 <= len(raw_points) <= 12) or (
+        not configured and len(raw_points) != 0
+    ):
+        raise VehicleRuntimeContractError(f"{field} has an invalid shape")
+    points: list[dict[str, float]] = []
+    for index, raw_point in enumerate(raw_points):
+        if isinstance(raw_point, Mapping):
+            if set(raw_point) != {"x", "y"}:
+                raise VehicleRuntimeContractError(
+                    f"{field}[{index}] must contain only x and y"
+                )
+            raw_coordinates = (raw_point.get("x"), raw_point.get("y"))
+        elif (
+            isinstance(raw_point, Sequence)
+            and not isinstance(raw_point, (str, bytes, bytearray))
+            and len(raw_point) == 2
+        ):
+            raw_coordinates = (raw_point[0], raw_point[1])
+        else:
+            raise VehicleRuntimeContractError(
+                f"{field}[{index}] must be [x, y] or an x/y object"
+            )
+        coordinates: dict[str, float] = {}
+        for axis, raw_coordinate in zip(("x", "y"), raw_coordinates, strict=True):
+            if isinstance(raw_coordinate, bool) or not isinstance(raw_coordinate, Real):
+                raise VehicleRuntimeContractError("ROI coordinates must be numbers")
+            coordinate = float(raw_coordinate)
+            if not math.isfinite(coordinate) or not 0 <= coordinate <= 1:
+                raise VehicleRuntimeContractError("ROI coordinates must be normalized")
+            coordinates[axis] = coordinate
+        points.append(coordinates)
+    if configured:
+        area = (
+            sum(
+                (points[index]["x"] * points[(index + 1) % len(points)]["y"])
+                - (points[(index + 1) % len(points)]["x"] * points[index]["y"])
+                for index in range(len(points))
+            )
+            / 2.0
+        )
+        if abs(area) < 0.0001:
+            raise VehicleRuntimeContractError("vehicle ROI polygon has no area")
+    return points
+
+
+def project_vehicle_roi_update(value) -> dict:
+    """Validate and canonicalize the browser body accepted by camera-PC."""
+    body = _mapping(value, "body")
+    allowed_fields = {"points", "enabled", "source"}
+    if set(body) - allowed_fields:
+        raise VehicleRuntimeContractError("body contains unsupported fields")
+    if "points" not in body:
+        raise VehicleRuntimeContractError("points are required")
+    result = {
+        "points": _project_points(body.get("points"), "points"),
+        "enabled": _boolean(body.get("enabled", True), "enabled"),
+        "source": "main",
+    }
+    if "source" in body:
+        source = _source(body.get("source"), "source")
+        if source != "main":
+            raise VehicleRuntimeContractError("vehicle ROI source must be main")
+    return result
+
+
+def project_vehicle_roi_save_response(camera: str, value) -> dict:
+    """Return only the persisted ROI state and safe apply flags."""
+    payload = _mapping(value, "saved ROI")
+    saved = _boolean(payload.get("saved"), "saved")
+    applied = _boolean(payload.get("applied_to_monitor"), "applied_to_monitor")
+    if not saved:
+        raise VehicleRuntimeContractError("saved must be true")
+    roi = _project_roi(payload, camera)
+    if not roi["configured"]:
+        raise VehicleRuntimeContractError("saved ROI must be configured")
+    if roi["source"] != "main":
+        raise VehicleRuntimeContractError("saved vehicle ROI source must be main")
+    return {
+        "saved": True,
+        "applied_to_monitor": applied,
+        "roi": roi,
     }
 
 
@@ -225,9 +298,19 @@ def _error_response(detail: str, code: str, response_status: int) -> Response:
 
 
 class VehiclePlateRuntimeView(PermAPIViewMixin, APIView):
-    """Live vehicle-model diagnostics and ROI without camera-PC secrets."""
+    """Live diagnostics plus a superuser-only canonical ROI update."""
 
     required_perms: ClassVar[dict[str, str]] = {"get": "grain.view"}
+
+    def get_permissions(self):
+        if self.request.method.lower() == "put":
+            return [IsSuperUser()]
+        return super().get_permissions()
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        response["Cache-Control"] = "no-store"
+        return response
 
     def get(self, request, cam: str):
         if not ai.enabled():
@@ -270,3 +353,76 @@ class VehiclePlateRuntimeView(PermAPIViewMixin, APIView):
         response = Response(payload)
         response["Cache-Control"] = "no-store"
         return response
+
+    def put(self, request, cam: str):
+        if not ai.enabled():
+            return _error_response(
+                "AI-сервис камер не настроен",
+                "ai_disabled",
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        try:
+            camera = ai.camera_id(cam)
+            update = project_vehicle_roi_update(request.data)
+        except VehicleRuntimeContractError:
+            return _error_response(
+                "Некорректная область распознавания",
+                "invalid_vehicle_roi",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        except ai.AiError:
+            return _error_response(
+                "Неизвестная камера",
+                "ai_error",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            upstream_status, upstream_payload = ai.save_vehicle_roi(camera, update)
+            if upstream_status in (
+                status.HTTP_200_OK,
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+            ):
+                try:
+                    payload = project_vehicle_roi_save_response(
+                        camera,
+                        upstream_payload,
+                    )
+                except VehicleRuntimeContractError:
+                    return _error_response(
+                        "AI-сервис вернул некорректный результат сохранения ROI",
+                        "ai_invalid_response",
+                        status.HTTP_502_BAD_GATEWAY,
+                    )
+                if upstream_status == status.HTTP_503_SERVICE_UNAVAILABLE:
+                    payload.update(
+                        {
+                            "detail": "ROI сохранён, но монитор пока не применил обновление",
+                            "code": "roi_saved_refresh_pending",
+                        }
+                    )
+                return Response(payload, status=upstream_status)
+            response_status = (
+                upstream_status
+                if upstream_status in (400, 404)
+                else status.HTTP_502_BAD_GATEWAY
+            )
+            detail = {
+                400: "Некорректная область распознавания",
+                404: "Камера не найдена в AI-сервисе",
+            }.get(response_status, "AI-сервис не сохранил область распознавания")
+            return _error_response(detail, "ai_error", response_status)
+        except ai.AiUnavailable:
+            return _error_response(
+                "AI-сервис камер недоступен",
+                "ai_unavailable",
+                status.HTTP_502_BAD_GATEWAY,
+            )
+        except ai.AiError as exc:
+            response_status = (
+                exc.status if exc.status in (400, 404) else status.HTTP_502_BAD_GATEWAY
+            )
+            detail = {
+                400: "Неизвестная камера",
+                404: "Камера не найдена в AI-сервисе",
+            }.get(response_status, "AI-сервис не сохранил область распознавания")
+            return _error_response(detail, "ai_error", response_status)

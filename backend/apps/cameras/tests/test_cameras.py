@@ -656,7 +656,7 @@ def test_token_denied_for_portal_client(auth_client, client_user):
     assert resp.status_code == 403
 
 
-@pytest.mark.parametrize("source", ["cam2", "cam2ai", "cam_8c28"])
+@pytest.mark.parametrize("source", ["cam2", "cam2ai", "cam_8c28", "cam1main"])
 def test_auth_accepts_valid_staff_cookie(api_client, auth_client, operator, source):
     token = _stream_token(auth_client, operator)
     response = _authorize_stream(
@@ -665,6 +665,22 @@ def test_auth_accepts_valid_staff_cookie(api_client, auth_client, operator, sour
         f"/go2rtc/api/ws?src={source}",
     )
     assert response.status_code == 204
+
+
+@pytest.mark.parametrize("source", ["cam2main", "cam1mainai", "cam1main-extra"])
+def test_auth_rejects_unprovisioned_main_stream_aliases(
+    api_client,
+    auth_client,
+    operator,
+    source,
+):
+    token = _stream_token(auth_client, operator)
+    response = _authorize_stream(
+        api_client,
+        token,
+        f"/go2rtc/api/ws?src={source}",
+    )
+    assert response.status_code == 403
 
 
 def test_auth_rejects_missing_or_bad_cookie(api_client):
@@ -760,6 +776,22 @@ def test_monoblock_stream_cookie_rejects_cross_camera(
         api_client,
         token,
         "/go2rtc/api/ws?src=cam3",
+    )
+    assert response.status_code == 403
+
+
+def test_monoblock_stream_cookie_cannot_use_staff_only_cam1_main_alias(
+    api_client,
+    auth_client,
+    stream_device,
+):
+    stream_device.camera_source = "cam1"
+    stream_device.save(update_fields=["camera_source"])
+    token = _stream_token(auth_client, stream_device.user)
+    response = _authorize_stream(
+        api_client,
+        token,
+        "/go2rtc/api/ws?src=cam1main",
     )
     assert response.status_code == 403
 
