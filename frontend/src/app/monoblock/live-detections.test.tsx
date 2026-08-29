@@ -7,6 +7,7 @@ import MonoblockPage from "./page";
 const mocks = vi.hoisted(() => ({
   responses: new Map<string, unknown>(),
   apiGet: vi.fn(),
+  permissions: ["shipping.load"],
   resolveDetections: null as null | ((value: { data: { processors: unknown[] } }) => void),
   rejectDetections: null as null | ((reason?: unknown) => void),
 }));
@@ -21,7 +22,7 @@ vi.mock("@/store/auth", () => ({
       is_monoblock: false,
       monoblock_name: null,
       monoblock_camera: null,
-      permissions: ["shipping.load"],
+      permissions: mocks.permissions,
       position: null,
       client_id: null,
       sales_department: null,
@@ -109,6 +110,7 @@ const analytics = {
 };
 
 beforeEach(() => {
+  mocks.permissions = ["shipping.load"];
   mocks.responses = new Map<string, unknown>([
     ["/orders/?post_board=1", []],
     [
@@ -146,8 +148,9 @@ beforeEach(() => {
 });
 
 describe("AI 24/7 live detections", () => {
-  it("показывает бренд-разбивку и использует основной бренд из ответа сервера", async () => {
+  it("не показывает независимую бренд-разбивку в активной аналитике", async () => {
     const user = userEvent.setup();
+    mocks.permissions = ["shipping.load", "ai_247.manage"];
     const brandedAnalytics = {
       ...analytics,
       total: 29,
@@ -202,13 +205,15 @@ describe("AI 24/7 live detections", () => {
     await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
     await user.click(screen.getByRole("tab", { name: "Аналитика" }));
 
-    const dominantBrandPanel = screen.getByText("Основной бренд").parentElement as HTMLElement;
-    expect(within(dominantBrandPanel).getByText("Korol")).toBeInTheDocument();
-    expect(within(dominantBrandPanel).queryByText("Future Brand")).not.toBeInTheDocument();
-    expect(screen.getByText("Future Brand")).toBeInTheDocument();
-    expect(screen.getByText("Дихан Баба")).toBeInTheDocument();
-    expect(screen.getByText("Не распознано")).toBeInTheDocument();
-    expect(screen.getByText("Нет данных (старые)")).toBeInTheDocument();
+    expect(screen.queryByText("Основной бренд")).not.toBeInTheDocument();
+    expect(screen.queryByText("Бренды")).not.toBeInTheDocument();
+    expect(screen.queryByText("Korol")).not.toBeInTheDocument();
+    expect(screen.queryByText("Future Brand")).not.toBeInTheDocument();
+    expect(screen.queryByText("Дихан Баба")).not.toBeInTheDocument();
+    expect(screen.getByText("Цвета продукции")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Уменьшить/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Сдать в архив/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Архив" })).not.toBeInTheDocument();
   });
 
   it("переключает карточки цветов и периоды дня между алгоритмом и сырыми данными", async () => {
@@ -225,8 +230,8 @@ describe("AI 24/7 live detections", () => {
         { color: "blue", total: 3, percent: 1.9 },
       ],
       brands: [{ brand: "korol", total: 158, percent: 100 }],
-      adjustment: 0,
-      total: 158,
+      adjustment: -5,
+      total: 153,
       updated_at: null,
     };
     const legacyDay = "2026-08-23";
@@ -256,12 +261,23 @@ describe("AI 24/7 live detections", () => {
       total: 40,
       updated_at: null,
     };
+    const peakHistoryPoint = {
+      day: "2026-08-21",
+      model_total: 200,
+      model_per_color: { red: 200 },
+      model_per_brand: {},
+      colors: [{ color: "red", total: 200, percent: 100 }],
+      brands: [],
+      adjustment: -20,
+      total: 180,
+      updated_at: null,
+    };
     const detailedAnalytics = {
       ...analytics,
-      total: 210,
-      all_time_total: 210,
-      model_all_time_total: 210,
-      history: [archivedHistoryPoint, legacyHistoryPoint, historyPoint],
+      total: 153,
+      all_time_total: 385,
+      model_all_time_total: 410,
+      history: [peakHistoryPoint, archivedHistoryPoint, legacyHistoryPoint, historyPoint],
       colors: historyPoint.colors,
       model_per_brand: historyPoint.model_per_brand,
       brands: historyPoint.brands,
@@ -274,10 +290,10 @@ describe("AI 24/7 live detections", () => {
           model_total: 158,
           model_per_color: historyPoint.model_per_color,
           model_per_brand: historyPoint.model_per_brand,
-          adjustment: 0,
-          total: 158,
-          all_time_total: 210,
-          history: [archivedHistoryPoint, legacyHistoryPoint, historyPoint],
+          adjustment: -5,
+          total: 153,
+          all_time_total: 385,
+          history: [peakHistoryPoint, archivedHistoryPoint, legacyHistoryPoint, historyPoint],
           colors: historyPoint.colors,
           brands: historyPoint.brands,
           dominant_color: "red",
@@ -348,6 +364,11 @@ describe("AI 24/7 live detections", () => {
     const productionDay = {
       selected_day: day,
       timezone: "UTC",
+      mappings: [
+        { color: "red", product: 1, product_label: "ДБН 1с 50кг · Красный 50 кг" },
+        { color: "green", product: 2, product_label: "K2c 50кг · Зелёный 50 кг" },
+        { color: "blue", product: 3, product_label: "ДБН вс 50кг · Синий 50 кг" },
+      ],
       day_runs: rawRuns,
       algorithm_day_runs: algorithmRuns,
       run_smoothing: {
@@ -455,21 +476,36 @@ describe("AI 24/7 live detections", () => {
     await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
     await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
     await user.click(screen.getByRole("tab", { name: "Аналитика" }));
-    await user.click(screen.getByRole("button", { name: "Аналитика за 24.08.2026: 158 мешков" }));
+    await user.click(screen.getByRole("button", { name: "Аналитика за 24.08.2026: 153 мешков" }));
 
     await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith(productionUrl));
     const heading = screen.getByRole("heading", { name: "24.08.2026" });
     const dayPanel = heading.closest(".rounded-2xl");
     if (!(dayPanel instanceof HTMLElement)) throw new Error("Карточка выбранного дня не найдена");
 
+    const bagsMetric = within(dayPanel).getByText("Учтено за день").parentElement;
+    const maxMetric = within(dayPanel).getByText("От максимума").parentElement;
+    if (!(bagsMetric instanceof HTMLElement) || !(maxMetric instanceof HTMLElement)) {
+      throw new Error("Краткие метрики выбранного дня не найдены");
+    }
+    expect(within(bagsMetric).getByText("153")).toBeInTheDocument();
+    expect(within(maxMetric).getByText("85%")).toBeInTheDocument();
+    expect(within(dayPanel).queryByText("Итог")).not.toBeInTheDocument();
+    expect(within(dayPanel).queryByText("Модель")).not.toBeInTheDocument();
+    expect(within(dayPanel).queryByText("Поправка")).not.toBeInTheDocument();
+    expect(within(dayPanel).getByText("Цвета и продукция за день")).toBeInTheDocument();
+
     const algorithmButton = within(dayPanel).getByRole("button", { name: "Алгоритм" });
     expect(algorithmButton).toHaveAttribute("aria-pressed", "true");
     const algorithmRed = await within(dayPanel).findByRole("group", { name: "Красный: 153 мешков" });
     expect(within(algorithmRed).getByText("96.8%")).toBeInTheDocument();
-    expect(within(dayPanel).getByRole("group", { name: "Зелёный: 5 мешков" })).toBeInTheDocument();
+    expect(within(algorithmRed).getByText("ДБН 1с 50кг · Красный 50 кг")).toBeInTheDocument();
+    const algorithmGreen = within(dayPanel).getByRole("group", { name: "Зелёный: 5 мешков" });
+    expect(within(algorithmGreen).getByText("K2c 50кг · Зелёный 50 кг")).toBeInTheDocument();
     expect(within(dayPanel).queryByRole("group", { name: /Синий: / })).not.toBeInTheDocument();
     expect(within(dayPanel).getAllByText("меш.")).toHaveLength(2);
-    expect(within(dayPanel).getByText("Korol")).toBeInTheDocument();
+    expect(within(dayPanel).queryByText("Korol")).not.toBeInTheDocument();
+    expect(within(dayPanel).queryByText("Бренды за день")).not.toBeInTheDocument();
 
     await user.click(within(dayPanel).getByRole("button", { name: "Сырые данные" }));
 
@@ -477,9 +513,10 @@ describe("AI 24/7 live detections", () => {
     const rawRed = within(dayPanel).getByRole("group", { name: "Красный: 150 мешков" });
     expect(within(rawRed).getByText("94.9%")).toBeInTheDocument();
     expect(within(dayPanel).getByRole("group", { name: "Зелёный: 5 мешков" })).toBeInTheDocument();
-    expect(within(dayPanel).getByRole("group", { name: "Синий: 3 мешков" })).toBeInTheDocument();
+    const rawBlue = within(dayPanel).getByRole("group", { name: "Синий: 3 мешков" });
+    expect(within(rawBlue).getByText("ДБН вс 50кг · Синий 50 кг")).toBeInTheDocument();
     expect(within(dayPanel).getAllByText("меш.")).toHaveLength(4);
-    expect(within(dayPanel).getByText("Korol")).toBeInTheDocument();
+    expect(within(dayPanel).queryByText("Korol")).not.toBeInTheDocument();
 
     // Предыдущий API не знает об algorithm_day_runs/run_smoothing: оба
     // режима должны без ошибки показать исходный дневной срез.
@@ -493,6 +530,8 @@ describe("AI 24/7 live detections", () => {
     );
     expect(within(legacyDayPanel).getByRole("group", { name: "Красный: 10 мешков" })).toBeInTheDocument();
     expect(within(legacyDayPanel).getByRole("group", { name: "Синий: 2 мешков" })).toBeInTheDocument();
+    expect(within(legacyDayPanel).getAllByText("Сопоставление недоступно")).toHaveLength(2);
+    expect(within(legacyDayPanel).queryByText("Не сопоставлено")).not.toBeInTheDocument();
     expect(within(legacyDayPanel).getAllByText("меш.")).toHaveLength(2);
 
     await user.click(within(legacyDayPanel).getByRole("button", { name: "Сырые данные" }));

@@ -3,17 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
-  Archive,
   BarChart3,
   Camera,
   CalendarDays,
-  ChevronRight,
   Cpu,
   Check,
   Clock3,
   LockKeyhole,
-  LoaderCircle,
-  Minus,
   PackageCheck,
   Radio,
   RefreshCw,
@@ -52,8 +48,7 @@ import { Modal } from "@/components/ui/modal";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { motion } from "motion/react";
 import { ColorDot, Eyebrow, Hairline, Metric, Panel, SectionHead } from "@/components/monoblock/ui";
-import { brandMeta } from "@/lib/monoblock-brands";
-import { colorMeta } from "@/lib/monoblock-colors";
+import { colorMeta, normalizedColor } from "@/lib/monoblock-colors";
 import { api, apiError } from "@/lib/api";
 import { orderedBagCount } from "@/lib/orders";
 import { resolveCountingLine } from "@/lib/camera-counting-line";
@@ -62,7 +57,6 @@ import { can } from "@/lib/can";
 import type {
   AiCountingSession,
   AlwaysOnCameraSettings,
-  AlwaysOnCountArchive,
   AlwaysOnDailyAnalytics,
   AlwaysOnDailyCameraAnalytics,
   AlwaysOnDetection,
@@ -92,14 +86,13 @@ const DETECTIONS_STALE_MS = 2_500;
 // Заказы/камеры/настройки меняются редко — не гоняем полный список заказов
 // каждые 3 секунды на экране, который висит открытым весь день.
 const SLOW_POLL_MS = 30_000;
-const ALWAYS_ON_MODAL_VIEWS = ["live", "production", "analytics", "archive"] as const;
+const ALWAYS_ON_MODAL_VIEWS = ["live", "production", "analytics"] as const;
 const MONOBLOCK_PAGE_TABS = ["shipments", "monoblock"] as const;
 
 const MODAL_TABS: { key: (typeof ALWAYS_ON_MODAL_VIEWS)[number]; label: string; icon: LucideIcon }[] = [
   { key: "live", label: "Прямой эфир", icon: Video },
   { key: "production", label: "Выпуск и склад", icon: PackageCheck },
   { key: "analytics", label: "Аналитика", icon: BarChart3 },
-  { key: "archive", label: "Архив", icon: Archive },
 ];
 
 function CameraChoice({
@@ -681,14 +674,12 @@ function AlwaysOnCard({
   detail,
   daily,
   canManage,
-  onAnalyticsChanged,
 }: {
   processor: AlwaysOnProcessorStatus;
   camera?: CameraFeed & { src: string };
   detail?: string;
   daily?: AlwaysOnDailyCameraAnalytics;
   canManage: boolean;
-  onAnalyticsChanged: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [modalView, setModalView] = useState<(typeof ALWAYS_ON_MODAL_VIEWS)[number]>("live");
@@ -698,13 +689,6 @@ function AlwaysOnCard({
     onChange: setModalView,
     label: "Режим мониторинга камеры",
   });
-  const [archives, setArchives] = useState<AlwaysOnCountArchive[] | null>(null);
-  const [archivesError, setArchivesError] = useState("");
-  const [openArchiveId, setOpenArchiveId] = useState<number | null>(null);
-  const [archiveToDelete, setArchiveToDelete] = useState<AlwaysOnCountArchive | null>(null);
-  const [deletingArchiveId, setDeletingArchiveId] = useState<number | null>(null);
-  const [deleteArchiveError, setDeleteArchiveError] = useState("");
-  const [correctionOpen, setCorrectionOpen] = useState(false);
   const [streamOnline, setStreamOnline] = useState(false);
   // Рамки модели можно скрыть: иногда оператору нужно посмотреть на сам кадр.
   const [showDetections, setShowDetections] = useState(true);
@@ -729,15 +713,6 @@ function AlwaysOnCard({
   const [selectedProductionLoading, setSelectedProductionLoading] = useState(false);
   const [selectedProductionError, setSelectedProductionError] = useState<string | null>(null);
   const [selectedProductionReload, setSelectedProductionReload] = useState(0);
-  const [correctionAmount, setCorrectionAmount] = useState("");
-  const [correctionColor, setCorrectionColor] = useState("");
-  const [correctionReason, setCorrectionReason] = useState("");
-  const [correctionError, setCorrectionError] = useState("");
-  const [correcting, setCorrecting] = useState(false);
-  const [archiveOpen, setArchiveOpen] = useState(false);
-  const [archiveNote, setArchiveNote] = useState("");
-  const [archiveError, setArchiveError] = useState("");
-  const [archiving, setArchiving] = useState(false);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [selectedDayColorView, setSelectedDayColorView] = useState<AlwaysOnDayColorView>("algorithm");
   const current = open ? liveProcessor : processor;
@@ -754,9 +729,6 @@ function AlwaysOnCard({
   const inSession = current.mode === "session";
   const chartMax = Math.max(1, ...(currentDaily?.history ?? []).map((item) => item.total));
   const dominant = currentDaily?.colors?.[0];
-  const dominantBrand = currentDaily?.dominant_brand
-    ? (currentDaily.brands ?? []).find((item) => item.brand === currentDaily.dominant_brand)
-    : undefined;
   // Разбор одного дня: сам столбик уже несёт полную статистику, поэтому
   // выбранный день хранится ключом, а не копией — опрос обновляет данные,
   // не закрывая панель.
@@ -764,7 +736,6 @@ function AlwaysOnCard({
   // Разбивку за день считает бэкенд — тем же кодом, что и общую, поэтому
   // цифры сходятся. Локальный расчёт остаётся на случай старого ответа.
   const selectedColors = selectedPoint?.colors?.length ? selectedPoint.colors : dayColorBreakdown(selectedPoint);
-  const selectedBrands = selectedPoint?.brands ?? [];
   // Дневная детализация приходит отдельным запросом. Проверка даты не даёт
   // на один рендер показать ответ предыдущего столбика после быстрого клика.
   const selectedDayProduction =
@@ -803,7 +774,15 @@ function AlwaysOnCard({
         ? smoothing.algorithm_colors
         : smoothing.raw_colors
       : selectedColors;
-  const correctionAvailable = currentDaily?.colors?.find((item) => item.color === correctionColor)?.total ?? 0;
+  const selectedMappings = selectedDayProduction?.mappings ?? production?.mappings ?? null;
+  const selectedProductByColor = new Map(
+    (selectedMappings ?? []).map((mapping) => [normalizedColor(mapping.color), mapping.product_label]),
+  );
+  const selectedMappingStatus = selectedMappings
+    ? "ready"
+    : selectedProductionError || selectedDayProduction || production
+      ? "unavailable"
+      : "loading";
 
   useEffect(() => {
     setLiveProcessor(processor);
@@ -1024,99 +1003,6 @@ function AlwaysOnCard({
     setStreamOnline(false);
   }
 
-  function showCorrection() {
-    if (!canManage) return;
-    setCorrectionAmount("");
-    setCorrectionColor(currentDaily?.colors?.[0]?.color ?? "");
-    setCorrectionReason("");
-    setCorrectionError("");
-    setCorrectionOpen(true);
-  }
-
-  async function subtractCount() {
-    if (!canManage) return;
-    setCorrecting(true);
-    setCorrectionError("");
-    try {
-      await api.post<AlwaysOnDailyCameraAnalytics>(`/cameras/always-on-analytics/${processor.cam}/subtract/`, {
-        amount: Number(correctionAmount),
-        color: correctionColor,
-        reason: correctionReason.trim(),
-      });
-      const analyticsResponse = await api.get<AlwaysOnDailyAnalytics>("/cameras/always-on-analytics/");
-      setLiveDaily(analyticsResponse.data.cameras.find((item) => item.camera === processor.cam));
-      await onAnalyticsChanged();
-      await loadProduction(false);
-      setCorrectionOpen(false);
-    } catch (cause) {
-      setCorrectionError(apiError(cause));
-    } finally {
-      setCorrecting(false);
-    }
-  }
-
-  const loadArchives = useCallback(async () => {
-    setArchivesError("");
-    try {
-      const response = await api.get<AlwaysOnCountArchive[]>(
-        `/cameras/always-on-analytics/archives/?camera=${encodeURIComponent(processor.cam)}`,
-      );
-      setArchives(response.data);
-      return response.data;
-    } catch (cause) {
-      setArchivesError(apiError(cause));
-      return null;
-    }
-  }, [processor.cam]);
-
-  // Архив не меняется сам по себе — грузим при первом открытии вкладки.
-  useEffect(() => {
-    if (open && modalView === "archive" && archives === null) void loadArchives();
-  }, [open, modalView, archives, loadArchives]);
-
-  async function deleteArchive(row: AlwaysOnCountArchive) {
-    if (!canManage) return;
-    setDeletingArchiveId(row.id);
-    setDeleteArchiveError("");
-    try {
-      await api.delete(`/cameras/always-on-analytics/archives/${row.id}/`);
-      // Мешки возвращаются в текущий счёт, поэтому обновляем и аналитику.
-      const analyticsResponse = await api.get<AlwaysOnDailyAnalytics>("/cameras/always-on-analytics/");
-      setLiveDaily(analyticsResponse.data.cameras.find((item) => item.camera === processor.cam));
-      await onAnalyticsChanged();
-      await loadArchives();
-      setArchiveToDelete(null);
-    } catch (cause) {
-      setDeleteArchiveError(apiError(cause));
-    } finally {
-      setDeletingArchiveId(null);
-    }
-  }
-
-  async function archiveCount() {
-    if (!canManage) return;
-    setArchiving(true);
-    setArchiveError("");
-    try {
-      await api.post(`/cameras/always-on-analytics/${processor.cam}/archive/`, {
-        note: archiveNote.trim(),
-      });
-      const analyticsResponse = await api.get<AlwaysOnDailyAnalytics>("/cameras/always-on-analytics/");
-      setLiveDaily(analyticsResponse.data.cameras.find((item) => item.camera === processor.cam));
-      await onAnalyticsChanged();
-      const fresh = await loadArchives();
-      setArchiveOpen(false);
-      setArchiveNote("");
-      // Сразу показываем, куда уехали мешки, и раскрываем свежую запись.
-      setModalView("archive");
-      if (fresh?.length) setOpenArchiveId(fresh[0].id);
-    } catch (cause) {
-      setArchiveError(apiError(cause));
-    } finally {
-      setArchiving(false);
-    }
-  }
-
   return (
     <>
       <button
@@ -1307,23 +1193,11 @@ function AlwaysOnCard({
                   )}
                 </div>
               </div>
-              <div className="mt-5 space-y-3">
-                {(current.error || liveDetail) && (
-                  <p className="rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5 text-xs leading-relaxed text-amber-100/80">
-                    {current.error || liveDetail}
-                  </p>
-                )}
-                {canManage && (
-                  <button
-                    type="button"
-                    disabled={todayTotal <= 0}
-                    onClick={showCorrection}
-                    className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2.5 text-xs font-semibold text-white/75 transition hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-35"
-                  >
-                    <Minus className="size-3.5" /> Уменьшить итог
-                  </button>
-                )}
-              </div>
+              {(current.error || liveDetail) && (
+                <p className="mt-5 rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5 text-xs leading-relaxed text-amber-100/80">
+                  {current.error || liveDetail}
+                </p>
+              )}
             </aside>
           </div>
         ) : modalView === "production" ? (
@@ -1340,7 +1214,7 @@ function AlwaysOnCard({
           </div>
         ) : modalView === "analytics" ? (
           <div {...modalTabs.getTabPanelProps("analytics")} className="space-y-4">
-            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <div className="grid gap-4 sm:grid-cols-3">
               <Panel className="p-5">
                 <Metric label="Сегодня" value={todayTotal} unit="меш." size="lg" />
               </Panel>
@@ -1361,28 +1235,12 @@ function AlwaysOnCard({
                   <div className="mt-2 text-2xl font-bold text-slate-300">—</div>
                 )}
               </Panel>
-              <Panel className="p-5">
-                <Eyebrow>Основной бренд</Eyebrow>
-                {dominantBrand ? (
-                  <div className="mt-2 flex items-center gap-2">
-                    <span className={cn("size-2.5 shrink-0 rounded-full", brandMeta(dominantBrand.brand).dot)} />
-                    <span className="min-w-0 truncate text-xl font-black tracking-tight text-slate-900">
-                      {brandMeta(dominantBrand.brand).label}
-                    </span>
-                    <span className="ml-auto text-sm font-semibold tabular-nums text-slate-400">
-                      {dominantBrand.total}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="mt-2 text-2xl font-bold text-slate-300">—</div>
-                )}
-              </Panel>
             </div>
 
             <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
               <Panel className="p-5 sm:p-6">
                 <SectionHead
-                  title="Подсчёт по дням"
+                  title="Учтено по дням"
                   aside={<span className="text-[11px] font-medium tabular-nums text-slate-400">макс. {chartMax}</span>}
                 />
                 <div className="mt-5 overflow-x-auto pb-1">
@@ -1409,7 +1267,9 @@ function AlwaysOnCard({
                                   active ? "bg-blue-600" : "bg-slate-200 group-hover:bg-slate-300",
                                   selectedDay && !active && "opacity-60",
                                 )}
-                                style={{ height: item.total ? `${Math.max(4, (item.total * 100) / chartMax)}%` : 0 }}
+                                style={{
+                                  height: item.total ? `${Math.max(4, (item.total * 100) / chartMax)}%` : 0,
+                                }}
                               />
                             </div>
                             <span
@@ -1454,53 +1314,6 @@ function AlwaysOnCard({
                     <div className="py-10 text-center text-sm text-slate-400">Цветов пока нет</div>
                   )}
                 </div>
-
-                <Hairline className="my-6" />
-                <SectionHead title="Бренды" hint="По мешкам модели. Старые данные показаны отдельно." />
-                <div className="mt-5 space-y-4">
-                  {(currentDaily?.brands ?? []).map((item) => {
-                    const meta = brandMeta(item.brand);
-                    return (
-                      <div key={item.brand}>
-                        <div className="mb-1.5 flex items-center gap-2 text-sm">
-                          <span className={cn("size-2.5 shrink-0 rounded-full", meta.dot)} />
-                          <span className="min-w-0 truncate font-medium text-slate-600">{meta.label}</span>
-                          <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
-                          <span className="w-9 text-right text-xs tabular-nums text-slate-400">{item.percent}%</span>
-                        </div>
-                        <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
-                          <div
-                            className={cn("h-full rounded-full transition-all duration-500", meta.bar)}
-                            style={{ width: `${item.percent}%` }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {(currentDaily?.brands ?? []).length === 0 && (
-                    <div className="py-6 text-center text-sm text-slate-400">Брендов пока нет</div>
-                  )}
-                </div>
-                {canManage && (
-                  <div className="mt-auto flex flex-col gap-2 pt-6">
-                    <button
-                      type="button"
-                      disabled={todayTotal <= 0}
-                      onClick={showCorrection}
-                      className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
-                    >
-                      <Minus className="size-3.5" /> Уменьшить за сегодня
-                    </button>
-                    <button
-                      type="button"
-                      disabled={allTimeTotal <= 0 || archiving}
-                      onClick={() => setArchiveOpen(true)}
-                      className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-35"
-                    >
-                      <Archive className="size-3.5" /> Сдать в архив
-                    </button>
-                  </div>
-                )}
               </Panel>
             </div>
 
@@ -1526,18 +1339,11 @@ function AlwaysOnCard({
                   </div>
                 </div>
 
-                <div className="mt-4 grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-4">
-                  <Metric label="Итог" value={selectedPoint.total} size="sm" />
-                  <Metric label="Модель" value={selectedPoint.model_total} size="sm" />
+                <div className="mt-4 grid max-w-xl grid-cols-2 gap-x-8 gap-y-4">
+                  <Metric label="Учтено за день" value={selectedPoint.total} size="sm" />
                   <Metric
-                    label="Поправка"
-                    value={selectedPoint.adjustment || 0}
-                    size="sm"
-                    accent={selectedPoint.adjustment < 0 ? "amber" : "slate"}
-                  />
-                  <Metric
-                    label="Доля дня"
-                    value={`${chartMax > 0 ? Math.round((selectedPoint.total * 100) / chartMax) : 0}%`}
+                    label="От максимума"
+                    value={`${Math.round((selectedPoint.total * 100) / chartMax)}%`}
                     size="sm"
                   />
                 </div>
@@ -1545,43 +1351,46 @@ function AlwaysOnCard({
                 {selectedVisibleColors.length > 0 && (
                   <>
                     <Hairline className="my-5" />
-                    <div className="grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
-                      {selectedVisibleColors.map((item) => (
-                        <div
-                          key={item.color}
-                          role="group"
-                          aria-label={`${colorMeta(item.color).label}: ${item.total} мешков`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <ColorDot className={colorMeta(item.color).dot} />
-                            <span className="text-xs font-medium text-slate-500">{colorMeta(item.color).label}</span>
-                            <span className="ml-auto text-xs tabular-nums text-slate-400">{item.percent}%</span>
-                          </div>
-                          <div className="mt-1 text-2xl font-black tabular-nums tracking-tight text-slate-900">
-                            {item.total}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                )}
-
-                {selectedBrands.length > 0 && (
-                  <>
-                    <Hairline className="my-5" />
-                    <Eyebrow>Бренды за день</Eyebrow>
+                    <SectionHead
+                      title="Цвета и продукция за день"
+                      hint="Количество по цветам распознано камерой; товар показан по текущему сопоставлению в разделе «Куда приходовать»."
+                    />
                     <div className="mt-3 grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
-                      {selectedBrands.map((item) => {
-                        const meta = brandMeta(item.brand);
+                      {selectedVisibleColors.map((item) => {
+                        const productLabel = selectedProductByColor.get(normalizedColor(item.color));
+                        const mappingLabel =
+                          productLabel ??
+                          (selectedMappingStatus === "ready"
+                            ? "Не сопоставлено"
+                            : selectedMappingStatus === "unavailable"
+                              ? "Сопоставление недоступно"
+                              : "Загрузка сопоставления…");
                         return (
-                          <div key={item.brand}>
+                          <div
+                            key={item.color}
+                            role="group"
+                            aria-label={`${colorMeta(item.color).label}: ${item.total} мешков`}
+                          >
                             <div className="flex items-center gap-2">
-                              <span className={cn("size-2.5 shrink-0 rounded-full", meta.dot)} />
-                              <span className="min-w-0 truncate text-xs font-medium text-slate-500">{meta.label}</span>
+                              <ColorDot className={colorMeta(item.color).dot} />
+                              <span className="text-xs font-medium text-slate-500">{colorMeta(item.color).label}</span>
                               <span className="ml-auto text-xs tabular-nums text-slate-400">{item.percent}%</span>
                             </div>
                             <div className="mt-1 text-2xl font-black tabular-nums tracking-tight text-slate-900">
                               {item.total}
+                            </div>
+                            <div
+                              title={mappingLabel}
+                              className={cn(
+                                "mt-1.5 truncate text-[11px] font-medium",
+                                productLabel
+                                  ? "text-slate-500"
+                                  : selectedMappingStatus === "ready"
+                                    ? "text-amber-600"
+                                    : "text-slate-400",
+                              )}
+                            >
+                              {mappingLabel}
                             </div>
                           </div>
                         );
@@ -1605,444 +1414,6 @@ function AlwaysOnCard({
             )}
           </div>
         ) : null}
-
-        {modalView === "archive" && (
-          <Panel {...modalTabs.getTabPanelProps("archive")} className="p-5 sm:p-6">
-            <SectionHead
-              title="Закрытые периоды"
-              hint="Каждая строка — счёт, сданный в архив. Данные не меняются."
-              aside={
-                archives !== null && archives.length > 0 ? (
-                  <Metric
-                    label="Всего"
-                    value={archives.reduce((sum, row) => sum + row.total, 0)}
-                    size="sm"
-                    className="text-right"
-                  />
-                ) : undefined
-              }
-            />
-
-            {archivesError && (
-              <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-[var(--destructive)]">
-                {archivesError}
-              </p>
-            )}
-
-            {archives === null && !archivesError && (
-              <div className="flex min-h-40 items-center justify-center text-slate-400">
-                <LoaderCircle className="size-5 animate-spin" />
-              </div>
-            )}
-
-            {archives !== null && archives.length === 0 && (
-              <div className="mt-4 flex min-h-40 flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 text-center text-slate-400">
-                <Archive className="mb-2 size-7 text-slate-300" />
-                <span className="text-sm font-semibold">Архив пуст</span>
-                <span className="mt-1 max-w-64 text-xs">
-                  Здесь появятся закрытые периоды после нажатия «Обнулить и сдать в архив».
-                </span>
-              </div>
-            )}
-
-            <div className="mt-4 space-y-2.5">
-              {(archives ?? []).map((row) => {
-                const expanded = openArchiveId === row.id;
-                const dayMax = Math.max(1, ...row.day_rows.map((d) => d.total));
-                return (
-                  <div
-                    key={row.id}
-                    className={cn(
-                      "overflow-hidden rounded-xl border transition",
-                      expanded ? "border-blue-300 bg-blue-50/40" : "border-slate-200",
-                    )}
-                  >
-                    <div className="flex items-stretch pr-2">
-                      <button
-                        type="button"
-                        onClick={() => setOpenArchiveId(expanded ? null : row.id)}
-                        aria-expanded={expanded}
-                        className="flex min-w-0 flex-1 items-center gap-3 p-3 text-left transition hover:bg-slate-50/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 sm:p-4"
-                      >
-                        <ChevronRight
-                          className={cn("size-4 shrink-0 text-slate-400 transition-transform", expanded && "rotate-90")}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                            <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">
-                              Период
-                            </span>
-                            <span className="font-bold text-slate-800">
-                              {fullDay(row.period_start)}
-                              {row.period_end !== row.period_start && ` — ${fullDay(row.period_end)}`}
-                            </span>
-                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
-                              {row.days} дн.
-                            </span>
-                          </div>
-                          <div className="mt-1 text-xs text-slate-400">
-                            Заархивирован {formatDateTime(row.created_at)} · {row.archived_by_name || "—"}
-                          </div>
-                        </div>
-                        <div className="shrink-0 text-right">
-                          <div className="text-2xl font-black tabular-nums text-slate-900">{row.total}</div>
-                          <div className="text-[10px] text-slate-400">мешков</div>
-                        </div>
-                      </button>
-                      {/* Корзинка прямо на строке: удаление, спрятанное внутри
-                        раскрытой карточки, никто не находил. */}
-                      {canManage && (
-                        <button
-                          type="button"
-                          aria-label={`Удалить архив за ${fullDay(row.period_start)}`}
-                          title="Удалить запись — мешки вернутся в счёт"
-                          disabled={deletingArchiveId === row.id}
-                          onClick={() => setArchiveToDelete(row)}
-                          className="flex size-9 shrink-0 items-center justify-center self-center rounded-lg text-slate-300 transition hover:bg-red-50 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          {deletingArchiveId === row.id ? (
-                            <LoaderCircle className="size-4 animate-spin" />
-                          ) : (
-                            <Trash2 className="size-4" />
-                          )}
-                        </button>
-                      )}
-                    </div>
-
-                    {expanded && (
-                      <div className="border-t border-slate-100 p-4 sm:p-5">
-                        <div className="grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-4">
-                          <Metric label="Итог" value={row.total} size="sm" />
-                          <Metric label="Модель" value={row.model_total} size="sm" />
-                          <Metric
-                            label="Поправка"
-                            value={row.adjustment || 0}
-                            size="sm"
-                            accent={row.adjustment < 0 ? "amber" : "slate"}
-                          />
-                          <Metric
-                            label="В среднем"
-                            value={row.days > 0 ? Math.round(row.total / row.days) : 0}
-                            size="sm"
-                          />
-                        </div>
-
-                        {row.colors.length > 0 && (
-                          <>
-                            <Hairline className="my-4" />
-                            <div className="grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
-                              {row.colors.map((item) => (
-                                <div key={item.color}>
-                                  <div className="flex items-center gap-2">
-                                    <ColorDot className={colorMeta(item.color).dot} />
-                                    <span className="text-xs font-medium text-slate-500">
-                                      {colorMeta(item.color).label}
-                                    </span>
-                                    <span className="ml-auto text-xs tabular-nums text-slate-400">{item.percent}%</span>
-                                  </div>
-                                  <div className="mt-1 text-xl font-black tabular-nums tracking-tight text-slate-900">
-                                    {item.total}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </>
-                        )}
-
-                        {(row.brands ?? []).length > 0 && (
-                          <>
-                            <Hairline className="my-4" />
-                            <Eyebrow>Бренды периода</Eyebrow>
-                            <div className="mt-3 grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
-                              {(row.brands ?? []).map((item) => {
-                                const meta = brandMeta(item.brand);
-                                return (
-                                  <div key={item.brand}>
-                                    <div className="flex items-center gap-2">
-                                      <span className={cn("size-2.5 shrink-0 rounded-full", meta.dot)} />
-                                      <span className="min-w-0 truncate text-xs font-medium text-slate-500">
-                                        {meta.label}
-                                      </span>
-                                      <span className="ml-auto text-xs tabular-nums text-slate-400">
-                                        {item.percent}%
-                                      </span>
-                                    </div>
-                                    <div className="mt-1 text-xl font-black tabular-nums tracking-tight text-slate-900">
-                                      {item.total}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </>
-                        )}
-
-                        {row.day_rows.length > 0 && (
-                          <>
-                            <Hairline className="my-4" />
-                            <Eyebrow>По дням</Eyebrow>
-                            <div className="mt-2 space-y-1.5">
-                              {row.day_rows.map((entry) => (
-                                <div key={entry.day} className="flex items-center gap-3 text-xs">
-                                  <span className="w-20 shrink-0 font-medium text-slate-500">{fullDay(entry.day)}</span>
-                                  <div className="h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-100">
-                                    <div
-                                      className="h-full rounded-full bg-slate-300"
-                                      style={{ width: `${Math.max(2, (entry.total * 100) / dayMax)}%` }}
-                                    />
-                                  </div>
-                                  <span className="w-14 shrink-0 text-right font-bold tabular-nums text-slate-900">
-                                    {entry.total}
-                                  </span>
-                                  <span className="hidden w-28 shrink-0 justify-end gap-1.5 sm:flex">
-                                    {entry.colors.map((c) => (
-                                      <span key={c.color} className="flex items-center gap-1 text-[10px]">
-                                        <span className={cn("size-2 rounded-full", colorMeta(c.color).dot)} />
-                                        <span className="tabular-nums text-slate-500">{c.total}</span>
-                                      </span>
-                                    ))}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          </>
-                        )}
-
-                        {row.note && (
-                          <p className="mt-4 rounded-lg bg-slate-50 px-3 py-2 text-xs italic text-slate-500">
-                            {row.note}
-                          </p>
-                        )}
-
-                        {canManage && (
-                          <button
-                            type="button"
-                            disabled={deletingArchiveId === row.id}
-                            onClick={() => setArchiveToDelete(row)}
-                            className="mt-4 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-400 transition hover:bg-red-50 hover:text-[var(--destructive)] disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            {deletingArchiveId === row.id ? (
-                              <LoaderCircle className="size-3.5 animate-spin" />
-                            ) : (
-                              <Trash2 className="size-3.5" />
-                            )}
-                            Удалить запись
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </Panel>
-        )}
-      </Modal>
-
-      <Modal
-        open={canManage && correctionOpen}
-        onClose={() => !correcting && setCorrectionOpen(false)}
-        eyebrow={`AI 24/7 · управление · ${camera?.zone || processor.cam}`}
-        title="Уменьшить итог за сегодня"
-        description="Используйте только для ложных срабатываний. Сырой результат модели не меняется, корректировка навсегда останется в журнале."
-        className="max-w-lg"
-        footer={
-          <>
-            <Button variant="ghost" disabled={correcting} onClick={() => setCorrectionOpen(false)}>
-              Отмена
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={
-                correcting ||
-                !correctionColor ||
-                Number(correctionAmount) <= 0 ||
-                Number(correctionAmount) > correctionAvailable ||
-                correctionReason.trim().length < 5
-              }
-              onClick={() => void subtractCount()}
-            >
-              {correcting ? <LoaderCircle className="size-4 animate-spin" /> : <Minus className="size-4" />}
-              Вычесть {Number(correctionAmount) > 0 ? correctionAmount : ""}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-5">
-          <div className="flex items-end justify-between rounded-2xl border border-blue-100 bg-blue-50/70 p-4">
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-500">Сейчас за сегодня</div>
-              <div className="mt-1 text-4xl font-black tabular-nums text-slate-900">{todayTotal}</div>
-            </div>
-            <div className="text-right text-xs text-slate-500">
-              модель: {currentDaily?.model_total ?? 0}
-              <br />
-              поправка: {currentDaily?.adjustment ?? 0}
-            </div>
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor={`correction-color-${processor.cam}`}>Цвет продукции</Label>
-            <select
-              id={`correction-color-${processor.cam}`}
-              value={correctionColor}
-              onChange={(event) => {
-                setCorrectionColor(event.target.value);
-                setCorrectionAmount("");
-              }}
-              className="h-10 w-full rounded-xl border bg-[var(--background)] px-3 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15"
-            >
-              <option value="">Выберите цвет</option>
-              {(currentDaily?.colors ?? [])
-                .filter((item) => item.total > 0)
-                .map((item) => (
-                  <option key={item.color} value={item.color}>
-                    {colorMeta(item.color).label} · {item.total} меш.
-                  </option>
-                ))}
-            </select>
-            <span className="text-xs text-[var(--muted-foreground)]">
-              Цвет нужен, чтобы складская корректировка попала в правильный товар.
-            </span>
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor={`correction-amount-${processor.cam}`}>Сколько вычесть</Label>
-            <Input
-              id={`correction-amount-${processor.cam}`}
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={correctionAvailable}
-              autoFocus
-              value={correctionAmount}
-              onChange={(event) => setCorrectionAmount(event.target.value)}
-              placeholder="Например, 2"
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor={`correction-reason-${processor.cam}`}>Причина</Label>
-            <textarea
-              id={`correction-reason-${processor.cam}`}
-              value={correctionReason}
-              onChange={(event) => setCorrectionReason(event.target.value)}
-              maxLength={500}
-              placeholder="Например: два ложных пересечения линии"
-              className="min-h-24 w-full resize-y rounded-xl border bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15"
-            />
-            <span className="text-xs text-[var(--muted-foreground)]">Обязательно, минимум 5 символов.</span>
-          </div>
-          {correctionError && (
-            <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-[var(--destructive)]">
-              {correctionError}
-            </p>
-          )}
-        </div>
-      </Modal>
-
-      <Modal
-        open={canManage && archiveOpen}
-        onClose={() => !archiving && setArchiveOpen(false)}
-        eyebrow={`AI 24/7 · управление · ${camera?.zone || processor.cam}`}
-        title="Обнулить счётчик и сдать в архив"
-        description="Накопленное переносится в архив целиком: счётчик начнётся с нуля, а дни останутся в истории и на графике."
-        className="max-w-lg"
-        footer={
-          <>
-            <Button variant="ghost" disabled={archiving} onClick={() => setArchiveOpen(false)}>
-              Отмена
-            </Button>
-            <Button disabled={archiving || allTimeTotal <= 0} onClick={() => void archiveCount()}>
-              {archiving ? <LoaderCircle className="size-4 animate-spin" /> : <Archive className="size-4" />}
-              Архивировать {allTimeTotal}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-5">
-          <div className="flex items-end justify-between rounded-2xl border border-blue-100 bg-blue-50/70 p-4">
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-500">Уйдёт в архив</div>
-              <div className="mt-1 text-4xl font-black tabular-nums text-slate-900">{allTimeTotal}</div>
-            </div>
-            <div className="text-right text-xs text-slate-500">
-              станет: 0
-              <br />
-              за сегодня: {todayTotal}
-            </div>
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor={`archive-note-${processor.cam}`}>Примечание</Label>
-            <textarea
-              id={`archive-note-${processor.cam}`}
-              value={archiveNote}
-              onChange={(event) => setArchiveNote(event.target.value)}
-              maxLength={500}
-              placeholder="Например: закрытие месяца, сдано в CRM"
-              className="min-h-20 w-full resize-y rounded-xl border bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15"
-            />
-            <span className="text-xs text-[var(--muted-foreground)]">
-              Необязательно — попадёт в журнал вместе с суммой.
-            </span>
-          </div>
-          {archiveError && (
-            <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-[var(--destructive)]">
-              {archiveError}
-            </p>
-          )}
-        </div>
-      </Modal>
-
-      <Modal
-        open={canManage && archiveToDelete !== null}
-        onClose={() => deletingArchiveId === null && setArchiveToDelete(null)}
-        eyebrow={`AI 24/7 · управление · ${camera?.zone || processor.cam}`}
-        title="Удалить запись архива?"
-        description="Мешки не пропадут — они вернутся в текущий счёт, как будто период не закрывали."
-        className="max-w-lg"
-        footer={
-          <>
-            <Button variant="ghost" disabled={deletingArchiveId !== null} onClick={() => setArchiveToDelete(null)}>
-              Отмена
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={deletingArchiveId !== null}
-              onClick={() => archiveToDelete && void deleteArchive(archiveToDelete)}
-            >
-              {deletingArchiveId !== null ? (
-                <LoaderCircle className="size-4 animate-spin" />
-              ) : (
-                <Trash2 className="size-4" />
-              )}
-              Удалить
-            </Button>
-          </>
-        }
-      >
-        {archiveToDelete && (
-          <div className="space-y-4">
-            <div className="flex items-end justify-between rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-amber-600">Вернётся в счёт</div>
-                <div className="mt-1 text-4xl font-black tabular-nums text-slate-900">{archiveToDelete.total}</div>
-              </div>
-              <div className="text-right text-xs text-slate-500">
-                {fullDay(archiveToDelete.period_start)}
-                {archiveToDelete.period_end !== archiveToDelete.period_start &&
-                  ` — ${fullDay(archiveToDelete.period_end)}`}
-                <br />
-                {archiveToDelete.days} дн.
-              </div>
-            </div>
-            <p className="text-sm text-slate-500">
-              Запись исчезнет из архива, а её дни снова попадут в «за всё время» и на график. Действие попадёт в журнал.
-            </p>
-            {deleteArchiveError && (
-              <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-[var(--destructive)]">
-                {deleteArchiveError}
-              </p>
-            )}
-          </div>
-        )}
       </Modal>
     </>
   );
@@ -2548,7 +1919,6 @@ function MonoblockPageInner() {
                           detail={alwaysOnSettings.detail}
                           daily={alwaysOnAnalytics?.cameras.find((item) => item.camera === source)}
                           canManage={canManageAlwaysOn}
-                          onAnalyticsChanged={reloadAlwaysOnAnalytics}
                         />
                       );
                     })}
