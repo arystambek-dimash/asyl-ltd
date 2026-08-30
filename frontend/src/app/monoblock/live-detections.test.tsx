@@ -364,6 +364,11 @@ describe("AI 24/7 live detections", () => {
     const productionDay = {
       selected_day: day,
       timezone: "UTC",
+      dominant_brand_by_color: {
+        red: "dikhan_baba",
+        green: "korol",
+        blue: "korol",
+      },
       mappings: [
         { color: "red", product: 1, product_label: "ДБН 1с 50кг · Красный 50 кг" },
         { color: "green", product: 2, product_label: "K2c 50кг · Зелёный 50 кг" },
@@ -499,9 +504,12 @@ describe("AI 24/7 live detections", () => {
     expect(algorithmButton).toHaveAttribute("aria-pressed", "true");
     const algorithmRed = await within(dayPanel).findByRole("group", { name: "Красный: 153 мешков" });
     expect(within(algorithmRed).getByText("96.8%")).toBeInTheDocument();
-    expect(within(algorithmRed).getByText("ДБН 1с 50кг · Красный 50 кг")).toBeInTheDocument();
+    const redMapping = within(algorithmRed).getByText("ДБН 1с 50кг · Красный 50 кг");
+    const redColorAndBrand = within(algorithmRed).getByText("Красный · Дихан Баба");
+    expect(redMapping.compareDocumentPosition(redColorAndBrand) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const algorithmGreen = within(dayPanel).getByRole("group", { name: "Зелёный: 5 мешков" });
     expect(within(algorithmGreen).getByText("K2c 50кг · Зелёный 50 кг")).toBeInTheDocument();
+    expect(within(algorithmGreen).getByText("Зелёный · Korol")).toBeInTheDocument();
     expect(within(dayPanel).queryByRole("group", { name: /Синий: / })).not.toBeInTheDocument();
     expect(within(dayPanel).getAllByText("меш.")).toHaveLength(2);
     expect(within(dayPanel).queryByText("Korol")).not.toBeInTheDocument();
@@ -515,6 +523,7 @@ describe("AI 24/7 live detections", () => {
     expect(within(dayPanel).getByRole("group", { name: "Зелёный: 5 мешков" })).toBeInTheDocument();
     const rawBlue = within(dayPanel).getByRole("group", { name: "Синий: 3 мешков" });
     expect(within(rawBlue).getByText("ДБН вс 50кг · Синий 50 кг")).toBeInTheDocument();
+    expect(within(rawBlue).getByText("Синий · Korol")).toBeInTheDocument();
     expect(within(dayPanel).getAllByText("меш.")).toHaveLength(4);
     expect(within(dayPanel).queryByText("Korol")).not.toBeInTheDocument();
 
@@ -531,6 +540,7 @@ describe("AI 24/7 live detections", () => {
     expect(within(legacyDayPanel).getByRole("group", { name: "Красный: 10 мешков" })).toBeInTheDocument();
     expect(within(legacyDayPanel).getByRole("group", { name: "Синий: 2 мешков" })).toBeInTheDocument();
     expect(within(legacyDayPanel).getAllByText("Сопоставление недоступно")).toHaveLength(2);
+    expect(within(legacyDayPanel).getAllByText(/Бренд недоступен$/)).toHaveLength(2);
     expect(within(legacyDayPanel).queryByText("Не сопоставлено")).not.toBeInTheDocument();
     expect(within(legacyDayPanel).getAllByText("меш.")).toHaveLength(2);
 

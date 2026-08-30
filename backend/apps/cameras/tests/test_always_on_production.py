@@ -9,6 +9,8 @@ from apps.cameras import analytics, production
 from apps.cameras.models import (
     AlwaysOnColorProductMapping,
     AlwaysOnCounterCursor,
+    AlwaysOnDailyAnalytics,
+    AlwaysOnImportedEvent,
     AlwaysOnProductionCorrection,
     AlwaysOnProductionRun,
     AlwaysOnStockBatch,
@@ -46,6 +48,31 @@ def _closed_run(*, camera="cam3", color="red", bags=10, day=16):
         last_counted_at=started + timedelta(minutes=10),
         ended_at=started + timedelta(minutes=10),
         model_bags=bags,
+    )
+
+
+def _imported_event(
+    event_id: int,
+    occurred_at: datetime,
+    *,
+    camera: str = "cam3",
+    mode: str = "always_on",
+    applied: bool = True,
+    class_name: str = "Red_50",
+    color: str | None = None,
+    brand: str | None = "korol",
+) -> AlwaysOnImportedEvent:
+    return AlwaysOnImportedEvent.objects.create(
+        camera=camera,
+        upstream_event_id=event_id,
+        occurred_at=occurred_at,
+        source="sub",
+        mode=mode,
+        class_name=class_name,
+        color=color,
+        brand=brand,
+        total_after=event_id,
+        applied_to_analytics=applied,
     )
 
 
@@ -564,6 +591,154 @@ def test_production_payload_returns_every_run_for_selected_day():
     )
     # Preserve the existing bounded journal contract for the settings screen.
     assert len(result["runs"]) == 100
+
+
+def test_selected_day_dominant_brand_is_joined_to_normalized_event_color():
+    selected_day = "2026-08-14"
+    for event_id, brand in enumerate(
+        [" Korol ", "korol", "Dikhan   Baba", "dikhan baba"],
+        start=1,
+    ):
+        _imported_event(
+            event_id,
+            _at(14, 10) + timedelta(minutes=event_id),
+            class_name="Red_50",
+            color=" Blue_50 ",
+            brand=brand,
+        )
+    _imported_event(
+        5,
+        _at(14, 11),
+        class_name="Green_50",
+        brand=None,
+    )
+    _imported_event(
+        6,
+        _at(14, 12),
+        class_name="Green_50",
+        brand="unknown",
+    )
+    AlwaysOnDailyAnalytics.objects.create(
+        camera="cam3",
+        day=_at(14, 0).date(),
+        model_total=6,
+        model_per_color={"blue": 4, "green": 2},
+    )
+
+    result = production.production_payload("cam3", day=selected_day)
+
+    # Both real brands have two events; the lexical tie-break is deterministic.
+    assert result["dominant_brand_by_color"] == {
+        "blue": "dikhan baba",
+        "green": None,
+    }
+
+
+def test_dominant_brand_uses_local_day_and_only_applied_always_on_camera_events():
+    start = _at(14, 0)
+    end = _at(15, 0)
+    _imported_event(1, start, class_name="Red_50", brand="korol")
+    _imported_event(
+        2,
+        end - timedelta(microseconds=1),
+        class_name="Red_50",
+        brand="korol",
+    )
+    _imported_event(
+        3,
+        start - timedelta(microseconds=1),
+        class_name="Green_50",
+        brand="outside before",
+    )
+    _imported_event(
+        4,
+        end,
+        class_name="Blue_50",
+        brand="outside after",
+    )
+    _imported_event(
+        1,
+        _at(14, 12),
+        camera="cam4",
+        class_name="Yellow_50",
+        brand="other camera",
+    )
+    _imported_event(
+        5,
+        _at(14, 13),
+        mode="session",
+        class_name="Purple_50",
+        brand="wrong mode",
+    )
+    _imported_event(
+        6,
+        _at(14, 14),
+        applied=False,
+        class_name="Orange_50",
+        brand="not applied",
+    )
+    AlwaysOnDailyAnalytics.objects.create(
+        camera="cam3",
+        day=_at(14, 0).date(),
+        model_total=2,
+        model_per_color={"red": 2},
+    )
+
+    result = production.production_payload("cam3", day="2026-08-14")
+
+    assert result["dominant_brand_by_color"] == {"red": "korol"}
+
+
+def test_dominant_brand_uses_only_the_active_tail_after_same_day_archive():
+    _imported_event(1, _at(14, 9), class_name="Red_50", brand="dikhan_baba")
+    _imported_event(2, _at(14, 9, 1), class_name="Green_50", brand="korol")
+    _imported_event(3, _at(14, 10), class_name="Red_50", brand="dikhan_baba")
+    _imported_event(4, _at(14, 11), class_name="Red_50", brand="korol")
+    _imported_event(5, _at(14, 11, 1), class_name="Green_50", brand="unknown")
+    _imported_event(6, _at(14, 12), class_name="Red_50", brand="korol")
+    # The active analytics row was reset by an archive after event 3.  Its
+    # colour counts describe only events 4–6, so archived brands cannot leak
+    # into the cards.
+    AlwaysOnDailyAnalytics.objects.create(
+        camera="cam3",
+        day=_at(14, 0).date(),
+        model_total=3,
+        model_per_color={"red": 2, "green": 1},
+    )
+
+    result = production.production_payload("cam3", day="2026-08-14")
+
+    assert result["dominant_brand_by_color"] == {
+        "green": None,
+        "red": "korol",
+    }
+
+
+def test_dominant_brand_is_unknown_when_event_journal_does_not_cover_active_count():
+    _imported_event(1, _at(14, 11), class_name="Red_50", brand="dikhan_baba")
+    _imported_event(2, _at(14, 12), class_name="Red_50", brand="dikhan_baba")
+    # A snapshot baseline predates the durable event journal.  Two classified
+    # events cannot safely label all 2,293 active red bags.
+    AlwaysOnDailyAnalytics.objects.create(
+        camera="cam3",
+        day=_at(14, 0).date(),
+        model_total=2293,
+        model_per_color={"red": 2293},
+    )
+
+    result = production.production_payload("cam3", day="2026-08-14")
+
+    assert result["dominant_brand_by_color"] == {"red": None}
+
+
+def test_dominant_brand_does_not_guess_for_legacy_or_missing_event_data():
+    _closed_run(camera="cam3", color="red", bags=7, day=14)
+
+    selected = production.production_payload("cam3", day="2026-08-14")
+    without_day = production.production_payload("cam3")
+
+    assert selected["dominant_brand_by_color"] == {}
+    assert without_day["dominant_brand_by_color"] == {}
 
 
 def test_production_payload_keeps_raw_runs_and_adds_algorithm_analytics():

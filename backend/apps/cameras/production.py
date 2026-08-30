@@ -9,7 +9,7 @@ production day.
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
 
 from django.conf import settings
@@ -26,6 +26,8 @@ from . import ai
 from .models import (
     AlwaysOnColorProductMapping,
     AlwaysOnCounterCursor,
+    AlwaysOnDailyAnalytics,
+    AlwaysOnImportedEvent,
     AlwaysOnProductionCorrection,
     AlwaysOnProductionRun,
     AlwaysOnStockBatch,
@@ -51,6 +53,7 @@ COLOR_LABELS = {
 TERMINAL_BATCH_STATUSES = frozenset(
     {AlwaysOnStockBatch.POSTED, AlwaysOnStockBatch.EMPTY}
 )
+NON_DOMINANT_BRANDS = frozenset({"unclassified", "unknown"})
 
 
 def _default_timezone():
@@ -565,6 +568,98 @@ def _selected_day(value: date | str | None) -> date | None:
         ) from exc
 
 
+def _dominant_brand_by_color(
+    camera: str,
+    selected_day: date | None,
+    selected_start: datetime | None,
+    selected_end: datetime | None,
+) -> dict[str, str | None]:
+    """Return the classified brand seen most often for each event colour.
+
+    This is deliberately derived from the durable event journal rather than
+    the independent daily brand totals.  It therefore preserves the exact
+    colour-to-brand relationship for the selected local calendar day.  Only
+    the newest events represented by the active colour totals participate:
+    today's events already transferred to an archive must not determine the
+    brand of the new active slice.  If the journal does not fully cover an
+    active colour (for example, because its baseline predates event sync), the
+    brand remains unknown.  A lexical tie-break keeps the result stable
+    regardless of database order.
+    """
+
+    if selected_day is None or selected_start is None or selected_end is None:
+        return {}
+
+    model_per_color = (
+        AlwaysOnDailyAnalytics.objects.filter(
+            camera=camera,
+            day=selected_day,
+            archived_at__isnull=True,
+        )
+        .values_list("model_per_color", flat=True)
+        .first()
+        or {}
+    )
+    active_counts = {
+        str(color).strip().lower(): int(count)
+        for color, count in model_per_color.items()
+        if str(color).strip() and int(count) > 0
+    }
+    if not active_counts:
+        return {}
+
+    consumed: Counter[str] = Counter()
+    remaining_events = sum(active_counts.values())
+    brand_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    events = (
+        AlwaysOnImportedEvent.objects.filter(
+            camera=camera,
+            mode="always_on",
+            applied_to_analytics=True,
+            occurred_at__gte=selected_start,
+            occurred_at__lt=selected_end,
+        )
+        .order_by("-upstream_event_id")
+        .values_list("color", "class_name", "brand")
+    )
+    for classified_color, class_name, classified_brand in events.iterator():
+        # Keep this compatible with event_sync._event_color.
+        color = (classified_color or class_name).split("_", 1)[0].strip().lower()
+        if (
+            not color
+            or len(color) > 32
+            or color not in active_counts
+            or consumed[color] >= active_counts[color]
+        ):
+            continue
+        # Unknown brands still consume their event's place in the active tail;
+        # otherwise an older, already archived known brand could leak in.
+        consumed[color] += 1
+        remaining_events -= 1
+
+        # Keep this compatible with event_sync._event_brand.  Explicit
+        # ``unknown`` and legacy ``unclassified`` values are evidence that no
+        # brand was identified, so they cannot become a dominant brand.
+        if classified_brand is not None:
+            brand = " ".join(classified_brand.split()).lower()
+            if brand and len(brand) <= 100 and brand not in NON_DOMINANT_BRANDS:
+                brand_counts[color][brand] += 1
+        if remaining_events == 0:
+            break
+
+    return {
+        color: (
+            min(
+                brand_counts[color].items(),
+                key=lambda item: (-item[1], item[0]),
+            )[0]
+            if consumed[color] == active_counts[color] and brand_counts[color]
+            else None
+        )
+        for color in sorted(active_counts)
+    }
+
+
 def production_payload(camera: str, day: date | str | None = None) -> dict:
     camera = ai.normalize(camera)
     selected_day = _selected_day(day)
@@ -673,6 +768,12 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
     return {
         "camera": camera,
         "selected_day": selected_day.isoformat() if selected_day else None,
+        "dominant_brand_by_color": _dominant_brand_by_color(
+            camera,
+            selected_day,
+            selected_start,
+            selected_end,
+        ),
         # The exact journal remains visible and backward-compatible.  The
         # algorithm view is derived only for selected-day analytics.
         "day_runs": raw_day_runs,

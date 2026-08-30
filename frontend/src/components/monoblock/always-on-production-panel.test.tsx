@@ -29,6 +29,7 @@ const payload: AlwaysOnProductionPayload = {
   next_run_at: "2026-08-16T14:00:00Z",
   selected_day: null,
   day_runs: [],
+  dominant_brand_by_color: {},
   fully_configured: false,
   available_colors: ["red", "blue"],
   mappings: [{ color: "red", product: 1, product_label: "Мука красная · 50 кг" }],

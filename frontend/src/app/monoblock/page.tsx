@@ -48,6 +48,7 @@ import { Modal } from "@/components/ui/modal";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { motion } from "motion/react";
 import { ColorDot, Eyebrow, Hairline, Metric, Panel, SectionHead } from "@/components/monoblock/ui";
+import { brandMeta } from "@/lib/monoblock-brands";
 import { colorMeta, normalizedColor } from "@/lib/monoblock-colors";
 import { api, apiError } from "@/lib/api";
 import { orderedBagCount } from "@/lib/orders";
@@ -778,6 +779,15 @@ function AlwaysOnCard({
   const selectedProductByColor = new Map(
     (selectedMappings ?? []).map((mapping) => [normalizedColor(mapping.color), mapping.product_label]),
   );
+  const selectedBrandsByColor = selectedDayProduction?.dominant_brand_by_color;
+  const selectedBrandByColor = new Map(
+    Object.entries(selectedBrandsByColor ?? {}).map(([color, brand]) => [normalizedColor(color), brand]),
+  );
+  const selectedBrandStatus = selectedBrandsByColor
+    ? "ready"
+    : selectedProductionError || selectedDayProduction
+      ? "unavailable"
+      : "loading";
   const selectedMappingStatus = selectedMappings
     ? "ready"
     : selectedProductionError || selectedDayProduction || production
@@ -1358,6 +1368,15 @@ function AlwaysOnCard({
                     <div className="mt-3 grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
                       {selectedVisibleColors.map((item) => {
                         const productLabel = selectedProductByColor.get(normalizedColor(item.color));
+                        const brand = selectedBrandByColor.get(normalizedColor(item.color));
+                        const brandLabel = brand
+                          ? brandMeta(brand).label
+                          : selectedBrandStatus === "ready"
+                            ? "Бренд не определён"
+                            : selectedBrandStatus === "unavailable"
+                              ? "Бренд недоступен"
+                              : "Загрузка бренда…";
+                        const colorAndBrandLabel = `${colorMeta(item.color).label} · ${brandLabel}`;
                         const mappingLabel =
                           productLabel ??
                           (selectedMappingStatus === "ready"
@@ -1372,25 +1391,35 @@ function AlwaysOnCard({
                             aria-label={`${colorMeta(item.color).label}: ${item.total} мешков`}
                           >
                             <div className="flex items-center gap-2">
-                              <ColorDot className={colorMeta(item.color).dot} />
-                              <span className="text-xs font-medium text-slate-500">{colorMeta(item.color).label}</span>
+                              <span
+                                title={mappingLabel}
+                                className={cn(
+                                  "min-w-0 truncate text-xs font-medium",
+                                  productLabel
+                                    ? "text-slate-600"
+                                    : selectedMappingStatus === "ready"
+                                      ? "text-amber-600"
+                                      : "text-slate-400",
+                                )}
+                              >
+                                {mappingLabel}
+                              </span>
                               <span className="ml-auto text-xs tabular-nums text-slate-400">{item.percent}%</span>
                             </div>
                             <div className="mt-1 text-2xl font-black tabular-nums tracking-tight text-slate-900">
                               {item.total}
                             </div>
-                            <div
-                              title={mappingLabel}
-                              className={cn(
-                                "mt-1.5 truncate text-[11px] font-medium",
-                                productLabel
-                                  ? "text-slate-500"
-                                  : selectedMappingStatus === "ready"
-                                    ? "text-amber-600"
-                                    : "text-slate-400",
-                              )}
-                            >
-                              {mappingLabel}
+                            <div className="mt-1.5 flex min-w-0 items-center gap-2">
+                              <ColorDot className={colorMeta(item.color).dot} />
+                              <span
+                                title={colorAndBrandLabel}
+                                className={cn(
+                                  "truncate text-[11px] font-medium",
+                                  brand ? "text-slate-500" : "text-slate-400",
+                                )}
+                              >
+                                {colorAndBrandLabel}
+                              </span>
                             </div>
                           </div>
                         );

@@ -764,6 +764,8 @@ export interface AlwaysOnProductionPayload {
   algorithm_day_runs?: AlwaysOnProductionRun[];
   /** Сравнение сырого и алгоритмического вида выбранного дня. */
   run_smoothing?: AlwaysOnRunSmoothing;
+  /** Доминирующий бренд каждого цвета по исходным событиям выбранного дня. */
+  dominant_brand_by_color?: Record<string, string | null>;
   fully_configured: boolean;
   available_colors: string[];
   mappings: AlwaysOnProductMapping[];
