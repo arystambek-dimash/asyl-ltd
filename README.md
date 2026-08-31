@@ -608,15 +608,23 @@ DEGRADED/OUTAGE/RECOVERY по-прежнему доставляются неза
 
 `anon 60/мин`, `user 600/мин`, `login 10/мин`, `register 5/мин`
 (config/throttles.py, поверх nginx-лимитов). Единый обработчик ошибок
-(`config/exceptions.py`) нормализует ответы к `{"detail", "code"}`.
+(`config/exceptions.py`) нормализует ответы к `{"detail", "code"}`; durable
+физические операции дополнительно возвращают `request_id`, состояние и
+`retryable`.
 
 ### Номера автомобилей с camera-PC
 
-AI на ПК камер передаёт только подтверждённые метаданные номера в защищённый
-HTTPS webhook `https://asyl-ltd.kz/api/integrations/vehicle-plate-events`
-(без завершающего `/`). Настройка токена, точный JSON-контракт, проверка и
-откат описаны в [deploy/vehicle-plate-events.md](deploy/vehicle-plate-events.md).
-Фото и видео для этой интеграции не передаются и не сохраняются.
+Для вывоза действует weight-first цепочка: Asyl фиксирует один стабильный вес,
+после чего idempotent POST включает on-demand распознавание камеры и потока из
+`VEHICLE_PLATE_WEIGHT_FIRST_CAMERA/SOURCE` внутри сохранённого ROI. Номер, вес
+и переходы рейса коммитятся одной транзакцией;
+повтор того же UUID не читает весы снова и идёт через retry-only camera endpoint.
+Если исходный POST не дошёл, durable tombstone запрещает запоздалый захват
+следующей машины. Старый camera-first webhook оставлен только для исторического
+журнала/rollback и одновременно не включается. Точный контракт, конфигурация,
+проверка и откат описаны в
+[deploy/vehicle-plate-events.md](deploy/vehicle-plate-events.md). Фото и видео
+в Asyl не передаются и не сохраняются.
 
 ### ApiPay / Kaspi Pay
 

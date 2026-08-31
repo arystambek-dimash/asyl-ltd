@@ -1,4 +1,10 @@
-# Vehicle plate events: production integration
+# Vehicle plate recognition: production integration
+
+The active export workflow is **weight-first**: Asyl LTD reads one stable truck
+scale value and only then asks the camera-PC to recognize the vehicle in the
+saved ROI. The older camera-first webhook remains documented below for audit
+history and rollback compatibility, but it must not drive the same physical
+lane at the same time.
 
 The camera-PC posts metadata for a confirmed stationary vehicle. It never
 posts, requests, or stores a photo or a video in Asyl-LTD.
@@ -131,22 +137,25 @@ pagination filters. It contains metadata only.
 
 ### Operator diagnostics and ROI
 
-The export-camera tab in `/grain` reads
-`GET /api/cameras/cam1/vehicle-plate-runtime/` every five seconds while the tab
+The export-camera tab in `/grain` reads the configuration-aware bootstrap
+`GET /api/cameras/vehicle-plate-runtime/` every five seconds while the tab
 is visible; callers need `grain.view`. The first request settles before polling
 starts, and each camera-PC probe has a two-second timeout. The backend obtains
-the live `/vehicle-number` and
-`/cameras/cam1/vehicle-roi` documents from camera-PC, validates them and returns
-only a `no-store` projection. Model paths, camera credentials, raw capture
+the configured weight-first camera and source from its server-only settings,
+then obtains the live `/vehicle-number` and matching
+`/cameras/<cam>/vehicle-roi` documents from camera-PC. It validates them and
+returns a `no-store` projection including the safe logical browser stream
+(`camN` for `sub`, `camNmain` for `main`). Model paths, camera credentials, raw capture
 state, active-visit identifiers, recognized plate text and `last_error` never
 reach the browser.
 
 The video and AI badges are independent. `ВИДЕО: В ЭФИРЕ` confirms only the
 WebRTC stream; the AI badge separately reports whether the detector, shared
-OCR, automatic monitor, `cam1/main` assignment, ROI and CRM delivery are ready.
-The editor uses the dedicated on-demand `cam1main` browser alias, which reads
-the same MediaMTX `/cam1` main stream as the vehicle monitor; the normal camera
-wall keeps its lower-bandwidth `cam1sub` alias. The blue polygon is therefore
+OCR, configured on-demand camera/source and ROI are ready. The editor uses the
+logical browser alias returned by the backend, so a configured `cam7/sub` lane
+renders `cam7`, while `cam7/main` renders `cam7main`; both edit the ROI that OCR
+will actually use.
+The blue polygon is therefore
 aligned to the exact `object-cover` video pixels evaluated by the model.
 
 The counters are cumulative since the monitor started. Watch which value stops
@@ -162,16 +171,148 @@ increasing during a real stopped-truck check, from left to right:
 
 Superusers can edit the same polygon directly over the export-camera video.
 The browser sends normalized points to
-`PUT /api/cameras/cam1/vehicle-plate-runtime/`; the backend validates the
-3–12-point, non-degenerate polygon, fixes its source to `main`, and proxies it to the canonical camera-PC
-`PUT /cameras/cam1/vehicle-roi` contract. The camera-PC persists the geometry
+`PUT /api/cameras/<configured-cam>/vehicle-plate-runtime/`; the backend validates
+the 3–12-point, non-degenerate polygon, fixes its source to the configured
+`VEHICLE_PLATE_WEIGHT_FIRST_SOURCE`, and proxies it to the canonical camera-PC
+`PUT /cameras/<configured-cam>/vehicle-roi` contract. The camera-PC persists the geometry
 atomically and asks the running monitor to reload it immediately. A `503` with
 `code=roi_saved_refresh_pending` means the file was saved but the live monitor
 could not confirm the immediate refresh; the monitor's normal two-second ROI
 reload still picks it up after recovery. All GET and PUT responses are
 `no-store`, and non-superusers cannot change the polygon.
 
-## Automatic truck-export weighing
+## Weight-first truck-export weighing (active mode)
+
+The operator creates an export passage first. The existing commands remain the
+only business trigger:
+
+```http
+POST /api/grain/wagons/<wagon-id>/entry-weight/
+POST /api/grain/wagons/<wagon-id>/exit-weight/
+Content-Type: application/json
+Idempotency-Key: <canonical lowercase UUID>
+
+{}
+```
+
+The browser generates one UUID per button attempt and keeps it in
+`sessionStorage` until the server gives a certain terminal response. A network
+retry and an auth-token refresh preserve the same UUID. The read-only scale
+preview endpoint never starts OCR or changes accounting state.
+
+For a new UUID the backend executes this sequence:
+
+1. Commit a `PassageWeightCapture` claim before hardware I/O.
+2. Acquire the shared truck-scale capture mutex and read the physical scale
+   exactly once. The sample must already be connected, stable, fresh and
+   positive.
+3. Store the weight and its stable timestamp on the durable claim, without yet
+   changing `Wagon` or creating `WeighingRecord`.
+4. POST the same UUID and timestamp to camera-PC:
+
+   ```http
+   POST /cameras/cam1/vehicle-recognition
+   X-Api-Key: <AI_SERVICE_API_KEY>
+   Idempotency-Key: <same UUID>
+   Content-Type: application/json
+
+   {"stable_weight_at":"2026-08-30T10:21:14.381000Z"}
+   ```
+
+   Weight is deliberately not sent. The camera source comes from the saved
+   ROI. Camera-PC fences off old frames, requires exactly one plate bbox inside
+   that ROI and confirms the same normalized Kazakhstan number with repeated
+   OCR votes.
+5. In one database transaction Asyl locks the claim and trip, verifies the
+   current phase and number, writes the plate, `WeighingRecord`, weight/net and
+   all Wagon status transitions, then marks the claim `completed`. Any business
+   rejection rolls back all accounting changes and leaves an auditable failed
+   claim.
+
+Entry may fill an empty trip number or confirm an already entered identical
+number. Exit must recognize the same number saved at entry. A mismatch, missing
+ROI, no OCR consensus, invalid plate or exit weight not greater than entry is a
+terminal failure: no partial weight, number or status is saved.
+
+If the response is lost after camera-PC received the command, the claim stays
+retryable. A later request with the same UUID never reads the scale again and
+uses the lookup-only endpoint:
+
+```http
+POST /cameras/cam1/vehicle-recognition-retry
+Idempotency-Key: <same UUID>
+
+{"stable_weight_at":"<same timestamp>"}
+```
+
+This endpoint can replay `processing` or the cached terminal result but cannot
+create a camera claim. If the original POST never arrived, camera-PC atomically
+persists a terminal tombstone. A delayed original POST then sees that tombstone
+and cannot capture another vehicle. An interrupted Asyl claim that never saved
+a scale sample also cannot be resumed and requires a new deliberate attempt.
+
+Camera-PC may answer `202` with `status=processing` while the first request is
+still running. This is not a new capture: Asyl polls only the retry endpoint
+with the same `Idempotency-Key` and identical `stable_weight_at` until it
+receives a terminal response. Operators must not generate another UUID for
+that physical weighing. Browser/proxy `502`/`503`/`504` responses switch the
+same durable Asyl claim to this retry-only path.
+
+Both hosts must synchronize time (NTP/Windows Time). Camera-PC rejects a new
+trigger that is over the configured max age or more than five seconds in the
+future; replay of an already claimed UUID is checked before this freshness
+gate. The on-demand timeout bounds the frame-scanning window, not arbitrary
+driver shutdown or a single non-cancellable OCR call, so the Asyl HTTP timeout
+must include a small transport/cleanup margin.
+
+The Wagon detail response exposes safe capture audit fields under
+`vehicle_recognition_captures`: request UUID, action, stage, weight, plate,
+confidence, response status and sanitized error. Raw images are neither sent
+to Asyl nor stored there.
+
+Backend production settings:
+
+```dotenv
+AI_SERVICE_URL=http://<TAILSCALE-IP-CAMERA-PC>:8890
+AI_SERVICE_API_KEY=<same 32-512 character plaintext key whose SHA-256 is on camera-PC>
+VEHICLE_PLATE_AUTO_EXPORT_ENABLED=0
+VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=1
+VEHICLE_PLATE_WEIGHT_FIRST_CAMERA=cam1
+VEHICLE_PLATE_WEIGHT_FIRST_SOURCE=main
+VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS=12
+```
+
+Both mode flags set to `1` make Django fail startup. On camera-PC the matching
+lane must be on-demand only:
+
+```dotenv
+AI_VEHICLE_AUTO_ENABLED=false
+AI_VEHICLE_AUTO_CAMERAS=
+AI_VEHICLE_ON_DEMAND_CAMERAS=cam1
+```
+
+`VEHICLE_PLATE_WEIGHT_FIRST_SOURCE` must match the saved camera-PC ROI source.
+The browser stream is derived safely from the provisioned go2rtc convention:
+`sub` maps to `<camera>` and `main` maps to `<camera>main` (for example,
+`cam7` or `cam7main`). It is not a separately trusted client setting. Camera
+slots are deliberately limited to `cam1..cam32`, matching the static aliases.
+
+The protected production `.env` is the source of these non-secret toggles.
+`AI_SERVICE_API_KEY` remains backend-only. Rollback to manual weighing sets
+both mode flags to `0`; it does not remove capture audit rows or migrations.
+
+The current scale controller exposes a pull-only current-value GET and no
+durable stable episode identifier. Therefore background polling of
+`stable=true` is intentionally not a trigger: it cannot distinguish one truck
+remaining on the scale from the next truck. A future fully automatic flow must
+POST a unique `stable_episode_id`; it can then reuse this coordinator safely.
+
+## Legacy camera-first truck export (disabled in weight-first mode)
+
+The following section describes the older webhook-driven implementation. Keep
+`VEHICLE_PLATE_AUTO_EXPORT_ENABLED=0` when weight-first is enabled. It is
+retained only for historical event ingestion and an explicit rollback; do not
+run both coordinators on `cam1`.
 
 Production can apply fresh `cam1` / `main` plate events directly to the truck
 export workflow. This is deliberately a fail-closed v1 integration: the camera
@@ -312,13 +453,18 @@ of this physical preflight is uncertain.
 
 ## Safe rollout and rollback
 
-1. Create a separate production token and put it in the server `.env`; set the
-   same value in the camera-PC service through a secure channel.
+1. Choose one lane, for example `cam7/sub`. Set the same lane in Asyl through
+   `VEHICLE_PLATE_WEIGHT_FIRST_CAMERA=cam7` and
+   `VEHICLE_PLATE_WEIGHT_FIRST_SOURCE=sub`; deploy camera-PC with
+   `AI_VEHICLE_ON_DEMAND_CAMERAS=cam7`, the vehicle model, shared OCR and a
+   saved `cam7` ROI whose source is `sub`. Keep its continuous vehicle sender
+   off.
 2. From the server repository, validate without printing interpolated secrets:
    `docker compose -f docker-compose.prod.yml config --quiet`.
-3. Deploy with the existing immutable-image workflow. The backend migration is
-   applied automatically during its normal startup; verify a new event gets
-   `201`, retry it and verify `200`, then check the CRM journal.
+3. Deploy Asyl with `AUTO_EXPORT=0` and `WEIGHT_FIRST=1`. The additive capture
+   migration runs during normal startup. On a test vehicle, verify entry uses
+   one scale read, the saved number matches the camera and the capture status is
+   `completed`; repeat the same request UUID and verify no second weighing.
 4. If the release health gate fails, the existing deploy workflow restores the
    prior application image and checkout automatically. The database is not
    automatically restored; the migration is additive and the existing backup
@@ -332,8 +478,7 @@ the deployed release, then verify the result. It must never be part of the
 normal release rollback. Neither path changes bag counters/events, wagon
 integration, or the camera-PC SQLite database.
 
-To disable this integration without touching other camera services, stop sends
-from the camera-PC and rotate the production token to a new unused value, then
-redeploy. Production Compose intentionally refuses a missing token. Existing
-vehicle events remain in the CRM. Do not reset the camera-PC SQLite database or
-its counters as part of this rollback.
+To disable weight-first without touching bag counting, set
+`VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=0` and recreate only the normal application
+release. Existing vehicle events and capture audit remain in the CRM. Do not
+reset the camera-PC SQLite database or its counters as part of this rollback.

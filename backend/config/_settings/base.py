@@ -1,7 +1,9 @@
 import os
+import re
 import sys
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlsplit
 
 from config.observability import (
     build_logging_config,
@@ -418,6 +420,68 @@ VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES = _bounded_int_env(
 VEHICLE_PLATE_AUTO_EXPORT_ENABLED = env_flag(
     os.environ.get("VEHICLE_PLATE_AUTO_EXPORT_ENABLED", "0")
 )
+VEHICLE_PLATE_WEIGHT_FIRST_ENABLED = env_flag(
+    os.environ.get("VEHICLE_PLATE_WEIGHT_FIRST_ENABLED", "0")
+)
+VEHICLE_PLATE_WEIGHT_FIRST_CAMERA = os.environ.get(
+    "VEHICLE_PLATE_WEIGHT_FIRST_CAMERA", "cam1"
+).strip()
+if re.fullmatch(
+    r"cam(?:[1-9]|[12][0-9]|3[0-2])",
+    VEHICLE_PLATE_WEIGHT_FIRST_CAMERA,
+) is None:
+    raise ValueError("VEHICLE_PLATE_WEIGHT_FIRST_CAMERA must be cam1..cam32")
+VEHICLE_PLATE_WEIGHT_FIRST_SOURCE = os.environ.get(
+    "VEHICLE_PLATE_WEIGHT_FIRST_SOURCE", "main"
+).strip().lower()
+if VEHICLE_PLATE_WEIGHT_FIRST_SOURCE not in {"main", "sub"}:
+    raise ValueError("VEHICLE_PLATE_WEIGHT_FIRST_SOURCE must be main or sub")
+try:
+    VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS = float(
+        os.environ.get("VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS", "12")
+    )
+except (TypeError, ValueError) as exc:
+    raise ValueError(
+        "VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS must be a number"
+    ) from exc
+if not 1 <= VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS <= 30:
+    raise ValueError(
+        "VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS must be between 1 and 30"
+    )
+if VEHICLE_PLATE_AUTO_EXPORT_ENABLED and VEHICLE_PLATE_WEIGHT_FIRST_ENABLED:
+    raise ValueError(
+        "VEHICLE_PLATE_AUTO_EXPORT_ENABLED and "
+        "VEHICLE_PLATE_WEIGHT_FIRST_ENABLED cannot both be enabled"
+    )
+if VEHICLE_PLATE_WEIGHT_FIRST_ENABLED:
+    ai_service_parts = urlsplit(AI_SERVICE_URL)
+    try:
+        ai_service_port = ai_service_parts.port
+        ai_service_authority_valid = bool(ai_service_parts.hostname) and (
+            ai_service_port is None or ai_service_port > 0
+        )
+    except ValueError:
+        ai_service_authority_valid = False
+    if (
+        ai_service_parts.scheme not in {"http", "https"}
+        or not ai_service_authority_valid
+        or ai_service_parts.path not in {"", "/"}
+        or ai_service_parts.query
+        or ai_service_parts.fragment
+    ):
+        raise ValueError(
+            "AI_SERVICE_URL must be an absolute HTTP(S) service root when "
+            "VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=1"
+        )
+    if (
+        len(AI_SERVICE_API_KEY) < 32
+        or len(AI_SERVICE_API_KEY) > 512
+        or any(ord(char) < 33 or ord(char) > 126 for char in AI_SERVICE_API_KEY)
+    ):
+        raise ValueError(
+            "AI_SERVICE_API_KEY must contain 32-512 printable ASCII characters "
+            "when VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=1"
+        )
 VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME = os.environ.get(
     "VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME", "Отруби"
 ).strip()

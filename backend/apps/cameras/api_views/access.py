@@ -1,6 +1,8 @@
+import re
 from typing import ClassVar
 from urllib.parse import parse_qsl, urlsplit
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core import signing
 from django.utils.crypto import constant_time_compare
@@ -20,7 +22,9 @@ CAM_TOKEN_SALT = "cameras.stream-cookie.v2"
 CAM_TOKEN_VERSION = 1
 CAM_STREAM_PATH = "/go2rtc/api/ws"
 MAX_ORIGINAL_URI_LENGTH = 2048
-STAFF_ONLY_CAMERA_STREAM_SOURCES = frozenset({"cam1main"})
+STAFF_ONLY_CAMERA_MAIN_STREAM_RE = re.compile(
+    r"^cam(?:[1-9]|[12][0-9]|3[0-2])main$"
+)
 
 
 def _camera_token_payload(user) -> dict:
@@ -73,8 +77,14 @@ def _camera_token_user(token: str):
 def _is_valid_camera_stream_source(source: str) -> bool:
     if not source or source.strip() != source:
         return False
-    if source in STAFF_ONLY_CAMERA_STREAM_SOURCES:
-        return True
+    if STAFF_ONLY_CAMERA_MAIN_STREAM_RE.fullmatch(source):
+        if settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED:
+            if settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE != "main":
+                return False
+            expected = f"{settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA}main"
+        else:
+            expected = "cam1main"
+        return source == expected
     try:
         normalized_source = services.normalize_camera_path(source)
     except ValueError:

@@ -19,10 +19,7 @@ import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 
-const VEHICLE_PLATE_CAMERA = "cam1";
-const VEHICLE_PLATE_OCR_SOURCE = "main";
-const VEHICLE_PLATE_VIDEO_STREAM = "cam1main";
-const VEHICLE_RUNTIME_URL = `/cameras/${VEHICLE_PLATE_CAMERA}/vehicle-plate-runtime/`;
+const VEHICLE_RUNTIME_BOOTSTRAP_URL = "/cameras/vehicle-plate-runtime/";
 const VEHICLE_RUNTIME_POLL_MS = 5_000;
 const DEFAULT_VEHICLE_ROI: NormalizedRoiPoint[] = [
   [0.25, 0.25],
@@ -61,7 +58,11 @@ export type VehiclePlateRuntime = {
   ready: boolean;
   automation_enabled: boolean;
   camera_configured: boolean;
-  source: string;
+  weight_first_enabled: boolean;
+  on_demand_enabled: boolean;
+  on_demand_camera_configured: boolean;
+  source: "main" | "sub";
+  stream: string;
   server_push_configured: boolean;
   diagnostic: string;
   monitor: VehiclePlateMonitor | null;
@@ -89,11 +90,11 @@ const TONE_CLASSES: Record<RuntimePresentation["tone"], string> = {
   idle: "border-white/15 bg-white/[0.06] text-white/60",
 };
 
-function draftRoi(points: NormalizedRoiPoint[]): VehicleRoiConfig {
+function draftRoi(points: NormalizedRoiPoint[], source: "main" | "sub"): VehicleRoiConfig {
   return {
     configured: true,
     enabled: true,
-    source: VEHICLE_PLATE_OCR_SOURCE,
+    source,
     coordinate_space: "normalized",
     points: points.map(([x, y]) => ({ x, y })),
   };
@@ -113,14 +114,14 @@ function validRoiDraft(points: NormalizedRoiPoint[]) {
   return points.length >= 3 && points.length <= 12 && polygonArea(points) >= 0.0001;
 }
 
-function acceptedSaveResponse(value: unknown): value is VehicleRoiSaveResponse {
+function acceptedSaveResponse(value: unknown, expectedSource: "main" | "sub"): value is VehicleRoiSaveResponse {
   if (!value || typeof value !== "object") return false;
   const payload = value as Partial<VehicleRoiSaveResponse>;
   const points = normalizeVehicleRoi(payload.roi?.points);
   return (
     payload.saved === true &&
     typeof payload.applied_to_monitor === "boolean" &&
-    isDrawableVehicleRoi(payload.roi, VEHICLE_PLATE_OCR_SOURCE) &&
+    isDrawableVehicleRoi(payload.roi, expectedSource) &&
     validRoiDraft(points)
   );
 }
@@ -144,21 +145,38 @@ export function vehicleAiPresentation(
   if (!runtime.ready) {
     return { label: "AI: НЕ ГОТОВА", detail: "Детектор номера или OCR не загрузился.", tone: "bad" };
   }
+  if (runtime.weight_first_enabled) {
+    if (!runtime.on_demand_enabled) {
+      return {
+        label: "AI ПО ЗАПРОСУ ВЫКЛ.",
+        detail: "ПК камер ещё не включён в режим распознавания после стабильного веса.",
+        tone: "bad",
+      };
+    }
+    if (!runtime.on_demand_camera_configured) {
+      return {
+        label: "КАМЕРА НЕ НАЗНАЧЕНА",
+        detail: `${runtime.camera} не добавлена в распознавание после веса.`,
+        tone: "bad",
+      };
+    }
+    if (!isDrawableVehicleRoi(runtime.roi, runtime.source)) {
+      return { label: "ROI НЕ ГОТОВ", detail: "Сначала сохраните рабочую зону номера.", tone: "warn" };
+    }
+    return {
+      label: "AI ГОТОВА",
+      detail: "После стабильного веса камера получит свежие кадры и подтвердит номер OCR.",
+      tone: "good",
+    };
+  }
   if (!runtime.automation_enabled) {
     return { label: "АВТОМАТИКА ВЫКЛ.", detail: "Автоматический запуск модели выключен.", tone: "warn" };
   }
   if (!runtime.camera_configured) {
     return {
       label: "КАМЕРА НЕ НАЗНАЧЕНА",
-      detail: `${VEHICLE_PLATE_CAMERA} не добавлена в автоматическое распознавание.`,
+      detail: `${runtime.camera} не добавлена в автоматическое распознавание.`,
       tone: "warn",
-    };
-  }
-  if (runtime.source !== VEHICLE_PLATE_OCR_SOURCE) {
-    return {
-      label: "ПОТОК НЕ СОВПАЛ",
-      detail: `AI читает ${runtime.source || "другой поток"}; ожидаемый источник распознавания — ${VEHICLE_PLATE_OCR_SOURCE}.`,
-      tone: "bad",
     };
   }
   if (!isDrawableVehicleRoi(runtime.roi, runtime.source)) {
@@ -216,8 +234,8 @@ export function vehicleAiPresentation(
   return { label: "AI ЗАПУСКАЕТСЯ", detail: "ROI загружен, ожидаем первый обработанный кадр.", tone: "warn" };
 }
 
-function vehiclePipelineHint(monitor: VehiclePlateMonitor): string {
-  if (monitor.scanned_frames === 0) return "С запуска монитор ещё не получил ни одного кадра main.";
+function vehiclePipelineHint(monitor: VehiclePlateMonitor, source: "main" | "sub"): string {
+  if (monitor.scanned_frames === 0) return `С запуска монитор ещё не получил ни одного кадра ${source}.`;
   if (monitor.plate_detections === 0) return "С запуска кадры поступали, но детектор не увидел номерной знак.";
   if (monitor.stationary_admissions === 0) {
     return "С запуска номер находился, но его центр не прошёл ROI и фильтр остановки.";
@@ -232,21 +250,21 @@ function roiPresentation(runtime: VehiclePlateRuntime | null, error: string): Ru
   const roi = runtime?.roi;
   if (!roi?.configured) return { label: "ROI НЕ ЗАДАН", detail: "Зона остановки ещё не настроена.", tone: "warn" };
   if (!roi.enabled) return { label: "ROI ВЫКЛЮЧЕН", detail: "Сохранённая зона сейчас отключена.", tone: "warn" };
-  if (roi.source !== VEHICLE_PLATE_OCR_SOURCE) {
+  if (!runtime || roi.source !== runtime.source) {
     return {
       label: "ROI ДЛЯ ДРУГОГО ПОТОКА",
       detail: `Зона сохранена для ${roi.source || "другого потока"}.`,
       tone: "bad",
     };
   }
-  if (!isDrawableVehicleRoi(roi, VEHICLE_PLATE_OCR_SOURCE)) {
+  if (!isDrawableVehicleRoi(roi, runtime.source)) {
     return { label: "ROI ПОВРЕЖДЁН", detail: "Координаты зоны нельзя безопасно показать.", tone: "bad" };
   }
   return { label: "ROI ПОКАЗАН", detail: "Голубая область — зона контроля остановки.", tone: "good" };
 }
 
 /**
- * Live view of the fixed vehicle-plate lane used by automatic grain export.
+ * Live view of the backend-configured vehicle-plate lane used by grain export.
  * CameraStream keeps the go2rtc signalling behind the authenticated endpoint;
  * this component only selects the logical stream name.
  */
@@ -264,13 +282,14 @@ export function VehiclePlateCameraWorkspace() {
     error: runtimeError,
     reload,
     setData: setRuntime,
-  } = useApi<VehiclePlateRuntime>(VEHICLE_RUNTIME_URL);
+  } = useApi<VehiclePlateRuntime>(VEHICLE_RUNTIME_BOOTSTRAP_URL);
   useVisiblePolling(reload, VEHICLE_RUNTIME_POLL_MS, !runtimeLoading && !editingRoi && !savingRoi);
   const aiState = vehicleAiPresentation(runtime, runtimeLoading, runtimeError);
+  const weightFirst = Boolean(runtime?.weight_first_enabled);
   const roiState = editingRoi
     ? { label: "ROI РЕДАКТИРУЕТСЯ", detail: "Перетащите точки и сохраните новую зону.", tone: "warn" as const }
     : roiPresentation(runtime, runtimeError);
-  const overlayRoi = editingRoi ? draftRoi(roiDraft) : runtimeError ? null : runtime?.roi;
+  const overlayRoi = editingRoi && runtime ? draftRoi(roiDraft, runtime.source) : runtimeError ? null : runtime?.roi;
   const canSaveRoi = validRoiDraft(roiDraft) && !savingRoi;
 
   function startRoiEditor() {
@@ -295,18 +314,24 @@ export function VehiclePlateCameraWorkspace() {
     setRoiDraft([]);
     setRoiSaveError("");
     setSaveNotice(
-      payload.applied_to_monitor
+      weightFirst
         ? {
-            message:
-              "ROI сохранён. ПК камер получил запрос на обновление; новая зона обычно применяется в течение 2 секунд.",
+            message: "ROI сохранён. Следующее распознавание после стабильного веса использует новую зону.",
             tone: "success",
           }
-        : {
-            message: "ROI сохранён, но монитор пока не подтвердил обновление. Он перечитает зону после восстановления.",
-            tone: "warning",
-          },
+        : payload.applied_to_monitor
+          ? {
+              message:
+                "ROI сохранён. ПК камер получил запрос на обновление; новая зона обычно применяется в течение 2 секунд.",
+              tone: "success",
+            }
+          : {
+              message:
+                "ROI сохранён, но монитор пока не подтвердил обновление. Он перечитает зону после восстановления.",
+              tone: "warning",
+            },
     );
-    if (payload.applied_to_monitor) showSuccess("ROI камеры сохранён");
+    if (weightFirst || payload.applied_to_monitor) showSuccess("ROI камеры сохранён");
   }
 
   async function saveRoi() {
@@ -316,18 +341,19 @@ export function VehiclePlateCameraWorkspace() {
     const body = {
       points: roiDraft.map(([x, y]) => ({ x, y })),
       enabled: true,
-      source: VEHICLE_PLATE_OCR_SOURCE,
+      source: runtime.source,
     };
+    const runtimeUrl = `/cameras/${runtime.camera}/vehicle-plate-runtime/`;
     try {
-      const response = await api.put<VehicleRoiSaveResponse>(VEHICLE_RUNTIME_URL, body, { timeout: 12_000 });
-      if (!acceptedSaveResponse(response.data)) throw new Error("invalid vehicle ROI response");
+      const response = await api.put<VehicleRoiSaveResponse>(runtimeUrl, body, { timeout: 12_000 });
+      if (!acceptedSaveResponse(response.data, runtime.source)) throw new Error("invalid vehicle ROI response");
       acceptSavedRoi(response.data);
     } catch (cause) {
       // A 503 may mean that the polygon was persisted while the live monitor
       // refresh failed. Keep that authoritative value instead of rolling back.
       const errorResponse = (cause as AxiosError<unknown>).response;
       const partial = errorResponse?.data;
-      if (errorResponse?.status === 503 && acceptedSaveResponse(partial)) acceptSavedRoi(partial);
+      if (errorResponse?.status === 503 && acceptedSaveResponse(partial, runtime.source)) acceptSavedRoi(partial);
       else setRoiSaveError(apiError(cause));
     } finally {
       setSavingRoi(false);
@@ -339,10 +365,12 @@ export function VehiclePlateCameraWorkspace() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-sky-700">
-            Камера автоматического вывоза
+            {weightFirst ? "Камера распознавания после веса" : "Камера автоматического вывоза"}
           </p>
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-            Камера проходной показывает машину, номер которой используется для автоматического рейса.
+            {weightFirst
+              ? "После стабильного показания весов сервис включает распознавание в сохранённой ROI и фиксирует номер в рейсе."
+              : "Камера проходной показывает машину, номер которой используется для автоматического рейса."}
           </p>
         </div>
         {canManageRoi ? (
@@ -398,14 +426,17 @@ export function VehiclePlateCameraWorkspace() {
       >
         <div className="grid lg:aspect-[44/16] lg:grid-cols-[1.55fr_0.85fr]">
           <div className="relative aspect-video min-h-72 overflow-hidden bg-black lg:aspect-auto lg:min-h-0">
-            <CameraStream
-              src={VEHICLE_PLATE_VIDEO_STREAM}
-              onStateChange={setStreamOnline}
-              className="absolute inset-0 size-full object-cover"
-            />
+            {runtime?.stream ? (
+              <CameraStream
+                key={runtime.stream}
+                src={runtime.stream}
+                onStateChange={setStreamOnline}
+                className="absolute inset-0 size-full object-cover"
+              />
+            ) : null}
             <VehicleRoiOverlay
               roi={overlayRoi}
-              expectedSource={VEHICLE_PLATE_OCR_SOURCE}
+              expectedSource={runtime?.source ?? "main"}
               editable={editingRoi}
               onPointsChange={setRoiDraft}
             />
@@ -422,7 +453,7 @@ export function VehiclePlateCameraWorkspace() {
                 ПРОХОДНАЯ · ВЫВОЗ
               </span>
               <span className="rounded-full bg-black/45 px-3 py-1.5 text-[10px] font-semibold text-white/65 backdrop-blur-md">
-                Камера {VEHICLE_PLATE_CAMERA} · поток/OCR: {VEHICLE_PLATE_OCR_SOURCE}
+                Камера {runtime?.camera ?? "—"} · поток/OCR: {runtime?.source ?? "—"}
               </span>
             </div>
 
@@ -436,7 +467,9 @@ export function VehiclePlateCameraWorkspace() {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-sky-300">Прямой эфир</p>
-                <h2 className="mt-2 text-2xl font-bold tracking-tight">Автоматический вывоз</h2>
+                <h2 className="mt-2 text-2xl font-bold tracking-tight">
+                  {weightFirst ? "Вес → номер → рейс" : "Автоматический вывоз"}
+                </h2>
               </div>
               <div className="flex shrink-0 flex-col items-end gap-1.5">
                 <span
@@ -486,7 +519,7 @@ export function VehiclePlateCameraWorkspace() {
                   <p className="mt-1 text-[11px] leading-4 text-white/45">{roiState.detail}</p>
                 </div>
               </div>
-              {runtime?.monitor ? (
+              {runtime?.monitor && !weightFirst ? (
                 <div
                   role="region"
                   aria-label="Этапы распознавания номера"
@@ -507,7 +540,9 @@ export function VehiclePlateCameraWorkspace() {
                       </div>
                     ))}
                   </div>
-                  <p className="mt-3 text-[11px] leading-4 text-white/50">{vehiclePipelineHint(runtime.monitor)}</p>
+                  <p className="mt-3 text-[11px] leading-4 text-white/50">
+                    {vehiclePipelineHint(runtime.monitor, runtime.source)}
+                  </p>
                 </div>
               ) : null}
             </div>

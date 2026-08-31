@@ -914,6 +914,29 @@ export interface VehiclePlateCandidate {
   ocr_confidence: number | string;
 }
 
+export interface PassageWeightCapture {
+  request_id: string;
+  action: "entry" | "exit";
+  status: "processing" | "completed" | "failed";
+  stage: "claimed" | "recognizing" | "applying" | "done";
+  camera: string;
+  camera_source: "main" | "sub" | "";
+  stable_weight_at: string | null;
+  weight_kg: number | null;
+  vehicle_number: string;
+  recognized_at: string | null;
+  confirmation_votes: number | null;
+  detector_confidence: string | null;
+  ocr_confidence: string | null;
+  response_status: number | null;
+  retryable: boolean;
+  error_code: string;
+  error_detail: string;
+  started_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
 export interface GrainWagon {
   id: number;
   supply: number | null;
@@ -958,6 +981,7 @@ export interface GrainWagon {
   weighings?: GrainWeighing[];
   lab_checks?: GrainLabCheck[];
   allocations?: GrainAllocation[];
+  vehicle_recognition_captures?: PassageWeightCapture[];
 }
 
 export interface GrainSupply {

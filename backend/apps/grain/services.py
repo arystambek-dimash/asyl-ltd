@@ -11,7 +11,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
 
 from django.conf import settings
-from django.db import InterfaceError, IntegrityError, OperationalError, transaction
+from django.db import IntegrityError, InterfaceError, OperationalError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import APIException, NotFound, ValidationError
 
@@ -25,6 +25,7 @@ from .models import (
     GrainSettings,
     GrainSupply,
     LabCheck,
+    PassageWeightCapture,
     Silo,
     SiloAllocation,
     SiloReservation,
@@ -1932,6 +1933,17 @@ def delete_wagon(
         raise NotFound(
             {"detail": "Рейс уже удалён", "code": "wagon_not_found"}
         ) from exc
+    processing_capture = (
+        PassageWeightCapture.objects.select_for_update()
+        .filter(wagon=wagon, status=PassageWeightCapture.PROCESSING)
+        .only("pk")
+        .first()
+    )
+    if processing_capture is not None:
+        raise _error(
+            "Рейс нельзя удалить, пока фиксируются вес и номер машины.",
+            "passage_capture_in_progress",
+        )
     supply = (
         GrainSupply.objects.select_for_update().get(pk=wagon.supply_id)
         if wagon.supply_id is not None

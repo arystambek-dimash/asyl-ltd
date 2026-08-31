@@ -81,6 +81,11 @@ urlpatterns = [
     path("cameras/ai/history/<int:pk>/recording/video/", CameraAiRecordingVideoView.as_view()),
     path("cameras/<str:cam>/counting-line", CameraCountingLineView.as_view()),
     path(
+        "cameras/vehicle-plate-runtime/",
+        VehiclePlateRuntimeView.as_view(),
+        name="vehicle-plate-runtime-bootstrap",
+    ),
+    path(
         "cameras/<str:cam>/vehicle-plate-runtime/",
         VehiclePlateRuntimeView.as_view(),
         name="vehicle-plate-runtime",

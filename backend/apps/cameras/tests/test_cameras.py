@@ -3,6 +3,7 @@ from unittest.mock import patch
 import pytest
 from django.core import signing
 from django.core.cache import cache
+from django.test import override_settings
 
 from apps.cameras import ai, services
 from apps.cameras.models import (
@@ -656,7 +657,10 @@ def test_token_denied_for_portal_client(auth_client, client_user):
     assert resp.status_code == 403
 
 
-@pytest.mark.parametrize("source", ["cam2", "cam2ai", "cam_8c28", "cam1main"])
+@pytest.mark.parametrize(
+    "source",
+    ["cam2", "cam2ai", "cam_8c28", "cam1main"],
+)
 def test_auth_accepts_valid_staff_cookie(api_client, auth_client, operator, source):
     token = _stream_token(auth_client, operator)
     response = _authorize_stream(
@@ -667,8 +671,63 @@ def test_auth_accepts_valid_staff_cookie(api_client, auth_client, operator, sour
     assert response.status_code == 204
 
 
-@pytest.mark.parametrize("source", ["cam2main", "cam1mainai", "cam1main-extra"])
-def test_auth_rejects_unprovisioned_main_stream_aliases(
+@override_settings(
+    VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=True,
+    VEHICLE_PLATE_WEIGHT_FIRST_CAMERA="cam32",
+    VEHICLE_PLATE_WEIGHT_FIRST_SOURCE="main",
+)
+def test_auth_accepts_only_the_configured_weight_first_main_alias(
+    api_client,
+    auth_client,
+    operator,
+):
+    token = _stream_token(auth_client, operator)
+
+    assert (
+        _authorize_stream(
+            api_client,
+            token,
+            "/go2rtc/api/ws?src=cam32main",
+        ).status_code
+        == 204
+    )
+    assert (
+        _authorize_stream(
+            api_client,
+            token,
+            "/go2rtc/api/ws?src=cam2main",
+        ).status_code
+        == 403
+    )
+
+
+@override_settings(
+    VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=True,
+    VEHICLE_PLATE_WEIGHT_FIRST_CAMERA="cam7",
+    VEHICLE_PLATE_WEIGHT_FIRST_SOURCE="sub",
+)
+def test_auth_does_not_expose_a_main_alias_for_a_substream_lane(
+    api_client,
+    auth_client,
+    operator,
+):
+    token = _stream_token(auth_client, operator)
+
+    assert (
+        _authorize_stream(
+            api_client,
+            token,
+            "/go2rtc/api/ws?src=cam7main",
+        ).status_code
+        == 403
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["cam0main", "cam33main", "cam1mainai", "cam1main-extra"],
+)
+def test_auth_rejects_unprovisioned_or_malformed_main_stream_aliases(
     api_client,
     auth_client,
     operator,

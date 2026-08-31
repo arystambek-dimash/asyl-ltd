@@ -10,21 +10,21 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
-
 from apps.catalog.models import Product  # noqa: F401  (регистрация приложений)
 from apps.eventlog.models import EventLog
-from apps.grain import services
+from apps.grain import scale, services
 from apps.grain import statuses as st
 from apps.grain.models import (
     GrainMovement,
     GrainSupply,
+    PassageWeightCapture,
     Silo,
     SiloReservation,
     SiloType,
     Wagon,
     WeighingRecord,
 )
-from apps.grain import scale
+from django.utils import timezone
 
 pytestmark = pytest.mark.django_db
 
@@ -222,6 +222,40 @@ def test_active_passage_requires_reason_then_can_be_deleted(
     assert event.payload["status"] == st.ARRIVED
     assert event.payload["active_deletion"] is True
     assert event.payload["reason"] == "Ошибочно зарегистрирован"
+
+
+def test_processing_weight_capture_blocks_wagon_deletion(
+    auth_client,
+    grain_admin,
+):
+    wagon = Wagon.objects.create(
+        number="555BBB02",
+        direction=Wagon.PASSAGE,
+        workflow="simple",
+        cargo_name="Отруби",
+        status=st.ARRIVED,
+        arrived_at=timezone.now(),
+    )
+    capture = PassageWeightCapture.objects.create(
+        idempotency_key="4fbd9ed6-0c61-4a2e-8d14-dac48fef4cbe",
+        wagon=wagon,
+        wagon_id_snapshot=wagon.pk,
+        action=PassageWeightCapture.ENTRY,
+        wagon_status_before=wagon.status,
+        camera="cam1",
+    )
+
+    response = auth_client(grain_admin).delete(
+        f"/api/grain/wagons/{wagon.pk}/delete/",
+        {"reason": "Ошибочно зарегистрирован"},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "passage_capture_in_progress"
+    assert Wagon.objects.filter(pk=wagon.pk).exists()
+    capture.refresh_from_db()
+    assert capture.wagon_id == wagon.pk
 
 
 def test_active_intake_delete_releases_reservation_without_changing_stock(

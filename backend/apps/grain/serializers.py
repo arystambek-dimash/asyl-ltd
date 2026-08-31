@@ -7,6 +7,7 @@ from .models import (
     GrainSettings,
     GrainSupply,
     LabCheck,
+    PassageWeightCapture,
     Silo,
     SiloAllocation,
     SiloType,
@@ -205,6 +206,37 @@ class SiloAllocationSerializer(serializers.ModelSerializer):
         ]
 
 
+class PassageWeightCaptureSerializer(serializers.ModelSerializer):
+    """Safe audit projection; raw model payload and secrets are never exposed."""
+
+    request_id = serializers.UUIDField(source="idempotency_key", read_only=True)
+
+    class Meta:
+        model = PassageWeightCapture
+        fields = [
+            "request_id",
+            "action",
+            "status",
+            "stage",
+            "camera",
+            "camera_source",
+            "stable_weight_at",
+            "weight_kg",
+            "vehicle_number",
+            "recognized_at",
+            "confirmation_votes",
+            "detector_confidence",
+            "ocr_confidence",
+            "response_status",
+            "retryable",
+            "error_code",
+            "error_detail",
+            "started_at",
+            "updated_at",
+            "completed_at",
+        ]
+
+
 class WagonSerializer(serializers.ModelSerializer):
     status_label = serializers.SerializerMethodField()
     supplier = serializers.CharField(
@@ -229,6 +261,7 @@ class WagonSerializer(serializers.ModelSerializer):
     weight_difference_kg = serializers.SerializerMethodField()
     weight_difference_percent = serializers.SerializerMethodField()
     weight_matches = serializers.SerializerMethodField()
+    vehicle_recognition_captures = serializers.SerializerMethodField()
 
     class Meta:
         model = Wagon
@@ -273,12 +306,17 @@ class WagonSerializer(serializers.ModelSerializer):
             "weighings",
             "lab_checks",
             "allocations",
+            "vehicle_recognition_captures",
         ]
 
     def get_status_label(self, wagon: Wagon) -> str:
         if wagon.is_passage and wagon.status == "at_silo":
             return "На территории · погрузка"
         return WAGON_STATUS_LABELS.get(wagon.status, wagon.status)
+
+    def get_vehicle_recognition_captures(self, wagon: Wagon) -> list[dict]:
+        captures = wagon.passage_weight_captures.order_by("-id")[:10]
+        return PassageWeightCaptureSerializer(captures, many=True).data
 
     def get_weight_difference_kg(self, wagon: Wagon):
         expected = wagon.planned_weight_kg

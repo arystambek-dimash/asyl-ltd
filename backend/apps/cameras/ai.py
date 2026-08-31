@@ -8,6 +8,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Mapping, Sequence
 from numbers import Real
+from uuid import UUID
 
 from django.conf import settings
 from django.core.cache import cache
@@ -21,6 +22,8 @@ MAX_ERROR_JSON_RESPONSE_BYTES = 64 * 1024
 WAGON_PLATE_TIMEOUT = 15
 WAGON_PLATE_MAX_BYTES = 12 * 1024 * 1024
 VEHICLE_RUNTIME_PROBE_TIMEOUT = 2.0
+VEHICLE_PLATE_RE = re.compile(r"^[0-9]{3}[A-Z]{3}[0-9]{2}$")
+MAX_VEHICLE_CONFIRMATION_VOTES = 32_767
 
 ALWAYS_ON_CACHE_KEY = "cameras:always-on-status:v1"
 ALWAYS_ON_TTL = 5
@@ -39,12 +42,17 @@ class AiUnavailable(Exception):
     """AI-сервис не отвечает (сеть, таймаут, ПК выключен)."""
 
 
+class AiProtocolError(AiUnavailable):
+    """AI service replied, but its successful response broke the contract."""
+
+
 class AiError(Exception):
     """Ответ сервиса с ошибкой (401 ключ, 409 лимит камер, 400 имя)."""
 
-    def __init__(self, status: int, detail: str):
+    def __init__(self, status: int, detail: str, payload: Mapping | None = None):
         self.status = status
         self.detail = detail
+        self.payload = dict(payload) if isinstance(payload, Mapping) else {}
         super().__init__(detail)
 
 
@@ -55,7 +63,7 @@ def enabled() -> bool:
 def _invalid_json_response(status: int | None, detail: str):
     if status is not None:
         raise AiError(status, f"AI-сервис: ошибка {status}")
-    raise AiUnavailable(detail)
+    raise AiProtocolError(detail)
 
 
 def _read_json_object(response, limit: int, *, error_status: int | None = None) -> dict:
@@ -75,7 +83,9 @@ def _read_json_object(response, limit: int, *, error_status: int | None = None) 
                 error_status,
                 f"AI-сервис: ошибка {error_status}",
             ) from exc
-        raise AiUnavailable("AI-сервис вернул некорректный ответ") from exc
+        raise AiProtocolError(
+            "AI-сервис вернул некорректный ответ"
+        ) from exc
     if not isinstance(payload, dict):
         _invalid_json_response(error_status, "AI-сервис вернул некорректный ответ")
     return payload
@@ -87,12 +97,19 @@ def _request(
     body: dict | None = None,
     *,
     timeout_seconds: float | None = None,
+    idempotency_key: str | None = None,
 ) -> tuple[int, dict]:
+    request_headers = {
+        "X-Api-Key": AI_KEY,
+        "Content-Type": "application/json",
+    }
+    if idempotency_key is not None:
+        request_headers["Idempotency-Key"] = idempotency_key
     req = urllib.request.Request(
         f"{AI_URL}{path}",
         method=method,
         data=json.dumps(body).encode() if body is not None else None,
-        headers={"X-Api-Key": AI_KEY, "Content-Type": "application/json"},
+        headers=request_headers,
     )
     try:
         response = urllib.request.urlopen(
@@ -147,7 +164,7 @@ def _call(
         detail = payload.get("detail") or payload.get("error")
         if not isinstance(detail, str) or not detail.strip():
             detail = f"AI-сервис: ошибка {status}"
-        raise AiError(status, detail)
+        raise AiError(status, detail, payload)
     return payload
 
 
@@ -267,6 +284,117 @@ def save_vehicle_roi(cam: str, payload: dict) -> tuple[int, dict]:
         f"/cameras/{camera_id(cam)}/vehicle-roi",
         payload,
         timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
+    )
+
+
+def _recognize_vehicle_from_camera(
+    cam: str,
+    request_id: UUID | str,
+    stable_weight_at: str,
+    *,
+    retry_only: bool,
+) -> dict:
+    camera = camera_id(cam)
+    raw_request_id = str(request_id)
+    try:
+        parsed_request_id = UUID(raw_request_id)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("request_id must be a canonical UUID") from exc
+    if str(parsed_request_id) != raw_request_id:
+        raise ValueError("request_id must be a canonical UUID")
+    if not isinstance(stable_weight_at, str) or not stable_weight_at:
+        raise ValueError("stable_weight_at must be a timestamp")
+
+    status, payload = _request(
+        "POST",
+        (
+            f"/cameras/{camera}/vehicle-recognition-retry"
+            if retry_only
+            else f"/cameras/{camera}/vehicle-recognition"
+        ),
+        {"stable_weight_at": stable_weight_at},
+        timeout_seconds=settings.VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS,
+        idempotency_key=raw_request_id,
+    )
+    if status != 200:
+        detail = payload.get("error") or payload.get("detail")
+        if not isinstance(detail, str) or not detail.strip():
+            detail = f"AI-сервис: ошибка {status}"
+        raise AiError(status, detail, payload)
+
+    confirmation = payload.get("confirmation")
+    number = payload.get("vehicle_number")
+    source = payload.get("source")
+    if (
+        payload.get("ok") is not True
+        or payload.get("status") != "recognized"
+        or payload.get("request_id") != raw_request_id
+        or payload.get("camera") != camera
+        or not isinstance(number, str)
+        or VEHICLE_PLATE_RE.fullmatch(number) is None
+        or source not in {"main", "sub"}
+        or source != settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE
+        or not isinstance(confirmation, Mapping)
+    ):
+        raise AiProtocolError(
+            "AI-сервис вернул некорректный результат номера"
+        )
+
+    votes = confirmation.get("votes")
+    detector_confidence = confirmation.get("detector_confidence")
+    ocr_confidence = confirmation.get("ocr_confidence")
+    if (
+        isinstance(votes, bool)
+        or not isinstance(votes, int)
+        or votes < 1
+        or votes > MAX_VEHICLE_CONFIRMATION_VOTES
+        or isinstance(detector_confidence, bool)
+        or not isinstance(detector_confidence, Real)
+        or not math.isfinite(float(detector_confidence))
+        or not 0 <= float(detector_confidence) <= 1
+        or isinstance(ocr_confidence, bool)
+        or not isinstance(ocr_confidence, Real)
+        or not math.isfinite(float(ocr_confidence))
+        or not 0 <= float(ocr_confidence) <= 1
+    ):
+        raise AiProtocolError(
+            "AI-сервис вернул некорректную уверенность OCR"
+        )
+    return payload
+
+
+def recognize_vehicle_from_camera(
+    cam: str,
+    request_id: UUID | str,
+    stable_weight_at: str,
+) -> dict:
+    """Start the one allowed camera claim for a fresh scale observation.
+
+    The camera PC owns frame selection, ROI filtering and OCR consensus. Asyl
+    sends only the stable-weight timestamp and remains the authoritative owner
+    of the physical weight itself.
+    """
+
+    return _recognize_vehicle_from_camera(
+        cam,
+        request_id,
+        stable_weight_at,
+        retry_only=False,
+    )
+
+
+def retry_vehicle_recognition_from_camera(
+    cam: str,
+    request_id: UUID | str,
+    stable_weight_at: str,
+) -> dict:
+    """Replay an existing camera-PC claim without permission to create one."""
+
+    return _recognize_vehicle_from_camera(
+        cam,
+        request_id,
+        stable_weight_at,
+        retry_only=True,
     )
 
 

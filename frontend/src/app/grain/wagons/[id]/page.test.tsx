@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { Suspense, type ComponentProps, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { GrainWagon } from "@/lib/types";
+import type { GrainWagon, PassageWeightCapture } from "@/lib/types";
 import GrainWagonPage from "./page";
 
 const postMock = vi.hoisted(() => vi.fn());
@@ -92,8 +92,35 @@ function wagon(overrides: Partial<GrainWagon> = {}): GrainWagon {
   };
 }
 
+function processingCapture(overrides: Partial<PassageWeightCapture> = {}): PassageWeightCapture {
+  return {
+    request_id: "7ea3b52c-f6bc-4ac9-b716-a5e37e2ec1ba",
+    action: "entry",
+    status: "processing",
+    stage: "recognizing",
+    camera: "cam1",
+    camera_source: "main",
+    stable_weight_at: "2026-08-30T10:21:14.381Z",
+    weight_kg: 12_000,
+    vehicle_number: "",
+    recognized_at: null,
+    confirmation_votes: null,
+    detector_confidence: null,
+    ocr_confidence: null,
+    response_status: 503,
+    retryable: true,
+    error_code: "vehicle_recognition_unavailable",
+    error_detail: "Связь с камерой прервалась.",
+    started_at: "2026-08-30T10:21:14Z",
+    updated_at: "2026-08-30T10:21:15Z",
+    completed_at: null,
+    ...overrides,
+  };
+}
+
 describe("StageAction automatic scale capture", () => {
   beforeEach(() => {
+    sessionStorage.clear();
     postMock.mockReset();
     postMock.mockResolvedValue({ data: {} });
     deleteMock.mockReset();
@@ -144,7 +171,17 @@ describe("StageAction automatic scale capture", () => {
     expect(screen.queryByText(/Причина ручного ввода/)).not.toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: buttonName as RegExp }));
 
-    expect(postMock).toHaveBeenCalledWith(endpoint, {});
+    expect(postMock).toHaveBeenCalledWith(
+      endpoint,
+      {},
+      {
+        headers: {
+          "Idempotency-Key": expect.stringMatching(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+          ),
+        },
+      },
+    );
     await waitFor(() => {
       expect(wagonReloadMock).toHaveBeenCalledOnce();
       expect(timelineReloadMock).toHaveBeenCalledOnce();
@@ -189,13 +226,139 @@ describe("StageAction automatic scale capture", () => {
     await renderStage(wagon());
 
     await user.click(await screen.findByRole("button", { name: /Получить вес пустой/ }));
-    expect(screen.getByRole("button", { name: "Получаю вес с весов…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Фиксирую показание весов…" })).toBeDisabled();
 
     rejectRequest(new Error("scale offline"));
     expect(await screen.findByText("Весовой аппарат недоступен")).toBeInTheDocument();
     expect(wagonReloadMock).toHaveBeenCalledOnce();
     expect(timelineReloadMock).toHaveBeenCalledOnce();
-    expect(screen.getByRole("button", { name: /Получить вес пустой/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Проверить результат повторно" })).toBeEnabled();
+    expect(screen.getByText(/с тем же идентификатором операции/)).toBeInTheDocument();
+  });
+
+  it("reuses the same idempotency key after a lost response", async () => {
+    postMock.mockRejectedValueOnce(new Error("connection reset")).mockResolvedValueOnce({ data: {} });
+    const user = userEvent.setup();
+    await renderStage(wagon());
+
+    await user.click(await screen.findByRole("button", { name: /Получить вес пустой/ }));
+    await screen.findByRole("button", { name: "Проверить результат повторно" });
+    const firstKey = postMock.mock.calls[0][2].headers["Idempotency-Key"];
+
+    await user.click(screen.getByRole("button", { name: "Проверить результат повторно" }));
+    await waitFor(() => expect(postMock).toHaveBeenCalledTimes(2));
+    const secondKey = postMock.mock.calls[1][2].headers["Idempotency-Key"];
+
+    expect(secondKey).toBe(firstKey);
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  it("recovers the processing request id from the server after session storage was lost", async () => {
+    const requestId = "d38deba1-5ee8-47ee-8308-332096b76ccc";
+    const user = userEvent.setup();
+    await renderStage(
+      wagon({
+        vehicle_recognition_captures: [processingCapture({ request_id: requestId })],
+      }),
+    );
+
+    const retry = await screen.findByRole("button", { name: "Проверить результат повторно" });
+    expect(sessionStorage.length).toBe(1);
+    await user.click(retry);
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/grain/wagons/7/entry-weight/",
+      {},
+      { headers: { "Idempotency-Key": requestId } },
+    );
+  });
+
+  it("hydrates an uncertain capture from session storage after a remount", async () => {
+    const requestId = "5d066ef4-fe98-40ea-97ae-fbd67a758189";
+    sessionStorage.setItem("asyl:passage-weight-capture:v1:1:7:entry-weight", requestId);
+    const user = userEvent.setup();
+    await renderStage(wagon());
+
+    await user.click(await screen.findByRole("button", { name: "Проверить результат повторно" }));
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/grain/wagons/7/entry-weight/",
+      {},
+      { headers: { "Idempotency-Key": requestId } },
+    );
+  });
+
+  it("clears a stored request after the server reports that capture as terminal", async () => {
+    const requestId = "1dbb1f4f-ea16-4867-b9ef-449cf6f460f5";
+    sessionStorage.setItem("asyl:passage-weight-capture:v1:1:7:entry-weight", requestId);
+    await renderStage(
+      wagon({
+        vehicle_recognition_captures: [
+          processingCapture({
+            request_id: requestId,
+            status: "failed",
+            stage: "done",
+            retryable: false,
+            completed_at: "2026-08-30T10:21:16Z",
+          }),
+        ],
+      }),
+    );
+
+    expect(await screen.findByRole("button", { name: /Получить вес пустой/ })).toBeEnabled();
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  it("adopts the server request id from a resumable conflict", async () => {
+    const serverRequestId = "a762d132-e03d-4cc4-984d-9792a9d4079c";
+    postMock
+      .mockRejectedValueOnce({
+        response: {
+          status: 409,
+          data: {
+            code: "passage_capture_resume_required",
+            request_id: serverRequestId,
+            retryable: true,
+          },
+        },
+      })
+      .mockResolvedValueOnce({ data: {} });
+    const user = userEvent.setup();
+    await renderStage(wagon());
+
+    await user.click(await screen.findByRole("button", { name: /Получить вес пустой/ }));
+    await user.click(await screen.findByRole("button", { name: "Проверить результат повторно" }));
+    await waitFor(() => expect(postMock).toHaveBeenCalledTimes(2));
+
+    expect(postMock.mock.calls[1][2].headers["Idempotency-Key"]).toBe(serverRequestId);
+  });
+
+  it("retains the same idempotency key for a proxy 502 without a retryability body", async () => {
+    postMock.mockRejectedValueOnce({ response: { status: 502, data: {} } }).mockResolvedValueOnce({ data: {} });
+    const user = userEvent.setup();
+    await renderStage(wagon());
+
+    await user.click(await screen.findByRole("button", { name: /Получить вес пустой/ }));
+    const firstKey = postMock.mock.calls[0][2].headers["Idempotency-Key"];
+    await user.click(await screen.findByRole("button", { name: "Проверить результат повторно" }));
+    await waitFor(() => expect(postMock).toHaveBeenCalledTimes(2));
+
+    expect(postMock.mock.calls[1][2].headers["Idempotency-Key"]).toBe(firstKey);
+  });
+
+  it("honors an explicit terminal response even when its HTTP status is 503", async () => {
+    postMock
+      .mockRejectedValueOnce({ response: { status: 503, data: { retryable: false } } })
+      .mockResolvedValueOnce({ data: {} });
+    const user = userEvent.setup();
+    await renderStage(wagon());
+
+    await user.click(await screen.findByRole("button", { name: /Получить вес пустой/ }));
+    const firstKey = postMock.mock.calls[0][2].headers["Idempotency-Key"];
+    await user.click(await screen.findByRole("button", { name: /Получить вес пустой/ }));
+    await waitFor(() => expect(postMock).toHaveBeenCalledTimes(2));
+
+    expect(postMock.mock.calls[1][2].headers["Idempotency-Key"]).not.toBe(firstKey);
   });
 });
 

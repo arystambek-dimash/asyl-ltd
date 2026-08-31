@@ -52,6 +52,10 @@ INFO = {
         "server_push_configured": True,
         "monitors": {"cam1": MONITOR},
     },
+    "on_demand": {
+        "enabled": True,
+        "cameras": ["cam1"],
+    },
 }
 
 ROI = {
@@ -145,6 +149,8 @@ def test_vehicle_runtime_requires_grain_view_permission(
 ):
     response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
     assert response.status_code in (401, 403)
+    response = api_client.get("/api/cameras/vehicle-plate-runtime/")
+    assert response.status_code in (401, 403)
 
     client_user = django_user_model.objects.create_user(
         username="vehicle-runtime-client",
@@ -175,6 +181,8 @@ def test_vehicle_runtime_projects_safe_live_status_and_roi(api_client, grain_vie
     assert response.status_code == 200
     assert response["Cache-Control"] == "no-store"
     assert response.data["camera"] == "cam1"
+    assert response.data["source"] == "main"
+    assert response.data["stream"] == "cam1main"
     assert response.data["diagnostic"] == "online"
     assert response.data["monitor"]["plate_detections"] == 8
     assert response.data["monitor"]["stationary_admissions"] == 3
@@ -194,6 +202,94 @@ def test_vehicle_runtime_projects_safe_live_status_and_roi(api_client, grain_vie
         assert private_value not in rendered
     info.assert_called_once_with()
     roi.assert_called_once_with("cam1")
+
+
+def test_vehicle_runtime_projects_weight_first_readiness_without_legacy_monitor(
+    api_client,
+    grain_viewer,
+    settings,
+):
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED = True
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE = "main"
+    info = deepcopy(INFO)
+    info["automation"].update(enabled=False, configured_cameras=[], monitors={})
+    api_client.force_authenticate(grain_viewer)
+    with (
+        patch.object(ai, "vehicle_number_info", return_value=info),
+        patch.object(ai, "vehicle_roi", return_value=deepcopy(ROI)),
+    ):
+        response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
+
+    assert response.status_code == 200
+    assert response.data["diagnostic"] == "on_demand_ready"
+    assert response.data["weight_first_enabled"] is True
+    assert response.data["on_demand_enabled"] is True
+    assert response.data["on_demand_camera_configured"] is True
+    assert response.data["monitor"] is None
+
+
+@pytest.mark.parametrize(
+    ("configured_source", "expected_stream"),
+    [("sub", "cam7"), ("main", "cam7main")],
+)
+def test_vehicle_runtime_bootstrap_uses_configured_weight_first_camera_and_source(
+    api_client,
+    grain_viewer,
+    settings,
+    configured_source,
+    expected_stream,
+):
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED = True
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA = "cam7"
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE = configured_source
+    info = deepcopy(INFO)
+    info["automation"].update(enabled=False, configured_cameras=[], monitors={})
+    info["on_demand"]["cameras"] = ["cam7"]
+    roi_payload = {
+        **deepcopy(ROI),
+        "cam": "cam7",
+        "source": configured_source,
+    }
+    api_client.force_authenticate(grain_viewer)
+
+    with (
+        patch.object(ai, "vehicle_number_info", return_value=info) as info_request,
+        patch.object(ai, "vehicle_roi", return_value=roi_payload) as roi_request,
+    ):
+        response = api_client.get("/api/cameras/vehicle-plate-runtime/")
+
+    assert response.status_code == 200
+    assert response.data["camera"] == "cam7"
+    assert response.data["source"] == configured_source
+    assert response.data["stream"] == expected_stream
+    assert response.data["diagnostic"] == "on_demand_ready"
+    assert response.data["on_demand_camera_configured"] is True
+    info_request.assert_called_once_with()
+    roi_request.assert_called_once_with("cam7")
+
+
+def test_vehicle_runtime_weight_first_is_not_ready_for_wrong_roi_source(
+    api_client,
+    grain_viewer,
+    settings,
+):
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED = True
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA = "cam1"
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE = "sub"
+    info = deepcopy(INFO)
+    info["automation"].update(enabled=False, configured_cameras=[], monitors={})
+    api_client.force_authenticate(grain_viewer)
+
+    with (
+        patch.object(ai, "vehicle_number_info", return_value=info),
+        patch.object(ai, "vehicle_roi", return_value=deepcopy(ROI)),
+    ):
+        response = api_client.get("/api/cameras/vehicle-plate-runtime/")
+
+    assert response.status_code == 200
+    assert response.data["source"] == "sub"
+    assert response.data["stream"] == "cam1"
+    assert response.data["diagnostic"] == "on_demand_roi_source_mismatch"
 
 
 @pytest.mark.parametrize(
@@ -357,6 +453,38 @@ def test_vehicle_roi_put_forwards_body_and_projects_safe_response(
     }
     assert "secret" not in repr(response.data)
     save.assert_called_once_with("cam1", body)
+
+
+def test_vehicle_roi_put_uses_configured_weight_first_substream(
+    api_client,
+    superuser,
+    settings,
+):
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED = True
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA = "cam7"
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE = "sub"
+    body = {"points": ROI["points"], "enabled": True, "source": "sub"}
+    saved_roi = {
+        **deepcopy(SAVED_ROI),
+        "cam": "cam7",
+        "source": "sub",
+    }
+    api_client.force_authenticate(superuser)
+
+    with patch.object(
+        ai,
+        "save_vehicle_roi",
+        return_value=(200, saved_roi),
+    ) as save:
+        response = api_client.put(
+            "/api/cameras/cam7/vehicle-plate-runtime/",
+            body,
+            format="json",
+        )
+
+    assert response.status_code == 200
+    assert response.data["roi"]["source"] == "sub"
+    save.assert_called_once_with("cam7", body)
 
 
 def test_vehicle_roi_put_preserves_saved_refresh_pending_response(

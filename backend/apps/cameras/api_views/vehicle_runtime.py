@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from numbers import Real
 from typing import ClassVar
 
+from django.conf import settings
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -200,8 +201,9 @@ def _project_points(value, field: str, *, configured: bool = True) -> list[dict]
     return points
 
 
-def project_vehicle_roi_update(value) -> dict:
+def project_vehicle_roi_update(value, *, expected_source: str = "main") -> dict:
     """Validate and canonicalize the browser body accepted by camera-PC."""
+    expected_source = _source(expected_source, "expected_source")
     body = _mapping(value, "body")
     allowed_fields = {"points", "enabled", "source"}
     if set(body) - allowed_fields:
@@ -211,17 +213,25 @@ def project_vehicle_roi_update(value) -> dict:
     result = {
         "points": _project_points(body.get("points"), "points"),
         "enabled": _boolean(body.get("enabled", True), "enabled"),
-        "source": "main",
+        "source": expected_source,
     }
     if "source" in body:
         source = _source(body.get("source"), "source")
-        if source != "main":
-            raise VehicleRuntimeContractError("vehicle ROI source must be main")
+        if source != expected_source:
+            raise VehicleRuntimeContractError(
+                "vehicle ROI source does not match the configured stream"
+            )
     return result
 
 
-def project_vehicle_roi_save_response(camera: str, value) -> dict:
+def project_vehicle_roi_save_response(
+    camera: str,
+    value,
+    *,
+    expected_source: str = "main",
+) -> dict:
     """Return only the persisted ROI state and safe apply flags."""
+    expected_source = _source(expected_source, "expected_source")
     payload = _mapping(value, "saved ROI")
     saved = _boolean(payload.get("saved"), "saved")
     applied = _boolean(payload.get("applied_to_monitor"), "applied_to_monitor")
@@ -230,13 +240,42 @@ def project_vehicle_roi_save_response(camera: str, value) -> dict:
     roi = _project_roi(payload, camera)
     if not roi["configured"]:
         raise VehicleRuntimeContractError("saved ROI must be configured")
-    if roi["source"] != "main":
-        raise VehicleRuntimeContractError("saved vehicle ROI source must be main")
+    if roi["source"] != expected_source:
+        raise VehicleRuntimeContractError(
+            "saved vehicle ROI source does not match the configured stream"
+        )
     return {
         "saved": True,
         "applied_to_monitor": applied,
         "roi": roi,
     }
+
+
+def _project_on_demand(value) -> dict:
+    """Project the weight-triggered capability added by newer camera PCs.
+
+    Missing data is treated as disabled so a rolling deployment can show a
+    useful diagnostic while the camera PC is still on the previous release.
+    """
+
+    if value is None:
+        return {"enabled": False, "cameras": []}
+    on_demand = _mapping(value, "on_demand")
+    enabled = _boolean(on_demand.get("enabled"), "on_demand.enabled")
+    cameras = on_demand.get("cameras")
+    if not isinstance(cameras, list) or not all(
+        isinstance(item, str) and ai.CAM_RE.fullmatch(item) for item in cameras
+    ):
+        raise VehicleRuntimeContractError("on_demand.cameras is invalid")
+    return {
+        "enabled": enabled,
+        "cameras": list(cameras),
+    }
+
+
+def _browser_stream(camera: str, source: str) -> str:
+    """Map MediaMTX source names to provisioned go2rtc browser aliases."""
+    return camera if source == "sub" else f"{camera}main"
 
 
 def project_vehicle_runtime(camera: str, info, roi) -> dict:
@@ -248,7 +287,7 @@ def project_vehicle_runtime(camera: str, info, roi) -> dict:
     server_push_configured = _boolean(
         automation.get("server_push_configured"), "automation.server_push_configured"
     )
-    source = _source(automation.get("source"), "automation.source")
+    automation_source = _source(automation.get("source"), "automation.source")
     configured_cameras = automation.get("configured_cameras")
     if not isinstance(configured_cameras, list) or not all(
         isinstance(item, str) and ai.CAM_RE.fullmatch(item)
@@ -258,16 +297,40 @@ def project_vehicle_runtime(camera: str, info, roi) -> dict:
     monitors = _mapping(automation.get("monitors"), "automation.monitors")
     raw_monitor = monitors.get(camera)
     monitor = _project_monitor(raw_monitor, camera) if raw_monitor is not None else None
-    if monitor is not None and monitor["source"] != source:
+    if monitor is not None and monitor["source"] != automation_source:
         raise VehicleRuntimeContractError(
             "monitor.source does not match automation.source"
         )
     camera_configured = camera in configured_cameras
+    on_demand = _project_on_demand(runtime.get("on_demand"))
+    on_demand_camera_configured = camera in on_demand["cameras"]
+    weight_first_enabled = bool(settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED)
+    projected_roi = _project_roi(roi, camera)
+    source = (
+        _source(
+            settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE,
+            "VEHICLE_PLATE_WEIGHT_FIRST_SOURCE",
+        )
+        if weight_first_enabled
+        else automation_source
+    )
 
     if not enabled:
         diagnostic = "model_disabled"
     elif not ready:
         diagnostic = "model_not_ready"
+    elif weight_first_enabled and not on_demand["enabled"]:
+        diagnostic = "on_demand_disabled"
+    elif weight_first_enabled and not on_demand_camera_configured:
+        diagnostic = "on_demand_camera_not_configured"
+    elif weight_first_enabled and (
+        not projected_roi["configured"] or not projected_roi["enabled"]
+    ):
+        diagnostic = "on_demand_roi_not_ready"
+    elif weight_first_enabled and projected_roi["source"] != source:
+        diagnostic = "on_demand_roi_source_mismatch"
+    elif weight_first_enabled:
+        diagnostic = "on_demand_ready"
     elif not automation_enabled:
         diagnostic = "automation_disabled"
     elif not camera_configured:
@@ -283,11 +346,15 @@ def project_vehicle_runtime(camera: str, info, roi) -> dict:
         "ready": ready,
         "automation_enabled": automation_enabled,
         "camera_configured": camera_configured,
+        "weight_first_enabled": weight_first_enabled,
+        "on_demand_enabled": on_demand["enabled"],
+        "on_demand_camera_configured": on_demand_camera_configured,
         "source": source,
+        "stream": _browser_stream(camera, source),
         "server_push_configured": server_push_configured,
         "diagnostic": diagnostic,
         "monitor": monitor,
-        "roi": _project_roi(roi, camera),
+        "roi": projected_roi,
     }
 
 
@@ -312,7 +379,7 @@ class VehiclePlateRuntimeView(PermAPIViewMixin, APIView):
         response["Cache-Control"] = "no-store"
         return response
 
-    def get(self, request, cam: str):
+    def get(self, request, cam: str | None = None):
         if not ai.enabled():
             return _error_response(
                 "AI-сервис камер не настроен",
@@ -320,7 +387,9 @@ class VehiclePlateRuntimeView(PermAPIViewMixin, APIView):
                 status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         try:
-            camera = ai.camera_id(cam)
+            camera = ai.camera_id(
+                cam or settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA
+            )
             payload = project_vehicle_runtime(
                 camera,
                 ai.vehicle_number_info(),
@@ -363,7 +432,16 @@ class VehiclePlateRuntimeView(PermAPIViewMixin, APIView):
             )
         try:
             camera = ai.camera_id(cam)
-            update = project_vehicle_roi_update(request.data)
+            expected_source = (
+                settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE
+                if settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED
+                and camera == settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA
+                else "main"
+            )
+            update = project_vehicle_roi_update(
+                request.data,
+                expected_source=expected_source,
+            )
         except VehicleRuntimeContractError:
             return _error_response(
                 "Некорректная область распознавания",
@@ -386,6 +464,7 @@ class VehiclePlateRuntimeView(PermAPIViewMixin, APIView):
                     payload = project_vehicle_roi_save_response(
                         camera,
                         upstream_payload,
+                        expected_source=expected_source,
                     )
                 except VehicleRuntimeContractError:
                     return _error_response(
