@@ -32,7 +32,11 @@ function runtime(overrides: Partial<VehiclePlateRuntime> = {}): VehiclePlateRunt
     ready: true,
     automation_enabled: true,
     camera_configured: true,
+    weight_first_enabled: false,
+    on_demand_enabled: true,
+    on_demand_camera_configured: true,
     source: "main",
+    stream: "cam1main",
     server_push_configured: true,
     diagnostic: "online",
     monitor: {
@@ -89,13 +93,13 @@ describe("VehiclePlateCameraWorkspace", () => {
     mockApi(runtime());
   });
 
-  it("shows cam1 and polls its AI runtime without conflating it with the video signal", () => {
+  it("uses the runtime bootstrap and keeps video health separate from AI health", () => {
     render(<VehiclePlateCameraWorkspace />);
 
     expect(screen.getByRole("region", { name: "Камера проходной на вывоз" })).toBeInTheDocument();
     expect(screen.getByTestId("protected-camera-stream")).toHaveAttribute("data-src", "cam1main");
     expect(screen.getByText("Камера cam1 · поток/OCR: main")).toBeInTheDocument();
-    expect(mocks.useApi).toHaveBeenCalledWith("/cameras/cam1/vehicle-plate-runtime/");
+    expect(mocks.useApi).toHaveBeenCalledWith("/cameras/vehicle-plate-runtime/");
     expect(mocks.visiblePolling).toHaveBeenCalledWith(mocks.reload, 5_000, true);
 
     // Video playback and model health are independent signals. This player
@@ -120,13 +124,47 @@ describe("VehiclePlateCameraWorkspace", () => {
     expect(screen.getByText("ВИДЕО: НЕТ СИГНАЛА")).toBeInTheDocument();
   });
 
+  it("shows the weight-first camera as ready without a legacy monitor or webhook", () => {
+    mockApi(
+      runtime({
+        camera: "cam7",
+        source: "sub",
+        stream: "cam7",
+        weight_first_enabled: true,
+        automation_enabled: false,
+        camera_configured: false,
+        server_push_configured: false,
+        diagnostic: "on_demand_ready",
+        monitor: null,
+        roi: {
+          ...runtime().roi,
+          source: "sub",
+        },
+      }),
+    );
+
+    render(<VehiclePlateCameraWorkspace />);
+
+    expect(screen.getByText("Камера распознавания после веса")).toBeInTheDocument();
+    expect(screen.getByText("Вес → номер → рейс")).toBeInTheDocument();
+    expect(screen.getAllByText("AI ГОТОВА")).toHaveLength(2);
+    expect(screen.getByTestId("protected-camera-stream")).toHaveAttribute("data-src", "cam7");
+    expect(screen.getByText("Камера cam7 · поток/OCR: sub")).toBeInTheDocument();
+    expect(screen.queryByText("АВТОМАТИКА ВЫКЛ.")).not.toBeInTheDocument();
+    expect(screen.queryByText("ОТПРАВКА НЕ НАСТРОЕНА")).not.toBeInTheDocument();
+  });
+
   it("shows source mismatch and does not claim that the ROI is visible", () => {
     mockApi(
       runtime({
+        camera: "cam7",
+        source: "sub",
+        stream: "cam7",
+        weight_first_enabled: true,
         roi: {
           configured: true,
           enabled: true,
-          source: "sub",
+          source: "main",
           coordinate_space: "normalized",
           points: [
             { x: 0.1, y: 0.1 },
@@ -238,9 +276,15 @@ describe("VehiclePlateCameraWorkspace", () => {
     expect(screen.getByTestId("vehicle-roi-layer")).toHaveAttribute("aria-hidden", "true");
   });
 
-  it("saves canonical normalized points and commits the returned ROI", async () => {
+  it("saves ROI to the configured camera and source from runtime", async () => {
     mocks.auth.isSuperuser = true;
-    const current = runtime();
+    const current = runtime({
+      camera: "cam7",
+      source: "sub",
+      stream: "cam7",
+      weight_first_enabled: true,
+      roi: { ...runtime().roi, source: "sub" },
+    });
     const savedRoi = {
       ...current.roi,
       points: [
@@ -260,7 +304,7 @@ describe("VehiclePlateCameraWorkspace", () => {
 
     await waitFor(() =>
       expect(mocks.put).toHaveBeenCalledWith(
-        "/cameras/cam1/vehicle-plate-runtime/",
+        "/cameras/cam7/vehicle-plate-runtime/",
         {
           points: [
             { x: 0.2, y: 0.3 },
@@ -269,13 +313,13 @@ describe("VehiclePlateCameraWorkspace", () => {
             { x: 0.1, y: 0.9 },
           ],
           enabled: true,
-          source: "main",
+          source: "sub",
         },
         { timeout: 12_000 },
       ),
     );
     expect(mocks.setData).toHaveBeenCalledWith({ ...current, roi: savedRoi });
-    expect(screen.getByText(/ПК камер получил запрос на обновление/)).toBeInTheDocument();
+    expect(screen.getByText(/Следующее распознавание после стабильного веса/)).toBeInTheDocument();
     expect(mocks.showSuccess).toHaveBeenCalledWith("ROI камеры сохранён");
   });
 

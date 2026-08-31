@@ -1,6 +1,8 @@
 from typing import ClassVar
+from uuid import UUID
 
 from config.throttles import TruckScalePreviewRateThrottle
+from django.conf import settings
 from django.db import transaction
 from rest_framework import viewsets
 from rest_framework.decorators import action
@@ -13,7 +15,7 @@ from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
 from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.models import EventLog
 
-from . import scale, services
+from . import scale, services, vehicle_weight_capture
 from . import statuses as st
 from .models import GrainSupply, Silo, SiloType, Wagon
 from .scale_preview import get_scale_preview
@@ -71,6 +73,45 @@ def _require_empty_scale_command(request) -> None:
                 ),
             }
         )
+
+
+def _passage_capture_idempotency_key(request) -> UUID:
+    raw = request.headers.get("Idempotency-Key", "")
+    if not raw:
+        raise ValidationError(
+            {
+                "detail": "Для фиксации веса нужен canonical UUID Idempotency-Key.",
+                "code": "idempotency_key_required",
+            }
+        )
+    try:
+        value = UUID(raw)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValidationError(
+            {
+                "detail": "Idempotency-Key должен быть canonical lowercase UUID.",
+                "code": "idempotency_key_invalid",
+            }
+        ) from exc
+    if str(value) != raw:
+        raise ValidationError(
+            {
+                "detail": "Idempotency-Key должен быть canonical lowercase UUID.",
+                "code": "idempotency_key_invalid",
+            }
+        )
+    return value
+
+
+def _record_stage_weight(request, wagon: Wagon, action: str) -> Wagon:
+    if settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED and wagon.is_passage:
+        return vehicle_weight_capture.capture_passage_weight_and_plate(
+            wagon,
+            action,
+            request.user,
+            idempotency_key=_passage_capture_idempotency_key(request),
+        )
+    return services.record_scale_weight(wagon, action, request.user)
 
 
 class GrainSupplyViewSet(PermViewSetMixin, viewsets.ModelViewSet):
@@ -146,7 +187,11 @@ class WagonViewSet(
 ):
     queryset = (
         Wagon.objects.select_related("supply", "assigned_silo")
-        .prefetch_related("weighings", "lab_checks", "allocations__silo")
+        .prefetch_related(
+            "weighings",
+            "lab_checks",
+            "allocations__silo",
+        )
         .order_by("-id")
     )
     serializer_class = WagonSerializer
@@ -295,9 +340,7 @@ class WagonViewSet(
     @action(detail=True, methods=["post"], url_path="entry-weight")
     def entry_weight(self, request, pk=None):
         _require_empty_scale_command(request)
-        wagon = services.record_scale_weight(
-            self.get_object(), "entry", request.user
-        )
+        wagon = _record_stage_weight(request, self.get_object(), "entry")
         return self._done(wagon)
 
     @action(detail=True, methods=["post"], url_path="lab")
@@ -385,9 +428,7 @@ class WagonViewSet(
     @action(detail=True, methods=["post"], url_path="exit-weight")
     def exit_weight(self, request, pk=None):
         _require_empty_scale_command(request)
-        wagon = services.record_scale_weight(
-            self.get_object(), "exit", request.user
-        )
+        wagon = _record_stage_weight(request, self.get_object(), "exit")
         return self._done(wagon)
 
     @action(detail=True, methods=["post"], url_path="resolve-discrepancy")

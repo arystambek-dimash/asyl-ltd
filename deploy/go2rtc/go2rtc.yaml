@@ -3,8 +3,9 @@
 #   CAMERA_HOST, CAMERA_USER, CAMERA_PASS
 #
 # Пути cam1..camN на MediaMTX динамические (по числу каналов NVR), поэтому
-# здесь пре-провижен запас cam1..cam32: потоки поднимаются только по
-# требованию, несуществующие/неиспользуемые ничего не стоят. Какие камеры
+# здесь пре-провижен запас cam1..cam32 для sub и cam1main..cam32main для
+# ROI/main: потоки поднимаются только по требованию, а неиспользуемые ничего
+# не стоят. Какие камеры
 # реально есть — определяет бэкенд (apps/cameras/services.py).
 #
 # Кодеки: сабпотоки NVR — уже H.264 (HIK отдаёт H264/Main), браузер играет
@@ -44,6 +45,102 @@ streams:
   cam1main:
     - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam1
     - ffmpeg:cam1main#video=h264
+  # Main-stream aliases are pre-provisioned just like the lower-bandwidth
+  # camN aliases below. They stay idle until the superuser ROI editor requests
+  # the configured weight-first lane.
+  cam2main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam2
+    - ffmpeg:cam2main#video=h264
+  cam3main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam3
+    - ffmpeg:cam3main#video=h264
+  cam4main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam4
+    - ffmpeg:cam4main#video=h264
+  cam5main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam5
+    - ffmpeg:cam5main#video=h264
+  cam6main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam6
+    - ffmpeg:cam6main#video=h264
+  cam7main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam7
+    - ffmpeg:cam7main#video=h264
+  cam8main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam8
+    - ffmpeg:cam8main#video=h264
+  cam9main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam9
+    - ffmpeg:cam9main#video=h264
+  cam10main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam10
+    - ffmpeg:cam10main#video=h264
+  cam11main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam11
+    - ffmpeg:cam11main#video=h264
+  cam12main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam12
+    - ffmpeg:cam12main#video=h264
+  cam13main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam13
+    - ffmpeg:cam13main#video=h264
+  cam14main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam14
+    - ffmpeg:cam14main#video=h264
+  cam15main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam15
+    - ffmpeg:cam15main#video=h264
+  cam16main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam16
+    - ffmpeg:cam16main#video=h264
+  cam17main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam17
+    - ffmpeg:cam17main#video=h264
+  cam18main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam18
+    - ffmpeg:cam18main#video=h264
+  cam19main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam19
+    - ffmpeg:cam19main#video=h264
+  cam20main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam20
+    - ffmpeg:cam20main#video=h264
+  cam21main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam21
+    - ffmpeg:cam21main#video=h264
+  cam22main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam22
+    - ffmpeg:cam22main#video=h264
+  cam23main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam23
+    - ffmpeg:cam23main#video=h264
+  cam24main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam24
+    - ffmpeg:cam24main#video=h264
+  cam25main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam25
+    - ffmpeg:cam25main#video=h264
+  cam26main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam26
+    - ffmpeg:cam26main#video=h264
+  cam27main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam27
+    - ffmpeg:cam27main#video=h264
+  cam28main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam28
+    - ffmpeg:cam28main#video=h264
+  cam29main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam29
+    - ffmpeg:cam29main#video=h264
+  cam30main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam30
+    - ffmpeg:cam30main#video=h264
+  cam31main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam31
+    - ffmpeg:cam31main#video=h264
+  cam32main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam32
+    - ffmpeg:cam32main#video=h264
   cam1:
     - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam1sub
     - ffmpeg:cam1#video=h264

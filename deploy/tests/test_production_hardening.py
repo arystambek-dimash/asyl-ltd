@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKUP_SCRIPT = REPO_ROOT / "deploy" / "backup" / "backup.sh"
 REMOTE_DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "remote-deploy.sh"
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
+GO2RTC_CONFIG = REPO_ROOT / "deploy" / "go2rtc" / "go2rtc.yaml"
 
 CANDIDATE_BACKEND = (
     "ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:" + "a" * 64
@@ -962,6 +963,25 @@ class SecurityHeaderTests(unittest.TestCase):
             "Referrer-Policy",
         ):
             self.assertIn(header, headers)
+
+
+class VehicleRoiStreamAliasTests(unittest.TestCase):
+    def test_all_weight_first_camera_slots_have_sub_and_main_browser_aliases(
+        self,
+    ) -> None:
+        config = GO2RTC_CONFIG.read_text(encoding="utf-8")
+        for camera_number in range(1, 33):
+            camera = f"cam{camera_number}"
+            self.assertIn(f"  {camera}:\n", config)
+            self.assertIn(
+                f"@${{CAMERA_HOST}}:8554/{camera}sub",
+                config,
+            )
+            self.assertIn(f"  {camera}main:\n", config)
+            self.assertIn(
+                f"@${{CAMERA_HOST}}:8554/{camera}\n",
+                config,
+            )
 
 
 if __name__ == "__main__":

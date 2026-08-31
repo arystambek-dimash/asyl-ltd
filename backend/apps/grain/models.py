@@ -311,6 +311,118 @@ class WeighingRecord(models.Model):
         ordering = ["-id"]
 
 
+class PassageWeightCapture(models.Model):
+    """Durable weight-first command joining one scale read to one plate result."""
+
+    ENTRY = "entry"
+    EXIT = "exit"
+    ACTIONS = [(ENTRY, "Въезд"), (EXIT, "Выезд")]
+
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    STATUSES = [
+        (PROCESSING, "Выполняется"),
+        (COMPLETED, "Завершено"),
+        (FAILED, "Ошибка"),
+    ]
+
+    CLAIMED = "claimed"
+    RECOGNIZING = "recognizing"
+    APPLYING = "applying"
+    DONE = "done"
+    STAGES = [
+        (CLAIMED, "Запрос принят"),
+        (RECOGNIZING, "Распознавание номера"),
+        (APPLYING, "Сохранение результата"),
+        (DONE, "Завершено"),
+    ]
+
+    idempotency_key = models.UUIDField(unique=True)
+    wagon = models.ForeignKey(
+        Wagon,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="passage_weight_captures",
+    )
+    # Keep the physical-operation audit addressable even after an explicitly
+    # authorized trip deletion detaches the live FK.
+    wagon_id_snapshot = models.PositiveBigIntegerField(db_index=True)
+    action = models.CharField(max_length=10, choices=ACTIONS)
+    wagon_status_before = models.CharField(max_length=30)
+    status = models.CharField(max_length=12, choices=STATUSES, default=PROCESSING)
+    stage = models.CharField(max_length=16, choices=STAGES, default=CLAIMED)
+    camera = models.CharField(max_length=32)
+    camera_source = models.CharField(max_length=4, blank=True, default="")
+    stable_weight_at = models.DateTimeField(null=True, blank=True)
+    weight_kg = models.PositiveBigIntegerField(null=True, blank=True)
+    scale_number = models.CharField(max_length=50, blank=True, default="")
+    scale_age_seconds = models.DecimalField(
+        max_digits=10,
+        decimal_places=3,
+        null=True,
+        blank=True,
+    )
+    scale_updated_at = models.CharField(max_length=64, blank=True, default="")
+    vehicle_number = models.CharField(max_length=30, blank=True, default="")
+    recognized_at = models.DateTimeField(null=True, blank=True)
+    confirmation_votes = models.PositiveSmallIntegerField(null=True, blank=True)
+    detector_confidence = models.DecimalField(
+        max_digits=7,
+        decimal_places=6,
+        null=True,
+        blank=True,
+    )
+    ocr_confidence = models.DecimalField(
+        max_digits=7,
+        decimal_places=6,
+        null=True,
+        blank=True,
+    )
+    ai_payload_json = models.JSONField(default=dict, blank=True)
+    response_status = models.PositiveSmallIntegerField(null=True, blank=True)
+    retryable = models.BooleanField(default=False)
+    error_code = models.CharField(max_length=64, blank=True, default="")
+    error_detail = models.CharField(max_length=300, blank=True, default="")
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    started_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [
+            models.CheckConstraint(
+                name="grain_passage_capture_action_valid",
+                condition=models.Q(action__in=["entry", "exit"]),
+            ),
+            models.CheckConstraint(
+                name="grain_passage_capture_status_valid",
+                condition=models.Q(
+                    status__in=["processing", "completed", "failed"]
+                ),
+            ),
+            models.CheckConstraint(
+                name="grain_passage_capture_stage_valid",
+                condition=models.Q(
+                    stage__in=["claimed", "recognizing", "applying", "done"]
+                ),
+            ),
+            models.UniqueConstraint(
+                fields=["wagon", "action"],
+                condition=models.Q(status__in=["processing", "completed"]),
+                name="grain_one_active_passage_capture",
+            ),
+        ]
+
+
 class LabCheck(models.Model):
     DECISIONS = [
         "accepted",
