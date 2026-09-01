@@ -33,6 +33,7 @@ def _event(
     class_name: str = "Red_50",
     color: str | None = None,
     brand: str | None = None,
+    continuous_analytics: bool | None = None,
 ) -> dict:
     event = {
         "id": event_id,
@@ -53,6 +54,8 @@ def _event(
         "total_after": total_after,
         "total_weight_after": float(event_id * 50),
     }
+    if continuous_analytics is not None:
+        event["continuous_analytics"] = continuous_analytics
     if color is not None:
         event.update(
             {
@@ -268,6 +271,17 @@ def test_invalid_classification_enrichment_is_rejected(field, value):
     assert not AlwaysOnImportedEvent.objects.exists()
 
 
+def test_non_boolean_continuous_analytics_marker_is_rejected():
+    event = _event(1, 1)
+    event["continuous_analytics"] = 1
+
+    with pytest.raises(
+        event_sync.EventSyncError,
+        match="continuous_analytics",
+    ):
+        event_sync.parse_page(_page([event]), camera="cam3", after_id=0)
+
+
 def test_replayed_event_cannot_change_classification_enrichment():
     AlwaysOnCounterCursor.objects.create(
         camera="cam3",
@@ -394,12 +408,55 @@ def test_session_event_is_durable_but_not_added_to_always_on_analytics():
     assert result.ignored == 1
     imported = AlwaysOnImportedEvent.objects.get()
     assert imported.mode == "session"
+    assert imported.continuous_analytics is False
     assert imported.color is None
     assert imported.brand is None
     assert imported.sku is None
     assert not imported.applied_to_analytics
     assert AlwaysOnCounterCursor.objects.get(camera="cam3").last_event_id == 1
     assert not AlwaysOnDailyAnalytics.objects.exists()
+
+
+def test_flagged_session_event_updates_continuous_analytics_exactly_once():
+    page = event_sync.parse_page(
+        _page(
+            [
+                _event(
+                    1,
+                    1,
+                    mode="session",
+                    continuous_analytics=True,
+                    color="Green_50",
+                    brand="pioneer",
+                )
+            ]
+        ),
+        camera="cam3",
+        after_id=0,
+    )
+
+    assert event_sync.apply_page(
+        camera="cam3",
+        page=page,
+        requested_after_id=0,
+    )[:2] == (1, 0)
+    assert event_sync.apply_page(
+        camera="cam3",
+        page=page,
+        requested_after_id=0,
+    )[:2] == (0, 0)
+
+    imported = AlwaysOnImportedEvent.objects.get()
+    assert imported.mode == "session"
+    assert imported.continuous_analytics is True
+    assert imported.applied_to_analytics is True
+    analytics_row = AlwaysOnDailyAnalytics.objects.get(camera="cam3")
+    assert analytics_row.model_total == 1
+    assert analytics_row.model_per_color == {"green": 1}
+    assert analytics_row.model_per_brand == {"pioneer": 1}
+    assert sum(
+        AlwaysOnProductionRun.objects.values_list("model_bags", flat=True)
+    ) == 1
 
 
 def test_sync_follows_pages_until_the_upstream_is_caught_up():

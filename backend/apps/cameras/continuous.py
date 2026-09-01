@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import logging
+import threading
+from contextlib import contextmanager
 from datetime import timedelta
 
 from django.core.cache import cache
+from django.db import DatabaseError, connection
 from django.db.models import Q
 from django.utils import timezone
 
@@ -13,6 +16,126 @@ from . import ai, analytics, event_sync
 from .models import AlwaysOnCounterCursor, MonoblockCameraSettings
 
 log = logging.getLogger(__name__)
+
+_ALWAYS_ON_LOCAL_MUTEX = threading.RLock()
+_ALWAYS_ON_ADVISORY_NAMESPACE = 0x4149  # "AI"
+_ALWAYS_ON_ADVISORY_KEY = 0x323437  # "247"
+
+
+@contextmanager
+def _always_on_policy_mutex():
+    """Serialize camera-PC policy writes across threads and web workers."""
+
+    with _ALWAYS_ON_LOCAL_MUTEX:
+        if connection.vendor != "postgresql":
+            yield
+            return
+
+        acquired = False
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT pg_advisory_lock(%s, %s)",
+                    [_ALWAYS_ON_ADVISORY_NAMESPACE, _ALWAYS_ON_ADVISORY_KEY],
+                )
+            acquired = True
+            yield
+        finally:
+            if acquired:
+                try:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT pg_advisory_unlock(%s, %s)",
+                            [_ALWAYS_ON_ADVISORY_NAMESPACE, _ALWAYS_ON_ADVISORY_KEY],
+                        )
+                        released = cursor.fetchone()
+                    if released != (True,):
+                        log.error("PostgreSQL always-on policy lock was not owned")
+                except DatabaseError:
+                    log.exception("Could not release PostgreSQL always-on policy lock")
+                    connection.close()
+
+
+def always_on_sync_state(current: dict, desired: list[str]) -> tuple[str, str]:
+    """Return a fail-closed readiness state for one camera-PC policy reply."""
+
+    live_sources = current.get("cameras")
+    if not isinstance(live_sources, list):
+        live_sources = current.get("camera_sources")
+    if not isinstance(live_sources, list):
+        return "pending", "AI-сервис не подтвердил список камер AI 24/7"
+    if any(not isinstance(source, str) for source in live_sources):
+        return "pending", "AI-сервис вернул некорректный список камер AI 24/7"
+    if sorted(live_sources) != sorted(desired) or current.get("source") != "sub":
+        return "pending", "Настройка AI 24/7 ожидает синхронизации"
+
+    upstream_pending = current.get("pending")
+    if upstream_pending:
+        pending_rows = upstream_pending if isinstance(upstream_pending, list) else []
+        reasons = []
+        for item in pending_rows:
+            if not isinstance(item, dict):
+                continue
+            camera = item.get("cam")
+            reason = item.get("reason")
+            if isinstance(camera, str) and isinstance(reason, str):
+                reasons.append(f"{camera}: {reason}")
+        detail = ", ".join(reasons) or "камера-ПК ещё запускает процессоры"
+        return "pending", f"AI 24/7 ожидает готовности: {detail}"
+
+    processors = current.get("processors")
+    if not isinstance(processors, list):
+        return "pending", "AI-сервис не подтвердил готовность процессоров"
+    by_camera = {
+        item.get("cam"): item
+        for item in processors or []
+        if isinstance(item, dict) and isinstance(item.get("cam"), str)
+    }
+    for camera in desired:
+        processor = by_camera.get(camera)
+        if (
+            processor is None
+            or processor.get("running") is not True
+            or processor.get("processor_alive") is not True
+        ):
+            return "pending", f"AI 24/7 ожидает запуска процессора {camera}"
+        if processor.get("source") != "sub":
+            return "pending", f"Процессор {camera} ещё не перешёл на источник sub"
+        mode = processor.get("mode")
+        if mode not in {"always_on", "session"}:
+            return "pending", f"AI 24/7 не подтвердил режим процессора {camera}"
+        if mode == "session" and processor.get("continuous_analytics") is not True:
+            return (
+                "pending",
+                f"Сессия {camera} не подключена к непрерывной аналитике AI 24/7",
+            )
+        explicit_status = processor.get("status")
+        if explicit_status in {
+            "reconnecting",
+            "warming",
+            "waiting",
+            "starting",
+            "failed",
+            "model_unavailable",
+            "stopped",
+        }:
+            return "pending", f"Камера {camera} сейчас в состоянии {explicit_status}"
+        metrics = processor.get("metrics")
+        gap_started_at = processor.get("camera_gap_started_at")
+        if gap_started_at is None and isinstance(metrics, dict):
+            gap_started_at = metrics.get("camera_gap_started_at")
+        if gap_started_at:
+            return "pending", f"Камера {camera} переподключается после потери потока"
+        if not processor.get("last_frame_at"):
+            return "pending", f"Камера {camera} ещё не передала кадр в AI 24/7"
+        if isinstance(metrics, dict) and "inference_frames" in metrics:
+            inference_frames = metrics.get("inference_frames")
+            if type(inference_frames) is not int or inference_frames <= 0:
+                return (
+                    "pending",
+                    f"Модель {camera} ещё не обработала ни одного кадра",
+                )
+    return "synced", ""
 
 
 def _draining_event_sources() -> set[str]:
@@ -63,6 +186,34 @@ def _record_counts(current: dict, desired: list[str]) -> None:
         analytics.record_snapshot(current, cameras=legacy_snapshot_cameras)
 
 
+def sync_always_on_policy(
+    *,
+    previous_sources: list[str] | tuple[str, ...] | None = None,
+) -> dict:
+    """Apply PostgreSQL's effective monoblock policy to the camera PC.
+
+    Callers persist their business change before entering this function.  A
+    network failure therefore leaves one durable desired state which the
+    monitor can reconcile later, rather than rolling PostgreSQL back after the
+    camera PC may already have accepted the request.
+    """
+
+    with _always_on_policy_mutex():
+        # Read the durable policy only after acquiring the cross-worker mutex.
+        # Requests that reached the camera PC out of HTTP order therefore all
+        # apply the newest committed PostgreSQL state, never a stale snapshot.
+        desired = MonoblockCameraSettings.always_on_sources()
+        desired_set = set(desired)
+        removed_sources = set(previous_sources or []) - desired_set
+        for camera in removed_sources:
+            event_sync.request_stop_drain(camera)
+
+        current = ai.configure_always_on(desired, "sub")
+        for camera in removed_sources:
+            event_sync.confirm_stop_drain(camera)
+        return current
+
+
 def reconcile() -> dict:
     """Make the camera-PC durable state match PostgreSQL's desired state."""
     desired = sorted(MonoblockCameraSettings.always_on_sources())
@@ -91,17 +242,20 @@ def reconcile() -> dict:
             continue
     desired_sources = set(desired)
     removed_sources = normalized_current_sources - desired_sources
-    if removed_sources:
-        # Mark event cameras for a final drain before stopping them.  If that
-        # drain fails, later monitor iterations keep retrying even though the
-        # camera is no longer part of the live configuration.
-        for camera in removed_sources:
-            event_sync.request_stop_drain(camera)
-
     if normalized_current_sources != desired_sources or current_source != "sub":
-        current = ai.configure_always_on(desired, "sub")
-        for camera in removed_sources:
-            event_sync.confirm_stop_drain(camera)
+        current = sync_always_on_policy(
+            previous_sources=sorted(normalized_current_sources),
+        )
+        desired_sources = set(MonoblockCameraSettings.always_on_sources())
+        configured_sources = current.get("cameras")
+        if not isinstance(configured_sources, list):
+            configured_sources = current.get("camera_sources")
+        normalized_current_sources = set()
+        for source in configured_sources or []:
+            try:
+                normalized_current_sources.add(ai.normalize(source))
+            except ai.AiError:
+                continue
     stopped_pending_sources = set(
         AlwaysOnCounterCursor.objects.filter(
             event_stop_drain_requested_at__isnull=False,

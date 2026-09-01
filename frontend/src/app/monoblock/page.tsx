@@ -221,7 +221,7 @@ function CameraSettingsButton({
         onClose={() => setOpen(false)}
         eyebrow="Настройка администратора"
         title="Камеры моноблока"
-        description="Отметьте камеры, которые оператор сможет назначать заказам."
+        description="Отметьте логические камеры camN. Камера-ПК подключает их напрямую к substream и готовит непрерывный AI-процессор до начала заказа."
         className="max-w-xl"
         footer={
           <>
@@ -237,8 +237,8 @@ function CameraSettingsButton({
         <div className="mb-4 flex items-start gap-3 rounded-xl border border-blue-100 bg-blue-50/70 p-3 text-sm text-blue-900">
           <ShieldCheck className="mt-0.5 size-5 shrink-0 text-blue-600" />
           <p>
-            Изменение применяется для всех устройств. Активные отгрузки продолжат работу, но новые увидят только
-            выбранные камеры.
+            Выбранные камеры автоматически обязательны в AI 24/7 на источнике sub. Физический RTSP-адрес хранится на
+            камера-ПК и здесь не вводится. Камеру с активной отгрузкой нельзя добавить или убрать до завершения сессии.
           </p>
         </div>
 
@@ -281,6 +281,7 @@ function MonoblockDevicesButton({
   const [active, setActive] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [policyNotice, setPolicyNotice] = useState("");
 
   function showForm(device?: MonoblockDevice) {
     setEditing(device ?? null);
@@ -304,10 +305,17 @@ function MonoblockDevicesButton({
         is_active: active,
         ...(password ? { password } : {}),
       };
-      if (editing) await api.patch(`/cameras/monoblock-devices/${editing.id}/`, body);
-      else await api.post("/cameras/monoblock-devices/", body);
+      const response = editing
+        ? await api.patch<MonoblockDevice>(`/cameras/monoblock-devices/${editing.id}/`, body)
+        : await api.post<MonoblockDevice>("/cameras/monoblock-devices/", body);
       await reload();
       setFormOpen(false);
+      setPolicyNotice(
+        response.status === 202 || response.data.always_on_sync_status === "pending"
+          ? response.data.always_on_detail ||
+              "Настройка сохранена, но камера-ПК ещё не подтвердила AI 24/7. Запуск отгрузки будет недоступен до синхронизации."
+          : "",
+      );
     } catch (cause) {
       setError(apiError(cause));
     } finally {
@@ -326,10 +334,22 @@ function MonoblockDevicesButton({
     setRemoveBusy(true);
     setRemoveError("");
     try {
-      await api.delete(`/cameras/monoblock-devices/${removing.id}/`);
+      const response = await api.delete<{
+        deleted?: boolean;
+        always_on_sync_status?: "synced" | "pending";
+        always_on_detail?: string;
+      }>(`/cameras/monoblock-devices/${removing.id}/`);
       await reload();
       setRemoving(null);
-      showSuccess("Моноблок удалён");
+      if (response.status === 202 || response.data?.always_on_sync_status === "pending") {
+        const detail =
+          response.data?.always_on_detail || "Моноблок удалён, но камера-ПК ещё не подтвердила новую политику AI 24/7.";
+        setPolicyNotice(detail);
+        showSuccess("Моноблок удалён; AI 24/7 ожидает синхронизации");
+      } else {
+        setPolicyNotice("");
+        showSuccess("Моноблок удалён");
+      }
     } catch (cause) {
       setRemoveError(apiError(cause));
     } finally {
@@ -359,7 +379,7 @@ function MonoblockDevicesButton({
         onClose={() => setOpen(false)}
         eyebrow="Устройства и доступ"
         title="Учётные записи моноблоков"
-        description="У каждого физического моноблока свой логин и ровно одна закреплённая камера."
+        description="У каждого физического моноблока свой логин и ровно одна логическая камера camN. Активная камера автоматически работает 24/7 через прямое сопоставление substream на камера-ПК."
         className="max-w-2xl"
       >
         <div className="mb-4 flex items-center justify-between gap-3">
@@ -405,6 +425,11 @@ function MonoblockDevicesButton({
           <div className="rounded-2xl border border-dashed p-10 text-center text-sm text-slate-400">
             Моноблоки ещё не зарегистрированы.
           </div>
+        )}
+        {policyNotice && (
+          <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            {policyNotice}
+          </p>
         )}
         {error && !formOpen && <p className="mt-3 text-sm text-[var(--destructive)]">{error}</p>}
       </Modal>
@@ -527,6 +552,7 @@ function AlwaysOnSettingsButton({
   }
 
   function toggle(source: string) {
+    if ((settings?.automatic_camera_sources ?? []).includes(source)) return;
     setSelected((current) => {
       if (current.includes(source)) return current.filter((item) => item !== source);
       if (settings?.capacity && current.length >= settings.capacity) {
@@ -576,7 +602,7 @@ function AlwaysOnSettingsButton({
         onClose={() => setOpen(false)}
         eyebrow="Требуется право «AI 24/7: Управление»"
         title="Постоянный AI-подсчёт"
-        description="Модель остаётся прогретой и считает круглосуточно. В этом режиме видео не публикуется и не записывается."
+        description="Модель считает круглосуточно через прямое сопоставление camN/sub. Камеры Моноблока включаются автоматически; здесь можно выбрать только дополнительные камеры."
         className="max-w-2xl"
         footer={
           <>
@@ -603,7 +629,7 @@ function AlwaysOnSettingsButton({
           </div>
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
             <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Диск камеры</p>
-            <p className="mt-1 text-sm font-bold text-slate-800">Без фоновой записи</p>
+            <p className="mt-1 text-sm font-bold text-slate-800">Технический архив 48 ч</p>
           </div>
         </div>
 
@@ -617,6 +643,7 @@ function AlwaysOnSettingsButton({
         <div className="grid gap-3 sm:grid-cols-2">
           {cameras.map((camera) => {
             const checked = selected.includes(camera.src);
+            const automatic = (settings?.automatic_camera_sources ?? []).includes(camera.src);
             const live = settings?.processors.find((item) => item.cam === camera.src);
             return (
               <button
@@ -624,11 +651,14 @@ function AlwaysOnSettingsButton({
                 type="button"
                 onClick={() => toggle(camera.src)}
                 aria-pressed={checked}
+                disabled={automatic}
+                aria-label={automatic ? `${camera.zone}: автоматически включена Моноблоком` : undefined}
                 className={cn(
                   "flex items-center gap-3 rounded-2xl border p-3 text-left transition",
                   checked
                     ? "border-blue-400 bg-blue-50 ring-2 ring-blue-500/15"
                     : "border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm",
+                  automatic && "cursor-not-allowed border-emerald-300 bg-emerald-50/70 ring-emerald-500/10",
                 )}
               >
                 <span
@@ -645,6 +675,11 @@ function AlwaysOnSettingsButton({
                     <span className={cn("size-1.5 rounded-full", live?.running ? "bg-emerald-400" : "bg-slate-300")} />
                     {live?.mode === "session" ? "занята отгрузкой" : live?.running ? "считает 24/7" : camera.src}
                   </span>
+                  {automatic && (
+                    <span className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-emerald-700">
+                      <LockKeyhole className="size-3" /> Автоматически · Моноблок · {camera.src}/sub
+                    </span>
+                  )}
                 </span>
                 <span
                   className={cn(
@@ -697,6 +732,7 @@ function AlwaysOnCard({
   // они держались мешка, и помечаем временем — устаревшие гасим.
   const [liveBoxes, setLiveBoxes] = useState<{
     detections: AlwaysOnDetection[];
+    bagsPresent?: boolean | null;
     frame?: { width?: number; height?: number } | null;
     line?: AlwaysOnProcessorStatus["line"];
     direction?: AlwaysOnProcessorStatus["direction"];
@@ -717,6 +753,7 @@ function AlwaysOnCard({
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [selectedDayColorView, setSelectedDayColorView] = useState<AlwaysOnDayColorView>("algorithm");
   const current = open ? liveProcessor : processor;
+  const bagsPresent = open && liveBoxes ? liveBoxes.bagsPresent : current.bags_present;
   const countingLine = resolveCountingLine(
     {
       line: liveBoxes?.line ?? current.line,
@@ -861,7 +898,8 @@ function AlwaysOnCard({
             revision &&
             revision === previous?.revision &&
             row?.line === previous.line &&
-            row?.direction === previous.direction
+            row?.direction === previous.direction &&
+            row?.bags_present === previous.bagsPresent
           ) {
             return previous;
           }
@@ -870,6 +908,7 @@ function AlwaysOnCard({
             // An explicit empty list prevents the initial, now-stale settings
             // snapshot from reappearing through a nullish fallback.
             detections: row?.detections ?? [],
+            bagsPresent: row?.bags_present ?? null,
             frame: row?.detection_frame,
             line: row?.line,
             direction: row?.direction,
@@ -885,7 +924,7 @@ function AlwaysOnCard({
           setLiveBoxes((previous) =>
             previous?.revision === "unavailable"
               ? previous
-              : { detections: [], revision: "unavailable", at: Date.now() },
+              : { detections: [], bagsPresent: null, revision: "unavailable", at: Date.now() },
           );
         }
       } finally {
@@ -1048,7 +1087,19 @@ function AlwaysOnCard({
                 />
                 {inSession ? "режим отгрузки" : current.running ? "фоновый подсчёт" : "переподключение"}
               </span>
-              <span>{inSession ? "видео записывается" : "без записи видео"}</span>
+              <span>{inSession ? "AI-видео отгрузки" : "технический архив 48 ч"}</span>
+              <span
+                className={cn(
+                  "font-semibold",
+                  bagsPresent === true
+                    ? "text-emerald-600"
+                    : bagsPresent === false
+                      ? "text-slate-500"
+                      : "text-amber-600",
+                )}
+              >
+                Мешки в кадре: {bagsPresent === true ? "есть" : bagsPresent === false ? "нет" : "нет данных"}
+              </span>
               <span className="ml-auto font-semibold text-slate-500">Всего: {allTimeTotal}</span>
             </span>
           </span>
@@ -1060,7 +1111,7 @@ function AlwaysOnCard({
         onClose={closeStream}
         eyebrow="AI 24/7 · мониторинг"
         title={camera?.zone || processor.cam}
-        description="Прямой эфир, журнал цветовых смен, аналитика и автоматический приход на склад. Фоновое видео не записывается."
+        description="Прямой эфир, журнал цветовых смен, аналитика и автоматический приход на склад. Фоновый AI-overlay не публикуется; исходный substream хранится в техническом архиве 48 часов."
         className="max-w-5xl"
         mobileFullscreen
       >
@@ -1769,6 +1820,9 @@ function MonoblockPageInner() {
       reloadAlwaysOnSettings(),
       reloadAlwaysOnAnalytics(),
     ]);
+  const reloadMonoblockPolicy = async () => {
+    await Promise.all([reloadCameraSettings(), reloadMonoblockDevices(), reloadAlwaysOnSettings()]);
+  };
 
   const sessionOrderIds = new Set((sessions ?? []).map((session) => session.order_id));
   const startable = (orders ?? []).filter((order) => {
@@ -1879,10 +1933,10 @@ function MonoblockPageInner() {
                       <MonoblockDevicesButton
                         cameras={playable}
                         devices={monoblockDevices ?? []}
-                        reload={reloadMonoblockDevices}
+                        reload={reloadMonoblockPolicy}
                       />
                     )}
-                    <CameraSettingsButton cameras={playable} settings={cameraSettings} reload={reloadCameraSettings} />
+                    <CameraSettingsButton cameras={playable} settings={cameraSettings} reload={reloadMonoblockPolicy} />
                   </>
                 ) : null}
               </div>
@@ -1899,7 +1953,7 @@ function MonoblockPageInner() {
                   <p className="mt-3 text-sm font-semibold text-slate-600">Бесконечный цикл пока не запущен</p>
                   <p className="mt-1 max-w-sm text-xs text-slate-400">
                     {canManageAlwaysOn
-                      ? "Выберите камеры в настройке «AI 24/7» — модель начнёт считать круглосуточно, без публикации и записи видео."
+                      ? "Выберите камеры в настройке «AI 24/7» — модель начнёт считать круглосуточно; исходный substream будет храниться в техническом архиве 48 часов, а фоновый AI-overlay не публикуется."
                       : "Камеры для постоянного подсчёта пока не настроены. Обратитесь к сотруднику с правом управления AI 24/7."}
                   </p>
                 </div>
@@ -1912,7 +1966,8 @@ function MonoblockPageInner() {
                     <div>
                       <h2 className="text-[18px] font-bold tracking-tight text-slate-800">Постоянный AI-контур</h2>
                       <p className="text-[12px] text-slate-400">
-                        Бесконечный цикл: модель считает круглосуточно, без публикации и записи фонового видео
+                        Бесконечный цикл: модель считает круглосуточно, исходный substream хранится 48 часов; фоновый
+                        AI-overlay не публикуется
                       </p>
                     </div>
                     <div className="ml-auto flex items-center gap-2">
@@ -1963,6 +2018,8 @@ function MonoblockPageInner() {
                   cameraOwners={cameraOwners}
                   activeSessionCount={sessions?.length ?? 0}
                   cameraLocked={!!cameraSettings?.locked || !!me?.is_monoblock}
+                  continuousReady={cameraSettings?.always_on_sync_status === "synced"}
+                  continuousDetail={cameraSettings?.always_on_detail ?? ""}
                   onStart={start}
                 />
 

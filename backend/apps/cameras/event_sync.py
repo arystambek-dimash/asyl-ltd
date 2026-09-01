@@ -38,6 +38,7 @@ class CountEvent:
     camera: str
     source: str
     mode: str
+    continuous_analytics: bool
     class_name: str
     total_after: int
     color: str | None = None
@@ -118,6 +119,9 @@ def _parse_event(raw: object, *, camera: str, previous_id: int) -> CountEvent:
     mode = raw.get("mode")
     if mode not in {"always_on", "session"}:
         raise EventSyncError("AI /events: invalid event.mode")
+    continuous_analytics = raw.get("continuous_analytics", False)
+    if not isinstance(continuous_analytics, bool):
+        raise EventSyncError("AI /events: invalid event.continuous_analytics")
     source = raw.get("source")
     if source not in {"main", "sub"}:
         raise EventSyncError("AI /events: invalid event.source")
@@ -131,6 +135,7 @@ def _parse_event(raw: object, *, camera: str, previous_id: int) -> CountEvent:
         camera=camera,
         source=source,
         mode=mode,
+        continuous_analytics=continuous_analytics,
         class_name=class_name,
         total_after=total_after,
         color=_optional_text(raw, "color", max_length=100),
@@ -143,6 +148,14 @@ def _parse_event(raw: object, *, camera: str, previous_id: int) -> CountEvent:
             "classification_status",
             max_length=32,
         ),
+    )
+
+
+def _applies_to_continuous_analytics(event: CountEvent) -> bool:
+    """Honor the durable decision made when the camera event was created."""
+
+    return event.mode == "always_on" or (
+        event.mode == "session" and event.continuous_analytics
     )
 
 
@@ -416,22 +429,22 @@ def apply_page(
     compat_colors = dict(cursor.last_per_color or {})
 
     if not cursor.event_boundary_validated:
-        first_always_on = next(
-            (event for event in page.events if event.mode == "always_on"),
+        first_continuous = next(
+            (event for event in page.events if _applies_to_continuous_analytics(event)),
             None,
         )
-        if first_always_on is not None:
-            if first_always_on.total_after < 1:
+        if first_continuous is not None:
+            if first_continuous.total_after < 1:
                 raise EventSyncError("AI /events: invalid initial counter boundary")
             active_rows = list(
                 AlwaysOnDailyAnalytics.objects.select_for_update().filter(
                     camera=camera,
-                    day=timezone.localdate(first_always_on.occurred_at),
+                    day=timezone.localdate(first_continuous.occurred_at),
                     archived_at__isnull=True,
                 )
             )
             active_model_total = sum(row.model_total for row in active_rows)
-            upstream_baseline = first_always_on.total_after - 1
+            upstream_baseline = first_continuous.total_after - 1
             if upstream_baseline not in {cursor.last_total, active_model_total}:
                 raise EventSyncError(
                     "AI /events: initial counter boundary does not match CRM"
@@ -446,6 +459,7 @@ def apply_page(
     for event in page.events:
         if event.upstream_event_id <= current_id:
             continue
+        applies_to_analytics = _applies_to_continuous_analytics(event)
         imported, created = AlwaysOnImportedEvent.objects.get_or_create(
             camera=camera,
             upstream_event_id=event.upstream_event_id,
@@ -453,6 +467,7 @@ def apply_page(
                 "occurred_at": event.occurred_at,
                 "source": event.source,
                 "mode": event.mode,
+                "continuous_analytics": event.continuous_analytics,
                 "class_name": event.class_name,
                 "color": event.color,
                 "color_confidence": event.color_confidence,
@@ -461,7 +476,7 @@ def apply_page(
                 "sku": event.sku,
                 "classification_status": event.classification_status,
                 "total_after": event.total_after,
-                "applied_to_analytics": event.mode == "always_on",
+                "applied_to_analytics": applies_to_analytics,
             },
         )
         if not created:
@@ -469,6 +484,7 @@ def apply_page(
                 imported.occurred_at != event.occurred_at
                 or imported.source != event.source
                 or imported.mode != event.mode
+                or imported.continuous_analytics != event.continuous_analytics
                 or imported.class_name != event.class_name
                 or imported.color != event.color
                 or imported.color_confidence != event.color_confidence
@@ -479,9 +495,9 @@ def apply_page(
                 or imported.total_after != event.total_after
             ):
                 raise EventSyncError("AI /events: replayed event changed contents")
-            if imported.applied_to_analytics != (event.mode == "always_on"):
+            if imported.applied_to_analytics != applies_to_analytics:
                 raise EventSyncError("AI /events: imported event was not fully applied")
-        elif event.mode == "always_on":
+        elif applies_to_analytics:
             _assert_open_accounting_period(event)
             color_delta = _event_color(event)
             analytics.record_model_delta(

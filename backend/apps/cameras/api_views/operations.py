@@ -2,6 +2,7 @@
 
 from typing import ClassVar
 
+from django.db import transaction
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
@@ -9,7 +10,7 @@ from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm, IsStaff, IsSuperUser, PermAPIViewMixin
 
-from .. import ai, analytics, event_sync, health, production, recordings
+from .. import ai, analytics, continuous, event_sync, health, production, recordings
 from ..models import MonoblockCameraSettings
 from ..serializers import (
     AlwaysOnAnalyticsArchiveSerializer,
@@ -19,6 +20,7 @@ from ..serializers import (
     ShippingBoardSettingsSerializer,
     WagonNumberCameraSettingsSerializer,
 )
+from ..sessions import lock_camera_binding
 
 ALWAYS_ON_READ_PERMISSIONS = ("shipping.load", "ai_247.manage")
 ALWAYS_ON_MANAGE_PERMISSION = "ai_247.manage"
@@ -71,9 +73,13 @@ class AlwaysOnCameraSettingsView(_AlwaysOnPermissionMixin, APIView):
     @staticmethod
     def _payload(row=None, live=None, sync_status="synced", detail=""):
         row = row or MonoblockCameraSettings.objects.filter(singleton=True).first()
-        desired = row.always_on_camera_sources if row else []
+        automatic = MonoblockCameraSettings.mandatory_always_on_sources(row)
+        desired = MonoblockCameraSettings.always_on_sources(row)
+        manual = [source for source in desired if source not in set(automatic)]
         return {
             "camera_sources": desired,
+            "automatic_camera_sources": automatic,
+            "manual_camera_sources": manual,
             "source": "sub",
             "processors": (live or {}).get("processors", []),
             "capacity": (live or {}).get("capacity"),
@@ -95,14 +101,14 @@ class AlwaysOnCameraSettingsView(_AlwaysOnPermissionMixin, APIView):
             )
         try:
             live = ai.always_on_status_cached()
-            desired = row.always_on_camera_sources if row else []
-            synced = sorted(live.get("cameras") or []) == sorted(desired)
+            desired = MonoblockCameraSettings.always_on_sources(row)
+            sync_status, detail = continuous.always_on_sync_state(live, desired)
             return Response(
                 self._payload(
                     row,
                     live,
-                    "synced" if synced else "pending",
-                    "" if synced else "Настройка ожидает синхронизации",
+                    sync_status,
+                    detail,
                 )
             )
         except (ai.AiUnavailable, ai.AiError) as exc:
@@ -113,37 +119,61 @@ class AlwaysOnCameraSettingsView(_AlwaysOnPermissionMixin, APIView):
         serializer.is_valid(raise_exception=True)
         sources = serializer.validated_data["camera_sources"]
 
-        row, _ = MonoblockCameraSettings.objects.get_or_create(singleton=True)
-        live_before = ai.cached_always_on_status() if ai.enabled() else None
-        capacity = (live_before or {}).get("capacity")
-        if isinstance(capacity, int) and len(sources) > capacity:
-            raise ValidationError(
-                {
-                    "camera_sources": (
-                        f"ПК камер поддерживает до {capacity} активных процессоров"
-                    ),
-                    "code": "always_on_capacity_exceeded",
-                }
+        with transaction.atomic():
+            # The same singleton row serializes session reservations, device
+            # assignment and both camera-setting endpoints.
+            lock_camera_binding()
+            row = MonoblockCameraSettings.objects.select_for_update().get(
+                singleton=True
             )
-
-        previous_sources = set(row.always_on_camera_sources or [])
-        removed_sources = previous_sources - set(sources)
-        if removed_sources:
-            # The PUT stops processors immediately.  Preserve a durable final
-            # drain request first so the monitor will ingest crossings made
-            # since its previous 30-second poll from the stopped SQLite log.
-            for camera in removed_sources:
-                event_sync.request_stop_drain(camera)
-
-        row.always_on_camera_sources = sources
-        row.updated_by = request.user
-        row.save(
-            update_fields=[
-                "always_on_camera_sources",
-                "updated_by",
-                "updated_at",
+            automatic = MonoblockCameraSettings.mandatory_always_on_sources(row)
+            missing_automatic = [
+                source for source in automatic if source not in sources
             ]
-        )
+            if missing_automatic:
+                raise ValidationError(
+                    {
+                        "camera_sources": (
+                            "Камеры Моноблока работают 24/7 автоматически и не могут "
+                            "быть отключены здесь: " + ", ".join(missing_automatic)
+                        ),
+                        "code": "mandatory_always_on_cameras",
+                    }
+                )
+            automatic_set = set(automatic)
+            manual_sources = [
+                source for source in sources if source not in automatic_set
+            ]
+            effective_sources = MonoblockCameraSettings._ordered_camera_union(
+                automatic,
+                manual_sources,
+            )
+            previous_sources = MonoblockCameraSettings.always_on_sources(row)
+            live_before = ai.cached_always_on_status() if ai.enabled() else None
+            capacity = (live_before or {}).get("capacity")
+            if (
+                type(capacity) is int
+                and capacity >= 0
+                and len(effective_sources) > len(previous_sources)
+                and len(effective_sources) > capacity
+            ):
+                raise ValidationError(
+                    {
+                        "camera_sources": (
+                            f"ПК камер поддерживает до {capacity} активных процессоров"
+                        ),
+                        "code": "always_on_capacity_exceeded",
+                    }
+                )
+            row.always_on_camera_sources = manual_sources
+            row.updated_by = request.user
+            row.save(
+                update_fields=[
+                    "always_on_camera_sources",
+                    "updated_by",
+                    "updated_at",
+                ]
+            )
         if not ai.enabled():
             return Response(
                 self._payload(
@@ -154,10 +184,22 @@ class AlwaysOnCameraSettingsView(_AlwaysOnPermissionMixin, APIView):
                 status=status.HTTP_202_ACCEPTED,
             )
         try:
-            live = ai.configure_always_on(sources, "sub")
-            for camera in removed_sources:
-                event_sync.confirm_stop_drain(camera)
-            return Response(self._payload(row, live))
+            live = continuous.sync_always_on_policy(
+                previous_sources=previous_sources,
+            )
+            row = MonoblockCameraSettings.objects.get(singleton=True)
+            sync_status, detail = continuous.always_on_sync_state(
+                live,
+                MonoblockCameraSettings.always_on_sources(row),
+            )
+            return Response(
+                self._payload(row, live, sync_status, detail),
+                status=(
+                    status.HTTP_200_OK
+                    if sync_status == "synced"
+                    else status.HTTP_202_ACCEPTED
+                ),
+            )
         except (ai.AiUnavailable, ai.AiError) as exc:
             return Response(
                 self._payload(row, sync_status="pending", detail=str(exc)),

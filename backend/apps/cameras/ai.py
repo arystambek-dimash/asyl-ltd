@@ -403,37 +403,65 @@ def status(cam: str) -> dict | None:
     return _call("GET", _path(cam), none_on_404=True)
 
 
-def _order_session_ready(payload: object, *, require_zero: bool) -> bool:
+def assert_order_session_identity(
+    payload: object,
+    expected_session_id: int | None,
+) -> None:
+    """Require the worker to prove the exact database-session identity."""
+
+    if not isinstance(payload, Mapping) or expected_session_id is None:
+        return
+    worker_session_id = payload.get("session_id")
+    if type(worker_session_id) is not int:
+        raise AiError(
+            409,
+            "AI-счётчик не подтвердил точный session_id; "
+            "обновите страницу",
+        )
+    if worker_session_id != expected_session_id:
+        raise AiError(
+            409,
+            "AI-счётчик принадлежит другой сессии; обновите страницу",
+        )
+
+
+def _order_session_ready(
+    payload: object,
+    *,
+    expected_session_id: int | None,
+) -> bool:
     if not isinstance(payload, Mapping):
         return False
-    # Older camera-PC builds omit ``mode``. Only an explicit non-session mode
-    # (notably always_on) proves this is not the order counter we requested.
-    if payload.get("running") is not True or payload.get("mode") not in (
-        None,
-        "session",
-    ):
+    if payload.get("running") is not True or payload.get("mode") != "session":
         return False
-    return not (require_zero and payload.get("total") != 0)
+    assert_order_session_identity(payload, expected_session_id)
+    # Order counting may only attach to the uninterrupted 24/7 processor.  A
+    # cold session would produce the order total but silently disappear from
+    # continuous production analytics.
+    if payload.get("continuous_analytics") is not True:
+        raise AiError(
+            409,
+            "Камера ещё не готова в режиме AI 24/7; повторите запуск позже",
+        )
+    return True
 
 
 def wait_for_order_session(
     cam: str,
     payload: dict | None,
     *,
-    require_zero: bool = False,
+    expected_session_id: int | None = None,
 ) -> dict:
     """Wait for an asynchronously starting camera-PC order counter."""
     current = payload if isinstance(payload, dict) else {}
     deadline = time.monotonic() + TIMEOUT
-    while not _order_session_ready(current, require_zero=require_zero):
+    while not _order_session_ready(
+        current,
+        expected_session_id=expected_session_id,
+    ):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            detail = (
-                "AI-счётчик не подтвердил обнуление новой сессии"
-                if require_zero
-                else "AI-счётчик не подтвердил запуск сессии заказа"
-            )
-            raise AiError(503, detail)
+            raise AiError(503, "AI-счётчик не подтвердил запуск сессии заказа")
         time.sleep(min(SESSION_READY_POLL_SECONDS, remaining))
         live = status(cam)
         if live is not None:
@@ -448,16 +476,21 @@ def start(cam: str, options: dict | None = None) -> dict:
     return payload
 
 
-def reset(cam: str) -> dict:
+def reset(cam: str, session_id: int) -> dict:
     """Обнулить счётчик работающей модели (новая погрузка)."""
-    payload = _call("POST", f"{_path(cam)}/reset")
+    payload = _call(
+        "POST",
+        f"{_path(cam)}/reset",
+        {"session_id": session_id},
+    )
     assert payload is not None  # none_on_404 is false, so errors raise above
     return payload
 
 
-def delete(cam: str) -> dict | None:
+def delete(cam: str, session_id: int | None = None) -> dict | None:
     """Перевести уже сохранённую сессию в IDLE, не делая предварительный GET."""
-    return _call("DELETE", _path(cam), none_on_404=True)
+    body = {"session_id": session_id} if session_id is not None else None
+    return _call("DELETE", _path(cam), body=body, none_on_404=True)
 
 
 def _normalize_always_on(payload: dict | None) -> dict:
@@ -550,6 +583,11 @@ def always_on_detections_cached() -> dict:
                 "cam": row.get("cam"),
                 "running": row.get("running"),
                 "total": row.get("total"),
+                "bags_present": (
+                    row.get("bags_present")
+                    if type(row.get("bags_present")) is bool
+                    else None
+                ),
                 "detections": row.get("detections") or [],
                 "detection_frame": row.get("detection_frame"),
                 # The 24/7 stream is intentionally clean. The browser needs

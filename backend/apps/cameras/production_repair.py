@@ -252,14 +252,18 @@ def rebuild_event_production_runs(
         applied_events = [
             event
             for event in all_day_events
-            if event.mode == "always_on" and event.applied_to_analytics
+            if event.applied_to_analytics
         ]
         if not applied_events:
             raise ProductionRepairError(
-                "no applied always_on events exist for camera and local day"
+                "no applied continuous-analytics events exist for camera and local day"
             )
         if any(
-            event.applied_to_analytics and event.mode != "always_on"
+            event.applied_to_analytics
+            and not (
+                event.mode == "always_on"
+                or (event.mode == "session" and event.continuous_analytics)
+            )
             for event in all_day_events
         ):
             raise ProductionRepairError("imported event application state is invalid")
@@ -267,12 +271,15 @@ def rebuild_event_production_runs(
         boundary_at = applied_events[0].occurred_at
         last_event_at = applied_events[-1].occurred_at
         if any(
-            event.mode == "always_on"
+            (
+                event.mode == "always_on"
+                or (event.mode == "session" and event.continuous_analytics)
+            )
             and not event.applied_to_analytics
             for event in all_day_events
         ):
             raise ProductionRepairError(
-                "an unapplied always_on event exists on the selected local day"
+                "an unapplied continuous-analytics event exists on the selected local day"
             )
         if cursor.last_event_id < max(
             event.upstream_event_id for event in applied_events

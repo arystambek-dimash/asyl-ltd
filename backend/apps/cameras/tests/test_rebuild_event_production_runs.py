@@ -267,7 +267,7 @@ def test_apply_aborts_on_unapplied_event_before_covered_interval():
     _run("red", _at(13, 36), _at(13, 38), 2)
     before = _run_snapshot()
 
-    with pytest.raises(CommandError, match="unapplied always_on event"):
+    with pytest.raises(CommandError, match="unapplied continuous-analytics event"):
         call_command(
             "rebuild_event_production_runs",
             camera=CAMERA,

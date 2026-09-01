@@ -3,7 +3,11 @@ from unittest.mock import patch
 import pytest
 
 from apps.cameras import ai, services
-from apps.cameras.models import AiCountingSession, MonoblockDevice
+from apps.cameras.models import (
+    AiCountingSession,
+    MonoblockCameraSettings,
+    MonoblockDevice,
+)
 from apps.clients.models import Client
 from apps.orders.models import Order
 
@@ -26,7 +30,7 @@ def _create_device(auth_client, superuser, **overrides):
     response = auth_client(superuser).post(
         "/api/cameras/monoblock-devices/", payload, format="json",
     )
-    assert response.status_code == 201, response.data
+    assert response.status_code in {201, 202}, response.data
     return MonoblockDevice.objects.select_related("user").get(pk=response.data["id"])
 
 
@@ -56,8 +60,8 @@ def test_device_sees_only_its_camera_and_locked_settings(auth_client, superuser)
 
 
 def test_device_cannot_start_another_camera(auth_client, superuser, monkeypatch):
-    monkeypatch.setattr(ai, "AI_KEY", "key")
     device = _create_device(auth_client, superuser)
+    monkeypatch.setattr(ai, "AI_KEY", "key")
     order = Order.objects.create(
         client=Client.objects.create_with_user(first_name="A", last_name="B", phone="1"),
         status="confirmed",
@@ -178,3 +182,156 @@ def test_active_device_cannot_be_created_over_open_camera_session(
     assert response.data["code"] == "monoblock_busy"
     assert not MonoblockDevice.objects.filter(camera_source="cam2").exists()
     assert not django_user_model.objects.filter(username="late-monoblock").exists()
+
+
+def test_inactive_device_cannot_be_reactivated_over_active_camera_work(
+    auth_client,
+    superuser,
+):
+    device = _create_device(
+        auth_client,
+        superuser,
+        username="inactive-busy-device",
+        is_active=False,
+    )
+    order = Order.objects.create(
+        client=Client.objects.create_with_user(
+            first_name="Inactive",
+            last_name="Busy",
+            phone="inactive-busy",
+        ),
+        status="loading",
+        loading_camera=device.camera_source,
+    )
+    AiCountingSession.objects.create(
+        order=order,
+        camera=device.camera_source,
+        status=AiCountingSession.ACTIVE,
+        started_by=superuser,
+    )
+
+    with patch.object(ai, "configure_always_on") as configure:
+        response = auth_client(superuser).patch(
+            f"/api/cameras/monoblock-devices/{device.pk}/",
+            {"is_active": True},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "monoblock_busy"
+    configure.assert_not_called()
+    device.refresh_from_db()
+    device.user.refresh_from_db()
+    assert device.is_active is False
+    assert device.user.is_active is False
+
+
+def test_active_device_membership_reconciles_substream_on_create_move_and_delete(
+    auth_client,
+    superuser,
+    monkeypatch,
+):
+    monkeypatch.setattr(ai, "AI_KEY", "key")
+
+    def configured(cameras, source):
+        return {
+            "cameras": cameras,
+            "source": source,
+            "capacity": 4,
+            "pending": [],
+            "processors": [
+                {
+                    "cam": camera,
+                    "running": True,
+                    "processor_alive": True,
+                    "source": "sub",
+                    "mode": "always_on",
+                    "last_frame_at": "2026-09-01T08:00:00Z",
+                }
+                for camera in cameras
+            ],
+        }
+
+    with patch.object(ai, "configure_always_on", side_effect=configured) as configure:
+        device = _create_device(auth_client, superuser)
+        moved = auth_client(superuser).patch(
+            f"/api/cameras/monoblock-devices/{device.pk}/",
+            {"camera_source": "cam3"},
+            format="json",
+        )
+        deleted = auth_client(superuser).delete(
+            f"/api/cameras/monoblock-devices/{device.pk}/",
+        )
+
+    assert moved.status_code == 200
+    assert moved.data["always_on_source"] == "sub"
+    assert moved.data["always_on_sync_status"] == "synced"
+    assert deleted.status_code == 204
+    assert [call.args for call in configure.call_args_list] == [
+        (["cam2"], "sub"),
+        (["cam3"], "sub"),
+        ([], "sub"),
+    ]
+
+
+def test_active_device_creation_reports_pending_sync_without_rolling_back(
+    auth_client,
+    superuser,
+    monkeypatch,
+):
+    monkeypatch.setattr(ai, "AI_KEY", "key")
+    with patch.object(
+        ai,
+        "configure_always_on",
+        side_effect=ai.AiUnavailable("camera PC offline"),
+    ):
+        response = auth_client(superuser).post(
+            "/api/cameras/monoblock-devices/",
+            {
+                "name": "Моноблок фасовки",
+                "username": "mono-offline",
+                "password": "Complex-pass-123",
+                "camera_source": "cam8",
+            },
+            format="json",
+        )
+
+    assert response.status_code == 202
+    assert response.data["always_on_sync_status"] == "pending"
+    assert "offline" in response.data["always_on_detail"]
+    assert MonoblockDevice.objects.filter(camera_source="cam8").exists()
+
+
+def test_active_device_creation_rejects_known_effective_capacity_before_commit(
+    auth_client,
+    superuser,
+    django_user_model,
+    monkeypatch,
+):
+    MonoblockCameraSettings.objects.create(camera_sources=["cam2"])
+    monkeypatch.setattr(ai, "AI_KEY", "key")
+    monkeypatch.setattr(
+        ai,
+        "cached_always_on_status",
+        lambda: {"cameras": ["cam2"], "source": "sub", "capacity": 1},
+    )
+
+    with patch.object(ai, "configure_always_on") as configure:
+        response = auth_client(superuser).post(
+            "/api/cameras/monoblock-devices/",
+            {
+                "name": "Лишний моноблок",
+                "username": "mono-over-capacity",
+                "password": "Complex-pass-123",
+                "camera_source": "cam3",
+            },
+            format="json",
+        )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "always_on_capacity_exceeded"
+    configure.assert_not_called()
+    assert not MonoblockDevice.objects.filter(camera_source="cam3").exists()
+    assert not django_user_model.objects.filter(
+        username="mono-over-capacity"
+    ).exists()

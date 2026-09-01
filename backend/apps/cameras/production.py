@@ -614,7 +614,6 @@ def _dominant_brand_by_color(
     events = (
         AlwaysOnImportedEvent.objects.filter(
             camera=camera,
-            mode="always_on",
             applied_to_analytics=True,
             occurred_at__gte=selected_start,
             occurred_at__lt=selected_end,

@@ -85,6 +85,8 @@ export function ShipmentLauncher({
   cameraOwners = {},
   activeSessionCount = 0,
   cameraLocked = false,
+  continuousReady = true,
+  continuousDetail = "",
   onStart,
   className,
 }: {
@@ -94,6 +96,8 @@ export function ShipmentLauncher({
   cameraOwners?: Record<string, number>;
   activeSessionCount?: number;
   cameraLocked?: boolean;
+  continuousReady?: boolean;
+  continuousDetail?: string;
   onStart: (order: Order, camera: PlayableCamera) => Promise<void>;
   className?: string;
 }) {
@@ -106,6 +110,7 @@ export function ShipmentLauncher({
   const availableCameras = useMemo(
     () =>
       cameras.filter((camera) => {
+        if (!continuousReady) return false;
         // Поток с известным src ещё не означает живую камеру: для запуска AI
         // оператор может выбрать только подтверждённый online-источник.
         if (!camera.online) return false;
@@ -113,18 +118,20 @@ export function ShipmentLauncher({
         if (ownerId != null) return ownerId === order?.id;
         return !busyCameras.includes(camera.src);
       }),
-    [busyCameras, cameraOwners, cameras, order?.id],
+    [busyCameras, cameraOwners, cameras, continuousReady, order?.id],
   );
   const camera = availableCameras.find((item) => item.src === cameraSrc) ?? null;
   const onlineCameraCount = cameras.filter((item) => item.online).length;
   const camerasOnline = onlineCameraCount > 0;
-  const cameraPlaceholder = !cameras.length
-    ? "Камеры не настроены"
-    : !onlineCameraCount
-      ? "Нет камер онлайн"
-      : !availableCameras.length
-        ? "Нет свободных камер"
-        : "Выберите камеру";
+  const cameraPlaceholder = !continuousReady
+    ? "AI 24/7 ещё не готов"
+    : !cameras.length
+      ? "Камеры не настроены"
+      : !onlineCameraCount
+        ? "Нет камер онлайн"
+        : !availableCameras.length
+          ? "Нет свободных камер"
+          : "Выберите камеру";
   const cameraStatus = !cameras.length
     ? "Не настроены"
     : onlineCameraCount === cameras.length
@@ -191,7 +198,7 @@ export function ShipmentLauncher({
         <div className="grid w-full max-w-[1180px] items-center gap-5 lg:grid-cols-[minmax(230px,1fr)_260px_minmax(230px,1fr)] lg:gap-10">
           <div className="order-2 flex justify-center lg:order-1 lg:justify-end">
             {cameraLocked ? (
-              <AssignedCameraCard camera={cameras[0] ?? null} available={!!camera?.online} />
+              <AssignedCameraCard camera={cameras[0] ?? null} available={continuousReady && !!camera?.online} />
             ) : (
               <SelectCard
                 kind="camera"
@@ -258,8 +265,15 @@ export function ShipmentLauncher({
         </div>
 
         <p className="mt-5 max-w-[570px] text-center text-[14px] font-medium leading-relaxed text-[#415174] sm:text-[15px]">
-          Моноблок запустит AI-подсчёт для выбранных заказа и камеры.
+          Моноблок подключит заказ только к готовому непрерывному AI-процессору camN/sub. Если камера ещё прогревается,
+          система попросит повторить запуск позже — отдельный холодный счётчик не создаётся.
         </p>
+        {!continuousReady && (
+          <p className="mt-2 max-w-[620px] rounded-xl border border-amber-200 bg-amber-50/95 px-4 py-2 text-center text-sm font-medium text-amber-900">
+            {continuousDetail ||
+              "Камера-ПК ещё не подтвердила непрерывный процессор camN/sub. Запуск временно недоступен."}
+          </p>
+        )}
         {error && <p className="mt-2 text-center text-sm font-medium text-[var(--destructive)]">{error}</p>}
 
         <div className="mt-4 flex flex-wrap justify-center gap-2 text-[11px] text-slate-500 lg:absolute lg:bottom-5 lg:right-6 lg:mt-0">

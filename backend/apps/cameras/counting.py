@@ -192,37 +192,100 @@ def _pending_cleanup(
     return sessions_to_clean.order_by("-ended_at", "-pk").first()
 
 
+def _delete_exact_session(
+    camera: str,
+    session_id: int,
+    *,
+    invalid_detail: str = (
+        "AI-сервис не подтвердил очистку точной сессии; "
+        "повторите после восстановления камеры"
+    ),
+) -> tuple[dict, dict]:
+    """Delete only one proven worker session and return its frozen final.
+
+    HTTP 404 is not proof that the durable camera-PC boundary disappeared: a
+    crashed processor can be recreated from that boundary by the always-on
+    reconciler.  Cleanup is complete only after the scoped DELETE response
+    names this exact session in its authoritative final payload.
+    """
+
+    stopped = ai.delete(camera, session_id=session_id)
+    payload = _payload(stopped)
+    final = _payload(payload.get("final"))
+    outer_session_id = payload.get("session_id")
+    exact_outer_identity = outer_session_id is None or (
+        type(outer_session_id) is int and outer_session_id == session_id
+    )
+    if (
+        stopped is None
+        or payload.get("ok") is not True
+        or payload.get("stopped") is not True
+        or payload.get("cam") != camera
+        or not exact_outer_identity
+        or type(final.get("session_id")) is not int
+        or final.get("session_id") != session_id
+        or final.get("cam") != camera
+        or final.get("mode") != "session"
+        or final.get("running") is not False
+    ):
+        raise ai.AiError(503, invalid_detail)
+    return payload, final
+
+
 def _finish_pending_cleanup(
     camera: str,
     exclude_session_id: int | None = None,
     *,
+    cleanup_session_id: int | None = None,
     known_session_worker: bool = False,
 ) -> None:
     """Idle an orphaned worker before it can leak its count into a new order."""
-    pending = _pending_cleanup(camera, exclude_session_id)
-    if pending is None:
-        return
-    should_delete = known_session_worker
-    if not known_session_worker:
-        live = ai.status(camera)
-        live_payload = _payload(live)
-        should_delete = (
-            live is not None
-            and live_payload.get("running") is True
-            and live_payload.get("mode") != "always_on"
-        )
-    if should_delete:
-        # Only a per-order worker is ours. A restored always-on processor must
-        # never be reset while resolving an old cleanup marker.
-        ai.delete(camera)
-    # One successful idle command resolves every older marker for this camera.
-    resolved = AiCountingSession.objects.filter(
-        camera=camera,
-        error__startswith=CLEANUP_PENDING_PREFIX,
-    )
-    if exclude_session_id is not None:
-        resolved = resolved.exclude(pk=exclude_session_id)
-    resolved.update(error="")
+    while True:
+        if cleanup_session_id is not None:
+            pending = (
+                AiCountingSession.objects.select_for_update()
+                .filter(
+                    pk=cleanup_session_id,
+                    camera=camera,
+                    error__startswith=CLEANUP_PENDING_PREFIX,
+                )
+                .first()
+            )
+        else:
+            pending = _pending_cleanup(camera, exclude_session_id)
+        if pending is None:
+            return
+        if not known_session_worker:
+            live = ai.status(camera)
+            live_payload = _payload(live)
+            if live is None:
+                raise ai.AiError(
+                    503,
+                    "AI-процессор ещё не восстановлен; очистка сессии отложена",
+                )
+            worker_session_id = live_payload.get("session_id")
+            if worker_session_id is not None and (
+                type(worker_session_id) is not int
+                or worker_session_id != pending.pk
+            ):
+                raise ai.AiError(
+                    409,
+                    "AI-счётчик принадлежит другой сессии; очистка отложена",
+                )
+            if live_payload.get("mode") == "session":
+                ai.assert_order_session_identity(live_payload, pending.pk)
+
+        # The scoped response is the proof even when the processor has already
+        # returned to always-on mode and replays a previously frozen final.
+        _delete_exact_session(camera, pending.pk)
+        # Resolve only the identity that was actually inspected/finished. A
+        # stale marker must never clear another session's cleanup obligation.
+        AiCountingSession.objects.filter(
+            pk=pending.pk,
+            error__startswith=CLEANUP_PENDING_PREFIX,
+        ).update(error="")
+        if cleanup_session_id is not None:
+            return
 
 
 def get_status(camera: str, order_id: int | None, user) -> dict:
@@ -243,8 +306,16 @@ def get_status(camera: str, order_id: int | None, user) -> dict:
 
     live = ai.status(camera)
     live_payload = _payload(live)
+    if live is not None:
+        mode = live_payload.get("mode")
+        if live_payload.get("session_id") is not None or mode == "session":
+            ai.assert_order_session_identity(live_payload, session.pk)
     worker_running = live is not None and live_payload.get("running") is True
-    is_session_worker = worker_running and live_payload.get("mode") != "always_on"
+    is_session_worker = (
+        worker_running
+        and live_payload.get("mode") == "session"
+        and live_payload.get("continuous_analytics") is True
+    )
     is_active = session.status == AiCountingSession.ACTIVE
     if not is_session_worker or not is_active:
         code = (
@@ -331,26 +402,38 @@ def start(
         worker_may_be_running = False
         try:
             if was_starting:
-                _finish_pending_cleanup(camera, session.pk)
+                _finish_pending_cleanup(camera, exclude_session_id=session.pk)
             if initialize_worker:
-                live = ai.start(camera)
+                live = ai.start(
+                    camera,
+                    {
+                        "source": "sub",
+                        "session_id": session.pk,
+                        "require_continuous": True,
+                    },
+                )
                 worker_may_be_running = True
-                ai.wait_for_order_session(camera, live)
-                live = ai.reset(camera)
             else:
                 live = ai.status(camera)
                 live_payload = _payload(live)
                 if (
                     live is None
                     or live_payload.get("running") is not True
-                    or live_payload.get("mode") == "always_on"
+                    or live_payload.get("mode") != "session"
                 ):
-                    live = ai.start(camera)
+                    live = ai.start(
+                        camera,
+                        {
+                            "source": "sub",
+                            "session_id": session.pk,
+                            "require_continuous": True,
+                        },
+                    )
                 worker_may_be_running = live is not None
             live = ai.wait_for_order_session(
                 camera,
                 live,
-                require_zero=initialize_worker,
+                expected_session_id=session.pk,
             )
             live_payload = _payload(live)
             if live_payload.get("running") is not True:
@@ -359,7 +442,7 @@ def start(
             if exc.status < 500 and was_starting:
                 if worker_may_be_running:
                     try:
-                        ai.delete(camera)
+                        _delete_exact_session(camera, session.pk)
                     except (ai.AiError, ai.AiUnavailable) as cleanup_exc:
                         _mark_failed_locked(
                             session,
@@ -379,7 +462,7 @@ def start(
                 order = begin_camera_loading(order, camera, user)
             except (ValidationError, PermissionDenied) as exc:
                 try:
-                    ai.delete(camera)
+                    _delete_exact_session(camera, session.pk)
                 except (ai.AiError, ai.AiUnavailable) as cleanup_exc:
                     _mark_failed_locked(
                         session,
@@ -449,21 +532,66 @@ def _capture_final(
         return final, _valid_total(final.get("total")), True, exc
 
     live_payload = _payload(live)
+    if live is None:
+        final = _stored_snapshot(session)
+        failure = ai.AiError(
+            503,
+            "AI-процессор не найден; durable session требует очистки",
+        )
+        return final, _valid_total(final.get("total")), True, failure
+    if live_payload.get("mode") == "session":
+        ai.assert_order_session_identity(live_payload, session.pk)
     is_session_worker = (
         live is not None
         and live_payload.get("running") is True
-        and live_payload.get("mode") != "always_on"
+        and live_payload.get("mode") == "session"
+        and live_payload.get("continuous_analytics") is True
     )
     if not is_session_worker:
         # After a camera-PC restart the configured 24/7 worker may be back on
-        # this camera. Its total belongs to analytics, not to this order, and
-        # DELETE would reset that unrelated counter.
+        # this camera. Its total belongs to analytics, not to this order. The
+        # local row can close, but its durable boundary remains pending until a
+        # scoped DELETE proves this exact session was finalized or absent.
         final = _stored_snapshot(session)
-        return final, _valid_total(final.get("total")), False, None
+        return final, _valid_total(final.get("total")), True, None
 
     final = live_payload
     safe_total = _save_final_snapshot(session, final)
     return final, safe_total, True, None
+
+
+def _finish_with_authoritative_final(
+    camera: str,
+    session: AiCountingSession,
+) -> tuple[dict, int]:
+    """Atomically freeze and validate the exact durable order result.
+
+    A GET followed by DELETE has an unavoidable counting gap: a crossing can
+    land between those requests.  The camera PC therefore freezes the session
+    inside scoped DELETE and durably replays the same ``final`` for retries
+    after an ambiguous response or a rolled-back business transaction.
+    """
+
+    _, final = _delete_exact_session(
+        camera,
+        session.pk,
+        invalid_detail=(
+            "AI-сервис не подтвердил точный финальный счёт; "
+            "повторите завершение"
+        ),
+    )
+    if final.get("continuous_analytics") is not True:
+        raise ai.AiError(
+            503,
+            "AI-сервис не подтвердил точный финальный счёт; повторите завершение",
+        )
+    safe_total = _valid_total(final.get("total"))
+    if safe_total is None:
+        raise ai.AiError(
+            503,
+            "AI-сервис вернул некорректный финальный счёт; повторите завершение",
+        )
+    return final, safe_total
 
 
 def _locked_open_session(camera: str) -> AiCountingSession | None:
@@ -484,11 +612,12 @@ def stop(
     complete_order: bool = False,
     expected_session_id: int | None = None,
 ) -> dict:
-    """Close local ownership even when remote cleanup is temporarily broken.
+    """Finish an order exactly, or cancel local ownership best-effort.
 
-    A failed DELETE is recorded on the closed session. Before a later order is
-    allowed to start, :func:`start` retries that idempotent cleanup, preventing
-    the old counter from leaking into the new loading.
+    Business completion requires the scoped durable DELETE result before its
+    database commit. A plain cancel may still close locally when remote cleanup
+    is temporarily broken; :func:`start` retries that marked cleanup before a
+    later order can reuse the camera.
     """
     camera = ai.normalize(camera)
     assert_device_camera(user, camera)
@@ -501,9 +630,26 @@ def stop(
 
     with transaction.atomic():
         session = _locked_open_session(camera)
-        _assert_expected_session(session, expected_session_id)
         if session is None:
             locked_order = _assert_order_department_scope(order.pk, user)
+            completed_session = None
+            if expected_session_id is not None:
+                completed_session = (
+                    AiCountingSession.objects.select_for_update(of=("self",))
+                    .filter(
+                        pk=expected_session_id,
+                        camera=camera,
+                        order_id=locked_order.pk,
+                        status=AiCountingSession.CLOSED,
+                    )
+                    .first()
+                )
+                if not (
+                    complete_order
+                    and locked_order.status == "loaded"
+                    and completed_session is not None
+                ):
+                    _assert_expected_session(None, expected_session_id)
             response = {
                 "running": False,
                 **metadata(None, locked_order.pk, camera, user),
@@ -513,7 +659,13 @@ def stop(
                     order_status="loaded",
                     bags_loaded=locked_order.shipment.bags_loaded,
                 )
+                if completed_session is not None:
+                    response.update(
+                        session_id=completed_session.pk,
+                        total=completed_session.final_total,
+                    )
             return response
+        _assert_expected_session(session, expected_session_id)
         if session.order_id != order.pk:
             raise sessions.AiSessionBusy(session)
         locked_order = _assert_order_department_scope(session.order_id, user)
@@ -533,12 +685,12 @@ def stop(
                 "Сначала восстановите запуск AI-счётчика или отмените его",
             )
 
-        final, safe_total, cleanup_needed, capture_failure = _capture_final(
-            camera,
-            session,
-        )
-
         if complete_order:
+            # DELETE is the linearization point for the order total.  It runs
+            # before the business commit, and the camera PC durably replays
+            # the same final if this transaction later rolls back.
+            final, safe_total = _finish_with_authoritative_final(camera, session)
+            cleanup_needed = False
             shipment = finish_ai_counting(
                 locked_order,
                 safe_total,
@@ -547,6 +699,10 @@ def stop(
             actual_bags = shipment.bags_loaded
             final_total = actual_bags
         else:
+            final, safe_total, cleanup_needed, capture_failure = _capture_final(
+                camera,
+                session,
+            )
             _release_camera_binding(locked_order.pk, camera)
             final_total = safe_total
 
@@ -583,6 +739,7 @@ def stop(
                 with transaction.atomic():
                     _finish_pending_cleanup(
                         camera,
+                        cleanup_session_id=session_id,
                         known_session_worker=True,
                     )
             except (ai.AiError, ai.AiUnavailable) as exc:
@@ -635,7 +792,17 @@ def reset(
                 "Сбросить счётчик может только начавший отгрузку сотрудник "
                 "или администратор"
             )
-        live = ai.reset(camera)
+        live = ai.reset(camera, session.pk)
         live_payload = _payload(live)
+        ai.assert_order_session_identity(live_payload, session.pk)
+        if (
+            live_payload.get("running") is not True
+            or live_payload.get("mode") != "session"
+            or live_payload.get("continuous_analytics") is not True
+        ):
+            raise ai.AiError(
+                409,
+                "AI-сервис не подтвердил сброс точной непрерывной сессии",
+            )
         _save_live_status_locked(session, live_payload)
     return {**live_payload, **metadata(session, order.pk, camera, user)}
