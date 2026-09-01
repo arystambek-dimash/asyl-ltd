@@ -7,9 +7,11 @@ from rest_framework.exceptions import ValidationError
 
 from apps.cameras import analytics
 from apps.cameras.models import (
+    ANALYTICS_SCOPE_AI247,
     AlwaysOnCountArchive,
     AlwaysOnCounterCursor,
     AlwaysOnDailyAnalytics,
+    ContinuousCameraRole,
     MonoblockCameraSettings,
 )
 
@@ -19,6 +21,10 @@ pytestmark = pytest.mark.django_db
 def _enable(camera="cam3"):
     MonoblockCameraSettings.objects.update_or_create(
         singleton=True, defaults={"always_on_camera_sources": [camera]},
+    )
+    ContinuousCameraRole.objects.update_or_create(
+        camera=camera,
+        defaults={"analytics_scope": ANALYTICS_SCOPE_AI247},
     )
 
 

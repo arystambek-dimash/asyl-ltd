@@ -25,10 +25,10 @@ VEHICLE_RUNTIME_PROBE_TIMEOUT = 2.0
 VEHICLE_PLATE_RE = re.compile(r"^[0-9]{3}[A-Z]{3}[0-9]{2}$")
 MAX_VEHICLE_CONFIRMATION_VOTES = 32_767
 
-ALWAYS_ON_CACHE_KEY = "cameras:always-on-status:v1"
+ALWAYS_ON_CACHE_KEY = "cameras:always-on-status:v2"
 ALWAYS_ON_TTL = 5
 SESSION_READY_POLL_SECONDS = 0.2
-DETECTIONS_CACHE_KEY = "cameras:always-on-detections:v1"
+DETECTIONS_CACHE_KEY = "cameras:always-on-detections:v2"
 DETECTIONS_TTL = 1
 
 WAGON_NUMBER_CACHE_KEY = "cameras:wagon-number-status:v1"
@@ -435,13 +435,17 @@ def _order_session_ready(
     if payload.get("running") is not True or payload.get("mode") != "session":
         return False
     assert_order_session_identity(payload, expected_session_id)
-    # Order counting may only attach to the uninterrupted 24/7 processor.  A
-    # cold session would produce the order total but silently disappear from
-    # continuous production analytics.
-    if payload.get("continuous_analytics") is not True:
+    # Order counting may only attach to the uninterrupted shipping processor.
+    # A cold or AI-24/7 session would put the same physical crossing into the
+    # wrong business ledger.
+    if (
+        payload.get("continuous_analytics") is not True
+        or payload.get("analytics_scope") != "shipping"
+    ):
         raise AiError(
             409,
-            "Камера ещё не готова в режиме AI 24/7; повторите запуск позже",
+            "Камера ещё не готова в непрерывном контуре отгрузки; "
+            "повторите запуск позже",
         )
     return True
 
@@ -510,6 +514,7 @@ def always_on_status() -> dict:
         else {
             "cameras": [],
             "source": "sub",
+            "analytics_scopes": {},
             "processors": [],
         }
     )
@@ -537,6 +542,9 @@ def count_events(
             "after_id": after_id,
             "limit": limit,
             "cam": camera,
+            # Version 2 is the role-aware journal. Legacy backends omit this
+            # parameter and therefore see AI-24/7 rows only during rollback.
+            "contract_version": 2,
         }
     )
     return _call("GET", f"/events?{query}", none_on_404=True)
@@ -595,6 +603,7 @@ def always_on_detections_cached() -> dict:
                 "line": row.get("line"),
                 "direction": row.get("direction"),
                 "last_frame_at": row.get("last_frame_at"),
+                "analytics_scope": row.get("analytics_scope"),
             }
             for row in status.get("processors", [])
             if isinstance(row, dict)
@@ -616,7 +625,7 @@ def cached_always_on_status() -> dict | None:
 
 
 def invalidate_always_on_cache() -> None:
-    cache.delete(ALWAYS_ON_CACHE_KEY)
+    cache.delete_many([ALWAYS_ON_CACHE_KEY, DETECTIONS_CACHE_KEY])
 
 
 def invalidate_counting_line_caches() -> None:
@@ -624,28 +633,41 @@ def invalidate_counting_line_caches() -> None:
     cache.delete_many([ALWAYS_ON_CACHE_KEY, DETECTIONS_CACHE_KEY])
 
 
-def configure_always_on(cameras: list[str], source: str = "sub") -> dict:
-    """Atomically persist and apply the 24/7 camera set on the camera PC."""
+def configure_always_on(
+    cameras: list[str],
+    source: str = "sub",
+    analytics_scopes: Mapping[str, str] | None = None,
+) -> dict:
+    """Atomically persist both continuous contours on the camera PC."""
     normalized = list(dict.fromkeys(normalize(camera) for camera in cameras))
     if source not in {"sub", "main"}:
         raise AiError(400, "Неизвестный источник камеры")
-    try:
-        # Актуальный Windows-агент использует явное имя camera_sources.
-        payload = _call(
-            "PUT",
-            "/always-on",
-            {"camera_sources": normalized, "source": source},
-        )
-    except AiError as exc:
-        if exc.status != 422:
-            raise
-        payload = _call(
-            "PUT",
-            "/always-on",
-            {"cameras": normalized, "source": source},
-        )
+    if not isinstance(analytics_scopes, Mapping):
+        raise AiError(400, "Не указаны роли непрерывных камер")
+    normalized_scopes: dict[str, str] = {}
+    for raw_camera, scope in analytics_scopes.items():
+        if not isinstance(raw_camera, str):
+            raise AiError(400, "Некорректная роль камеры")
+        camera = normalize(raw_camera)
+        if scope not in {"shipping", "ai_247"}:
+            raise AiError(400, "Некорректная роль камеры")
+        normalized_scopes[camera] = scope
+    if set(normalized_scopes) != set(normalized):
+        raise AiError(400, "Роли камер не совпадают со списком процессоров")
+    # Role-aware agents are mandatory. Falling back to the old `cameras`
+    # contract would silently merge shipping into AI 24/7 analytics.
+    payload = _call(
+        "PUT",
+        "/always-on",
+        {
+            "camera_sources": normalized,
+            "source": source,
+            "analytics_scopes": normalized_scopes,
+        },
+    )
     status = _normalize_always_on(payload)
     cache.set(ALWAYS_ON_CACHE_KEY, status, ALWAYS_ON_TTL)
+    cache.delete(DETECTIONS_CACHE_KEY)
     return status
 
 

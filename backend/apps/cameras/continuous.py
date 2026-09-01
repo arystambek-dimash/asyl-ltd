@@ -13,7 +13,12 @@ from django.utils import timezone
 from apps.grain import services as grain_services
 
 from . import ai, analytics, event_sync
-from .models import AlwaysOnCounterCursor, MonoblockCameraSettings
+from .models import (
+    ANALYTICS_SCOPE_AI247,
+    ANALYTICS_SCOPE_SHIPPING,
+    AlwaysOnCounterCursor,
+    MonoblockCameraSettings,
+)
 
 log = logging.getLogger(__name__)
 
@@ -56,32 +61,40 @@ def _always_on_policy_mutex():
                     connection.close()
 
 
-def always_on_sync_state(current: dict, desired: list[str]) -> tuple[str, str]:
-    """Return a fail-closed readiness state for one camera-PC policy reply."""
-
+def _live_sources(current: dict) -> list[str] | None:
     live_sources = current.get("cameras")
     if not isinstance(live_sources, list):
         live_sources = current.get("camera_sources")
-    if not isinstance(live_sources, list):
-        return "pending", "AI-сервис не подтвердил список камер AI 24/7"
-    if any(not isinstance(source, str) for source in live_sources):
-        return "pending", "AI-сервис вернул некорректный список камер AI 24/7"
-    if sorted(live_sources) != sorted(desired) or current.get("source") != "sub":
-        return "pending", "Настройка AI 24/7 ожидает синхронизации"
+    if not isinstance(live_sources, list) or any(
+        not isinstance(source, str) for source in live_sources
+    ):
+        return None
+    return live_sources
 
-    upstream_pending = current.get("pending")
-    if upstream_pending:
-        pending_rows = upstream_pending if isinstance(upstream_pending, list) else []
-        reasons = []
-        for item in pending_rows:
-            if not isinstance(item, dict):
-                continue
-            camera = item.get("cam")
-            reason = item.get("reason")
-            if isinstance(camera, str) and isinstance(reason, str):
-                reasons.append(f"{camera}: {reason}")
-        detail = ", ".join(reasons) or "камера-ПК ещё запускает процессоры"
-        return "pending", f"AI 24/7 ожидает готовности: {detail}"
+
+def _processor_readiness(
+    current: dict,
+    camera: str,
+    *,
+    analytics_scope: str | None,
+) -> tuple[str, str]:
+    live_sources = _live_sources(current)
+    if live_sources is None or camera not in live_sources:
+        return "pending", f"Камера {camera} ещё не применена на AI-сервисе"
+    if current.get("source") != "sub":
+        return "pending", f"Камера {camera} ещё не перешла на источник sub"
+
+    if analytics_scope is not None:
+        scopes = current.get("analytics_scopes")
+        if not isinstance(scopes, dict) or scopes.get(camera) != analytics_scope:
+            return "pending", f"AI-сервис не подтвердил роль камеры {camera}"
+
+    for item in current.get("pending") or []:
+        if not isinstance(item, dict) or item.get("cam") != camera:
+            continue
+        reason = item.get("reason")
+        detail = reason if isinstance(reason, str) else "процессор запускается"
+        return "pending", f"{camera}: {detail}"
 
     processors = current.get("processors")
     if not isinstance(processors, list):
@@ -91,50 +104,121 @@ def always_on_sync_state(current: dict, desired: list[str]) -> tuple[str, str]:
         for item in processors or []
         if isinstance(item, dict) and isinstance(item.get("cam"), str)
     }
+    processor = by_camera.get(camera)
+    if (
+        processor is None
+        or processor.get("running") is not True
+        or processor.get("processor_alive") is not True
+    ):
+        return "pending", f"Ожидается запуск процессора {camera}"
+    if processor.get("source") != "sub":
+        return "pending", f"Процессор {camera} ещё не перешёл на источник sub"
+    if analytics_scope is not None and processor.get("analytics_scope") != analytics_scope:
+        return "pending", f"Процессор {camera} не подтвердил свою роль"
+    mode = processor.get("mode")
+    if mode not in {"always_on", "session"}:
+        return "pending", f"AI-сервис не подтвердил режим процессора {camera}"
+    if mode == "session" and processor.get("continuous_analytics") is not True:
+        return "pending", f"Сессия {camera} потеряла непрерывную аналитику"
+    explicit_status = processor.get("status")
+    if explicit_status in {
+        "reconnecting",
+        "warming",
+        "waiting",
+        "starting",
+        "failed",
+        "model_unavailable",
+        "stopped",
+    }:
+        return "pending", f"Камера {camera} сейчас в состоянии {explicit_status}"
+    metrics = processor.get("metrics")
+    gap_started_at = processor.get("camera_gap_started_at")
+    if gap_started_at is None and isinstance(metrics, dict):
+        gap_started_at = metrics.get("camera_gap_started_at")
+    if gap_started_at:
+        return "pending", f"Камера {camera} переподключается после потери потока"
+    if not processor.get("last_frame_at"):
+        return "pending", f"Камера {camera} ещё не передала кадр"
+    if isinstance(metrics, dict) and "inference_frames" in metrics:
+        inference_frames = metrics.get("inference_frames")
+        if type(inference_frames) is not int or inference_frames <= 0:
+            return "pending", f"Модель {camera} ещё не обработала ни одного кадра"
+    return "synced", ""
+
+
+def contour_readiness(
+    current: dict,
+    desired: list[str],
+    analytics_scope: str,
+) -> dict[str, dict[str, str]]:
+    """Return per-camera readiness without coupling the two contours."""
+
+    result = {}
     for camera in desired:
-        processor = by_camera.get(camera)
-        if (
-            processor is None
-            or processor.get("running") is not True
-            or processor.get("processor_alive") is not True
-        ):
-            return "pending", f"AI 24/7 ожидает запуска процессора {camera}"
-        if processor.get("source") != "sub":
-            return "pending", f"Процессор {camera} ещё не перешёл на источник sub"
-        mode = processor.get("mode")
-        if mode not in {"always_on", "session"}:
-            return "pending", f"AI 24/7 не подтвердил режим процессора {camera}"
-        if mode == "session" and processor.get("continuous_analytics") is not True:
-            return (
-                "pending",
-                f"Сессия {camera} не подключена к непрерывной аналитике AI 24/7",
-            )
-        explicit_status = processor.get("status")
-        if explicit_status in {
-            "reconnecting",
-            "warming",
-            "waiting",
-            "starting",
-            "failed",
-            "model_unavailable",
-            "stopped",
-        }:
-            return "pending", f"Камера {camera} сейчас в состоянии {explicit_status}"
-        metrics = processor.get("metrics")
-        gap_started_at = processor.get("camera_gap_started_at")
-        if gap_started_at is None and isinstance(metrics, dict):
-            gap_started_at = metrics.get("camera_gap_started_at")
-        if gap_started_at:
-            return "pending", f"Камера {camera} переподключается после потери потока"
-        if not processor.get("last_frame_at"):
-            return "pending", f"Камера {camera} ещё не передала кадр в AI 24/7"
-        if isinstance(metrics, dict) and "inference_frames" in metrics:
-            inference_frames = metrics.get("inference_frames")
-            if type(inference_frames) is not int or inference_frames <= 0:
-                return (
-                    "pending",
-                    f"Модель {camera} ещё не обработала ни одного кадра",
-                )
+        status, detail = _processor_readiness(
+            current,
+            camera,
+            analytics_scope=analytics_scope,
+        )
+        result[camera] = {"status": status, "detail": detail}
+    return result
+
+
+def contour_sync_state(
+    current: dict,
+    desired: list[str],
+    analytics_scope: str,
+) -> tuple[str, str]:
+    readiness = contour_readiness(current, desired, analytics_scope)
+    pending = [
+        f"{camera}: {value['detail']}"
+        for camera, value in readiness.items()
+        if value["status"] != "synced"
+    ]
+    return ("pending", "; ".join(pending)) if pending else ("synced", "")
+
+
+def policy_sync_state(
+    current: dict,
+    desired: list[str],
+    analytics_scopes: dict[str, str],
+) -> tuple[str, str]:
+    """Validate the complete role-aware camera-PC control-plane reply."""
+
+    live_sources = _live_sources(current)
+    if live_sources is None:
+        return "pending", "AI-сервис не подтвердил список непрерывных камер"
+    if sorted(live_sources) != sorted(desired) or current.get("source") != "sub":
+        return "pending", "Настройка непрерывных камер ожидает синхронизации"
+    if current.get("analytics_scopes") != analytics_scopes:
+        return "pending", "AI-сервис не подтвердил роли непрерывных камер"
+    for camera in desired:
+        state, detail = _processor_readiness(
+            current,
+            camera,
+            analytics_scope=analytics_scopes[camera],
+        )
+        if state != "synced":
+            return state, detail
+    return "synced", ""
+
+
+def always_on_sync_state(current: dict, desired: list[str]) -> tuple[str, str]:
+    """Backward-compatible exact readiness check without role inference."""
+
+    live_sources = _live_sources(current)
+    if live_sources is None:
+        return "pending", "AI-сервис не подтвердил список камер AI 24/7"
+    if sorted(live_sources) != sorted(desired) or current.get("source") != "sub":
+        return "pending", "Настройка AI 24/7 ожидает синхронизации"
+    for camera in desired:
+        state, detail = _processor_readiness(
+            current,
+            camera,
+            analytics_scope=None,
+        )
+        if state != "synced":
+            return state, detail
     return "synced", ""
 
 
@@ -154,7 +238,11 @@ def _draining_event_sources() -> set[str]:
     )
 
 
-def _record_counts(current: dict, desired: list[str]) -> None:
+def _record_counts(
+    current: dict,
+    desired: list[str],
+    analytics_scopes: dict[str, str],
+) -> None:
     """Use durable events when supported and snapshots only for explicit 404s."""
 
     legacy_snapshot_cameras: set[str] = set()
@@ -183,7 +271,70 @@ def _record_counts(current: dict, desired: list[str]) -> None:
             )
 
     if legacy_snapshot_cameras:
-        analytics.record_snapshot(current, cameras=legacy_snapshot_cameras)
+        analytics.record_snapshot(
+            current,
+            cameras=legacy_snapshot_cameras,
+            analytics_scopes=analytics_scopes,
+        )
+
+
+def _observed_analytics_scopes(
+    current: dict,
+    desired_scopes: dict[str, str],
+    *,
+    fallback_to_desired: bool = True,
+) -> dict[str, str]:
+    """Prefer the role attached to the processor that produced a snapshot."""
+
+    result = dict(desired_scopes) if fallback_to_desired else {}
+    live_scopes = current.get("analytics_scopes")
+    if isinstance(live_scopes, dict):
+        for camera, scope in live_scopes.items():
+            if (
+                isinstance(camera, str)
+                and scope in {ANALYTICS_SCOPE_SHIPPING, ANALYTICS_SCOPE_AI247}
+            ):
+                result[camera] = scope
+    return result
+
+
+def _confirmed_shipping_sources(
+    current: dict,
+    desired_sources: set[str],
+) -> list[str]:
+    """Return desired live cameras whose role CV explicitly acknowledged."""
+
+    live_sources = _live_sources(current)
+    scopes = current.get("analytics_scopes")
+    if live_sources is None or not isinstance(scopes, dict):
+        return []
+    normalized_live = set()
+    for source in live_sources:
+        try:
+            normalized_live.add(ai.normalize(source))
+        except ai.AiError:
+            continue
+    return sorted(
+        camera
+        for camera in desired_sources & normalized_live
+        if scopes.get(camera) == ANALYTICS_SCOPE_SHIPPING
+        and _processor_readiness(
+            current,
+            camera,
+            analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+        )[0]
+        == "synced"
+    )
+
+
+def _confirm_shipping_bootstraps(cameras: list[str]) -> None:
+    for camera in cameras:
+        analytics.confirm_shipping_bootstrap_scope(camera)
+
+
+def _complete_shipping_bootstraps(cameras: list[str]) -> None:
+    for camera in cameras:
+        analytics.complete_shipping_bootstrap(camera)
 
 
 def sync_always_on_policy(
@@ -202,13 +353,18 @@ def sync_always_on_policy(
         # Read the durable policy only after acquiring the cross-worker mutex.
         # Requests that reached the camera PC out of HTTP order therefore all
         # apply the newest committed PostgreSQL state, never a stale snapshot.
-        desired = MonoblockCameraSettings.always_on_sources()
+        desired = MonoblockCameraSettings.continuous_sources()
+        analytics_scopes = MonoblockCameraSettings.continuous_roles()
         desired_set = set(desired)
         removed_sources = set(previous_sources or []) - desired_set
         for camera in removed_sources:
             event_sync.request_stop_drain(camera)
 
-        current = ai.configure_always_on(desired, "sub")
+        current = ai.configure_always_on(
+            desired,
+            "sub",
+            analytics_scopes=analytics_scopes,
+        )
         for camera in removed_sources:
             event_sync.confirm_stop_drain(camera)
         return current
@@ -216,7 +372,8 @@ def sync_always_on_policy(
 
 def reconcile() -> dict:
     """Make the camera-PC durable state match PostgreSQL's desired state."""
-    desired = sorted(MonoblockCameraSettings.always_on_sources())
+    desired = MonoblockCameraSettings.continuous_sources()
+    analytics_scopes = MonoblockCameraSettings.continuous_roles()
     current = ai.always_on_status()
     current_sources = current.get("cameras")
     current_source = current.get("source", "sub")
@@ -232,7 +389,11 @@ def reconcile() -> dict:
             "состояние неизвестно, синхронизация отложена",
             current_sources,
         )
-        _record_counts(current, sorted(set(desired) | _draining_event_sources()))
+        _record_counts(
+            current,
+            sorted(set(desired) | _draining_event_sources()),
+            _observed_analytics_scopes(current, analytics_scopes),
+        )
         return current
     normalized_current_sources: set[str] = set()
     for source in current_sources:
@@ -242,11 +403,43 @@ def reconcile() -> dict:
             continue
     desired_sources = set(desired)
     removed_sources = normalized_current_sources - desired_sources
-    if normalized_current_sources != desired_sources or current_source != "sub":
-        current = sync_always_on_policy(
-            previous_sources=sorted(normalized_current_sources),
-        )
-        desired_sources = set(MonoblockCameraSettings.always_on_sources())
+    current_scopes = current.get("analytics_scopes")
+    policy_changed = (
+        normalized_current_sources != desired_sources
+        or current_source != "sub"
+        or current_scopes != analytics_scopes
+    )
+    if policy_changed:
+        try:
+            current = sync_always_on_policy(
+                previous_sources=sorted(normalized_current_sources),
+            )
+        except (ai.AiUnavailable, ai.AiError):
+            # A broken new mapping must not starve the event journal of an
+            # already healthy processor. Import the observed live set first,
+            # then let the monitor report/retry the policy failure.
+            confirmed_shipping = _confirmed_shipping_sources(
+                current,
+                desired_sources,
+            )
+            _confirm_shipping_bootstraps(confirmed_shipping)
+            _record_counts(
+                current,
+                sorted(
+                    normalized_current_sources
+                    | desired_sources
+                    | _draining_event_sources()
+                ),
+                _observed_analytics_scopes(
+                    current,
+                    analytics_scopes,
+                    fallback_to_desired=False,
+                ),
+            )
+            _complete_shipping_bootstraps(confirmed_shipping)
+            raise
+        desired_sources = set(MonoblockCameraSettings.continuous_sources())
+        analytics_scopes = MonoblockCameraSettings.continuous_roles()
         configured_sources = current.get("cameras")
         if not isinstance(configured_sources, list):
             configured_sources = current.get("camera_sources")
@@ -267,11 +460,30 @@ def reconcile() -> dict:
         # its second durable barrier: the live configuration itself confirms
         # that this camera is now stopped.
         event_sync.confirm_stop_drain(camera)
+    active_desired_sources = normalized_current_sources & desired_sources
+    dangling_reactivations = set(
+        AlwaysOnCounterCursor.objects.filter(
+            camera__in=active_desired_sources,
+            event_stop_drain_requested_at__isnull=False,
+            event_stop_confirmed_at__isnull=True,
+        ).values_list("camera", flat=True)
+    )
+    if dangling_reactivations:
+        reactivation_fence = timezone.now()
+        for camera in sorted(dangling_reactivations):
+            event_sync.reactivate_stop_drain(
+                camera,
+                required_at=reactivation_fence,
+            )
+    confirmed_shipping = _confirmed_shipping_sources(current, desired_sources)
+    _confirm_shipping_bootstraps(confirmed_shipping)
     draining_sources = _draining_event_sources()
     _record_counts(
         current,
         sorted(desired_sources | removed_sources | draining_sources),
+        _observed_analytics_scopes(current, analytics_scopes),
     )
+    _complete_shipping_bootstraps(confirmed_shipping)
     return current
 
 

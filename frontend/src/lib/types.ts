@@ -519,10 +519,22 @@ export interface ShippingBoardSettings {
 }
 export interface MonoblockCameraSettings {
   camera_sources: string[];
-  always_on_camera_sources: string[];
-  always_on_source: "sub";
-  always_on_sync_status: "synced" | "pending";
-  always_on_detail: string;
+  /** Cameras explicitly owned by the separate AI 24/7 contour. */
+  blocked_camera_sources?: string[];
+  /** Currently active cameras in the other contour; permanent reservations do not consume capacity. */
+  active_other_camera_sources?: string[];
+  /** Отгрузочные камеры, непрерывно запущенные на camera-PC. */
+  continuous_camera_sources?: string[];
+  continuous_source?: "sub";
+  continuous_sync_status?: "synced" | "pending";
+  continuous_detail?: string;
+  camera_readiness?: Record<string, CameraContinuousReadiness>;
+  processors?: AlwaysOnProcessorStatus[];
+  /** Legacy aliases retained while older clients are rolling forward. */
+  always_on_camera_sources?: string[];
+  always_on_source?: "sub";
+  always_on_sync_status?: "synced" | "pending";
+  always_on_detail?: string;
   locked: boolean;
   device_id: number | null;
   device_name: string | null;
@@ -567,7 +579,11 @@ export interface AlwaysOnDetection {
 export interface AlwaysOnProcessorStatus {
   cam: string;
   running: boolean;
+  /** Process still owns a live capture/inference worker on the camera PC. */
+  processor_alive?: boolean;
   mode: "always_on" | "session" | "idle";
+  analytics_scope?: "shipping" | "ai_247";
+  source?: "main" | "sub";
   recording: boolean;
   total: number;
   /** Confident (>= count threshold) bags on the latest AI frame. */
@@ -583,18 +599,36 @@ export interface AlwaysOnProcessorStatus {
   error?: string | null;
   metrics?: { inference_fps?: number; dropped_frames?: number };
 }
+export interface CameraContinuousReadiness {
+  status: "synced" | "pending";
+  detail: string;
+}
+export interface AnalyticsSyncState {
+  status: "synced" | "pending" | "catching_up" | "error" | "stale" | "unsupported";
+  available: boolean;
+  caught_up_at?: string | null;
+  last_event_at?: string | null;
+  error?: string;
+  detail: string;
+}
 export interface AlwaysOnCameraSettings {
   camera_sources: string[];
-  /** Камеры Моноблока: входят в 24/7 автоматически и не снимаются вручную. */
-  automatic_camera_sources: string[];
-  /** Дополнительный ручной выбор в настройке AI 24/7. */
-  manual_camera_sources: string[];
+  analytics_scope: "shipping" | "ai_247";
+  /** Kept for wire compatibility; AI 24/7 no longer owns shipment cameras. */
+  automatic_camera_sources?: string[];
+  /** Explicit cameras owned by this contour. */
+  manual_camera_sources?: string[];
+  /** Cameras owned by the other contour and unavailable in this picker. */
+  blocked_camera_sources?: string[];
+  /** Currently active cameras in the other contour; used only for the shared runtime capacity. */
+  active_other_camera_sources?: string[];
   source: "sub" | "main";
   processors: AlwaysOnProcessorStatus[];
   capacity: number | null;
   service_available: boolean;
   sync_status: "synced" | "pending";
   detail: string;
+  camera_readiness?: Record<string, CameraContinuousReadiness>;
   updated_at: string | null;
 }
 export interface WagonNumberCameraStatus {
@@ -676,8 +710,11 @@ export interface AlwaysOnDailyCameraAnalytics {
   dominant_color: string | null;
   dominant_brand: string | null;
   updated_at: string | null;
+  analytics_sync?: AnalyticsSyncState;
 }
 export interface AlwaysOnDailyAnalytics {
+  analytics_scope?: "shipping" | "ai_247";
+  analytics_sync?: AnalyticsSyncState;
   day: string;
   total: number;
   all_time_total: number;

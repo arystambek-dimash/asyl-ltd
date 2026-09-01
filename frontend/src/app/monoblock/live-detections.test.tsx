@@ -80,7 +80,10 @@ vi.mock("@/lib/api", () => ({
 const processor = {
   cam: "cam2",
   running: true,
+  processor_alive: true,
   mode: "always_on",
+  analytics_scope: "ai_247",
+  source: "sub",
   recording: false,
   total: 17,
   detections: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.4, label: "Red_50", confidence: 0.91, counted: false }],
@@ -88,12 +91,14 @@ const processor = {
 
 const alwaysOnSettings = {
   camera_sources: ["cam2"],
+  analytics_scope: "ai_247",
   source: "sub",
   processors: [processor],
   capacity: 2,
   service_available: true,
   sync_status: "synced",
   detail: "",
+  camera_readiness: { cam2: { status: "synced", detail: "" } },
   updated_at: null,
 };
 
@@ -148,6 +153,125 @@ beforeEach(() => {
 });
 
 describe("AI 24/7 live detections", () => {
+  it("не подменяет недоступный живой счётчик нулём", async () => {
+    const user = userEvent.setup();
+    const unavailableSettings = {
+      ...alwaysOnSettings,
+      processors: [{ ...processor, running: false, processor_alive: false, total: 0 }],
+      camera_readiness: { cam2: { status: "pending", detail: "Процессор ещё не подтверждён" } },
+    };
+    mocks.responses.set("/cameras/always-on-settings/", unavailableSettings);
+    mocks.apiGet.mockImplementation((url: unknown) => {
+      if (url === "/cameras/always-on-detections/") return new Promise(() => undefined);
+      if (url === "/cameras/always-on-settings/") return Promise.resolve({ data: unavailableSettings });
+      if (url === "/cameras/always-on-analytics/") return Promise.resolve({ data: analytics });
+      return Promise.reject(new Error(`Unexpected GET ${String(url)}`));
+    });
+
+    render(<MonoblockPage />);
+    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
+    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+
+    const label = screen.getByText("Текущий цикл");
+    expect(label.parentElement).toHaveTextContent("Текущий цикл—");
+    expect(label.parentElement).not.toHaveTextContent("Текущий цикл0");
+  });
+
+  it("показывает живой итог только для подтверждённого sub-процессора своего контура", async () => {
+    const user = userEvent.setup();
+
+    render(<MonoblockPage />);
+    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
+    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+
+    const label = screen.getByText("Текущий цикл");
+    expect(label.parentElement).toHaveTextContent("Текущий цикл17");
+  });
+
+  it("не запрашивает выпуск AI 24/7 при разборе дня камеры отгрузки", async () => {
+    const user = userEvent.setup();
+    const day = "2026-08-24";
+    const historyPoint = {
+      day,
+      model_total: 12,
+      model_per_color: { red: 9, blue: 3 },
+      model_per_brand: {},
+      colors: [
+        { color: "red", total: 9, percent: 75 },
+        { color: "blue", total: 3, percent: 25 },
+      ],
+      brands: [],
+      adjustment: 0,
+      total: 12,
+      updated_at: null,
+    };
+    const shippingProcessor = { ...processor, analytics_scope: "shipping" };
+    const shippingSettings = {
+      ...alwaysOnSettings,
+      analytics_scope: "shipping",
+      processors: [shippingProcessor],
+      camera_readiness: { cam2: { status: "synced", detail: "" } },
+    };
+    const shippingAnalytics = {
+      ...analytics,
+      analytics_scope: "shipping",
+      analytics_sync: { status: "synced", available: true, detail: "" },
+      total: 12,
+      all_time_total: 12,
+      model_all_time_total: 12,
+      history: [historyPoint],
+      colors: historyPoint.colors,
+      cameras: [
+        {
+          camera: "cam2",
+          ...historyPoint,
+          all_time_total: 12,
+          history: [historyPoint],
+          dominant_color: "red",
+          dominant_brand: null,
+          analytics_sync: { status: "synced", available: true, detail: "" },
+        },
+      ],
+    };
+    mocks.responses.set("/cameras/monoblock-settings/", {
+      camera_sources: ["cam2"],
+      blocked_camera_sources: [],
+      continuous_camera_sources: ["cam2"],
+      continuous_source: "sub",
+      continuous_sync_status: "synced",
+      continuous_detail: "",
+      camera_readiness: { cam2: { status: "synced", detail: "" } },
+      locked: false,
+      device_id: null,
+      device_name: null,
+      updated_at: null,
+    });
+    mocks.responses.set("/cameras/shipping-continuous-settings/", shippingSettings);
+    mocks.responses.set("/cameras/shipping-continuous-analytics/", shippingAnalytics);
+    mocks.responses.set("/cameras/always-on-settings/", { ...alwaysOnSettings, camera_sources: [], processors: [] });
+    mocks.apiGet.mockClear();
+    mocks.apiGet.mockImplementation((url: unknown) => {
+      if (url === "/cameras/shipping-continuous-detections/") {
+        return Promise.resolve({ data: { processors: [shippingProcessor] } });
+      }
+      if (url === "/cameras/shipping-continuous-settings/") return Promise.resolve({ data: shippingSettings });
+      if (url === "/cameras/shipping-continuous-analytics/") return Promise.resolve({ data: shippingAnalytics });
+      return Promise.reject(new Error(`Unexpected GET ${String(url)}`));
+    });
+
+    render(<MonoblockPage />);
+    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await user.click(screen.getByRole("tab", { name: "Аналитика" }));
+    await user.click(screen.getByRole("button", { name: "Аналитика за 24.08.2026: 12 мешков" }));
+
+    expect(screen.getByText("Цвета мешков за день")).toBeInTheDocument();
+    expect(screen.queryByText("Цвета и продукция за день")).not.toBeInTheDocument();
+    expect(screen.queryByText("Журнал периодов выпуска")).not.toBeInTheDocument();
+    expect(mocks.apiGet.mock.calls.some(([url]) => String(url).startsWith("/cameras/always-on-production/"))).toBe(
+      false,
+    );
+  });
+
   it.each([
     { bagsPresent: true, expected: "Мешки в кадре: есть" },
     { bagsPresent: false, expected: "Мешки в кадре: нет" },

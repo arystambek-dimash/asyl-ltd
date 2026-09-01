@@ -9,10 +9,13 @@ from django.core.management.base import CommandError
 
 from apps.cameras import production, production_repair
 from apps.cameras.models import (
+    ANALYTICS_SCOPE_AI247,
+    ANALYTICS_SCOPE_SHIPPING,
     AlwaysOnCounterCursor,
     AlwaysOnImportedEvent,
     AlwaysOnProductionCorrection,
     AlwaysOnProductionRun,
+    ContinuousCameraRole,
 )
 
 pytestmark = pytest.mark.django_db
@@ -26,6 +29,14 @@ def _at(hour: int, minute: int) -> datetime:
     return datetime(2026, 8, 25, hour, minute, tzinfo=ALMATY)
 
 
+@pytest.fixture(autouse=True)
+def reserve_ai247_camera():
+    ContinuousCameraRole.objects.create(
+        camera=CAMERA,
+        analytics_scope=ANALYTICS_SCOPE_AI247,
+    )
+
+
 def _event(
     event_id: int,
     occurred_at: datetime,
@@ -33,6 +44,7 @@ def _event(
     *,
     applied: bool = True,
     classified_color: str | None = None,
+    analytics_scope: str = ANALYTICS_SCOPE_AI247,
 ) -> AlwaysOnImportedEvent:
     return AlwaysOnImportedEvent.objects.create(
         camera=CAMERA,
@@ -40,10 +52,14 @@ def _event(
         occurred_at=occurred_at,
         source="sub",
         mode="always_on",
+        analytics_scope=analytics_scope,
         class_name=f"{color}_bag",
         color=classified_color,
         total_after=event_id,
         applied_to_analytics=applied,
+        applied_to_production=(
+            applied and analytics_scope == ANALYTICS_SCOPE_AI247
+        ),
     )
 
 
@@ -107,7 +123,15 @@ def overlapping_color_runs():
     ]
     for event_id, occurred_at, color in event_specs:
         _event(event_id, occurred_at, color)
-    _cursor(event_count=len(event_specs))
+    # A later shipping event shares the durable camera journal, but is not a
+    # production event and therefore must not affect repair boundaries/totals.
+    _event(
+        8,
+        _at(13, 43),
+        "yellow",
+        analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+    )
+    _cursor(event_count=8)
 
     # Legacy logic reopens the first red row after blue instead of creating a
     # fourth A→B→C→A period, while green and blue remain open concurrently.
@@ -330,6 +354,19 @@ def test_command_rejects_current_or_future_local_day(monkeypatch):
         )
 
     assert not AlwaysOnProductionRun.objects.exists()
+
+
+def test_command_rejects_a_shipping_reserved_camera():
+    ContinuousCameraRole.objects.filter(camera=CAMERA).update(
+        analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+    )
+
+    with pytest.raises(CommandError, match="not reserved for AI 24/7 production"):
+        call_command(
+            "rebuild_event_production_runs",
+            camera=CAMERA,
+            day=LOCAL_DAY.isoformat(),
+        )
 
 
 def test_apply_aborts_on_production_tail_after_last_imported_event():

@@ -30,10 +30,12 @@ from django.utils import timezone
 
 from . import ai, alerts, services
 from .models import (
+    AiCountingSession,
     AlwaysOnCounterCursor,
     CameraHealthState,
     CameraIncident,
     MonoblockCameraSettings,
+    ShippingAnalyticsBootstrap,
 )
 
 log = logging.getLogger(__name__)
@@ -731,7 +733,14 @@ def state_payload(
         and state.status != CameraHealthState.OUTAGE
     )
     effective_status = "unavailable" if stale else state.status
-    desired_event_cameras = set(MonoblockCameraSettings.always_on_sources())
+    desired_event_cameras = set(MonoblockCameraSettings.continuous_sources())
+    desired_shipping_cameras = set(MonoblockCameraSettings.shipping_sources())
+    pending_shipping_bootstraps = set(
+        ShippingAnalyticsBootstrap.objects.filter(
+            camera__in=desired_shipping_cameras,
+            completed_at__isnull=True,
+        ).values_list("camera", flat=True)
+    )
     pending_drain_cameras = set(
         AlwaysOnCounterCursor.objects.exclude(event_sync_supported=False)
         .filter(
@@ -796,6 +805,10 @@ def state_payload(
             else:
                 sync_status = "synced"
                 detail = ""
+        if camera in pending_shipping_bootstraps:
+            sync_status = "bootstrap_pending"
+            detail = "shipping analytics history bootstrap is pending"
+            event_sync_blocking = True
         event_rows.append(
             {
                 "camera": camera,
@@ -809,6 +822,13 @@ def state_payload(
             }
         )
     incident = CameraIncident.objects.filter(resolved_at__isnull=True).first()
+    open_sessions = list(
+        AiCountingSession.objects.filter(
+            status__in=AiCountingSession.OPEN_STATUSES,
+        )
+        .order_by("id")
+        .values("id", "camera", "status")
+    )
     return {
         "status": effective_status,
         "recorded_status": state.status,
@@ -834,6 +854,15 @@ def state_payload(
             "required": require_events,
             "cameras": event_rows,
         },
+        "session_cutover": {
+            "blocking": bool(open_sessions),
+            "detail": (
+                "active AI counting sessions must finish before contour cutover"
+                if open_sessions
+                else ""
+            ),
+            "sessions": open_sessions,
+        },
     }
 
 
@@ -843,6 +872,7 @@ def exit_code(payload: dict, *, fail_on_degraded: bool = False) -> int:
         or payload.get("confirming_outage")
         or payload.get("status") in ("unavailable", "initializing")
         or (payload.get("event_sync") or {}).get("blocking")
+        or (payload.get("session_cutover") or {}).get("blocking")
     ):
         return 2
     if payload.get("status") == CameraHealthState.OUTAGE:

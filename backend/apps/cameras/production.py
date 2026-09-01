@@ -24,6 +24,7 @@ from apps.warehouse.services import receive_stock
 
 from . import ai
 from .models import (
+    ANALYTICS_SCOPE_AI247,
     AlwaysOnColorProductMapping,
     AlwaysOnCounterCursor,
     AlwaysOnDailyAnalytics,
@@ -32,6 +33,7 @@ from .models import (
     AlwaysOnProductionRun,
     AlwaysOnStockBatch,
     AlwaysOnStockPosting,
+    ContinuousCameraRole,
 )
 
 log = logging.getLogger(__name__)
@@ -285,17 +287,26 @@ def record_color_deltas(
 
 
 @transaction.atomic
-def close_stale_runs(now: datetime | None = None) -> int:
+def close_stale_runs(
+    now: datetime | None = None,
+    *,
+    reserved_ai247_only: bool = False,
+) -> int:
     """Close runs after five quiet minutes and always at a shift boundary."""
 
     now = _aware(now)
     current_day = business_day_for(now)
     threshold = now - RUN_GAP
-    rows = list(
-        AlwaysOnProductionRun.objects.select_for_update().filter(
-            ended_at__isnull=True,
-        )
+    rows_query = AlwaysOnProductionRun.objects.select_for_update().filter(
+        ended_at__isnull=True,
     )
+    if reserved_ai247_only:
+        rows_query = rows_query.filter(
+            camera__in=ContinuousCameraRole.objects.filter(
+                analytics_scope=ANALYTICS_SCOPE_AI247,
+            ).values("camera")
+        )
+    rows = list(rows_query)
     closed = 0
     for row in rows:
         if row.business_day != current_day or row.last_counted_at < threshold:
@@ -614,7 +625,10 @@ def _dominant_brand_by_color(
     events = (
         AlwaysOnImportedEvent.objects.filter(
             camera=camera,
+            analytics_scope=ANALYTICS_SCOPE_AI247,
+            mode="always_on",
             applied_to_analytics=True,
+            applied_to_production=True,
             occurred_at__gte=selected_start,
             occurred_at__lt=selected_end,
         )
@@ -663,7 +677,7 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
     camera = ai.normalize(camera)
     selected_day = _selected_day(day)
     now = timezone.now()
-    close_stale_runs(now)
+    close_stale_runs(now, reserved_ai247_only=True)
     current_day = business_day_for(now)
 
     products = list(
@@ -960,8 +974,22 @@ def _locked_or_created_batch(camera: str, business_day: date) -> AlwaysOnStockBa
         )
 
 
+def _assert_ai247_role(camera: str) -> None:
+    if not ContinuousCameraRole.objects.filter(
+        camera=camera,
+        analytics_scope=ANALYTICS_SCOPE_AI247,
+    ).exists():
+        raise ValidationError(
+            {
+                "detail": "Камера не закреплена за контуром AI 24/7",
+                "code": "camera_not_in_ai247",
+            }
+        )
+
+
 @transaction.atomic
 def _post_one(camera: str, business_day: date, now: datetime) -> AlwaysOnStockBatch:
+    _assert_ai247_role(camera)
     # The event importer owns this lock before it checks a terminal batch.
     # Keep the same lock order here so count ingestion and stock closing can
     # never deadlock or let a late event slip behind an immutable receipt.
@@ -1211,13 +1239,19 @@ def _mark_failed(
 
 def _due_pairs(now: datetime) -> list[tuple[str, date]]:
     current_day = business_day_for(now)
+    ai247_cameras = ContinuousCameraRole.objects.filter(
+        analytics_scope=ANALYTICS_SCOPE_AI247,
+    ).values("camera")
     terminal = AlwaysOnStockBatch.objects.filter(
         camera=OuterRef("camera"),
         business_day=OuterRef("business_day"),
         status__in=TERMINAL_BATCH_STATUSES,
     )
     pairs = set(
-        AlwaysOnProductionRun.objects.filter(business_day__lt=current_day)
+        AlwaysOnProductionRun.objects.filter(
+            business_day__lt=current_day,
+            camera__in=ai247_cameras,
+        )
         .annotate(_terminal=Exists(terminal))
         .filter(_terminal=False)
         .order_by()
@@ -1227,6 +1261,7 @@ def _due_pairs(now: datetime) -> list[tuple[str, date]]:
     pairs.update(
         AlwaysOnStockBatch.objects.filter(
             business_day__lt=current_day,
+            camera__in=ai247_cameras,
             status__in=(
                 AlwaysOnStockBatch.SCHEDULED,
                 AlwaysOnStockBatch.BLOCKED,
@@ -1241,7 +1276,7 @@ def post_due_stock(now: datetime | None = None) -> list[dict]:
     """Post every overdue camera/day independently and retry safe failures."""
 
     now = _aware(now)
-    close_stale_runs(now)
+    close_stale_runs(now, reserved_ai247_only=True)
     result = []
     for camera, business_day in _due_pairs(now):
         try:
@@ -1262,6 +1297,7 @@ def retry_batch(batch_id: int) -> dict:
         batch = AlwaysOnStockBatch.objects.get(pk=batch_id)
     except AlwaysOnStockBatch.DoesNotExist as exc:
         raise NotFound("Складская партия не найдена") from exc
+    _assert_ai247_role(batch.camera)
     if batch.status in TERMINAL_BATCH_STATUSES:
         return _batch_payload(batch)
     now = timezone.now()

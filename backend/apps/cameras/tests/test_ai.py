@@ -11,6 +11,8 @@ from django.utils import timezone
 
 from apps.cameras import ai, counting, recordings, services
 from apps.cameras.models import (
+    ANALYTICS_SCOPE_AI247,
+    ANALYTICS_SCOPE_SHIPPING,
     AiCountingSession,
     MonoblockCameraSettings,
     MonoblockDevice,
@@ -31,6 +33,7 @@ RUNNING = {
     "cam": "cam2", "running": True, "stream": "cam2ai", "status": "онлайн",
     "fps": 19.8, "total": 42, "weight": 2100, "per_color": {"Blue_50": 40},
     "continuous_analytics": True,
+    "analytics_scope": ANALYTICS_SCOPE_SHIPPING,
 }
 RESET_READY = {**RUNNING, "total": 0}
 LINE_CONFIG = {
@@ -67,6 +70,7 @@ def order_session_status(
 def durable_start_request(method, path, body=None):
     assert method == "POST"
     assert isinstance(body, dict)
+    assert body["expected_analytics_scope"] == ANALYTICS_SCOPE_SHIPPING
     camera = path.removeprefix("/processors/")
     return 200, order_session_status(body["session_id"], cam=camera)
 
@@ -179,6 +183,7 @@ def test_monoblock_start_binds_camera_and_moves_confirmed_order_to_loading(
                 "source": "sub",
                 "session_id": session.pk,
                 "require_continuous": True,
+                "expected_analytics_scope": ANALYTICS_SCOPE_SHIPPING,
             },
         ),
     ]
@@ -236,6 +241,7 @@ def test_monoblock_accepts_first_crossing_during_durable_session_start(
                 "source": "sub",
                 "session_id": session.pk,
                 "require_continuous": True,
+                "expected_analytics_scope": ANALYTICS_SCOPE_SHIPPING,
             },
         ),
         ("GET", "/processors/cam2", None),
@@ -411,35 +417,88 @@ def test_unstable_scale_cannot_block_monoblock(
     assert order.shipment.arrived_at is None
 
 
-def test_always_on_client_uses_windows_camera_sources_contract():
+def test_always_on_client_uses_role_aware_camera_sources_contract():
     upstream = {
-        "camera_sources": ["cam2"], "source": "sub", "processors": [],
+        "camera_sources": ["cam2"],
+        "source": "sub",
+        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_AI247},
+        "processors": [],
     }
     with patch.object(ai, "_call", return_value=upstream) as call:
-        result = ai.configure_always_on(["2", "cam2"], "sub")
+        result = ai.configure_always_on(
+            ["2", "cam2"],
+            "sub",
+            analytics_scopes={"2": ANALYTICS_SCOPE_AI247},
+        )
 
     call.assert_called_once_with(
-        "PUT", "/always-on", {"camera_sources": ["cam2"], "source": "sub"},
+        "PUT",
+        "/always-on",
+        {
+            "camera_sources": ["cam2"],
+            "source": "sub",
+            "analytics_scopes": {"cam2": ANALYTICS_SCOPE_AI247},
+        },
     )
     assert result["cameras"] == ["cam2"]
+    assert result["analytics_scopes"] == {"cam2": ANALYTICS_SCOPE_AI247}
 
 
-def test_always_on_client_normalizes_status_and_falls_back_for_old_agent():
+def test_always_on_client_normalizes_status_but_never_retries_an_old_agent():
     with patch.object(ai, "_call", return_value={
         "camera_sources": ["cam3"], "source": "sub", "processors": [],
     }):
         assert ai.always_on_status()["cameras"] == ["cam3"]
 
-    with patch.object(ai, "_call", side_effect=[
-        ai.AiError(422, "Field required: cameras"),
-        {"cameras": ["cam3"], "source": "sub", "processors": []},
-    ]) as call:
-        result = ai.configure_always_on(["cam3"])
+    with (
+        patch.object(
+            ai,
+            "_call",
+            side_effect=ai.AiError(422, "Field required: cameras"),
+        ) as call,
+        pytest.raises(ai.AiError) as exc,
+    ):
+        ai.configure_always_on(
+            ["cam3"],
+            analytics_scopes={"cam3": ANALYTICS_SCOPE_AI247},
+        )
 
-    assert call.call_args_list[-1].args == (
-        "PUT", "/always-on", {"cameras": ["cam3"], "source": "sub"},
+    assert exc.value.status == 422
+    call.assert_called_once_with(
+        "PUT",
+        "/always-on",
+        {
+            "camera_sources": ["cam3"],
+            "source": "sub",
+            "analytics_scopes": {"cam3": ANALYTICS_SCOPE_AI247},
+        },
     )
-    assert result["cameras"] == ["cam3"]
+
+
+@pytest.mark.parametrize(
+    "analytics_scopes",
+    [
+        None,
+        {},
+        {"cam2": "legacy"},
+        {
+            "cam2": ANALYTICS_SCOPE_AI247,
+            "cam3": ANALYTICS_SCOPE_SHIPPING,
+        },
+    ],
+)
+def test_always_on_client_requires_one_exact_role_per_camera(analytics_scopes):
+    with (
+        patch.object(ai, "_call") as call,
+        pytest.raises(ai.AiError) as exc,
+    ):
+        ai.configure_always_on(
+            ["cam2"],
+            analytics_scopes=analytics_scopes,
+        )
+
+    assert exc.value.status == 400
+    call.assert_not_called()
 
 
 def test_wagon_number_client_assigns_single_main_stream_camera():
@@ -758,6 +817,7 @@ def test_start_when_idle_posts_directly_to_service(api_client, loader, loading_o
                 "source": "sub",
                 "session_id": session.pk,
                 "require_continuous": True,
+                "expected_analytics_scope": ANALYTICS_SCOPE_SHIPPING,
             },
         ),
     ]
@@ -769,11 +829,12 @@ def test_start_when_idle_posts_directly_to_service(api_client, loader, loading_o
 @pytest.mark.parametrize(
     ("reply_mutation", "detail_fragment"),
     [
-        ({"continuous_analytics": False}, "AI 24/7"),
+        ({"continuous_analytics": False}, "контуре отгрузки"),
+        ({"analytics_scope": ANALYTICS_SCOPE_AI247}, "контуре отгрузки"),
         ({"session_id_offset": 1}, "другой сессии"),
     ],
 )
-def test_start_rejects_noncontinuous_or_wrong_durable_worker(
+def test_start_rejects_wrong_contour_or_durable_worker_identity(
     api_client,
     loader,
     loading_order,
@@ -799,6 +860,10 @@ def test_start_rejects_noncontinuous_or_wrong_durable_worker(
                 "continuous_analytics",
                 True,
             ),
+            "analytics_scope": reply_mutation.get(
+                "analytics_scope",
+                ANALYTICS_SCOPE_SHIPPING,
+            ),
             "session_id": worker_session_id,
         }
 
@@ -821,6 +886,7 @@ def test_start_rejects_noncontinuous_or_wrong_durable_worker(
                 "source": "sub",
                 "session_id": session.pk,
                 "require_continuous": True,
+                "expected_analytics_scope": ANALYTICS_SCOPE_SHIPPING,
             },
         ),
         ("DELETE", "/processors/cam2", {"session_id": session.pk}),
@@ -888,6 +954,7 @@ def test_fast_detection_snapshot_keeps_the_applied_counting_line():
                 "detection_frame": {"width": 1920, "height": 1080},
                 "line": "0.08,0.61,0.93,0.58",
                 "direction": "negative",
+                "analytics_scope": ANALYTICS_SCOPE_AI247,
             }
         ]
     }
@@ -897,6 +964,10 @@ def test_fast_detection_snapshot_keeps_the_applied_counting_line():
     assert payload["processors"][0]["line"] == "0.08,0.61,0.93,0.58"
     assert payload["processors"][0]["direction"] == "negative"
     assert payload["processors"][0]["bags_present"] is True
+    assert (
+        payload["processors"][0]["analytics_scope"]
+        == ANALYTICS_SCOPE_AI247
+    )
 
 
 @pytest.mark.parametrize(
@@ -1361,6 +1432,7 @@ def test_failed_worker_cleanup_is_retried_before_camera_reuse(
                 "source": "sub",
                 "session_id": next_session.pk,
                 "require_continuous": True,
+                "expected_analytics_scope": ANALYTICS_SCOPE_SHIPPING,
             },
         ),
     ]
@@ -1753,6 +1825,7 @@ def test_complete_order_fails_closed_without_exact_durable_final(
     [
         {"session_id": 999_999},
         {"continuous_analytics": False},
+        {"analytics_scope": ANALYTICS_SCOPE_AI247},
         {"total": True},
     ],
 )

@@ -4,7 +4,9 @@ import pytest
 
 from apps.cameras import ai, services
 from apps.cameras.models import (
+    ANALYTICS_SCOPE_AI247,
     AiCountingSession,
+    ContinuousCameraRole,
     MonoblockCameraSettings,
     MonoblockDevice,
 )
@@ -72,6 +74,54 @@ def test_device_cannot_start_another_camera(auth_client, superuser, monkeypatch)
     assert response.status_code == 403
     order.refresh_from_db()
     assert order.status == "confirmed"
+
+
+def test_device_cannot_claim_an_ai247_camera(auth_client, superuser):
+    MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam2"])
+    ContinuousCameraRole.objects.create(
+        camera="cam2",
+        analytics_scope=ANALYTICS_SCOPE_AI247,
+    )
+
+    response = auth_client(superuser).post(
+        "/api/cameras/monoblock-devices/",
+        {
+            "name": "Конфликтный моноблок",
+            "username": "mono-conflict",
+            "password": "Complex-pass-123",
+            "camera_source": "cam2",
+        },
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "camera_role_immutable"
+    assert not MonoblockDevice.objects.exists()
+    assert not type(superuser)._default_manager.filter(
+        username="mono-conflict"
+    ).exists()
+
+
+def test_device_move_to_ai247_camera_is_atomic(auth_client, superuser):
+    device = _create_device(auth_client, superuser)
+    row = MonoblockCameraSettings.objects.get(singleton=True)
+    row.always_on_camera_sources = ["cam3"]
+    row.save(update_fields=["always_on_camera_sources"])
+    ContinuousCameraRole.objects.create(
+        camera="cam3",
+        analytics_scope=ANALYTICS_SCOPE_AI247,
+    )
+
+    response = auth_client(superuser).patch(
+        f"/api/cameras/monoblock-devices/{device.pk}/",
+        {"camera_source": "cam3"},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "camera_role_immutable"
+    device.refresh_from_db()
+    assert device.camera_source == "cam2"
 
 
 def test_device_order_list_is_scoped_to_queue_and_own_camera(auth_client, superuser):
@@ -233,10 +283,11 @@ def test_active_device_membership_reconciles_substream_on_create_move_and_delete
 ):
     monkeypatch.setattr(ai, "AI_KEY", "key")
 
-    def configured(cameras, source):
+    def configured(cameras, source, *, analytics_scopes):
         return {
             "cameras": cameras,
             "source": source,
+            "analytics_scopes": analytics_scopes,
             "capacity": 4,
             "pending": [],
             "processors": [
@@ -246,6 +297,7 @@ def test_active_device_membership_reconciles_substream_on_create_move_and_delete
                     "processor_alive": True,
                     "source": "sub",
                     "mode": "always_on",
+                    "analytics_scope": analytics_scopes[camera],
                     "last_frame_at": "2026-09-01T08:00:00Z",
                 }
                 for camera in cameras
@@ -271,6 +323,11 @@ def test_active_device_membership_reconciles_substream_on_create_move_and_delete
         (["cam2"], "sub"),
         (["cam3"], "sub"),
         ([], "sub"),
+    ]
+    assert [call.kwargs for call in configure.call_args_list] == [
+        {"analytics_scopes": {"cam2": "shipping"}},
+        {"analytics_scopes": {"cam3": "shipping"}},
+        {"analytics_scopes": {}},
     ]
 
 
