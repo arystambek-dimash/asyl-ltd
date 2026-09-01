@@ -74,7 +74,8 @@ class MonoblockCameraSettings(models.Model):
 
     singleton = models.BooleanField(default=True, unique=True, editable=False)
     camera_sources = models.JSONField(default=list, blank=True)
-    # Камеры, чьи модели работают 24/7 без публикации/записи видео.
+    # Камеры с AI 24/7. Фоновый overlay не публикуется, а исходный substream
+    # хранится на камера-ПК в отдельном rolling-архиве для доказательств.
     # Изменение защищено отдельным правом ai_247.manage.
     always_on_camera_sources = models.JSONField(default=list, blank=True)
     # Одна камера высокого разрешения, закреплённая за будущим контуром
@@ -122,12 +123,61 @@ class MonoblockCameraSettings(models.Model):
         }
 
     @classmethod
-    def always_on_sources(cls) -> list[str]:
-        row = (
-            cls.objects.filter(singleton=True).only("always_on_camera_sources").first()
+    def mandatory_always_on_sources(
+        cls,
+        row: "MonoblockCameraSettings | None" = None,
+    ) -> list[str]:
+        """Cameras whose monoblock role makes continuous AI non-optional.
+
+        The shared Monoblock picker and active physical devices are two ways to
+        assign a camera to this workflow.  Keep their order stable and collapse
+        duplicates so every control-plane consumer sends the same policy to the
+        camera PC.
+        """
+
+        if row is None:
+            row = (
+                cls.objects.filter(singleton=True)
+                .only("camera_sources", "always_on_camera_sources")
+                .first()
+            )
+        configured = row.camera_sources if row else []
+        device_sources = MonoblockDevice.objects.filter(is_active=True).order_by(
+            "id"
+        ).values_list("camera_source", flat=True)
+        return cls._ordered_camera_union(configured, device_sources)
+
+    @classmethod
+    def always_on_sources(
+        cls,
+        row: "MonoblockCameraSettings | None" = None,
+    ) -> list[str]:
+        """Return the effective durable AI 24/7 policy in canonical order."""
+
+        if row is None:
+            row = (
+                cls.objects.filter(singleton=True)
+                .only("camera_sources", "always_on_camera_sources")
+                .first()
+            )
+        manual = row.always_on_camera_sources if row else []
+        return cls._ordered_camera_union(
+            cls.mandatory_always_on_sources(row),
+            manual,
         )
-        sources = row.always_on_camera_sources if row else []
-        return [source for source in sources if isinstance(source, str) and source]
+
+    @staticmethod
+    def _ordered_camera_union(*groups) -> list[str]:
+        result: list[str] = []
+        for group in groups:
+            for source in group or []:
+                if (
+                    isinstance(source, str)
+                    and source
+                    and source not in result
+                ):
+                    result.append(source)
+        return result
 
     @classmethod
     def wagon_number_source(cls) -> str:
@@ -222,6 +272,10 @@ class AlwaysOnImportedEvent(models.Model):
     occurred_at = models.DateTimeField(db_index=True)
     source = models.CharField(max_length=16)
     mode = models.CharField(max_length=16)
+    # True means a session crossing also belongs to the uninterrupted
+    # production/AI-24/7 ledger. The camera PC fixes this decision at event
+    # creation time so delayed ingestion never guesses from today's settings.
+    continuous_analytics = models.BooleanField(default=False, db_default=False)
     class_name = models.CharField(max_length=100, blank=True, default="")
     color = models.CharField(max_length=100, null=True, blank=True)
     color_confidence = models.FloatField(null=True, blank=True)

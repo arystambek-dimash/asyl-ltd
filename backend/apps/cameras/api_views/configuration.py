@@ -14,7 +14,7 @@ from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
 from apps.eventlog.services import log_event
 from apps.orders.models import Order
 
-from .. import services
+from .. import ai, continuous, services
 from ..models import AiCountingSession, MonoblockCameraSettings, MonoblockDevice
 from ..policies import active_device_for
 from ..serializers import (
@@ -69,6 +69,59 @@ class CameraListView(APIView):
         return Response({"camera": camera, "name": name})
 
 
+def _sync_effective_always_on(previous_sources: list[str]) -> tuple[str, str]:
+    """Best-effort immediate apply; PostgreSQL remains the durable authority."""
+
+    if not ai.enabled():
+        return "pending", "AI-сервис не настроен; выбор применится после настройки"
+    try:
+        live = continuous.sync_always_on_policy(previous_sources=previous_sources)
+    except (ai.AiUnavailable, ai.AiError) as exc:
+        return "pending", str(exc)
+    return continuous.always_on_sync_state(
+        live,
+        MonoblockCameraSettings.always_on_sources(),
+    )
+
+
+def _sync_changed_device_policy(previous_sources: list[str]) -> tuple[str, str]:
+    """Avoid a remote write when a device edit did not change AI membership."""
+
+    if previous_sources == MonoblockCameraSettings.always_on_sources():
+        return "synced", ""
+    return _sync_effective_always_on(previous_sources)
+
+
+def _assert_known_always_on_capacity(
+    effective_sources: list[str],
+    *,
+    previous_sources: list[str] | None = None,
+) -> None:
+    """Reject an impossible policy when a trustworthy cached limit is known."""
+
+    # A reduction (or a camera swap at the same cardinality) is how an
+    # already-over-capacity installation recovers. Never block that path.
+    if previous_sources is not None and len(effective_sources) <= len(
+        previous_sources
+    ):
+        return
+    live = ai.cached_always_on_status() if ai.enabled() else None
+    capacity = (live or {}).get("capacity")
+    if (
+        type(capacity) is int
+        and capacity >= 0
+        and len(effective_sources) > capacity
+    ):
+        raise ValidationError(
+            {
+                "camera_sources": (
+                    f"ПК камер поддерживает до {capacity} активных процессоров"
+                ),
+                "code": "always_on_capacity_exceeded",
+            }
+        )
+
+
 class MonoblockCameraSettingsView(APIView):
     """Shared allowlist for the camera dropdown in the Monoblock screen."""
 
@@ -78,47 +131,125 @@ class MonoblockCameraSettingsView(APIView):
         return [HasPerm("sys_permissions.manage")]
 
     @staticmethod
-    def _payload(settings_row=None, device=None):
+    def _payload(
+        settings_row=None,
+        device=None,
+        *,
+        always_on_sync_status="synced",
+        always_on_detail="",
+    ):
         row = (
             settings_row
             or MonoblockCameraSettings.objects.filter(singleton=True).first()
         )
         if device is not None:
-            return {
+            payload = {
                 "camera_sources": [device.camera_source],
                 "locked": True,
                 "device_id": device.pk,
                 "device_name": device.name,
                 "updated_at": device.updated_at,
             }
+        else:
+            payload = {
+                "camera_sources": row.camera_sources if row else [],
+                "locked": False,
+                "device_id": None,
+                "device_name": None,
+                "updated_at": row.updated_at if row else None,
+            }
         return {
-            "camera_sources": row.camera_sources if row else [],
-            "locked": False,
-            "device_id": None,
-            "device_name": None,
-            "updated_at": row.updated_at if row else None,
+            **payload,
+            "always_on_camera_sources": MonoblockCameraSettings.always_on_sources(
+                row
+            ),
+            "always_on_source": "sub",
+            "always_on_sync_status": always_on_sync_status,
+            "always_on_detail": always_on_detail,
         }
 
     def get(self, request):
-        return Response(self._payload(device=active_device_for(request.user)))
+        device = active_device_for(request.user)
+        if not ai.enabled():
+            return Response(
+                self._payload(
+                    device=device,
+                    always_on_sync_status="pending",
+                    always_on_detail="AI-сервис не настроен",
+                )
+            )
+        try:
+            live = ai.always_on_status_cached()
+            sync_status, detail = continuous.always_on_sync_state(
+                live,
+                MonoblockCameraSettings.always_on_sources(),
+            )
+        except (ai.AiUnavailable, ai.AiError) as exc:
+            sync_status, detail = "pending", str(exc)
+        return Response(
+            self._payload(
+                device=device,
+                always_on_sync_status=sync_status,
+                always_on_detail=detail,
+            )
+        )
 
     def put(self, request):
         serializer = CameraSourcesSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         sources = serializer.validated_data["camera_sources"]
-        row, _ = MonoblockCameraSettings.objects.update_or_create(
-            singleton=True,
-            defaults={"camera_sources": sources, "updated_by": request.user},
+        with transaction.atomic():
+            lock_camera_binding()
+            row = MonoblockCameraSettings.objects.select_for_update().get(
+                singleton=True
+            )
+            previous_sources = MonoblockCameraSettings.always_on_sources(row)
+            changed_sources = set(row.camera_sources or []) ^ set(sources)
+            for camera in sorted(changed_sources):
+                _assert_camera_has_no_active_work(camera)
+            device_sources = MonoblockDevice.objects.filter(
+                is_active=True
+            ).values_list("camera_source", flat=True)
+            effective_sources = MonoblockCameraSettings._ordered_camera_union(
+                sources,
+                device_sources,
+                row.always_on_camera_sources,
+            )
+            _assert_known_always_on_capacity(
+                effective_sources,
+                previous_sources=previous_sources,
+            )
+            row.camera_sources = sources
+            row.updated_by = request.user
+            row.save(update_fields=["camera_sources", "updated_by", "updated_at"])
+        sync_status, detail = _sync_effective_always_on(previous_sources)
+        row = MonoblockCameraSettings.objects.get(singleton=True)
+        return Response(
+            self._payload(
+                row,
+                always_on_sync_status=sync_status,
+                always_on_detail=detail,
+            ),
+            status=(
+                status.HTTP_200_OK
+                if sync_status == "synced"
+                else status.HTTP_202_ACCEPTED
+            ),
         )
-        return Response(self._payload(row))
 
 
-def _device_payload(device, names=None):
+def _device_payload(
+    device,
+    names=None,
+    *,
+    always_on_sync_status=None,
+    always_on_detail="",
+):
     # names передаётся списком: иначе справочник подписей читается заново на
     # каждую строку ответа.
     if names is None:
         names = MonoblockCameraSettings.display_names()
-    return {
+    payload = {
         "id": device.pk,
         "name": device.name,
         "username": device.user.username,
@@ -128,6 +259,13 @@ def _device_payload(device, names=None):
         "created_at": device.created_at,
         "updated_at": device.updated_at,
     }
+    if always_on_sync_status is not None:
+        payload.update(
+            always_on_source="sub",
+            always_on_sync_status=always_on_sync_status,
+            always_on_detail=always_on_detail,
+        )
+    return payload
 
 
 def _unique_device_validation(exc):
@@ -158,7 +296,8 @@ def _assert_device_can_change_binding(
     """Do not strand an open loading by moving or disabling its device."""
     binding_changes = camera != device.camera_source
     deactivates = device.is_active and not is_active
-    if not binding_changes and not deactivates:
+    activates = not device.is_active and is_active
+    if not binding_changes and not deactivates and not activates:
         return
 
     affected_cameras = {device.camera_source}
@@ -217,8 +356,16 @@ class MonoblockDeviceListView(APIView):
             with transaction.atomic():
                 # AI reservations take the same mutex before creating OPEN.
                 lock_camera_binding()
+                previous_sources = MonoblockCameraSettings.always_on_sources()
                 if is_active:
                     _assert_camera_has_no_active_work(camera)
+                    _assert_known_always_on_capacity(
+                        MonoblockCameraSettings._ordered_camera_union(
+                            previous_sources,
+                            [camera],
+                        ),
+                        previous_sources=previous_sources,
+                    )
                 user = User.objects.create_user(
                     username=username,
                     password=data["password"],
@@ -244,7 +391,19 @@ class MonoblockDeviceListView(APIView):
             user=request.user,
             payload={"device_id": device.pk, "username": username, "camera": camera},
         )
-        return Response(_device_payload(device), status=status.HTTP_201_CREATED)
+        sync_status, detail = _sync_changed_device_policy(previous_sources)
+        return Response(
+            _device_payload(
+                device,
+                always_on_sync_status=sync_status,
+                always_on_detail=detail,
+            ),
+            status=(
+                status.HTTP_201_CREATED
+                if sync_status == "synced"
+                else status.HTTP_202_ACCEPTED
+            ),
+        )
 
 
 class MonoblockDeviceDetailView(APIView):
@@ -262,6 +421,7 @@ class MonoblockDeviceDetailView(APIView):
             with transaction.atomic():
                 lock_camera_binding()
                 device = self._get(pk, lock=True)
+                previous_sources = MonoblockCameraSettings.always_on_sources()
                 serializer = MonoblockDeviceCreateUpdateSerializer(
                     device,
                     data=request.data,
@@ -277,6 +437,21 @@ class MonoblockDeviceDetailView(APIView):
                     device,
                     camera=camera,
                     is_active=is_active,
+                )
+                row = MonoblockCameraSettings.objects.get(singleton=True)
+                other_device_sources = MonoblockDevice.objects.filter(
+                    is_active=True
+                ).exclude(pk=device.pk).values_list("camera_source", flat=True)
+                proposed_device_sources = list(other_device_sources)
+                if is_active:
+                    proposed_device_sources.append(camera)
+                _assert_known_always_on_capacity(
+                    MonoblockCameraSettings._ordered_camera_union(
+                        row.camera_sources,
+                        proposed_device_sources,
+                        row.always_on_camera_sources,
+                    ),
+                    previous_sources=previous_sources,
                 )
 
                 before = {
@@ -320,7 +495,19 @@ class MonoblockDeviceDetailView(APIView):
                 },
             },
         )
-        return Response(_device_payload(device))
+        sync_status, detail = _sync_changed_device_policy(previous_sources)
+        return Response(
+            _device_payload(
+                device,
+                always_on_sync_status=sync_status,
+                always_on_detail=detail,
+            ),
+            status=(
+                status.HTTP_200_OK
+                if sync_status == "synced"
+                else status.HTTP_202_ACCEPTED
+            ),
+        )
 
     put = patch
 
@@ -328,6 +515,7 @@ class MonoblockDeviceDetailView(APIView):
         with transaction.atomic():
             lock_camera_binding()
             device = self._get(pk, lock=True)
+            previous_sources = MonoblockCameraSettings.always_on_sources()
             if AiCountingSession.objects.filter(
                 camera=device.camera_source,
                 status__in=AiCountingSession.OPEN_STATUSES,
@@ -358,4 +546,15 @@ class MonoblockDeviceDetailView(APIView):
                 "camera": snapshot["camera_source"],
             },
         )
+        sync_status, detail = _sync_changed_device_policy(previous_sources)
+        if sync_status == "pending":
+            return Response(
+                {
+                    "deleted": True,
+                    "always_on_source": "sub",
+                    "always_on_sync_status": sync_status,
+                    "always_on_detail": detail,
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
         return Response(status=status.HTTP_204_NO_CONTENT)

@@ -39,10 +39,32 @@ describe("ShipmentLauncher", () => {
     await user.selectOptions(screen.getByLabelText("Заказ"), "401");
     await user.selectOptions(screen.getByLabelText("Камера"), "cam2");
 
-    expect(screen.getByText(/Моноблок запустит AI-подсчёт для выбранных заказа и камеры/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/подключит заказ только к готовому непрерывному AI-процессору camN\/sub/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/отдельный холодный счётчик не создаётся/)).toBeInTheDocument();
     expect(screen.queryByText(/входн.*вес|весы/i)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Начатьотгрузку" }));
     expect(onStart).toHaveBeenCalledWith(order, camera);
+  });
+
+  it("does not offer a camera while continuous AI policy is pending", async () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ShipmentLauncher
+        orders={[order]}
+        cameras={[camera]}
+        continuousReady={false}
+        continuousDetail="cam2 ещё прогревается"
+        onStart={onStart}
+      />,
+    );
+
+    await userEvent.setup().selectOptions(screen.getByLabelText("Заказ"), "401");
+    expect(screen.getByText("cam2 ещё прогревается")).toBeInTheDocument();
+    expect(screen.getByLabelText("Камера")).not.toHaveValue("cam2");
+    expect(screen.getByRole("button", { name: "Начатьотгрузку" })).toBeDisabled();
+    expect(onStart).not.toHaveBeenCalled();
   });
 });

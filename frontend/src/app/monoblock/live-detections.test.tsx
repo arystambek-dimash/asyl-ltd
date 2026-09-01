@@ -148,6 +148,44 @@ beforeEach(() => {
 });
 
 describe("AI 24/7 live detections", () => {
+  it.each([
+    { bagsPresent: true, expected: "Мешки в кадре: есть" },
+    { bagsPresent: false, expected: "Мешки в кадре: нет" },
+    { bagsPresent: undefined, expected: "Мешки в кадре: нет данных" },
+  ])("показывает tri-state наличие мешков: $expected", async ({ bagsPresent, expected }) => {
+    const user = userEvent.setup();
+    const nextProcessor = {
+      ...processor,
+      ...(bagsPresent === undefined ? {} : { bags_present: bagsPresent }),
+    };
+    mocks.responses.set("/cameras/always-on-settings/", {
+      ...alwaysOnSettings,
+      processors: [nextProcessor],
+    });
+
+    render(<MonoblockPage />);
+    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
+
+    expect(screen.getByText(expected)).toBeInTheDocument();
+    expect(screen.getByText("технический архив 48 ч")).toBeInTheDocument();
+  });
+
+  it("обновляет наличие мешков из быстрого снимка детекций", async () => {
+    const user = userEvent.setup();
+    render(<MonoblockPage />);
+
+    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
+    expect(screen.getByText("Мешки в кадре: нет данных")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await act(async () => {
+      mocks.resolveDetections?.({
+        data: { processors: [{ ...processor, bags_present: true }] },
+      });
+    });
+
+    await waitFor(() => expect(screen.getByText("Мешки в кадре: есть")).toBeInTheDocument());
+  });
+
   it("не показывает независимую бренд-разбивку в активной аналитике", async () => {
     const user = userEvent.setup();
     mocks.permissions = ["shipping.load", "ai_247.manage"];

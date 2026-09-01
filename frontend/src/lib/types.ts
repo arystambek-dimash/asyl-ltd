@@ -519,6 +519,10 @@ export interface ShippingBoardSettings {
 }
 export interface MonoblockCameraSettings {
   camera_sources: string[];
+  always_on_camera_sources: string[];
+  always_on_source: "sub";
+  always_on_sync_status: "synced" | "pending";
+  always_on_detail: string;
   locked: boolean;
   device_id: number | null;
   device_name: string | null;
@@ -533,6 +537,10 @@ export interface MonoblockDevice {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  /** Present on create/update responses when the durable policy was applied. */
+  always_on_source?: "sub";
+  always_on_sync_status?: "synced" | "pending";
+  always_on_detail?: string;
 }
 /**
  * Рамка мешка на последнем кадре.
@@ -562,6 +570,8 @@ export interface AlwaysOnProcessorStatus {
   mode: "always_on" | "session" | "idle";
   recording: boolean;
   total: number;
+  /** Confident (>= count threshold) bags on the latest AI frame. */
+  bags_present?: boolean | null;
   detections?: AlwaysOnDetection[];
   /** Размер кадра модели — по нему пиксельные рамки переводятся в доли. */
   detection_frame?: { width?: number; height?: number } | null;
@@ -575,6 +585,10 @@ export interface AlwaysOnProcessorStatus {
 }
 export interface AlwaysOnCameraSettings {
   camera_sources: string[];
+  /** Камеры Моноблока: входят в 24/7 автоматически и не снимаются вручную. */
+  automatic_camera_sources: string[];
+  /** Дополнительный ручной выбор в настройке AI 24/7. */
+  manual_camera_sources: string[];
   source: "sub" | "main";
   processors: AlwaysOnProcessorStatus[];
   capacity: number | null;

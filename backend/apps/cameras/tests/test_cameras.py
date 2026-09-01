@@ -1,11 +1,14 @@
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
 from django.core import signing
 from django.core.cache import cache
+from django.db import connections
 from django.test import override_settings
 
-from apps.cameras import ai, services
+from apps.cameras import ai, continuous, services
 from apps.cameras.models import (
     AiCountingSession,
     MonoblockCameraSettings,
@@ -18,6 +21,8 @@ from apps.cameras.views import (
     CAM_TOKEN_SALT,
     CAM_TOKEN_VERSION,
 )
+from apps.clients.models import Client
+from apps.orders.models import Order
 
 pytestmark = pytest.mark.django_db
 
@@ -331,8 +336,10 @@ def test_admin_configures_monoblock_camera_allowlist(auth_client, boss, operator
         {"camera_sources": ["2", "cam3", "cam3"]},
         format="json",
     )
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.data["camera_sources"] == ["cam2", "cam3"]
+    assert response.data["always_on_camera_sources"] == ["cam2", "cam3"]
+    assert response.data["always_on_source"] == "sub"
     row = MonoblockCameraSettings.objects.get(singleton=True)
     assert row.camera_sources == ["cam2", "cam3"]
     assert row.updated_by == boss
@@ -340,6 +347,331 @@ def test_admin_configures_monoblock_camera_allowlist(auth_client, boss, operator
     response = auth_client(operator).get("/api/cameras/monoblock-settings/")
     assert response.status_code == 200
     assert response.data["camera_sources"] == ["cam2", "cam3"]
+
+
+def test_effective_always_on_sources_are_a_stable_union(
+    django_user_model,
+):
+    row = MonoblockCameraSettings.objects.create(
+        camera_sources=["cam3", "cam2", "cam3"],
+        always_on_camera_sources=["cam4", "cam2"],
+    )
+    active_user = django_user_model.objects.create_user(username="mono-cam5")
+    inactive_user = django_user_model.objects.create_user(username="mono-cam6")
+    MonoblockDevice.objects.create(
+        user=active_user,
+        name="Активный",
+        camera_source="cam5",
+        is_active=True,
+    )
+    MonoblockDevice.objects.create(
+        user=inactive_user,
+        name="Отключённый",
+        camera_source="cam6",
+        is_active=False,
+    )
+
+    assert MonoblockCameraSettings.mandatory_always_on_sources(row) == [
+        "cam3",
+        "cam2",
+        "cam5",
+    ]
+    assert MonoblockCameraSettings.always_on_sources(row) == [
+        "cam3",
+        "cam2",
+        "cam5",
+        "cam4",
+    ]
+
+
+def test_monoblock_camera_save_reconciles_effective_substream_policy(
+    auth_client,
+    boss,
+    monkeypatch,
+):
+    MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam4"])
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    live = {
+        "cameras": ["cam2", "cam3", "cam4"],
+        "source": "sub",
+        "capacity": 4,
+        "pending": [],
+        "processors": [
+            {
+                "cam": camera,
+                "running": True,
+                "processor_alive": True,
+                "source": "sub",
+                "mode": "always_on",
+                "last_frame_at": "2026-09-01T08:00:00Z",
+            }
+            for camera in ("cam2", "cam3", "cam4")
+        ],
+    }
+    with patch.object(ai, "configure_always_on", return_value=live) as configure:
+        response = auth_client(boss).put(
+            "/api/cameras/monoblock-settings/",
+            {"camera_sources": ["cam2", "cam3"]},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    assert response.data["always_on_sync_status"] == "synced"
+    configure.assert_called_once_with(["cam2", "cam3", "cam4"], "sub")
+
+
+def test_monoblock_camera_save_is_durable_when_camera_pc_is_offline(
+    auth_client,
+    boss,
+    monkeypatch,
+):
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    with patch.object(
+        ai,
+        "configure_always_on",
+        side_effect=ai.AiUnavailable("offline"),
+    ):
+        response = auth_client(boss).put(
+            "/api/cameras/monoblock-settings/",
+            {"camera_sources": ["cam7"]},
+            format="json",
+        )
+
+    assert response.status_code == 202
+    assert response.data["always_on_sync_status"] == "pending"
+    assert "offline" in response.data["always_on_detail"]
+    assert MonoblockCameraSettings.always_on_sources() == ["cam7"]
+
+
+def test_monoblock_camera_change_is_blocked_during_open_session(
+    auth_client,
+    boss,
+):
+    row = MonoblockCameraSettings.objects.create(camera_sources=["cam2"])
+    order = Order.objects.create(
+        client=Client.objects.create_with_user(
+            first_name="Busy",
+            last_name="Camera",
+            phone="shared-settings-busy",
+        ),
+        status="loading",
+        loading_camera="cam2",
+    )
+    AiCountingSession.objects.create(
+        order=order,
+        camera="cam2",
+        status=AiCountingSession.ACTIVE,
+        started_by=boss,
+    )
+
+    with patch.object(ai, "configure_always_on") as configure:
+        response = auth_client(boss).put(
+            "/api/cameras/monoblock-settings/",
+            {"camera_sources": ["cam3"]},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "monoblock_busy"
+    configure.assert_not_called()
+    row.refresh_from_db()
+    assert row.camera_sources == ["cam2"]
+
+
+def test_monoblock_camera_change_rejects_known_effective_capacity_before_commit(
+    auth_client,
+    boss,
+    monkeypatch,
+):
+    row = MonoblockCameraSettings.objects.create(camera_sources=["cam2"])
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    cache.set(
+        ai.ALWAYS_ON_CACHE_KEY,
+        {"cameras": ["cam2"], "source": "sub", "capacity": 1},
+        ai.ALWAYS_ON_TTL,
+    )
+
+    with patch.object(ai, "configure_always_on") as configure:
+        response = auth_client(boss).put(
+            "/api/cameras/monoblock-settings/",
+            {"camera_sources": ["cam2", "cam3"]},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "always_on_capacity_exceeded"
+    configure.assert_not_called()
+    row.refresh_from_db()
+    assert row.camera_sources == ["cam2"]
+
+
+def test_always_on_pending_reason_is_not_reported_as_synced(
+    auth_client,
+    superuser,
+    monkeypatch,
+):
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    live = {
+        "cameras": ["cam2"],
+        "source": "sub",
+        "capacity": 2,
+        "pending": [{"cam": "cam2", "reason": "camera_warming"}],
+        "processors": [
+            {
+                "cam": "cam2",
+                "running": True,
+                "processor_alive": True,
+                "source": "sub",
+                "mode": "always_on",
+                "last_frame_at": "2026-09-01T08:00:00Z",
+            }
+        ],
+    }
+    with patch.object(ai, "configure_always_on", return_value=live):
+        response = auth_client(superuser).put(
+            "/api/cameras/always-on-settings/",
+            {"camera_sources": ["cam2"]},
+            format="json",
+        )
+
+    assert response.status_code == 202
+    assert response.data["sync_status"] == "pending"
+    assert "cam2: camera_warming" in response.data["detail"]
+
+    with patch.object(ai, "always_on_status_cached", return_value=live):
+        follow_up = auth_client(superuser).get(
+            "/api/cameras/always-on-settings/"
+        )
+    assert follow_up.status_code == 200
+    assert follow_up.data["sync_status"] == "pending"
+    assert "camera_warming" in follow_up.data["detail"]
+
+
+def test_order_mode_requires_continuous_analytics_for_always_on_readiness():
+    live = {
+        "cameras": ["cam2"],
+        "source": "sub",
+        "pending": [],
+        "processors": [
+            {
+                "cam": "cam2",
+                "running": True,
+                "processor_alive": True,
+                "source": "sub",
+                "mode": "session",
+                "continuous_analytics": False,
+                "last_frame_at": "2026-09-01T08:00:00Z",
+            }
+        ],
+    }
+
+    sync_status, detail = continuous.always_on_sync_state(live, ["cam2"])
+
+    assert sync_status == "pending"
+    assert "не подключена" in detail
+
+
+def test_always_on_readiness_waits_for_first_inference_frame_when_exposed():
+    live = {
+        "cameras": ["cam2"],
+        "source": "sub",
+        "pending": [],
+        "processors": [
+            {
+                "cam": "cam2",
+                "running": True,
+                "processor_alive": True,
+                "source": "sub",
+                "mode": "always_on",
+                "last_frame_at": "2026-09-01T08:00:00Z",
+                "metrics": {"inference_frames": 0},
+            }
+        ],
+    }
+
+    sync_status, detail = continuous.always_on_sync_state(live, ["cam2"])
+    assert sync_status == "pending"
+    assert "ни одного кадра" in detail
+
+    live["processors"][0]["metrics"]["inference_frames"] = 1
+    assert continuous.always_on_sync_state(live, ["cam2"]) == ("synced", "")
+
+
+def test_always_on_readiness_rejects_stale_frame_during_camera_gap():
+    live = {
+        "cameras": ["cam2"],
+        "source": "sub",
+        "pending": [],
+        "processors": [
+            {
+                "cam": "cam2",
+                "running": True,
+                "processor_alive": True,
+                "source": "sub",
+                "mode": "always_on",
+                "status": "reconnecting",
+                # This timestamp is deliberately stale: it must not make a
+                # disconnected capture look ready.
+                "last_frame_at": "2026-09-01T08:00:00Z",
+                "metrics": {
+                    "inference_frames": 18,
+                    "camera_gap_started_at": "2026-09-01T08:00:05Z",
+                },
+            }
+        ],
+    }
+
+    sync_status, detail = continuous.always_on_sync_state(live, ["cam2"])
+
+    assert sync_status == "pending"
+    assert "reconnecting" in detail
+
+    live["processors"][0]["status"] = "online"
+    sync_status, detail = continuous.always_on_sync_state(live, ["cam2"])
+    assert sync_status == "pending"
+    assert "потери потока" in detail
+
+    live["processors"][0]["metrics"]["camera_gap_started_at"] = None
+    assert continuous.always_on_sync_state(live, ["cam2"]) == ("synced", "")
+
+
+def test_always_on_apply_is_serialized_so_newer_policy_finishes_last(monkeypatch):
+    desired = {"value": ["cam2"]}
+    first_started = threading.Event()
+    allow_first_to_finish = threading.Event()
+    applied = []
+
+    monkeypatch.setattr(
+        MonoblockCameraSettings,
+        "always_on_sources",
+        lambda: list(desired["value"]),
+    )
+
+    def configure(cameras, source):
+        if cameras == ["cam2"]:
+            first_started.set()
+            assert allow_first_to_finish.wait(timeout=5)
+        applied.append((list(cameras), source))
+        return {"cameras": cameras, "source": source, "processors": []}
+
+    monkeypatch.setattr(ai, "configure_always_on", configure)
+
+    def apply():
+        try:
+            return continuous.sync_always_on_policy()
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(apply)
+        assert first_started.wait(timeout=5)
+        desired["value"] = ["cam3"]
+        second = executor.submit(apply)
+        allow_first_to_finish.set()
+        first.result(timeout=5)
+        second.result(timeout=5)
+
+    assert applied == [(["cam2"], "sub"), (["cam3"], "sub")]
 
 
 def test_shipping_board_settings_default_to_today(auth_client, operator):
@@ -422,13 +754,17 @@ def test_always_on_settings_are_readable_to_loaders_and_managed_separately(
         "cameras": ["cam2"],
         "source": "sub",
         "capacity": 2,
+        "pending": [],
         "processors": [
             {
                 "cam": "cam2",
                 "running": True,
+                "processor_alive": True,
+                "source": "sub",
                 "mode": "always_on",
                 "recording": False,
                 "total": 14,
+                "last_frame_at": "2026-09-01T08:00:00Z",
             }
         ],
     }
@@ -490,6 +826,32 @@ def test_always_on_choice_survives_camera_pc_outage(
     assert response.status_code == 202
     assert response.data["sync_status"] == "pending"
     assert MonoblockCameraSettings.always_on_sources() == ["cam3"]
+
+
+def test_manual_ai_247_cannot_remove_mandatory_monoblock_camera(
+    auth_client,
+    superuser,
+):
+    row = MonoblockCameraSettings.objects.create(
+        camera_sources=["cam2"],
+        always_on_camera_sources=["cam3"],
+    )
+
+    response = auth_client(superuser).put(
+        "/api/cameras/always-on-settings/",
+        {"camera_sources": ["cam3"]},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "mandatory_always_on_cameras"
+    row.refresh_from_db()
+    assert row.always_on_camera_sources == ["cam3"]
+
+    settings = auth_client(superuser).get("/api/cameras/always-on-settings/")
+    assert settings.data["automatic_camera_sources"] == ["cam2"]
+    assert settings.data["manual_camera_sources"] == ["cam3"]
+    assert settings.data["camera_sources"] == ["cam2", "cam3"]
 
 
 def test_wagon_number_camera_assignment_is_superuser_only_and_uses_main_stream(
@@ -634,6 +996,50 @@ def test_superuser_cannot_exceed_camera_pc_processor_capacity(
     assert response.status_code == 400
     configure.assert_not_called()
     assert MonoblockCameraSettings.always_on_sources() == []
+
+
+def test_capacity_guard_allows_policy_reduction_back_toward_limit(
+    auth_client,
+    superuser,
+    monkeypatch,
+):
+    MonoblockCameraSettings.objects.create(
+        always_on_camera_sources=["cam2", "cam3"]
+    )
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    live = {
+        "cameras": ["cam2"],
+        "source": "sub",
+        "capacity": 1,
+        "pending": [],
+        "processors": [
+            {
+                "cam": "cam2",
+                "running": True,
+                "processor_alive": True,
+                "source": "sub",
+                "mode": "always_on",
+                "last_frame_at": "2026-09-01T08:00:00Z",
+            }
+        ],
+    }
+    with (
+        patch.object(
+            ai,
+            "cached_always_on_status",
+            return_value={"capacity": 1},
+        ),
+        patch.object(ai, "configure_always_on", return_value=live) as configure,
+    ):
+        response = auth_client(superuser).put(
+            "/api/cameras/always-on-settings/",
+            {"camera_sources": ["cam2"]},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    configure.assert_called_once_with(["cam2"], "sub")
+    assert MonoblockCameraSettings.always_on_sources() == ["cam2"]
 
 
 def test_token_sets_cookie(auth_client, operator):

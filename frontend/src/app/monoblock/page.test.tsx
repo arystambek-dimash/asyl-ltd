@@ -8,6 +8,9 @@ import MonoblockPage from "./page";
 const mocks = vi.hoisted(() => ({
   me: null as Me | null,
   urls: [] as (string | null)[],
+  cameras: [] as Array<Record<string, unknown>>,
+  alwaysOnSources: [] as string[],
+  automaticSources: [] as string[],
 }));
 
 vi.mock("@/store/auth", () => ({
@@ -30,13 +33,26 @@ vi.mock("@/lib/use-api", () => ({
   useApi: (url: string | null) => {
     mocks.urls.push(url);
     let data: unknown = null;
-    if (url === "/orders/?post_board=1" || url === "/cameras/" || url === "/cameras/ai/sessions/") data = [];
+    if (url === "/orders/?post_board=1" || url === "/cameras/ai/sessions/") data = [];
+    if (url === "/cameras/") data = mocks.cameras;
     if (url === "/cameras/monoblock-settings/") {
-      data = { camera_sources: [], locked: false, device_id: null, device_name: null, updated_at: null };
+      data = {
+        camera_sources: [],
+        always_on_camera_sources: [],
+        always_on_source: "sub",
+        always_on_sync_status: "synced",
+        always_on_detail: "",
+        locked: false,
+        device_id: null,
+        device_name: null,
+        updated_at: null,
+      };
     }
     if (url === "/cameras/always-on-settings/") {
       data = {
-        camera_sources: [],
+        camera_sources: mocks.alwaysOnSources,
+        automatic_camera_sources: mocks.automaticSources,
+        manual_camera_sources: [],
         source: "sub",
         processors: [],
         capacity: null,
@@ -86,6 +102,9 @@ const employee: Me = {
 beforeEach(() => {
   mocks.me = employee;
   mocks.urls = [];
+  mocks.cameras = [];
+  mocks.alwaysOnSources = [];
+  mocks.automaticSources = [];
 });
 
 describe("доступ к AI 24/7 на странице моноблока", () => {
@@ -110,6 +129,34 @@ describe("доступ к AI 24/7 на странице моноблока", () 
 
     await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
     expect(screen.getByRole("button", { name: /Настроить/ })).toBeInTheDocument();
+  });
+
+  it("показывает камеру Моноблока как автоматическую и не даёт снять её вручную", async () => {
+    mocks.me = { ...employee, permissions: ["shipping.load", "ai_247.manage"] };
+    mocks.cameras = [
+      {
+        id: "camera-2",
+        name: "Camera 2",
+        zone: "Пост погрузки",
+        src: "cam2",
+        kind: "direct",
+        online: true,
+      },
+    ];
+    mocks.alwaysOnSources = ["cam2"];
+    mocks.automaticSources = ["cam2"];
+    const user = userEvent.setup();
+    render(<MonoblockPage />);
+
+    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
+    await user.click(screen.getByRole("button", { name: /Настроить/ }));
+
+    expect(
+      screen.getByRole("button", {
+        name: "Пост погрузки: автоматически включена Моноблоком",
+      }),
+    ).toBeDisabled();
+    expect(screen.getByText(/Автоматически · Моноблок · cam2\/sub/)).toBeInTheDocument();
   });
 
   it("не показывает вкладку и не запрашивает мониторинг техническому моноблоку", () => {
