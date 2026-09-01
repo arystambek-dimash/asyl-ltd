@@ -317,6 +317,83 @@ class AlwaysOnImportedEvent(models.Model):
         ]
 
 
+class ManualBagAnalyticsImportBatch(models.Model):
+    """One checksum-pinned, analytics-only manual backfill.
+
+    This audit trail is intentionally separate from ``AlwaysOnImportedEvent``:
+    manual recovery files do not own camera-PC journal ids and therefore must
+    never advance (or collide with) the live event cursor.
+    """
+
+    file_sha256 = models.CharField(max_length=64, unique=True)
+    schema_name = models.CharField(max_length=100)
+    source_filename = models.CharField(max_length=255)
+    model_id = models.CharField(max_length=100)
+    model_sha256 = models.CharField(max_length=64)
+    camera = models.CharField(max_length=32)
+    source = models.CharField(max_length=16)
+    analytics_scope = models.CharField(max_length=32)
+    event_count = models.PositiveIntegerField()
+    first_captured_at = models.DateTimeField()
+    last_captured_at = models.DateTimeField()
+    per_day = models.JSONField(default=dict)
+    applied_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-applied_at", "-id"]
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValueError("Manual analytics import batches are immutable")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("Manual analytics import batches cannot be deleted")
+
+
+class ManualBagAnalyticsImportEvent(models.Model):
+    """Immutable provenance ledger for one manually restored bag event."""
+
+    batch = models.ForeignKey(
+        ManualBagAnalyticsImportBatch,
+        on_delete=models.PROTECT,
+        related_name="events",
+    )
+    idempotency_key = models.CharField(max_length=255, unique=True)
+    sequence = models.PositiveIntegerField()
+    captured_at = models.DateTimeField(db_index=True)
+    local_day = models.DateField(db_index=True)
+    camera = models.CharField(max_length=32)
+    source = models.CharField(max_length=16)
+    model_event_origin = models.CharField(max_length=32)
+    source_row_id = models.PositiveBigIntegerField()
+    shadow_run_id = models.PositiveBigIntegerField(null=True, blank=True)
+    class_name = models.CharField(max_length=100)
+    color = models.CharField(max_length=100)
+    color_confidence = models.FloatField(null=True, blank=True)
+    brand = models.CharField(max_length=100, null=True, blank=True)
+    brand_confidence = models.FloatField(null=True, blank=True)
+    sku = models.CharField(max_length=255, null=True, blank=True)
+    classification_status = models.CharField(max_length=32)
+
+    class Meta:
+        ordering = ["sequence"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["batch", "sequence"],
+                name="cameras_one_manual_event_sequence_per_batch",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValueError("Manual analytics import events are immutable")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("Manual analytics import events cannot be deleted")
+
+
 class VehiclePlateEvent(models.Model):
     """Metadata-only vehicle plate observation received from the camera PC.
 
