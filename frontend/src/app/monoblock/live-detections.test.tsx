@@ -7,6 +7,8 @@ import MonoblockPage from "./page";
 const mocks = vi.hoisted(() => ({
   responses: new Map<string, unknown>(),
   apiGet: vi.fn(),
+  apiPut: vi.fn(),
+  apiPost: vi.fn(),
   permissions: ["shipping.load"],
   resolveDetections: null as null | ((value: { data: { processors: unknown[] } }) => void),
   rejectDetections: null as null | ((reason?: unknown) => void),
@@ -73,6 +75,8 @@ vi.mock("@/lib/use-api", () => ({
 vi.mock("@/lib/api", () => ({
   api: {
     get: (...args: unknown[]) => mocks.apiGet(...args),
+    put: (...args: unknown[]) => mocks.apiPut(...args),
+    post: (...args: unknown[]) => mocks.apiPost(...args),
   },
   apiError: () => "Ошибка тестового API",
 }));
@@ -116,6 +120,8 @@ const analytics = {
 
 beforeEach(() => {
   mocks.permissions = ["shipping.load"];
+  mocks.apiPut.mockReset();
+  mocks.apiPost.mockReset();
   mocks.responses = new Map<string, unknown>([
     ["/orders/?post_board=1", []],
     [
@@ -378,6 +384,91 @@ describe("AI 24/7 live detections", () => {
     expect(screen.queryByRole("tab", { name: "Архив" })).not.toBeInTheDocument();
   });
 
+  it("не позволяет запоздавшему GET перезаписать сохранённые привязки", async () => {
+    const user = userEvent.setup();
+    mocks.permissions = ["shipping.load", "ai_247.manage"];
+    const initialProduction = {
+      camera: "cam2",
+      warehouse: 1,
+      warehouse_name: "Основной склад",
+      warehouses: [{ id: 1, code: "main", name: "Основной склад", is_active: true, is_default: true }],
+      timezone: "Asia/Almaty",
+      close_time: "19:00",
+      current_business_day: "2026-08-24",
+      next_run_at: "2026-08-24T13:00:00Z",
+      selected_day: null,
+      day_runs: [],
+      fully_configured: false,
+      available_colors: ["red", "blue"],
+      mappings: [
+        { color: "red", product: 1, product_label: "Красная мука · 50 кг" },
+        { color: "blue", product: null, product_label: null },
+      ],
+      products: [
+        {
+          id: 1,
+          label: "Красная мука · 50 кг",
+          color: "Red",
+          color_label: "Красный",
+          weight_kg: "50.00",
+          warehouse: 1,
+        },
+        {
+          id: 2,
+          label: "Синяя мука · 50 кг",
+          color: "Blue",
+          color_label: "Синий",
+          weight_kg: "50.00",
+          warehouse: 1,
+        },
+      ],
+      runs: [],
+      preview: [],
+      batches: [],
+    };
+    const savedProduction = {
+      ...initialProduction,
+      fully_configured: true,
+      mappings: [initialProduction.mappings[0], { color: "blue", product: 2, product_label: "Синяя мука · 50 кг" }],
+    };
+    let resolveStale: ((value: { data: typeof initialProduction }) => void) | null = null;
+    const staleResponse = new Promise<{ data: typeof initialProduction }>((resolve) => {
+      resolveStale = resolve;
+    });
+    let productionGets = 0;
+    mocks.apiGet.mockImplementation((url: unknown) => {
+      if (url === "/cameras/always-on-detections/") return new Promise(() => undefined);
+      if (url === "/cameras/always-on-settings/") return Promise.resolve({ data: alwaysOnSettings });
+      if (url === "/cameras/always-on-analytics/") return Promise.resolve({ data: analytics });
+      if (url === "/cameras/always-on-production/?camera=cam2") {
+        productionGets += 1;
+        return productionGets === 1 ? Promise.resolve({ data: initialProduction }) : staleResponse;
+      }
+      return Promise.reject(new Error(`Unexpected GET ${String(url)}`));
+    });
+    mocks.apiPut.mockResolvedValue({ data: savedProduction });
+
+    render(<MonoblockPage />);
+    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
+    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await user.click(screen.getByRole("tab", { name: "Выпуск и склад" }));
+    await screen.findByLabelText("Товар для цвета Синий");
+
+    await user.click(screen.getByRole("tab", { name: "Прямой эфир" }));
+    await user.click(screen.getByRole("tab", { name: "Выпуск и склад" }));
+    await waitFor(() => expect(productionGets).toBe(2));
+    await user.selectOptions(screen.getByLabelText("Товар для цвета Синий"), "2");
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+    await waitFor(() => expect(screen.getByText("всё готово")).toBeInTheDocument());
+
+    await act(async () => {
+      resolveStale?.({ data: initialProduction });
+    });
+    expect(screen.getByText("всё готово")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Развернуть настройку прихода" }));
+    expect(screen.getByLabelText("Товар для цвета Синий")).toHaveValue("2");
+  });
+
   it("переключает карточки цветов и периоды дня между алгоритмом и сырыми данными", async () => {
     const user = userEvent.setup();
     const day = "2026-08-24";
@@ -526,6 +617,26 @@ describe("AI 24/7 live detections", () => {
     const productionDay = {
       selected_day: day,
       timezone: "UTC",
+      warehouse: 2,
+      warehouse_name: "Склад готовой продукции",
+      products: [
+        {
+          id: 1,
+          label: "ДБН 1с 50кг · Красный 50 кг",
+          color: "Red",
+          color_label: "Красный",
+          weight_kg: "50.00",
+          warehouse: 2,
+        },
+        {
+          id: 3,
+          label: "ДБН вс 50кг · Синий 50 кг",
+          color: "Blue",
+          color_label: "Синий",
+          weight_kg: "50.00",
+          warehouse: 2,
+        },
+      ],
       dominant_brand_by_color: {
         red: "dikhan_baba",
         green: "korol",
@@ -533,7 +644,7 @@ describe("AI 24/7 live detections", () => {
       },
       mappings: [
         { color: "red", product: 1, product_label: "ДБН 1с 50кг · Красный 50 кг" },
-        { color: "green", product: 2, product_label: "K2c 50кг · Зелёный 50 кг" },
+        { color: "green", product: null, product_label: null },
         { color: "blue", product: 3, product_label: "ДБН вс 50кг · Синий 50 кг" },
       ],
       day_runs: rawRuns,
@@ -555,6 +666,7 @@ describe("AI 24/7 live detections", () => {
       },
     };
     const productionUrl = `/cameras/always-on-production/?camera=cam2&day=${day}`;
+    const currentProductionUrl = "/cameras/always-on-production/?camera=cam2";
     const legacyProductionUrl = `/cameras/always-on-production/?camera=cam2&day=${legacyDay}`;
     const archivedProductionUrl = `/cameras/always-on-production/?camera=cam2&day=${archivedDay}`;
     const legacyProductionDay = {
@@ -633,6 +745,7 @@ describe("AI 24/7 live detections", () => {
       }
       if (url === "/cameras/always-on-settings/") return Promise.resolve({ data: alwaysOnSettings });
       if (url === "/cameras/always-on-analytics/") return Promise.resolve({ data: detailedAnalytics });
+      if (url === currentProductionUrl) return Promise.resolve({ data: { ...productionDay, selected_day: null } });
       if (url === productionUrl) return Promise.resolve({ data: productionDay });
       if (url === legacyProductionUrl) return Promise.resolve({ data: legacyProductionDay });
       if (url === archivedProductionUrl) return Promise.resolve({ data: archivedProductionDay });
@@ -643,6 +756,22 @@ describe("AI 24/7 live detections", () => {
     await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
     await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
     await user.click(screen.getByRole("tab", { name: "Аналитика" }));
+    await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith(currentProductionUrl));
+
+    const allTimeColorsPanel = screen.getByText("Цвета продукции").closest(".rounded-2xl");
+    if (!(allTimeColorsPanel instanceof HTMLElement)) throw new Error("Общая карточка цветов не найдена");
+    const allTimeRedBinding = within(allTimeColorsPanel)
+      .getByText("ДБН 1с 50кг · Красный 50 кг")
+      .closest('[data-receipt-binding="bound"]');
+    expect(allTimeRedBinding).toHaveTextContent("Склад готовой продукции");
+    expect(allTimeColorsPanel.querySelector('[data-receipt-binding="unbound"]')).toHaveTextContent("Не привязан");
+
+    const dominantPanel = screen.getByText("Основной цвет").closest(".rounded-2xl");
+    if (!(dominantPanel instanceof HTMLElement)) throw new Error("Карточка основного цвета не найдена");
+    expect(
+      within(dominantPanel).getByText("ДБН 1с 50кг · Красный 50 кг").closest('[data-receipt-binding="bound"]'),
+    ).toHaveTextContent("Склад готовой продукции");
+
     await user.click(screen.getByRole("button", { name: "Аналитика за 24.08.2026: 153 мешков" }));
 
     await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith(productionUrl));
@@ -666,11 +795,17 @@ describe("AI 24/7 live detections", () => {
     expect(algorithmButton).toHaveAttribute("aria-pressed", "true");
     const algorithmRed = await within(dayPanel).findByRole("group", { name: "Красный: 153 мешков" });
     expect(within(algorithmRed).getByText("96.8%")).toBeInTheDocument();
-    const redMapping = within(algorithmRed).getByText("ДБН 1с 50кг · Красный 50 кг");
+    const redMapping = within(algorithmRed)
+      .getByText("ДБН 1с 50кг · Красный 50 кг")
+      .closest('[data-receipt-binding="bound"]');
+    if (!(redMapping instanceof HTMLElement)) throw new Error("Привязка красного цвета не найдена");
+    expect(redMapping).toHaveTextContent("Склад готовой продукции");
     const redColorAndBrand = within(algorithmRed).getByText("Красный · Дихан Баба");
     expect(redMapping.compareDocumentPosition(redColorAndBrand) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const algorithmGreen = within(dayPanel).getByRole("group", { name: "Зелёный: 5 мешков" });
-    expect(within(algorithmGreen).getByText("K2c 50кг · Зелёный 50 кг")).toBeInTheDocument();
+    const greenBinding = algorithmGreen.querySelector('[data-receipt-binding="unbound"]');
+    expect(greenBinding).toHaveTextContent("Не привязан");
+    expect(greenBinding).toHaveClass("text-red-700");
     expect(within(algorithmGreen).getByText("Зелёный · Korol")).toBeInTheDocument();
     expect(within(dayPanel).queryByRole("group", { name: /Синий: / })).not.toBeInTheDocument();
     expect(within(dayPanel).getAllByText("меш.")).toHaveLength(2);
@@ -701,10 +836,14 @@ describe("AI 24/7 live detections", () => {
     );
     expect(within(legacyDayPanel).getByRole("group", { name: "Красный: 10 мешков" })).toBeInTheDocument();
     expect(within(legacyDayPanel).getByRole("group", { name: "Синий: 2 мешков" })).toBeInTheDocument();
-    expect(within(legacyDayPanel).getAllByText("Сопоставление недоступно")).toHaveLength(2);
+    expect(within(legacyDayPanel).getAllByText("ДБН 1с 50кг · Красный 50 кг")).toHaveLength(2);
+    expect(within(legacyDayPanel).getAllByText("ДБН вс 50кг · Синий 50 кг")).toHaveLength(2);
     expect(within(legacyDayPanel).getAllByText(/Бренд недоступен$/)).toHaveLength(2);
-    expect(within(legacyDayPanel).queryByText("Не сопоставлено")).not.toBeInTheDocument();
+    expect(within(legacyDayPanel).queryByText("Сопоставление недоступно")).not.toBeInTheDocument();
     expect(within(legacyDayPanel).getAllByText("меш.")).toHaveLength(2);
+    expect(
+      within(allTimeColorsPanel).getByText("ДБН 1с 50кг · Красный 50 кг").closest('[data-receipt-binding="bound"]'),
+    ).toHaveTextContent("Склад готовой продукции");
 
     await user.click(within(legacyDayPanel).getByRole("button", { name: "Сырые данные" }));
     expect(within(legacyDayPanel).getByRole("group", { name: "Красный: 10 мешков" })).toBeInTheDocument();

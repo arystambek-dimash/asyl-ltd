@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ChevronDown, Clock3, LoaderCircle, RefreshCw, Save } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, ChevronDown, Clock3, LoaderCircle, RefreshCw, Save, Warehouse } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
@@ -24,6 +24,10 @@ const BATCH_META: Record<AlwaysOnStockBatch["status"], { label: string; classNam
   failed: { label: "Ошибка", className: "bg-red-50 text-red-600" },
 };
 
+// Keep this in sync with backend production.BASE_COLORS. White and any new
+// detector label can be mapped to any product from the selected warehouse.
+const PRODUCT_COLOR_RESTRICTED = new Set(["red", "green", "blue"]);
+
 function zonedDateTime(value: string, timezone: string, withDate = true) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -35,15 +39,25 @@ function zonedDateTime(value: string, timezone: string, withDate = true) {
   }).format(date);
 }
 
-function productOptions(products: AlwaysOnProductionProduct[], color: string, selectedProduct: number | null) {
-  const matching = products.filter((product) => normalizedColor(product.color) === normalizedColor(color));
-  if (!matching.length) return products;
-
+function productOptions(
+  products: AlwaysOnProductionProduct[],
+  color: string,
+  selectedProduct: number | null,
+  warehouse: number | null,
+) {
+  const available = products.filter(
+    (product) => product.warehouse == null || warehouse === null || product.warehouse === warehouse,
+  );
+  const matching = available.filter((product) => normalizedColor(product.color) === normalizedColor(color));
   const selected = products.find((product) => product.id === selectedProduct);
-  if (!selected || matching.some((product) => product.id === selected.id)) return matching;
+  // The model can report a new/unclassified color. The backend deliberately
+  // allows such a row to map to any product from this warehouse; known colors
+  // remain restricted so an operator cannot accidentally bind red to blue.
+  const candidates = PRODUCT_COLOR_RESTRICTED.has(normalizedColor(color)) ? matching : available;
+  if (!selected || candidates.some((product) => product.id === selected.id)) return candidates;
   // Старую несовпадающую настройку не прячем: оператор должен сначала увидеть,
   // куда сейчас идёт продукция, и только потом осознанно заменить товар.
-  return [selected, ...matching];
+  return [selected, ...candidates];
 }
 
 function mappingSignature(rows: AlwaysOnProductMapping[]) {
@@ -53,13 +67,128 @@ function mappingSignature(rows: AlwaysOnProductMapping[]) {
     .join("|");
 }
 
+function mappingNeedsConfiguration(
+  mapping: AlwaysOnProductMapping,
+  products: AlwaysOnProductionProduct[],
+  warehouse: number | null,
+) {
+  if (mapping.product === null) return true;
+  const product = products.find((row) => row.id === mapping.product);
+  if (!product) return true;
+  return warehouse !== null && product.warehouse != null && product.warehouse !== warehouse;
+}
+
+export type AlwaysOnReceiptMappingStatus = "ready" | "loading" | "unavailable";
+
+export interface AlwaysOnReceiptMappingContext {
+  status: AlwaysOnReceiptMappingStatus;
+  mappings?: AlwaysOnProductMapping[] | null;
+  products?: AlwaysOnProductionProduct[] | null;
+  warehouse?: number | null;
+  warehouseName?: string | null;
+}
+
+export type AlwaysOnReceiptDestination =
+  | { state: "bound"; productLabel: string; warehouseName: string | null }
+  | { state: "unbound" | "loading" | "unavailable" };
+
+/** Resolves the current camera route shown in analytics; it is not a historical snapshot. */
+export function resolveAlwaysOnReceiptDestination(
+  context: AlwaysOnReceiptMappingContext,
+  color: string,
+): AlwaysOnReceiptDestination {
+  if (context.status !== "ready") return { state: context.status };
+
+  const mapping = (context.mappings ?? []).find((row) => normalizedColor(row.color) === normalizedColor(color));
+  if (mapping?.product == null || !mapping.product_label || context.warehouse === null) {
+    return { state: "unbound" };
+  }
+
+  // When the product catalogue is present, stale/inactive products and products
+  // from another warehouse are no longer valid bindings. An omitted catalogue is
+  // accepted only for rolling compatibility with the previous API response.
+  if (context.products) {
+    const product = context.products.find((row) => row.id === mapping.product);
+    if (
+      !product ||
+      (context.warehouse !== undefined && product.warehouse != null && product.warehouse !== context.warehouse)
+    ) {
+      return { state: "unbound" };
+    }
+  }
+
+  return {
+    state: "bound",
+    productLabel: mapping.product_label,
+    warehouseName: context.warehouseName ?? (context.warehouse === undefined ? null : `Склад #${context.warehouse}`),
+  };
+}
+
+/** Compact `product → warehouse` label shared by summaries, day cards and runs. */
+export function AlwaysOnReceiptDestinationLabel({
+  destination,
+  colorLabel,
+  className,
+}: {
+  destination: AlwaysOnReceiptDestination;
+  colorLabel?: string;
+  className?: string;
+}) {
+  const accessiblePrefix = colorLabel ? `${colorLabel}: приход — ` : "Приход — ";
+  if (destination.state === "unbound") {
+    return (
+      <span
+        data-receipt-binding="unbound"
+        className={cn(
+          "inline-flex w-fit items-center gap-1 rounded-md border border-red-200 bg-red-50 px-1.5 py-0.5 text-[11px] font-bold text-red-700",
+          className,
+        )}
+      >
+        <span className="sr-only">{accessiblePrefix}</span>
+        <AlertTriangle aria-hidden="true" className="size-3 shrink-0" /> Не привязан
+      </span>
+    );
+  }
+
+  if (destination.state !== "bound") {
+    return (
+      <span className={cn("text-xs font-medium text-slate-500", className)}>
+        <span className="sr-only">{accessiblePrefix}</span>
+        {destination.state === "loading" ? "Загрузка сопоставления…" : "Сопоставление недоступно"}
+      </span>
+    );
+  }
+
+  const title = destination.warehouseName
+    ? `${accessiblePrefix}${destination.productLabel}, склад ${destination.warehouseName}`
+    : `${accessiblePrefix}${destination.productLabel}`;
+  return (
+    <span
+      data-receipt-binding="bound"
+      title={title}
+      className={cn("flex min-w-0 flex-wrap items-center gap-x-1 text-xs leading-tight", className)}
+    >
+      <span className="sr-only">{accessiblePrefix}</span>
+      <span className="min-w-0 font-semibold text-slate-700">{destination.productLabel}</span>
+      {destination.warehouseName && (
+        <span className="inline-flex min-w-0 items-center gap-1 font-medium text-slate-500">
+          <span aria-hidden="true">→</span>
+          <span className="sr-only">склад </span>
+          <Warehouse aria-hidden="true" className="size-3 shrink-0" />
+          <span>{destination.warehouseName}</span>
+        </span>
+      )}
+    </span>
+  );
+}
+
 interface AlwaysOnProductionPanelProps {
   payload: AlwaysOnProductionPayload | null;
   loading: boolean;
   error: string | null;
   saving: boolean;
   canManage: boolean;
-  onSave: (mappings: AlwaysOnProductMapping[]) => void | Promise<void>;
+  onSave: (mappings: AlwaysOnProductMapping[], warehouse: number | null) => void | Promise<void>;
   onRetry?: (batch: AlwaysOnStockBatch) => void | Promise<void>;
 }
 
@@ -70,6 +199,7 @@ interface AlwaysOnDayRunLogProps {
   loading: boolean;
   error?: string | null;
   unavailableReason?: string | null;
+  receiptMapping?: AlwaysOnReceiptMappingContext;
   onRetry?: () => void;
 }
 
@@ -130,6 +260,7 @@ export function AlwaysOnDayRunLog({
   loading,
   error,
   unavailableReason,
+  receiptMapping,
   onRetry,
 }: AlwaysOnDayRunLogProps) {
   const orderedRuns = useMemo(
@@ -185,11 +316,20 @@ export function AlwaysOnDayRunLog({
             return (
               <div
                 key={run.id}
-                className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-2.5 sm:grid-cols-[110px_minmax(0,1fr)_auto] sm:items-center"
+                className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-2.5 sm:grid-cols-[minmax(220px,1.25fr)_minmax(150px,1fr)_auto] sm:items-center"
               >
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className={cn("size-2.5 shrink-0 rounded-full", meta.dot, active && "animate-pulse")} />
-                  <span className="truncate text-xs font-bold text-slate-700">{meta.label}</span>
+                <div className="min-w-0">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className={cn("size-2.5 shrink-0 rounded-full", meta.dot, active && "animate-pulse")} />
+                    <span className="truncate text-xs font-bold text-slate-700">{meta.label}</span>
+                  </div>
+                  {receiptMapping && (
+                    <AlwaysOnReceiptDestinationLabel
+                      destination={resolveAlwaysOnReceiptDestination(receiptMapping, run.color)}
+                      colorLabel={meta.label}
+                      className="mt-1 pl-[18px]"
+                    />
+                  )}
                 </div>
                 <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-slate-500 sm:col-span-1">
                   <Clock3 className="size-3 shrink-0 text-slate-400" />
@@ -253,28 +393,75 @@ export function AlwaysOnProductionPanel({
   onRetry,
 }: AlwaysOnProductionPanelProps) {
   const [draft, setDraft] = useState<AlwaysOnProductMapping[]>([]);
+  const [warehouseDraft, setWarehouseDraft] = useState<number | null>(null);
   // Сопоставление цвет→товар скрыто под сворачиваемой секцией, чтобы не
   // загромождать вкладку. Раскрываем автоматически, только пока остаются
   // ненастроенные цвета — иначе оператор может не заметить, что приход ждёт
   // настройки. После настройки всех цветов остаётся под кнопкой.
   const [mappingOpen, setMappingOpen] = useState(false);
+  const syncedCamera = useRef<string | null>(null);
+  const baselineMappingSignature = useRef("");
+  const baselineWarehouse = useRef<number | null>(null);
+  const savingRef = useRef(saving);
+  const draftRef = useRef(draft);
+  const warehouseDraftRef = useRef(warehouseDraft);
+  draftRef.current = draft;
+  warehouseDraftRef.current = warehouseDraft;
 
   useEffect(() => {
     if (!payload) return;
+    const incomingSignature = mappingSignature(payload.mappings);
+    const incomingWarehouse = payload.warehouse ?? null;
+    const draftSignature = mappingSignature(draftRef.current);
+    const sameCamera = syncedCamera.current === payload.camera;
+    const hasLocalChanges =
+      sameCamera &&
+      (draftSignature !== baselineMappingSignature.current || warehouseDraftRef.current !== baselineWarehouse.current);
+    const incomingMatchesDraft =
+      draftSignature === incomingSignature && warehouseDraftRef.current === incomingWarehouse;
+    const saveJustFinished = savingRef.current && !saving;
+    const serverChangedFromBaseline =
+      incomingSignature !== baselineMappingSignature.current || incomingWarehouse !== baselineWarehouse.current;
+    savingRef.current = saving;
+
+    if (
+      sameCamera &&
+      (saving || hasLocalChanges) &&
+      !incomingMatchesDraft &&
+      !(saveJustFinished && serverChangedFromBaseline)
+    ) {
+      return;
+    }
     const byColor = new Map(payload.mappings.map((row) => [normalizedColor(row.color), row]));
     const nextDraft = payload.available_colors.map((color) => {
       const current = byColor.get(normalizedColor(color));
       return current ?? { color, product: null, product_label: null };
     });
     setDraft(nextDraft);
-    setMappingOpen(nextDraft.some((row) => row.product === null));
-  }, [payload]);
+    const nextWarehouse = incomingWarehouse;
+    setWarehouseDraft(nextWarehouse);
+    setMappingOpen(
+      payload.fully_configured === false ||
+        nextDraft.some((row) => mappingNeedsConfiguration(row, payload.products, nextWarehouse)),
+    );
+    syncedCamera.current = payload.camera;
+    baselineMappingSignature.current = incomingSignature;
+    baselineWarehouse.current = incomingWarehouse;
+  }, [payload, saving]);
 
   const dirty = useMemo(
-    () => Boolean(payload && mappingSignature(draft) !== mappingSignature(payload.mappings)),
-    [draft, payload],
+    () =>
+      Boolean(
+        payload &&
+        (mappingSignature(draft) !== mappingSignature(payload.mappings) ||
+          warehouseDraft !== (payload.warehouse ?? null)),
+      ),
+    [draft, payload, warehouseDraft],
   );
-  const missingColors = draft.filter((row) => row.product === null).map((row) => colorMeta(row.color).label);
+  const missingColors = draft
+    .filter((row) => mappingNeedsConfiguration(row, payload?.products ?? [], warehouseDraft))
+    .map((row) => colorMeta(row.color).label);
+  const hasConfigurationIssue = missingColors.length > 0 || payload?.fully_configured === false;
   const batches = useMemo(
     () =>
       [...(payload?.batches ?? [])].sort(
@@ -320,6 +507,19 @@ export function AlwaysOnProductionPanel({
     );
   }
 
+  function updateWarehouse(value: string) {
+    if (!canManage) return;
+    const warehouseId = value ? Number(value) : null;
+    setWarehouseDraft(warehouseId);
+    setDraft((current) =>
+      current.map((mapping) => {
+        const selected = payload?.products.find((product) => product.id === mapping.product);
+        if (!selected || selected.warehouse == null || selected.warehouse === warehouseId) return mapping;
+        return { ...mapping, product: null, product_label: null };
+      }),
+    );
+  }
+
   return (
     <div className="space-y-4">
       {error && (
@@ -352,8 +552,8 @@ export function AlwaysOnProductionPanel({
             <div>
               <Eyebrow>Готовность</Eyebrow>
               <div className="mt-2">
-                {missingColors.length ? (
-                  <StatusChip tone="warn">нужна настройка</StatusChip>
+                {hasConfigurationIssue ? (
+                  <StatusChip tone="error">нужна настройка</StatusChip>
                 ) : (
                   <StatusChip tone="ok">готово</StatusChip>
                 )}
@@ -364,48 +564,74 @@ export function AlwaysOnProductionPanel({
       </Panel>
 
       <Panel>
-        <button
-          type="button"
-          aria-expanded={mappingOpen}
-          onClick={() => setMappingOpen((open) => !open)}
-          className="flex w-full items-center gap-3 px-5 py-4 text-left transition hover:bg-slate-50/60"
-        >
+        <div className="flex items-center gap-3 px-5 py-4">
           <span className="min-w-0 flex-1">
             <SectionHead
               title="Куда приходовать"
               hint="Один раз сопоставьте распознанный цвет с товаром каталога. Подсчёт и журнал работают независимо — мешки не потеряются."
             />
           </span>
-          {missingColors.length > 0 ? (
-            <StatusChip tone="warn">
-              {missingColors.length} из {draft.length}
+          {hasConfigurationIssue ? (
+            <StatusChip tone="error">
+              {missingColors.length > 0 ? `${missingColors.length} из ${draft.length}` : "проверьте"}
             </StatusChip>
           ) : (
             <StatusChip tone="ok">всё готово</StatusChip>
           )}
-          <ChevronDown
-            className={cn(
-              "size-5 shrink-0 text-slate-300 transition-transform duration-200",
-              mappingOpen && "rotate-180",
-            )}
-          />
-        </button>
+          <button
+            type="button"
+            aria-expanded={mappingOpen}
+            aria-label={mappingOpen ? "Свернуть настройку прихода" : "Развернуть настройку прихода"}
+            onClick={() => setMappingOpen((open) => !open)}
+            className="flex size-9 shrink-0 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+          >
+            <ChevronDown className={cn("size-5 transition-transform duration-200", mappingOpen && "rotate-180")} />
+          </button>
+        </div>
 
         {mappingOpen && (
           <>
             <Hairline />
             <div className="px-5 pb-5 pt-4">
+              {(payload.warehouses?.length ?? 0) > 0 && (
+                <label className="mb-4 grid gap-2 rounded-xl bg-slate-50 p-3 sm:grid-cols-[130px_minmax(0,1fr)] sm:items-center">
+                  <span className="text-sm font-semibold text-slate-700">Склад прихода</span>
+                  <Select
+                    aria-label="Склад прихода"
+                    value={warehouseDraft ?? ""}
+                    disabled={!canManage}
+                    onChange={(event) => updateWarehouse(event.target.value)}
+                    className="bg-white"
+                  >
+                    <option value="" disabled>
+                      Выберите склад
+                    </option>
+                    {(payload.warehouses ?? []).map((warehouse) => (
+                      <option key={warehouse.id} value={warehouse.id}>
+                        {warehouse.name}
+                        {warehouse.is_default ? " · основной" : ""}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+              )}
               <div className="space-y-2">
                 {draft.map((mapping) => {
                   const meta = colorMeta(mapping.color);
-                  const candidates = productOptions(payload.products, mapping.color, mapping.product);
+                  const candidates = productOptions(payload.products, mapping.color, mapping.product, warehouseDraft);
+                  const needsConfiguration = mappingNeedsConfiguration(mapping, payload.products, warehouseDraft);
                   return (
                     <label
                       key={mapping.color}
                       className="grid gap-2 sm:grid-cols-[130px_minmax(0,1fr)] sm:items-center"
                     >
-                      <span className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                      <span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-700">
                         <ColorDot className={meta.dot} /> {meta.label}
+                        {needsConfiguration && (
+                          <span className="rounded-md bg-red-50 px-1.5 py-0.5 text-[10px] font-bold text-red-700">
+                            Не привязан
+                          </span>
+                        )}
                       </span>
                       <Select
                         aria-label={`Товар для цвета ${meta.label}`}
@@ -433,7 +659,11 @@ export function AlwaysOnProductionPanel({
 
               {canManage && (
                 <div className="mt-4 flex justify-end">
-                  <Button size="sm" disabled={!dirty || saving} onClick={() => void onSave(draft)}>
+                  <Button
+                    size="sm"
+                    disabled={!dirty || saving || ((payload.warehouses?.length ?? 0) > 0 && warehouseDraft === null)}
+                    onClick={() => void onSave(draft, warehouseDraft)}
+                  >
                     {saving ? <LoaderCircle className="animate-spin" /> : <Save />}
                     {saving ? "Сохраняем…" : "Сохранить"}
                   </Button>
@@ -455,14 +685,21 @@ export function AlwaysOnProductionPanel({
           <div className="mt-5 grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3">
             {payload.preview.map((row) => {
               const meta = colorMeta(row.color);
+              const destination: AlwaysOnReceiptDestination =
+                row.configured && row.product_label
+                  ? {
+                      state: "bound",
+                      productLabel: row.product_label,
+                      warehouseName:
+                        payload.warehouse_name ??
+                        (payload.warehouse === undefined ? null : `Склад #${payload.warehouse}`),
+                    }
+                  : { state: "unbound" };
               return (
                 <div key={row.color}>
                   <div className="flex items-center gap-2">
                     <ColorDot className={meta.dot} />
                     <span className="text-xs font-medium text-slate-500">{meta.label}</span>
-                    {!row.configured && (
-                      <InfoHint text="Товар не выбран — этот цвет не попадёт на склад до настройки." />
-                    )}
                   </div>
                   <div className="mt-1.5 flex items-baseline gap-1">
                     <span className="text-3xl font-black tabular-nums tracking-tight text-slate-900">
@@ -470,6 +707,11 @@ export function AlwaysOnProductionPanel({
                     </span>
                     <span className="text-xs font-medium text-slate-400">меш.</span>
                   </div>
+                  <AlwaysOnReceiptDestinationLabel
+                    destination={destination}
+                    colorLabel={meta.label}
+                    className="mt-1.5"
+                  />
                 </div>
               );
             })}
@@ -498,6 +740,7 @@ export function AlwaysOnProductionPanel({
                       <div className="text-sm font-semibold text-slate-800">{formatIsoDate(batch.business_day)}</div>
                       <div className="mt-0.5 text-[11px] text-slate-400">
                         {zonedDateTime(batch.scheduled_for, timezone, false)}
+                        {batch.warehouse_name ? ` · ${batch.warehouse_name}` : ""}
                       </div>
                     </div>
                     <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold", meta.className)}>

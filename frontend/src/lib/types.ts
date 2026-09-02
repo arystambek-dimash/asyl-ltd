@@ -27,7 +27,17 @@ export interface Product {
   label: string;
   cv_class?: string;
   available_bags?: number;
+  warehouse?: number | null;
+  warehouse_name?: string | null;
   ask_truck_weight?: boolean;
+}
+export interface Warehouse {
+  id: number;
+  code: string;
+  name: string;
+  address: string;
+  is_active: boolean;
+  is_default: boolean;
 }
 interface ClientPriceRow {
   product: number;
@@ -253,6 +263,8 @@ export interface Order {
   id: number;
   client: number;
   store?: number | null;
+  warehouse?: number | null;
+  warehouse_name?: string | null;
   client_name?: string;
   client_phone?: string;
   department?: string;
@@ -440,6 +452,8 @@ export interface CashierLogItem {
 }
 export interface StockItem {
   id: number;
+  warehouse: number;
+  warehouse_name: string;
   product: number;
   product_label: string;
   grade: string;
@@ -776,6 +790,8 @@ export interface AlwaysOnStockPosting {
 export interface AlwaysOnStockBatch {
   id: number;
   camera: string;
+  warehouse?: number | null;
+  warehouse_name?: string | null;
   business_day: string;
   scheduled_for: string;
   status: "scheduled" | "blocked" | "posted" | "empty" | "failed";
@@ -791,6 +807,10 @@ export interface AlwaysOnProductionProduct {
   color: string;
   color_label: string;
   weight_kg: string;
+  available_bags?: number;
+  /** null means the catalogue item has not been assigned to a warehouse yet. */
+  warehouse?: number | null;
+  warehouse_name?: string | null;
 }
 export interface AlwaysOnStockPreview {
   color: string;
@@ -803,6 +823,10 @@ export interface AlwaysOnStockPreview {
 }
 export interface AlwaysOnProductionPayload {
   camera: string;
+  /** Optional while the frontend and backend are rolled out independently. */
+  warehouse?: number;
+  warehouse_name?: string;
+  warehouses?: Array<Omit<Warehouse, "address"> & { address?: string }>;
   timezone: string;
   close_time: string;
   current_business_day: string;

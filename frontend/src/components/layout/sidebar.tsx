@@ -70,7 +70,7 @@ function staffSections(): NavSection[] {
         // Единый пост: машины и вагоны вместе — лайв-этапы и моноблок отгрузки.
         { href: "/shipping", label: "Пост погрузки", icon: Truck, perm: ["shipping.view", "train.view"] },
         { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "shipping.load" },
-        { href: "/warehouse", label: "Склад", icon: Boxes, perm: "warehouse.view" },
+        { href: "/warehouse", label: "Склады", icon: Boxes, perm: "warehouse.view" },
         // Силосы имеют отдельное право независимо от зернового процесса.
         { href: "/warehouse/silos", label: "Силосы", icon: Warehouse, perm: "silos.view" },
         // Проходная вагонов: заявки, приход, взвешивание и выход.

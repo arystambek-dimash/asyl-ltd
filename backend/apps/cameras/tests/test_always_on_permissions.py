@@ -9,6 +9,9 @@ from apps.cameras.models import (
     MonoblockCameraSettings,
     MonoblockDevice,
 )
+from apps.catalog.models import Product
+from apps.warehouse.models import Warehouse
+from apps.warehouse.services import receive_stock
 
 pytestmark = pytest.mark.django_db
 
@@ -61,6 +64,33 @@ def test_human_with_read_or_manage_permission_can_get_all_ai_247_monitoring(
 
     for endpoint in READ_ENDPOINTS:
         assert auth_client(user).get(endpoint).status_code == 200
+
+
+def test_shipping_reader_does_not_receive_stock_balances_or_warehouse_addresses(
+    auth_client,
+    user_with_perms,
+    read_ai_status,
+):
+    loader = user_with_perms("ai-stock-private", codes=["shipping.load"])
+    warehouse = Warehouse.objects.create(
+        code="private-address",
+        name="Склад готовой продукции",
+        address="Закрытая зона 7",
+    )
+    product = Product.objects.create(
+        name="Приватный остаток",
+        color="Red",
+        weight_kg="50",
+    )
+    receive_stock(product, 127, user=None, warehouse=warehouse)
+
+    response = auth_client(loader).get(
+        "/api/cameras/always-on-production/?camera=cam3",
+    )
+
+    assert response.status_code == 200
+    assert all("available_bags" not in row for row in response.data["products"])
+    assert all("address" not in row for row in response.data["warehouses"])
 
 
 def test_ai_247_monitoring_get_denies_unprivileged_client_and_anonymous_users(

@@ -134,15 +134,17 @@ export function ColorDot({ className, pulse }: { className?: string; pulse?: boo
 }
 
 /** Тихий статус: точка + короткая метка (вместо прогресс-баров и абзацев). */
-export function StatusChip({ tone, children }: { tone: "ok" | "warn" | "muted"; children: ReactNode }) {
+export function StatusChip({ tone, children }: { tone: "ok" | "warn" | "error" | "muted"; children: ReactNode }) {
   const map = {
     ok: "text-emerald-600",
     warn: "text-amber-600",
+    error: "text-red-600",
     muted: "text-slate-400",
   };
   const dot = {
     ok: "bg-emerald-500",
     warn: "bg-amber-500",
+    error: "bg-red-500",
     muted: "bg-slate-300",
   };
   return (

@@ -361,7 +361,10 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                   {order.transport_type === "train" ? "Вагон" : order.truck_number || "Машина"}
                 </InfoRow>
                 <InfoRow label="Отдел">{order.department_name ?? order.department}</InfoRow>
-                <InfoRow label="Склад">{store?.name || (order.store ? `Склад #${order.store}` : "Основной")}</InfoRow>
+                <InfoRow label="Склад отгрузки">{order.warehouse_name || "Основной склад"}</InfoRow>
+                <InfoRow label="Магазин">
+                  {store?.name || (order.store ? `Магазин #${order.store}` : "Без магазина")}
+                </InfoRow>
                 {hasRecordedWeight && (
                   <>
                     <InfoRow label="Учётный вес машины">{formatMoney(order.weigh_in_kg!)} кг</InfoRow>

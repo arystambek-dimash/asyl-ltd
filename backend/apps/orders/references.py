@@ -4,6 +4,7 @@ from apps.catalog.models import Product
 from apps.clients.models import Client, Store
 from apps.sales.access import scope_by_client_department
 from apps.sales.models import Department
+from apps.warehouse.models import Warehouse
 
 
 def build_order_form_options(user) -> dict:
@@ -28,15 +29,21 @@ def build_order_form_options(user) -> dict:
     ).order_by("id")
     products = (
         Product.objects.filter(is_active=True)
-        .select_related("stock")
+        .prefetch_related("stock_items__warehouse")
         .only(
             "id",
             "name",
             "color",
             "weight_kg",
-            "stock__bags",
         )
         .order_by("id")
+    )
+    warehouses = list(
+        Warehouse.objects.filter(is_active=True).order_by("name", "id")
+    )
+    compatibility_warehouse = next(
+        (warehouse for warehouse in warehouses if warehouse.code == "main"),
+        None,
     )
     stores = scope_by_client_department(
         Store.objects.all(),
@@ -68,16 +75,18 @@ def build_order_form_options(user) -> dict:
             for client in clients
         ],
         "products": [
+            _product_option(product, compatibility_warehouse) for product in products
+        ],
+        "warehouses": [
             {
-                "id": product.id,
-                "label": str(product),
-                "available_bags": (
-                    product.stock.bags
-                    if hasattr(product, "stock")
-                    else 0
-                ),
+                "id": warehouse.id,
+                "code": warehouse.code,
+                "name": warehouse.name,
+                "address": warehouse.address,
+                "is_active": warehouse.is_active,
+                "is_default": warehouse.is_default,
             }
-            for product in products
+            for warehouse in warehouses
         ],
         "stores": [
             {
@@ -98,4 +107,32 @@ def build_order_form_options(user) -> dict:
             }
             for department in departments
         ],
+    }
+
+
+def _product_stock(product, compatibility_warehouse=None):
+    """Return bags and the effective warehouse for a Phase-1 stock row."""
+    try:
+        stock = product.stock
+    except AttributeError:
+        return 0, None, None
+    warehouse = stock.warehouse or compatibility_warehouse
+    return (
+        stock.bags,
+        warehouse.pk if warehouse is not None else None,
+        warehouse.name if warehouse is not None else None,
+    )
+
+
+def _product_option(product, compatibility_warehouse):
+    bags, warehouse_id, warehouse_name = _product_stock(
+        product,
+        compatibility_warehouse,
+    )
+    return {
+        "id": product.id,
+        "label": str(product),
+        "available_bags": bags,
+        "warehouse": warehouse_id,
+        "warehouse_name": warehouse_name,
     }

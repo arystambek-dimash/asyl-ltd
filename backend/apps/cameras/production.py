@@ -20,7 +20,8 @@ from rest_framework.exceptions import NotFound, ValidationError
 
 from apps.catalog.models import Product
 from apps.eventlog.services import log_event
-from apps.warehouse.services import receive_stock
+from apps.warehouse.models import StockItem, Warehouse
+from apps.warehouse.services import DEFAULT_WAREHOUSE_CODE, receive_stock
 
 from . import ai
 from .models import (
@@ -33,6 +34,7 @@ from .models import (
     AlwaysOnProductionRun,
     AlwaysOnStockBatch,
     AlwaysOnStockPosting,
+    AlwaysOnWarehouseRoute,
     ContinuousCameraRole,
 )
 
@@ -316,13 +318,83 @@ def close_stale_runs(
     return closed
 
 
-def _product_payload(product: Product) -> dict:
+def _compatibility_warehouse(*, lock: bool = False) -> Warehouse:
+    warehouses = Warehouse.objects.filter(code=DEFAULT_WAREHOUSE_CODE)
+    if lock:
+        warehouses = warehouses.select_for_update(no_key=True)
+    warehouse = warehouses.first()
+    if warehouse is None:
+        raise ValidationError(
+            {
+                "warehouse": "Системный склад не настроен",
+                "code": "compatibility_warehouse_not_configured",
+            }
+        )
+    return warehouse
+
+
+def _warehouse_for_camera(
+    camera: str,
+    *,
+    lock: bool = False,
+    require_active: bool = True,
+) -> Warehouse:
+    routes = AlwaysOnWarehouseRoute.objects.filter(camera=camera)
+    routes = (
+        routes.select_for_update() if lock else routes.select_related("warehouse")
+    )
+    route = routes.first()
+    warehouse = None
+    if route and route.warehouse_id:
+        if lock:
+            warehouse = (
+                Warehouse.objects.select_for_update(no_key=True)
+                .filter(pk=route.warehouse_id)
+                .first()
+            )
+        else:
+            warehouse = route.warehouse
+    # Cameras created by the previous image have no route. Their mappings and
+    # stock belong to the stable compatibility warehouse, even if an operator
+    # later promotes another warehouse as the default for new orders.
+    warehouse = warehouse or _compatibility_warehouse(lock=lock)
+    if require_active and not warehouse.is_active:
+        raise ValidationError(
+            {
+                "warehouse": f"Склад «{warehouse.name}» отключён",
+                "code": "warehouse_inactive",
+            }
+        )
+    return warehouse
+
+
+def _effective_stock_warehouse_id(
+    stock_item: StockItem,
+    *,
+    compatibility_warehouse_id: int,
+) -> int:
+    # A previous image can insert NULL during the expand rollout.  Such a row
+    # is legacy main-warehouse stock until the contract migration makes the
+    # column mandatory.
+    return stock_item.warehouse_id or compatibility_warehouse_id
+
+
+def _product_payload(
+    product: Product,
+    *,
+    stock_item: StockItem | None = None,
+    compatibility_warehouse: Warehouse | None = None,
+) -> dict:
+    effective_warehouse = None
+    if stock_item is not None:
+        effective_warehouse = stock_item.warehouse or compatibility_warehouse
     return {
         "id": product.pk,
         "label": str(product),
         "color": product.color,
         "color_label": dict(Product.COLORS).get(product.color, product.color),
         "weight_kg": str(product.weight_kg),
+        "warehouse": effective_warehouse.pk if effective_warehouse else None,
     }
 
 
@@ -520,6 +592,8 @@ def _batch_payload(row: AlwaysOnStockBatch) -> dict:
     return {
         "id": row.pk,
         "camera": row.camera,
+        "warehouse": row.warehouse_id,
+        "warehouse_name": row.warehouse.name if row.warehouse_id else None,
         "business_day": row.business_day.isoformat(),
         "scheduled_for": _iso(row.scheduled_for),
         "status": row.status,
@@ -680,17 +754,43 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
     close_stale_runs(now, reserved_ai247_only=True)
     current_day = business_day_for(now)
 
+    warehouse = _warehouse_for_camera(
+        camera,
+        require_active=False,
+    )
+    warehouses = list(
+        Warehouse.objects.filter(is_active=True).order_by("name", "id")
+    )
+    if warehouse.pk not in {row.pk for row in warehouses}:
+        warehouses.append(warehouse)
+
     products = list(
         Product.objects.filter(is_active=True).order_by(
             "name", "color", "weight_kg", "id"
         )
     )
+    stock_by_product = {
+        row.product_id: row
+        for row in StockItem.objects.filter(product_id__in=[p.pk for p in products])
+        .select_related("warehouse")
+        .order_by("id")
+    }
+    compatibility_warehouse = _compatibility_warehouse()
+    compatibility_warehouse_id = compatibility_warehouse.pk
     mapping_rows = list(
         AlwaysOnColorProductMapping.objects.filter(camera=camera)
         .select_related("product")
         .order_by("color")
     )
     mapping_by_color = {row.color: row for row in mapping_rows}
+
+    def mapping_matches_warehouse(mapping: AlwaysOnColorProductMapping) -> bool:
+        stock_item = stock_by_product.get(mapping.product_id)
+        return stock_item is None or _effective_stock_warehouse_id(
+            stock_item,
+            compatibility_warehouse_id=compatibility_warehouse_id,
+        ) == warehouse.pk
+
     observed_colors = set(
         AlwaysOnProductionRun.objects.filter(camera=camera)
         .values_list("color", flat=True)
@@ -712,7 +812,11 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
     preview = []
     for color in preview_colors:
         mapping = mapping_by_color.get(color)
-        configured = bool(mapping and mapping.product.is_active)
+        configured = bool(
+            mapping
+            and mapping.product.is_active
+            and mapping_matches_warehouse(mapping)
+        )
         preview.append(
             {
                 "color": color,
@@ -766,6 +870,7 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
     )
     batches = list(
         AlwaysOnStockBatch.objects.filter(camera=camera)
+        .select_related("warehouse")
         .prefetch_related("items__product", "items__receipt")
         .order_by("-business_day", "-id")[:31]
     )
@@ -780,6 +885,18 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
     algorithm_day_runs, run_smoothing = _run_smoothing_payload(raw_day_runs)
     return {
         "camera": camera,
+        "warehouse": warehouse.pk,
+        "warehouse_name": warehouse.name,
+        "warehouses": [
+            {
+                "id": row.pk,
+                "code": row.code,
+                "name": row.name,
+                "is_active": row.is_active,
+                "is_default": row.is_default,
+            }
+            for row in warehouses
+        ],
         "selected_day": selected_day.isoformat() if selected_day else None,
         "dominant_brand_by_color": _dominant_brand_by_color(
             camera,
@@ -797,7 +914,9 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
         "current_business_day": current_day.isoformat(),
         "next_run_at": _iso(scheduled_for(current_day)),
         "fully_configured": all(
-            color in mapping_by_color and mapping_by_color[color].product.is_active
+            color in mapping_by_color
+            and mapping_by_color[color].product.is_active
+            and mapping_matches_warehouse(mapping_by_color[color])
             for color in available_colors
         ),
         "available_colors": available_colors,
@@ -805,18 +924,117 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
             _mapping_payload(mapping_by_color.get(color), color)
             for color in available_colors
         ],
-        "products": [_product_payload(product) for product in products],
+        "products": [
+            _product_payload(
+                product,
+                stock_item=stock_by_product.get(product.pk),
+                compatibility_warehouse=compatibility_warehouse,
+            )
+            for product in products
+        ],
         "runs": [_run_payload(row) for row in runs],
         "preview": preview,
         "batches": [_batch_payload(row) for row in batches],
     }
 
 
+def _camera_has_unposted_production(camera: str) -> bool:
+    # A posting attempt can create/pin a batch before the event journal has
+    # caught up and before any positive run is visible. That non-terminal
+    # snapshot still belongs to the current route and must fence route changes.
+    if (
+        AlwaysOnStockBatch.objects.filter(camera=camera)
+        .exclude(status__in=TERMINAL_BATCH_STATUSES)
+        .exists()
+    ):
+        return True
+    production_days = set(
+        AlwaysOnProductionRun.objects.filter(camera=camera, model_bags__gt=0)
+        .order_by()
+        .values_list("business_day", flat=True)
+        .distinct()
+    )
+    if not production_days:
+        return False
+    terminal_days = set(
+        AlwaysOnStockBatch.objects.filter(
+            camera=camera,
+            business_day__in=production_days,
+            status__in=TERMINAL_BATCH_STATUSES,
+        ).values_list("business_day", flat=True)
+    )
+    return bool(production_days - terminal_days)
+
+
 @transaction.atomic
-def save_mappings(camera: str, mappings: list[dict], user=None) -> dict:
+def save_mappings(
+    camera: str,
+    mappings: list[dict],
+    user=None,
+    *,
+    warehouse=None,
+) -> dict:
     camera = ai.normalize(camera)
     if not isinstance(mappings, list):
         raise ValidationError({"mappings": "Передайте список привязок"})
+
+    # Event ingestion and stock posting take this per-camera mutex first.
+    # Taking the same lock before reading runs/batches closes the window where
+    # a page from the old route is in flight but not committed yet.
+    AlwaysOnCounterCursor.objects.select_for_update().get_or_create(camera=camera)
+    current_warehouse = _warehouse_for_camera(
+        camera,
+        lock=True,
+        require_active=False,
+    )
+    if warehouse is None:
+        selected_warehouse = current_warehouse
+    else:
+        if isinstance(warehouse, Warehouse):
+            warehouse_id = warehouse.pk
+        else:
+            if isinstance(warehouse, bool):
+                warehouse_id = 0
+            else:
+                try:
+                    warehouse_id = int(warehouse)
+                except (TypeError, ValueError):
+                    warehouse_id = 0
+        selected_warehouse = (
+            Warehouse.objects.select_for_update(no_key=True)
+            .filter(pk=warehouse_id)
+            .first()
+        )
+        if selected_warehouse is None:
+            raise ValidationError(
+                {
+                    "warehouse": "Склад не найден",
+                    "code": "warehouse_not_found",
+                }
+            )
+    if (
+        not selected_warehouse.is_active
+        and selected_warehouse.pk != current_warehouse.pk
+    ):
+        raise ValidationError(
+            {
+                "warehouse": "Выберите действующий склад",
+                "code": "warehouse_inactive",
+            }
+        )
+    if (
+        selected_warehouse.pk != current_warehouse.pk
+        and _camera_has_unposted_production(camera)
+    ):
+        raise ValidationError(
+            {
+                "warehouse": (
+                    "Склад нельзя менять, пока у камеры есть "
+                    "неоприходованная производственная смена"
+                ),
+                "code": "warehouse_has_unposted_production",
+            }
+        )
 
     normalized: list[tuple[str, int | None]] = []
     seen: set[str] = set()
@@ -840,7 +1058,20 @@ def save_mappings(camera: str, mappings: list[dict], user=None) -> dict:
         normalized.append((color, product_id))
 
     product_ids = {product_id for _color, product_id in normalized if product_id}
-    products = Product.objects.select_for_update().filter(pk__in=product_ids).in_bulk()
+    products = (
+        Product.objects.select_for_update()
+        .filter(pk__in=product_ids)
+        .order_by("pk")
+        .in_bulk()
+    )
+    compatibility_warehouse_id = _compatibility_warehouse().pk
+    stock_by_product = {
+        row.product_id: row
+        for row in StockItem.objects.select_for_update(of=("self",))
+        .filter(product_id__in=product_ids)
+        .select_related("warehouse")
+        .order_by("product_id")
+    }
     for color, product_id in normalized:
         if product_id is None:
             continue
@@ -858,6 +1089,38 @@ def save_mappings(camera: str, mappings: list[dict], user=None) -> dict:
                     "mappings": f"Для цвета «{expected}» выберите товар того же цвета",
                 }
             )
+        stock_item = stock_by_product.get(product_id)
+        if stock_item is not None and _effective_stock_warehouse_id(
+            stock_item,
+            compatibility_warehouse_id=compatibility_warehouse_id,
+        ) != selected_warehouse.pk:
+            raise ValidationError(
+                {
+                    "mappings": (
+                        f"Товар #{product_id} уже закреплён за другим складом"
+                    ),
+                    "code": "product_assigned_other_warehouse",
+                }
+            )
+
+    # Persist product ownership as soon as a mapping is saved. Otherwise a
+    # rollback image would create an unassigned product in ``main`` when the
+    # shift posts, ignoring this camera's route to a secondary warehouse.
+    for product_id in sorted(product_ids):
+        if product_id not in stock_by_product:
+            stock_by_product[product_id] = StockItem.objects.create(
+                product=products[product_id],
+                warehouse=selected_warehouse,
+                bags=0,
+            )
+
+    AlwaysOnWarehouseRoute.objects.update_or_create(
+        camera=camera,
+        defaults={
+            "warehouse": selected_warehouse,
+            "updated_by": user,
+        },
+    )
 
     list(
         AlwaysOnColorProductMapping.objects.select_for_update().filter(
@@ -952,26 +1215,45 @@ def record_correction(
     )
 
 
-def _locked_or_created_batch(camera: str, business_day: date) -> AlwaysOnStockBatch:
+def _locked_or_created_batch(
+    camera: str,
+    business_day: date,
+    *,
+    warehouse: Warehouse | None = None,
+) -> AlwaysOnStockBatch:
+    warehouse = warehouse or _warehouse_for_camera(
+        camera,
+        lock=True,
+        require_active=False,
+    )
     try:
-        return AlwaysOnStockBatch.objects.select_for_update().get(
+        batch = AlwaysOnStockBatch.objects.select_for_update().get(
             camera=camera,
             business_day=business_day,
         )
+        if batch.warehouse_id is None:
+            batch.warehouse = warehouse
+            batch.save(update_fields=["warehouse", "updated_at"])
+        return batch
     except AlwaysOnStockBatch.DoesNotExist:
         pass
     try:
         with transaction.atomic():
             return AlwaysOnStockBatch.objects.create(
                 camera=camera,
+                warehouse=warehouse,
                 business_day=business_day,
                 scheduled_for=scheduled_for(business_day),
             )
     except IntegrityError:
-        return AlwaysOnStockBatch.objects.select_for_update().get(
+        batch = AlwaysOnStockBatch.objects.select_for_update().get(
             camera=camera,
             business_day=business_day,
         )
+        if batch.warehouse_id is None:
+            batch.warehouse = warehouse
+            batch.save(update_fields=["warehouse", "updated_at"])
+        return batch
 
 
 def _assert_ai247_role(camera: str) -> None:
@@ -1000,7 +1282,16 @@ def _post_one(camera: str, business_day: date, now: datetime) -> AlwaysOnStockBa
         )
         .first()
     )
-    batch = _locked_or_created_batch(camera, business_day)
+    route_warehouse = _warehouse_for_camera(
+        camera,
+        lock=True,
+        require_active=False,
+    )
+    batch = _locked_or_created_batch(
+        camera,
+        business_day,
+        warehouse=route_warehouse,
+    )
     if batch.status in TERMINAL_BATCH_STATUSES:
         return batch
     if cursor is not None and cursor.event_sync_supported is not False:
@@ -1095,6 +1386,7 @@ def _post_one(camera: str, business_day: date, now: datetime) -> AlwaysOnStockBa
             payload={
                 "batch": batch.pk,
                 "camera": camera,
+                "warehouse": batch.warehouse_id,
                 "business_day": business_day.isoformat(),
                 "total_bags": 0,
                 "status": batch.status,
@@ -1136,7 +1428,10 @@ def _post_one(camera: str, business_day: date, now: datetime) -> AlwaysOnStockBa
         if should_log:
             log_event(
                 "always_on_stock_blocked",
-                f"AI 24/7 · {camera}: приход за {business_day:%d.%m.%Y} ожидает настройки",
+                (
+                    f"AI 24/7 · {camera}: приход за "
+                    f"{business_day:%d.%m.%Y} ожидает настройки"
+                ),
                 payload={
                     "batch": batch.pk,
                     "camera": camera,
@@ -1149,7 +1444,10 @@ def _post_one(camera: str, business_day: date, now: datetime) -> AlwaysOnStockBa
     # Lock the exact catalogue rows whose active state was just validated.
     product_ids = {mapping_by_color[color].product_id for color in positive}
     locked_products = (
-        Product.objects.select_for_update().filter(pk__in=product_ids).in_bulk()
+        Product.objects.select_for_update()
+        .filter(pk__in=product_ids)
+        .order_by("pk")
+        .in_bulk()
     )
     newly_inactive = sorted(
         color
@@ -1174,6 +1472,8 @@ def _post_one(camera: str, business_day: date, now: datetime) -> AlwaysOnStockBa
             values["net_bags"],
             user=None,
             note=note,
+            warehouse=batch.warehouse,
+            require_active=False,
         )
         posting = AlwaysOnStockPosting.objects.create(
             batch=batch,
@@ -1207,6 +1507,7 @@ def _post_one(camera: str, business_day: date, now: datetime) -> AlwaysOnStockBa
         payload={
             "batch": batch.pk,
             "camera": camera,
+            "warehouse": batch.warehouse_id,
             "business_day": business_day.isoformat(),
             "total_bags": total_bags,
             "items": [

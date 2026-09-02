@@ -667,6 +667,37 @@ class AlwaysOnColorProductMapping(models.Model):
         ]
 
 
+class AlwaysOnWarehouseRoute(models.Model):
+    """Finished-goods warehouse used by one AI 24/7 camera.
+
+    The route is separate from colour-to-product mappings so clearing or
+    changing a colour does not lose the physical warehouse destination.
+    ``warehouse`` stays nullable during the expand rollout: a previous image
+    can run after migrations and simply continues to use the main warehouse.
+    """
+
+    camera = models.CharField(max_length=32, unique=True)
+    warehouse = models.ForeignKey(
+        "warehouse.Warehouse",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="always_on_routes",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="always_on_warehouse_route_updates",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["camera"]
+
+
 class AlwaysOnProductionRun(models.Model):
     """A contiguous interval in which an always-on model counted one color."""
 
@@ -742,6 +773,16 @@ class AlwaysOnStockBatch(models.Model):
     )
 
     camera = models.CharField(max_length=32)
+    # Snapshot of the route used for this production shift.  It is nullable
+    # during the expand rollout so the previous image can still INSERT a batch
+    # after the migration and an automatic rollback remains safe.
+    warehouse = models.ForeignKey(
+        "warehouse.Warehouse",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="always_on_stock_batches",
+    )
     business_day = models.DateField()
     scheduled_for = models.DateTimeField()
     status = models.CharField(max_length=12, choices=STATUSES, default=SCHEDULED)

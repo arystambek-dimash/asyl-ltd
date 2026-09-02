@@ -1,5 +1,14 @@
 from io import BytesIO
 
+from config.throttles import PortalOrderCreateRateThrottle
+from django.db.models import Prefetch, Q
+from django.http import FileResponse
+from django.utils import timezone
+from rest_framework import mixins, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
+
 from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Client, Store
 from apps.clients.serializers import StoreSerializer
@@ -16,14 +25,8 @@ from apps.orders.services import (
     create_client_payment, release_client_payment, request_client_debt,
     set_truck_number,
 )
-from config.throttles import PortalOrderCreateRateThrottle
-from django.db.models import Prefetch
-from django.http import FileResponse
-from django.utils import timezone
-from rest_framework import status, viewsets, mixins
-from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
-from rest_framework.response import Response
+from apps.warehouse.models import Warehouse
+from apps.warehouse.services import DEFAULT_WAREHOUSE_CODE
 
 from .exceptions import Conflict, PaymentProviderError
 from .serializers import CatalogProductSerializer, PortalOrderSerializer
@@ -62,7 +65,27 @@ class PortalCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             .values_list("id", flat=True).first())
         price_qs = ClientPrice.objects.filter(
             client_id=client_id, currency=self._currency())
-        return (Product.objects.filter(is_active=True)
+        default_warehouse = (
+            Warehouse.objects.filter(is_default=True, is_active=True)
+            .only("id", "code")
+            .order_by("id")
+            .first()
+        )
+        if default_warehouse is None:
+            return Product.objects.none()
+
+        stock_scope = Q(stock_items__warehouse_id=default_warehouse.pk)
+        if default_warehouse.code == DEFAULT_WAREHOUSE_CODE:
+            # A rollback image can still leave pre-migration rows without a
+            # warehouse. They belong to the compatibility warehouse only;
+            # moving the default must never move those products implicitly.
+            stock_scope |= Q(stock_items__warehouse__isnull=True)
+
+        return (Product.objects.filter(
+                    stock_scope,
+                    is_active=True,
+                    stock_items__bags__gt=0,
+                )
                 .prefetch_related(Prefetch(
             "client_prices", queryset=price_qs,
             to_attr="portal_client_prices"))

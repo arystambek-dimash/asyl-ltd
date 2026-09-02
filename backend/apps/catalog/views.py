@@ -25,7 +25,7 @@ class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     }
 
     def get_queryset(self):
-        qs = Product.objects.select_related("stock")
+        qs = Product.objects.prefetch_related("stock_items")
         if self.request.query_params.get("archived") in ("1", "true"):
             return qs.filter(is_active=False)
         return qs.filter(is_active=True)

@@ -73,11 +73,11 @@ describe("подсветка активного пункта", () => {
     expect(screen.getByRole("link", { name: "Новый заказ" })).not.toHaveClass(activeClass);
   });
 
-  it("показывает склад и силосы отдельными пунктами, активен самый специфичный", () => {
+  it("показывает склады и силосы отдельными пунктами, активен самый специфичный", () => {
     nav.pathname = "/warehouse/silos";
     render(<Sidebar me={factoryUser} />);
 
-    const stock = screen.getByRole("link", { name: "Склад" });
+    const stock = screen.getByRole("link", { name: "Склады" });
     expect(stock).toHaveAttribute("href", "/warehouse");
     expect(stock).not.toHaveClass(activeClass);
     const silos = screen.getByRole("link", { name: "Силосы" });
@@ -89,7 +89,7 @@ describe("подсветка активного пункта", () => {
   it("прячет вкладки склада и силосов без соответствующих прав", () => {
     render(<Sidebar me={{ ...factoryUser, permissions: ["grain.view"] }} />);
 
-    expect(screen.queryByRole("link", { name: "Склад" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Склады" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Силосы" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Приход и вывоз" })).toHaveAttribute("href", "/grain");
   });

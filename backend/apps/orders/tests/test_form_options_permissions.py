@@ -5,7 +5,7 @@ from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Client, Store
 from apps.sales.models import Department
 from apps.orders.models import Order, OrderItem
-from apps.warehouse.models import StockItem
+from apps.warehouse.models import StockItem, Warehouse
 
 
 pytestmark = pytest.mark.django_db
@@ -66,6 +66,7 @@ def test_order_permission_grants_minimal_form_options(
     assert response.status_code == 200
     clients = {row["id"]: row for row in response.data["clients"]}
     products = {row["id"]: row for row in response.data["products"]}
+    warehouses = {row["id"]: row for row in response.data["warehouses"]}
     stores = {row["id"]: row for row in response.data["stores"]}
     departments = {
         row["id"]: row for row in response.data["departments"]
@@ -77,11 +78,16 @@ def test_order_permission_grants_minimal_form_options(
         "phone": "+77010000000",
         "currency": "USD",
     }
+    main = Warehouse.objects.get(is_default=True)
     assert products[product.id] == {
         "id": product.id,
         "label": "Мука · Синий 50 кг",
         "available_bags": 37,
+        "warehouse": main.pk,
+        "warehouse_name": main.name,
     }
+    assert warehouses[main.pk]["code"] == "main"
+    assert warehouses[main.pk]["is_default"] is True
     assert stores[store.id] == {
         "id": store.id,
         "client": client.id,

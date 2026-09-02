@@ -300,6 +300,9 @@ class AlwaysOnProductMappingItemSerializer(serializers.Serializer):
 
 class AlwaysOnProductMappingsSerializer(serializers.Serializer):
     camera = serializers.CharField(max_length=32)
+    # Optional for rolling-deploy compatibility.  New clients always send it;
+    # older clients keep routing production to the configured/default store.
+    warehouse = serializers.IntegerField(min_value=1, required=False)
     mappings = AlwaysOnProductMappingItemSerializer(many=True)
 
     def validate_mappings(self, rows):

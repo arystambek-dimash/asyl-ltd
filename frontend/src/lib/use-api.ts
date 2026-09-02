@@ -1,11 +1,13 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { AxiosError } from "axios";
 import { api, apiError, isCanceledRequest } from "@/lib/api";
 
 export function useApi<T>(url: string | null) {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [errorStatus, setErrorStatus] = useState<number | null>(null);
   const activeController = useRef<AbortController | null>(null);
   const latestRequest = useRef(0);
   const activeUrl = useRef<string | null>(null);
@@ -22,6 +24,7 @@ export function useApi<T>(url: string | null) {
     latestRequest.current += 1;
     setData(next);
     setError("");
+    setErrorStatus(null);
     setLoading(false);
   }, []);
 
@@ -32,6 +35,7 @@ export function useApi<T>(url: string | null) {
       latestRequest.current += 1;
       setData(null);
       setError("");
+      setErrorStatus(null);
       setLoading(false);
       return;
     }
@@ -45,9 +49,11 @@ export function useApi<T>(url: string | null) {
       if (requestId !== latestRequest.current) return;
       setData(res.data);
       setError("");
+      setErrorStatus(null);
     } catch (e) {
       if (requestId !== latestRequest.current || isCanceledRequest(e)) return;
       setError(apiError(e));
+      setErrorStatus((e as AxiosError).response?.status ?? null);
     } finally {
       if (requestId === latestRequest.current) {
         setLoading(false);
@@ -61,6 +67,7 @@ export function useApi<T>(url: string | null) {
       activeUrl.current = url;
       setData(null);
       setError("");
+      setErrorStatus(null);
     }
     void reload();
     return () => {
@@ -74,6 +81,7 @@ export function useApi<T>(url: string | null) {
     data: isCurrentUrl ? data : null,
     loading: url ? !isCurrentUrl || loading : false,
     error: isCurrentUrl ? error : "",
+    errorStatus: isCurrentUrl ? errorStatus : null,
     reload,
     setData: commit,
   };

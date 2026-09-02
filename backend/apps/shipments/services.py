@@ -5,7 +5,7 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from apps.eventlog.services import log_event
-from apps.warehouse.services import deduct_stock
+from apps.warehouse.services import deduct_stock, resolve_warehouse
 
 from .models import Shipment
 
@@ -152,7 +152,12 @@ def estimated_load_kg(order) -> Decimal:
     )
 
 
-def _lock_stock_rows(items) -> None:
+def _lock_stock_rows(
+    items,
+    warehouse=None,
+    *,
+    require_active=True,
+) -> None:
     """Acquire stock locks in one global product order.
 
     Without a deterministic order, two mixed-product shipments containing
@@ -160,10 +165,15 @@ def _lock_stock_rows(items) -> None:
     Creating a zero row here also makes the existing allow-negative behavior
     deterministic when a product has no stock row yet.
     """
-    from apps.warehouse.models import StockItem
+    from apps.warehouse.services import lock_stock_item
 
-    for product_id in sorted({item.product_id for item in items}):
-        StockItem.objects.select_for_update().get_or_create(product_id=product_id)
+    products = {item.product_id: item.product for item in items}
+    for product_id in sorted(products):
+        lock_stock_item(
+            products[product_id],
+            warehouse=warehouse,
+            require_active=require_active,
+        )
 
 
 @transaction.atomic
@@ -544,6 +554,17 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
             "code": "product_deleted",
         })
 
+    # The warehouse was selected while the order was still editable. It may be
+    # deactivated later, but historical fulfillment and rollback must continue
+    # against that immutable pin. Lock stock before deleting external video so
+    # a warehouse-domain error cannot leave media deleted while the DB rolls
+    # back unchanged.
+    warehouse = resolve_warehouse(order.warehouse, require_active=False)
+    _lock_stock_rows(items, warehouse, require_active=False)
+    if order.warehouse_id is None:
+        order.warehouse = warehouse
+        order.save(update_fields=["warehouse"])
+
     # Удаление локального видео — сопутствующая очистка, а не часть складской
     # транзакции. Недоступный ПК камер не должен блокировать контролируемый
     # откат: запись всё равно исчезнет по локальной политике хранения, а сбой
@@ -568,7 +589,6 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
 
     from apps.warehouse.services import adjust_stock
 
-    _lock_stock_rows(items)
     restored = 0
     for item in items:
         adjust_stock(
@@ -576,6 +596,8 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
             item.quantity,
             user,
             note=f"Откат отгрузки заказа #{order.pk}: {reason}",
+            warehouse=warehouse,
+            require_active=False,
         )
         restored += item.quantity
 
@@ -623,9 +645,20 @@ def _do_ship(order, shipment, user, label):
                 "detail": f"Товар «{item.product_label}» удалён. Обновите состав заказа.",
                 "code": "product_deleted",
             })
-    _lock_stock_rows(items)
+    warehouse = resolve_warehouse(order.warehouse, require_active=False)
+    _lock_stock_rows(items, warehouse, require_active=False)
+    if order.warehouse_id is None:
+        order.warehouse = warehouse
+        order.save(update_fields=["warehouse"])
     for item in items:
-        deduct_stock(item.product, item.quantity, user, allow_negative=True)
+        deduct_stock(
+            item.product,
+            item.quantity,
+            user,
+            allow_negative=True,
+            warehouse=warehouse,
+            require_active=False,
+        )
     shipment.shipped_at = timezone.now()
     shipment.save()
     order.status = "shipped"

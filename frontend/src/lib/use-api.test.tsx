@@ -105,4 +105,15 @@ describe("useApi", () => {
     await resolveRequest(polling, { id: "before-save" });
     expect(result.current.data).toEqual({ id: "saved" });
   });
+
+  it("exposes the response status for compatibility fallbacks", async () => {
+    getMock.mockRejectedValueOnce({ response: { status: 404 } });
+
+    const { result } = renderHook(() => useApi<Payload>("/warehouses/"));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data).toBeNull();
+    expect(result.current.error).toBe("request failed");
+    expect(result.current.errorStatus).toBe(404);
+  });
 });

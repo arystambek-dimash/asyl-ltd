@@ -672,6 +672,7 @@ class AlwaysOnProductionView(_AlwaysOnPermissionMixin, APIView):
                 camera,
                 serializer.validated_data["mappings"],
                 request.user,
+                warehouse=serializer.validated_data.get("warehouse"),
             )
         )
 

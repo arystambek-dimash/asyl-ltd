@@ -30,12 +30,12 @@ import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { cn, formatCurrency, todayLocalIsoDate, currencySymbol } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
-import type { Client, Department, Order, Product, Store } from "@/lib/types";
+import type { Client, Department, Order, Product, Store, Warehouse } from "@/lib/types";
 
 type Row = { id: number; product: string; quantity: string; price: string };
 type Step = 1 | 2 | 3;
 type OrderClientOption = Pick<Client, "id" | "name" | "company_name" | "phone" | "currency">;
-type OrderProductOption = Pick<Product, "id" | "label" | "available_bags">;
+type OrderProductOption = Pick<Product, "id" | "label" | "available_bags" | "warehouse" | "warehouse_name">;
 type OrderStoreOption = Pick<Store, "id" | "client" | "name" | "address">;
 type OrderDepartmentOption = Pick<Department, "id" | "code" | "name" | "color" | "is_default">;
 
@@ -44,6 +44,7 @@ interface OrderFormOptions {
   products: OrderProductOption[];
   stores: OrderStoreOption[];
   departments: OrderDepartmentOption[];
+  warehouses?: Warehouse[];
 }
 
 const EMPTY_FORM_OPTIONS: OrderFormOptions = {
@@ -51,11 +52,12 @@ const EMPTY_FORM_OPTIONS: OrderFormOptions = {
   products: [],
   stores: [],
   departments: [],
+  warehouses: [],
 };
 
 const STEPS = [
   { number: 1 as const, label: "Клиент", caption: "Кому и от какого отдела", icon: UserRound },
-  { number: 2 as const, label: "Доставка", caption: "Валюта и транспорт", icon: Truck },
+  { number: 2 as const, label: "Доставка", caption: "Склад, валюта и транспорт", icon: Truck },
   { number: 3 as const, label: "Состав", caption: "Товары и итог", icon: PackageOpen },
 ];
 
@@ -122,7 +124,7 @@ export function OrderForm({
     error: formOptionsError,
     reload: reloadFormOptions,
   } = useApi<OrderFormOptions>("/orders/form-options/");
-  const { clients, products, stores, departments } = formOptions ?? EMPTY_FORM_OPTIONS;
+  const { clients, products, stores, departments, warehouses = [] } = formOptions ?? EMPTY_FORM_OPTIONS;
   const source = editing ?? template;
   const nextRowId = useRef(source?.items.length ?? 1);
   const [step, setStep] = useState<Step>(1);
@@ -132,6 +134,7 @@ export function OrderForm({
   const [client, setClient] = useState(source ? String(source.client) : "");
   const [currency, setCurrency] = useState<"KZT" | "USD">(source?.currency ?? "KZT");
   const [store, setStore] = useState(source?.store ? String(source.store) : "");
+  const [warehouse, setWarehouse] = useState(source?.warehouse ? String(source.warehouse) : "");
   const [transport, setTransport] = useState<"truck" | "train">(source?.transport_type ?? "truck");
   const [truck, setTruck] = useState(source?.truck_number ?? "");
   const [arrival, setArrival] = useState(editing?.arrival_date ?? (template ? todayLocalIsoDate() : ""));
@@ -180,6 +183,22 @@ export function OrderForm({
   }, [assignedDepartment, departments, dept, editing]);
 
   useEffect(() => {
+    if (!warehouses.length || editing) return;
+    if (warehouse && warehouses.some((item) => String(item.id) === warehouse)) return;
+    const initial = warehouses.find((item) => item.is_default) ?? warehouses[0];
+    setWarehouse(String(initial.id));
+    if (template && products.some((item) => item.warehouse !== undefined)) {
+      setRows((current) =>
+        current.map((row) => {
+          const selected = products.find((item) => String(item.id) === row.product);
+          if (!selected || String(selected.warehouse) === String(initial.id)) return row;
+          return { ...row, product: "", price: "" };
+        }),
+      );
+    }
+  }, [editing, products, template, warehouse, warehouses]);
+
+  useEffect(() => {
     if (!loadedClientPrices || editing) return;
     setRows((current) =>
       current.map((row) => (row.product ? { ...row, price: loadedClientPrices[row.product] ?? "" } : row)),
@@ -197,6 +216,28 @@ export function OrderForm({
   const clientStores = stores.filter((item) => String(item.client) === client);
   const selectedStore = clientStores.find((item) => String(item.id) === store);
   const selectedDepartment = departments.find((item) => item.code === dept);
+  const editingWarehouseMissing = Boolean(
+    editing?.warehouse && !warehouses.some((item) => item.id === editing.warehouse),
+  );
+  const warehouseOptions: Warehouse[] = editingWarehouseMissing
+    ? [
+        ...warehouses,
+        {
+          id: editing!.warehouse!,
+          code: `inactive-${editing!.warehouse}`,
+          name: editing!.warehouse_name || "Отключённый склад",
+          address: "",
+          is_active: false,
+          is_default: false,
+        },
+      ]
+    : warehouses;
+  const selectedWarehouse = warehouseOptions.find((item) => String(item.id) === warehouse);
+  const productsHaveWarehouseScope = products.some((item) => item.warehouse !== undefined);
+  const warehouseProducts =
+    productsHaveWarehouseScope && warehouse
+      ? products.filter((item) => String(item.warehouse) === warehouse)
+      : products;
   const validRows = rows.filter((row) => row.product && Number(row.quantity) > 0);
   const allPriced = validRows.every((row) => Number(row.price) > 0);
   const total = validRows.reduce((sum, row) => sum + Number(row.price || 0) * Number(row.quantity || 0), 0);
@@ -219,6 +260,10 @@ export function OrderForm({
     }
     if (step === 1 && (!client || !dept)) {
       setError(!client ? "Выберите клиента, чтобы продолжить." : "Выберите отдел продаж.");
+      return;
+    }
+    if (step === 2 && warehouseOptions.length > 0 && !warehouse) {
+      setError("Выберите склад отгрузки.");
       return;
     }
     if (step < 3) setStep((step + 1) as Step);
@@ -247,6 +292,7 @@ export function OrderForm({
       const prices = Object.fromEntries(validRows.map((row) => [row.product, row.price]));
       const body = {
         store: store ? Number(store) : null,
+        ...(warehouse ? { warehouse: Number(warehouse) } : {}),
         arrival_date: arrival || null,
         currency,
         ...(!physicalFieldsLocked
@@ -503,6 +549,48 @@ export function OrderForm({
 
       {referenceDataReady && step === 2 && (
         <div className="space-y-6">
+          {warehouseOptions.length > 0 && (
+            <section className="space-y-3">
+              <div className="flex items-end justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Склад отгрузки</h3>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Заказ и все последующие складские движения будут закреплены за этим складом.
+                  </p>
+                </div>
+                <Building2 className="size-5 text-blue-500" />
+              </div>
+              <Select
+                aria-label="Склад отгрузки"
+                value={warehouse}
+                disabled={Boolean(
+                  editing && ["confirmed", "arrived", "loading", "loaded", "shipped"].includes(editing.status),
+                )}
+                onChange={(event) => {
+                  const nextWarehouse = event.target.value;
+                  setWarehouse(nextWarehouse);
+                  if (!productsHaveWarehouseScope) return;
+                  setRows((current) =>
+                    current.map((row) => {
+                      const selected = products.find((item) => String(item.id) === row.product);
+                      if (!selected || String(selected.warehouse) === nextWarehouse) return row;
+                      return { ...row, product: "", price: "" };
+                    }),
+                  );
+                }}
+                className="h-11 rounded-xl bg-white"
+              >
+                {warehouseOptions.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                    {item.is_default ? " · основной" : ""}
+                    {!item.is_active ? " · отключён" : ""}
+                  </option>
+                ))}
+              </Select>
+            </section>
+          )}
+
           <section className="space-y-3">
             <div className="flex items-end justify-between gap-3">
               <div>
@@ -602,7 +690,7 @@ export function OrderForm({
 
       {referenceDataReady && step === 3 && (
         <div className="space-y-5">
-          <section className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <section className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:p-3.5">
               <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">Клиент</div>
               <div className="mt-1 truncate text-sm font-bold text-slate-900">{selectedClient?.name || "—"}</div>
@@ -620,6 +708,15 @@ export function OrderForm({
               <div className="mt-0.5 text-[11px] text-slate-500">
                 {transport === "truck" ? "Трак" : "Вагон"}
                 {arrival ? ` · ${arrival}` : ""}
+              </div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:p-3.5">
+              <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">Склад</div>
+              <div className="mt-1 truncate text-sm font-bold text-slate-900">
+                {selectedWarehouse?.name || source?.warehouse_name || "Основной склад"}
+              </div>
+              <div className="mt-0.5 truncate text-[11px] text-slate-500">
+                {selectedWarehouse?.address || "Склад отгрузки"}
               </div>
             </div>
             <div className="col-span-2 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3 sm:col-span-1 sm:p-3.5">
@@ -674,95 +771,102 @@ export function OrderForm({
               </div>
             )}
             <div className="space-y-2">
-              {rows.map((row, index) => (
-                <div
-                  key={row.id}
-                  className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_40px] gap-2 rounded-2xl border border-slate-200 bg-white p-3 sm:grid-cols-[minmax(0,1fr)_100px_140px_36px]"
-                >
-                  <Select
-                    value={row.product}
-                    className="col-span-3 h-10 rounded-xl sm:col-span-1"
-                    aria-label={`Товар, позиция ${index + 1}`}
-                    disabled={compositionLocked}
-                    onChange={(event) => {
-                      const product = event.target.value;
-                      setRows(
-                        rows.map((item, itemIndex) =>
-                          itemIndex === index ? { ...item, product, price: clientPrices[product] ?? "" } : item,
-                        ),
-                      );
-                    }}
+              {rows.map((row, index) => {
+                const currentProduct = products.find((item) => String(item.id) === row.product);
+                const selectableProducts =
+                  editing && currentProduct && !warehouseProducts.some((item) => item.id === currentProduct.id)
+                    ? [currentProduct, ...warehouseProducts]
+                    : warehouseProducts;
+                return (
+                  <div
+                    key={row.id}
+                    className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_40px] gap-2 rounded-2xl border border-slate-200 bg-white p-3 sm:grid-cols-[minmax(0,1fr)_100px_140px_36px]"
                   >
-                    <option value="">Выберите товар</option>
-                    {products.map((product) => {
-                      const bags = product.available_bags ?? 0;
-                      const unavailableForNewShipment = bags <= 0 && !shippedCorrection;
-                      return (
-                        <option key={product.id} value={product.id} disabled={unavailableForNewShipment}>
-                          {product.label}
-                          {bags > 0
-                            ? ` · ${bags} меш.`
-                            : shippedCorrection
-                              ? " — нет текущего остатка, доступно для исправления"
-                              : " — нет в наличии"}
-                        </option>
-                      );
-                    })}
-                  </Select>
-                  <Input
-                    type="number"
-                    min="1"
-                    inputMode="numeric"
-                    placeholder="Мешков"
-                    className="rounded-xl"
-                    value={row.quantity}
-                    aria-label={`Количество мешков, позиция ${index + 1}`}
-                    disabled={compositionLocked}
-                    onChange={(event) =>
-                      setRows(
-                        rows.map((item, itemIndex) =>
-                          itemIndex === index ? { ...item, quantity: event.target.value } : item,
-                        ),
-                      )
-                    }
-                  />
-                  <Input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    inputMode="decimal"
-                    className="rounded-xl"
-                    aria-label={`Цена, позиция ${index + 1}`}
-                    placeholder={`Цена, ${currencySymbol(currency)}`}
-                    value={row.price}
-                    disabled={compositionLocked}
-                    onChange={(event) =>
-                      setRows(
-                        rows.map((item, itemIndex) =>
-                          itemIndex === index ? { ...item, price: event.target.value } : item,
-                        ),
-                      )
-                    }
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    title="Удалить позицию"
-                    aria-label={`Удалить позицию ${index + 1}`}
-                    disabled={compositionLocked}
-                    onClick={() =>
-                      setRows(
-                        rows.length > 1
-                          ? rows.filter((_, itemIndex) => itemIndex !== index)
-                          : [{ id: nextRowId.current++, product: "", quantity: "", price: "" }],
-                      )
-                    }
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
-                </div>
-              ))}
+                    <Select
+                      value={row.product}
+                      className="col-span-3 h-10 rounded-xl sm:col-span-1"
+                      aria-label={`Товар, позиция ${index + 1}`}
+                      disabled={compositionLocked}
+                      onChange={(event) => {
+                        const product = event.target.value;
+                        setRows(
+                          rows.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, product, price: clientPrices[product] ?? "" } : item,
+                          ),
+                        );
+                      }}
+                    >
+                      <option value="">Выберите товар</option>
+                      {selectableProducts.map((product) => {
+                        const bags = product.available_bags ?? 0;
+                        const unavailableForNewShipment = bags <= 0 && !shippedCorrection;
+                        return (
+                          <option key={product.id} value={product.id} disabled={unavailableForNewShipment}>
+                            {product.label}
+                            {bags > 0
+                              ? ` · ${bags} меш.`
+                              : shippedCorrection
+                                ? " — нет текущего остатка, доступно для исправления"
+                                : " — нет в наличии"}
+                          </option>
+                        );
+                      })}
+                    </Select>
+                    <Input
+                      type="number"
+                      min="1"
+                      inputMode="numeric"
+                      placeholder="Мешков"
+                      className="rounded-xl"
+                      value={row.quantity}
+                      aria-label={`Количество мешков, позиция ${index + 1}`}
+                      disabled={compositionLocked}
+                      onChange={(event) =>
+                        setRows(
+                          rows.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, quantity: event.target.value } : item,
+                          ),
+                        )
+                      }
+                    />
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      inputMode="decimal"
+                      className="rounded-xl"
+                      aria-label={`Цена, позиция ${index + 1}`}
+                      placeholder={`Цена, ${currencySymbol(currency)}`}
+                      value={row.price}
+                      disabled={compositionLocked}
+                      onChange={(event) =>
+                        setRows(
+                          rows.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, price: event.target.value } : item,
+                          ),
+                        )
+                      }
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      title="Удалить позицию"
+                      aria-label={`Удалить позицию ${index + 1}`}
+                      disabled={compositionLocked}
+                      onClick={() =>
+                        setRows(
+                          rows.length > 1
+                            ? rows.filter((_, itemIndex) => itemIndex !== index)
+                            : [{ id: nextRowId.current++, product: "", quantity: "", price: "" }],
+                        )
+                      }
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
+                );
+              })}
             </div>
             <Button
               type="button"
@@ -866,6 +970,7 @@ export function OrderForm({
               !referenceDataReady ||
               !client ||
               !dept ||
+              (warehouseOptions.length > 0 && !warehouse) ||
               (!compositionLocked && (!validRows.length || !allPriced)) ||
               (shippedCorrection && editReason.trim().length < 5)
             }

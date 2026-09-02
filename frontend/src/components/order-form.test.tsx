@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { OrderForm } from "@/components/order-form";
@@ -182,6 +182,136 @@ describe("OrderForm reference data resilience", () => {
         prices: { "2": "4.25" },
       }),
     );
+  });
+
+  it("pins a new order to the selected warehouse and shows only its products", async () => {
+    const secondaryProduct = {
+      id: 4,
+      label: "Мука со второго склада 50 кг",
+      available_bags: 14,
+      warehouse: 22,
+      warehouse_name: "Склад №2",
+    } as Product;
+    const template = {
+      id: 13,
+      client: client.id,
+      department: department.code,
+      currency: "KZT",
+      warehouse: 11,
+      warehouse_name: "Основной склад",
+      truck_number: "",
+      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
+    } as Order;
+    const states = new Map<string, unknown>([
+      [
+        "/orders/form-options/",
+        apiState({
+          clients: [client],
+          products: [{ ...product, warehouse: 11, warehouse_name: "Основной склад" }, secondaryProduct],
+          stores: [],
+          departments: [department],
+          warehouses: [
+            { id: 11, code: "main", name: "Основной склад", address: "", is_active: true, is_default: true },
+            { id: 22, code: "second", name: "Склад №2", address: "Цех 2", is_active: true, is_default: false },
+          ],
+        }),
+      ],
+      ["/client-prices/?client=1&currency=KZT", apiState<Record<string, string>>({ "2": "17.50", "4": "21.00" })],
+    ]);
+    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+
+    const user = userEvent.setup();
+    render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.selectOptions(screen.getByLabelText("Склад отгрузки"), "22");
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+
+    const productSelect = screen.getByLabelText("Товар, позиция 1");
+    expect(screen.queryByRole("option", { name: /Мука 50 кг/ })).not.toBeInTheDocument();
+    await user.selectOptions(productSelect, "4");
+    await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/orders/",
+      expect.objectContaining({
+        warehouse: 22,
+        items: [{ product: 4, quantity: 3 }],
+      }),
+    );
+  });
+
+  it("keeps an inactive pinned warehouse visible while editing an order", async () => {
+    const editing = {
+      id: 14,
+      client: client.id,
+      department: department.code,
+      currency: "KZT",
+      status: "confirmed",
+      warehouse: 99,
+      warehouse_name: "Старый склад",
+      transport_type: "truck",
+      truck_number: "",
+      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
+    } as Order;
+    useApiMock.mockImplementation((url: string | null) => {
+      if (url === "/orders/form-options/") {
+        return apiState({
+          clients: [client],
+          products: [{ ...product, warehouse: 99, warehouse_name: "Старый склад" }],
+          stores: [],
+          departments: [department],
+          warehouses: [
+            { id: 11, code: "main", name: "Основной склад", address: "", is_active: true, is_default: true },
+          ],
+        });
+      }
+      return apiState(null);
+    });
+
+    const user = userEvent.setup();
+    render(<OrderForm editing={editing} onCancel={vi.fn()} onDone={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+
+    const selector = screen.getByLabelText("Склад отгрузки");
+    expect(selector).toBeDisabled();
+    expect(selector).toHaveValue("99");
+    expect(screen.getByRole("option", { name: "Старый склад · отключён" })).toBeInTheDocument();
+  });
+
+  it("uses the active default instead of an inactive warehouse from a template", async () => {
+    const template = {
+      id: 15,
+      client: client.id,
+      department: department.code,
+      currency: "KZT",
+      warehouse: 99,
+      warehouse_name: "Старый склад",
+      truck_number: "",
+      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
+    } as Order;
+    useApiMock.mockImplementation((url: string | null) => {
+      if (url === "/orders/form-options/") {
+        return apiState({
+          clients: [client],
+          products: [{ ...product, warehouse: 99, warehouse_name: "Старый склад" }],
+          stores: [],
+          departments: [department],
+          warehouses: [
+            { id: 11, code: "main", name: "Основной склад", address: "", is_active: true, is_default: true },
+          ],
+        });
+      }
+      return apiState(null);
+    });
+
+    const user = userEvent.setup();
+    render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+
+    await waitFor(() => expect(screen.getByLabelText("Склад отгрузки")).toHaveValue("11"));
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    expect(screen.getByLabelText("Товар, позиция 1")).toHaveValue("");
   });
 
   it("requires an audit reason and sends it when a shipped order is corrected", async () => {

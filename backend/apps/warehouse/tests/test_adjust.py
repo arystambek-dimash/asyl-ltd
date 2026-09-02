@@ -66,18 +66,19 @@ def test_movements_endpoint_lists_history(auth_client, boss):
     assert resp.data[0]["balance_after"] == 80
 
 
-def test_delete_stock_item_resets_balance_and_keeps_history(auth_client, boss):
+def test_delete_stock_item_is_rejected_to_preserve_warehouse_ownership(
+    auth_client,
+    boss,
+):
     prod = _product()
     item = adjust_stock(prod, 80, boss)
 
     resp = auth_client(boss).delete(f"/api/stock/{item.id}/")
 
-    assert resp.status_code == 204
-    assert not StockItem.objects.filter(pk=item.id).exists()
-    removal = StockMovement.objects.filter(product=prod).first()
-    assert removal.delta == -80
-    assert removal.balance_after == 0
-    assert removal.note == "Удаление из складского списка"
+    assert resp.status_code == 400
+    assert resp.data["code"] == "warehouse_assignment_locked"
+    assert StockItem.objects.filter(pk=item.id, bags=80).exists()
+    assert list(StockMovement.objects.filter(product=prod).values_list("delta", flat=True)) == [80]
 
 
 def test_delete_stock_item_manager_only(auth_client, operator, boss):

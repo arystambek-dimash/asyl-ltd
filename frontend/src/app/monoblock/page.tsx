@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   BarChart3,
@@ -36,7 +36,10 @@ import {
   AlwaysOnDayColorViewToggle,
   AlwaysOnDayRunLog,
   AlwaysOnProductionPanel,
+  AlwaysOnReceiptDestinationLabel,
+  resolveAlwaysOnReceiptDestination,
   type AlwaysOnDayColorView,
+  type AlwaysOnReceiptMappingContext,
 } from "@/components/monoblock/always-on-production-panel";
 import { RequirePerm } from "@/components/require-perm";
 import { ShipmentLauncher } from "@/components/shipping/shipment-launcher";
@@ -793,6 +796,8 @@ function AlwaysOnCard({
   const [productionLoading, setProductionLoading] = useState(false);
   const [productionError, setProductionError] = useState<string | null>(null);
   const [productionSaving, setProductionSaving] = useState(false);
+  const productionRequestSequence = useRef(0);
+  const productionMutationInFlight = useRef(false);
   const [selectedProductionDay, setSelectedProductionDay] = useState<AlwaysOnProductionPayload | null>(null);
   const [selectedProductionLoading, setSelectedProductionLoading] = useState(false);
   const [selectedProductionError, setSelectedProductionError] = useState<string | null>(null);
@@ -830,6 +835,24 @@ function AlwaysOnCard({
   const inSession = current.mode === "session";
   const chartMax = Math.max(1, ...(currentDaily?.history ?? []).map((item) => item.total));
   const dominant = currentDaily?.colors?.[0];
+  const currentReceiptMappings = selectedProductionDay?.mappings ?? production?.mappings ?? null;
+  const currentReceiptError = selectedProductionError || productionError;
+  const receiptMapping = useMemo<AlwaysOnReceiptMappingContext>(
+    () => ({
+      status: currentReceiptError
+        ? "unavailable"
+        : currentReceiptMappings
+          ? "ready"
+          : selectedProductionDay || production
+            ? "unavailable"
+            : "loading",
+      mappings: currentReceiptMappings,
+      products: selectedProductionDay?.products ?? production?.products,
+      warehouse: selectedProductionDay?.warehouse ?? production?.warehouse,
+      warehouseName: selectedProductionDay?.warehouse_name ?? production?.warehouse_name,
+    }),
+    [currentReceiptError, currentReceiptMappings, production, selectedProductionDay],
+  );
   // Разбор одного дня: сам столбик уже несёт полную статистику, поэтому
   // выбранный день хранится ключом, а не копией — опрос обновляет данные,
   // не закрывая панель.
@@ -876,8 +899,22 @@ function AlwaysOnCard({
         : smoothing.raw_colors
       : selectedColors;
   const selectedMappings = selectedDayProduction?.mappings ?? production?.mappings ?? null;
-  const selectedProductByColor = new Map(
-    (selectedMappings ?? []).map((mapping) => [normalizedColor(mapping.color), mapping.product_label]),
+  const selectedReceiptMapping = useMemo<AlwaysOnReceiptMappingContext>(
+    () => ({
+      status:
+        selectedProductionError || productionError
+          ? "unavailable"
+          : selectedMappings
+            ? "ready"
+            : selectedDayProduction || production
+              ? "unavailable"
+              : "loading",
+      mappings: selectedMappings,
+      products: selectedDayProduction?.products ?? production?.products,
+      warehouse: selectedDayProduction?.warehouse ?? production?.warehouse,
+      warehouseName: selectedDayProduction?.warehouse_name ?? production?.warehouse_name,
+    }),
+    [selectedDayProduction, selectedMappings, selectedProductionError, production, productionError],
   );
   const selectedBrandsByColor = selectedDayProduction?.dominant_brand_by_color;
   const selectedBrandByColor = new Map(
@@ -888,12 +925,6 @@ function AlwaysOnCard({
     : selectedProductionError || selectedDayProduction
       ? "unavailable"
       : "loading";
-  const selectedMappingStatus = selectedMappings
-    ? "ready"
-    : selectedProductionError || selectedDayProduction || production
-      ? "unavailable"
-      : "loading";
-
   useEffect(() => {
     setLiveProcessor(processor);
     setLiveReadiness(readiness);
@@ -1022,32 +1053,52 @@ function AlwaysOnCard({
 
   const loadProduction = useCallback(
     async (showLoader = false) => {
+      if (productionMutationInFlight.current) return null;
+      const requestSequence = ++productionRequestSequence.current;
       if (showLoader) setProductionLoading(true);
       setProductionError(null);
       try {
         const response = await api.get<AlwaysOnProductionPayload>(
           `/cameras/always-on-production/?camera=${encodeURIComponent(processor.cam)}`,
         );
+        if (requestSequence !== productionRequestSequence.current || productionMutationInFlight.current) {
+          return null;
+        }
         setProduction(response.data);
         return response.data;
       } catch (cause) {
-        setProductionError(apiError(cause));
+        if (requestSequence === productionRequestSequence.current && !productionMutationInFlight.current) {
+          setProductionError(apiError(cause));
+        }
         return null;
       } finally {
-        if (showLoader) setProductionLoading(false);
+        if (requestSequence === productionRequestSequence.current) {
+          setProductionLoading(false);
+        }
       }
     },
     [processor.cam],
   );
 
-  // Журнал обновляем отдельно и заметно реже live-рамок. Приходы и настройки
-  // не должны раздувать уже существующий трёхсекундный polling аналитики.
+  // Полный производственный журнал обновляем только на его собственной
+  // вкладке. Этот endpoint также закрывает устаревшие периоды, поэтому не
+  // дублируем его polling поверх выбранного дня аналитики.
   useEffect(() => {
     if (!open || modalView !== "production") return;
     void loadProduction(true);
     const timer = window.setInterval(() => void loadProduction(false), 15_000);
     return () => window.clearInterval(timer);
   }, [loadProduction, modalView, open]);
+
+  // Сводной аналитике нужен текущий маршрут цвет → товар → склад. Пока день
+  // не выбран, обновляем его отдельно; после выбора дневной запрос становится
+  // единственным polling-источником и не создаёт двойных блокировок на backend.
+  useEffect(() => {
+    if (!open || isShipping || modalView !== "analytics" || selectedDay) return;
+    void loadProduction(false);
+    const timer = window.setInterval(() => void loadProduction(false), 15_000);
+    return () => window.clearInterval(timer);
+  }, [isShipping, loadProduction, modalView, open, selectedDay]);
 
   // Исторический день запрашиваем отдельно: полный ответ вкладки «Выпуск и
   // склад» нельзя подменять дневным срезом. Текущий выбранный день обновляем,
@@ -1075,6 +1126,7 @@ function AlwaysOnCard({
           `/cameras/always-on-production/?camera=${encodeURIComponent(processor.cam)}&day=${encodeURIComponent(selectedDay)}`,
         );
         if (disposed) return;
+        setProductionError(null);
         setSelectedProductionDay(response.data);
       } catch (cause) {
         if (!disposed) setSelectedProductionError(apiError(cause));
@@ -1093,13 +1145,17 @@ function AlwaysOnCard({
     };
   }, [currentDaily?.day, isShipping, modalView, open, processor.cam, selectedDay, selectedProductionReload]);
 
-  async function saveProductionMappings(mappings: AlwaysOnProductMapping[]) {
+  async function saveProductionMappings(mappings: AlwaysOnProductMapping[], warehouse: number | null) {
     if (!canManage) return;
+    productionMutationInFlight.current = true;
+    productionRequestSequence.current += 1;
+    setProductionLoading(false);
     setProductionSaving(true);
     setProductionError(null);
     try {
       const response = await api.put<AlwaysOnProductionPayload>("/cameras/always-on-production/", {
         camera: processor.cam,
+        ...(warehouse !== null ? { warehouse } : {}),
         mappings: mappings.map(({ color, product }) => ({ color, product })),
       });
       setProduction(response.data);
@@ -1107,19 +1163,26 @@ function AlwaysOnCard({
     } catch (cause) {
       setProductionError(apiError(cause));
     } finally {
+      productionMutationInFlight.current = false;
       setProductionSaving(false);
     }
   }
 
   async function retryProductionBatch(batch: AlwaysOnStockBatch) {
     if (!canManage) return;
+    productionMutationInFlight.current = true;
+    productionRequestSequence.current += 1;
+    setProductionLoading(false);
     setProductionError(null);
     try {
       await api.post(`/cameras/always-on-production/batches/${batch.id}/retry/`);
+      productionMutationInFlight.current = false;
       await loadProduction(false);
       showSuccess("Приёмка повторно проверена");
     } catch (cause) {
       setProductionError(apiError(cause));
+    } finally {
+      productionMutationInFlight.current = false;
     }
   }
 
@@ -1382,13 +1445,24 @@ function AlwaysOnCard({
               <Panel className="p-5">
                 <Eyebrow>Основной цвет</Eyebrow>
                 {dominant ? (
-                  <div className="mt-2 flex items-center gap-2">
-                    <ColorDot className={colorMeta(dominant.color).dot} />
-                    <span className="text-2xl font-black tracking-tight text-slate-900">
-                      {colorMeta(dominant.color).label}
-                    </span>
-                    <span className="ml-auto text-sm font-semibold tabular-nums text-slate-400">{dominant.total}</span>
-                  </div>
+                  <>
+                    <div className="mt-2 flex items-center gap-2">
+                      <ColorDot className={colorMeta(dominant.color).dot} />
+                      <span className="text-2xl font-black tracking-tight text-slate-900">
+                        {colorMeta(dominant.color).label}
+                      </span>
+                      <span className="ml-auto text-sm font-semibold tabular-nums text-slate-400">
+                        {dominant.total}
+                      </span>
+                    </div>
+                    {!isShipping && (
+                      <AlwaysOnReceiptDestinationLabel
+                        destination={resolveAlwaysOnReceiptDestination(receiptMapping, dominant.color)}
+                        colorLabel={colorMeta(dominant.color).label}
+                        className="mt-2"
+                      />
+                    )}
+                  </>
                 ) : (
                   <div className="mt-2 text-2xl font-bold text-slate-300">—</div>
                 )}
@@ -1452,7 +1526,11 @@ function AlwaysOnCard({
               <Panel className="flex flex-col p-5 sm:p-6">
                 <SectionHead
                   title={isShipping ? "Цвета мешков" : "Цвета продукции"}
-                  hint={isShipping ? "За всё время в контуре отгрузки." : "За всё время по данным модели."}
+                  hint={
+                    isShipping
+                      ? "За всё время в контуре отгрузки."
+                      : "За всё время по данным модели. Под цветом показаны текущие товар и склад прихода."
+                  }
                 />
                 <div className="mt-5 space-y-4">
                   {(currentDaily?.colors ?? []).map((item) => (
@@ -1469,6 +1547,13 @@ function AlwaysOnCard({
                           style={{ width: `${item.percent}%` }}
                         />
                       </div>
+                      {!isShipping && (
+                        <AlwaysOnReceiptDestinationLabel
+                          destination={resolveAlwaysOnReceiptDestination(receiptMapping, item.color)}
+                          colorLabel={colorMeta(item.color).label}
+                          className="mt-2"
+                        />
+                      )}
                     </div>
                   ))}
                   {!currentDaily?.colors?.length && (
@@ -1544,7 +1629,6 @@ function AlwaysOnCard({
                             </div>
                           );
                         }
-                        const productLabel = selectedProductByColor.get(normalizedColor(item.color));
                         const brand = selectedBrandByColor.get(normalizedColor(item.color));
                         const brandLabel = brand
                           ? brandMeta(brand).label
@@ -1554,33 +1638,18 @@ function AlwaysOnCard({
                               ? "Бренд недоступен"
                               : "Загрузка бренда…";
                         const colorAndBrandLabel = `${colorMeta(item.color).label} · ${brandLabel}`;
-                        const mappingLabel =
-                          productLabel ??
-                          (selectedMappingStatus === "ready"
-                            ? "Не сопоставлено"
-                            : selectedMappingStatus === "unavailable"
-                              ? "Сопоставление недоступно"
-                              : "Загрузка сопоставления…");
+                        const destination = resolveAlwaysOnReceiptDestination(selectedReceiptMapping, item.color);
                         return (
                           <div
                             key={item.color}
                             role="group"
                             aria-label={`${colorMeta(item.color).label}: ${item.total} мешков`}
                           >
-                            <div className="flex items-center gap-2">
-                              <span
-                                title={mappingLabel}
-                                className={cn(
-                                  "min-w-0 truncate text-xs font-medium",
-                                  productLabel
-                                    ? "text-slate-600"
-                                    : selectedMappingStatus === "ready"
-                                      ? "text-amber-600"
-                                      : "text-slate-400",
-                                )}
-                              >
-                                {mappingLabel}
-                              </span>
+                            <div className="flex min-w-0 items-start gap-2">
+                              <AlwaysOnReceiptDestinationLabel
+                                destination={destination}
+                                colorLabel={colorMeta(item.color).label}
+                              />
                               <span className="ml-auto text-xs tabular-nums text-slate-400">{item.percent}%</span>
                             </div>
                             <div className="mt-1 text-2xl font-black tabular-nums tracking-tight text-slate-900">
@@ -1615,6 +1684,7 @@ function AlwaysOnCard({
                       loading={selectedProductionLoading}
                       error={selectedProductionError}
                       unavailableReason={runMismatchMessage}
+                      receiptMapping={selectedReceiptMapping}
                       onRetry={() => setSelectedProductionReload((value) => value + 1)}
                     />
                   </>

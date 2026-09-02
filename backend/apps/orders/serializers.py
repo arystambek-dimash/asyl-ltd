@@ -344,6 +344,12 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     is_debt = serializers.BooleanField(read_only=True)
     client_name = serializers.CharField(source="client.name", read_only=True)
     client_phone = serializers.CharField(source="client.phone", read_only=True)
+    warehouse_name = serializers.CharField(
+        source="warehouse.name",
+        read_only=True,
+        allow_null=True,
+        default=None,
+    )
     weigh_in_kg = serializers.SerializerMethodField()
     bags_loaded = serializers.SerializerMethodField()
     bag_estimate_kg = serializers.SerializerMethodField()
@@ -366,7 +372,8 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ["id", "client", "store", "client_name", "client_phone",
+        fields = ["id", "client", "store", "warehouse", "warehouse_name",
+                  "client_name", "client_phone",
                   "department", "department_name", "department_color", "status",
                   "currency",
                   "payment_status", "settlement_intent", "payment_method", "transport_type",
@@ -385,6 +392,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
             "truck_number": {"required": False},
             "arrival_date": {"required": False, "allow_null": True},
             "store": {"required": False, "allow_null": True},
+            "warehouse": {"required": False, "allow_null": True},
             "transport_type": {"required": False},
         }
 
@@ -531,7 +539,10 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
 
     @transaction.atomic
     def create(self, validated_data):
-        from apps.warehouse.services import ensure_products_available
+        from apps.warehouse.services import (
+            ensure_products_available,
+            resolve_warehouse,
+        )
 
         from .services import apply_item_prices, confirm_order
 
@@ -540,7 +551,12 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         # optional write-only transport field on ordinary order creation.
         validated_data.pop("edit_reason", None)
         template_order = validated_data.pop("template_order", None)
-        ensure_products_available(item["product"] for item in items)
+        warehouse = resolve_warehouse(validated_data.get("warehouse"))
+        validated_data["warehouse"] = warehouse
+        ensure_products_available(
+            (item["product"] for item in items),
+            warehouse=warehouse,
+        )
         user = self.context["request"].user
         validated_data["created_by"] = user
         validated_data.setdefault("currency", validated_data["client"].currency)
@@ -597,6 +613,65 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         # the same parent lock as AI start/finish so a stale PATCH cannot put
         # status/loading_camera back after a physical transition.
         instance = lock_live_order(instance, user)
+        warehouse_supplied = "warehouse" in validated_data
+        requested_warehouse = validated_data.pop("warehouse", None)
+        if warehouse_supplied:
+            from apps.warehouse.services import (
+                ensure_products_available,
+                resolve_warehouse,
+            )
+
+            current_warehouse = resolve_warehouse(
+                instance.warehouse,
+                require_active=False,
+            )
+            requested_warehouse = resolve_warehouse(
+                requested_warehouse,
+                require_active=False,
+            )
+            if requested_warehouse.pk != current_warehouse.pk:
+                if instance.status in (
+                    "confirmed", "arrived", "loading", "loaded", "shipped"
+                ):
+                    raise serializers.ValidationError({
+                        "detail": "Склад отгрузки нельзя изменить после подтверждения заказа",
+                        "code": "warehouse_locked",
+                    })
+                # A newly selected warehouse must be active. The relaxed
+                # resolution above only lets an existing inactive pin remain
+                # readable and comparable.
+                requested_warehouse = resolve_warehouse(requested_warehouse)
+                # Persist before replace_items so its availability check uses the
+                # selected warehouse. transaction.atomic rolls this back if a
+                # later scalar or item validation fails.
+                instance.warehouse = requested_warehouse
+                instance.save(update_fields=["warehouse"])
+                if "items" not in validated_data:
+                    current_items = list(
+                        instance.items.select_related("product")
+                    )
+                    deleted = [
+                        item.product_label
+                        for item in current_items
+                        if item.product_id is None
+                    ]
+                    if deleted:
+                        raise serializers.ValidationError({
+                            "detail": (
+                                "Нельзя сменить склад: удалены товары — "
+                                + ", ".join(deleted)
+                            ),
+                            "code": "product_deleted",
+                        })
+                    ensure_products_available(
+                        (item.product for item in current_items),
+                        warehouse=requested_warehouse,
+                    )
+            elif instance.warehouse_id is None:
+                # Explicitly selecting the effective default pins a legacy-null
+                # order without treating it as a business-level warehouse move.
+                instance.warehouse = requested_warehouse
+                instance.save(update_fields=["warehouse"])
         new_intent = validated_data.get("settlement_intent")
         if new_intent is not None and new_intent != instance.settlement_intent:
             if instance.status == "shipped":

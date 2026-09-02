@@ -18,11 +18,13 @@ from apps.cameras.models import (
     AlwaysOnProductionRun,
     AlwaysOnStockBatch,
     AlwaysOnStockPosting,
+    AlwaysOnWarehouseRoute,
     ContinuousCameraRole,
     MonoblockCameraSettings,
 )
 from apps.catalog.models import Product
-from apps.warehouse.models import StockItem, StockMovement, StockReceipt
+from apps.warehouse.models import StockItem, StockMovement, StockReceipt, Warehouse
+from apps.warehouse.services import receive_stock
 
 pytestmark = pytest.mark.django_db
 
@@ -428,6 +430,201 @@ def test_daily_stock_post_is_exactly_once():
     movement = StockMovement.objects.get(product=product)
     assert movement.delta == 12
     assert "AI 24/7" in movement.note
+
+
+def test_daily_stock_post_uses_the_camera_warehouse_route():
+    _reserve_ai247()
+    secondary = Warehouse.objects.create(
+        code="finished-goods-2",
+        name="Склад готовой продукции №2",
+    )
+    product = _product()
+    production.save_mappings(
+        "cam3",
+        [{"color": "red", "product": product.pk}],
+        warehouse=secondary.pk,
+    )
+    AlwaysOnCounterCursor.objects.filter(camera="cam3").update(
+        event_sync_supported=False,
+    )
+    _closed_run(bags=12)
+
+    posted = production.post_due_stock(_at(16, 19))[0]
+
+    route = AlwaysOnWarehouseRoute.objects.get(camera="cam3")
+    batch = AlwaysOnStockBatch.objects.get(camera="cam3")
+    stock = StockItem.objects.get(product=product)
+    receipt = StockReceipt.objects.get(product=product)
+    movement = StockMovement.objects.get(product=product)
+    assert route.warehouse == secondary
+    assert batch.warehouse == secondary
+    assert stock.warehouse == secondary
+    assert receipt.warehouse == secondary
+    assert movement.warehouse == secondary
+    assert posted["warehouse"] == secondary.pk
+    assert posted["warehouse_name"] == secondary.name
+
+
+def test_mapping_materializes_zero_stock_ownership_before_posting():
+    secondary = Warehouse.objects.create(code="mapped-stock", name="Склад маршрута")
+    product = _product()
+
+    production.save_mappings(
+        "cam3",
+        [{"color": "red", "product": product.pk}],
+        warehouse=secondary.pk,
+    )
+
+    stock = StockItem.objects.get(product=product)
+    assert stock.warehouse == secondary
+    assert stock.bags == 0
+    assert AlwaysOnCounterCursor.objects.filter(camera="cam3").exists()
+
+
+def test_unrouted_legacy_camera_stays_on_main_after_default_changes():
+    main = Warehouse.objects.get(code="main")
+    secondary = Warehouse.objects.create(code="new-default", name="Новый основной")
+    product = _product()
+    receive_stock(product, 3, user=None, warehouse=main)
+    AlwaysOnColorProductMapping.objects.create(
+        camera="cam3",
+        color="red",
+        product=product,
+    )
+    Warehouse.objects.filter(pk=main.pk).update(is_default=False)
+    Warehouse.objects.filter(pk=secondary.pk).update(is_default=True)
+
+    result = production.production_payload("cam3")
+
+    assert result["warehouse"] == main.pk
+    red_mapping = next(
+        row for row in result["mappings"] if row["color"] == "red"
+    )
+    assert red_mapping["product"] == product.pk
+
+
+def test_daily_stock_post_finishes_for_a_route_disabled_after_production():
+    _reserve_ai247()
+    secondary = Warehouse.objects.create(
+        code="finished-goods-disabled",
+        name="Отключённый после смены склад",
+    )
+    product = _product()
+    production.save_mappings(
+        "cam3",
+        [{"color": "red", "product": product.pk}],
+        warehouse=secondary.pk,
+    )
+    AlwaysOnCounterCursor.objects.filter(camera="cam3").update(
+        event_sync_supported=False,
+    )
+    _closed_run(bags=9)
+    Warehouse.objects.filter(pk=secondary.pk).update(is_active=False)
+
+    posted = production.post_due_stock(_at(16, 19))[0]
+
+    assert posted["status"] == AlwaysOnStockBatch.POSTED
+    assert posted["warehouse"] == secondary.pk
+    assert StockItem.objects.get(product=product).warehouse_id == secondary.pk
+    assert StockReceipt.objects.get(product=product).warehouse_id == secondary.pk
+
+
+def test_mapping_can_be_fixed_on_the_same_inactive_route_with_unposted_work():
+    secondary = Warehouse.objects.create(code="inactive-route", name="Склад смены")
+    red = _product("Red")
+    blue = _product("Blue")
+    production.save_mappings(
+        "cam3",
+        [{"color": "red", "product": red.pk}],
+        warehouse=secondary.pk,
+    )
+    _closed_run(color="blue", bags=4)
+    Warehouse.objects.filter(pk=secondary.pk).update(is_active=False)
+
+    result = production.save_mappings(
+        "cam3",
+        [
+            {"color": "red", "product": red.pk},
+            {"color": "blue", "product": blue.pk},
+        ],
+        warehouse=secondary.pk,
+    )
+
+    assert result["warehouse"] == secondary.pk
+    assert StockItem.objects.get(product=blue).warehouse_id == secondary.pk
+    assert AlwaysOnColorProductMapping.objects.get(
+        camera="cam3",
+        color="blue",
+    ).product == blue
+
+
+def test_mapping_rejects_a_product_assigned_to_another_warehouse():
+    main = Warehouse.objects.get(is_default=True)
+    secondary = Warehouse.objects.create(code="secondary", name="Второй склад")
+    product = _product()
+    receive_stock(product, 3, user=None, warehouse=main)
+
+    with pytest.raises(ValidationError) as exc:
+        production.save_mappings(
+            "cam3",
+            [{"color": "red", "product": product.pk}],
+            warehouse=secondary.pk,
+        )
+
+    assert exc.value.detail["code"] == "product_assigned_other_warehouse"
+    assert not AlwaysOnWarehouseRoute.objects.filter(camera="cam3").exists()
+    assert not AlwaysOnColorProductMapping.objects.filter(camera="cam3").exists()
+
+
+def test_camera_warehouse_cannot_change_with_unposted_production():
+    main = Warehouse.objects.get(is_default=True)
+    secondary = Warehouse.objects.create(code="secondary", name="Второй склад")
+    product = _product()
+    production.save_mappings(
+        "cam3",
+        [{"color": "red", "product": product.pk}],
+        warehouse=main.pk,
+    )
+    _closed_run(bags=1)
+
+    with pytest.raises(ValidationError) as exc:
+        production.save_mappings(
+            "cam3",
+            [{"color": "red", "product": product.pk}],
+            warehouse=secondary.pk,
+        )
+
+    assert exc.value.detail["code"] == "warehouse_has_unposted_production"
+    assert AlwaysOnWarehouseRoute.objects.get(camera="cam3").warehouse == main
+
+
+def test_camera_warehouse_cannot_change_with_a_nonterminal_batch_before_runs():
+    main = Warehouse.objects.get(is_default=True)
+    secondary = Warehouse.objects.create(code="batch-route", name="Второй склад")
+    product = _product()
+    production.save_mappings(
+        "cam3",
+        [{"color": "red", "product": product.pk}],
+        warehouse=main.pk,
+    )
+    AlwaysOnStockBatch.objects.create(
+        camera="cam3",
+        warehouse=main,
+        business_day=_at(28, 12).date(),
+        scheduled_for=_at(28, 19),
+        status=AlwaysOnStockBatch.BLOCKED,
+        last_error="Ожидается журнал событий",
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        production.save_mappings(
+            "cam3",
+            [],
+            warehouse=secondary.pk,
+        )
+
+    assert exc.value.detail["code"] == "warehouse_has_unposted_production"
+    assert AlwaysOnWarehouseRoute.objects.get(camera="cam3").warehouse == main
 
 
 def test_event_camera_stock_waits_for_a_fresh_caught_up_page_after_cutoff():

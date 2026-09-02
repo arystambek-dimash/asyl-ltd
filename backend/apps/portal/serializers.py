@@ -278,10 +278,14 @@ class PortalOrderSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def create(self, validated_data):
         # Атомарно: сбой на любой позиции не должен оставлять заказ-сироту.
-        from apps.warehouse.services import ensure_products_available
+        from apps.warehouse.services import ensure_products_available, resolve_warehouse
         items = validated_data.pop("items")
+        warehouse = resolve_warehouse()
         # Клиент портала тоже заказывает только товар в наличии.
-        ensure_products_available(item["product"] for item in items)
+        ensure_products_available(
+            (item["product"] for item in items),
+            warehouse=warehouse,
+        )
         intent = validated_data.get("settlement_intent", "pending")
         method = validated_data.get("payment_method", "pending")
         transport = validated_data.get("transport_type", "truck")
@@ -299,6 +303,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
                                      department=Department.default_code(),
                                      settlement_intent=intent,
                                      payment_method=method, store=store,
+                                     warehouse=warehouse,
                                      transport_type=transport)
         # Products are already validated model instances. Populate the same
         # immutable snapshots as OrderItem.save(), then insert the bounded list

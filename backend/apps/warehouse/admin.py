@@ -2,9 +2,12 @@ from django.contrib import admin
 
 from apps.common.admin import ReadOnlyOperationalAdmin
 
-from .models import StockItem, StockMovement, StockReceipt
+from .models import StockItem, StockMovement, StockReceipt, Warehouse
 
-admin.site.register([StockItem, StockReceipt], ReadOnlyOperationalAdmin)
+admin.site.register(
+    [Warehouse, StockItem, StockReceipt],
+    ReadOnlyOperationalAdmin,
+)
 
 
 @admin.register(StockMovement)

@@ -1,5 +1,6 @@
 "use client";
-import { useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
@@ -9,7 +10,6 @@ import { Input } from "@/components/ui/input";
 import { Field } from "@/components/ui/field";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
@@ -26,16 +26,18 @@ import {
   ArrowDown,
   ArrowRight,
   ArrowUp,
+  Building2,
   Boxes,
+  MapPin,
   Package,
   Pencil,
   Plus,
   Scale,
   Search,
-  Trash2,
+  Settings2,
   X,
 } from "lucide-react";
-import type { StockItem, Product } from "@/lib/types";
+import type { StockItem, Product, Warehouse } from "@/lib/types";
 
 // Статус остатка: нет / мало (<20 мешков) / в наличии.
 function stockTone(bags: number): { tone: "destructive" | "warning" | "success"; label: string } {
@@ -45,13 +47,54 @@ function stockTone(bags: number): { tone: "destructive" | "warning" | "success";
 }
 
 const QUICK_AMOUNTS = [10, 50, 100, 500];
+const LEGACY_WAREHOUSE: Warehouse = {
+  id: 0,
+  code: "main",
+  name: "Основной склад",
+  address: "Режим совместимости",
+  is_active: true,
+  is_default: true,
+};
 
 function WarehousePageInner() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const searchParamsKey = searchParams.toString();
+  const warehouseParam = searchParams.get("warehouse");
   const { me } = useAuth();
   const canAdjust = can(me, "warehouse.adjust");
   const canBrowseCatalog = can(me, "catalog.view");
-  const { data: stock, loading: stockLoading, error: loadError, reload } = useApi<StockItem[]>("/stock/");
+  const {
+    data: warehouseData,
+    loading: warehousesLoading,
+    error: warehousesError,
+    errorStatus: warehousesErrorStatus,
+    reload: reloadWarehouses,
+  } = useApi<Warehouse[]>("/warehouses/");
+  const legacyWarehouseMode = warehouseData === null && warehousesErrorStatus === 404;
+  const warehouses = useMemo(
+    () => (legacyWarehouseMode ? [LEGACY_WAREHOUSE] : warehouseData),
+    [legacyWarehouseMode, warehouseData],
+  );
+  const activeWarehouses = useMemo(() => (warehouses ?? []).filter((item) => item.is_active), [warehouses]);
+  const selectedWarehouse = useMemo(() => {
+    const requested = activeWarehouses.find((item) => String(item.id) === warehouseParam);
+    return requested ?? activeWarehouses.find((item) => item.is_default) ?? activeWarehouses[0] ?? null;
+  }, [activeWarehouses, warehouseParam]);
+  const selectedWarehouseId = selectedWarehouse?.id ?? null;
+  const stockUrl = selectedWarehouse
+    ? legacyWarehouseMode
+      ? "/stock/"
+      : `/stock/?warehouse=${selectedWarehouse.id}`
+    : null;
+  const { data: stock, loading: stockLoading, error: loadError, reload } = useApi<StockItem[]>(stockUrl);
   const { data: products } = useApi<Product[]>(canAdjust && canBrowseCatalog ? "/products/" : null);
+  // Phase 1 keeps product assignment unique across all warehouses. The selected
+  // stock powers the page, while this aggregate prevents offering a product
+  // that is already assigned to another warehouse.
+  const { data: allStock, reload: reloadAllStock } = useApi<StockItem[]>(
+    canAdjust && canBrowseCatalog ? "/stock/" : null,
+  );
 
   // фильтры
   const [search, setSearch] = useState("");
@@ -66,13 +109,34 @@ function WarehousePageInner() {
   const [amount, setAmount] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [deleteItem, setDeleteItem] = useState<StockItem | null>(null);
-  const [deleteError, setDeleteError] = useState("");
-  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [warehouseManagerOpen, setWarehouseManagerOpen] = useState(false);
+
+  useEffect(() => {
+    if (!selectedWarehouse || legacyWarehouseMode || warehouseParam === String(selectedWarehouse.id)) return;
+    const nextParams = new URLSearchParams(searchParamsKey);
+    nextParams.set("warehouse", String(selectedWarehouse.id));
+    router.replace(`/warehouse?${nextParams.toString()}`, { scroll: false });
+  }, [legacyWarehouseMode, router, searchParamsKey, selectedWarehouse, warehouseParam]);
+
+  useEffect(() => {
+    setSearch("");
+    setGrade("");
+    setPackaging("");
+    setOpen(false);
+    setProduct("");
+    setAmount("");
+    setError("");
+  }, [selectedWarehouseId]);
+
+  function selectWarehouse(warehouseId: number) {
+    const nextParams = new URLSearchParams(searchParamsKey);
+    nextParams.set("warehouse", String(warehouseId));
+    router.replace(`/warehouse?${nextParams.toString()}`, { scroll: false });
+  }
 
   const items = useMemo(() => stock ?? [], [stock]);
-  const stockedProductIds = new Set(items.map((item) => item.product));
-  const availableProducts = (products ?? []).filter((item) => !stockedProductIds.has(item.id));
+  const stockedProductIds = new Set((allStock ?? []).map((item) => item.product));
+  const availableProducts = allStock ? (products ?? []).filter((item) => !stockedProductIds.has(item.id)) : [];
   const grades = useMemo(() => Array.from(new Set(items.map((s) => s.grade))).filter(Boolean), [items]);
   const packagings = useMemo(() => Array.from(new Set(items.map((s) => s.packaging))).filter(Boolean), [items]);
   const bagsByProduct = useMemo(() => new Map(items.map((s) => [String(s.product), s.bags])), [items]);
@@ -134,35 +198,21 @@ function WarehousePageInner() {
 
   async function submitAdjust(e: React.FormEvent) {
     e.preventDefault();
-    if (!product || delta <= 0 || insufficient) return;
+    if (!selectedWarehouse || !product || delta <= 0 || insufficient) return;
     setBusy(true);
     setError("");
     try {
       await api.post("/stock/adjust/", {
+        ...(legacyWarehouseMode ? {} : { warehouse: selectedWarehouseId }),
         product: Number(product),
         delta: mode === "add" ? delta : -delta,
       });
       setOpen(false);
-      reload();
+      await Promise.all([reload(), reloadAllStock()]);
     } catch (e) {
       setError(apiError(e));
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function confirmDelete() {
-    if (!deleteItem) return;
-    setDeleteBusy(true);
-    setDeleteError("");
-    try {
-      await api.delete(`/stock/${deleteItem.id}/`);
-      setDeleteItem(null);
-      reload();
-    } catch (e) {
-      setDeleteError(apiError(e));
-    } finally {
-      setDeleteBusy(false);
     }
   }
 
@@ -174,45 +224,146 @@ function WarehousePageInner() {
     setPackaging("");
   }
 
+  const productReferencesLoading = products === null || allStock === null;
   const addButton =
-    canAdjust && canBrowseCatalog ? (
+    canAdjust && canBrowseCatalog && selectedWarehouse ? (
       <Button
         size="sm"
-        aria-label="Добавить товар на склад"
+        aria-label={`Добавить товар на склад ${selectedWarehouse.name}`}
         onClick={openAdd}
-        disabled={products !== null && availableProducts.length === 0}
-        title={products !== null && availableProducts.length === 0 ? "Все товары уже добавлены на склад" : undefined}
+        disabled={productReferencesLoading || availableProducts.length === 0}
+        title={
+          productReferencesLoading
+            ? "Загружаем каталог"
+            : availableProducts.length === 0
+              ? "Все товары уже распределены по складам"
+              : undefined
+        }
       >
         <Plus className="size-4" /> <span className="hidden sm:inline">Добавить товар</span>
       </Button>
     ) : undefined;
 
+  const manageButton =
+    canAdjust && !legacyWarehouseMode ? (
+      <Button size="sm" variant="outline" onClick={() => setWarehouseManagerOpen(true)} disabled={!warehouses}>
+        <Settings2 className="size-4" /> <span className="hidden sm:inline">Управление</span>
+      </Button>
+    ) : undefined;
+  const pageActions =
+    manageButton || addButton ? (
+      <div className="flex items-center gap-2">
+        {manageButton}
+        {addButton}
+      </div>
+    ) : undefined;
+
+  const warehouseManager = legacyWarehouseMode ? null : (
+    <WarehouseManagerModal
+      open={warehouseManagerOpen}
+      warehouses={warehouses ?? []}
+      onClose={() => setWarehouseManagerOpen(false)}
+      onSaved={async (saved, created) => {
+        await reloadWarehouses();
+        if (created && saved.is_active) selectWarehouse(saved.id);
+      }}
+    />
+  );
+
+  if (!warehouses) {
+    return (
+      <AppShell title="Склады" section="Работа" description="Остатки готовой продукции по местам хранения.">
+        <DataGate loading={warehousesLoading} error={warehousesError} onRetry={reloadWarehouses} />
+      </AppShell>
+    );
+  }
+
+  if (!selectedWarehouse) {
+    return (
+      <AppShell
+        title="Склады"
+        section="Работа"
+        description="Остатки готовой продукции по местам хранения."
+        actions={pageActions}
+      >
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center px-5 py-14 text-center">
+            <Building2 className="size-10 text-[var(--muted-foreground)]/45" />
+            <h2 className="mt-3 font-semibold">Нет активных складов</h2>
+            <p className="mt-1 max-w-md text-sm text-[var(--muted-foreground)]">
+              {canAdjust
+                ? "Создайте первый склад или активируйте существующий, чтобы распределить товары."
+                : "Попросите администратора настроить доступный склад."}
+            </p>
+            {canAdjust && (
+              <Button className="mt-4" size="sm" onClick={() => setWarehouseManagerOpen(true)}>
+                <Plus className="size-4" /> Настроить склады
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+        {warehouseManager}
+      </AppShell>
+    );
+  }
+
+  const warehouseSelector = (
+    <Card className="mb-5">
+      <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <Building2 className="size-4 text-[var(--primary)]" /> Рабочий склад
+          </div>
+          <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">
+            {selectedWarehouse.address || "Адрес не указан"}
+          </p>
+        </div>
+        <Select
+          aria-label="Склад"
+          className="w-full sm:w-72"
+          value={String(selectedWarehouse.id)}
+          onChange={(event) => selectWarehouse(Number(event.target.value))}
+        >
+          {activeWarehouses.map((warehouse) => (
+            <option key={warehouse.id} value={warehouse.id}>
+              {warehouse.name}
+              {warehouse.is_default ? " · основной" : ""}
+            </option>
+          ))}
+        </Select>
+      </CardContent>
+    </Card>
+  );
+
   if (!stock) {
     return (
       <AppShell
-        title="Склад"
+        title="Склады"
         section="Работа"
-        description="Актуальное количество готовой продукции и быстрые операции приёмки и списания."
-        actions={addButton}
+        description="Остатки готовой продукции по местам хранения."
+        actions={pageActions}
       >
+        {warehouseSelector}
         <DataGate loading={stockLoading} error={loadError} onRetry={reload} />
+        {warehouseManager}
       </AppShell>
     );
   }
 
   return (
     <AppShell
-      title="Склад"
+      title="Склады"
       section="Работа"
-      description="Актуальное количество готовой продукции и быстрые операции приёмки и списания."
-      actions={addButton}
+      description="Остатки готовой продукции по местам хранения."
+      actions={pageActions}
     >
+      {warehouseSelector}
       {/* Сводка всегда следует текущему набору фильтров. */}
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <StatCard
           label="Товаров"
           value={String(filtered.length)}
-          caption={hasFilters ? `из ${items.length} по фильтру` : "на складе"}
+          caption={hasFilters ? `из ${items.length} по фильтру` : selectedWarehouse.name}
           icon={Boxes}
         />
         <StatCard
@@ -243,7 +394,7 @@ function WarehousePageInner() {
           <div className="border-b bg-[var(--muted)]/20 p-4 sm:p-5">
             <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h2 className="text-base font-semibold">Товары на складе</h2>
+                <h2 className="text-base font-semibold">Товары · {selectedWarehouse.name}</h2>
                 <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
                   {hasFilters
                     ? `Показано ${sorted.length} из ${items.length} товаров`
@@ -323,15 +474,7 @@ function WarehousePageInner() {
                       <Badge tone={st.tone} dot>
                         {st.label}
                       </Badge>
-                      {canAdjust && (
-                        <StockActionMenu
-                          onEdit={() => openAdjust(s.product)}
-                          onDelete={() => {
-                            setDeleteError("");
-                            setDeleteItem(s);
-                          }}
-                        />
-                      )}
+                      {canAdjust && <StockActionMenu onEdit={() => openAdjust(s.product)} />}
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3 rounded-lg bg-[var(--muted)]/45 p-3 text-sm">
@@ -348,7 +491,12 @@ function WarehousePageInner() {
               );
             })}
             {filtered.length === 0 && (
-              <EmptyStockState hasFilters={hasFilters} canAdjust={canAdjust} onReset={resetFilters} onAdd={openAdd} />
+              <EmptyStockState
+                hasFilters={hasFilters}
+                canAdjust={canAdjust && canBrowseCatalog && availableProducts.length > 0}
+                onReset={resetFilters}
+                onAdd={openAdd}
+              />
             )}
           </div>
 
@@ -399,13 +547,7 @@ function WarehousePageInner() {
                     </TD>
                     {canAdjust && (
                       <TD className="text-right">
-                        <StockActionMenu
-                          onEdit={() => openAdjust(s.product)}
-                          onDelete={() => {
-                            setDeleteError("");
-                            setDeleteItem(s);
-                          }}
-                        />
+                        <StockActionMenu onEdit={() => openAdjust(s.product)} />
                       </TD>
                     )}
                   </TR>
@@ -416,7 +558,7 @@ function WarehousePageInner() {
                   <TD colSpan={canAdjust ? 6 : 5} className="p-0">
                     <EmptyStockState
                       hasFilters={hasFilters}
-                      canAdjust={canAdjust}
+                      canAdjust={canAdjust && canBrowseCatalog && availableProducts.length > 0}
                       onReset={resetFilters}
                       onAdd={openAdd}
                     />
@@ -436,8 +578,8 @@ function WarehousePageInner() {
         title={dialogIntent === "add" ? "Добавить товар" : "Изменить остаток"}
         description={
           dialogIntent === "add"
-            ? "Выберите товар и укажите количество мешков для добавления на склад."
-            : "Добавьте поступление или спишите выбранный товар."
+            ? `Выберите товар и укажите количество для склада «${selectedWarehouse.name}».`
+            : `Добавьте поступление или спишите товар на складе «${selectedWarehouse.name}».`
         }
       >
         <form onSubmit={submitAdjust} className="flex flex-col gap-4">
@@ -569,7 +711,7 @@ function WarehousePageInner() {
             <Button
               type="submit"
               variant={mode === "remove" ? "destructive" : "default"}
-              disabled={busy || !product || delta <= 0 || insufficient}
+              disabled={busy || !selectedWarehouse || !product || delta <= 0 || insufficient}
             >
               {busy
                 ? "Сохранение…"
@@ -581,34 +723,243 @@ function WarehousePageInner() {
         </form>
       </Modal>
 
-      <ConfirmDialog
-        open={!!deleteItem}
-        onClose={() => {
-          if (!deleteBusy) setDeleteItem(null);
-        }}
-        title="Удалить товар со склада?"
-        description={
-          deleteItem
-            ? `${deleteItem.product_label}: позиция и текущий остаток ${formatMoney(deleteItem.bags)} меш. будут удалены со склада. Товар останется в каталоге, и его можно будет добавить снова.`
-            : ""
-        }
-        confirmLabel="Удалить"
-        busy={deleteBusy}
-        error={deleteError}
-        onConfirm={confirmDelete}
-      />
+      {warehouseManager}
     </AppShell>
   );
 }
 
-function StockActionMenu({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
+function WarehouseManagerModal({
+  open,
+  warehouses,
+  onClose,
+  onSaved,
+}: {
+  open: boolean;
+  warehouses: Warehouse[];
+  onClose: () => void;
+  onSaved: (warehouse: Warehouse, created: boolean) => void | Promise<void>;
+}) {
+  const [editing, setEditing] = useState<Warehouse | null>(null);
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [address, setAddress] = useState("");
+  const [isActive, setIsActive] = useState(true);
+  const [isDefault, setIsDefault] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setEditing(null);
+    setCode("");
+    setName("");
+    setAddress("");
+    setIsActive(true);
+    setIsDefault(warehouses.length === 0);
+    setError("");
+  }, [open, warehouses.length]);
+
+  function startCreate() {
+    setEditing(null);
+    setCode("");
+    setName("");
+    setAddress("");
+    setIsActive(true);
+    setIsDefault(warehouses.length === 0);
+    setError("");
+  }
+
+  function startEdit(warehouse: Warehouse) {
+    setEditing(warehouse);
+    setCode(warehouse.code);
+    setName(warehouse.name);
+    setAddress(warehouse.address);
+    setIsActive(warehouse.is_active);
+    setIsDefault(warehouse.is_default);
+    setError("");
+  }
+
+  async function saveWarehouse(event: React.FormEvent) {
+    event.preventDefault();
+    if (!code.trim() || !name.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const body = {
+        code: code.trim(),
+        name: name.trim(),
+        address: address.trim(),
+        is_active: isActive,
+        is_default: isDefault,
+      };
+      const created = editing === null;
+      const response = editing
+        ? await api.patch<Warehouse>(`/warehouses/${editing.id}/`, body)
+        : await api.post<Warehouse>("/warehouses/", body);
+      await onSaved(response.data, created);
+      onClose();
+    } catch (cause) {
+      setError(apiError(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      eyebrow="Справочник"
+      title="Управление складами"
+      description="Создавайте места хранения и выбирайте основной склад для новых операций."
+      className="max-w-3xl"
+    >
+      <div className="grid gap-5 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+        <section className="min-w-0">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold">Склады</h3>
+            <Button size="sm" variant="outline" onClick={startCreate}>
+              <Plus className="size-3.5" /> Новый
+            </Button>
+          </div>
+          <div className="flex max-h-72 flex-col gap-2 overflow-y-auto pr-1">
+            {warehouses.map((warehouse) => (
+              <button
+                key={warehouse.id}
+                type="button"
+                onClick={() => startEdit(warehouse)}
+                aria-pressed={editing?.id === warehouse.id}
+                className={cn(
+                  "flex items-start gap-3 rounded-lg border p-3 text-left outline-none transition hover:bg-[var(--muted)]/45 focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/40",
+                  editing?.id === warehouse.id && "border-[var(--primary)] bg-[var(--primary)]/5",
+                )}
+              >
+                <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md bg-[var(--muted)] text-[var(--muted-foreground)]">
+                  <Building2 className="size-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-center gap-1.5">
+                    <span className="truncate text-sm font-medium">{warehouse.name}</span>
+                    {warehouse.is_default && <Badge tone="success">Основной</Badge>}
+                    {!warehouse.is_active && <Badge>Неактивен</Badge>}
+                  </span>
+                  <span className="mt-0.5 block truncate text-xs text-[var(--muted-foreground)]">
+                    {warehouse.code}
+                    {warehouse.address ? ` · ${warehouse.address}` : ""}
+                  </span>
+                </span>
+                <Pencil className="mt-1 size-3.5 shrink-0 text-[var(--muted-foreground)]" />
+              </button>
+            ))}
+            {warehouses.length === 0 && (
+              <div className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-[var(--muted-foreground)]">
+                Склады ещё не созданы.
+              </div>
+            )}
+          </div>
+        </section>
+
+        <form
+          onSubmit={saveWarehouse}
+          className="flex min-w-0 flex-col gap-4 border-t pt-5 md:border-l md:border-t-0 md:pl-5 md:pt-0"
+        >
+          <div>
+            <h3 className="text-sm font-semibold">{editing ? "Изменить склад" : "Новый склад"}</h3>
+            <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
+              Код используется в интеграциях, название видно сотрудникам.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Код" htmlFor="warehouse-code">
+              <Input
+                id="warehouse-code"
+                value={code}
+                onChange={(event) => setCode(event.target.value)}
+                placeholder="main"
+                autoFocus
+                required
+                disabled={editing?.code === "main"}
+              />
+            </Field>
+            <Field label="Название" htmlFor="warehouse-name">
+              <Input
+                id="warehouse-name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Основной склад"
+                required
+              />
+            </Field>
+          </div>
+          <Field label="Адрес" htmlFor="warehouse-address">
+            <div className="relative">
+              <MapPin className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+              <Input
+                id="warehouse-address"
+                className="pl-9"
+                value={address}
+                onChange={(event) => setAddress(event.target.value)}
+                placeholder="Адрес или зона на территории"
+              />
+            </div>
+          </Field>
+          <div className="grid gap-2 rounded-lg border bg-[var(--muted)]/25 p-3 text-sm">
+            <label className="flex cursor-pointer items-start gap-2.5">
+              <input
+                type="checkbox"
+                className="mt-0.5 size-4 accent-[var(--primary)]"
+                checked={isActive}
+                disabled={isDefault || editing?.code === "main"}
+                onChange={(event) => setIsActive(event.target.checked)}
+              />
+              <span>
+                <span className="block font-medium">Активный склад</span>
+                <span className="block text-xs text-[var(--muted-foreground)]">Доступен для просмотра и операций.</span>
+              </span>
+            </label>
+            <label className="flex cursor-pointer items-start gap-2.5 border-t pt-2">
+              <input
+                type="checkbox"
+                className="mt-0.5 size-4 accent-[var(--primary)]"
+                checked={isDefault}
+                disabled={editing?.is_default}
+                onChange={(event) => {
+                  setIsDefault(event.target.checked);
+                  if (event.target.checked) setIsActive(true);
+                }}
+              />
+              <span>
+                <span className="block font-medium">Основной склад</span>
+                <span className="block text-xs text-[var(--muted-foreground)]">
+                  Открывается первым, если склад не указан в ссылке.
+                </span>
+              </span>
+            </label>
+          </div>
+          {error && (
+            <p role="alert" className="text-sm text-[var(--destructive)]">
+              {error}
+            </p>
+          )}
+          <div className="mt-auto flex justify-end gap-2 border-t pt-4">
+            <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
+              Отмена
+            </Button>
+            <Button type="submit" disabled={busy || !code.trim() || !name.trim()}>
+              {busy ? "Сохранение…" : editing ? "Сохранить" : "Создать склад"}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </Modal>
+  );
+}
+
+function StockActionMenu({ onEdit }: { onEdit: () => void }) {
   return (
     <ActionMenu
       label="Действия с товаром"
-      items={[
-        { key: "edit", label: "Изменить", icon: Pencil, onSelect: onEdit },
-        { key: "delete", label: "Удалить", icon: Trash2, tone: "destructive", onSelect: onDelete },
-      ]}
+      items={[{ key: "edit", label: "Изменить", icon: Pencil, onSelect: onEdit }]}
     />
   );
 }
@@ -652,8 +1003,10 @@ function EmptyStockState({
 
 export default function WarehousePage() {
   return (
-    <RequirePerm perm="warehouse.view" title="Склад">
-      <WarehousePageInner />
-    </RequirePerm>
+    <Suspense fallback={<p className="text-sm text-[var(--muted-foreground)]">Загрузка складов…</p>}>
+      <RequirePerm perm="warehouse.view" title="Склады">
+        <WarehousePageInner />
+      </RequirePerm>
+    </Suspense>
   );
 }

@@ -49,6 +49,17 @@ class Order(models.Model):
         "clients.Store", null=True, blank=True,
         on_delete=models.SET_NULL, related_name="orders",
     )
+    # The source warehouse is independent from ``store`` (the client's delivery
+    # location).  Keep the column nullable throughout the rollback window: an
+    # older application image does not know about it and must still be able to
+    # insert orders after the additive migration has run.
+    warehouse = models.ForeignKey(
+        "warehouse.Warehouse",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="orders",
+    )
     status = models.CharField(max_length=20, default="draft")
     payment_status = models.CharField(max_length=20, default="unpaid")
     settlement_intent = models.CharField(max_length=20, default="debt")

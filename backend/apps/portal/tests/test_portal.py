@@ -1,11 +1,13 @@
-import pytest
 from decimal import Decimal
 
+import pytest
+from django.db import connection
+
 from apps.catalog.models import ClientPrice, Product
-from apps.warehouse.models import StockItem
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
-from apps.portal.serializers import MAX_PORTAL_ORDER_ITEMS, MAX_PORTAL_ITEM_QUANTITY
+from apps.portal.serializers import MAX_PORTAL_ITEM_QUANTITY, MAX_PORTAL_ORDER_ITEMS
+from apps.warehouse.models import StockItem, Warehouse
 
 pytestmark = pytest.mark.django_db
 
@@ -18,6 +20,30 @@ def _product():
 
 def _client_for(user):
     return Client.objects.create_with_user(first_name="Мой", last_name="К", phone="x", user=user)
+
+
+def _make_default(warehouse):
+    Warehouse.objects.filter(is_default=True).exclude(pk=warehouse.pk).update(
+        is_default=False
+    )
+    Warehouse.objects.filter(pk=warehouse.pk).update(is_default=True)
+    warehouse.refresh_from_db()
+
+
+def _force_legacy_null_warehouse(stock_item):
+    """Emulate a row written by the pre-warehouse application image."""
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute("ALTER TABLE warehouse_stockitem DISABLE TRIGGER USER")
+        try:
+            StockItem.objects.filter(pk=stock_item.pk).update(warehouse=None)
+        finally:
+            with connection.cursor() as cursor:
+                cursor.execute("ALTER TABLE warehouse_stockitem ENABLE TRIGGER USER")
+    else:
+        StockItem.objects.filter(pk=stock_item.pk).update(warehouse=None)
+    stock_item.refresh_from_db()
+    assert stock_item.warehouse_id is None
 
 
 def test_client_creates_own_pending_order(auth_client, client_user):
@@ -128,26 +154,103 @@ def test_staff_cannot_use_portal(auth_client, manager):
     assert resp.status_code == 403
 
 
-def test_client_catalog_lists_active_products_without_exposing_stock(
+def test_client_catalog_lists_only_active_products_with_positive_default_stock(
     auth_client, client_user,
 ):
     _client_for(client_user)
-    # Товар без складской карточки виден в каталоге, но самого
-    # поля остатка в клиентском API больше нет.
-    active = Product.objects.create(
-        name="БезСклада", color="Blue", weight_kg="50", price="100.00")
+    main = Warehouse.objects.get(code="main")
+    available = Product.objects.create(
+        name="В наличии", color="Blue", weight_kg="50", price="100.00")
+    StockItem.objects.create(product=available, warehouse=main, bags=5)
+    no_stock = Product.objects.create(
+        name="Без склада", color="Blue", weight_kg="50", price="100.00")
+    zero_stock = Product.objects.create(
+        name="Нулевой остаток", color="Blue", weight_kg="50", price="100.00")
+    StockItem.objects.create(product=zero_stock, warehouse=main, bags=0)
     inactive = Product.objects.create(
         name="Скрытый", color="Green", weight_kg="50", price="100.00", is_active=False
     )
+    StockItem.objects.create(product=inactive, warehouse=main, bags=7)
 
     resp = auth_client(client_user).get("/api/portal/catalog/")
 
     assert resp.status_code == 200
     by_id = {p["id"]: p for p in resp.data}
-    assert active.id in by_id
+    assert available.id in by_id
+    assert no_stock.id not in by_id
+    assert zero_stock.id not in by_id
     assert inactive.id not in by_id
-    assert "available_bags" not in by_id[active.id]
-    assert by_id[active.id]["price"] is None
+    assert "available_bags" not in by_id[available.id]
+    assert by_id[available.id]["price"] is None
+
+
+def test_client_catalog_scopes_products_to_active_default_warehouse(
+    auth_client, client_user,
+):
+    _client_for(client_user)
+    main = Warehouse.objects.get(code="main")
+    secondary = Warehouse.objects.create(
+        code="south", name="Южный склад", is_active=True,
+    )
+    main_product = Product.objects.create(
+        name="Главный", color="Red", weight_kg="50", price="100.00",
+    )
+    secondary_product = Product.objects.create(
+        name="Южный", color="Blue", weight_kg="50", price="100.00",
+    )
+    StockItem.objects.create(product=main_product, warehouse=main, bags=10)
+    StockItem.objects.create(
+        product=secondary_product, warehouse=secondary, bags=3,
+    )
+    _make_default(secondary)
+
+    response = auth_client(client_user).get("/api/portal/catalog/")
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.data] == [secondary_product.pk]
+
+    secondary.is_active = False
+    secondary.save(update_fields=["is_active"])
+    response = auth_client(client_user).get("/api/portal/catalog/")
+
+    assert response.status_code == 200
+    assert response.data == []
+
+
+@pytest.mark.django_db(transaction=True)
+def test_legacy_null_stock_belongs_only_to_compatibility_main_default(
+    auth_client, client_user,
+):
+    _client_for(client_user)
+    main = Warehouse.objects.get(code="main")
+    legacy_product = Product.objects.create(
+        name="Legacy", color="Red", weight_kg="50", price="100.00",
+    )
+    legacy_stock = StockItem.objects.create(
+        product=legacy_product, warehouse=main, bags=4,
+    )
+    _force_legacy_null_warehouse(legacy_stock)
+
+    response = auth_client(client_user).get("/api/portal/catalog/")
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.data] == [legacy_product.pk]
+
+    secondary = Warehouse.objects.create(
+        code="north", name="Северный склад", is_active=True,
+    )
+    secondary_product = Product.objects.create(
+        name="Северный", color="Blue", weight_kg="50", price="100.00",
+    )
+    StockItem.objects.create(
+        product=secondary_product, warehouse=secondary, bags=2,
+    )
+    _make_default(secondary)
+
+    response = auth_client(client_user).get("/api/portal/catalog/")
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.data] == [secondary_product.pk]
 
 
 def test_portal_catalog_does_not_leak_exact_balance_but_staff_catalog_keeps_it(

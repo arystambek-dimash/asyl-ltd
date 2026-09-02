@@ -64,7 +64,8 @@ def with_order_api_relations(queryset: QuerySet[Order]) -> QuerySet[Order]:
     return (
         queryset
         .select_related(
-            "client__user", "store", "shipment", "debt_override_by", "deleted_by"
+            "client__user", "store", "warehouse", "shipment",
+            "debt_override_by", "deleted_by"
         )
         .prefetch_related(
             "items__product",

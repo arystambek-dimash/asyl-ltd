@@ -3,7 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AlwaysOnProductionPayload, AlwaysOnProductionRun } from "@/lib/types";
-import { AlwaysOnDayColorViewToggle, AlwaysOnDayRunLog, AlwaysOnProductionPanel } from "./always-on-production-panel";
+import {
+  AlwaysOnDayColorViewToggle,
+  AlwaysOnDayRunLog,
+  AlwaysOnProductionPanel,
+  resolveAlwaysOnReceiptDestination,
+} from "./always-on-production-panel";
 
 function makeRun(overrides: Partial<AlwaysOnProductionRun>): AlwaysOnProductionRun {
   return {
@@ -23,6 +28,12 @@ function makeRun(overrides: Partial<AlwaysOnProductionRun>): AlwaysOnProductionR
 
 const payload: AlwaysOnProductionPayload = {
   camera: "cam1",
+  warehouse: 1,
+  warehouse_name: "Основной склад",
+  warehouses: [
+    { id: 1, code: "main", name: "Основной склад", address: "", is_active: true, is_default: true },
+    { id: 2, code: "second", name: "Склад №2", address: "Цех 2", is_active: true, is_default: false },
+  ],
   timezone: "Asia/Almaty",
   close_time: "19:00",
   current_business_day: "2026-08-16",
@@ -34,9 +45,38 @@ const payload: AlwaysOnProductionPayload = {
   available_colors: ["red", "blue"],
   mappings: [{ color: "red", product: 1, product_label: "Мука красная · 50 кг" }],
   products: [
-    { id: 1, label: "Мука красная · 50 кг", color: "Red", color_label: "Красный", weight_kg: "50.00" },
-    { id: 2, label: "Мука синяя · 25 кг", color: "Blue", color_label: "Синий", weight_kg: "25.00" },
-    { id: 3, label: "Мука зелёная · 50 кг", color: "Green", color_label: "Зелёный", weight_kg: "50.00" },
+    {
+      id: 1,
+      label: "Мука красная · 50 кг",
+      color: "Red",
+      color_label: "Красный",
+      weight_kg: "50.00",
+      warehouse: 1,
+    },
+    {
+      id: 2,
+      label: "Мука синяя · 25 кг",
+      color: "Blue",
+      color_label: "Синий",
+      weight_kg: "25.00",
+      warehouse: 1,
+    },
+    {
+      id: 3,
+      label: "Мука зелёная · 50 кг",
+      color: "Green",
+      color_label: "Зелёный",
+      weight_kg: "50.00",
+      warehouse: 2,
+    },
+    {
+      id: 4,
+      label: "Мука красная второго склада · 50 кг",
+      color: "Red",
+      color_label: "Красный",
+      weight_kg: "50.00",
+      warehouse: 2,
+    },
   ],
   runs: [
     {
@@ -91,6 +131,129 @@ describe("AlwaysOnProductionPanel", () => {
     expect(screen.getByLabelText("Товар для цвета Синий")).toBeInTheDocument();
   });
 
+  it("показывает товар и склад в предварительном приходе, а отсутствие привязки — красным", () => {
+    render(
+      <AlwaysOnProductionPanel
+        payload={{
+          ...payload,
+          preview: [
+            ...payload.preview,
+            {
+              color: "blue",
+              detected_bags: 4,
+              correction_bags: 0,
+              net_bags: 4,
+              product: null,
+              product_label: null,
+              configured: false,
+            },
+          ],
+        }}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage
+        onSave={vi.fn()}
+      />,
+    );
+
+    const previewPanel = screen.getByText("Предварительный приход").closest(".rounded-2xl");
+    if (!(previewPanel instanceof HTMLElement)) throw new Error("Карточка предварительного прихода не найдена");
+    const bound = within(previewPanel).getByText("Мука красная · 50 кг").closest('[data-receipt-binding="bound"]');
+    const unbound = previewPanel.querySelector('[data-receipt-binding="unbound"]');
+    expect(bound).toHaveTextContent("Красный: приход — Мука красная · 50 кг→склад Основной склад");
+    expect(unbound).toHaveTextContent("Синий: приход — Не привязан");
+    expect(unbound).toHaveClass("text-red-700");
+  });
+
+  it("принимает новый непривязанный цвет из polling, когда оператор не редактировал форму", () => {
+    const configuredPayload: AlwaysOnProductionPayload = {
+      ...payload,
+      fully_configured: true,
+      available_colors: ["red"],
+      mappings: [{ color: "red", product: 1, product_label: "Мука красная · 50 кг" }],
+    };
+    const { rerender } = render(
+      <AlwaysOnProductionPanel
+        payload={configuredPayload}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage
+        onSave={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("готово")).toBeInTheDocument();
+    rerender(
+      <AlwaysOnProductionPanel
+        payload={{
+          ...configuredPayload,
+          fully_configured: false,
+          available_colors: ["red", "blue"],
+          mappings: [...configuredPayload.mappings, { color: "blue", product: null, product_label: null }],
+        }}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage
+        onSave={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("Товар для цвета Синий")).toBeInTheDocument();
+    expect(screen.getByText("нужна настройка")).toBeInTheDocument();
+    expect(screen.getByText("1 из 2")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["white", "Белый"],
+    ["unclassified", "unclassified"],
+  ])("разрешает сопоставить цвет %s с товаром выбранного склада", (color, colorLabel) => {
+    render(
+      <AlwaysOnProductionPanel
+        payload={{
+          ...payload,
+          fully_configured: false,
+          available_colors: [color],
+          mappings: [{ color, product: null, product_label: null }],
+        }}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage
+        onSave={vi.fn()}
+      />,
+    );
+
+    const select = screen.getByLabelText(`Товар для цвета ${colorLabel}`);
+    expect(within(select).getByRole("option", { name: "Мука красная · 50 кг" })).toBeInTheDocument();
+    expect(within(select).getByRole("option", { name: "Мука синяя · 25 кг" })).toBeInTheDocument();
+    expect(within(select).queryByRole("option", { name: /второго склада/ })).not.toBeInTheDocument();
+  });
+
+  it("показывает ошибочную привязку товара к другому складу как ненастроенную", () => {
+    render(
+      <AlwaysOnProductionPanel
+        payload={{
+          ...payload,
+          available_colors: ["red"],
+          mappings: [{ color: "red", product: 4, product_label: "Мука красная второго склада · 50 кг" }],
+          fully_configured: false,
+        }}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage
+        onSave={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("нужна настройка")).toBeInTheDocument();
+    expect(screen.getByText("1 из 1")).toBeInTheDocument();
+    expect(screen.getByLabelText("Товар для цвета Красный")).toHaveValue("4");
+  });
+
   it("предлагает товар совпадающего цвета и сохраняет выбранное сопоставление", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
@@ -112,10 +275,43 @@ describe("AlwaysOnProductionPanel", () => {
     await user.selectOptions(blueSelect, "2");
     await user.click(screen.getByRole("button", { name: "Сохранить" }));
 
-    expect(onSave).toHaveBeenCalledWith([
-      { color: "red", product: 1, product_label: "Мука красная · 50 кг" },
-      { color: "blue", product: 2, product_label: "Мука синяя · 25 кг" },
-    ]);
+    expect(onSave).toHaveBeenCalledWith(
+      [
+        { color: "red", product: 1, product_label: "Мука красная · 50 кг" },
+        { color: "blue", product: 2, product_label: "Мука синяя · 25 кг" },
+      ],
+      1,
+    );
+  });
+
+  it("changes the receipt warehouse and clears mappings owned by the previous warehouse", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <AlwaysOnProductionPanel
+        payload={payload}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage
+        onSave={onSave}
+      />,
+    );
+
+    await user.selectOptions(screen.getByLabelText("Склад прихода"), "2");
+    const red = screen.getByLabelText("Товар для цвета Красный");
+    expect(red).toHaveValue("");
+    expect(within(red).queryByRole("option", { name: "Мука красная · 50 кг" })).not.toBeInTheDocument();
+    await user.selectOptions(red, "4");
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    expect(onSave).toHaveBeenCalledWith(
+      [
+        { color: "red", product: 4, product_label: "Мука красная второго склада · 50 кг" },
+        { color: "blue", product: null, product_label: null },
+      ],
+      2,
+    );
   });
 
   it("оставляет настройки и повторный приход только для чтения без права управления", () => {
@@ -188,6 +384,48 @@ describe("AlwaysOnProductionPanel", () => {
 });
 
 describe("AlwaysOnDayRunLog", () => {
+  it("показывает текущий товар и склад для каждого периода и красный статус без привязки", () => {
+    render(
+      <AlwaysOnDayRunLog
+        day="2026-08-16"
+        timezone="Asia/Almaty"
+        loading={false}
+        error={null}
+        runs={[payload.runs[0], makeRun({ id: 8, color: "blue", model_bags: 3 })]}
+        receiptMapping={{
+          status: "ready",
+          mappings: [
+            { color: "red", product: 1, product_label: "Мука красная · 50 кг" },
+            { color: "blue", product: null, product_label: null },
+          ],
+          products: payload.products,
+          warehouse: payload.warehouse,
+          warehouseName: payload.warehouse_name,
+        }}
+      />,
+    );
+
+    const bound = screen.getByText("Мука красная · 50 кг").closest('[data-receipt-binding="bound"]');
+    const unbound = document.querySelector('[data-receipt-binding="unbound"]');
+    expect(bound).toHaveTextContent("Красный: приход — Мука красная · 50 кг→склад Основной склад");
+    expect(unbound).toHaveTextContent("Синий: приход — Не привязан");
+  });
+
+  it("не считает товар другого склада корректной привязкой", () => {
+    expect(
+      resolveAlwaysOnReceiptDestination(
+        {
+          status: "ready",
+          mappings: [{ color: "red", product: 4, product_label: "Мука красная второго склада · 50 кг" }],
+          products: payload.products,
+          warehouse: 1,
+          warehouseName: "Основной склад",
+        },
+        "red",
+      ),
+    ).toEqual({ state: "unbound" });
+  });
+
   it("не смешивает журнал с несовместимым срезом аналитики", () => {
     render(
       <AlwaysOnDayRunLog

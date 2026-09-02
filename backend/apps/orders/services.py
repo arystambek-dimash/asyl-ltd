@@ -870,6 +870,11 @@ def confirm_order(order: Order, user, prices: dict | None = None) -> Order:
     if order.status not in ("draft", "pending"):
         raise ValidationError(
             {"detail": "Подтвердить можно только новый заказ", "code": "invalid_status"})
+    if order.warehouse_id is None:
+        from apps.warehouse.services import resolve_warehouse
+
+        order.warehouse = resolve_warehouse()
+        order.save(update_fields=["warehouse"])
     _apply_prices(order, prices or {}, user)
     confirmed = transition(order, "confirmed", user, "Заказ подтверждён")
     caller_order.status = confirmed.status
@@ -879,11 +884,11 @@ def confirm_order(order: Order, user, prices: dict | None = None) -> Order:
 @transaction.atomic
 def repeat_order(source: Order, user) -> Order:
     """Создать независимый заказ из старого документа с сегодняшней датой."""
-    from apps.warehouse.services import ensure_products_available
+    from apps.warehouse.services import ensure_products_available, resolve_warehouse
 
     source = lock_live_order(source, user)
     source = (
-        Order.objects.select_related("client__user", "store")
+        Order.objects.select_related("client__user", "store", "warehouse")
         .prefetch_related("items__product")
         .get(pk=source.pk)
     )
@@ -901,7 +906,11 @@ def repeat_order(source: Order, user) -> Order:
                       + ", ".join(unavailable),
             "code": "repeat_product_unavailable",
         })
-    ensure_products_available(item.product for item in items)
+    warehouse = resolve_warehouse(source.warehouse)
+    ensure_products_available(
+        (item.product for item in items),
+        warehouse=warehouse,
+    )
 
     has_complete_prices = all(
         item.unit_price is not None and item.unit_price > 0 for item in items
@@ -912,6 +921,7 @@ def repeat_order(source: Order, user) -> Order:
         department=source.department,
         transport_type=source.transport_type,
         store=source.store,
+        warehouse=warehouse,
         settlement_intent=source.settlement_intent,
         payment_method=source.payment_method,
         truck_number=source.truck_number,
@@ -1234,6 +1244,12 @@ def replace_items(
 
     is_shipped = order.status == "shipped"
     reason = _shipped_edit_reason(edit_reason) if is_shipped else ""
+    from apps.warehouse.services import resolve_warehouse
+
+    warehouse = resolve_warehouse(order.warehouse, require_active=False)
+    if order.warehouse_id is None:
+        order.warehouse = warehouse
+        order.save(update_fields=["warehouse"])
     old_items = list(
         # ``product`` is nullable for historical rows. Lock only OrderItem;
         # PostgreSQL cannot apply FOR UPDATE to the nullable side of the outer
@@ -1258,7 +1274,11 @@ def replace_items(
     if not is_shipped:
         from apps.warehouse.services import ensure_products_available
 
-        ensure_products_available(item["product"] for item in items_data)
+        ensure_products_available(
+            (item["product"] for item in items_data),
+            warehouse=warehouse,
+            require_active=False,
+        )
 
     old_total = sum(
         (
@@ -1313,6 +1333,8 @@ def replace_items(
             order=order,
             user=user,
             reason=reason,
+            warehouse=warehouse,
+            require_active=False,
         )
 
     # Сумма могла измениться — сохранённый статус оплаты приводим к факту.
