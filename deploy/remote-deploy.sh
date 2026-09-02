@@ -81,6 +81,33 @@ is_git_sha() {
   printf '%s\n' "$1" | grep -Eq '^[0-9a-f]{40}$'
 }
 
+git_fetch_origin() {
+  fetch_branch="$1"
+  if [ -z "${GHCR_TOKEN:-}" ]; then
+    GIT_TERMINAL_PROMPT=0 git fetch origin "$fetch_branch"
+    return
+  fi
+
+  # GitHub may require authentication for smart-HTTP POSTs even when the
+  # initial public refs advertisement succeeds. Pass the already streamed
+  # Actions token through Git's environment-only config so it never enters
+  # the remote URL, process arguments or logs.
+  git_auth_header="$(
+    printf 'x-access-token:%s' "$GHCR_TOKEN" | base64 | tr -d '\n'
+  )"
+  if GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+    GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $git_auth_header" \
+    GIT_TERMINAL_PROMPT=0 \
+    git fetch origin "$fetch_branch"; then
+    fetch_status=0
+  else
+    fetch_status=$?
+  fi
+  unset git_auth_header
+  return "$fetch_status"
+}
+
 if ! is_backend_image_ref "${BACKEND_IMAGE_REF:-}"; then
   echo "BACKEND_IMAGE_REF must be the immutable asyl-ltd backend digest." >&2
   exit 1
@@ -147,7 +174,7 @@ if [ "$DEPLOY_ACTION" = "deploy" ]; then
   previous_git_sha="$starting_git_sha"
 
   echo "Deploying ${BRANCH} in ${APP_DIR}"
-  git fetch origin "$BRANCH"
+  git_fetch_origin "$BRANCH"
   candidate_git_sha="$(git rev-parse "origin/$BRANCH")"
   if ! is_git_sha "$candidate_git_sha"; then
     echo "Candidate remote branch does not resolve to a valid Git commit." >&2

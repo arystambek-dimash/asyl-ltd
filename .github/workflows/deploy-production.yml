@@ -213,7 +213,13 @@ jobs:
                && mkdir -p \"\$state_dir\" \
                && chmod 700 \"\$state_dir\" \
                && test \"\$(stat -c '%u' \"\$state_dir\")\" = \"\$(id -u)\" \
-               && git fetch origin main \
+               && git_auth_header=\$(printf 'x-access-token:%s' \"\$GHCR_TOKEN\" | base64 | tr -d '\n') \
+               && GIT_CONFIG_COUNT=1 \
+                  GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+                  GIT_CONFIG_VALUE_0=\"AUTHORIZATION: basic \$git_auth_header\" \
+                  GIT_TERMINAL_PROMPT=0 \
+                  git fetch origin main \
+               && unset git_auth_header \
                && test \"\$(git rev-parse origin/main)\" = '$RELEASE_SHA' \
                && runner=\"\$state_dir/candidate-$RELEASE_SHA.runner\" \
                && incoming=\"\$runner.incoming.\$\$\" \

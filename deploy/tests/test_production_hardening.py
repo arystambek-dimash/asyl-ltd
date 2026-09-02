@@ -878,6 +878,24 @@ class ProductionManifestTests(unittest.TestCase):
             3,
         )
 
+    def test_production_git_fetch_uses_environment_only_github_auth(self) -> None:
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "deploy-production.yml"
+        ).read_text(encoding="utf-8")
+        deploy_script = REMOTE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        for text in (workflow, deploy_script):
+            self.assertIn(
+                "GIT_CONFIG_KEY_0=http.https://github.com/.extraheader",
+                text,
+            )
+            self.assertIn("GIT_TERMINAL_PROMPT=0", text)
+            self.assertIn("AUTHORIZATION: basic", text)
+            self.assertNotIn("https://x-access-token:", text)
+
+        self.assertIn("git_fetch_origin \"$BRANCH\"", deploy_script)
+        self.assertNotIn('git fetch origin "$BRANCH"', deploy_script)
+
     def test_scale_compose_configuration_routes_by_hardware(self) -> None:
         compose = PROD_COMPOSE.read_text(encoding="utf-8")
         deploy_script = REMOTE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
