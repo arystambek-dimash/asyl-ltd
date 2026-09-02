@@ -6,7 +6,7 @@ import { Camera, Check, ChevronDown, ClipboardList, LoaderCircle, Play, Radio, L
 import type { CameraFeed } from "@/components/camera-wall";
 import { apiError } from "@/lib/api";
 import { orderedBagCount } from "@/lib/orders";
-import type { Order } from "@/lib/types";
+import type { AlwaysOnProcessorStatus, CameraContinuousReadiness, Order } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type PlayableCamera = CameraFeed & { src: string };
@@ -82,10 +82,12 @@ export function ShipmentLauncher({
   orders,
   cameras,
   busyCameras = [],
+  shippingProcessors,
   cameraOwners = {},
   activeSessionCount = 0,
   cameraLocked = false,
   continuousReady = true,
+  cameraReadiness,
   continuousDetail = "",
   onStart,
   className,
@@ -93,10 +95,13 @@ export function ShipmentLauncher({
   orders: Order[];
   cameras: PlayableCamera[];
   busyCameras?: string[];
+  /** Global shipping runtime state, including sessions outside this department. */
+  shippingProcessors?: AlwaysOnProcessorStatus[];
   cameraOwners?: Record<string, number>;
   activeSessionCount?: number;
   cameraLocked?: boolean;
   continuousReady?: boolean;
+  cameraReadiness?: Record<string, CameraContinuousReadiness>;
   continuousDetail?: string;
   onStart: (order: Order, camera: PlayableCamera) => Promise<void>;
   className?: string;
@@ -107,24 +112,36 @@ export function ShipmentLauncher({
   const [error, setError] = useState("");
 
   const order = orders.find((item) => String(item.id) === orderId) ?? null;
+  const occupiedCameras = useMemo(() => {
+    const occupied = new Set(busyCameras);
+    for (const processor of shippingProcessors ?? []) {
+      if (processor.mode === "session") occupied.add(processor.cam);
+    }
+    return occupied;
+  }, [busyCameras, shippingProcessors]);
   const availableCameras = useMemo(
     () =>
       cameras.filter((camera) => {
-        if (!continuousReady) return false;
+        const readiness = cameraReadiness?.[camera.src];
+        if (readiness ? readiness.status !== "synced" : !continuousReady) return false;
         // Поток с известным src ещё не означает живую камеру: для запуска AI
         // оператор может выбрать только подтверждённый online-источник.
         if (!camera.online) return false;
         const ownerId = cameraOwners[camera.src];
         if (ownerId != null) return ownerId === order?.id;
-        return !busyCameras.includes(camera.src);
+        return !occupiedCameras.has(camera.src);
       }),
-    [busyCameras, cameraOwners, cameras, continuousReady, order?.id],
+    [cameraOwners, cameraReadiness, cameras, continuousReady, occupiedCameras, order?.id],
   );
   const camera = availableCameras.find((item) => item.src === cameraSrc) ?? null;
   const onlineCameraCount = cameras.filter((item) => item.online).length;
   const camerasOnline = onlineCameraCount > 0;
-  const cameraPlaceholder = !continuousReady
-    ? "AI 24/7 ещё не готов"
+  const readyCameraCount = cameras.filter((item) => {
+    const readiness = cameraReadiness?.[item.src];
+    return readiness ? readiness.status === "synced" : continuousReady;
+  }).length;
+  const cameraPlaceholder = !readyCameraCount
+    ? "Камеры отгрузки ещё не готовы"
     : !cameras.length
       ? "Камеры не настроены"
       : !onlineCameraCount
@@ -198,7 +215,7 @@ export function ShipmentLauncher({
         <div className="grid w-full max-w-[1180px] items-center gap-5 lg:grid-cols-[minmax(230px,1fr)_260px_minmax(230px,1fr)] lg:gap-10">
           <div className="order-2 flex justify-center lg:order-1 lg:justify-end">
             {cameraLocked ? (
-              <AssignedCameraCard camera={cameras[0] ?? null} available={continuousReady && !!camera?.online} />
+              <AssignedCameraCard camera={cameras[0] ?? null} available={!!camera?.online} />
             ) : (
               <SelectCard
                 kind="camera"
@@ -268,7 +285,7 @@ export function ShipmentLauncher({
           Моноблок подключит заказ только к готовому непрерывному AI-процессору camN/sub. Если камера ещё прогревается,
           система попросит повторить запуск позже — отдельный холодный счётчик не создаётся.
         </p>
-        {!continuousReady && (
+        {!readyCameraCount && (
           <p className="mt-2 max-w-[620px] rounded-xl border border-amber-200 bg-amber-50/95 px-4 py-2 text-center text-sm font-medium text-amber-900">
             {continuousDetail ||
               "Камера-ПК ещё не подтвердила непрерывный процессор camN/sub. Запуск временно недоступен."}

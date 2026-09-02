@@ -46,6 +46,9 @@ from .api_views.operations import (
     AlwaysOnStockRetryView,
     CameraHealthView,
     ShippingBoardSettingsView,
+    ShippingContinuousAnalyticsView,
+    ShippingContinuousDetectionsView,
+    ShippingContinuousSettingsView,
     WagonNumberCameraSettingsView,
 )
 from .api_views.vehicle_runtime import VehiclePlateRuntimeView
@@ -82,6 +85,9 @@ __all__ = [
     "MonoblockDeviceDetailView",
     "MonoblockDeviceListView",
     "ShippingBoardSettingsView",
+    "ShippingContinuousAnalyticsView",
+    "ShippingContinuousDetectionsView",
+    "ShippingContinuousSettingsView",
     "VehiclePlateRuntimeView",
     "WagonNumberCameraSettingsView",
 ]

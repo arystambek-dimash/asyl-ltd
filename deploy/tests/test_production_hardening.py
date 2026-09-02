@@ -14,6 +14,7 @@ BACKUP_SCRIPT = REPO_ROOT / "deploy" / "backup" / "backup.sh"
 REMOTE_DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "remote-deploy.sh"
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
 GO2RTC_CONFIG = REPO_ROOT / "deploy" / "go2rtc" / "go2rtc.yaml"
+CAMERA_HEALTH_GATE = REPO_ROOT / "deploy" / "health" / "wait-for-camera-health.sh"
 
 CANDIDATE_BACKEND = (
     "ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:" + "a" * 64
@@ -157,6 +158,7 @@ class RemoteDeployTests(unittest.TestCase):
         running_services: str,
         backup_status: int = 0,
         candidate_up_status: int = 0,
+        cutover_status: int = 0,
     ) -> tuple[dict[str, str], Path, Path]:
         fake_bin = root / "bin"
         fake_bin.mkdir()
@@ -220,6 +222,9 @@ case "$*" in
   *" exec -T db-backup /backup/backup.sh")
     exit "${FAKE_BACKUP_STATUS:-0}"
     ;;
+  *"run --rm --no-deps --entrypoint python backend manage.py check_camera_cutover")
+    exit "${FAKE_CUTOVER_STATUS:-0}"
+    ;;
   "image inspect "*)
     case "$*" in
       *"$FAKE_PREVIOUS_BACKEND"|*"$FAKE_PREVIOUS_FRONTEND")
@@ -266,6 +271,7 @@ exit 0
                 "FAKE_RUNNING_SERVICES": running_services,
                 "FAKE_BACKUP_STATUS": str(backup_status),
                 "FAKE_CANDIDATE_UP_STATUS": str(candidate_up_status),
+                "FAKE_CUTOVER_STATUS": str(cutover_status),
                 "FAKE_CANDIDATE_BACKEND": CANDIDATE_BACKEND,
                 "FAKE_PREVIOUS_BACKEND": PREVIOUS_BACKEND,
                 "FAKE_PREVIOUS_FRONTEND": PREVIOUS_FRONTEND,
@@ -413,6 +419,45 @@ exit 0
                 line for line in environment_log.splitlines() if " up -d " in line
             )
             self.assertIn(f"release={CANDIDATE_SHA}", candidate_start)
+
+    def test_deploy_quiesces_old_camera_writers_before_cutover_and_candidate(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            environment, docker_log, _ = self._environment(
+                Path(temporary),
+                running_services="db-backup",
+            )
+
+            result = self._run(environment)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            commands = docker_log.read_text(encoding="utf-8")
+            stop = "stop -t 60 backend camera-monitor ai-stock-monitor"
+            cutover = "backend manage.py check_camera_cutover"
+            self.assertIn(stop, commands)
+            self.assertLess(commands.index(stop), commands.index(cutover))
+            self.assertLess(commands.index(cutover), commands.index("up -d"))
+
+    def test_cutover_refusal_resumes_previous_camera_writers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            environment, docker_log, _ = self._environment(
+                Path(temporary),
+                running_services="db-backup",
+                cutover_status=17,
+            )
+
+            result = self._run(environment)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("Camera contour cutover refused", result.stderr)
+            self.assertIn("resuming the previous camera writers", result.stderr)
+            commands = docker_log.read_text(encoding="utf-8")
+            self.assertIn(
+                "start backend camera-monitor ai-stock-monitor",
+                commands,
+            )
+            self.assertNotIn(" up -d ", f" {commands} ")
 
     def test_same_candidate_retry_preserves_original_rollback_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -632,6 +677,23 @@ exit 0
 
 
 class ProductionManifestTests(unittest.TestCase):
+    def test_camera_monitor_waits_for_migrated_healthy_backend(self) -> None:
+        compose = PROD_COMPOSE.read_text(encoding="utf-8")
+        monitor = compose.split("\n  camera-monitor:\n", 1)[1].split(
+            "\n  ai-stock-monitor:\n",
+            1,
+        )[0]
+
+        self.assertIn("backend:\n        condition: service_healthy", monitor)
+
+    def test_camera_health_gate_reports_last_event_sync_diagnostic(self) -> None:
+        gate = CAMERA_HEALTH_GATE.read_text(encoding="utf-8")
+
+        self.assertIn("check_camera_health --human", gate)
+        self.assertIn('last_output="$output"', gate)
+        self.assertIn("Последняя диагностика camera-monitor:", gate)
+        self.assertIn("printf '%s\\n' \"$last_output\" >&2", gate)
+
     def test_shell_scripts_parse(self) -> None:
         for script in (BACKUP_SCRIPT, REMOTE_DEPLOY_SCRIPT):
             subprocess.run(["/bin/sh", "-n", str(script)], check=True)

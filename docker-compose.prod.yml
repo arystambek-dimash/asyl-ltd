@@ -258,6 +258,8 @@ services:
     entrypoint: []
     command: ["python", "manage.py", "monitor_cameras"]
     depends_on:
+      backend:
+        condition: service_healthy
       db:
         condition: service_healthy
       redis:

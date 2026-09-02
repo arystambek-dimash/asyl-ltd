@@ -6,17 +6,48 @@ import pytest
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from apps.cameras import ai, analytics, continuous, event_sync, production
+from apps.cameras import (
+    ai,
+    analytics,
+    continuous,
+    event_sync,
+    health,
+    production,
+    production_repair,
+)
 from apps.cameras.models import (
+    ANALYTICS_SCOPE_AI247,
+    ANALYTICS_SCOPE_SHIPPING,
     AlwaysOnCounterCursor,
     AlwaysOnDailyAnalytics,
     AlwaysOnImportedEvent,
     AlwaysOnProductionRun,
     AlwaysOnStockBatch,
+    CameraHealthState,
+    ContinuousCameraRole,
     MonoblockCameraSettings,
+    ShippingAnalyticsBootstrap,
+    ShippingDailyAnalytics,
 )
 
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _default_ai247_role():
+    """Most journal tests exercise the legacy/default AI247 contour."""
+
+    ContinuousCameraRole.objects.create(
+        camera="cam3",
+        analytics_scope=ANALYTICS_SCOPE_AI247,
+    )
+
+
+def _set_role(camera: str, analytics_scope: str) -> None:
+    ContinuousCameraRole.objects.update_or_create(
+        camera=camera,
+        defaults={"analytics_scope": analytics_scope},
+    )
 
 
 def _at(second: int) -> datetime:
@@ -34,6 +65,7 @@ def _event(
     color: str | None = None,
     brand: str | None = None,
     continuous_analytics: bool | None = None,
+    analytics_scope: str = ANALYTICS_SCOPE_AI247,
 ) -> dict:
     event = {
         "id": event_id,
@@ -41,6 +73,7 @@ def _event(
         "cam": camera,
         "source": "sub",
         "mode": mode,
+        "analytics_scope": analytics_scope,
         "generation": 1,
         "frame": 6900 + event_id,
         "track_id": event_id,
@@ -92,7 +125,7 @@ def test_ai_client_reads_the_bounded_camera_event_page():
 
     call.assert_called_once_with(
         "GET",
-        "/events?after_id=2&limit=500&cam=cam3",
+        "/events?after_id=2&limit=500&cam=cam3&contract_version=2",
         none_on_404=True,
     )
 
@@ -282,6 +315,64 @@ def test_non_boolean_continuous_analytics_marker_is_rejected():
         event_sync.parse_page(_page([event]), camera="cam3", after_id=0)
 
 
+@pytest.mark.parametrize("analytics_scope", [None, "", "legacy", True])
+def test_event_analytics_scope_is_a_required_closed_contract(analytics_scope):
+    event = _event(1, 1)
+    event["analytics_scope"] = analytics_scope
+
+    with pytest.raises(
+        event_sync.EventSyncError,
+        match="analytics_scope",
+    ):
+        event_sync.parse_page(_page([event]), camera="cam3", after_id=0)
+
+
+def test_legacy_unscoped_event_blocks_deploy_without_touching_either_ledger():
+    """An old CV service may ignore contract_version=2; never infer its role."""
+
+    MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
+    current = {
+        "cameras": ["cam3"],
+        "source": "sub",
+        "analytics_scopes": {"cam3": ANALYTICS_SCOPE_AI247},
+        "processors": [],
+    }
+    legacy_event = _event(1, 1)
+    legacy_event.pop("analytics_scope")
+
+    with (
+        patch.object(ai, "always_on_status", return_value=current),
+        patch.object(ai, "count_events", return_value=_page([legacy_event])),
+    ):
+        continuous.reconcile()
+
+    cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
+    assert "analytics_scope" in cursor.event_sync_error
+    assert cursor.event_caught_up_at is None
+    assert not AlwaysOnImportedEvent.objects.exists()
+    assert not AlwaysOnDailyAnalytics.objects.exists()
+    assert not ShippingDailyAnalytics.objects.exists()
+    assert not AlwaysOnProductionRun.objects.exists()
+
+    now = timezone.now()
+    state = CameraHealthState.objects.create(
+        status=CameraHealthState.HEALTHY,
+        observed_status=CameraHealthState.HEALTHY,
+        expected_count=10,
+        online_count=10,
+        last_checked_at=now,
+    )
+    deploy = health.state_payload(
+        state,
+        now=now,
+        max_age=180,
+        require_events=True,
+    )
+    assert deploy["event_sync"]["blocking"] is True
+    assert deploy["event_sync"]["cameras"][0]["status"] == "error"
+    assert health.exit_code(deploy) == 2
+
+
 def test_replayed_event_cannot_change_classification_enrichment():
     AlwaysOnCounterCursor.objects.create(
         camera="cam3",
@@ -296,6 +387,7 @@ def test_replayed_event_cannot_change_classification_enrichment():
         occurred_at=_at(1),
         source="sub",
         mode="always_on",
+        analytics_scope=ANALYTICS_SCOPE_AI247,
         class_name="Red_50",
         color="Red_50",
         color_confidence=0.9,
@@ -332,6 +424,7 @@ def test_replayed_event_cannot_change_classification_enrichment():
     cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
     assert cursor.last_event_id == 0
     assert not AlwaysOnDailyAnalytics.objects.exists()
+    assert not ShippingDailyAnalytics.objects.exists()
 
 
 def test_stale_concurrent_page_cannot_overwrite_the_newer_caught_up_state():
@@ -400,7 +493,17 @@ def test_page_cursor_and_crm_updates_roll_back_together():
 
 
 def test_session_event_is_durable_but_not_added_to_always_on_analytics():
-    response = _page([_event(1, 1, mode="session")])
+    _set_role("cam3", ANALYTICS_SCOPE_SHIPPING)
+    response = _page(
+        [
+            _event(
+                1,
+                1,
+                mode="session",
+                analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+            )
+        ]
+    )
     with patch.object(ai, "count_events", return_value=response):
         result = event_sync.sync_camera("cam3")
 
@@ -409,6 +512,7 @@ def test_session_event_is_durable_but_not_added_to_always_on_analytics():
     imported = AlwaysOnImportedEvent.objects.get()
     assert imported.mode == "session"
     assert imported.continuous_analytics is False
+    assert imported.analytics_scope == ANALYTICS_SCOPE_SHIPPING
     assert imported.color is None
     assert imported.brand is None
     assert imported.sku is None
@@ -417,7 +521,7 @@ def test_session_event_is_durable_but_not_added_to_always_on_analytics():
     assert not AlwaysOnDailyAnalytics.objects.exists()
 
 
-def test_flagged_session_event_updates_continuous_analytics_exactly_once():
+def test_legacy_ai_scoped_session_advances_cursor_without_ai_production():
     page = event_sync.parse_page(
         _page(
             [
@@ -426,6 +530,39 @@ def test_flagged_session_event_updates_continuous_analytics_exactly_once():
                     1,
                     mode="session",
                     continuous_analytics=True,
+                    analytics_scope=ANALYTICS_SCOPE_AI247,
+                )
+            ]
+        ),
+        camera="cam3",
+        after_id=0,
+    )
+
+    assert event_sync.apply_page(
+        camera="cam3",
+        page=page,
+        requested_after_id=0,
+    )[:2] == (0, 1)
+    imported = AlwaysOnImportedEvent.objects.get()
+    assert imported.applied_to_analytics is False
+    assert imported.applied_to_production is False
+    assert imported.applied_to_shipping_bootstrap is False
+    assert AlwaysOnCounterCursor.objects.get(camera="cam3").last_event_id == 1
+    assert not AlwaysOnDailyAnalytics.objects.exists()
+    assert not AlwaysOnProductionRun.objects.exists()
+
+
+def test_flagged_session_event_updates_continuous_analytics_exactly_once():
+    _set_role("cam3", ANALYTICS_SCOPE_SHIPPING)
+    page = event_sync.parse_page(
+        _page(
+            [
+                _event(
+                    1,
+                    1,
+                    mode="session",
+                    continuous_analytics=True,
+                    analytics_scope=ANALYTICS_SCOPE_SHIPPING,
                     color="Green_50",
                     brand="pioneer",
                 )
@@ -449,11 +586,51 @@ def test_flagged_session_event_updates_continuous_analytics_exactly_once():
     imported = AlwaysOnImportedEvent.objects.get()
     assert imported.mode == "session"
     assert imported.continuous_analytics is True
+    assert imported.analytics_scope == ANALYTICS_SCOPE_SHIPPING
     assert imported.applied_to_analytics is True
-    analytics_row = AlwaysOnDailyAnalytics.objects.get(camera="cam3")
+    analytics_row = ShippingDailyAnalytics.objects.get(camera="cam3")
     assert analytics_row.model_total == 1
     assert analytics_row.model_per_color == {"green": 1}
     assert analytics_row.model_per_brand == {"pioneer": 1}
+    assert not AlwaysOnProductionRun.objects.exists()
+
+
+def test_shipping_and_ai247_events_use_separate_analytics_ledgers():
+    _set_role("cam2", ANALYTICS_SCOPE_SHIPPING)
+    ai_page = event_sync.parse_page(
+        _page([_event(1, 1, analytics_scope=ANALYTICS_SCOPE_AI247)]),
+        camera="cam3",
+        after_id=0,
+    )
+    shipping_page = event_sync.parse_page(
+        _page(
+            [
+                _event(
+                    1,
+                    1,
+                    mode="session",
+                    camera="cam2",
+                    continuous_analytics=True,
+                    analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+                )
+            ]
+        ),
+        camera="cam2",
+        after_id=0,
+    )
+
+    assert event_sync.apply_page(
+        camera="cam3",
+        page=ai_page,
+        requested_after_id=0,
+    )[:2] == (1, 0)
+    assert event_sync.apply_page(
+        camera="cam2",
+        page=shipping_page,
+        requested_after_id=0,
+    )[:2] == (1, 0)
+    assert AlwaysOnDailyAnalytics.objects.get(camera="cam3").model_total == 1
+    assert ShippingDailyAnalytics.objects.get(camera="cam2").model_total == 1
     assert sum(
         AlwaysOnProductionRun.objects.values_list("model_bags", flat=True)
     ) == 1
@@ -579,12 +756,14 @@ def test_reconcile_uses_snapshots_only_for_an_explicit_legacy_404():
     current = {
         "cameras": ["cam3"],
         "source": "sub",
+        "analytics_scopes": {"cam3": ANALYTICS_SCOPE_AI247},
         "processors": [
             {
                 "cam": "cam3",
                 "total": 4,
                 "mode": "always_on",
                 "running": True,
+                "analytics_scope": ANALYTICS_SCOPE_AI247,
             }
         ],
     }
@@ -598,7 +777,11 @@ def test_reconcile_uses_snapshots_only_for_an_explicit_legacy_404():
         patch.object(analytics, "record_snapshot") as snapshot,
     ):
         continuous.reconcile()
-    snapshot.assert_called_once_with(current, cameras={"cam3"})
+    snapshot.assert_called_once_with(
+        current,
+        cameras={"cam3"},
+        analytics_scopes={"cam3": ANALYTICS_SCOPE_AI247},
+    )
 
     with (
         patch.object(ai, "always_on_status", return_value=current),
@@ -613,6 +796,320 @@ def test_reconcile_uses_snapshots_only_for_an_explicit_legacy_404():
     snapshot.assert_not_called()
 
 
+def test_policy_put_failure_does_not_starve_healthy_event_import():
+    _set_role("cam2", ANALYTICS_SCOPE_SHIPPING)
+    MonoblockCameraSettings.objects.create(
+        camera_sources=["cam2"],
+        always_on_camera_sources=["cam3"],
+    )
+    current = {
+        "cameras": ["cam3"],
+        "source": "sub",
+        "analytics_scopes": {"cam3": ANALYTICS_SCOPE_AI247},
+        "processors": [],
+    }
+    synced = event_sync.SyncResult(True, 0, 0, 1, 0, True)
+
+    with (
+        patch.object(ai, "always_on_status", return_value=current),
+        patch.object(
+            ai,
+            "configure_always_on",
+            side_effect=ai.AiUnavailable("policy PUT failed"),
+        ),
+        patch.object(event_sync, "sync_camera", return_value=synced) as sync,
+    ):
+        with pytest.raises(ai.AiUnavailable, match="policy PUT failed"):
+            continuous.reconcile()
+
+    assert [call.args for call in sync.call_args_list] == [
+        ("cam2",),
+        ("cam3",),
+    ]
+
+
+def test_policy_put_failure_never_guesses_scope_for_legacy_snapshot():
+    _set_role("cam2", ANALYTICS_SCOPE_SHIPPING)
+    MonoblockCameraSettings.objects.create(camera_sources=["cam2"])
+    current = {
+        "cameras": ["cam2"],
+        "source": "sub",
+        # A legacy reply cannot prove whether this running processor still
+        # owns the pre-change role, so its aggregate is not safe to route.
+        "processors": [
+            {
+                "cam": "cam2",
+                "total": 1,
+                "mode": "always_on",
+                "running": True,
+                "per_color": {"Red_50": 1},
+            }
+        ],
+    }
+    unsupported = event_sync.SyncResult(False, 0, 0, 1, None, False)
+
+    with (
+        patch.object(ai, "always_on_status", return_value=current),
+        patch.object(
+            ai,
+            "configure_always_on",
+            side_effect=ai.AiUnavailable("policy PUT failed"),
+        ),
+        patch.object(event_sync, "sync_camera", return_value=unsupported),
+    ):
+        with pytest.raises(ai.AiUnavailable, match="policy PUT failed"):
+            continuous.reconcile()
+
+    assert not AlwaysOnDailyAnalytics.objects.exists()
+    assert not ShippingDailyAnalytics.objects.exists()
+
+
+def test_failed_remove_then_same_scope_reactivation_reaches_fresh_synced_tail():
+    _set_role("cam3", ANALYTICS_SCOPE_SHIPPING)
+    row = MonoblockCameraSettings.objects.create(
+        camera_sources=[],
+        always_on_camera_sources=[],
+    )
+    cursor = AlwaysOnCounterCursor.objects.create(
+        camera="cam3",
+        last_total=9,
+        last_event_id=9,
+        event_compat_total=9,
+        event_sync_supported=True,
+        event_boundary_validated=True,
+        event_caught_up_at=_at(9),
+    )
+    still_running_shipping = {
+        "cameras": ["cam3"],
+        "source": "sub",
+        "analytics_scopes": {"cam3": ANALYTICS_SCOPE_SHIPPING},
+        "processors": [],
+    }
+
+    with (
+        patch.object(ai, "always_on_status", return_value=still_running_shipping),
+        patch.object(
+            ai,
+            "configure_always_on",
+            side_effect=ai.AiUnavailable("remove PUT failed"),
+        ),
+        patch.object(
+            event_sync,
+            "sync_camera",
+            return_value=event_sync.SyncResult(True, 0, 0, 1, 9, True),
+        ),
+    ):
+        with pytest.raises(ai.AiUnavailable, match="remove PUT failed"):
+            continuous.reconcile()
+
+    cursor.refresh_from_db()
+    assert cursor.event_stop_drain_requested_at is not None
+    assert cursor.event_stop_confirmed_at is None
+    assert cursor.event_caught_up_at is None
+
+    # The camera is reactivated in its permanent shipping contour. The fresh
+    # successful reply must cancel the stale failed-stop intent.
+    row.camera_sources = ["cam3"]
+    row.save(update_fields=["camera_sources", "updated_at"])
+    running_shipping = {
+        "cameras": ["cam3"],
+        "source": "sub",
+        "analytics_scopes": {"cam3": ANALYTICS_SCOPE_SHIPPING},
+        "processors": [
+            {
+                "cam": "cam3",
+                "running": True,
+                "processor_alive": True,
+                "source": "sub",
+                "mode": "always_on",
+                "analytics_scope": ANALYTICS_SCOPE_SHIPPING,
+                "last_frame_at": "2026-09-01T08:00:00Z",
+            }
+        ],
+    }
+    shipping_event = _event(
+        10,
+        10,
+        analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+    )
+    with (
+        patch.object(ai, "always_on_status", return_value=running_shipping),
+        patch.object(ai, "configure_always_on") as configure,
+        patch.object(
+            ai,
+            "count_events",
+            return_value=_page([shipping_event], after_id=9),
+        ),
+    ):
+        continuous.reconcile()
+
+    configure.assert_not_called()
+    cursor.refresh_from_db()
+    assert cursor.last_event_id == 10
+    assert cursor.event_caught_up_at is not None
+    assert cursor.event_drain_required_at is None
+    assert cursor.event_stop_drain_requested_at is None
+    assert cursor.event_stop_confirmed_at is None
+    assert ShippingDailyAnalytics.objects.get(camera="cam3").model_total == 1
+    assert not AlwaysOnDailyAnalytics.objects.exists()
+    assert not AlwaysOnProductionRun.objects.exists()
+
+
+def test_initial_shipping_bootstrap_covers_cutover_tail_and_is_idempotent():
+    _set_role("cam3", ANALYTICS_SCOPE_SHIPPING)
+    MonoblockCameraSettings.objects.create(camera_sources=["cam3"])
+    marker = ShippingAnalyticsBootstrap.objects.create(camera="cam3")
+    AlwaysOnCounterCursor.objects.create(
+        camera="cam3",
+        last_total=5,
+        last_per_color={"red": 5},
+        last_mode="always_on",
+    )
+    legacy = AlwaysOnDailyAnalytics.objects.create(
+        camera="cam3",
+        day=timezone.localdate(_at(1)),
+        model_total=5,
+        model_per_color={"red": 5},
+        model_per_brand={"korol": 5},
+        adjustment=-1,
+    )
+    ai_tail = event_sync.parse_page(
+        _page(
+            [
+                _event(
+                    1,
+                    6,
+                    mode="session",
+                    continuous_analytics=True,
+                    analytics_scope=ANALYTICS_SCOPE_AI247,
+                )
+            ]
+        ),
+        camera="cam3",
+        after_id=0,
+    )
+    assert event_sync.apply_page(
+        camera="cam3",
+        page=ai_tail,
+        requested_after_id=0,
+    )[:2] == (1, 0)
+    imported_tail = AlwaysOnImportedEvent.objects.get(upstream_event_id=1)
+    assert imported_tail.applied_to_analytics is False
+    assert imported_tail.applied_to_production is False
+    assert imported_tail.applied_to_shipping_bootstrap is True
+    legacy.refresh_from_db()
+    assert legacy.model_total == 6
+    assert not AlwaysOnProductionRun.objects.exists()
+    assert not AlwaysOnStockBatch.objects.exists()
+    running_shipping = {
+        "cameras": ["cam3"],
+        "source": "sub",
+        "analytics_scopes": {"cam3": ANALYTICS_SCOPE_SHIPPING},
+        "processors": [
+            {
+                "cam": "cam3",
+                "running": True,
+                "processor_alive": True,
+                "source": "sub",
+                "mode": "always_on",
+                "analytics_scope": ANALYTICS_SCOPE_SHIPPING,
+                "last_frame_at": "2026-09-01T08:00:00Z",
+            }
+        ],
+    }
+    first_shipping_event = _event(
+        2,
+        1,
+        analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+    )
+
+    with (
+        patch.object(ai, "always_on_status", return_value=running_shipping),
+        patch.object(
+            ai,
+            "count_events",
+            return_value=_page([first_shipping_event], after_id=1),
+        ),
+    ):
+        continuous.reconcile()
+
+    marker.refresh_from_db()
+    assert marker.scope_confirmed_at is not None
+    assert marker.completed_at is not None
+    cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
+    assert cursor.event_boundary_validated is True
+    assert cursor.event_caught_up_at is not None
+    shipping = ShippingDailyAnalytics.objects.get(camera="cam3", day=legacy.day)
+    assert shipping.model_total == 7
+    assert shipping.model_per_color == {"red": 7}
+    assert shipping.model_per_brand == {"unclassified": 2, "korol": 5}
+    assert shipping.adjustment == -1
+    assert shipping.total == 6
+    legacy.refresh_from_db()
+    assert legacy.model_total == 6
+    assert legacy.adjustment == -1
+    assert not AlwaysOnProductionRun.objects.exists()
+    with pytest.raises(
+        production_repair.ProductionRepairError,
+        match="not reserved for AI 24/7",
+    ):
+        production_repair.rebuild_event_production_runs(
+            camera="cam3",
+            local_day=timezone.localdate(_at(1)),
+        )
+
+    with (
+        patch.object(ai, "always_on_status", return_value=running_shipping),
+        patch.object(
+            ai,
+            "count_events",
+            return_value=_page([], after_id=2),
+        ),
+    ):
+        continuous.reconcile()
+
+    shipping.refresh_from_db()
+    assert shipping.model_total == 7
+    assert shipping.adjustment == -1
+
+    delayed_ai = event_sync.parse_page(
+        _page([_event(3, 7, analytics_scope=ANALYTICS_SCOPE_AI247)], after_id=2),
+        camera="cam3",
+        after_id=2,
+    )
+    with pytest.raises(event_sync.EventSyncError, match="violates camera role"):
+        event_sync.apply_page(
+            camera="cam3",
+            page=delayed_ai,
+            requested_after_id=2,
+        )
+    assert not AlwaysOnImportedEvent.objects.filter(upstream_event_id=3).exists()
+
+
+def test_shipping_generation_reset_requires_confirmed_initial_bootstrap():
+    _set_role("cam3", ANALYTICS_SCOPE_SHIPPING)
+    AlwaysOnCounterCursor.objects.create(camera="cam3", last_total=5)
+    page = event_sync.parse_page(
+        _page(
+            [
+                _event(
+                    1,
+                    1,
+                    analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+                )
+            ]
+        ),
+        camera="cam3",
+        after_id=0,
+    )
+
+    with pytest.raises(event_sync.EventSyncError, match="reset is not authorized"):
+        event_sync.apply_page(camera="cam3", page=page, requested_after_id=0)
+
+    assert not AlwaysOnImportedEvent.objects.exists()
+    assert not ShippingDailyAnalytics.objects.exists()
+
+
 def test_removing_an_event_camera_performs_and_retries_a_final_drain():
     MonoblockCameraSettings.objects.create(always_on_camera_sources=[])
     AlwaysOnCounterCursor.objects.create(
@@ -623,8 +1120,18 @@ def test_removing_an_event_camera_performs_and_retries_a_final_drain():
         event_boundary_validated=True,
         event_caught_up_at=_at(9),
     )
-    before_stop = {"cameras": ["cam3"], "source": "sub", "processors": []}
-    after_stop = {"cameras": [], "source": "sub", "processors": []}
+    before_stop = {
+        "cameras": ["cam3"],
+        "source": "sub",
+        "analytics_scopes": {"cam3": ANALYTICS_SCOPE_AI247},
+        "processors": [],
+    }
+    after_stop = {
+        "cameras": [],
+        "source": "sub",
+        "analytics_scopes": {},
+        "processors": [],
+    }
 
     with (
         patch.object(ai, "always_on_status", return_value=before_stop),
@@ -637,7 +1144,7 @@ def test_removing_an_event_camera_performs_and_retries_a_final_drain():
     ):
         continuous.reconcile()
 
-    configure.assert_called_once_with([], "sub")
+    configure.assert_called_once_with([], "sub", analytics_scopes={})
     sync.assert_called_once_with("cam3")
     assert AlwaysOnCounterCursor.objects.get(camera="cam3").event_caught_up_at is None
 
@@ -667,7 +1174,12 @@ def test_reconcile_recovers_a_crash_after_remote_stop_before_second_barrier():
         event_caught_up_at=_at(9),
     )
     event_sync.request_stop_drain("cam3")
-    stopped = {"cameras": [], "source": "sub", "processors": []}
+    stopped = {
+        "cameras": [],
+        "source": "sub",
+        "analytics_scopes": {},
+        "processors": [],
+    }
 
     with (
         patch.object(ai, "always_on_status", return_value=stopped),

@@ -27,7 +27,12 @@ from apps.shipments.services import (
 )
 
 from . import ai, sessions
-from .models import AiCountingSession, MonoblockCameraSettings, MonoblockDevice
+from .models import (
+    ANALYTICS_SCOPE_SHIPPING,
+    AiCountingSession,
+    MonoblockCameraSettings,
+    MonoblockDevice,
+)
 from .policies import (
     assert_device_camera,
     can_control_session,
@@ -104,6 +109,13 @@ def _valid_total(value: object) -> int | None:
     if type(value) is not int or not 0 <= value <= MAX_COUNTER_TOTAL:
         return None
     return value
+
+
+def _is_continuous_shipping(payload: Mapping) -> bool:
+    return (
+        payload.get("continuous_analytics") is True
+        and payload.get("analytics_scope") == ANALYTICS_SCOPE_SHIPPING
+    )
 
 
 def _assert_expected_session(
@@ -314,7 +326,7 @@ def get_status(camera: str, order_id: int | None, user) -> dict:
     is_session_worker = (
         worker_running
         and live_payload.get("mode") == "session"
-        and live_payload.get("continuous_analytics") is True
+        and _is_continuous_shipping(live_payload)
     )
     is_active = session.status == AiCountingSession.ACTIVE
     if not is_session_worker or not is_active:
@@ -410,6 +422,7 @@ def start(
                         "source": "sub",
                         "session_id": session.pk,
                         "require_continuous": True,
+                        "expected_analytics_scope": ANALYTICS_SCOPE_SHIPPING,
                     },
                 )
                 worker_may_be_running = True
@@ -427,6 +440,7 @@ def start(
                             "source": "sub",
                             "session_id": session.pk,
                             "require_continuous": True,
+                            "expected_analytics_scope": ANALYTICS_SCOPE_SHIPPING,
                         },
                     )
                 worker_may_be_running = live is not None
@@ -545,7 +559,7 @@ def _capture_final(
         live is not None
         and live_payload.get("running") is True
         and live_payload.get("mode") == "session"
-        and live_payload.get("continuous_analytics") is True
+        and _is_continuous_shipping(live_payload)
     )
     if not is_session_worker:
         # After a camera-PC restart the configured 24/7 worker may be back on
@@ -580,7 +594,7 @@ def _finish_with_authoritative_final(
             "повторите завершение"
         ),
     )
-    if final.get("continuous_analytics") is not True:
+    if not _is_continuous_shipping(final):
         raise ai.AiError(
             503,
             "AI-сервис не подтвердил точный финальный счёт; повторите завершение",
@@ -798,7 +812,7 @@ def reset(
         if (
             live_payload.get("running") is not True
             or live_payload.get("mode") != "session"
-            or live_payload.get("continuous_analytics") is not True
+            or not _is_continuous_shipping(live_payload)
         ):
             raise ai.AiError(
                 409,

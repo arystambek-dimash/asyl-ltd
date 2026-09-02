@@ -3,7 +3,12 @@ from unittest.mock import patch
 import pytest
 
 from apps.cameras import ai
-from apps.cameras.models import MonoblockCameraSettings, MonoblockDevice
+from apps.cameras.models import (
+    ANALYTICS_SCOPE_AI247,
+    ContinuousCameraRole,
+    MonoblockCameraSettings,
+    MonoblockDevice,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -15,6 +20,11 @@ READ_ENDPOINTS = (
     "/api/cameras/always-on-analytics/archives/",
     "/api/cameras/always-on-production/?camera=cam3",
 )
+SHIPPING_READ_ENDPOINTS = (
+    "/api/cameras/shipping-continuous-settings/",
+    "/api/cameras/shipping-continuous-detections/",
+    "/api/cameras/shipping-continuous-analytics/",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -24,6 +34,14 @@ def disable_camera_pc(monkeypatch):
 
 @pytest.fixture
 def read_ai_status():
+    MonoblockCameraSettings.objects.update_or_create(
+        singleton=True,
+        defaults={"always_on_camera_sources": ["cam3"]},
+    )
+    ContinuousCameraRole.objects.update_or_create(
+        camera="cam3",
+        defaults={"analytics_scope": ANALYTICS_SCOPE_AI247},
+    )
     with patch.object(
         ai,
         "always_on_detections_cached",
@@ -75,6 +93,40 @@ def test_technical_monoblock_account_cannot_get_ai_247_monitoring(
 
     for endpoint in READ_ENDPOINTS:
         assert auth_client(user).get(endpoint).status_code == 403
+
+
+def test_shipping_continuous_endpoints_are_separate_and_device_scoped(
+    auth_client,
+    make_user,
+    user_with_perms,
+    read_ai_status,
+):
+    shipping_user = user_with_perms(
+        "shipping-continuous-reader",
+        codes=["shipping.view"],
+    )
+    ai247_only = user_with_perms(
+        "ai247-only-reader",
+        codes=["ai_247.manage"],
+    )
+    device_user = make_user(username="shipping-continuous-device")
+    MonoblockDevice.objects.create(
+        user=device_user,
+        name="Моноблок cam9",
+        camera_source="cam9",
+    )
+
+    for endpoint in SHIPPING_READ_ENDPOINTS:
+        assert auth_client(shipping_user).get(endpoint).status_code == 200
+        assert auth_client(ai247_only).get(endpoint).status_code == 403
+        response = auth_client(device_user).get(endpoint)
+        assert response.status_code == 200
+        if endpoint.endswith("settings/"):
+            assert response.data["camera_sources"] == ["cam9"]
+        elif endpoint.endswith("analytics/"):
+            assert [row["camera"] for row in response.data["cameras"]] == [
+                "cam9"
+            ]
 
 
 MUTATION_REQUESTS = (

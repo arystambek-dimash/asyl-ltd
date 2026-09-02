@@ -2,6 +2,9 @@ from django.conf import settings
 from django.db import models
 from django.db.models import Q
 
+ANALYTICS_SCOPE_SHIPPING = "shipping"
+ANALYTICS_SCOPE_AI247 = "ai_247"
+
 
 class AiCountingSession(models.Model):
     """Durable ownership of a per-camera AI counting slot.
@@ -123,16 +126,15 @@ class MonoblockCameraSettings(models.Model):
         }
 
     @classmethod
-    def mandatory_always_on_sources(
+    def shipping_sources(
         cls,
         row: "MonoblockCameraSettings | None" = None,
     ) -> list[str]:
-        """Cameras whose monoblock role makes continuous AI non-optional.
+        """Cameras assigned to the independent continuous shipping contour.
 
         The shared Monoblock picker and active physical devices are two ways to
-        assign a camera to this workflow.  Keep their order stable and collapse
-        duplicates so every control-plane consumer sends the same policy to the
-        camera PC.
+        assign a camera to shipping. Keep their order stable and collapse
+        duplicates so every control-plane consumer sees one canonical set.
         """
 
         if row is None:
@@ -148,23 +150,88 @@ class MonoblockCameraSettings(models.Model):
         return cls._ordered_camera_union(configured, device_sources)
 
     @classmethod
-    def always_on_sources(
+    def ai247_sources(
         cls,
         row: "MonoblockCameraSettings | None" = None,
     ) -> list[str]:
-        """Return the effective durable AI 24/7 policy in canonical order."""
+        """Return only cameras explicitly assigned to the AI 24/7 contour."""
 
         if row is None:
             row = (
                 cls.objects.filter(singleton=True)
-                .only("camera_sources", "always_on_camera_sources")
+                .only("always_on_camera_sources")
                 .first()
             )
-        manual = row.always_on_camera_sources if row else []
+        return cls._ordered_camera_union(row.always_on_camera_sources if row else [])
+
+    @classmethod
+    def continuous_sources(
+        cls,
+        row: "MonoblockCameraSettings | None" = None,
+    ) -> list[str]:
+        """Return the physical camera-PC processor set for both contours."""
+
         return cls._ordered_camera_union(
-            cls.mandatory_always_on_sources(row),
-            manual,
+            cls.shipping_sources(row),
+            cls.ai247_sources(row),
         )
+
+    @classmethod
+    def continuous_roles(
+        cls,
+        row: "MonoblockCameraSettings | None" = None,
+    ) -> dict[str, str]:
+        """Map every continuous camera to its one immutable analytics scope."""
+
+        shipping = cls.shipping_sources(row)
+        ai247 = cls.ai247_sources(row)
+        overlap = sorted(set(shipping) & set(ai247))
+        if overlap:
+            raise RuntimeError(
+                "camera roles overlap between shipping and AI 24/7: "
+                + ", ".join(overlap)
+            )
+        desired = {
+            **{camera: ANALYTICS_SCOPE_SHIPPING for camera in shipping},
+            **{camera: ANALYTICS_SCOPE_AI247 for camera in ai247},
+        }
+        reserved = dict(
+            ContinuousCameraRole.objects.filter(camera__in=desired).values_list(
+                "camera",
+                "analytics_scope",
+            )
+        )
+        missing = sorted(set(desired) - set(reserved))
+        mismatched = sorted(
+            camera
+            for camera, analytics_scope in desired.items()
+            if reserved.get(camera) not in {None, analytics_scope}
+        )
+        if missing or mismatched:
+            problems = []
+            if missing:
+                problems.append("missing reservations: " + ", ".join(missing))
+            if mismatched:
+                problems.append("scope mismatch: " + ", ".join(mismatched))
+            raise RuntimeError("invalid continuous camera roles (" + "; ".join(problems) + ")")
+        return desired
+
+    @classmethod
+    def reserved_sources(cls, analytics_scope: str) -> list[str]:
+        """Return every camera ever assigned to one immutable contour."""
+
+        return list(
+            ContinuousCameraRole.objects.filter(
+                analytics_scope=analytics_scope,
+            )
+            .order_by("created_at", "id")
+            .values_list("camera", flat=True)
+        )
+
+    # Compatibility aliases for integrations importing the former helper.
+    # New code must choose one business contour explicitly.
+    mandatory_always_on_sources = shipping_sources
+    always_on_sources = continuous_sources
 
     @staticmethod
     def _ordered_camera_union(*groups) -> list[str]:
@@ -276,6 +343,11 @@ class AlwaysOnImportedEvent(models.Model):
     # production/AI-24/7 ledger. The camera PC fixes this decision at event
     # creation time so delayed ingestion never guesses from today's settings.
     continuous_analytics = models.BooleanField(default=False, db_default=False)
+    analytics_scope = models.CharField(
+        max_length=16,
+        default=ANALYTICS_SCOPE_AI247,
+        db_default=ANALYTICS_SCOPE_AI247,
+    )
     class_name = models.CharField(max_length=100, blank=True, default="")
     color = models.CharField(max_length=100, null=True, blank=True)
     color_confidence = models.FloatField(null=True, blank=True)
@@ -285,6 +357,14 @@ class AlwaysOnImportedEvent(models.Model):
     classification_status = models.CharField(max_length=32, null=True, blank=True)
     total_after = models.PositiveBigIntegerField(null=True, blank=True)
     applied_to_analytics = models.BooleanField(default=False)
+    # The database default keeps automatic rollback safe: the previous image
+    # inserts ordinary AI 24/7 events without naming this candidate column.
+    # Candidate ingestion always writes the exact eligibility explicitly.
+    applied_to_production = models.BooleanField(default=False, db_default=True)
+    applied_to_shipping_bootstrap = models.BooleanField(
+        default=False,
+        db_default=False,
+    )
     imported_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -489,6 +569,72 @@ class AlwaysOnDailyAnalytics(models.Model):
     @property
     def total(self) -> int:
         return max(0, self.model_total + self.adjustment)
+
+
+class ShippingDailyAnalytics(models.Model):
+    """Rollback-safe continuous analytics for shipment cameras.
+
+    AI 24/7 keeps using ``AlwaysOnDailyAnalytics`` unchanged because an
+    automatic image rollback runs the previous ORM against the migrated
+    database. A separate table lets both contours store the same camera/day
+    without making the legacy ``get_or_create(camera, day)`` ambiguous.
+    """
+
+    camera = models.CharField(max_length=32)
+    day = models.DateField(db_index=True)
+    model_total = models.PositiveIntegerField(default=0)
+    model_per_color = models.JSONField(default=dict, blank=True)
+    model_per_brand = models.JSONField(default=dict, db_default={}, blank=True)
+    adjustment = models.IntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["camera"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["camera", "day"],
+                name="cameras_one_shipping_total_per_day",
+            ),
+        ]
+
+    @property
+    def total(self) -> int:
+        return max(0, self.model_total + self.adjustment)
+
+
+class ShippingAnalyticsBootstrap(models.Model):
+    """One-time fence for transferring pre-scope-cutover shipping history."""
+
+    camera = models.CharField(max_length=32, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    scope_confirmed_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["camera"]
+
+
+class ContinuousCameraRole(models.Model):
+    """Permanent business-contour ownership for one physical camera.
+
+    Removing a camera from the active processor union decommissions it but
+    never transfers its analytics history. Re-adding it to the same contour is
+    safe; assigning it to the opposite contour is intentionally rejected.
+    """
+
+    camera = models.CharField(max_length=32, unique=True)
+    analytics_scope = models.CharField(
+        max_length=16,
+        choices=(
+            (ANALYTICS_SCOPE_SHIPPING, "Shipping"),
+            (ANALYTICS_SCOPE_AI247, "AI 24/7"),
+        ),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
 
 
 class AlwaysOnColorProductMapping(models.Model):

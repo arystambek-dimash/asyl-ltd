@@ -18,9 +18,11 @@ from django.utils import timezone
 
 from . import ai, production
 from .models import (
+    ANALYTICS_SCOPE_AI247,
     AlwaysOnCounterCursor,
     AlwaysOnImportedEvent,
     AlwaysOnProductionRun,
+    ContinuousCameraRole,
 )
 
 
@@ -225,6 +227,11 @@ def rebuild_event_production_runs(
         raise ProductionRepairError(
             "local_day must be strictly before the current plant-local day"
         )
+    if not ContinuousCameraRole.objects.filter(
+        camera=camera,
+        analytics_scope=ANALYTICS_SCOPE_AI247,
+    ).exists():
+        raise ProductionRepairError("camera is not reserved for AI 24/7 production")
 
     day_start, day_end = _day_window(local_day)
     with transaction.atomic():
@@ -234,6 +241,8 @@ def rebuild_event_production_runs(
         )
         events_query = AlwaysOnImportedEvent.objects.filter(
             camera=camera,
+            analytics_scope=ANALYTICS_SCOPE_AI247,
+            mode="always_on",
             occurred_at__gte=day_start,
             occurred_at__lt=day_end,
         ).order_by("occurred_at", "upstream_event_id")
@@ -252,18 +261,14 @@ def rebuild_event_production_runs(
         applied_events = [
             event
             for event in all_day_events
-            if event.applied_to_analytics
+            if event.applied_to_analytics and event.applied_to_production
         ]
         if not applied_events:
             raise ProductionRepairError(
                 "no applied continuous-analytics events exist for camera and local day"
             )
         if any(
-            event.applied_to_analytics
-            and not (
-                event.mode == "always_on"
-                or (event.mode == "session" and event.continuous_analytics)
-            )
+            event.applied_to_analytics != event.applied_to_production
             for event in all_day_events
         ):
             raise ProductionRepairError("imported event application state is invalid")
@@ -271,11 +276,8 @@ def rebuild_event_production_runs(
         boundary_at = applied_events[0].occurred_at
         last_event_at = applied_events[-1].occurred_at
         if any(
-            (
-                event.mode == "always_on"
-                or (event.mode == "session" and event.continuous_analytics)
-            )
-            and not event.applied_to_analytics
+            not event.applied_to_analytics
+            and not event.applied_to_shipping_bootstrap
             for event in all_day_events
         ):
             raise ProductionRepairError(

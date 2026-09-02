@@ -11,6 +11,8 @@ RELEASE_STATE_RECEIPT="${RELEASE_STATE_RECEIPT:-${RELEASE_STATE_FILE}.prev}"
 RELEASE_RUNNER_FILE="${RELEASE_RUNNER_FILE:-${RELEASE_STATE_FILE}.runner}"
 RELEASE_STATE_DIRECTORY="$(dirname "$RELEASE_STATE_FILE")"
 STATE_TEMP_FILE=""
+OLD_CAMERA_WRITERS_QUIESCED=0
+CANDIDATE_START_ATTEMPTED=0
 
 case "$DEPLOY_ACTION" in
   deploy|rollback|finalize|mark-good) ;;
@@ -22,6 +24,18 @@ esac
 
 cleanup_state_temp() {
   cleanup_status=$?
+  if [ "$OLD_CAMERA_WRITERS_QUIESCED" -eq 1 ] && \
+     [ "$CANDIDATE_START_ATTEMPTED" -eq 0 ]; then
+    echo "Candidate did not start; resuming the previous camera writers." >&2
+    if ! (
+      cd "$APP_DIR" &&
+      docker compose -f "$COMPOSE_FILE" start \
+        backend camera-monitor ai-stock-monitor
+    ); then
+      echo "Failed to resume one or more previous camera writer containers." >&2
+      cleanup_status=1
+    fi
+  fi
   if [ -n "$STATE_TEMP_FILE" ]; then
     rm -f "$STATE_TEMP_FILE"
   fi
@@ -622,13 +636,37 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
   --entrypoint /bin/sh \
   backend -c 'chown -R app:app /app/media /app/staticfiles'
 
+# Migration 0028 introduces permanent analytics roles. The previous backend,
+# camera importer and stock poster do not understand those fences. Stop every
+# old camera writer before the candidate can migrate, then check sessions from
+# the candidate image while HTTP is unavailable. This closes the TOCTOU gap:
+# no new loading can start after the zero-open-session check, and no old worker
+# can post or import across the schema/policy cutover.
+echo "Quiescing previous camera writers before role migration..."
+OLD_CAMERA_WRITERS_QUIESCED=1
+if ! docker compose -f "$COMPOSE_FILE" stop -t 60 \
+  backend camera-monitor ai-stock-monitor; then
+  echo "Failed to quiesce previous camera writers." >&2
+  exit 1
+fi
+if ! docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
+  --entrypoint python \
+  backend manage.py check_camera_cutover; then
+  echo "Camera contour cutover refused; the previous release will resume." >&2
+  exit 2
+fi
+
 candidate_status=0
 echo "Starting candidate containers..."
+CANDIDATE_START_ATTEMPTED=1
 if docker compose -f "$COMPOSE_FILE" up -d --remove-orphans \
   --pull never --wait --wait-timeout 180; then
   :
 else
   candidate_status=$?
+fi
+if [ "$candidate_status" -eq 0 ]; then
+  OLD_CAMERA_WRITERS_QUIESCED=0
 fi
 
 if [ "$candidate_status" -eq 0 ]; then

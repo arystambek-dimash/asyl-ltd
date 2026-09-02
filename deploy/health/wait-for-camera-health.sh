@@ -90,8 +90,9 @@ wait_for_monitor() {
   attempts=$(( (CAMERA_HEALTH_WAIT_SECONDS + CAMERA_HEALTH_POLL_SECONDS - 1) / CAMERA_HEALTH_POLL_SECONDS ))
   attempt=1
   last_rc=2
+  last_output=""
 
-  set -- python manage.py check_camera_health --max-age "$CAMERA_HEALTH_MAX_AGE"
+  set -- python manage.py check_camera_health --human --max-age "$CAMERA_HEALTH_MAX_AGE"
   if [ -n "$CAMERA_HEALTH_REQUIRE_SINCE_EPOCH" ]; then
     set -- "$@" --require-since-epoch "$CAMERA_HEALTH_REQUIRE_SINCE_EPOCH"
   fi
@@ -105,6 +106,7 @@ wait_for_monitor() {
     rc=$?
     set -e
     last_rc=$rc
+    last_output="$output"
 
     case "$rc" in
       0)
@@ -136,6 +138,10 @@ wait_for_monitor() {
   done
 
   echo "Camera monitor did not produce a fresh heartbeat within ${CAMERA_HEALTH_WAIT_SECONDS}s (last exit ${last_rc})." >&2
+  if [ -n "$last_output" ]; then
+    echo "Последняя диагностика camera-monitor:" >&2
+    printf '%s\n' "$last_output" >&2
+  fi
   compose ps camera-monitor go2rtc >&2 || true
   return 2
 }

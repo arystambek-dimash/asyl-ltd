@@ -8,11 +8,16 @@ from django.utils import timezone
 
 from apps.cameras import ai, analytics
 from apps.cameras.models import (
+    ANALYTICS_SCOPE_AI247,
+    ANALYTICS_SCOPE_SHIPPING,
     AlwaysOnColorProductMapping,
     AlwaysOnCountArchive,
     AlwaysOnCounterCursor,
     AlwaysOnDailyAnalytics,
+    AlwaysOnImportedEvent,
+    ContinuousCameraRole,
     MonoblockCameraSettings,
+    ShippingDailyAnalytics,
 )
 from apps.catalog.models import Product
 from apps.eventlog.models import EventLog
@@ -75,9 +80,18 @@ def test_brand_columns_keep_database_defaults_for_old_image_rollback():
         [("cameras", "0023_remove_legacy_esp_schema")]
     ).apps
     old_daily = old_apps.get_model("cameras", "AlwaysOnDailyAnalytics")
+    old_imported = old_apps.get_model("cameras", "AlwaysOnImportedEvent")
     old_archive = old_apps.get_model("cameras", "AlwaysOnCountArchive")
     day = timezone.localdate()
     daily = old_daily.objects.create(camera="cam31", day=day)
+    imported = old_imported.objects.create(
+        camera="cam31",
+        upstream_event_id=1,
+        occurred_at=timezone.now(),
+        source="sub",
+        mode="always_on",
+        class_name="Red_50",
+    )
     archive = old_archive.objects.create(
         camera="cam31",
         period_start=day,
@@ -85,7 +99,159 @@ def test_brand_columns_keep_database_defaults_for_old_image_rollback():
     )
 
     assert AlwaysOnDailyAnalytics.objects.get(pk=daily.pk).model_per_brand == {}
+    assert AlwaysOnImportedEvent.objects.get(pk=imported.pk).analytics_scope == "ai_247"
     assert AlwaysOnCountArchive.objects.get(pk=archive.pk).model_per_brand == {}
+
+
+def test_shipping_and_ai247_analytics_are_disjoint_and_report_sync_state(
+    auth_client,
+    admin_user,
+):
+    today = timezone.localdate()
+    now = timezone.now()
+    MonoblockCameraSettings.objects.create(
+        camera_sources=["cam2"],
+        always_on_camera_sources=["cam3"],
+    )
+    AlwaysOnDailyAnalytics.objects.bulk_create(
+        [
+            AlwaysOnDailyAnalytics(
+                camera="cam2",
+                day=today,
+                model_total=100,
+            ),
+            AlwaysOnDailyAnalytics(
+                camera="cam3",
+                day=today,
+                model_total=7,
+            ),
+        ]
+    )
+    ShippingDailyAnalytics.objects.bulk_create(
+        [
+            ShippingDailyAnalytics(
+                camera="cam2",
+                day=today,
+                model_total=4,
+            ),
+            ShippingDailyAnalytics(
+                camera="cam3",
+                day=today,
+                model_total=200,
+            ),
+        ]
+    )
+    AlwaysOnCounterCursor.objects.bulk_create(
+        [
+            AlwaysOnCounterCursor(
+                camera=camera,
+                event_sync_supported=True,
+                event_boundary_validated=True,
+                event_caught_up_at=now,
+            )
+            for camera in ("cam2", "cam3")
+        ]
+    )
+
+    shipping = auth_client(admin_user).get(
+        "/api/cameras/shipping-continuous-analytics/"
+    )
+    ai247 = auth_client(admin_user).get("/api/cameras/always-on-analytics/")
+
+    assert shipping.status_code == 200
+    assert shipping.data["analytics_scope"] == "shipping"
+    assert shipping.data["total"] == 4
+    assert [row["camera"] for row in shipping.data["cameras"]] == ["cam2"]
+    assert shipping.data["analytics_sync"]["available"] is True
+    assert shipping.data["cameras"][0]["analytics_sync"]["status"] == "synced"
+    assert ai247.status_code == 200
+    assert ai247.data["analytics_scope"] == "ai_247"
+    assert ai247.data["total"] == 7
+    assert [row["camera"] for row in ai247.data["cameras"]] == ["cam3"]
+
+
+def test_shipping_analytics_marks_failed_import_instead_of_presenting_zero_as_fresh(
+    auth_client,
+    admin_user,
+):
+    MonoblockCameraSettings.objects.create(camera_sources=["cam2"])
+    ShippingDailyAnalytics.objects.create(
+        camera="cam2",
+        day=timezone.localdate(),
+        model_total=9,
+    )
+    AlwaysOnCounterCursor.objects.create(
+        camera="cam2",
+        event_sync_supported=True,
+        event_boundary_validated=True,
+        event_sync_error="camera PC timeout",
+        event_sync_failed_at=timezone.now(),
+    )
+
+    response = auth_client(admin_user).get(
+        "/api/cameras/shipping-continuous-analytics/"
+    )
+
+    assert response.status_code == 200
+    assert response.data["total"] == 9
+    assert response.data["analytics_sync"]["available"] is False
+    assert response.data["analytics_sync"]["status"] == "error"
+    assert response.data["cameras"][0]["analytics_sync"]["error"] == (
+        "camera PC timeout"
+    )
+
+
+def test_missing_event_cursor_marks_zero_analytics_unavailable(
+    auth_client,
+    admin_user,
+):
+    MonoblockCameraSettings.objects.create(camera_sources=["cam2"])
+
+    response = auth_client(admin_user).get(
+        "/api/cameras/shipping-continuous-analytics/"
+    )
+
+    assert response.status_code == 200
+    assert response.data["total"] == 0
+    assert response.data["analytics_sync"] == {
+        "status": "pending",
+        "available": False,
+        "detail": "Журнал событий камеры ещё не проверен",
+    }
+    assert response.data["cameras"][0]["analytics_sync"]["available"] is False
+
+
+def test_today_payload_reads_sync_cursor_before_daily_totals():
+    """A concurrent import must not expose a fresh cursor with stale zero rows."""
+
+    MonoblockCameraSettings.objects.create(camera_sources=["cam2"])
+    calls = []
+    cursor_filter = AlwaysOnCounterCursor.objects.filter
+    daily_filter = ShippingDailyAnalytics.objects.filter
+
+    def tracked_cursor_filter(*args, **kwargs):
+        calls.append("cursor")
+        return cursor_filter(*args, **kwargs)
+
+    def tracked_daily_filter(*args, **kwargs):
+        calls.append("daily")
+        return daily_filter(*args, **kwargs)
+
+    with (
+        patch.object(
+            AlwaysOnCounterCursor.objects,
+            "filter",
+            side_effect=tracked_cursor_filter,
+        ),
+        patch.object(
+            ShippingDailyAnalytics.objects,
+            "filter",
+            side_effect=tracked_daily_filter,
+        ),
+    ):
+        analytics.today_payload(ANALYTICS_SCOPE_SHIPPING)
+
+    assert calls.index("cursor") < calls.index("daily")
 
 
 def test_session_count_is_not_added_to_background_analytics():
@@ -98,6 +264,10 @@ def test_session_count_is_not_added_to_background_analytics():
 
 def test_superuser_can_subtract_with_reason_and_audit(auth_client, admin_user, boss):
     MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
+    ContinuousCameraRole.objects.create(
+        camera="cam3",
+        analytics_scope=ANALYTICS_SCOPE_AI247,
+    )
     analytics.record_snapshot(live(12, per_color={"Red_50": 12}))
 
     forbidden = auth_client(boss).post(
@@ -130,6 +300,10 @@ def test_loader_reads_production_but_only_manager_changes_route(
     boss,
 ):
     MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
+    ContinuousCameraRole.objects.create(
+        camera="cam3",
+        analytics_scope=ANALYTICS_SCOPE_AI247,
+    )
     red = Product.objects.create(
         name="Робот Кука",
         color="Red",
@@ -322,6 +496,10 @@ def test_reconcile_never_switches_off_on_an_unreadable_camera_list(malformed):
         singleton=True,
         defaults={"always_on_camera_sources": ["cam3"]},
     )
+    ContinuousCameraRole.objects.update_or_create(
+        camera="cam3",
+        defaults={"analytics_scope": ANALYTICS_SCOPE_AI247},
+    )
 
     with (
         patch.object(
@@ -350,12 +528,21 @@ def test_reconcile_still_pushes_the_desired_set_when_the_pc_disagrees():
         singleton=True,
         defaults={"always_on_camera_sources": ["cam3"]},
     )
+    ContinuousCameraRole.objects.update_or_create(
+        camera="cam3",
+        defaults={"analytics_scope": ANALYTICS_SCOPE_AI247},
+    )
 
     with (
         patch.object(
             ai,
             "always_on_status",
-            return_value={"cameras": [], "source": "sub", "processors": []},
+            return_value={
+                "cameras": [],
+                "source": "sub",
+                "analytics_scopes": {},
+                "processors": [],
+            },
         ),
         patch.object(
             ai,
@@ -363,6 +550,7 @@ def test_reconcile_still_pushes_the_desired_set_when_the_pc_disagrees():
             return_value={
                 "cameras": ["cam3"],
                 "source": "sub",
+                "analytics_scopes": {"cam3": "ai_247"},
                 "processors": [],
             },
         ) as configure,
@@ -374,4 +562,8 @@ def test_reconcile_still_pushes_the_desired_set_when_the_pc_disagrees():
     ):
         continuous.reconcile()
 
-    configure.assert_called_once_with(["cam3"], "sub")
+    configure.assert_called_once_with(
+        ["cam3"],
+        "sub",
+        analytics_scopes={"cam3": "ai_247"},
+    )

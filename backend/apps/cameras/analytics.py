@@ -10,16 +10,143 @@ from apps.eventlog.services import log_event
 
 from . import ai
 from .models import (
+    ANALYTICS_SCOPE_AI247,
+    ANALYTICS_SCOPE_SHIPPING,
     AlwaysOnCountArchive,
     AlwaysOnCounterCursor,
     AlwaysOnDailyAnalytics,
+    ContinuousCameraRole,
     MonoblockCameraSettings,
+    ShippingAnalyticsBootstrap,
+    ShippingDailyAnalytics,
 )
 
 EVENT_ARCHIVE_MAX_SYNC_AGE = timedelta(seconds=60)
+EVENT_ANALYTICS_STALE_AGE = timedelta(seconds=90)
 LEGACY_BRAND = "unclassified"
 UNKNOWN_BRAND = "unknown"
 NON_DOMINANT_BRANDS = frozenset({LEGACY_BRAND, UNKNOWN_BRAND})
+
+
+def _assert_ai247_reservation(camera: str) -> str:
+    camera = ai.normalize(camera)
+    if not ContinuousCameraRole.objects.filter(
+        camera=camera,
+        analytics_scope=ANALYTICS_SCOPE_AI247,
+    ).exists():
+        raise ValidationError(
+            {
+                "detail": "Камера не закреплена за контуром AI 24/7",
+                "code": "camera_not_in_ai247",
+            }
+        )
+    return camera
+
+
+def _daily_model(analytics_scope: str):
+    if analytics_scope == ANALYTICS_SCOPE_AI247:
+        return AlwaysOnDailyAnalytics
+    if analytics_scope == ANALYTICS_SCOPE_SHIPPING:
+        return ShippingDailyAnalytics
+    raise ValueError("unknown continuous analytics scope")
+
+
+@transaction.atomic
+def confirm_shipping_bootstrap_scope(camera: str) -> bool:
+    """Persist CV's role-aware acknowledgement before importing its tail."""
+
+    marker = (
+        ShippingAnalyticsBootstrap.objects.select_for_update()
+        .filter(
+            camera=ai.normalize(camera),
+            completed_at__isnull=True,
+        )
+        .first()
+    )
+    if marker is None:
+        return False
+    if marker.scope_confirmed_at is None:
+        marker.scope_confirmed_at = timezone.now()
+        marker.save(update_fields=["scope_confirmed_at"])
+    return True
+
+
+@transaction.atomic
+def complete_shipping_bootstrap(camera: str) -> bool:
+    """Add the final legacy tail once the role-aware journal is caught up.
+
+    This is additive because post-cutover shipping events may already exist in
+    the new table. Legacy rows remain untouched for an automatic old-image
+    rollback. The cursor lock serializes this transfer with event ingestion.
+    """
+
+    camera = ai.normalize(camera)
+    if not ShippingAnalyticsBootstrap.objects.filter(
+        camera=camera,
+        completed_at__isnull=True,
+    ).exists():
+        return False
+    cursor = (
+        AlwaysOnCounterCursor.objects.select_for_update()
+        .filter(camera=camera)
+        .first()
+    )
+    marker = (
+        ShippingAnalyticsBootstrap.objects.select_for_update()
+        .filter(camera=camera, completed_at__isnull=True)
+        .first()
+    )
+    if marker is None:
+        return False
+    if (
+        cursor is None
+        or cursor.event_sync_supported is not True
+        or not cursor.event_boundary_validated
+        or cursor.event_sync_error
+        or cursor.event_sync_failed_at is not None
+        or cursor.event_caught_up_at is None
+        or cursor.event_caught_up_at < marker.created_at
+        or marker.scope_confirmed_at is None
+        or cursor.event_caught_up_at < marker.scope_confirmed_at
+    ):
+        return False
+
+    legacy_rows = list(
+        AlwaysOnDailyAnalytics.objects.select_for_update().filter(
+            camera=camera,
+            archived_at__isnull=True,
+        )
+    )
+    for legacy in legacy_rows:
+        shipping, _ = (
+            ShippingDailyAnalytics.objects.select_for_update().get_or_create(
+                camera=camera,
+                day=legacy.day,
+            )
+        )
+        colors = dict(shipping.model_per_color or {})
+        for color, value in (legacy.model_per_color or {}).items():
+            colors[color] = int(colors.get(color, 0)) + int(value)
+        brands = dict(shipping.model_per_brand or {})
+        for brand, value in (legacy.model_per_brand or {}).items():
+            brands[brand] = int(brands.get(brand, 0)) + int(value)
+        shipping.model_total += legacy.model_total
+        shipping.model_per_color = colors
+        shipping.model_per_brand = brands
+        shipping.adjustment += legacy.adjustment
+        shipping.save(
+            update_fields=[
+                "model_total",
+                "model_per_color",
+                "model_per_brand",
+                "adjustment",
+                "updated_at",
+            ]
+        )
+
+    marker.completed_at = timezone.now()
+    marker.save(update_fields=["completed_at"])
+    return True
 
 
 def _processor_total(processor: dict) -> int | None:
@@ -116,7 +243,9 @@ def record_model_delta(
     brand_delta: dict[str, int] | None = None,
     total_delta: int,
     observed_at: datetime,
+    analytics_scope: str = ANALYTICS_SCOPE_AI247,
     ordered_color_event: bool = False,
+    record_production: bool = True,
 ) -> None:
     """Apply one authoritative count delta to both CRM ledgers.
 
@@ -131,21 +260,22 @@ def record_model_delta(
     if total_delta <= 0:
         return
 
-    # The daily aggregate remains the fast source for charts.  The append-only
-    # production ledger is deliberately separate: display archives may be
-    # created/deleted by an administrator, while warehouse receipts must never
-    # be duplicated or lost because of those presentation actions.
-    from . import production
+    daily_model = _daily_model(analytics_scope)
 
-    production.record_color_deltas(
-        camera=camera,
-        color_deltas=color_delta,
-        total_delta=total_delta,
-        observed_at=observed_at,
-        ordered_color_event=ordered_color_event,
-    )
+    # Only the explicit AI 24/7 contour represents production and can create
+    # warehouse receipts. Shipping analytics is an operational camera ledger.
+    if analytics_scope == ANALYTICS_SCOPE_AI247 and record_production:
+        from . import production
 
-    row, _ = AlwaysOnDailyAnalytics.objects.select_for_update().get_or_create(
+        production.record_color_deltas(
+            camera=camera,
+            color_deltas=color_delta,
+            total_delta=total_delta,
+            observed_at=observed_at,
+            ordered_color_event=ordered_color_event,
+        )
+
+    row, _ = daily_model.objects.select_for_update().get_or_create(
         camera=camera,
         day=timezone.localdate(observed_at),
     )
@@ -169,7 +299,12 @@ def record_model_delta(
 
 
 @transaction.atomic
-def _record_processor(processor: dict, observed_at: datetime) -> None:
+def _record_processor(
+    processor: dict,
+    observed_at: datetime,
+    *,
+    analytics_scope: str,
+) -> None:
     camera = processor.get("cam")
     total = _processor_total(processor)
     if not isinstance(camera, str) or total is None:
@@ -223,6 +358,7 @@ def _record_processor(processor: dict, observed_at: datetime) -> None:
         color_delta=color_delta,
         total_delta=delta,
         observed_at=observed_at,
+        analytics_scope=analytics_scope,
     )
 
 
@@ -231,6 +367,7 @@ def record_snapshot(
     observed_at: datetime | None = None,
     *,
     cameras: set[str] | None = None,
+    analytics_scopes: dict[str, str] | None = None,
 ) -> None:
     observed_at = observed_at or timezone.now()
     processors = live.get("processors") if isinstance(live, dict) else None
@@ -246,15 +383,37 @@ def record_snapshot(
                 continue
             if camera not in cameras:
                 continue
-        _record_processor(processor, observed_at)
+        try:
+            camera = ai.normalize(processor.get("cam"))
+        except ai.AiError:
+            continue
+        if analytics_scopes is None:
+            scope = ANALYTICS_SCOPE_AI247
+        else:
+            # A caller with an explicit role map must never guess the missing
+            # camera into AI 24/7 (and accidentally create stock movements).
+            scope = analytics_scopes.get(camera)
+        if scope not in {ANALYTICS_SCOPE_AI247, ANALYTICS_SCOPE_SHIPPING}:
+            continue
+        _record_processor(
+            processor,
+            observed_at,
+            analytics_scope=scope,
+        )
 
 
-def _row_payload(row: AlwaysOnDailyAnalytics | None, camera: str, day: date) -> dict:
+def _row_payload(
+    row: AlwaysOnDailyAnalytics | ShippingDailyAnalytics | None,
+    camera: str,
+    day: date,
+    analytics_scope: str = ANALYTICS_SCOPE_AI247,
+) -> dict:
     colors = _normalized_colors(row.model_per_color if row else None)
     model_total = row.model_total if row else 0
     brands = _normalized_brands(row.model_per_brand if row else None, model_total)
     return {
         "camera": camera,
+        "analytics_scope": analytics_scope,
         "day": day.isoformat(),
         "model_total": model_total,
         "model_per_color": colors,
@@ -350,30 +509,142 @@ def _dominant_brand(items: list[dict]) -> str | None:
 
 
 def _history_payload(
-    rows_by_day: dict[date, AlwaysOnDailyAnalytics], start: date, end: date
+    rows_by_day: dict[
+        date,
+        AlwaysOnDailyAnalytics | ShippingDailyAnalytics,
+    ],
+    start: date,
+    end: date,
+    analytics_scope: str,
 ) -> list[dict]:
     result = []
     current = start
     while current <= end:
         result.append(
-            _row_payload(rows_by_day.get(current), "", current) | {"camera": None}
+            _row_payload(
+                rows_by_day.get(current),
+                "",
+                current,
+                analytics_scope,
+            )
+            | {"camera": None}
         )
         current += timedelta(days=1)
     return result
 
 
-def today_payload() -> dict:
+def _event_sync_payload(
+    cursor: AlwaysOnCounterCursor | None,
+    *,
+    now: datetime,
+    bootstrap_pending: bool = False,
+) -> dict:
+    status = "pending"
+    detail = "Журнал событий камеры ещё не проверен"
+    if cursor is not None:
+        if cursor.event_sync_error or cursor.event_sync_failed_at is not None:
+            status = "error"
+            detail = cursor.event_sync_error or "Синхронизация событий завершилась ошибкой"
+        elif cursor.event_sync_supported is False:
+            status = "unsupported"
+            detail = "AI-сервис не поддерживает надёжный журнал событий"
+        elif not cursor.event_boundary_validated:
+            status = "pending"
+            detail = "Начальная граница журнала событий ещё не подтверждена"
+        elif cursor.event_caught_up_at is None:
+            status = "catching_up"
+            detail = "События камеры ещё загружаются"
+        elif now - cursor.event_caught_up_at > EVENT_ANALYTICS_STALE_AGE:
+            status = "stale"
+            detail = "Аналитика камеры давно не синхронизировалась"
+        else:
+            status = "synced"
+            detail = ""
+    if bootstrap_pending and status == "synced":
+        status = "catching_up"
+        detail = "История отгрузки ещё переносится"
+    return {
+        "status": status,
+        "available": status == "synced",
+        "caught_up_at": cursor.event_caught_up_at if cursor else None,
+        "last_event_at": cursor.last_event_at if cursor else None,
+        "error": cursor.event_sync_error if cursor else "",
+        "detail": detail,
+    }
+
+
+def _aggregate_sync_payload(rows: list[dict]) -> dict:
+    unavailable = [row for row in rows if not row["available"]]
+    if not unavailable:
+        return {"status": "synced", "available": True, "detail": ""}
+    priority = {
+        "error": 0,
+        "stale": 1,
+        "catching_up": 2,
+        "pending": 3,
+        "unsupported": 4,
+    }
+    first = min(unavailable, key=lambda row: priority.get(row["status"], 99))
+    return {
+        "status": first["status"],
+        "available": False,
+        "detail": first["detail"],
+    }
+
+
+def today_payload(
+    analytics_scope: str = ANALYTICS_SCOPE_AI247,
+    *,
+    camera_sources: list[str] | tuple[str, ...] | None = None,
+) -> dict:
+    if analytics_scope == ANALYTICS_SCOPE_AI247:
+        desired = MonoblockCameraSettings.ai247_sources()
+    elif analytics_scope == ANALYTICS_SCOPE_SHIPPING:
+        desired = MonoblockCameraSettings.shipping_sources()
+    else:
+        raise ValueError("unknown continuous analytics scope")
+    if camera_sources is not None:
+        requested = {
+            ai.normalize(camera)
+            for camera in camera_sources
+        }
+        desired = [camera for camera in desired if camera in requested]
     day = timezone.localdate()
     history_start = day - timedelta(days=13)
-    desired = MonoblockCameraSettings.always_on_sources()
     # Архивные дни остаются в базе ради истории, но в текущий счёт не входят:
     # их мешки уже посчитаны и перенесены в архив.
-    all_rows = list(
-        AlwaysOnDailyAnalytics.objects.filter(
-            camera__in=desired, archived_at__isnull=True
+    daily_model = _daily_model(analytics_scope)
+    daily_filters = {"camera__in": desired}
+    if analytics_scope == ANALYTICS_SCOPE_AI247:
+        daily_filters["archived_at__isnull"] = True
+    # Read the one-time fence before rows. If bootstrap commits between these
+    # reads, this response remains unavailable; if it committed earlier, its
+    # atomic row updates are necessarily visible below. Never emit a transient
+    # synced zero from a pre-seed snapshot.
+    pending_bootstraps = (
+        set(
+            ShippingAnalyticsBootstrap.objects.filter(
+                camera__in=desired,
+                completed_at__isnull=True,
+            ).values_list("camera", flat=True)
         )
+        if analytics_scope == ANALYTICS_SCOPE_SHIPPING
+        else set()
     )
-    rows_by_camera: dict[str, list[AlwaysOnDailyAnalytics]] = {
+    now = timezone.now()
+    # Cursor and daily totals are committed together by the event importer.
+    # Read the cursor first: under READ COMMITTED a concurrent import can then
+    # only expose an older cursor with newer rows (temporarily unavailable),
+    # never newer authoritative sync state with older/empty rows (false zero).
+    cursors = {
+        row.camera: row
+        for row in AlwaysOnCounterCursor.objects.filter(camera__in=desired)
+    }
+    all_rows = list(daily_model.objects.filter(**daily_filters))
+    rows_by_camera: dict[
+        str,
+        list[AlwaysOnDailyAnalytics | ShippingDailyAnalytics],
+    ] = {
         camera: [] for camera in desired
     }
     for row in all_rows:
@@ -388,14 +659,24 @@ def today_payload() -> dict:
         brands = _merge_brands(camera_rows)
         brand_items = _brand_payload(brands)
         cameras.append(
-            _row_payload(by_day.get(day), camera, day)
+            _row_payload(by_day.get(day), camera, day, analytics_scope)
             | {
                 "all_time_total": sum(row.total for row in camera_rows),
-                "history": _history_payload(by_day, history_start, day),
+                "history": _history_payload(
+                    by_day,
+                    history_start,
+                    day,
+                    analytics_scope,
+                ),
                 "colors": color_items,
                 "dominant_color": color_items[0]["color"] if color_items else None,
                 "brands": brand_items,
                 "dominant_brand": _dominant_brand(brand_items),
+                "analytics_sync": _event_sync_payload(
+                    cursors.get(camera),
+                    now=now,
+                    bootstrap_pending=camera in pending_bootstraps,
+                ),
             }
         )
 
@@ -460,7 +741,10 @@ def today_payload() -> dict:
     all_colors = _merge_colors(all_rows)
     all_brands = _merge_brands(all_rows)
     brand_items = _brand_payload(all_brands)
+    sync_rows = [item["analytics_sync"] for item in cameras]
     return {
+        "analytics_scope": analytics_scope,
+        "analytics_sync": _aggregate_sync_payload(sync_rows),
         "day": day.isoformat(),
         "total": sum(item["total"] for item in cameras),
         "all_time_total": sum(item["all_time_total"] for item in cameras),
@@ -489,7 +773,7 @@ def archive_camera(camera: str, note: str, user) -> dict:
     выпадают из «сегодня» и «за всё время». Сырой cursor остаётся baseline
     camera-PC, поэтому после закрытия учитывается только новый прирост.
     """
-    camera = ai.normalize(camera)
+    camera = _assert_ai247_reservation(camera)
     note = " ".join(str(note or "").split())[:500]
 
     # Serialize archive boundaries with event ingestion.  The API performs a
@@ -515,7 +799,10 @@ def archive_camera(camera: str, note: str, user) -> dict:
 
     rows = list(
         AlwaysOnDailyAnalytics.objects.select_for_update()
-        .filter(camera=camera, archived_at__isnull=True)
+        .filter(
+            camera=camera,
+            archived_at__isnull=True,
+        )
         .order_by("day")
     )
     if not rows:
@@ -679,6 +966,7 @@ def delete_archive(archive_id: int, user) -> dict:
                 "code": "archive_not_found",
             }
         )
+    _assert_ai247_reservation(archive.camera)
 
     restored_days = archive.daily_rows.count()
     AlwaysOnDailyAnalytics.objects.filter(archive=archive).update(
@@ -739,18 +1027,27 @@ def delete_archive(archive_id: int, user) -> dict:
     return payload
 
 
-def archives_payload(camera: str | None = None) -> list[dict]:
+def archives_payload(
+    camera: str | None = None,
+    *,
+    camera_sources: list[str] | tuple[str, ...] | None = None,
+) -> list[dict]:
     rows = AlwaysOnCountArchive.objects.select_related("archived_by").prefetch_related(
         "daily_rows"
     )
+    if camera_sources is None:
+        camera_sources = MonoblockCameraSettings.reserved_sources(
+            ANALYTICS_SCOPE_AI247
+        )
     if camera:
         rows = rows.filter(camera=ai.normalize(camera))
+    rows = rows.filter(camera__in=camera_sources)
     return [_archive_payload(row) for row in rows]
 
 
 @transaction.atomic
 def subtract_today(camera: str, amount, reason: str, user, color: str) -> dict:
-    camera = ai.normalize(camera)
+    camera = _assert_ai247_reservation(camera)
     # Production corrections acquire cursor→batch.  Take the cursor before
     # this function locks the daily row to preserve that global lock order.
     AlwaysOnCounterCursor.objects.select_for_update().get_or_create(camera=camera)

@@ -4,9 +4,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError
 
 from apps.cameras import analytics, production
 from apps.cameras.models import (
+    ANALYTICS_SCOPE_AI247,
+    ANALYTICS_SCOPE_SHIPPING,
     AlwaysOnColorProductMapping,
     AlwaysOnCounterCursor,
     AlwaysOnDailyAnalytics,
@@ -15,6 +18,7 @@ from apps.cameras.models import (
     AlwaysOnProductionRun,
     AlwaysOnStockBatch,
     AlwaysOnStockPosting,
+    ContinuousCameraRole,
     MonoblockCameraSettings,
 )
 from apps.catalog.models import Product
@@ -51,6 +55,13 @@ def _closed_run(*, camera="cam3", color="red", bags=10, day=16):
     )
 
 
+def _reserve_ai247(camera="cam3"):
+    ContinuousCameraRole.objects.update_or_create(
+        camera=camera,
+        defaults={"analytics_scope": ANALYTICS_SCOPE_AI247},
+    )
+
+
 def _imported_event(
     event_id: int,
     occurred_at: datetime,
@@ -61,6 +72,7 @@ def _imported_event(
     class_name: str = "Red_50",
     color: str | None = None,
     brand: str | None = "korol",
+    analytics_scope: str = ANALYTICS_SCOPE_AI247,
 ) -> AlwaysOnImportedEvent:
     return AlwaysOnImportedEvent.objects.create(
         camera=camera,
@@ -68,11 +80,17 @@ def _imported_event(
         occurred_at=occurred_at,
         source="sub",
         mode=mode,
+        analytics_scope=analytics_scope,
         class_name=class_name,
         color=color,
         brand=brand,
         total_after=event_id,
         applied_to_analytics=applied,
+        applied_to_production=(
+            applied
+            and analytics_scope == ANALYTICS_SCOPE_AI247
+            and mode == "always_on"
+        ),
     )
 
 
@@ -389,6 +407,7 @@ def test_smooth_day_runs_never_merges_with_or_across_unreliable_neighbor(barrier
 
 
 def test_daily_stock_post_is_exactly_once():
+    _reserve_ai247()
     product = _product()
     _closed_run(bags=12)
     AlwaysOnColorProductMapping.objects.create(
@@ -412,6 +431,7 @@ def test_daily_stock_post_is_exactly_once():
 
 
 def test_event_camera_stock_waits_for_a_fresh_caught_up_page_after_cutoff():
+    _reserve_ai247()
     product = _product()
     _closed_run(bags=12)
     AlwaysOnColorProductMapping.objects.create(
@@ -444,6 +464,7 @@ def test_event_camera_stock_waits_for_a_fresh_caught_up_page_after_cutoff():
 
 
 def test_stock_cannot_close_before_the_initial_event_capability_probe():
+    _reserve_ai247()
     product = _product()
     _closed_run(bags=4)
     AlwaysOnColorProductMapping.objects.create(
@@ -461,6 +482,7 @@ def test_stock_cannot_close_before_the_initial_event_capability_probe():
 
 
 def test_missing_mapping_blocks_whole_batch_then_retries_safely():
+    _reserve_ai247()
     red = _product("Red")
     _closed_run(color="red", bags=7)
     _closed_run(color="blue", bags=4)
@@ -491,6 +513,7 @@ def test_missing_mapping_blocks_whole_batch_then_retries_safely():
 
 
 def test_color_correction_reduces_the_warehouse_receipt(boss):
+    _reserve_ai247()
     product = _product()
     _closed_run(bags=10)
     AlwaysOnCounterCursor.objects.create(
@@ -519,8 +542,47 @@ def test_color_correction_reduces_the_warehouse_receipt(boss):
     assert StockItem.objects.get(product=product).bags == 8
 
 
+def test_shipping_reserved_legacy_batches_are_never_posted_or_retried():
+    for camera in ("cam2", "cam4"):
+        ContinuousCameraRole.objects.create(
+            camera=camera,
+            analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+        )
+    blocked_day = _at(15, 10).date()
+    failed_day = _at(16, 10).date()
+    _closed_run(camera="cam2", bags=5, day=15)
+    _closed_run(camera="cam4", bags=7, day=16)
+    blocked = AlwaysOnStockBatch.objects.create(
+        camera="cam2",
+        business_day=blocked_day,
+        scheduled_for=production.scheduled_for(blocked_day),
+        status=AlwaysOnStockBatch.BLOCKED,
+        last_error="legacy blocked",
+    )
+    failed = AlwaysOnStockBatch.objects.create(
+        camera="cam4",
+        business_day=failed_day,
+        scheduled_for=production.scheduled_for(failed_day),
+        status=AlwaysOnStockBatch.FAILED,
+        last_error="legacy failed",
+    )
+
+    assert production._due_pairs(_at(17, 19)) == []
+    assert production.post_due_stock(_at(17, 19)) == []
+    for batch in (blocked, failed):
+        with pytest.raises(ValidationError):
+            production.retry_batch(batch.pk)
+        batch.refresh_from_db()
+    assert blocked.status == AlwaysOnStockBatch.BLOCKED
+    assert blocked.last_error == "legacy blocked"
+    assert failed.status == AlwaysOnStockBatch.FAILED
+    assert failed.last_error == "legacy failed"
+    assert not StockMovement.objects.exists()
+
+
 def test_display_archive_does_not_duplicate_the_production_ledger(boss):
     MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
+    _reserve_ai247()
     first = _at(16, 12)
     analytics.record_snapshot(
         {
@@ -591,6 +653,27 @@ def test_production_payload_returns_every_run_for_selected_day():
     )
     # Preserve the existing bounded journal contract for the settings screen.
     assert len(result["runs"]) == 100
+
+
+def test_viewing_ai_production_does_not_close_a_shipping_legacy_run():
+    _reserve_ai247("cam3")
+    ContinuousCameraRole.objects.create(
+        camera="cam2",
+        analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+    )
+    shipping_run = AlwaysOnProductionRun.objects.create(
+        camera="cam2",
+        business_day=_at(14, 10).date(),
+        color="red",
+        started_at=_at(14, 10),
+        last_counted_at=_at(14, 10),
+        model_bags=3,
+    )
+
+    production.production_payload("cam3", day="2026-08-14")
+
+    shipping_run.refresh_from_db()
+    assert shipping_run.ended_at is None
 
 
 def test_selected_day_dominant_brand_is_joined_to_normalized_event_color():
@@ -677,6 +760,17 @@ def test_dominant_brand_uses_local_day_and_only_applied_always_on_camera_events(
         class_name="Orange_50",
         brand="not applied",
     )
+    # A camera may change contour later on the same day. Shipping enrichment
+    # must never label AI-production totals, even though it is durably applied
+    # to its own analytics ledger.
+    for event_id in (7, 8):
+        _imported_event(
+            event_id,
+            _at(14, 15) + timedelta(seconds=event_id),
+            class_name="Red_50",
+            brand="shipping-only",
+            analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+        )
     AlwaysOnDailyAnalytics.objects.create(
         camera="cam3",
         day=_at(14, 0).date(),
@@ -799,6 +893,14 @@ def test_production_api_filters_day_and_rejects_bad_iso_date(
     auth_client,
     admin_user,
 ):
+    MonoblockCameraSettings.objects.update_or_create(
+        singleton=True,
+        defaults={"always_on_camera_sources": ["cam3"]},
+    )
+    ContinuousCameraRole.objects.create(
+        camera="cam3",
+        analytics_scope=ANALYTICS_SCOPE_AI247,
+    )
     selected = _closed_run(camera="cam3", color="red", bags=7, day=14)
     _closed_run(camera="cam3", color="blue", bags=8, day=15)
 
@@ -815,6 +917,46 @@ def test_production_api_filters_day_and_rejects_bad_iso_date(
     )
     assert invalid.status_code == 400
     assert "day" in invalid.data["detail"]
+
+
+def test_production_api_rejects_shipping_contour_camera(auth_client, admin_user):
+    MonoblockCameraSettings.objects.create(
+        camera_sources=["cam2"],
+        always_on_camera_sources=["cam3"],
+    )
+
+    response = auth_client(admin_user).get(
+        "/api/cameras/always-on-production/?camera=cam2"
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "camera_not_in_ai247"
+
+
+def test_production_api_fails_closed_when_active_ai_setting_has_shipping_role(
+    auth_client,
+    admin_user,
+):
+    MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam2"])
+    ContinuousCameraRole.objects.create(
+        camera="cam2",
+        analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+    )
+
+    read = auth_client(admin_user).get(
+        "/api/cameras/always-on-production/?camera=cam2"
+    )
+    write = auth_client(admin_user).put(
+        "/api/cameras/always-on-production/",
+        {"camera": "cam2", "mappings": []},
+        format="json",
+    )
+
+    assert read.status_code == 400
+    assert read.data["code"] == "camera_not_in_ai247"
+    assert write.status_code == 400
+    assert write.data["code"] == "camera_not_in_ai247"
+    assert not AlwaysOnColorProductMapping.objects.filter(camera="cam2").exists()
 
 
 def test_selected_analytics_day_uses_local_calendar_not_stock_business_day():

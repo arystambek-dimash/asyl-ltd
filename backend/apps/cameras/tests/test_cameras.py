@@ -10,7 +10,10 @@ from django.test import override_settings
 
 from apps.cameras import ai, continuous, services
 from apps.cameras.models import (
+    ANALYTICS_SCOPE_AI247,
+    ANALYTICS_SCOPE_SHIPPING,
     AiCountingSession,
+    ContinuousCameraRole,
     MonoblockCameraSettings,
     MonoblockDevice,
 )
@@ -349,12 +352,12 @@ def test_admin_configures_monoblock_camera_allowlist(auth_client, boss, operator
     assert response.data["camera_sources"] == ["cam2", "cam3"]
 
 
-def test_effective_always_on_sources_are_a_stable_union(
+def test_continuous_sources_and_roles_are_stable_and_disjoint(
     django_user_model,
 ):
     row = MonoblockCameraSettings.objects.create(
         camera_sources=["cam3", "cam2", "cam3"],
-        always_on_camera_sources=["cam4", "cam2"],
+        always_on_camera_sources=["cam4"],
     )
     active_user = django_user_model.objects.create_user(username="mono-cam5")
     inactive_user = django_user_model.objects.create_user(username="mono-cam6")
@@ -370,18 +373,65 @@ def test_effective_always_on_sources_are_a_stable_union(
         camera_source="cam6",
         is_active=False,
     )
+    ContinuousCameraRole.objects.bulk_create(
+        [
+            ContinuousCameraRole(
+                camera=camera,
+                analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+            )
+            for camera in ("cam2", "cam3", "cam5")
+        ]
+        + [
+            ContinuousCameraRole(
+                camera="cam4",
+                analytics_scope=ANALYTICS_SCOPE_AI247,
+            )
+        ]
+    )
 
-    assert MonoblockCameraSettings.mandatory_always_on_sources(row) == [
+    assert MonoblockCameraSettings.shipping_sources(row) == [
         "cam3",
         "cam2",
         "cam5",
     ]
-    assert MonoblockCameraSettings.always_on_sources(row) == [
+    assert MonoblockCameraSettings.ai247_sources(row) == ["cam4"]
+    assert MonoblockCameraSettings.continuous_sources(row) == [
         "cam3",
         "cam2",
         "cam5",
         "cam4",
     ]
+    assert MonoblockCameraSettings.continuous_roles(row) == {
+        "cam3": ANALYTICS_SCOPE_SHIPPING,
+        "cam2": ANALYTICS_SCOPE_SHIPPING,
+        "cam5": ANALYTICS_SCOPE_SHIPPING,
+        "cam4": ANALYTICS_SCOPE_AI247,
+    }
+
+
+def test_shipping_picker_cannot_claim_an_ai247_camera_atomically(
+    auth_client,
+    boss,
+):
+    row = MonoblockCameraSettings.objects.create(
+        camera_sources=["cam2"],
+        always_on_camera_sources=["cam4"],
+    )
+
+    with patch.object(ai, "configure_always_on") as configure:
+        response = auth_client(boss).put(
+            "/api/cameras/monoblock-settings/",
+            {"camera_sources": ["cam2", "cam4"]},
+            format="json",
+        )
+
+    assert response.status_code == 409
+    assert response.data["code"] == "camera_role_immutable"
+    assert response.data["detail"]["cameras"] == ["cam4"]
+    configure.assert_not_called()
+    row.refresh_from_db()
+    assert row.camera_sources == ["cam2"]
+    assert row.always_on_camera_sources == ["cam4"]
 
 
 def test_monoblock_camera_save_reconciles_effective_substream_policy(
@@ -394,6 +444,11 @@ def test_monoblock_camera_save_reconciles_effective_substream_policy(
     live = {
         "cameras": ["cam2", "cam3", "cam4"],
         "source": "sub",
+        "analytics_scopes": {
+            "cam2": ANALYTICS_SCOPE_SHIPPING,
+            "cam3": ANALYTICS_SCOPE_SHIPPING,
+            "cam4": ANALYTICS_SCOPE_AI247,
+        },
         "capacity": 4,
         "pending": [],
         "processors": [
@@ -403,6 +458,11 @@ def test_monoblock_camera_save_reconciles_effective_substream_policy(
                 "processor_alive": True,
                 "source": "sub",
                 "mode": "always_on",
+                "analytics_scope": (
+                    ANALYTICS_SCOPE_AI247
+                    if camera == "cam4"
+                    else ANALYTICS_SCOPE_SHIPPING
+                ),
                 "last_frame_at": "2026-09-01T08:00:00Z",
             }
             for camera in ("cam2", "cam3", "cam4")
@@ -417,7 +477,15 @@ def test_monoblock_camera_save_reconciles_effective_substream_policy(
 
     assert response.status_code == 200
     assert response.data["always_on_sync_status"] == "synced"
-    configure.assert_called_once_with(["cam2", "cam3", "cam4"], "sub")
+    configure.assert_called_once_with(
+        ["cam2", "cam3", "cam4"],
+        "sub",
+        analytics_scopes={
+            "cam2": ANALYTICS_SCOPE_SHIPPING,
+            "cam3": ANALYTICS_SCOPE_SHIPPING,
+            "cam4": ANALYTICS_SCOPE_AI247,
+        },
+    )
 
 
 def test_monoblock_camera_save_is_durable_when_camera_pc_is_offline(
@@ -440,7 +508,7 @@ def test_monoblock_camera_save_is_durable_when_camera_pc_is_offline(
     assert response.status_code == 202
     assert response.data["always_on_sync_status"] == "pending"
     assert "offline" in response.data["always_on_detail"]
-    assert MonoblockCameraSettings.always_on_sources() == ["cam7"]
+    assert MonoblockCameraSettings.shipping_sources() == ["cam7"]
 
 
 def test_monoblock_camera_change_is_blocked_during_open_session(
@@ -514,6 +582,7 @@ def test_always_on_pending_reason_is_not_reported_as_synced(
     live = {
         "cameras": ["cam2"],
         "source": "sub",
+        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_AI247},
         "capacity": 2,
         "pending": [{"cam": "cam2", "reason": "camera_warming"}],
         "processors": [
@@ -523,6 +592,7 @@ def test_always_on_pending_reason_is_not_reported_as_synced(
                 "processor_alive": True,
                 "source": "sub",
                 "mode": "always_on",
+                "analytics_scope": ANALYTICS_SCOPE_AI247,
                 "last_frame_at": "2026-09-01T08:00:00Z",
             }
         ],
@@ -551,6 +621,7 @@ def test_order_mode_requires_continuous_analytics_for_always_on_readiness():
     live = {
         "cameras": ["cam2"],
         "source": "sub",
+        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_SHIPPING},
         "pending": [],
         "processors": [
             {
@@ -559,22 +630,28 @@ def test_order_mode_requires_continuous_analytics_for_always_on_readiness():
                 "processor_alive": True,
                 "source": "sub",
                 "mode": "session",
+                "analytics_scope": ANALYTICS_SCOPE_SHIPPING,
                 "continuous_analytics": False,
                 "last_frame_at": "2026-09-01T08:00:00Z",
             }
         ],
     }
 
-    sync_status, detail = continuous.always_on_sync_state(live, ["cam2"])
+    sync_status, detail = continuous.contour_sync_state(
+        live,
+        ["cam2"],
+        ANALYTICS_SCOPE_SHIPPING,
+    )
 
     assert sync_status == "pending"
-    assert "не подключена" in detail
+    assert "потеряла непрерывную аналитику" in detail
 
 
 def test_always_on_readiness_waits_for_first_inference_frame_when_exposed():
     live = {
         "cameras": ["cam2"],
         "source": "sub",
+        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_AI247},
         "pending": [],
         "processors": [
             {
@@ -583,24 +660,34 @@ def test_always_on_readiness_waits_for_first_inference_frame_when_exposed():
                 "processor_alive": True,
                 "source": "sub",
                 "mode": "always_on",
+                "analytics_scope": ANALYTICS_SCOPE_AI247,
                 "last_frame_at": "2026-09-01T08:00:00Z",
                 "metrics": {"inference_frames": 0},
             }
         ],
     }
 
-    sync_status, detail = continuous.always_on_sync_state(live, ["cam2"])
+    sync_status, detail = continuous.contour_sync_state(
+        live,
+        ["cam2"],
+        ANALYTICS_SCOPE_AI247,
+    )
     assert sync_status == "pending"
     assert "ни одного кадра" in detail
 
     live["processors"][0]["metrics"]["inference_frames"] = 1
-    assert continuous.always_on_sync_state(live, ["cam2"]) == ("synced", "")
+    assert continuous.contour_sync_state(
+        live,
+        ["cam2"],
+        ANALYTICS_SCOPE_AI247,
+    ) == ("synced", "")
 
 
 def test_always_on_readiness_rejects_stale_frame_during_camera_gap():
     live = {
         "cameras": ["cam2"],
         "source": "sub",
+        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_AI247},
         "pending": [],
         "processors": [
             {
@@ -609,6 +696,7 @@ def test_always_on_readiness_rejects_stale_frame_during_camera_gap():
                 "processor_alive": True,
                 "source": "sub",
                 "mode": "always_on",
+                "analytics_scope": ANALYTICS_SCOPE_AI247,
                 "status": "reconnecting",
                 # This timestamp is deliberately stale: it must not make a
                 # disconnected capture look ready.
@@ -621,18 +709,67 @@ def test_always_on_readiness_rejects_stale_frame_during_camera_gap():
         ],
     }
 
-    sync_status, detail = continuous.always_on_sync_state(live, ["cam2"])
+    sync_status, detail = continuous.contour_sync_state(
+        live,
+        ["cam2"],
+        ANALYTICS_SCOPE_AI247,
+    )
 
     assert sync_status == "pending"
     assert "reconnecting" in detail
 
     live["processors"][0]["status"] = "online"
-    sync_status, detail = continuous.always_on_sync_state(live, ["cam2"])
+    sync_status, detail = continuous.contour_sync_state(
+        live,
+        ["cam2"],
+        ANALYTICS_SCOPE_AI247,
+    )
     assert sync_status == "pending"
     assert "потери потока" in detail
 
     live["processors"][0]["metrics"]["camera_gap_started_at"] = None
-    assert continuous.always_on_sync_state(live, ["cam2"]) == ("synced", "")
+    assert continuous.contour_sync_state(
+        live,
+        ["cam2"],
+        ANALYTICS_SCOPE_AI247,
+    ) == ("synced", "")
+
+
+def test_contour_readiness_requires_exact_top_level_and_processor_roles():
+    live = {
+        "cameras": ["cam2"],
+        "source": "sub",
+        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_AI247},
+        "pending": [],
+        "processors": [
+            {
+                "cam": "cam2",
+                "running": True,
+                "processor_alive": True,
+                "source": "sub",
+                "mode": "always_on",
+                "analytics_scope": ANALYTICS_SCOPE_AI247,
+                "last_frame_at": "2026-09-01T08:00:00Z",
+            }
+        ],
+    }
+
+    status, detail = continuous.contour_sync_state(
+        live,
+        ["cam2"],
+        ANALYTICS_SCOPE_SHIPPING,
+    )
+    assert status == "pending"
+    assert "не подтвердил роль камеры cam2" in detail
+
+    live["analytics_scopes"]["cam2"] = ANALYTICS_SCOPE_SHIPPING
+    status, detail = continuous.contour_sync_state(
+        live,
+        ["cam2"],
+        ANALYTICS_SCOPE_SHIPPING,
+    )
+    assert status == "pending"
+    assert "Процессор cam2 не подтвердил свою роль" in detail
 
 
 def test_always_on_apply_is_serialized_so_newer_policy_finishes_last(monkeypatch):
@@ -643,16 +780,28 @@ def test_always_on_apply_is_serialized_so_newer_policy_finishes_last(monkeypatch
 
     monkeypatch.setattr(
         MonoblockCameraSettings,
-        "always_on_sources",
+        "continuous_sources",
         lambda: list(desired["value"]),
     )
+    monkeypatch.setattr(
+        MonoblockCameraSettings,
+        "continuous_roles",
+        lambda: {
+            camera: ANALYTICS_SCOPE_AI247 for camera in desired["value"]
+        },
+    )
 
-    def configure(cameras, source):
+    def configure(cameras, source, *, analytics_scopes):
         if cameras == ["cam2"]:
             first_started.set()
             assert allow_first_to_finish.wait(timeout=5)
-        applied.append((list(cameras), source))
-        return {"cameras": cameras, "source": source, "processors": []}
+        applied.append((list(cameras), source, dict(analytics_scopes)))
+        return {
+            "cameras": cameras,
+            "source": source,
+            "analytics_scopes": analytics_scopes,
+            "processors": [],
+        }
 
     monkeypatch.setattr(ai, "configure_always_on", configure)
 
@@ -671,7 +820,10 @@ def test_always_on_apply_is_serialized_so_newer_policy_finishes_last(monkeypatch
         first.result(timeout=5)
         second.result(timeout=5)
 
-    assert applied == [(["cam2"], "sub"), (["cam3"], "sub")]
+    assert applied == [
+        (["cam2"], "sub", {"cam2": ANALYTICS_SCOPE_AI247}),
+        (["cam3"], "sub", {"cam3": ANALYTICS_SCOPE_AI247}),
+    ]
 
 
 def test_shipping_board_settings_default_to_today(auth_client, operator):
@@ -753,6 +905,7 @@ def test_always_on_settings_are_readable_to_loaders_and_managed_separately(
     live = {
         "cameras": ["cam2"],
         "source": "sub",
+        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_AI247},
         "capacity": 2,
         "pending": [],
         "processors": [
@@ -762,6 +915,7 @@ def test_always_on_settings_are_readable_to_loaders_and_managed_separately(
                 "processor_alive": True,
                 "source": "sub",
                 "mode": "always_on",
+                "analytics_scope": ANALYTICS_SCOPE_AI247,
                 "recording": False,
                 "total": 14,
                 "last_frame_at": "2026-09-01T08:00:00Z",
@@ -771,10 +925,11 @@ def test_always_on_settings_are_readable_to_loaders_and_managed_separately(
     with (
         patch.object(
             ai,
-            "always_on_status",
+            "cached_always_on_status",
             return_value={
                 "cameras": [],
                 "source": "sub",
+                "analytics_scopes": {},
                 "capacity": 2,
                 "processors": [],
             },
@@ -789,8 +944,14 @@ def test_always_on_settings_are_readable_to_loaders_and_managed_separately(
 
     assert response.status_code == 200
     assert response.data["camera_sources"] == ["cam2"]
+    assert response.data["analytics_scope"] == ANALYTICS_SCOPE_AI247
+    assert response.data["blocked_camera_sources"] == []
     assert response.data["processors"][0]["recording"] is False
-    configure.assert_called_once_with(["cam2"], "sub")
+    configure.assert_called_once_with(
+        ["cam2"],
+        "sub",
+        analytics_scopes={"cam2": ANALYTICS_SCOPE_AI247},
+    )
     row = MonoblockCameraSettings.objects.get(singleton=True)
     assert row.always_on_camera_sources == ["cam2"]
     assert row.updated_by == manager
@@ -825,10 +986,41 @@ def test_always_on_choice_survives_camera_pc_outage(
 
     assert response.status_code == 202
     assert response.data["sync_status"] == "pending"
-    assert MonoblockCameraSettings.always_on_sources() == ["cam3"]
+    assert MonoblockCameraSettings.ai247_sources() == ["cam3"]
 
 
-def test_manual_ai_247_cannot_remove_mandatory_monoblock_camera(
+def test_ai247_settings_expose_shipping_cameras_as_blocked(
+    auth_client,
+    superuser,
+):
+    MonoblockCameraSettings.objects.create(
+        camera_sources=["cam2"],
+        always_on_camera_sources=["cam3"],
+    )
+    ContinuousCameraRole.objects.bulk_create(
+        [
+            ContinuousCameraRole(
+                camera="cam2",
+                analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+            ),
+            ContinuousCameraRole(
+                camera="cam3",
+                analytics_scope=ANALYTICS_SCOPE_AI247,
+            ),
+        ]
+    )
+
+    response = auth_client(superuser).get("/api/cameras/always-on-settings/")
+
+    assert response.status_code == 200
+    assert response.data["analytics_scope"] == ANALYTICS_SCOPE_AI247
+    assert response.data["automatic_camera_sources"] == []
+    assert response.data["manual_camera_sources"] == ["cam3"]
+    assert response.data["camera_sources"] == ["cam3"]
+    assert response.data["blocked_camera_sources"] == ["cam2"]
+
+
+def test_ai247_picker_cannot_claim_shipping_camera_atomically(
     auth_client,
     superuser,
 ):
@@ -837,21 +1029,188 @@ def test_manual_ai_247_cannot_remove_mandatory_monoblock_camera(
         always_on_camera_sources=["cam3"],
     )
 
-    response = auth_client(superuser).put(
-        "/api/cameras/always-on-settings/",
-        {"camera_sources": ["cam3"]},
-        format="json",
-    )
+    with patch.object(ai, "configure_always_on") as configure:
+        response = auth_client(superuser).put(
+            "/api/cameras/always-on-settings/",
+            {"camera_sources": ["cam2", "cam3"]},
+            format="json",
+        )
 
-    assert response.status_code == 400
-    assert response.data["code"] == "mandatory_always_on_cameras"
+    assert response.status_code == 409
+    assert response.data["code"] == "camera_role_immutable"
+    assert response.data["detail"]["cameras"] == ["cam2"]
+    configure.assert_not_called()
     row.refresh_from_db()
+    assert row.camera_sources == ["cam2"]
     assert row.always_on_camera_sources == ["cam3"]
 
-    settings = auth_client(superuser).get("/api/cameras/always-on-settings/")
-    assert settings.data["automatic_camera_sources"] == ["cam2"]
-    assert settings.data["manual_camera_sources"] == ["cam3"]
-    assert settings.data["camera_sources"] == ["cam2", "cam3"]
+
+def test_contour_settings_and_shipping_detections_do_not_leak_other_role(
+    auth_client,
+    boss,
+    monkeypatch,
+):
+    MonoblockCameraSettings.objects.create(
+        camera_sources=["cam2"],
+        always_on_camera_sources=["cam3"],
+    )
+    ContinuousCameraRole.objects.bulk_create(
+        [
+            ContinuousCameraRole(
+                camera="cam2",
+                analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+            ),
+            ContinuousCameraRole(
+                camera="cam3",
+                analytics_scope=ANALYTICS_SCOPE_AI247,
+            ),
+        ]
+    )
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    live = {
+        "cameras": ["cam2", "cam3"],
+        "source": "sub",
+        "analytics_scopes": {
+            "cam2": ANALYTICS_SCOPE_SHIPPING,
+            "cam3": ANALYTICS_SCOPE_AI247,
+        },
+        "capacity": 4,
+        "pending": [],
+        "processors": [
+            {
+                "cam": "cam2",
+                "running": True,
+                "processor_alive": True,
+                "source": "sub",
+                "mode": "always_on",
+                "analytics_scope": ANALYTICS_SCOPE_SHIPPING,
+                "last_frame_at": "2026-09-01T08:00:00Z",
+                "total": 12,
+            },
+            {
+                "cam": "cam3",
+                "running": True,
+                "processor_alive": True,
+                "source": "sub",
+                "mode": "always_on",
+                "analytics_scope": ANALYTICS_SCOPE_AI247,
+                "last_frame_at": "2026-09-01T08:00:00Z",
+                "total": 34,
+            },
+        ],
+    }
+    detections = {
+        **live,
+        "processors": [
+            {"cam": "cam2", "analytics_scope": ANALYTICS_SCOPE_SHIPPING},
+            {"cam": "cam3", "analytics_scope": ANALYTICS_SCOPE_AI247},
+        ],
+    }
+
+    with (
+        patch.object(ai, "always_on_status_cached", return_value=live),
+        patch.object(ai, "always_on_detections_cached", return_value=detections),
+    ):
+        shipping = auth_client(boss).get(
+            "/api/cameras/shipping-continuous-settings/"
+        )
+        ai247 = auth_client(boss).get("/api/cameras/always-on-settings/")
+        boxes = auth_client(boss).get(
+            "/api/cameras/shipping-continuous-detections/"
+        )
+
+    assert shipping.status_code == 200
+    assert shipping.data["analytics_scope"] == ANALYTICS_SCOPE_SHIPPING
+    assert shipping.data["camera_sources"] == ["cam2"]
+    assert shipping.data["blocked_camera_sources"] == ["cam3"]
+    assert shipping.data["sync_status"] == "synced"
+    assert [item["cam"] for item in shipping.data["processors"]] == ["cam2"]
+
+    assert ai247.status_code == 200
+    assert ai247.data["analytics_scope"] == ANALYTICS_SCOPE_AI247
+    assert ai247.data["camera_sources"] == ["cam3"]
+    assert ai247.data["blocked_camera_sources"] == ["cam2"]
+    assert ai247.data["sync_status"] == "synced"
+    assert [item["cam"] for item in ai247.data["processors"]] == ["cam3"]
+
+    assert boxes.status_code == 200
+    assert boxes.data["cameras"] == ["cam2"]
+    assert boxes.data["camera_sources"] == ["cam2"]
+    assert boxes.data["analytics_scopes"] == {
+        "cam2": ANALYTICS_SCOPE_SHIPPING
+    }
+    assert [item["cam"] for item in boxes.data["processors"]] == ["cam2"]
+
+
+def test_contour_settings_hide_stale_processors_from_the_opposite_scope(
+    auth_client,
+    boss,
+    monkeypatch,
+):
+    MonoblockCameraSettings.objects.create(
+        camera_sources=["cam2"],
+        always_on_camera_sources=["cam3"],
+    )
+    ContinuousCameraRole.objects.bulk_create(
+        [
+            ContinuousCameraRole(
+                camera="cam2",
+                analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+            ),
+            ContinuousCameraRole(
+                camera="cam3",
+                analytics_scope=ANALYTICS_SCOPE_AI247,
+            ),
+        ]
+    )
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    stale_live = {
+        "cameras": ["cam2", "cam3"],
+        "source": "sub",
+        "analytics_scopes": {
+            "cam2": ANALYTICS_SCOPE_SHIPPING,
+            "cam3": ANALYTICS_SCOPE_AI247,
+        },
+        "processors": [
+            {
+                "cam": "cam2",
+                "analytics_scope": ANALYTICS_SCOPE_AI247,
+                "running": True,
+                "total": 99,
+            },
+            {
+                "cam": "cam3",
+                "analytics_scope": ANALYTICS_SCOPE_SHIPPING,
+                "running": True,
+                "total": 88,
+            },
+        ],
+        "pending": [
+            {"cam": "cam2", "analytics_scope": ANALYTICS_SCOPE_AI247},
+            {"cam": "cam3", "analytics_scope": ANALYTICS_SCOPE_SHIPPING},
+        ],
+    }
+
+    with (
+        patch.object(ai, "always_on_status_cached", return_value=stale_live),
+        patch.object(ai, "always_on_detections_cached", return_value=stale_live),
+    ):
+        shipping = auth_client(boss).get(
+            "/api/cameras/shipping-continuous-settings/"
+        )
+        ai247 = auth_client(boss).get("/api/cameras/always-on-settings/")
+        monoblock = auth_client(boss).get("/api/cameras/monoblock-settings/")
+        detections = auth_client(boss).get(
+            "/api/cameras/shipping-continuous-detections/"
+        )
+
+    assert shipping.data["processors"] == []
+    assert shipping.data["sync_status"] == "pending"
+    assert ai247.data["processors"] == []
+    assert ai247.data["sync_status"] == "pending"
+    assert monoblock.data["processors"] == []
+    assert detections.data["processors"] == []
+    assert detections.data["pending"] == []
 
 
 def test_wagon_number_camera_assignment_is_superuser_only_and_uses_main_stream(
@@ -981,6 +1340,7 @@ def test_superuser_cannot_exceed_camera_pc_processor_capacity(
             return_value={
                 "cameras": [],
                 "source": "sub",
+                "analytics_scopes": {},
                 "capacity": 1,
                 "processors": [],
             },
@@ -995,7 +1355,7 @@ def test_superuser_cannot_exceed_camera_pc_processor_capacity(
 
     assert response.status_code == 400
     configure.assert_not_called()
-    assert MonoblockCameraSettings.always_on_sources() == []
+    assert MonoblockCameraSettings.ai247_sources() == []
 
 
 def test_capacity_guard_allows_policy_reduction_back_toward_limit(
@@ -1010,6 +1370,7 @@ def test_capacity_guard_allows_policy_reduction_back_toward_limit(
     live = {
         "cameras": ["cam2"],
         "source": "sub",
+        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_AI247},
         "capacity": 1,
         "pending": [],
         "processors": [
@@ -1019,6 +1380,7 @@ def test_capacity_guard_allows_policy_reduction_back_toward_limit(
                 "processor_alive": True,
                 "source": "sub",
                 "mode": "always_on",
+                "analytics_scope": ANALYTICS_SCOPE_AI247,
                 "last_frame_at": "2026-09-01T08:00:00Z",
             }
         ],
@@ -1038,8 +1400,12 @@ def test_capacity_guard_allows_policy_reduction_back_toward_limit(
         )
 
     assert response.status_code == 200
-    configure.assert_called_once_with(["cam2"], "sub")
-    assert MonoblockCameraSettings.always_on_sources() == ["cam2"]
+    configure.assert_called_once_with(
+        ["cam2"],
+        "sub",
+        analytics_scopes={"cam2": ANALYTICS_SCOPE_AI247},
+    )
+    assert MonoblockCameraSettings.ai247_sources() == ["cam2"]
 
 
 def test_token_sets_cookie(auth_client, operator):
@@ -1344,7 +1710,12 @@ def test_always_on_status_is_not_refetched_on_every_poll(monkeypatch):
     """The polling read path must not call the camera PC per request."""
     monkeypatch.setattr(ai, "AI_KEY", "k")
     cache.delete(ai.ALWAYS_ON_CACHE_KEY)
-    payload = {"cameras": ["cam1"], "source": "sub", "processors": []}
+    payload = {
+        "cameras": ["cam1"],
+        "source": "sub",
+        "analytics_scopes": {"cam1": ANALYTICS_SCOPE_AI247},
+        "processors": [],
+    }
     with patch.object(ai, "_call", return_value=payload) as call:
         first = ai.always_on_status_cached()
         second = ai.always_on_status_cached()
@@ -1383,7 +1754,7 @@ def test_always_on_choice_survives_an_unreachable_camera_pc(
     assert response.status_code == 202
     assert response.data["camera_sources"] == ["cam3"]
     assert response.data["sync_status"] == "pending"
-    assert MonoblockCameraSettings.always_on_sources() == ["cam3"]
+    assert MonoblockCameraSettings.ai247_sources() == ["cam3"]
 
     # Follow-up reads keep showing it, so the page cannot fall back to "0".
     with patch.object(ai, "always_on_status_cached", side_effect=timeout):
