@@ -91,6 +91,14 @@ class SeparateContourMigrationTests(TransactionTestCase):
             mode="always_on",
             applied_to_analytics=True,
         )
+        imported_event_model.objects.create(
+            camera="cam11",
+            upstream_event_id=30815,
+            occurred_at=timezone.now(),
+            source="sub",
+            mode="always_on",
+            applied_to_analytics=False,
+        )
         captured_at = timezone.now()
         manual_batch = manual_batch_model.objects.create(
             file_sha256="a" * 64,
@@ -98,7 +106,7 @@ class SeparateContourMigrationTests(TransactionTestCase):
             source_filename="production-recovery.json",
             model_id="best.pt",
             model_sha256="b" * 64,
-            camera="cam3",
+            camera="cam10",
             source="sub",
             analytics_scope="ai_247",
             event_count=1,
@@ -112,7 +120,7 @@ class SeparateContourMigrationTests(TransactionTestCase):
             sequence=1,
             captured_at=captured_at,
             local_day=timezone.localdate(),
-            camera="cam3",
+            camera="cam10",
             source="sub",
             model_event_origin="production",
             source_row_id=30815,
@@ -209,9 +217,11 @@ class SeparateContourMigrationTests(TransactionTestCase):
             "cam9": "ai_247",
             # A dormant cursor reserves AI ownership without reactivation.
             "cam7": "ai_247",
+            # A manual analytics ledger is explicit historical AI ownership.
+            "cam10": "ai_247",
         }
 
-    def test_old_image_event_inserts_receive_safe_database_defaults(self):
+    def test_legacy_event_state_and_old_image_defaults_remain_safe(self):
         executor = MigrationExecutor(connection)
         old_apps = executor.loader.project_state(self.migrate_from).apps
         old_event_model = old_apps.get_model(
@@ -242,6 +252,15 @@ class SeparateContourMigrationTests(TransactionTestCase):
             assert event.applied_to_production is True
             assert event.applied_to_shipping_bootstrap is False
 
+        skipped = new_event_model.objects.get(
+            camera="cam11",
+            upstream_event_id=30815,
+        )
+        assert skipped.analytics_scope == "ai_247"
+        assert skipped.applied_to_analytics is False
+        assert skipped.applied_to_production is False
+        assert skipped.applied_to_shipping_bootstrap is False
+
     def test_manual_import_audit_ledger_survives_upgrade(self):
         batch_model = self.apps.get_model(
             "cameras", "ManualBagAnalyticsImportBatch"
@@ -253,7 +272,9 @@ class SeparateContourMigrationTests(TransactionTestCase):
         batch = batch_model.objects.get(file_sha256="a" * 64)
         event = event_model.objects.get(batch=batch)
         assert batch.event_count == 1
+        assert batch.camera == "cam10"
         assert event.idempotency_key == "migration-preserves-manual-ledger"
+        assert event.camera == "cam10"
         assert event.source_row_id == 30815
 
     def test_old_orm_remains_unambiguous_after_both_contours_write_same_day(self):
@@ -278,6 +299,14 @@ class SeparateContourMigrationTests(TransactionTestCase):
             "cameras",
             "AlwaysOnDailyAnalytics",
         )
+        old_batch_model = old_apps.get_model(
+            "cameras",
+            "ManualBagAnalyticsImportBatch",
+        )
+        old_event_model = old_apps.get_model(
+            "cameras",
+            "ManualBagAnalyticsImportEvent",
+        )
 
         row, created = old_daily_model.objects.get_or_create(
             camera="cam2",
@@ -289,3 +318,9 @@ class SeparateContourMigrationTests(TransactionTestCase):
             camera="cam2",
             day=self.day,
         ).count() == 1
+        batch = old_batch_model.objects.get(file_sha256="a" * 64)
+        event = old_event_model.objects.get(batch=batch)
+        assert batch.event_count == 1
+        assert batch.camera == "cam10"
+        assert event.idempotency_key == "migration-preserves-manual-ledger"
+        assert event.source_row_id == 30815

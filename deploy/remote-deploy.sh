@@ -636,7 +636,7 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
   --entrypoint /bin/sh \
   backend -c 'chown -R app:app /app/media /app/staticfiles'
 
-# Migration 0027 introduces permanent analytics roles. The previous backend,
+# Migration 0028 introduces permanent analytics roles. The previous backend,
 # camera importer and stock poster do not understand those fences. Stop every
 # old camera writer before the candidate can migrate, then check sessions from
 # the candidate image while HTTP is unavailable. This closes the TOCTOU gap:
