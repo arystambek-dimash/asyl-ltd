@@ -215,7 +215,7 @@ def seed_continuous_camera_roles(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("cameras", "0026_imported_event_continuous_analytics"),
+        ("cameras", "0027_manual_bag_analytics_import"),
     ]
 
     operations = [

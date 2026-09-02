@@ -7,11 +7,11 @@ from django.utils import timezone
 class SeparateContourMigrationTests(TransactionTestCase):
     migrate_from = [
         ("accounts", "0003_user_must_change_password"),
-        ("cameras", "0026_imported_event_continuous_analytics"),
+        ("cameras", "0027_manual_bag_analytics_import"),
     ]
     migrate_to = [
         ("accounts", "0003_user_must_change_password"),
-        ("cameras", "0027_separate_shipping_ai247_analytics"),
+        ("cameras", "0028_separate_shipping_ai247_analytics"),
     ]
 
     def setUp(self):
@@ -26,6 +26,12 @@ class SeparateContourMigrationTests(TransactionTestCase):
         cursor_model = old_apps.get_model("cameras", "AlwaysOnCounterCursor")
         imported_event_model = old_apps.get_model(
             "cameras", "AlwaysOnImportedEvent"
+        )
+        manual_batch_model = old_apps.get_model(
+            "cameras", "ManualBagAnalyticsImportBatch"
+        )
+        manual_event_model = old_apps.get_model(
+            "cameras", "ManualBagAnalyticsImportEvent"
         )
         session_model = old_apps.get_model("cameras", "AiCountingSession")
         user_model = old_apps.get_model("accounts", "User")
@@ -84,6 +90,35 @@ class SeparateContourMigrationTests(TransactionTestCase):
             source="sub",
             mode="always_on",
             applied_to_analytics=True,
+        )
+        captured_at = timezone.now()
+        manual_batch = manual_batch_model.objects.create(
+            file_sha256="a" * 64,
+            schema_name="asyl.best_pt_manual_bag_events.v1",
+            source_filename="production-recovery.json",
+            model_id="best.pt",
+            model_sha256="b" * 64,
+            camera="cam3",
+            source="sub",
+            analytics_scope="ai_247",
+            event_count=1,
+            first_captured_at=captured_at,
+            last_captured_at=captured_at,
+            per_day={str(timezone.localdate()): {"total": 1}},
+        )
+        manual_event_model.objects.create(
+            batch=manual_batch,
+            idempotency_key="migration-preserves-manual-ledger",
+            sequence=1,
+            captured_at=captured_at,
+            local_day=timezone.localdate(),
+            camera="cam3",
+            source="sub",
+            model_event_origin="production",
+            source_row_id=30815,
+            class_name="Red",
+            color="red",
+            classification_status="classified",
         )
 
         self.day = timezone.localdate()
@@ -206,6 +241,20 @@ class SeparateContourMigrationTests(TransactionTestCase):
             assert event.analytics_scope == "ai_247"
             assert event.applied_to_production is True
             assert event.applied_to_shipping_bootstrap is False
+
+    def test_manual_import_audit_ledger_survives_upgrade(self):
+        batch_model = self.apps.get_model(
+            "cameras", "ManualBagAnalyticsImportBatch"
+        )
+        event_model = self.apps.get_model(
+            "cameras", "ManualBagAnalyticsImportEvent"
+        )
+
+        batch = batch_model.objects.get(file_sha256="a" * 64)
+        event = event_model.objects.get(batch=batch)
+        assert batch.event_count == 1
+        assert event.idempotency_key == "migration-preserves-manual-ledger"
+        assert event.source_row_id == 30815
 
     def test_old_orm_remains_unambiguous_after_both_contours_write_same_day(self):
         legacy_model = self.apps.get_model("cameras", "AlwaysOnDailyAnalytics")
