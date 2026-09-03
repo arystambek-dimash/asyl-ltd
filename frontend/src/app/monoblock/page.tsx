@@ -1450,7 +1450,7 @@ function AlwaysOnCard({
                 {dominant ? (
                   <>
                     <div className="mt-2 flex items-center gap-2">
-                      {!dominantHasProduct && <ColorDot className={colorMeta(dominant.color).dot} />}
+                      <ColorDot className={colorMeta(dominant.color).dot} />
                       <span
                         className={cn(
                           "font-black tracking-tight text-slate-900",
@@ -1538,7 +1538,7 @@ function AlwaysOnCard({
                   hint={
                     isShipping
                       ? "За всё время в контуре отгрузки."
-                      : "За всё время по данным модели. Для привязанных данных показаны товар и склад; цвет остаётся только без привязки."
+                      : "За всё время по данным модели. При наличии привязки название цвета заменяется товаром и складом, а цветовой индикатор сохраняется."
                   }
                 />
                 <div className="mt-5 space-y-4">
@@ -1550,7 +1550,7 @@ function AlwaysOnCard({
                     return (
                       <div key={item.color}>
                         <div className="mb-1.5 flex items-center gap-2 text-sm">
-                          {!hasProduct && <ColorDot className={colorMeta(item.color).dot} />}
+                          <ColorDot className={colorMeta(item.color).dot} />
                           <span className="min-w-0 truncate font-medium text-slate-600">
                             {hasProduct ? destination.productLabel : colorMeta(item.color).label}
                           </span>
@@ -1559,10 +1559,7 @@ function AlwaysOnCard({
                         </div>
                         <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
                           <div
-                            className={cn(
-                              "h-full rounded-full transition-all duration-500",
-                              hasProduct ? "bg-blue-600" : colorMeta(item.color).bar,
-                            )}
+                            className={cn("h-full rounded-full transition-all duration-500", colorMeta(item.color).bar)}
                             style={{ width: `${item.percent}%` }}
                           />
                         </div>
@@ -1677,15 +1674,7 @@ function AlwaysOnCard({
                               {item.total}
                             </div>
                             <div className="mt-1.5 flex min-w-0 items-center gap-2">
-                              <ColorDot
-                                className={
-                                  hasProduct
-                                    ? brand
-                                      ? brandMeta(brand).dot
-                                      : "bg-slate-300"
-                                    : colorMeta(item.color).dot
-                                }
-                              />
+                              <ColorDot className={colorMeta(item.color).dot} />
                               <span
                                 title={hasProduct ? `Бренд: ${brandLabel}` : colorAndBrandLabel}
                                 className={cn(

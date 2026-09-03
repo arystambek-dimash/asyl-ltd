@@ -350,17 +350,26 @@ export function AlwaysOnDayRunLog({
                 className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-2.5 sm:grid-cols-[minmax(220px,1.25fr)_minmax(150px,1fr)_auto] sm:items-center"
               >
                 <div className="min-w-0">
-                  {!hasProduct && (
+                  {hasProduct ? (
+                    <div className="flex min-w-0 items-start gap-2">
+                      <span
+                        className={cn("mt-0.5 size-2.5 shrink-0 rounded-full", meta.dot, active && "animate-pulse")}
+                      />
+                      {destination && (
+                        <AlwaysOnReceiptDestinationLabel destination={destination} colorLabel={undefined} />
+                      )}
+                    </div>
+                  ) : (
                     <div className="flex min-w-0 items-center gap-2">
                       <span className={cn("size-2.5 shrink-0 rounded-full", meta.dot, active && "animate-pulse")} />
                       <span className="truncate text-xs font-bold text-slate-700">{meta.label}</span>
                     </div>
                   )}
-                  {destination && (
+                  {destination && !hasProduct && (
                     <AlwaysOnReceiptDestinationLabel
                       destination={destination}
-                      colorLabel={hasProduct ? undefined : meta.label}
-                      className={hasProduct ? undefined : "mt-1 pl-[18px]"}
+                      colorLabel={meta.label}
+                      className="mt-1 pl-[18px]"
                     />
                   )}
                 </div>

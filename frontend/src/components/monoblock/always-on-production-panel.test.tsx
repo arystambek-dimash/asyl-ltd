@@ -474,6 +474,7 @@ describe("AlwaysOnDayRunLog", () => {
     const unbound = unboundRun.querySelector('[data-receipt-binding="unbound"]');
     expect(bound).toHaveTextContent("Приход — Мука красная · 50 кг→склад Основной склад");
     expect(within(boundRun).queryByText("Красный")).not.toBeInTheDocument();
+    expect(boundRun.getElementsByClassName("bg-[#dc604d]")).toHaveLength(1);
     expect(within(unboundRun).getByText("Синий")).toBeInTheDocument();
     expect(unbound).toHaveTextContent("Синий: приход — Не привязан");
   });

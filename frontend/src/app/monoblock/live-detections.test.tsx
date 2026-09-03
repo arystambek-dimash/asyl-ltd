@@ -764,6 +764,7 @@ describe("AI 24/7 live detections", () => {
     const allTimeRedBinding = allTimeColorsPanel.querySelector('[data-receipt-binding="bound"]');
     expect(allTimeRedBinding).toHaveTextContent("Склад готовой продукции");
     expect(within(allTimeColorsPanel).queryByText("Красный")).not.toBeInTheDocument();
+    expect(allTimeColorsPanel.getElementsByClassName("bg-[#dc604d]")).toHaveLength(2);
     expect(within(allTimeColorsPanel).queryByText("Синий")).not.toBeInTheDocument();
     expect(within(allTimeColorsPanel).getByText("Зелёный")).toBeInTheDocument();
     expect(allTimeColorsPanel.querySelector('[data-receipt-binding="unbound"]')).toHaveTextContent("Не привязан");
@@ -773,6 +774,7 @@ describe("AI 24/7 live detections", () => {
     expect(within(dominantPanel).getByText("ДБН 1с 50кг · Красный 50 кг")).toBeInTheDocument();
     expect(dominantPanel.querySelector('[data-receipt-binding="bound"]')).toHaveTextContent("Склад готовой продукции");
     expect(within(dominantPanel).queryByText("Красный")).not.toBeInTheDocument();
+    expect(dominantPanel.getElementsByClassName("bg-[#dc604d]")).toHaveLength(1);
 
     await user.click(screen.getByRole("button", { name: "Аналитика за 24.08.2026: 153 мешков" }));
 
@@ -807,6 +809,9 @@ describe("AI 24/7 live detections", () => {
     const redBrand = within(algorithmRed).getByText("Бренд: Дихан Баба");
     expect(redMapping.compareDocumentPosition(redBrand) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(algorithmRed).queryByText("Красный")).not.toBeInTheDocument();
+    expect(algorithmRed.getElementsByClassName("bg-[#dc604d]")).toHaveLength(1);
+    expect(algorithmRed.getElementsByClassName("size-2.5")).toHaveLength(1);
+    expect(redBrand.previousElementSibling).toHaveClass("bg-[#dc604d]");
     const algorithmGreen = within(dayPanel).getByRole("group", { name: "Зелёный: 5 мешков" });
     const greenBinding = algorithmGreen.querySelector('[data-receipt-binding="unbound"]');
     expect(greenBinding).toHaveTextContent("Не привязан");
@@ -826,12 +831,16 @@ describe("AI 24/7 live detections", () => {
     expect(within(rawRed).getByText("94.9%")).toBeInTheDocument();
     expect(within(rawRed).getByText("Бренд: Дихан Баба")).toBeInTheDocument();
     expect(within(rawRed).queryByText("Красный")).not.toBeInTheDocument();
+    expect(rawRed.getElementsByClassName("bg-[#dc604d]")).toHaveLength(1);
     expect(within(dayPanel).getByRole("group", { name: "Зелёный: 5 мешков" })).toBeInTheDocument();
     const rawBlue = within(dayPanel).getByRole("group", {
       name: "ДБН вс 50кг · Синий 50 кг: 3 мешков",
     });
     expect(within(rawBlue).getByText("ДБН вс 50кг · Синий 50 кг")).toBeInTheDocument();
-    expect(within(rawBlue).getByText("Бренд: Korol")).toBeInTheDocument();
+    const rawBlueBrand = within(rawBlue).getByText("Бренд: Korol");
+    expect(rawBlueBrand).toBeInTheDocument();
+    expect(rawBlueBrand.previousElementSibling).toHaveClass("bg-[#4169d8]");
+    expect(rawBlue.getElementsByClassName("size-2.5")).toHaveLength(1);
     expect(within(rawBlue).queryByText("Синий")).not.toBeInTheDocument();
     expect(within(dayPanel).getAllByText("меш.")).toHaveLength(4);
     expect(within(dayPanel).queryByText("Korol")).not.toBeInTheDocument();
