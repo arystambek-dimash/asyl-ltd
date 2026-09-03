@@ -42,6 +42,7 @@ def test_stock_movement_admin_keeps_operational_list_columns():
     model_admin = admin.site._registry[StockMovement]
 
     assert model_admin.list_display == (
+        "warehouse",
         "product",
         "delta",
         "balance_after",
@@ -49,4 +50,4 @@ def test_stock_movement_admin_keeps_operational_list_columns():
         "created_at",
         "created_by",
     )
-    assert model_admin.list_filter == ("reason", "product")
+    assert model_admin.list_filter == ("warehouse", "reason", "product")

@@ -18,8 +18,9 @@ class ProductSerializer(serializers.ModelSerializer):
                   "label", "cv_class", "available_bags"]
 
     def get_available_bags(self, obj):
-        stock = getattr(obj, "stock", None)
-        return stock.bags if stock else 0
+        # This legacy catalogue field is intentionally a company-wide total.
+        # Warehouse-sensitive flows use their explicit stock projections.
+        return sum(stock.bags for stock in obj.stock_items.all())
 
     def _can_view_color(self):
         request = self.context.get("request")

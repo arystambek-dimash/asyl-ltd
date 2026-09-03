@@ -35,7 +35,10 @@ import type { Client, Department, Order, Product, Store, Warehouse } from "@/lib
 type Row = { id: number; product: string; quantity: string; price: string };
 type Step = 1 | 2 | 3;
 type OrderClientOption = Pick<Client, "id" | "name" | "company_name" | "phone" | "currency">;
-type OrderProductOption = Pick<Product, "id" | "label" | "available_bags" | "warehouse" | "warehouse_name">;
+type OrderProductOption = Pick<
+  Product,
+  "id" | "label" | "available_bags" | "stock_by_warehouse" | "warehouse" | "warehouse_name"
+>;
 type OrderStoreOption = Pick<Store, "id" | "client" | "name" | "address">;
 type OrderDepartmentOption = Pick<Department, "id" | "code" | "name" | "color" | "is_default">;
 
@@ -54,6 +57,21 @@ const EMPTY_FORM_OPTIONS: OrderFormOptions = {
   departments: [],
   warehouses: [],
 };
+
+function productIsAssignedToWarehouse(product: OrderProductOption, warehouse: string) {
+  if (!warehouse) return true;
+  if (product.stock_by_warehouse !== undefined) {
+    return Object.prototype.hasOwnProperty.call(product.stock_by_warehouse, warehouse);
+  }
+  return String(product.warehouse) === warehouse;
+}
+
+function productBagsAtWarehouse(product: OrderProductOption, warehouse: string) {
+  if (warehouse && product.stock_by_warehouse !== undefined) {
+    return product.stock_by_warehouse[warehouse] ?? 0;
+  }
+  return product.available_bags ?? 0;
+}
 
 const STEPS = [
   { number: 1 as const, label: "Клиент", caption: "Кому и от какого отдела", icon: UserRound },
@@ -187,11 +205,11 @@ export function OrderForm({
     if (warehouse && warehouses.some((item) => String(item.id) === warehouse)) return;
     const initial = warehouses.find((item) => item.is_default) ?? warehouses[0];
     setWarehouse(String(initial.id));
-    if (template && products.some((item) => item.warehouse !== undefined)) {
+    if (template && products.some((item) => item.stock_by_warehouse !== undefined || item.warehouse !== undefined)) {
       setRows((current) =>
         current.map((row) => {
           const selected = products.find((item) => String(item.id) === row.product);
-          if (!selected || String(selected.warehouse) === String(initial.id)) return row;
+          if (!selected || productIsAssignedToWarehouse(selected, String(initial.id))) return row;
           return { ...row, product: "", price: "" };
         }),
       );
@@ -233,10 +251,12 @@ export function OrderForm({
       ]
     : warehouses;
   const selectedWarehouse = warehouseOptions.find((item) => String(item.id) === warehouse);
-  const productsHaveWarehouseScope = products.some((item) => item.warehouse !== undefined);
+  const productsHaveWarehouseScope = products.some(
+    (item) => item.stock_by_warehouse !== undefined || item.warehouse !== undefined,
+  );
   const warehouseProducts =
     productsHaveWarehouseScope && warehouse
-      ? products.filter((item) => String(item.warehouse) === warehouse)
+      ? products.filter((item) => productIsAssignedToWarehouse(item, warehouse))
       : products;
   const validRows = rows.filter((row) => row.product && Number(row.quantity) > 0);
   const allPriced = validRows.every((row) => Number(row.price) > 0);
@@ -573,7 +593,7 @@ export function OrderForm({
                   setRows((current) =>
                     current.map((row) => {
                       const selected = products.find((item) => String(item.id) === row.product);
-                      if (!selected || String(selected.warehouse) === nextWarehouse) return row;
+                      if (!selected || productIsAssignedToWarehouse(selected, nextWarehouse)) return row;
                       return { ...row, product: "", price: "" };
                     }),
                   );
@@ -715,9 +735,6 @@ export function OrderForm({
               <div className="mt-1 truncate text-sm font-bold text-slate-900">
                 {selectedWarehouse?.name || source?.warehouse_name || "Основной склад"}
               </div>
-              <div className="mt-0.5 truncate text-[11px] text-slate-500">
-                {selectedWarehouse?.address || "Склад отгрузки"}
-              </div>
             </div>
             <div className="col-span-2 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3 sm:col-span-1 sm:p-3.5">
               <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-600">Текущий итог</div>
@@ -798,7 +815,7 @@ export function OrderForm({
                     >
                       <option value="">Выберите товар</option>
                       {selectableProducts.map((product) => {
-                        const bags = product.available_bags ?? 0;
+                        const bags = productBagsAtWarehouse(product, warehouse);
                         const unavailableForNewShipment = bags <= 0 && !shippedCorrection;
                         return (
                           <option key={product.id} value={product.id} disabled={unavailableForNewShipment}>

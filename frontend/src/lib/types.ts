@@ -27,6 +27,8 @@ export interface Product {
   label: string;
   cv_class?: string;
   available_bags?: number;
+  /** Per-warehouse balances; omitted by older API versions. */
+  stock_by_warehouse?: Record<string, number>;
   warehouse?: number | null;
   warehouse_name?: string | null;
   ask_truck_weight?: boolean;
@@ -808,6 +810,8 @@ export interface AlwaysOnProductionProduct {
   color_label: string;
   weight_kg: string;
   available_bags?: number;
+  /** Every warehouse with a stock card; omitted by older API versions. */
+  warehouse_ids?: number[];
   /** null means the catalogue item has not been assigned to a warehouse yet. */
   warehouse?: number | null;
   warehouse_name?: string | null;

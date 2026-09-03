@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import transaction
 from rest_framework import serializers
 
@@ -28,7 +30,28 @@ class WarehouseSerializer(serializers.ModelSerializer):
         # must be cleared before the partial unique constraint can accept the
         # new one. DRF's generated constraint validator checks too early.
         validators = []
-        extra_kwargs = {"is_default": {"validators": []}}
+        extra_kwargs = {
+            "code": {"required": False},
+            "address": {"required": False},
+            "is_default": {"validators": []},
+        }
+
+    def validate_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Укажите название склада")
+        # PostgreSQL clusters created with the C locale only fold ASCII in
+        # ILIKE/lower(). Python's Unicode casefold keeps the operator-facing
+        # validation correct for Cyrillic names too; the DB expression remains
+        # the final concurrent-write guard.
+        duplicates = Warehouse.objects.all()
+        if self.instance is not None:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+        normalized = value.casefold()
+        names = duplicates.values_list("name", flat=True)
+        if any(name.strip().casefold() == normalized for name in names):
+            raise serializers.ValidationError("Склад с таким названием уже существует")
+        return value
 
     def validate_code(self, value):
         return value.strip().lower()
@@ -70,6 +93,10 @@ class WarehouseSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def create(self, validated_data):
+        # The operator-facing form only asks for a name.  Preserve explicitly
+        # supplied legacy integration codes, otherwise create an opaque stable
+        # key that never changes when the display name is edited.
+        validated_data.setdefault("code", f"wh-{uuid.uuid4().hex[:12]}")
         if validated_data.get("is_default"):
             _lock_warehouse_configuration()
             Warehouse.objects.select_for_update().filter(is_default=True).update(
@@ -112,6 +139,14 @@ class StockAdjustmentSerializer(serializers.Serializer):
     )
     product = serializers.IntegerField()
     delta = serializers.IntegerField()
+    note = serializers.CharField(required=False, allow_blank=True, max_length=255)
+
+
+class StockTransferSerializer(serializers.Serializer):
+    product = serializers.IntegerField()
+    from_warehouse = serializers.IntegerField()
+    to_warehouse = serializers.IntegerField()
+    bags = serializers.IntegerField()
     note = serializers.CharField(required=False, allow_blank=True, max_length=255)
 
 
@@ -217,4 +252,5 @@ class StockMovementSerializer(
             "note",
             "created_at",
             "created_by_name",
+            "transfer_id",
         ]

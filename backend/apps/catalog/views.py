@@ -1,3 +1,4 @@
+from django.db.models import Prefetch
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -8,6 +9,7 @@ from rest_framework.views import APIView
 from apps.clients.models import Client
 from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
 from apps.sales.access import scope_by_client_department
+from apps.warehouse.models import StockItem
 
 from .models import ClientPrice, Product
 from .serializers import ProductSerializer
@@ -25,7 +27,12 @@ class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     }
 
     def get_queryset(self):
-        qs = Product.objects.prefetch_related("stock_items")
+        qs = Product.objects.prefetch_related(
+            Prefetch(
+                "stock_items",
+                queryset=StockItem.objects.select_related("warehouse"),
+            )
+        )
         if self.request.query_params.get("archived") in ("1", "true"):
             return qs.filter(is_active=False)
         return qs.filter(is_active=True)

@@ -14,14 +14,18 @@ from datetime import date, datetime, time, timedelta
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import Exists, OuterRef, Sum
+from django.db.models import Exists, OuterRef, Q, Sum
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
 from apps.catalog.models import Product
 from apps.eventlog.services import log_event
 from apps.warehouse.models import StockItem, Warehouse
-from apps.warehouse.services import DEFAULT_WAREHOUSE_CODE, receive_stock
+from apps.warehouse.services import (
+    DEFAULT_WAREHOUSE_CODE,
+    lock_stock_item,
+    receive_stock,
+)
 
 from . import ai
 from .models import (
@@ -340,9 +344,7 @@ def _warehouse_for_camera(
     require_active: bool = True,
 ) -> Warehouse:
     routes = AlwaysOnWarehouseRoute.objects.filter(camera=camera)
-    routes = (
-        routes.select_for_update() if lock else routes.select_related("warehouse")
-    )
+    routes = routes.select_for_update() if lock else routes.select_related("warehouse")
     route = routes.first()
     warehouse = None
     if route and route.warehouse_id:
@@ -379,10 +381,18 @@ def _effective_stock_warehouse_id(
     return stock_item.warehouse_id or compatibility_warehouse_id
 
 
+def _stock_scope_for_warehouse(warehouse: Warehouse) -> Q:
+    scope = Q(warehouse=warehouse)
+    if warehouse.code == DEFAULT_WAREHOUSE_CODE:
+        scope |= Q(warehouse__isnull=True)
+    return scope
+
+
 def _product_payload(
     product: Product,
     *,
     stock_item: StockItem | None = None,
+    warehouse_ids: set[int] | None = None,
     compatibility_warehouse: Warehouse | None = None,
 ) -> dict:
     effective_warehouse = None
@@ -395,6 +405,7 @@ def _product_payload(
         "color_label": dict(Product.COLORS).get(product.color, product.color),
         "weight_kg": str(product.weight_kg),
         "warehouse": effective_warehouse.pk if effective_warehouse else None,
+        "warehouse_ids": sorted(warehouse_ids or ()),
     }
 
 
@@ -758,9 +769,7 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
         camera,
         require_active=False,
     )
-    warehouses = list(
-        Warehouse.objects.filter(is_active=True).order_by("name", "id")
-    )
+    warehouses = list(Warehouse.objects.filter(is_active=True).order_by("name", "id"))
     if warehouse.pk not in {row.pk for row in warehouses}:
         warehouses.append(warehouse)
 
@@ -769,14 +778,23 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
             "name", "color", "weight_kg", "id"
         )
     )
-    stock_by_product = {
-        row.product_id: row
-        for row in StockItem.objects.filter(product_id__in=[p.pk for p in products])
-        .select_related("warehouse")
-        .order_by("id")
-    }
     compatibility_warehouse = _compatibility_warehouse()
     compatibility_warehouse_id = compatibility_warehouse.pk
+    stock_rows = list(
+        StockItem.objects.filter(product_id__in=[p.pk for p in products])
+        .select_related("warehouse")
+        .order_by("warehouse_id", "id")
+    )
+    stock_by_product: dict[int, StockItem] = {}
+    warehouses_by_product: dict[int, set[int]] = defaultdict(set)
+    for row in stock_rows:
+        effective_warehouse_id = _effective_stock_warehouse_id(
+            row,
+            compatibility_warehouse_id=compatibility_warehouse_id,
+        )
+        warehouses_by_product[row.product_id].add(effective_warehouse_id)
+        if effective_warehouse_id == warehouse.pk:
+            stock_by_product[row.product_id] = row
     mapping_rows = list(
         AlwaysOnColorProductMapping.objects.filter(camera=camera)
         .select_related("product")
@@ -786,10 +804,14 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
 
     def mapping_matches_warehouse(mapping: AlwaysOnColorProductMapping) -> bool:
         stock_item = stock_by_product.get(mapping.product_id)
-        return stock_item is None or _effective_stock_warehouse_id(
-            stock_item,
-            compatibility_warehouse_id=compatibility_warehouse_id,
-        ) == warehouse.pk
+        return (
+            stock_item is not None
+            and _effective_stock_warehouse_id(
+                stock_item,
+                compatibility_warehouse_id=compatibility_warehouse_id,
+            )
+            == warehouse.pk
+        )
 
     observed_colors = set(
         AlwaysOnProductionRun.objects.filter(camera=camera)
@@ -813,9 +835,7 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
     for color in preview_colors:
         mapping = mapping_by_color.get(color)
         configured = bool(
-            mapping
-            and mapping.product.is_active
-            and mapping_matches_warehouse(mapping)
+            mapping and mapping.product.is_active and mapping_matches_warehouse(mapping)
         )
         preview.append(
             {
@@ -928,6 +948,7 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
             _product_payload(
                 product,
                 stock_item=stock_by_product.get(product.pk),
+                warehouse_ids=warehouses_by_product.get(product.pk),
                 compatibility_warehouse=compatibility_warehouse,
             )
             for product in products
@@ -982,36 +1003,48 @@ def save_mappings(
     # Taking the same lock before reading runs/batches closes the window where
     # a page from the old route is in flight but not committed yet.
     AlwaysOnCounterCursor.objects.select_for_update().get_or_create(camera=camera)
-    current_warehouse = _warehouse_for_camera(
-        camera,
-        lock=True,
-        require_active=False,
+    # Warehouse configuration and transfers always lock the stable main row
+    # first. Follow the same order here, then lock current/selected ids in
+    # ascending order; a secondary -> main route change must not invert it.
+    compatibility_warehouse = _compatibility_warehouse(lock=True)
+    route = (
+        AlwaysOnWarehouseRoute.objects.select_for_update().filter(camera=camera).first()
+    )
+    current_warehouse_id = (
+        route.warehouse_id
+        if route and route.warehouse_id
+        else compatibility_warehouse.pk
     )
     if warehouse is None:
-        selected_warehouse = current_warehouse
+        selected_warehouse_id = current_warehouse_id
+    elif isinstance(warehouse, Warehouse):
+        selected_warehouse_id = warehouse.pk
+    elif isinstance(warehouse, bool):
+        selected_warehouse_id = 0
     else:
-        if isinstance(warehouse, Warehouse):
-            warehouse_id = warehouse.pk
-        else:
-            if isinstance(warehouse, bool):
-                warehouse_id = 0
-            else:
-                try:
-                    warehouse_id = int(warehouse)
-                except (TypeError, ValueError):
-                    warehouse_id = 0
-        selected_warehouse = (
-            Warehouse.objects.select_for_update(no_key=True)
-            .filter(pk=warehouse_id)
-            .first()
+        try:
+            selected_warehouse_id = int(warehouse)
+        except (TypeError, ValueError):
+            selected_warehouse_id = 0
+
+    locked_warehouses = {compatibility_warehouse.pk: compatibility_warehouse}
+    locked_warehouses.update(
+        {
+            row.pk: row
+            for row in Warehouse.objects.select_for_update(no_key=True)
+            .filter(pk__in={current_warehouse_id, selected_warehouse_id})
+            .order_by("pk")
+        }
+    )
+    current_warehouse = locked_warehouses[current_warehouse_id]
+    selected_warehouse = locked_warehouses.get(selected_warehouse_id)
+    if selected_warehouse is None:
+        raise ValidationError(
+            {
+                "warehouse": "Склад не найден",
+                "code": "warehouse_not_found",
+            }
         )
-        if selected_warehouse is None:
-            raise ValidationError(
-                {
-                    "warehouse": "Склад не найден",
-                    "code": "warehouse_not_found",
-                }
-            )
     if (
         not selected_warehouse.is_active
         and selected_warehouse.pk != current_warehouse.pk
@@ -1064,11 +1097,13 @@ def save_mappings(
         .order_by("pk")
         .in_bulk()
     )
-    compatibility_warehouse_id = _compatibility_warehouse().pk
     stock_by_product = {
         row.product_id: row
         for row in StockItem.objects.select_for_update(of=("self",))
-        .filter(product_id__in=product_ids)
+        .filter(
+            _stock_scope_for_warehouse(selected_warehouse),
+            product_id__in=product_ids,
+        )
         .select_related("warehouse")
         .order_by("product_id")
     }
@@ -1089,30 +1124,25 @@ def save_mappings(
                     "mappings": f"Для цвета «{expected}» выберите товар того же цвета",
                 }
             )
-        stock_item = stock_by_product.get(product_id)
-        if stock_item is not None and _effective_stock_warehouse_id(
-            stock_item,
-            compatibility_warehouse_id=compatibility_warehouse_id,
-        ) != selected_warehouse.pk:
-            raise ValidationError(
-                {
-                    "mappings": (
-                        f"Товар #{product_id} уже закреплён за другим складом"
-                    ),
-                    "code": "product_assigned_other_warehouse",
-                }
-            )
-
-    # Persist product ownership as soon as a mapping is saved. Otherwise a
-    # rollback image would create an unassigned product in ``main`` when the
-    # shift posts, ignoring this camera's route to a secondary warehouse.
+    # Persist a stock card for this exact route. The same catalogue product may
+    # be produced and held in several warehouses independently.
     for product_id in sorted(product_ids):
         if product_id not in stock_by_product:
-            stock_by_product[product_id] = StockItem.objects.create(
-                product=products[product_id],
-                warehouse=selected_warehouse,
-                bags=0,
-            )
+            try:
+                stock_by_product[product_id] = lock_stock_item(
+                    products[product_id],
+                    selected_warehouse,
+                    require_active=False,
+                )
+            except ValidationError as exc:
+                if exc.detail.get("code") != "product_in_other_warehouse":
+                    raise
+                raise ValidationError(
+                    {
+                        "mappings": str(exc.detail["detail"]),
+                        "code": "product_assigned_other_warehouse",
+                    }
+                ) from exc
 
     AlwaysOnWarehouseRoute.objects.update_or_create(
         camera=camera,

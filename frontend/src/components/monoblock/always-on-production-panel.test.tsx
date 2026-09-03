@@ -254,6 +254,33 @@ describe("AlwaysOnProductionPanel", () => {
     expect(screen.getByLabelText("Товар для цвета Красный")).toHaveValue("4");
   });
 
+  it("позволяет повторно сохранить товар без карточки в складе камеры", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <AlwaysOnProductionPanel
+        payload={{
+          ...payload,
+          available_colors: ["red"],
+          mappings: [{ color: "red", product: 1, product_label: "Мука красная · 50 кг" }],
+          products: payload.products.map((product) => (product.id === 1 ? { ...product, warehouse: null } : product)),
+          fully_configured: false,
+        }}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage
+        onSave={onSave}
+      />,
+    );
+
+    expect(screen.getByLabelText("Товар для цвета Красный").closest("label")).toHaveTextContent("Не привязан");
+    const save = screen.getByRole("button", { name: "Сохранить" });
+    expect(save).toBeEnabled();
+    await user.click(save);
+    expect(onSave).toHaveBeenCalledWith([{ color: "red", product: 1, product_label: "Мука красная · 50 кг" }], 1);
+  });
+
   it("предлагает товар совпадающего цвета и сохраняет выбранное сопоставление", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
@@ -308,6 +335,42 @@ describe("AlwaysOnProductionPanel", () => {
     expect(onSave).toHaveBeenCalledWith(
       [
         { color: "red", product: 4, product_label: "Мука красная второго склада · 50 кг" },
+        { color: "blue", product: null, product_label: null },
+      ],
+      2,
+    );
+  });
+
+  it("keeps a mapped product when it already has a card in the next warehouse", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <AlwaysOnProductionPanel
+        payload={{
+          ...payload,
+          products: payload.products.map((product) =>
+            product.id === 1
+              ? { ...product, warehouse_ids: [1, 2] }
+              : { ...product, warehouse_ids: [product.warehouse as number] },
+          ),
+        }}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage
+        onSave={onSave}
+      />,
+    );
+
+    await user.selectOptions(screen.getByLabelText("Склад прихода"), "2");
+    const red = screen.getByLabelText("Товар для цвета Красный");
+    expect(red).toHaveValue("1");
+    expect(within(red).getByRole("option", { name: "Мука красная · 50 кг" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    expect(onSave).toHaveBeenCalledWith(
+      [
+        { color: "red", product: 1, product_label: "Мука красная · 50 кг" },
         { color: "blue", product: null, product_label: null },
       ],
       2,
@@ -418,6 +481,21 @@ describe("AlwaysOnDayRunLog", () => {
           status: "ready",
           mappings: [{ color: "red", product: 4, product_label: "Мука красная второго склада · 50 кг" }],
           products: payload.products,
+          warehouse: 1,
+          warehouseName: "Основной склад",
+        },
+        "red",
+      ),
+    ).toEqual({ state: "unbound" });
+  });
+
+  it("не показывает склад для товара без складской карточки", () => {
+    expect(
+      resolveAlwaysOnReceiptDestination(
+        {
+          status: "ready",
+          mappings: [{ color: "red", product: 1, product_label: "Мука красная · 50 кг" }],
+          products: payload.products.map((product) => (product.id === 1 ? { ...product, warehouse: null } : product)),
           warehouse: 1,
           warehouseName: "Основной склад",
         },

@@ -72,17 +72,29 @@ class Product(models.Model):
     def stock(self):
         """Compatibility bridge for the pre-multi-warehouse API.
 
-        Phase 1 keeps a global uniqueness constraint on StockItem.product, so
-        at most one related row exists.  Raising AttributeError for a missing
-        row preserves the old reverse-OneToOne ``getattr``/``hasattr`` contract.
-        New code should use ``stock_items`` and an explicit warehouse.
+        Once a product can be held in several warehouses, legacy callers still
+        need a deterministic single row. Prefer the active business default,
+        then a rollback-created main row, then the first named warehouse.
+        New stock logic must use ``stock_items`` and an explicit warehouse.
         """
         cache = getattr(self, "_prefetched_objects_cache", {})
         if "stock_items" in cache:
-            prefetched = cache["stock_items"]
-            item = prefetched[0] if prefetched else None
+            items = list(cache["stock_items"])
         else:
-            item = self.stock_items.first()
+            items = list(self.stock_items.select_related("warehouse"))
+        items.sort(
+            key=lambda item: (
+                0
+                if item.warehouse is not None and item.warehouse.is_default
+                else 1
+                if item.warehouse is None
+                else 2,
+                item.warehouse.name if item.warehouse is not None else "",
+                item.warehouse_id or 0,
+                item.pk,
+            )
+        )
+        item = items[0] if items else None
         if item is None:
             raise AttributeError("Product has no stock item")
         return item

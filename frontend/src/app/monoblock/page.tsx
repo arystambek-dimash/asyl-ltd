@@ -853,6 +853,9 @@ function AlwaysOnCard({
     }),
     [currentReceiptError, currentReceiptMappings, production, selectedProductionDay],
   );
+  const dominantReceiptDestination =
+    !isShipping && dominant ? resolveAlwaysOnReceiptDestination(receiptMapping, dominant.color) : null;
+  const dominantHasProduct = dominantReceiptDestination?.state === "bound";
   // Разбор одного дня: сам столбик уже несёт полную статистику, поэтому
   // выбранный день хранится ключом, а не копией — опрос обновляет данные,
   // не закрывая панель.
@@ -1443,22 +1446,28 @@ function AlwaysOnCard({
                 <Metric label="За всё время" value={allTimeDisplay} size="lg" accent="blue" />
               </Panel>
               <Panel className="p-5">
-                <Eyebrow>Основной цвет</Eyebrow>
+                <Eyebrow>{isShipping ? "Основной цвет" : "Основная продукция"}</Eyebrow>
                 {dominant ? (
                   <>
                     <div className="mt-2 flex items-center gap-2">
-                      <ColorDot className={colorMeta(dominant.color).dot} />
-                      <span className="text-2xl font-black tracking-tight text-slate-900">
-                        {colorMeta(dominant.color).label}
+                      {!dominantHasProduct && <ColorDot className={colorMeta(dominant.color).dot} />}
+                      <span
+                        className={cn(
+                          "font-black tracking-tight text-slate-900",
+                          dominantHasProduct ? "text-lg leading-tight sm:text-xl" : "text-2xl",
+                        )}
+                      >
+                        {dominantHasProduct ? dominantReceiptDestination.productLabel : colorMeta(dominant.color).label}
                       </span>
                       <span className="ml-auto text-sm font-semibold tabular-nums text-slate-400">
                         {dominant.total}
                       </span>
                     </div>
-                    {!isShipping && (
+                    {!isShipping && dominantReceiptDestination && (
                       <AlwaysOnReceiptDestinationLabel
-                        destination={resolveAlwaysOnReceiptDestination(receiptMapping, dominant.color)}
-                        colorLabel={colorMeta(dominant.color).label}
+                        destination={dominantReceiptDestination}
+                        colorLabel={dominantHasProduct ? undefined : colorMeta(dominant.color).label}
+                        showProduct={!dominantHasProduct}
                         className="mt-2"
                       />
                     )}
@@ -1525,39 +1534,53 @@ function AlwaysOnCard({
 
               <Panel className="flex flex-col p-5 sm:p-6">
                 <SectionHead
-                  title={isShipping ? "Цвета мешков" : "Цвета продукции"}
+                  title={isShipping ? "Цвета мешков" : "Продукция"}
                   hint={
                     isShipping
                       ? "За всё время в контуре отгрузки."
-                      : "За всё время по данным модели. Под цветом показаны текущие товар и склад прихода."
+                      : "За всё время по данным модели. Для привязанных данных показаны товар и склад; цвет остаётся только без привязки."
                   }
                 />
                 <div className="mt-5 space-y-4">
-                  {(currentDaily?.colors ?? []).map((item) => (
-                    <div key={item.color}>
-                      <div className="mb-1.5 flex items-center gap-2 text-sm">
-                        <ColorDot className={colorMeta(item.color).dot} />
-                        <span className="font-medium text-slate-600">{colorMeta(item.color).label}</span>
-                        <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
-                        <span className="w-9 text-right text-xs tabular-nums text-slate-400">{item.percent}%</span>
+                  {(currentDaily?.colors ?? []).map((item) => {
+                    const destination = !isShipping
+                      ? resolveAlwaysOnReceiptDestination(receiptMapping, item.color)
+                      : null;
+                    const hasProduct = destination?.state === "bound";
+                    return (
+                      <div key={item.color}>
+                        <div className="mb-1.5 flex items-center gap-2 text-sm">
+                          {!hasProduct && <ColorDot className={colorMeta(item.color).dot} />}
+                          <span className="min-w-0 truncate font-medium text-slate-600">
+                            {hasProduct ? destination.productLabel : colorMeta(item.color).label}
+                          </span>
+                          <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
+                          <span className="w-9 text-right text-xs tabular-nums text-slate-400">{item.percent}%</span>
+                        </div>
+                        <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                          <div
+                            className={cn(
+                              "h-full rounded-full transition-all duration-500",
+                              hasProduct ? "bg-blue-600" : colorMeta(item.color).bar,
+                            )}
+                            style={{ width: `${item.percent}%` }}
+                          />
+                        </div>
+                        {!isShipping && destination && (
+                          <AlwaysOnReceiptDestinationLabel
+                            destination={destination}
+                            colorLabel={hasProduct ? undefined : colorMeta(item.color).label}
+                            showProduct={!hasProduct}
+                            className="mt-2"
+                          />
+                        )}
                       </div>
-                      <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
-                        <div
-                          className={cn("h-full rounded-full transition-all duration-500", colorMeta(item.color).bar)}
-                          style={{ width: `${item.percent}%` }}
-                        />
-                      </div>
-                      {!isShipping && (
-                        <AlwaysOnReceiptDestinationLabel
-                          destination={resolveAlwaysOnReceiptDestination(receiptMapping, item.color)}
-                          colorLabel={colorMeta(item.color).label}
-                          className="mt-2"
-                        />
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                   {!currentDaily?.colors?.length && (
-                    <div className="py-10 text-center text-sm text-slate-400">Цветов пока нет</div>
+                    <div className="py-10 text-center text-sm text-slate-400">
+                      {isShipping ? "Цветов пока нет" : "Продукции пока нет"}
+                    </div>
                   )}
                 </div>
               </Panel>

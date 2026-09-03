@@ -27,6 +27,27 @@ const BATCH_META: Record<AlwaysOnStockBatch["status"], { label: string; classNam
 // Keep this in sync with backend production.BASE_COLORS. White and any new
 // detector label can be mapped to any product from the selected warehouse.
 const PRODUCT_COLOR_RESTRICTED = new Set(["red", "green", "blue"]);
+// Phase A remains a safe rollback target: until it is finalized, an existing
+// catalogue product can only be selected where its stock card already exists.
+// Phase B flips this and lets camera mapping create a card in another warehouse.
+const MULTI_WAREHOUSE_PRODUCT_ASSIGNMENT_ENABLED = false;
+
+function productHasStockCard(product: AlwaysOnProductionProduct, warehouse: number | null) {
+  if (warehouse === null) return false;
+  if (product.warehouse_ids !== undefined) {
+    return product.warehouse_ids.includes(warehouse);
+  }
+  return product.warehouse === undefined || product.warehouse === warehouse;
+}
+
+function productCanBeAssigned(product: AlwaysOnProductionProduct, warehouse: number | null) {
+  if (warehouse === null) return true;
+  if (MULTI_WAREHOUSE_PRODUCT_ASSIGNMENT_ENABLED) return true;
+  if (product.warehouse_ids !== undefined) {
+    return product.warehouse_ids.length === 0 || productHasStockCard(product, warehouse);
+  }
+  return product.warehouse == null || product.warehouse === warehouse;
+}
 
 function zonedDateTime(value: string, timezone: string, withDate = true) {
   const date = new Date(value);
@@ -45,9 +66,7 @@ function productOptions(
   selectedProduct: number | null,
   warehouse: number | null,
 ) {
-  const available = products.filter(
-    (product) => product.warehouse == null || warehouse === null || product.warehouse === warehouse,
-  );
+  const available = products.filter((product) => productCanBeAssigned(product, warehouse));
   const matching = available.filter((product) => normalizedColor(product.color) === normalizedColor(color));
   const selected = products.find((product) => product.id === selectedProduct);
   // The model can report a new/unclassified color. The backend deliberately
@@ -75,7 +94,8 @@ function mappingNeedsConfiguration(
   if (mapping.product === null) return true;
   const product = products.find((row) => row.id === mapping.product);
   if (!product) return true;
-  return warehouse !== null && product.warehouse != null && product.warehouse !== warehouse;
+  if (warehouse === null) return true;
+  return !productHasStockCard(product, warehouse);
 }
 
 export type AlwaysOnReceiptMappingStatus = "ready" | "loading" | "unavailable";
@@ -109,10 +129,7 @@ export function resolveAlwaysOnReceiptDestination(
   // accepted only for rolling compatibility with the previous API response.
   if (context.products) {
     const product = context.products.find((row) => row.id === mapping.product);
-    if (
-      !product ||
-      (context.warehouse !== undefined && product.warehouse != null && product.warehouse !== context.warehouse)
-    ) {
+    if (!product || (context.warehouse !== undefined && !productHasStockCard(product, context.warehouse))) {
       return { state: "unbound" };
     }
   }
@@ -128,10 +145,12 @@ export function resolveAlwaysOnReceiptDestination(
 export function AlwaysOnReceiptDestinationLabel({
   destination,
   colorLabel,
+  showProduct = true,
   className,
 }: {
   destination: AlwaysOnReceiptDestination;
   colorLabel?: string;
+  showProduct?: boolean;
   className?: string;
 }) {
   const accessiblePrefix = colorLabel ? `${colorLabel}: приход — ` : "Приход — ";
@@ -162,6 +181,8 @@ export function AlwaysOnReceiptDestinationLabel({
   const title = destination.warehouseName
     ? `${accessiblePrefix}${destination.productLabel}, склад ${destination.warehouseName}`
     : `${accessiblePrefix}${destination.productLabel}`;
+  if (!showProduct && !destination.warehouseName) return null;
+
   return (
     <span
       data-receipt-binding="bound"
@@ -169,7 +190,7 @@ export function AlwaysOnReceiptDestinationLabel({
       className={cn("flex min-w-0 flex-wrap items-center gap-x-1 text-xs leading-tight", className)}
     >
       <span className="sr-only">{accessiblePrefix}</span>
-      <span className="min-w-0 font-semibold text-slate-700">{destination.productLabel}</span>
+      {showProduct && <span className="min-w-0 font-semibold text-slate-700">{destination.productLabel}</span>}
       {destination.warehouseName && (
         <span className="inline-flex min-w-0 items-center gap-1 font-medium text-slate-500">
           <span aria-hidden="true">→</span>
@@ -461,6 +482,9 @@ export function AlwaysOnProductionPanel({
   const missingColors = draft
     .filter((row) => mappingNeedsConfiguration(row, payload?.products ?? [], warehouseDraft))
     .map((row) => colorMeta(row.color).label);
+  const canRepairCurrentMappings = draft.some(
+    (row) => row.product !== null && mappingNeedsConfiguration(row, payload?.products ?? [], warehouseDraft),
+  );
   const hasConfigurationIssue = missingColors.length > 0 || payload?.fully_configured === false;
   const batches = useMemo(
     () =>
@@ -514,7 +538,7 @@ export function AlwaysOnProductionPanel({
     setDraft((current) =>
       current.map((mapping) => {
         const selected = payload?.products.find((product) => product.id === mapping.product);
-        if (!selected || selected.warehouse == null || selected.warehouse === warehouseId) return mapping;
+        if (!selected || productCanBeAssigned(selected, warehouseId)) return mapping;
         return { ...mapping, product: null, product_label: null };
       }),
     );
@@ -661,7 +685,11 @@ export function AlwaysOnProductionPanel({
                 <div className="mt-4 flex justify-end">
                   <Button
                     size="sm"
-                    disabled={!dirty || saving || ((payload.warehouses?.length ?? 0) > 0 && warehouseDraft === null)}
+                    disabled={
+                      (!dirty && !canRepairCurrentMappings) ||
+                      saving ||
+                      ((payload.warehouses?.length ?? 0) > 0 && warehouseDraft === null)
+                    }
                     onClick={() => void onSave(draft, warehouseDraft)}
                   >
                     {saving ? <LoaderCircle className="animate-spin" /> : <Save />}

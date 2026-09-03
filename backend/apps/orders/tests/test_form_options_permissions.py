@@ -3,10 +3,9 @@ from rest_framework.test import APIClient
 
 from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Client, Store
-from apps.sales.models import Department
 from apps.orders.models import Order, OrderItem
+from apps.sales.models import Department
 from apps.warehouse.models import StockItem, Warehouse
-
 
 pytestmark = pytest.mark.django_db
 
@@ -85,6 +84,7 @@ def test_order_permission_grants_minimal_form_options(
         "available_bags": 37,
         "warehouse": main.pk,
         "warehouse_name": main.name,
+        "stock_by_warehouse": {str(main.pk): 37},
     }
     assert warehouses[main.pk]["code"] == "main"
     assert warehouses[main.pk]["is_default"] is True
@@ -134,6 +134,38 @@ def test_form_options_does_not_replace_generic_reference_permissions(
     assert api.get("/api/clients/").status_code == 403
     assert api.get("/api/products/").status_code == 403
     assert api.get("/api/stores/").status_code == 403
+
+
+def test_form_options_exposes_one_product_with_balances_by_warehouse(
+    user_with_perms,
+):
+    user = user_with_perms("multi-stock-options", codes=["orders.create"])
+    _client, _store, product, _department = _reference_rows()
+    main = Warehouse.objects.get(is_default=True)
+    secondary = Warehouse.objects.create(code="mill-2", name="Мельница 2")
+    inactive = Warehouse.objects.create(
+        code="closed",
+        name="Закрытый склад",
+        is_active=False,
+    )
+    StockItem.objects.create(product=product, warehouse=secondary, bags=12)
+    StockItem.objects.create(product=product, warehouse=inactive, bags=99)
+
+    response = _api(user).get("/api/orders/form-options/")
+
+    assert response.status_code == 200
+    rows = [row for row in response.data["products"] if row["id"] == product.pk]
+    assert len(rows) == 1
+    assert rows[0]["stock_by_warehouse"] == {
+        str(main.pk): 37,
+        str(secondary.pk): 12,
+    }
+    assert rows[0]["warehouse"] == main.pk
+    assert rows[0]["available_bags"] == 37
+    assert str(inactive.pk) not in rows[0]["stock_by_warehouse"]
+    assert inactive.pk not in {
+        warehouse["id"] for warehouse in response.data["warehouses"]
+    }
 
 
 def test_unrelated_order_permission_cannot_read_form_options(user_with_perms):

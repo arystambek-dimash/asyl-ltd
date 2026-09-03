@@ -184,7 +184,7 @@ describe("OrderForm reference data resilience", () => {
     );
   });
 
-  it("pins a new order to the selected warehouse and shows only its products", async () => {
+  it("uses per-warehouse balances when the same product is stored in multiple warehouses", async () => {
     const secondaryProduct = {
       id: 4,
       label: "Мука со второго склада 50 кг",
@@ -207,7 +207,15 @@ describe("OrderForm reference data resilience", () => {
         "/orders/form-options/",
         apiState({
           clients: [client],
-          products: [{ ...product, warehouse: 11, warehouse_name: "Основной склад" }, secondaryProduct],
+          products: [
+            {
+              ...product,
+              warehouse: 11,
+              warehouse_name: "Основной склад",
+              stock_by_warehouse: { "11": 20, "22": 7 },
+            },
+            { ...secondaryProduct, stock_by_warehouse: { "22": 14 } },
+          ],
           stores: [],
           departments: [department],
           warehouses: [
@@ -227,16 +235,15 @@ describe("OrderForm reference data resilience", () => {
     await user.selectOptions(screen.getByLabelText("Склад отгрузки"), "22");
     await user.click(screen.getByRole("button", { name: /Продолжить/ }));
 
-    const productSelect = screen.getByLabelText("Товар, позиция 1");
-    expect(screen.queryByRole("option", { name: /Мука 50 кг/ })).not.toBeInTheDocument();
-    await user.selectOptions(productSelect, "4");
+    expect(screen.getByRole("option", { name: "Мука 50 кг · 7 меш." })).toBeInTheDocument();
+    expect(screen.queryByText("Цех 2")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
 
     expect(postMock).toHaveBeenCalledWith(
       "/orders/",
       expect.objectContaining({
         warehouse: 22,
-        items: [{ product: 4, quantity: 3 }],
+        items: [{ product: 2, quantity: 3 }],
       }),
     );
   });

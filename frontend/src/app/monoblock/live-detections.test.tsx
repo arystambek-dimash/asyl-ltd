@@ -378,7 +378,7 @@ describe("AI 24/7 live detections", () => {
     expect(screen.queryByText("Korol")).not.toBeInTheDocument();
     expect(screen.queryByText("Future Brand")).not.toBeInTheDocument();
     expect(screen.queryByText("Дихан Баба")).not.toBeInTheDocument();
-    expect(screen.getByText("Цвета продукции")).toBeInTheDocument();
+    expect(screen.getByText("Продукция")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Уменьшить/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Сдать в архив/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Архив" })).not.toBeInTheDocument();
@@ -758,19 +758,21 @@ describe("AI 24/7 live detections", () => {
     await user.click(screen.getByRole("tab", { name: "Аналитика" }));
     await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith(currentProductionUrl));
 
-    const allTimeColorsPanel = screen.getByText("Цвета продукции").closest(".rounded-2xl");
+    const allTimeColorsPanel = screen.getByText("Продукция").closest(".rounded-2xl");
     if (!(allTimeColorsPanel instanceof HTMLElement)) throw new Error("Общая карточка цветов не найдена");
-    const allTimeRedBinding = within(allTimeColorsPanel)
-      .getByText("ДБН 1с 50кг · Красный 50 кг")
-      .closest('[data-receipt-binding="bound"]');
+    expect(within(allTimeColorsPanel).getByText("ДБН 1с 50кг · Красный 50 кг")).toBeInTheDocument();
+    const allTimeRedBinding = allTimeColorsPanel.querySelector('[data-receipt-binding="bound"]');
     expect(allTimeRedBinding).toHaveTextContent("Склад готовой продукции");
+    expect(within(allTimeColorsPanel).queryByText("Красный")).not.toBeInTheDocument();
+    expect(within(allTimeColorsPanel).queryByText("Синий")).not.toBeInTheDocument();
+    expect(within(allTimeColorsPanel).getByText("Зелёный")).toBeInTheDocument();
     expect(allTimeColorsPanel.querySelector('[data-receipt-binding="unbound"]')).toHaveTextContent("Не привязан");
 
-    const dominantPanel = screen.getByText("Основной цвет").closest(".rounded-2xl");
+    const dominantPanel = screen.getByText("Основная продукция").closest(".rounded-2xl");
     if (!(dominantPanel instanceof HTMLElement)) throw new Error("Карточка основного цвета не найдена");
-    expect(
-      within(dominantPanel).getByText("ДБН 1с 50кг · Красный 50 кг").closest('[data-receipt-binding="bound"]'),
-    ).toHaveTextContent("Склад готовой продукции");
+    expect(within(dominantPanel).getByText("ДБН 1с 50кг · Красный 50 кг")).toBeInTheDocument();
+    expect(dominantPanel.querySelector('[data-receipt-binding="bound"]')).toHaveTextContent("Склад готовой продукции");
+    expect(within(dominantPanel).queryByText("Красный")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Аналитика за 24.08.2026: 153 мешков" }));
 
@@ -841,9 +843,9 @@ describe("AI 24/7 live detections", () => {
     expect(within(legacyDayPanel).getAllByText(/Бренд недоступен$/)).toHaveLength(2);
     expect(within(legacyDayPanel).queryByText("Сопоставление недоступно")).not.toBeInTheDocument();
     expect(within(legacyDayPanel).getAllByText("меш.")).toHaveLength(2);
-    expect(
-      within(allTimeColorsPanel).getByText("ДБН 1с 50кг · Красный 50 кг").closest('[data-receipt-binding="bound"]'),
-    ).toHaveTextContent("Склад готовой продукции");
+    expect(allTimeColorsPanel.querySelector('[data-receipt-binding="bound"]')).toHaveTextContent(
+      "Склад готовой продукции",
+    );
 
     await user.click(within(legacyDayPanel).getByRole("button", { name: "Сырые данные" }));
     expect(within(legacyDayPanel).getByRole("group", { name: "Красный: 10 мешков" })).toBeInTheDocument();

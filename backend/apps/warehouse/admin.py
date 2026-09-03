@@ -13,6 +13,7 @@ admin.site.register(
 @admin.register(StockMovement)
 class StockMovementAdmin(ReadOnlyOperationalAdmin):
     list_display = (
+        "warehouse",
         "product",
         "delta",
         "balance_after",
@@ -20,8 +21,9 @@ class StockMovementAdmin(ReadOnlyOperationalAdmin):
         "created_at",
         "created_by",
     )
-    list_filter = ("reason", "product")
+    list_filter = ("warehouse", "reason", "product")
     readonly_fields = (
+        "warehouse",
         "product",
         "delta",
         "balance_after",
@@ -29,4 +31,5 @@ class StockMovementAdmin(ReadOnlyOperationalAdmin):
         "note",
         "created_at",
         "created_by",
+        "transfer_id",
     )
