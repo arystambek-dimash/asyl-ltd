@@ -6,13 +6,22 @@ from django.db import close_old_connections, connection, connections
 from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Product
+from apps.warehouse import services
 from apps.warehouse.models import StockItem, Warehouse
 from apps.warehouse.services import deduct_stock, get_default_warehouse, receive_stock
 
 pytestmark = pytest.mark.django_db
 
 
-def test_phase_a_operates_on_existing_exact_rows_after_phase_b_rollback(boss):
+def test_phase_a_operates_on_existing_exact_rows_after_phase_b_rollback(
+    boss,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        services,
+        "MULTI_WAREHOUSE_STOCK_WRITES_ENABLED",
+        False,
+    )
     main = get_default_warehouse()
     secondary = Warehouse.objects.create(code="second", name="Мельница 2")
     product = Product.objects.create(
@@ -32,9 +41,18 @@ def test_phase_a_operates_on_existing_exact_rows_after_phase_b_rollback(boss):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_phase_a_concurrent_first_assignment_creates_only_one_stock_card(boss):
+def test_phase_a_concurrent_first_assignment_creates_only_one_stock_card(
+    boss,
+    monkeypatch,
+):
     if connection.vendor != "postgresql":
         pytest.skip("row-lock contract requires PostgreSQL")
+
+    monkeypatch.setattr(
+        services,
+        "MULTI_WAREHOUSE_STOCK_WRITES_ENABLED",
+        False,
+    )
 
     main = get_default_warehouse()
     secondary = Warehouse.objects.create(code="second", name="Мельница 2")

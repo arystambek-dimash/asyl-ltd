@@ -1662,16 +1662,14 @@ function AlwaysOnCard({
                               : "Загрузка бренда…";
                         const colorAndBrandLabel = `${colorMeta(item.color).label} · ${brandLabel}`;
                         const destination = resolveAlwaysOnReceiptDestination(selectedReceiptMapping, item.color);
+                        const hasProduct = destination.state === "bound";
+                        const itemLabel = hasProduct ? destination.productLabel : colorMeta(item.color).label;
                         return (
-                          <div
-                            key={item.color}
-                            role="group"
-                            aria-label={`${colorMeta(item.color).label}: ${item.total} мешков`}
-                          >
+                          <div key={item.color} role="group" aria-label={`${itemLabel}: ${item.total} мешков`}>
                             <div className="flex min-w-0 items-start gap-2">
                               <AlwaysOnReceiptDestinationLabel
                                 destination={destination}
-                                colorLabel={colorMeta(item.color).label}
+                                colorLabel={hasProduct ? undefined : colorMeta(item.color).label}
                               />
                               <span className="ml-auto text-xs tabular-nums text-slate-400">{item.percent}%</span>
                             </div>
@@ -1679,15 +1677,23 @@ function AlwaysOnCard({
                               {item.total}
                             </div>
                             <div className="mt-1.5 flex min-w-0 items-center gap-2">
-                              <ColorDot className={colorMeta(item.color).dot} />
+                              <ColorDot
+                                className={
+                                  hasProduct
+                                    ? brand
+                                      ? brandMeta(brand).dot
+                                      : "bg-slate-300"
+                                    : colorMeta(item.color).dot
+                                }
+                              />
                               <span
-                                title={colorAndBrandLabel}
+                                title={hasProduct ? `Бренд: ${brandLabel}` : colorAndBrandLabel}
                                 className={cn(
                                   "truncate text-[11px] font-medium",
                                   brand ? "text-slate-500" : "text-slate-400",
                                 )}
                               >
-                                {colorAndBrandLabel}
+                                {hasProduct ? `Бренд: ${brandLabel}` : colorAndBrandLabel}
                               </span>
                             </div>
                           </div>

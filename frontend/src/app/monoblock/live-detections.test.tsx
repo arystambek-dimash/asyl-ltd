@@ -795,15 +795,18 @@ describe("AI 24/7 live detections", () => {
 
     const algorithmButton = within(dayPanel).getByRole("button", { name: "Алгоритм" });
     expect(algorithmButton).toHaveAttribute("aria-pressed", "true");
-    const algorithmRed = await within(dayPanel).findByRole("group", { name: "Красный: 153 мешков" });
+    const algorithmRed = await within(dayPanel).findByRole("group", {
+      name: "ДБН 1с 50кг · Красный 50 кг: 153 мешков",
+    });
     expect(within(algorithmRed).getByText("96.8%")).toBeInTheDocument();
     const redMapping = within(algorithmRed)
       .getByText("ДБН 1с 50кг · Красный 50 кг")
       .closest('[data-receipt-binding="bound"]');
     if (!(redMapping instanceof HTMLElement)) throw new Error("Привязка красного цвета не найдена");
     expect(redMapping).toHaveTextContent("Склад готовой продукции");
-    const redColorAndBrand = within(algorithmRed).getByText("Красный · Дихан Баба");
-    expect(redMapping.compareDocumentPosition(redColorAndBrand) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const redBrand = within(algorithmRed).getByText("Бренд: Дихан Баба");
+    expect(redMapping.compareDocumentPosition(redBrand) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(algorithmRed).queryByText("Красный")).not.toBeInTheDocument();
     const algorithmGreen = within(dayPanel).getByRole("group", { name: "Зелёный: 5 мешков" });
     const greenBinding = algorithmGreen.querySelector('[data-receipt-binding="unbound"]');
     expect(greenBinding).toHaveTextContent("Не привязан");
@@ -817,12 +820,19 @@ describe("AI 24/7 live detections", () => {
     await user.click(within(dayPanel).getByRole("button", { name: "Сырые данные" }));
 
     expect(within(dayPanel).getByRole("button", { name: "Сырые данные" })).toHaveAttribute("aria-pressed", "true");
-    const rawRed = within(dayPanel).getByRole("group", { name: "Красный: 150 мешков" });
+    const rawRed = within(dayPanel).getByRole("group", {
+      name: "ДБН 1с 50кг · Красный 50 кг: 150 мешков",
+    });
     expect(within(rawRed).getByText("94.9%")).toBeInTheDocument();
+    expect(within(rawRed).getByText("Бренд: Дихан Баба")).toBeInTheDocument();
+    expect(within(rawRed).queryByText("Красный")).not.toBeInTheDocument();
     expect(within(dayPanel).getByRole("group", { name: "Зелёный: 5 мешков" })).toBeInTheDocument();
-    const rawBlue = within(dayPanel).getByRole("group", { name: "Синий: 3 мешков" });
+    const rawBlue = within(dayPanel).getByRole("group", {
+      name: "ДБН вс 50кг · Синий 50 кг: 3 мешков",
+    });
     expect(within(rawBlue).getByText("ДБН вс 50кг · Синий 50 кг")).toBeInTheDocument();
-    expect(within(rawBlue).getByText("Синий · Korol")).toBeInTheDocument();
+    expect(within(rawBlue).getByText("Бренд: Korol")).toBeInTheDocument();
+    expect(within(rawBlue).queryByText("Синий")).not.toBeInTheDocument();
     expect(within(dayPanel).getAllByText("меш.")).toHaveLength(4);
     expect(within(dayPanel).queryByText("Korol")).not.toBeInTheDocument();
 
@@ -836,8 +846,12 @@ describe("AI 24/7 live detections", () => {
     await waitFor(() =>
       expect(within(legacyDayPanel).getByRole("button", { name: "Алгоритм" })).toHaveAttribute("aria-pressed", "true"),
     );
-    expect(within(legacyDayPanel).getByRole("group", { name: "Красный: 10 мешков" })).toBeInTheDocument();
-    expect(within(legacyDayPanel).getByRole("group", { name: "Синий: 2 мешков" })).toBeInTheDocument();
+    expect(
+      within(legacyDayPanel).getByRole("group", { name: "ДБН 1с 50кг · Красный 50 кг: 10 мешков" }),
+    ).toBeInTheDocument();
+    expect(
+      within(legacyDayPanel).getByRole("group", { name: "ДБН вс 50кг · Синий 50 кг: 2 мешков" }),
+    ).toBeInTheDocument();
     expect(within(legacyDayPanel).getAllByText("ДБН 1с 50кг · Красный 50 кг")).toHaveLength(2);
     expect(within(legacyDayPanel).getAllByText("ДБН вс 50кг · Синий 50 кг")).toHaveLength(2);
     expect(within(legacyDayPanel).getAllByText(/Бренд недоступен$/)).toHaveLength(2);
@@ -848,8 +862,12 @@ describe("AI 24/7 live detections", () => {
     );
 
     await user.click(within(legacyDayPanel).getByRole("button", { name: "Сырые данные" }));
-    expect(within(legacyDayPanel).getByRole("group", { name: "Красный: 10 мешков" })).toBeInTheDocument();
-    expect(within(legacyDayPanel).getByRole("group", { name: "Синий: 2 мешков" })).toBeInTheDocument();
+    expect(
+      within(legacyDayPanel).getByRole("group", { name: "ДБН 1с 50кг · Красный 50 кг: 10 мешков" }),
+    ).toBeInTheDocument();
+    expect(
+      within(legacyDayPanel).getByRole("group", { name: "ДБН вс 50кг · Синий 50 кг: 2 мешков" }),
+    ).toBeInTheDocument();
     expect(within(legacyDayPanel).getAllByText("меш.")).toHaveLength(2);
 
     // Append-only production runs include the part already moved to an
@@ -859,8 +877,10 @@ describe("AI 24/7 live detections", () => {
     const archivedHeading = screen.getByRole("heading", { name: "22.08.2026" });
     const archivedDayPanel = archivedHeading.closest(".rounded-2xl");
     if (!(archivedDayPanel instanceof HTMLElement)) throw new Error("Карточка архивного среза не найдена");
-    expect(await within(archivedDayPanel).findByRole("group", { name: "Синий: 40 мешков" })).toBeInTheDocument();
-    expect(within(archivedDayPanel).queryByRole("group", { name: /Красный: / })).not.toBeInTheDocument();
+    expect(
+      await within(archivedDayPanel).findByRole("group", { name: "ДБН вс 50кг · Синий 50 кг: 40 мешков" }),
+    ).toBeInTheDocument();
+    expect(within(archivedDayPanel).queryByRole("group", { name: /ДБН 1с 50кг/ })).not.toBeInTheDocument();
     expect(within(archivedDayPanel).getByRole("status")).toHaveTextContent("часть дня уже перенесена в архив");
     expect(within(archivedDayPanel).queryByText("меш.")).not.toBeInTheDocument();
   });

@@ -30,7 +30,7 @@ const PRODUCT_COLOR_RESTRICTED = new Set(["red", "green", "blue"]);
 // Phase A remains a safe rollback target: until it is finalized, an existing
 // catalogue product can only be selected where its stock card already exists.
 // Phase B flips this and lets camera mapping create a card in another warehouse.
-const MULTI_WAREHOUSE_PRODUCT_ASSIGNMENT_ENABLED = false;
+const MULTI_WAREHOUSE_PRODUCT_ASSIGNMENT_ENABLED = true;
 
 function productHasStockCard(product: AlwaysOnProductionProduct, warehouse: number | null) {
   if (warehouse === null) return false;
@@ -332,23 +332,35 @@ export function AlwaysOnDayRunLog({
         <div className="mt-2 max-h-[19rem] divide-y divide-slate-100 overflow-y-auto overscroll-contain">
           {orderedRuns.map((run) => {
             const meta = colorMeta(run.color);
+            const destination = receiptMapping
+              ? resolveAlwaysOnReceiptDestination(receiptMapping, run.color)
+              : undefined;
+            const hasProduct = destination?.state === "bound";
             const active = run.status === "active";
             const partial = Boolean(run.is_partial_for_day);
             return (
               <div
                 key={run.id}
+                role="group"
+                aria-label={
+                  partial
+                    ? `Период ${hasProduct ? destination.productLabel : meta.label}: сквозной период`
+                    : `Период ${hasProduct ? destination.productLabel : meta.label}: ${run.model_bags} мешков`
+                }
                 className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-2.5 sm:grid-cols-[minmax(220px,1.25fr)_minmax(150px,1fr)_auto] sm:items-center"
               >
                 <div className="min-w-0">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span className={cn("size-2.5 shrink-0 rounded-full", meta.dot, active && "animate-pulse")} />
-                    <span className="truncate text-xs font-bold text-slate-700">{meta.label}</span>
-                  </div>
-                  {receiptMapping && (
+                  {!hasProduct && (
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className={cn("size-2.5 shrink-0 rounded-full", meta.dot, active && "animate-pulse")} />
+                      <span className="truncate text-xs font-bold text-slate-700">{meta.label}</span>
+                    </div>
+                  )}
+                  {destination && (
                     <AlwaysOnReceiptDestinationLabel
-                      destination={resolveAlwaysOnReceiptDestination(receiptMapping, run.color)}
-                      colorLabel={meta.label}
-                      className="mt-1 pl-[18px]"
+                      destination={destination}
+                      colorLabel={hasProduct ? undefined : meta.label}
+                      className={hasProduct ? undefined : "mt-1 pl-[18px]"}
                     />
                   )}
                 </div>

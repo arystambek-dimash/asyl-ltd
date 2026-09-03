@@ -209,7 +209,7 @@ describe("AlwaysOnProductionPanel", () => {
   it.each([
     ["white", "Белый"],
     ["unclassified", "unclassified"],
-  ])("разрешает сопоставить цвет %s с товаром выбранного склада", (color, colorLabel) => {
+  ])("разрешает сопоставить цвет %s с товаром для нового склада", (color, colorLabel) => {
     render(
       <AlwaysOnProductionPanel
         payload={{
@@ -229,7 +229,7 @@ describe("AlwaysOnProductionPanel", () => {
     const select = screen.getByLabelText(`Товар для цвета ${colorLabel}`);
     expect(within(select).getByRole("option", { name: "Мука красная · 50 кг" })).toBeInTheDocument();
     expect(within(select).getByRole("option", { name: "Мука синяя · 25 кг" })).toBeInTheDocument();
-    expect(within(select).queryByRole("option", { name: /второго склада/ })).not.toBeInTheDocument();
+    expect(within(select).getByRole("option", { name: /второго склада/ })).toBeInTheDocument();
   });
 
   it("показывает ошибочную привязку товара к другому складу как ненастроенную", () => {
@@ -311,7 +311,7 @@ describe("AlwaysOnProductionPanel", () => {
     );
   });
 
-  it("changes the receipt warehouse and clears mappings owned by the previous warehouse", async () => {
+  it("changes the receipt warehouse and keeps mappings that can create a new stock card", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
     render(
@@ -327,14 +327,14 @@ describe("AlwaysOnProductionPanel", () => {
 
     await user.selectOptions(screen.getByLabelText("Склад прихода"), "2");
     const red = screen.getByLabelText("Товар для цвета Красный");
-    expect(red).toHaveValue("");
-    expect(within(red).queryByRole("option", { name: "Мука красная · 50 кг" })).not.toBeInTheDocument();
-    await user.selectOptions(red, "4");
+    expect(red).toHaveValue("1");
+    expect(within(red).getByRole("option", { name: "Мука красная · 50 кг" })).toBeInTheDocument();
+    expect(within(red).getByRole("option", { name: "Мука красная второго склада · 50 кг" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Сохранить" }));
 
     expect(onSave).toHaveBeenCalledWith(
       [
-        { color: "red", product: 4, product_label: "Мука красная второго склада · 50 кг" },
+        { color: "red", product: 1, product_label: "Мука красная · 50 кг" },
         { color: "blue", product: null, product_label: null },
       ],
       2,
@@ -468,9 +468,13 @@ describe("AlwaysOnDayRunLog", () => {
       />,
     );
 
-    const bound = screen.getByText("Мука красная · 50 кг").closest('[data-receipt-binding="bound"]');
-    const unbound = document.querySelector('[data-receipt-binding="unbound"]');
-    expect(bound).toHaveTextContent("Красный: приход — Мука красная · 50 кг→склад Основной склад");
+    const boundRun = screen.getByRole("group", { name: "Период Мука красная · 50 кг: 126 мешков" });
+    const unboundRun = screen.getByRole("group", { name: "Период Синий: 3 мешков" });
+    const bound = boundRun.querySelector('[data-receipt-binding="bound"]');
+    const unbound = unboundRun.querySelector('[data-receipt-binding="unbound"]');
+    expect(bound).toHaveTextContent("Приход — Мука красная · 50 кг→склад Основной склад");
+    expect(within(boundRun).queryByText("Красный")).not.toBeInTheDocument();
+    expect(within(unboundRun).getByText("Синий")).toBeInTheDocument();
     expect(unbound).toHaveTextContent("Синий: приход — Не привязан");
   });
 
@@ -550,6 +554,8 @@ describe("AlwaysOnDayRunLog", () => {
     expect(screen.getByText("10:25")).toBeInTheDocument();
     expect(screen.getByText("≈ приблизительно")).toBeInTheDocument();
     expect(screen.getByText("41")).toBeInTheDocument();
+    expect(screen.getByText("Красный")).toBeInTheDocument();
+    expect(screen.getByText("Синий")).toBeInTheDocument();
   });
 
   it("явно показывает пустой выбранный день", () => {

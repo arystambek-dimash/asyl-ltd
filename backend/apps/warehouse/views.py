@@ -15,6 +15,7 @@ from .serializers import (
     StockItemSerializer,
     StockMovementSerializer,
     StockReceiptSerializer,
+    StockTransferSerializer,
     WarehouseSerializer,
 )
 from .services import (
@@ -23,6 +24,7 @@ from .services import (
     delete_stock_item,
     receive_stock,
     resolve_warehouse,
+    transfer_stock,
 )
 
 
@@ -77,6 +79,7 @@ class StockViewSet(
         "movements": "warehouse.view",
         "adjust": "warehouse.adjust",
         "receive": "warehouse.adjust",
+        "transfer": "warehouse.adjust",
         "destroy": "warehouse.adjust",
     }
 
@@ -135,6 +138,29 @@ class StockViewSet(
         return Response(
             StockReceiptSerializer(receipt).data,
             status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["post"])
+    def transfer(self, request):
+        serializer = StockTransferSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        product = self._get_product(serializer.validated_data["product"])
+        result = transfer_stock(
+            product,
+            serializer.validated_data["bags"],
+            request.user,
+            from_warehouse=serializer.validated_data["from_warehouse"],
+            to_warehouse=serializer.validated_data["to_warehouse"],
+            note=serializer.validated_data.get("note", ""),
+        )
+        return Response(
+            {
+                "transfer_id": str(result["transfer_id"]),
+                "product": result["product"],
+                "bags": result["bags"],
+                "source": StockItemSerializer(result["source"]).data,
+                "destination": StockItemSerializer(result["destination"]).data,
+            }
         )
 
     @action(detail=False, methods=["get"])

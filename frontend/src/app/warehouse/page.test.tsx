@@ -114,7 +114,7 @@ function apiState<T>(
   };
 }
 
-describe("WarehousePage multi-warehouse phase 1", () => {
+describe("WarehousePage multi-warehouse inventory", () => {
   beforeEach(() => {
     navigation.search = "";
     navigation.replace.mockReset();
@@ -143,6 +143,13 @@ describe("WarehousePage multi-warehouse phase 1", () => {
 
     expect(screen.getByRole("heading", { name: "Склады" })).toBeInTheDocument();
     expect(screen.getByLabelText("Склад")).toHaveValue("2");
+    expect(screen.getByRole("button", { name: "Открыть склад Основной склад" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getByRole("button", { name: "Открыть склад Резервный склад" })).toHaveTextContent("1 позиция");
+    expect(screen.queryByText("Корпус 1")).not.toBeInTheDocument();
+    expect(screen.queryByText("Корпус 2")).not.toBeInTheDocument();
     expect(useApiMock).toHaveBeenCalledWith("/stock/?warehouse=2");
     await waitFor(() => expect(navigation.replace).toHaveBeenCalledWith("/warehouse?warehouse=2", { scroll: false }));
   });
@@ -160,22 +167,22 @@ describe("WarehousePage multi-warehouse phase 1", () => {
     expect(useApiMock).toHaveBeenCalledWith("/stock/?warehouse=2");
   });
 
-  it("excludes globally assigned products and sends the selected warehouse with an adjustment", async () => {
+  it("allows a product stored elsewhere to be added to the selected warehouse", async () => {
     navigation.search = "warehouse=2";
     const user = userEvent.setup();
     render(<WarehousePage />);
 
     await user.click(screen.getByRole("button", { name: "Добавить товар на склад Основной склад" }));
     const productSelect = await screen.findByLabelText("Товар");
-    expect(screen.queryByRole("option", { name: "Красная мука · 50 кг" })).not.toBeInTheDocument();
-    await user.selectOptions(productSelect, "20");
+    expect(screen.getByRole("option", { name: "Красная мука · 50 кг" })).toBeInTheDocument();
+    await user.selectOptions(productSelect, "10");
     await user.type(screen.getByLabelText("Количество мешков"), "25");
     await user.click(screen.getByRole("button", { name: "Добавить 25 меш." }));
 
     await waitFor(() =>
       expect(apiMocks.post).toHaveBeenCalledWith("/stock/adjust/", {
         warehouse: 2,
-        product: 20,
+        product: 10,
         delta: 25,
       }),
     );
@@ -188,7 +195,11 @@ describe("WarehousePage multi-warehouse phase 1", () => {
     render(<WarehousePage />);
 
     await user.click(screen.getByRole("button", { name: "Управление" }));
-    await user.click(await screen.findByRole("button", { name: /Резервный склад/ }));
+    await user.click(await screen.findByRole("button", { name: "Резервный склад" }));
+    expect(screen.queryByLabelText("Код")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Адрес")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Активный склад")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Основной склад")).not.toBeInTheDocument();
     const nameInput = screen.getByLabelText("Название");
     await user.clear(nameInput);
     await user.type(nameInput, "Резерв");
@@ -196,11 +207,7 @@ describe("WarehousePage multi-warehouse phase 1", () => {
 
     await waitFor(() =>
       expect(apiMocks.patch).toHaveBeenCalledWith("/warehouses/1/", {
-        code: "reserve",
         name: "Резерв",
-        address: "Корпус 2",
-        is_active: true,
-        is_default: false,
       }),
     );
   });
@@ -220,18 +227,52 @@ describe("WarehousePage multi-warehouse phase 1", () => {
     render(<WarehousePage />);
 
     await user.click(screen.getByRole("button", { name: "Управление" }));
-    await user.type(await screen.findByLabelText("Код"), "north");
-    await user.type(screen.getByLabelText("Название"), "Северный склад");
-    await user.type(screen.getByLabelText("Адрес"), "Северная зона");
+    await user.type(await screen.findByLabelText("Название"), "Северный склад");
     await user.click(screen.getByRole("button", { name: "Создать склад" }));
 
     await waitFor(() =>
       expect(apiMocks.post).toHaveBeenCalledWith("/warehouses/", {
-        code: "north",
         name: "Северный склад",
-        address: "Северная зона",
-        is_active: true,
-        is_default: false,
+      }),
+    );
+  });
+
+  it("moves stock to another warehouse and previews both balances", async () => {
+    navigation.search = "warehouse=1";
+    const destinationStock: StockItem = {
+      ...assignedStock,
+      id: 101,
+      warehouse: 2,
+      warehouse_name: "Основной склад",
+      bags: 4,
+    };
+    useApiMock.mockImplementation((url: string | null) => {
+      if (url === "/warehouses/") return apiState(warehouses);
+      if (url === "/products/") return apiState(products);
+      if (url === "/stock/") return apiState([assignedStock, destinationStock]);
+      if (url === "/stock/?warehouse=1") return apiState([assignedStock]);
+      return apiState([]);
+    });
+    const user = userEvent.setup();
+    render(<WarehousePage />);
+
+    await user.click(screen.getAllByRole("button", { name: "Действия с товаром" })[0]);
+    await user.click(screen.getByRole("menuitem", { name: "Изменить" }));
+    await user.click(screen.getByRole("button", { name: /Перемещение/ }));
+    await user.selectOptions(screen.getByLabelText("Склад назначения"), "2");
+    await user.type(screen.getByLabelText("Количество мешков"), "10");
+
+    expect(screen.getByText("Откуда · Резервный склад")).toBeInTheDocument();
+    expect(screen.getByText("Куда · Основной склад")).toBeInTheDocument();
+    expect(screen.getByText("10 меш. будут перенесены без изменения общего остатка.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Переместить 10 меш." }));
+    await waitFor(() =>
+      expect(apiMocks.post).toHaveBeenCalledWith("/stock/transfer/", {
+        from_warehouse: 1,
+        to_warehouse: 2,
+        product: 10,
+        bags: 10,
       }),
     );
   });

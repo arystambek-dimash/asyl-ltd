@@ -26,9 +26,9 @@ import {
   ArrowDown,
   ArrowRight,
   ArrowUp,
+  ArrowRightLeft,
   Building2,
   Boxes,
-  MapPin,
   Package,
   Pencil,
   Plus,
@@ -47,6 +47,20 @@ function stockTone(bags: number): { tone: "destructive" | "warning" | "success";
 }
 
 const QUICK_AMOUNTS = [10, 50, 100, 500];
+type StockOperation = "add" | "remove" | "transfer";
+
+function stockPositionLabel(count: number) {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  const noun =
+    mod10 === 1 && mod100 !== 11
+      ? "позиция"
+      : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+        ? "позиции"
+        : "позиций";
+  return `${count} ${noun}`;
+}
+
 const LEGACY_WAREHOUSE: Warehouse = {
   id: 0,
   code: "main",
@@ -89,12 +103,9 @@ function WarehousePageInner() {
     : null;
   const { data: stock, loading: stockLoading, error: loadError, reload } = useApi<StockItem[]>(stockUrl);
   const { data: products } = useApi<Product[]>(canAdjust && canBrowseCatalog ? "/products/" : null);
-  // Phase 1 keeps product assignment unique across all warehouses. The selected
-  // stock powers the page, while this aggregate prevents offering a product
-  // that is already assigned to another warehouse.
-  const { data: allStock, reload: reloadAllStock } = useApi<StockItem[]>(
-    canAdjust && canBrowseCatalog ? "/stock/" : null,
-  );
+  // Aggregate stock powers ownership counts and the destination preview. The
+  // selected warehouse still has its own scoped list and filters.
+  const { data: allStock, reload: reloadAllStock } = useApi<StockItem[]>(legacyWarehouseMode ? null : "/stock/");
 
   // фильтры
   const [search, setSearch] = useState("");
@@ -105,7 +116,8 @@ function WarehousePageInner() {
   const [open, setOpen] = useState(false);
   const [dialogIntent, setDialogIntent] = useState<"add" | "adjust">("add");
   const [product, setProduct] = useState("");
-  const [mode, setMode] = useState<"add" | "remove">("add");
+  const [mode, setMode] = useState<StockOperation>("add");
+  const [destinationWarehouse, setDestinationWarehouse] = useState("");
   const [amount, setAmount] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -124,6 +136,7 @@ function WarehousePageInner() {
     setPackaging("");
     setOpen(false);
     setProduct("");
+    setDestinationWarehouse("");
     setAmount("");
     setError("");
   }, [selectedWarehouseId]);
@@ -135,8 +148,19 @@ function WarehousePageInner() {
   }
 
   const items = useMemo(() => stock ?? [], [stock]);
-  const stockedProductIds = new Set((allStock ?? []).map((item) => item.product));
-  const availableProducts = allStock ? (products ?? []).filter((item) => !stockedProductIds.has(item.id)) : [];
+  const currentProductIds = new Set(items.map((item) => item.product));
+  const availableProducts = products ? products.filter((item) => !currentProductIds.has(item.id)) : [];
+  const warehouseStockCounts = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const item of allStock ?? []) {
+      counts.set(item.warehouse, (counts.get(item.warehouse) ?? 0) + 1);
+    }
+    return counts;
+  }, [allStock]);
+  const destinationWarehouses = useMemo(
+    () => activeWarehouses.filter((item) => item.id !== selectedWarehouseId),
+    [activeWarehouses, selectedWarehouseId],
+  );
   const grades = useMemo(() => Array.from(new Set(items.map((s) => s.grade))).filter(Boolean), [items]);
   const packagings = useMemo(() => Array.from(new Set(items.map((s) => s.packaging))).filter(Boolean), [items]);
   const bagsByProduct = useMemo(() => new Map(items.map((s) => [String(s.product), s.bags])), [items]);
@@ -176,6 +200,7 @@ function WarehousePageInner() {
     setDialogIntent("add");
     setProduct("");
     setMode("add");
+    setDestinationWarehouse("");
     setAmount("");
     setError("");
     setOpen(true);
@@ -185,6 +210,7 @@ function WarehousePageInner() {
     setDialogIntent("adjust");
     setProduct(String(productId));
     setMode("add");
+    setDestinationWarehouse("");
     setAmount("");
     setError("");
     setOpen(true);
@@ -194,19 +220,34 @@ function WarehousePageInner() {
   const currentBags = product ? (bagsByProduct.get(product) ?? 0) : null;
   const delta = Number(amount) || 0;
   const nextBags = currentBags === null ? null : mode === "add" ? currentBags + delta : currentBags - delta;
-  const insufficient = mode === "remove" && nextBags !== null && nextBags < 0;
+  const insufficient = mode !== "add" && nextBags !== null && nextBags < 0;
+  const destination = destinationWarehouses.find((item) => String(item.id) === destinationWarehouse) ?? null;
+  const destinationCurrentBags =
+    mode === "transfer" && product && destination && allStock
+      ? (allStock.find((item) => item.product === Number(product) && item.warehouse === destination.id)?.bags ?? 0)
+      : null;
 
   async function submitAdjust(e: React.FormEvent) {
     e.preventDefault();
-    if (!selectedWarehouse || !product || delta <= 0 || insufficient) return;
+    if (!selectedWarehouse || !product || delta <= 0 || insufficient || (mode === "transfer" && !destination)) return;
     setBusy(true);
     setError("");
     try {
-      await api.post("/stock/adjust/", {
-        ...(legacyWarehouseMode ? {} : { warehouse: selectedWarehouseId }),
-        product: Number(product),
-        delta: mode === "add" ? delta : -delta,
-      });
+      if (mode === "transfer") {
+        if (!destination) return;
+        await api.post("/stock/transfer/", {
+          from_warehouse: selectedWarehouse.id,
+          to_warehouse: destination.id,
+          product: Number(product),
+          bags: delta,
+        });
+      } else {
+        await api.post("/stock/adjust/", {
+          ...(legacyWarehouseMode ? {} : { warehouse: selectedWarehouseId }),
+          product: Number(product),
+          delta: mode === "add" ? delta : -delta,
+        });
+      }
       setOpen(false);
       await Promise.all([reload(), reloadAllStock()]);
     } catch (e) {
@@ -224,7 +265,7 @@ function WarehousePageInner() {
     setPackaging("");
   }
 
-  const productReferencesLoading = products === null || allStock === null;
+  const productReferencesLoading = products === null;
   const addButton =
     canAdjust && canBrowseCatalog && selectedWarehouse ? (
       <Button
@@ -292,7 +333,7 @@ function WarehousePageInner() {
             <h2 className="mt-3 font-semibold">Нет активных складов</h2>
             <p className="mt-1 max-w-md text-sm text-[var(--muted-foreground)]">
               {canAdjust
-                ? "Создайте первый склад или активируйте существующий, чтобы распределить товары."
+                ? "Создайте первый активный склад, чтобы распределить товары."
                 : "Попросите администратора настроить доступный склад."}
             </p>
             {canAdjust && (
@@ -308,29 +349,71 @@ function WarehousePageInner() {
   }
 
   const warehouseSelector = (
-    <Card className="mb-5">
-      <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <Building2 className="size-4 text-[var(--primary)]" /> Рабочий склад
+    <Card className="mb-5 overflow-hidden">
+      <CardContent className="p-0">
+        <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+          <div className="min-w-0">
+            <div className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+              Выбранный склад
+            </div>
+            <div className="mt-1 flex items-center gap-2 text-base font-semibold">
+              <Building2 className="size-4 text-[var(--primary)]" />
+              <span className="truncate">{selectedWarehouse.name}</span>
+            </div>
           </div>
-          <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">
-            {selectedWarehouse.address || "Адрес не указан"}
-          </p>
+          <Select
+            aria-label="Склад"
+            className="w-full sm:w-72"
+            value={String(selectedWarehouse.id)}
+            onChange={(event) => selectWarehouse(Number(event.target.value))}
+          >
+            {activeWarehouses.map((warehouse) => (
+              <option key={warehouse.id} value={warehouse.id}>
+                {warehouse.name}
+                {warehouse.is_default ? " · основной" : ""}
+              </option>
+            ))}
+          </Select>
         </div>
-        <Select
-          aria-label="Склад"
-          className="w-full sm:w-72"
-          value={String(selectedWarehouse.id)}
-          onChange={(event) => selectWarehouse(Number(event.target.value))}
+        <div
+          role="group"
+          className="grid gap-2 border-t bg-[var(--muted)]/20 p-3 sm:grid-cols-2 sm:p-4 lg:grid-cols-3"
+          aria-label="Быстрый выбор склада"
         >
           {activeWarehouses.map((warehouse) => (
-            <option key={warehouse.id} value={warehouse.id}>
-              {warehouse.name}
-              {warehouse.is_default ? " · основной" : ""}
-            </option>
+            <button
+              key={warehouse.id}
+              type="button"
+              aria-label={`Открыть склад ${warehouse.name}`}
+              aria-current={warehouse.id === selectedWarehouse.id ? "page" : undefined}
+              onClick={() => selectWarehouse(warehouse.id)}
+              className={cn(
+                "flex min-w-0 items-center gap-3 rounded-lg border bg-[var(--card)] p-3 text-left outline-none transition-colors hover:bg-[var(--accent)] focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/40",
+                warehouse.id === selectedWarehouse.id && "border-[var(--primary)] bg-[var(--primary)]/6",
+              )}
+            >
+              <span
+                className={cn(
+                  "flex size-9 shrink-0 items-center justify-center rounded-md bg-[var(--muted)] text-[var(--muted-foreground)]",
+                  warehouse.id === selectedWarehouse.id && "bg-[var(--primary)]/12 text-[var(--primary)]",
+                )}
+              >
+                <Building2 className="size-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5">
+                  <span className="truncate text-sm font-semibold">{warehouse.name}</span>
+                  {warehouse.is_default && <Badge tone="success">Основной</Badge>}
+                </span>
+                <span className="mt-0.5 block text-xs text-[var(--muted-foreground)]">
+                  {allStock === null
+                    ? "Загрузка товаров…"
+                    : stockPositionLabel(warehouseStockCounts.get(warehouse.id) ?? 0)}
+                </span>
+              </span>
+            </button>
           ))}
-        </Select>
+        </div>
       </CardContent>
     </Card>
   );
@@ -469,6 +552,9 @@ function WarehousePageInner() {
                       <div className="mt-1 text-xs text-[var(--muted-foreground)]">
                         {s.color_label} · {s.packaging}
                       </div>
+                      <div className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-[var(--primary)]">
+                        <Building2 className="size-3" /> {s.warehouse_name || selectedWarehouse.name}
+                      </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5">
                       <Badge tone={st.tone} dot>
@@ -534,6 +620,9 @@ function WarehousePageInner() {
                     <TD>
                       <div className="font-medium">{s.grade}</div>
                       <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">{s.color_label}</div>
+                      <div className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-[var(--primary)]">
+                        <Building2 className="size-3" /> {s.warehouse_name || selectedWarehouse.name}
+                      </div>
                     </TD>
                     <TD>{s.packaging}</TD>
                     <TD className="text-right tabular-nums font-semibold">
@@ -579,7 +668,7 @@ function WarehousePageInner() {
         description={
           dialogIntent === "add"
             ? `Выберите товар и укажите количество для склада «${selectedWarehouse.name}».`
-            : `Добавьте поступление или спишите товар на складе «${selectedWarehouse.name}».`
+            : `Примите, спишите или переместите товар со склада «${selectedWarehouse.name}».`
         }
       >
         <form onSubmit={submitAdjust} className="flex flex-col gap-4">
@@ -611,42 +700,68 @@ function WarehousePageInner() {
           {dialogIntent === "adjust" && (
             <div className="grid gap-1.5">
               <span className="text-sm font-medium">Тип операции</span>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid gap-2 sm:grid-cols-3">
                 {(
                   [
                     ["add", "Приёмка", "Добавить на склад", ArrowUp],
                     ["remove", "Списание", "Убрать со склада", ArrowDown],
+                    ["transfer", "Перемещение", "Передать на другой склад", ArrowRightLeft],
                   ] as const
-                ).map(([m, label, hint, Icon]) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => setMode(m)}
-                    aria-pressed={mode === m}
-                    className={cn(
-                      "flex items-center gap-3 rounded-lg border p-3 text-left outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/40",
-                      mode === m && m === "add" && "border-[var(--success)]/50 bg-[var(--success)]/8",
-                      mode === m && m === "remove" && "border-[var(--destructive)]/40 bg-[var(--destructive)]/7",
-                      mode !== m && "hover:bg-[var(--muted)]/40",
-                    )}
-                  >
-                    <span
+                )
+                  .filter(([m]) => m !== "transfer" || (!legacyWarehouseMode && destinationWarehouses.length > 0))
+                  .map(([m, label, hint, Icon]) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => {
+                        setMode(m);
+                        setDestinationWarehouse("");
+                      }}
+                      aria-pressed={mode === m}
                       className={cn(
-                        "flex size-8 shrink-0 items-center justify-center rounded-md bg-[var(--muted)] text-[var(--muted-foreground)]",
-                        mode === m && m === "add" && "bg-[var(--success)]/12 text-[var(--success)]",
-                        mode === m && m === "remove" && "bg-[var(--destructive)]/12 text-[var(--destructive)]",
+                        "flex items-center gap-2.5 rounded-lg border p-3 text-left outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/40 sm:flex-col sm:items-start",
+                        mode === m && m === "add" && "border-[var(--success)]/50 bg-[var(--success)]/8",
+                        mode === m && m === "remove" && "border-[var(--destructive)]/40 bg-[var(--destructive)]/7",
+                        mode === m && m === "transfer" && "border-[var(--primary)]/45 bg-[var(--primary)]/7",
+                        mode !== m && "hover:bg-[var(--muted)]/40",
                       )}
                     >
-                      <Icon className="size-4" />
-                    </span>
-                    <span>
-                      <span className="block text-sm font-medium">{label}</span>
-                      <span className="block text-xs text-[var(--muted-foreground)]">{hint}</span>
-                    </span>
-                  </button>
-                ))}
+                      <span
+                        className={cn(
+                          "flex size-8 shrink-0 items-center justify-center rounded-md bg-[var(--muted)] text-[var(--muted-foreground)]",
+                          mode === m && m === "add" && "bg-[var(--success)]/12 text-[var(--success)]",
+                          mode === m && m === "remove" && "bg-[var(--destructive)]/12 text-[var(--destructive)]",
+                          mode === m && m === "transfer" && "bg-[var(--primary)]/12 text-[var(--primary)]",
+                        )}
+                      >
+                        <Icon className="size-4" />
+                      </span>
+                      <span>
+                        <span className="block text-sm font-medium">{label}</span>
+                        <span className="block text-xs text-[var(--muted-foreground)]">{hint}</span>
+                      </span>
+                    </button>
+                  ))}
               </div>
             </div>
+          )}
+
+          {mode === "transfer" && (
+            <Field label="Склад назначения" htmlFor="stock-destination">
+              <Select
+                id="stock-destination"
+                value={destinationWarehouse}
+                onChange={(event) => setDestinationWarehouse(event.target.value)}
+                required
+              >
+                <option value="">Выберите склад</option>
+                {destinationWarehouses.map((warehouse) => (
+                  <option key={warehouse.id} value={warehouse.id}>
+                    {warehouse.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
           )}
 
           <Field label="Количество мешков" htmlFor="stock-amount">
@@ -673,14 +788,14 @@ function WarehousePageInner() {
                     : "text-[var(--muted-foreground)] hover:bg-[var(--accent)]",
                 )}
               >
-                {mode === "add" ? "+" : "−"}
+                {mode === "add" ? "+" : mode === "remove" ? "−" : "→ "}
                 {n}
               </button>
             ))}
           </div>
 
           {/* сейчас → станет */}
-          {currentBags !== null && (
+          {currentBags !== null && mode !== "transfer" && (
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 rounded-lg border bg-[var(--muted)]/30 p-3 text-sm">
               <div>
                 <div className="text-xs text-[var(--muted-foreground)]">Сейчас</div>
@@ -695,8 +810,53 @@ function WarehousePageInner() {
               </div>
             </div>
           )}
+          {currentBags !== null && mode === "transfer" && (
+            <div className="rounded-lg border bg-[var(--muted)]/30 p-3 text-sm">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-medium text-[var(--muted-foreground)]">
+                    Откуда · {selectedWarehouse.name}
+                  </div>
+                  <div className="mt-1 font-semibold tabular-nums">
+                    {formatMoney(currentBags)}
+                    <span className="font-normal text-[var(--muted-foreground)]"> → </span>
+                    <span className={cn(insufficient && "text-[var(--destructive)]")}>
+                      {delta > 0 ? formatMoney(nextBags!) : "—"}
+                    </span>{" "}
+                    меш.
+                  </div>
+                </div>
+                <span className="flex size-8 items-center justify-center rounded-full bg-[var(--primary)]/10 text-[var(--primary)]">
+                  <ArrowRight className="size-4" />
+                </span>
+                <div className="min-w-0 text-right">
+                  <div className="truncate text-xs font-medium text-[var(--muted-foreground)]">
+                    Куда · {destination?.name ?? "выберите склад"}
+                  </div>
+                  <div className="mt-1 font-semibold tabular-nums">
+                    {destinationCurrentBags === null ? (
+                      "—"
+                    ) : (
+                      <>
+                        {formatMoney(destinationCurrentBags)}
+                        <span className="font-normal text-[var(--muted-foreground)]"> → </span>
+                        {formatMoney(destinationCurrentBags + delta)} меш.
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+              {destination && delta > 0 && (
+                <p className="mt-2 border-t pt-2 text-xs text-[var(--muted-foreground)]">
+                  {formatMoney(delta)} меш. будут перенесены без изменения общего остатка.
+                </p>
+              )}
+            </div>
+          )}
           {insufficient && (
-            <p className="text-sm text-[var(--destructive)]">Нельзя списать больше, чем есть на складе.</p>
+            <p className="text-sm text-[var(--destructive)]">
+              Нельзя {mode === "transfer" ? "переместить" : "списать"} больше, чем есть на складе.
+            </p>
           )}
           {error && (
             <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
@@ -711,13 +871,22 @@ function WarehousePageInner() {
             <Button
               type="submit"
               variant={mode === "remove" ? "destructive" : "default"}
-              disabled={busy || !selectedWarehouse || !product || delta <= 0 || insufficient}
+              disabled={
+                busy ||
+                !selectedWarehouse ||
+                !product ||
+                delta <= 0 ||
+                insufficient ||
+                (mode === "transfer" && !destination)
+              }
             >
               {busy
                 ? "Сохранение…"
                 : mode === "add"
                   ? `${dialogIntent === "add" ? "Добавить" : "Принять"}${delta > 0 ? ` ${formatMoney(delta)} меш.` : ""}`
-                  : `Списать${delta > 0 ? ` ${formatMoney(delta)} меш.` : ""}`}
+                  : mode === "remove"
+                    ? `Списать${delta > 0 ? ` ${formatMoney(delta)} меш.` : ""}`
+                    : `Переместить${delta > 0 ? ` ${formatMoney(delta)} меш.` : ""}`}
             </Button>
           </div>
         </form>
@@ -740,62 +909,39 @@ function WarehouseManagerModal({
   onSaved: (warehouse: Warehouse, created: boolean) => void | Promise<void>;
 }) {
   const [editing, setEditing] = useState<Warehouse | null>(null);
-  const [code, setCode] = useState("");
   const [name, setName] = useState("");
-  const [address, setAddress] = useState("");
-  const [isActive, setIsActive] = useState(true);
-  const [isDefault, setIsDefault] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     if (!open) return;
     setEditing(null);
-    setCode("");
     setName("");
-    setAddress("");
-    setIsActive(true);
-    setIsDefault(warehouses.length === 0);
     setError("");
   }, [open, warehouses.length]);
 
   function startCreate() {
     setEditing(null);
-    setCode("");
     setName("");
-    setAddress("");
-    setIsActive(true);
-    setIsDefault(warehouses.length === 0);
     setError("");
   }
 
   function startEdit(warehouse: Warehouse) {
     setEditing(warehouse);
-    setCode(warehouse.code);
     setName(warehouse.name);
-    setAddress(warehouse.address);
-    setIsActive(warehouse.is_active);
-    setIsDefault(warehouse.is_default);
     setError("");
   }
 
   async function saveWarehouse(event: React.FormEvent) {
     event.preventDefault();
-    if (!code.trim() || !name.trim()) return;
+    if (!name.trim()) return;
     setBusy(true);
     setError("");
     try {
-      const body = {
-        code: code.trim(),
-        name: name.trim(),
-        address: address.trim(),
-        is_active: isActive,
-        is_default: isDefault,
-      };
       const created = editing === null;
       const response = editing
-        ? await api.patch<Warehouse>(`/warehouses/${editing.id}/`, body)
-        : await api.post<Warehouse>("/warehouses/", body);
+        ? await api.patch<Warehouse>(`/warehouses/${editing.id}/`, { name: name.trim() })
+        : await api.post<Warehouse>("/warehouses/", { name: name.trim() });
       await onSaved(response.data, created);
       onClose();
     } catch (cause) {
@@ -811,7 +957,7 @@ function WarehouseManagerModal({
       onClose={onClose}
       eyebrow="Справочник"
       title="Управление складами"
-      description="Создавайте места хранения и выбирайте основной склад для новых операций."
+      description="Создавайте понятные места хранения — сотрудникам достаточно названия."
       className="max-w-3xl"
     >
       <div className="grid gap-5 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
@@ -843,10 +989,6 @@ function WarehouseManagerModal({
                     {warehouse.is_default && <Badge tone="success">Основной</Badge>}
                     {!warehouse.is_active && <Badge>Неактивен</Badge>}
                   </span>
-                  <span className="mt-0.5 block truncate text-xs text-[var(--muted-foreground)]">
-                    {warehouse.code}
-                    {warehouse.address ? ` · ${warehouse.address}` : ""}
-                  </span>
                 </span>
                 <Pencil className="mt-1 size-3.5 shrink-0 text-[var(--muted-foreground)]" />
               </button>
@@ -866,76 +1008,19 @@ function WarehouseManagerModal({
           <div>
             <h3 className="text-sm font-semibold">{editing ? "Изменить склад" : "Новый склад"}</h3>
             <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
-              Код используется в интеграциях, название видно сотрудникам.
+              Название будет видно во всех складских операциях.
             </p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Код" htmlFor="warehouse-code">
-              <Input
-                id="warehouse-code"
-                value={code}
-                onChange={(event) => setCode(event.target.value)}
-                placeholder="main"
-                autoFocus
-                required
-                disabled={editing?.code === "main"}
-              />
-            </Field>
-            <Field label="Название" htmlFor="warehouse-name">
-              <Input
-                id="warehouse-name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="Основной склад"
-                required
-              />
-            </Field>
-          </div>
-          <Field label="Адрес" htmlFor="warehouse-address">
-            <div className="relative">
-              <MapPin className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-              <Input
-                id="warehouse-address"
-                className="pl-9"
-                value={address}
-                onChange={(event) => setAddress(event.target.value)}
-                placeholder="Адрес или зона на территории"
-              />
-            </div>
+          <Field label="Название" htmlFor="warehouse-name">
+            <Input
+              id="warehouse-name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="Например, Мельница 2"
+              autoFocus
+              required
+            />
           </Field>
-          <div className="grid gap-2 rounded-lg border bg-[var(--muted)]/25 p-3 text-sm">
-            <label className="flex cursor-pointer items-start gap-2.5">
-              <input
-                type="checkbox"
-                className="mt-0.5 size-4 accent-[var(--primary)]"
-                checked={isActive}
-                disabled={isDefault || editing?.code === "main"}
-                onChange={(event) => setIsActive(event.target.checked)}
-              />
-              <span>
-                <span className="block font-medium">Активный склад</span>
-                <span className="block text-xs text-[var(--muted-foreground)]">Доступен для просмотра и операций.</span>
-              </span>
-            </label>
-            <label className="flex cursor-pointer items-start gap-2.5 border-t pt-2">
-              <input
-                type="checkbox"
-                className="mt-0.5 size-4 accent-[var(--primary)]"
-                checked={isDefault}
-                disabled={editing?.is_default}
-                onChange={(event) => {
-                  setIsDefault(event.target.checked);
-                  if (event.target.checked) setIsActive(true);
-                }}
-              />
-              <span>
-                <span className="block font-medium">Основной склад</span>
-                <span className="block text-xs text-[var(--muted-foreground)]">
-                  Открывается первым, если склад не указан в ссылке.
-                </span>
-              </span>
-            </label>
-          </div>
           {error && (
             <p role="alert" className="text-sm text-[var(--destructive)]">
               {error}
@@ -945,7 +1030,7 @@ function WarehouseManagerModal({
             <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
               Отмена
             </Button>
-            <Button type="submit" disabled={busy || !code.trim() || !name.trim()}>
+            <Button type="submit" disabled={busy || !name.trim()}>
               {busy ? "Сохранение…" : editing ? "Сохранить" : "Создать склад"}
             </Button>
           </div>

@@ -1,8 +1,11 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from threading import Event
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
+from django.db import close_old_connections, connection, connections
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -23,6 +26,7 @@ from apps.cameras.models import (
     MonoblockCameraSettings,
 )
 from apps.catalog.models import Product
+from apps.warehouse import services as warehouse_services
 from apps.warehouse.models import StockItem, StockMovement, StockReceipt, Warehouse
 from apps.warehouse.services import receive_stock
 
@@ -558,22 +562,119 @@ def test_mapping_can_be_fixed_on_the_same_inactive_route_with_unposted_work():
     ).product == blue
 
 
-def test_mapping_rejects_a_product_assigned_to_another_warehouse():
+def test_mapping_creates_a_stock_card_for_same_product_in_another_warehouse():
     main = Warehouse.objects.get(is_default=True)
     secondary = Warehouse.objects.create(code="secondary", name="Второй склад")
     product = _product()
     receive_stock(product, 3, user=None, warehouse=main)
 
-    with pytest.raises(ValidationError) as exc:
-        production.save_mappings(
-            "cam3",
-            [{"color": "red", "product": product.pk}],
-            warehouse=secondary.pk,
-        )
+    result = production.save_mappings(
+        "cam3",
+        [{"color": "red", "product": product.pk}],
+        warehouse=secondary.pk,
+    )
 
-    assert exc.value.detail["code"] == "product_assigned_other_warehouse"
-    assert not AlwaysOnWarehouseRoute.objects.filter(camera="cam3").exists()
-    assert not AlwaysOnColorProductMapping.objects.filter(camera="cam3").exists()
+    assert result["warehouse"] == secondary.pk
+    assert StockItem.objects.filter(
+        product=product,
+        warehouse=main,
+        bags=3,
+    ).exists()
+    assert StockItem.objects.filter(
+        product=product,
+        warehouse=secondary,
+        bags=0,
+    ).exists()
+    assert AlwaysOnWarehouseRoute.objects.get(camera="cam3").warehouse == secondary
+    assert AlwaysOnColorProductMapping.objects.get(
+        camera="cam3", color="red"
+    ).product == product
+
+
+def test_payload_marks_mapping_unconfigured_without_stock_card_in_camera_warehouse():
+    main = Warehouse.objects.get(is_default=True)
+    secondary = Warehouse.objects.create(code="secondary", name="Второй склад")
+    product = _product()
+    receive_stock(product, 3, user=None, warehouse=main)
+    AlwaysOnWarehouseRoute.objects.create(camera="cam3", warehouse=secondary)
+    AlwaysOnColorProductMapping.objects.create(
+        camera="cam3",
+        color="red",
+        product=product,
+    )
+
+    result = production.production_payload("cam3")
+
+    product_option = next(row for row in result["products"] if row["id"] == product.pk)
+    assert result["fully_configured"] is False
+    assert product_option["warehouse"] is None
+
+
+@pytest.mark.django_db(transaction=True)
+def test_mapping_route_change_locks_main_before_secondary_warehouse(monkeypatch):
+    if connection.vendor != "postgresql":
+        pytest.skip("row-lock ordering contract requires PostgreSQL")
+
+    main = Warehouse.objects.get(is_default=True)
+    secondary = Warehouse.objects.create(code="secondary", name="Второй склад")
+    product = _product()
+    receive_stock(product, 10, user=None, warehouse=main)
+    AlwaysOnWarehouseRoute.objects.create(camera="cam3", warehouse=secondary)
+
+    main_locked = Event()
+    concurrent_transfer_started = Event()
+    original_compatibility_warehouse = production._compatibility_warehouse
+
+    def pause_after_main_lock(*, lock=False):
+        warehouse = original_compatibility_warehouse(lock=lock)
+        if lock:
+            main_locked.set()
+            if not concurrent_transfer_started.wait(timeout=5):
+                raise RuntimeError("concurrent transfer did not start")
+        return warehouse
+
+    monkeypatch.setattr(
+        production,
+        "_compatibility_warehouse",
+        pause_after_main_lock,
+    )
+
+    def change_route():
+        close_old_connections()
+        try:
+            return production.save_mappings(
+                "cam3",
+                [{"color": "red", "product": product.pk}],
+                warehouse=main.pk,
+            )
+        finally:
+            connections.close_all()
+
+    def transfer_concurrently():
+        close_old_connections()
+        try:
+            if not main_locked.wait(timeout=5):
+                raise RuntimeError("mapping save did not lock main")
+            concurrent_transfer_started.set()
+            return warehouse_services.transfer_stock(
+                Product.objects.get(pk=product.pk),
+                1,
+                user=None,
+                from_warehouse=main.pk,
+                to_warehouse=secondary.pk,
+            )
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        route_future = pool.submit(change_route)
+        transfer_future = pool.submit(transfer_concurrently)
+        route_future.result(timeout=10)
+        transfer_future.result(timeout=10)
+
+    assert AlwaysOnWarehouseRoute.objects.get(camera="cam3").warehouse == main
+    assert StockItem.objects.get(product=product, warehouse=main).bags == 9
+    assert StockItem.objects.get(product=product, warehouse=secondary).bags == 1
 
 
 def test_camera_warehouse_cannot_change_with_unposted_production():

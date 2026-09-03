@@ -14,7 +14,7 @@ DEFAULT_WAREHOUSE_CODE = "main"
 # multiple stock rows while application paths still reject creation of the
 # second row. Phase B flips this only after Phase A is finalized and safe to
 # roll back to with multi-warehouse data already present.
-MULTI_WAREHOUSE_STOCK_WRITES_ENABLED = False
+MULTI_WAREHOUSE_STOCK_WRITES_ENABLED = True
 
 
 def get_default_warehouse():

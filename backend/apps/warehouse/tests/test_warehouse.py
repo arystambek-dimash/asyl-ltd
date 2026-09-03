@@ -76,17 +76,20 @@ def test_explicit_warehouse_is_preserved_in_receipt_and_movement(boss):
     assert movement.warehouse == warehouse
 
 
-def test_phase_one_rejects_same_product_in_another_warehouse(boss):
+def test_same_product_can_have_independent_balances_in_two_warehouses(boss):
     prod = _product()
     receive_stock(prod, 10, boss)
     other = Warehouse.objects.create(code="south", name="Южный склад")
 
-    with pytest.raises(ValidationError) as exc_info:
-        receive_stock(prod, 5, boss, warehouse=other)
+    receive_stock(prod, 5, boss, warehouse=other)
 
-    assert str(exc_info.value.detail["code"]) == "product_in_other_warehouse"
-    assert StockItem.objects.get(product=prod).bags == 10
-    assert StockReceipt.objects.filter(product=prod).count() == 1
+    main_stock = StockItem.objects.get(
+        product=prod,
+        warehouse=get_default_warehouse(),
+    )
+    assert main_stock.bags == 10
+    assert StockItem.objects.get(product=prod, warehouse=other).bags == 5
+    assert StockReceipt.objects.filter(product=prod).count() == 2
 
 
 def test_availability_is_scoped_to_requested_warehouse(boss):
@@ -99,6 +102,9 @@ def test_availability_is_scoped_to_requested_warehouse(boss):
         ensure_products_available([prod], warehouse=other)
 
     assert str(exc_info.value.detail["code"]) == "out_of_stock"
+
+    receive_stock(prod, 2, boss, warehouse=other)
+    ensure_products_available([prod], warehouse=other)
 
 
 def test_deduct_stock_reduces(boss):
