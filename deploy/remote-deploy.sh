@@ -30,7 +30,7 @@ cleanup_state_temp() {
     if ! (
       cd "$APP_DIR" &&
       docker compose -f "$COMPOSE_FILE" start \
-        backend camera-monitor ai-stock-monitor
+        backend camera-monitor ai-stock-monitor passage-scale-monitor
     ); then
       echo "Failed to resume one or more previous camera writer containers." >&2
       cleanup_status=1
@@ -672,7 +672,7 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
 echo "Quiescing previous camera writers before role migration..."
 OLD_CAMERA_WRITERS_QUIESCED=1
 if ! docker compose -f "$COMPOSE_FILE" stop -t 60 \
-  backend camera-monitor ai-stock-monitor; then
+  backend camera-monitor ai-stock-monitor passage-scale-monitor; then
   echo "Failed to quiesce previous camera writers." >&2
   exit 1
 fi

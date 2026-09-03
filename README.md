@@ -50,6 +50,12 @@ docker compose up --build
 При старте бэкенда `entrypoint.sh` ждёт PostgreSQL, применяет миграции и
 идемпотентно создаёт суперпользователя (`create_superuser_env`).
 Камерные фичи локально выключены (пустые `CAMERA_*` переменные).
+Автоматика автомобильных весов также не стартует в обычном dev-стеке:
+профиль `hardware` включают только явно после настройки тестовых URL:
+
+```bash
+docker compose --profile hardware up --build
+```
 
 ### Разработка без Docker
 
@@ -117,6 +123,7 @@ nginx :443  ── rate-limit (30 r/s API, 10 r/m login), TLS, security-headers
 backend ──► PostgreSQL (данные)  ──► Redis (кэш discover_cameras и пр.)
 backend ──► ai_service :8890 на цеховом ПК (через WireGuard) — AI-подсчёт мешков
 camera-monitor (отдельный контейнер) — непрерывный probe камер, инциденты, алерты
+passage-scale-monitor (отдельный контейнер) — default-off polling весов вывоза
 ```
 
 Ключевые сквозные принципы:
@@ -548,6 +555,7 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 | `frontend` | Next.js standalone |
 | `go2rtc` | 32 статических слота cam1..cam32 + динамические потоки от бэкенда; ffmpeg-транскод только если кодек не H.264 |
 | `camera-monitor` | тот же образ backend, `manage.py monitor_cameras` |
+| `passage-scale-monitor` | тот же образ backend, `manage.py monitor_passage_scale`; секундный polling весов с default-off kill switch и фиксируемым до подтверждения `manual_required` |
 | `celery-payments` | Celery worker только очереди `payments`, concurrency/prefetch = 1; сверка ApiPay |
 | `celery-beat` | периодически ставит сверку ApiPay в Redis с expiry; schedule/pid живут в отдельном tmpfs |
 | `db` / `redis` | PostgreSQL 16 / Redis 7 — в изолированной internal-сети `data` |
@@ -562,8 +570,10 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 1. Только **immutable digest** образов (`ghcr.io/...@sha256:…`) — `:latest`
    отклоняется; flock от параллельных деплоев.
 2. `git pull --ff-only` → бэкап БД → `docker compose pull` →
-   `up -d --wait` (по healthcheck'ам: у backend — `healthcheck.py`, GET
-   `/api/auth/me/`).
+   остановка старых camera/scale writers → `up -d --wait`. У backend
+   healthcheck проверяет GET `/api/auth/me/`, у `passage-scale-monitor` —
+   свежий container-private heartbeat цикла. `degraded` из-за внешних
+   весов/камеры считается живым процессом и не вызывает rollback.
 3. **Camera health** не блокирует выпуск приложения: `camera-monitor`
    продолжает проверять потоки и отправлять алерты, а
    `wait-for-camera-health.sh` остаётся отдельной ручной диагностикой. Поэтому

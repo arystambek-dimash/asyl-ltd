@@ -1474,6 +1474,37 @@ def test_auth_accepts_only_the_configured_weight_first_main_alias(
 
 
 @override_settings(
+    VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=False,
+    VEHICLE_PLATE_AUTO_SCALE_ENABLED=True,
+    VEHICLE_PLATE_WEIGHT_FIRST_CAMERA="cam32",
+    VEHICLE_PLATE_WEIGHT_FIRST_SOURCE="main",
+)
+def test_auth_accepts_configured_main_alias_in_auto_scale_only_mode(
+    api_client,
+    auth_client,
+    operator,
+):
+    token = _stream_token(auth_client, operator)
+
+    assert (
+        _authorize_stream(
+            api_client,
+            token,
+            "/go2rtc/api/ws?src=cam32main",
+        ).status_code
+        == 204
+    )
+    assert (
+        _authorize_stream(
+            api_client,
+            token,
+            "/go2rtc/api/ws?src=cam1main",
+        ).status_code
+        == 403
+    )
+
+
+@override_settings(
     VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=True,
     VEHICLE_PLATE_WEIGHT_FIRST_CAMERA="cam7",
     VEHICLE_PLATE_WEIGHT_FIRST_SOURCE="sub",

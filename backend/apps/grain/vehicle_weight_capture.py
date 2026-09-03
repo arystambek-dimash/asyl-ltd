@@ -263,8 +263,14 @@ def _begin_capture(
     idempotency_key: UUID,
     now,
 ) -> _CaptureClaim:
-    # Global lock order for this workflow is Wagon -> PassageWeightCapture.
-    # The Wagon row also serializes two absent-key claims for one physical trip.
+    grain_services = _grain_services()
+    # When automatic polling is enabled, every new manual physical capture
+    # follows State -> automatic capture -> Wagon -> PassageWeightCapture.
+    # Existing idempotency keys remain replayable even while another automatic
+    # episode is active because they never read the scale a second time.
+    automation_state, automation_capture = (
+        grain_services._lock_automatic_passage_lane()
+    )
     wagon = Wagon.objects.select_for_update(of=("self",)).get(pk=wagon_id)
     existing = (
         PassageWeightCapture.objects.select_for_update()
@@ -280,6 +286,11 @@ def _begin_capture(
             now=now,
         )
 
+    grain_services._assert_automatic_passage_lane_allows_manual_operation(
+        automation_state,
+        automation_capture,
+    )
+
     if not wagon.is_passage:
         raise PassageCaptureError(
             status_code=400,
@@ -289,7 +300,7 @@ def _begin_capture(
             recognition_status="rejected",
             retryable=False,
         )
-    _grain_services()._ensure_scale_action_ready(wagon, action)
+    grain_services._ensure_scale_action_ready(wagon, action)
     active = (
         PassageWeightCapture.objects.select_for_update()
         .filter(
@@ -361,6 +372,9 @@ def _begin_capture(
             idempotency_key=idempotency_key,
             now=now,
         )
+    grain_services._fence_automatic_passage_lane_for_manual_mutation(
+        automation_state
+    )
     return _CaptureClaim(capture.pk, "new")
 
 

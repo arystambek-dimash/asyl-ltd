@@ -78,7 +78,10 @@ def _is_valid_camera_stream_source(source: str) -> bool:
     if not source or source.strip() != source:
         return False
     if STAFF_ONLY_CAMERA_MAIN_STREAM_RE.fullmatch(source):
-        if settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED:
+        if (
+            settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED
+            or settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED
+        ):
             if settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE != "main":
                 return False
             expected = f"{settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA}main"

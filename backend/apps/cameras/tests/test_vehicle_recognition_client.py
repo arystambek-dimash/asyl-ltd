@@ -23,6 +23,22 @@ def _recognized_payload(**overrides):
             "detector_confidence": 0.91,
             "ocr_confidence": 0.96,
         },
+        "frames_scanned": 3,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _production_payload(**overrides):
+    payload = {
+        "status": "recognized",
+        "vehicle_number": "123ABC02",
+        "confirmation": {
+            "votes": 3,
+            "detector_confidence": 0.91,
+            "ocr_confidence": 0.96,
+        },
+        "frames_scanned": 3,
     }
     payload.update(overrides)
     return payload
@@ -30,12 +46,21 @@ def _recognized_payload(**overrides):
 
 def test_weight_triggered_client_sends_exact_path_body_key_and_timeout(settings):
     settings.VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS = 12
-    payload = _recognized_payload()
+    payload = _production_payload()
 
     with patch.object(ai, "_request", return_value=(200, payload)) as request:
         result = ai.recognize_vehicle_from_camera("cam1", REQUEST_ID, TRIGGER)
 
-    assert result == payload
+    assert result == {
+        **payload,
+        "ok": True,
+        "request_id": REQUEST_ID,
+        "camera": "cam1",
+        "source": "main",
+        "stable_weight_at": TRIGGER,
+        "recognized_at": result["recognized_at"],
+    }
+    assert result["recognized_at"].endswith("Z")
     request.assert_called_once_with(
         "POST",
         "/cameras/cam1/vehicle-recognition",
@@ -47,14 +72,18 @@ def test_weight_triggered_client_sends_exact_path_body_key_and_timeout(settings)
 
 def test_weight_triggered_retry_uses_lookup_only_endpoint(settings):
     settings.VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS = 12
-    payload = _recognized_payload()
+    payload = _production_payload()
 
     with patch.object(ai, "_request", return_value=(200, payload)) as request:
         result = ai.retry_vehicle_recognition_from_camera(
             "cam1", REQUEST_ID, TRIGGER
         )
 
-    assert result == payload
+    assert result["request_id"] == REQUEST_ID
+    assert result["camera"] == "cam1"
+    assert result["source"] == "main"
+    assert result["stable_weight_at"] == TRIGGER
+    assert result["recognized_at"].endswith("Z")
     request.assert_called_once_with(
         "POST",
         "/cameras/cam1/vehicle-recognition-retry",
@@ -107,10 +136,14 @@ def test_weight_triggered_client_preserves_terminal_payload():
 @pytest.mark.parametrize(
     "overrides",
     [
+        {"ok": False},
         {"request_id": "17d95309-91ff-48c8-8ac4-43dc70936f1a"},
         {"camera": "cam2"},
+        {"stable_weight_at": "2026-08-30T10:21:13.000000Z"},
         {"vehicle_number": "not-a-plate"},
         {"source": "unknown"},
+        {"frames_scanned": 0},
+        {"frames_scanned": True},
         {
             "confirmation": {
                 "votes": 0,

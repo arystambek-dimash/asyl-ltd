@@ -4,11 +4,12 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
-from apps.cameras.models import VehiclePlateEvent
-from apps.grain import statuses as st
-from apps.grain.models import Wagon
 from django.db import IntegrityError
 from django.utils import timezone
+
+from apps.cameras.models import VehiclePlateEvent
+from apps.grain import statuses as st
+from apps.grain.models import AutomaticPassageCapture, Wagon
 
 pytestmark = pytest.mark.django_db
 
@@ -159,6 +160,38 @@ def test_candidates_require_both_timestamps_fresh_and_fixed_lane(
 
     assert response.status_code == 200
     assert [row["event_id"] for row in response.data] == [str(fresh.event_id)]
+
+
+def test_automatic_scale_event_is_not_visible_or_manually_claimable(
+    auth_client,
+    gate_operator,
+):
+    event = create_event()
+    AutomaticPassageCapture.objects.create(
+        idempotency_key=event.event_id,
+        camera="cam1",
+        stage=AutomaticPassageCapture.APPLYING,
+        vehicle_plate_event=event,
+    )
+    client = auth_client(gate_operator)
+
+    candidates = client.get(CANDIDATES_URL)
+    passage = client.post(
+        PASSAGE_URL,
+        {
+            "vehicle_plate_event_id": str(event.event_id),
+            "cargo_name": "Отруби",
+        },
+        format="json",
+    )
+
+    assert candidates.status_code == 200
+    assert candidates.data == []
+    assert passage.status_code == 400
+    assert passage.data["code"] == "vehicle_plate_event_unavailable"
+    assert not Wagon.objects.exists()
+    event.refresh_from_db()
+    assert event.processing_status == VehiclePlateEvent.RECEIVED
 
 
 def test_candidates_are_newest_first_and_limited_to_five(

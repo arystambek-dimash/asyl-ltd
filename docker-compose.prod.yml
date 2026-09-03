@@ -49,6 +49,17 @@ x-backend-environment: &backend-environment
   VEHICLE_PLATE_WEIGHT_FIRST_CAMERA: ${VEHICLE_PLATE_WEIGHT_FIRST_CAMERA:-cam1}
   VEHICLE_PLATE_WEIGHT_FIRST_SOURCE: ${VEHICLE_PLATE_WEIGHT_FIRST_SOURCE:-main}
   VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS: ${VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS:-12}
+  # Dedicated, default-off scale-first automation. The monitor stays alive
+  # while disabled so Compose can still verify its process liveness.
+  VEHICLE_PLATE_AUTO_SCALE_ENABLED: ${VEHICLE_PLATE_AUTO_SCALE_ENABLED:-0}
+  VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS: ${VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS:-1}
+  VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG: ${VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG:-500}
+  VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS: ${VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS:-2}
+  VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS: ${VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS:-3}
+  VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG: ${VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG:-50}
+  VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS: ${VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS:-3}
+  VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE: ${VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE:-/tmp/passage-scale-monitor/heartbeat.json}
+  VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS: ${VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS:-60}
   VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME: ${VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME:-Отруби}
   VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS: ${VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS:-15}
   VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS: ${VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS:-60}
@@ -285,6 +296,40 @@ services:
       backend:
         condition: service_healthy
     init: true
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - data
+      - default
+
+  passage-scale-monitor:
+    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    environment:
+      <<: *backend-environment
+      DJANGO_COLLECTSTATIC: "0"
+      APP_SERVICE: passage-scale-monitor
+    # Migrations and bootstrap remain owned by the healthy backend container.
+    entrypoint: []
+    command: ["python", "manage.py", "monitor_passage_scale"]
+    depends_on:
+      backend:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    init: true
+    stop_grace_period: 60s
+    tmpfs:
+      - /tmp/passage-scale-monitor:rw,noexec,nosuid,nodev,size=1m,mode=1777
+    # This is deliberately a liveness check. Hardware readiness is reported by
+    # the monitor as `degraded` without rolling back an otherwise healthy app.
+    healthcheck:
+      test: ["CMD", "python", "/app/passage_scale_monitor_healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     logging: *default-logging
     networks:

@@ -1,16 +1,23 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { VehiclePlateCameraWorkspace, type VehiclePlateRuntime } from "./vehicle-plate-camera";
+import {
+  VehiclePlateCameraWorkspace,
+  type ScaleAutomationRuntime,
+  type VehiclePlateRuntime,
+} from "./vehicle-plate-camera";
 
 const mocks = vi.hoisted(() => ({
   useApi: vi.fn(),
   reload: vi.fn(),
+  scaleReload: vi.fn(),
   setData: vi.fn(),
+  scaleSetData: vi.fn(),
   visiblePolling: vi.fn(),
   put: vi.fn(),
+  post: vi.fn(),
   apiError: vi.fn(),
   showSuccess: vi.fn(),
-  auth: { isSuperuser: false },
+  auth: { isSuperuser: false, permissions: [] as string[] },
 }));
 
 vi.mock("@/components/camera-stream", () => ({
@@ -18,11 +25,11 @@ vi.mock("@/components/camera-stream", () => ({
 }));
 vi.mock("@/lib/use-api", () => ({ useApi: mocks.useApi }));
 vi.mock("@/lib/use-visible-polling", () => ({ useVisiblePolling: mocks.visiblePolling }));
-vi.mock("@/lib/api", () => ({ api: { put: mocks.put }, apiError: mocks.apiError }));
+vi.mock("@/lib/api", () => ({ api: { post: mocks.post, put: mocks.put }, apiError: mocks.apiError }));
 vi.mock("@/lib/toast", () => ({ showSuccess: mocks.showSuccess }));
 vi.mock("@/store/auth", () => ({
-  useAuth: (selector: (state: { me: { is_superuser: boolean } }) => unknown) =>
-    selector({ me: { is_superuser: mocks.auth.isSuperuser } }),
+  useAuth: (selector: (state: { me: { is_superuser: boolean; permissions: string[] } }) => unknown) =>
+    selector({ me: { is_superuser: mocks.auth.isSuperuser, permissions: mocks.auth.permissions } }),
 }));
 
 function runtime(overrides: Partial<VehiclePlateRuntime> = {}): VehiclePlateRuntime {
@@ -39,6 +46,13 @@ function runtime(overrides: Partial<VehiclePlateRuntime> = {}): VehiclePlateRunt
     stream: "cam1main",
     server_push_configured: true,
     diagnostic: "online",
+    scale_automation: {
+      enabled: false,
+      state: "disabled",
+      last_checked_at: "2026-09-03T07:30:00Z",
+      heartbeat_stale: false,
+      active: null,
+    },
     monitor: {
       status: "online",
       source: "main",
@@ -74,8 +88,25 @@ function runtime(overrides: Partial<VehiclePlateRuntime> = {}): VehiclePlateRunt
   };
 }
 
-function mockApi(data: VehiclePlateRuntime | null, error = "", loading = false) {
-  mocks.useApi.mockReturnValue({ data, error, loading, reload: mocks.reload, setData: mocks.setData });
+function mockApi(
+  data: VehiclePlateRuntime | null,
+  error = "",
+  loading = false,
+  scaleData: ScaleAutomationRuntime | null = data?.scale_automation ?? null,
+  scaleError = "",
+  scaleLoading = false,
+) {
+  mocks.useApi.mockImplementation((url: string) =>
+    url === "/grain/automatic-passage-scale/runtime/"
+      ? {
+          data: scaleData,
+          error: scaleError,
+          loading: scaleLoading,
+          reload: mocks.scaleReload,
+          setData: mocks.scaleSetData,
+        }
+      : { data, error, loading, reload: mocks.reload, setData: mocks.setData },
+  );
 }
 
 describe("VehiclePlateCameraWorkspace", () => {
@@ -83,13 +114,19 @@ describe("VehiclePlateCameraWorkspace", () => {
     mocks.useApi.mockReset();
     mocks.reload.mockReset();
     mocks.reload.mockResolvedValue(undefined);
+    mocks.scaleReload.mockReset();
+    mocks.scaleReload.mockResolvedValue(undefined);
     mocks.setData.mockReset();
+    mocks.scaleSetData.mockReset();
     mocks.visiblePolling.mockReset();
     mocks.put.mockReset();
+    mocks.post.mockReset();
+    mocks.post.mockResolvedValue({ data: {} });
     mocks.apiError.mockReset();
     mocks.apiError.mockReturnValue("Не удалось сохранить ROI");
     mocks.showSuccess.mockReset();
     mocks.auth.isSuperuser = false;
+    mocks.auth.permissions = [];
     mockApi(runtime());
   });
 
@@ -100,6 +137,7 @@ describe("VehiclePlateCameraWorkspace", () => {
     expect(screen.getByTestId("protected-camera-stream")).toHaveAttribute("data-src", "cam1main");
     expect(screen.getByText("Камера cam1 · поток/OCR: main")).toBeInTheDocument();
     expect(mocks.useApi).toHaveBeenCalledWith("/cameras/vehicle-plate-runtime/");
+    expect(mocks.useApi).toHaveBeenCalledWith("/grain/automatic-passage-scale/runtime/");
     expect(mocks.visiblePolling).toHaveBeenCalledWith(mocks.reload, 5_000, true);
 
     // Video playback and model health are independent signals. This player
@@ -125,6 +163,7 @@ describe("VehiclePlateCameraWorkspace", () => {
   });
 
   it("shows the weight-first camera as ready without a legacy monitor or webhook", () => {
+    const current = runtime();
     mockApi(
       runtime({
         camera: "cam7",
@@ -136,6 +175,11 @@ describe("VehiclePlateCameraWorkspace", () => {
         server_push_configured: false,
         diagnostic: "on_demand_ready",
         monitor: null,
+        scale_automation: {
+          ...current.scale_automation!,
+          enabled: true,
+          state: "idle",
+        },
         roi: {
           ...runtime().roi,
           source: "sub",
@@ -145,13 +189,265 @@ describe("VehiclePlateCameraWorkspace", () => {
 
     render(<VehiclePlateCameraWorkspace />);
 
-    expect(screen.getByText("Камера распознавания после веса")).toBeInTheDocument();
-    expect(screen.getByText("Вес → номер → рейс")).toBeInTheDocument();
+    expect(screen.getByText("Автоматический вывоз по весам")).toBeInTheDocument();
+    expect(screen.getByText("Вес → номер → статус")).toBeInTheDocument();
     expect(screen.getAllByText("AI ГОТОВА")).toHaveLength(2);
+    expect(screen.getByRole("region", { name: "Автоматика весов" })).toHaveTextContent(
+      "ОЖИДАЕТ МАШИНУФоновый сервис проверяет весы каждую секунду",
+    );
     expect(screen.getByTestId("protected-camera-stream")).toHaveAttribute("data-src", "cam7");
     expect(screen.getByText("Камера cam7 · поток/OCR: sub")).toBeInTheDocument();
     expect(screen.queryByText("АВТОМАТИКА ВЫКЛ.")).not.toBeInTheDocument();
     expect(screen.queryByText("ОТПРАВКА НЕ НАСТРОЕНА")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["candidate", "ЖДЁТ СТАБИЛЬНЫЙ ВЕС", "Обнаружено изменение веса"],
+    ["recognizing", "РАСПОЗНАЁТ НОМЕР", "Камера обрабатывает новый стабильный заезд"],
+    ["applying", "ОБНОВЛЯЕТ РЕЙС", "следующий статус рейса сохраняются"],
+    ["awaiting_clear", "ЖДЁТ ОСВОБОЖДЕНИЯ ВЕСОВ", "машина съедет с весов"],
+    ["unavailable", "ВЕСЫ НЕДОСТУПНЫ", "Используйте ручное оформление"],
+  ] as const)("shows the independent %s scale-automation state", (state, label, detail) => {
+    const current = runtime();
+    mockApi(
+      runtime({
+        weight_first_enabled: true,
+        monitor: null,
+        scale_automation: { ...current.scale_automation!, enabled: true, state },
+      }),
+    );
+
+    render(<VehiclePlateCameraWorkspace />);
+
+    expect(screen.getAllByText("AI ГОТОВА")).toHaveLength(2);
+    expect(screen.getByRole("region", { name: "Автоматика весов" })).toHaveTextContent(label);
+    expect(screen.getByText(new RegExp(detail))).toBeInTheDocument();
+  });
+
+  it("directs an operator to the affected trip when automation needs manual help", () => {
+    const current = runtime();
+    mockApi(
+      runtime({
+        weight_first_enabled: true,
+        monitor: null,
+        scale_automation: {
+          ...current.scale_automation!,
+          enabled: true,
+          state: "manual_required",
+          active: {
+            request_id: "c4e7a4b1-7d77-4700-9ca7-f37b82083815",
+            stage: "done",
+            action: "exit",
+            wagon_id: 91,
+            retryable: false,
+            error_code: "plate_mismatch",
+          },
+        },
+      }),
+    );
+
+    render(<VehiclePlateCameraWorkspace />);
+
+    expect(screen.getAllByText("AI ГОТОВА")).toHaveLength(2);
+    expect(screen.getByRole("region", { name: "Автоматика весов" })).toHaveTextContent(
+      "НУЖЕН ОПЕРАТОРАвтоматика остановила рейс #91; завершите его ручными кнопками.",
+    );
+    expect(screen.queryByRole("button", { name: "Подтвердить ручную обработку" })).not.toBeInTheDocument();
+    expect(screen.queryByText("c4e7a4b1-7d77-4700-9ca7-f37b82083815")).not.toBeInTheDocument();
+  });
+
+  it("keeps a latched manual passage actionable when Camera-PC runtime is unavailable", async () => {
+    mocks.auth.permissions = ["grain.weigh"];
+    const current = runtime();
+    const requestId = "c4e7a4b1-7d77-4700-9ca7-f37b82083815";
+    const scaleAutomation: ScaleAutomationRuntime = {
+      ...current.scale_automation!,
+      enabled: true,
+      state: "manual_required",
+      heartbeat_stale: true,
+      active: {
+        request_id: requestId,
+        stage: "done",
+        action: "exit",
+        wagon_id: 91,
+        retryable: false,
+        error_code: "plate_mismatch",
+      },
+    };
+    const acknowledgedAutomation: ScaleAutomationRuntime = {
+      ...scaleAutomation,
+      state: "awaiting_clear",
+    };
+    mocks.post.mockResolvedValue({
+      data: { acknowledged: true, scale_automation: acknowledgedAutomation },
+    });
+    mocks.scaleReload.mockRejectedValueOnce(new Error("runtime reload offline"));
+    mockApi(null, "AI-сервис камер недоступен", false, scaleAutomation);
+
+    render(<VehiclePlateCameraWorkspace />);
+    expect(screen.getAllByText("AI: НЕТ СВЯЗИ")).toHaveLength(2);
+    expect(screen.getByRole("region", { name: "Автоматика весов" })).toHaveTextContent("НУЖЕН ОПЕРАТОР");
+    fireEvent.click(screen.getByRole("button", { name: "Подтвердить ручную обработку" }));
+
+    await waitFor(() =>
+      expect(mocks.post).toHaveBeenCalledWith("/grain/automatic-passage-scale/acknowledge/", {
+        request_id: requestId,
+        resolved: true,
+      }),
+    );
+    await waitFor(() => expect(mocks.scaleReload).toHaveBeenCalled());
+    expect(mocks.reload).not.toHaveBeenCalled();
+    expect(mocks.setData).not.toHaveBeenCalled();
+    expect(mocks.scaleSetData).toHaveBeenCalledWith(acknowledgedAutomation);
+    expect(mocks.showSuccess).toHaveBeenCalledWith("Ручная обработка подтверждена");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps a latched manual passage actionable after automation is disabled", () => {
+    mocks.auth.permissions = ["grain.weigh"];
+    const current = runtime();
+    const requestId = "c4e7a4b1-7d77-4700-9ca7-f37b82083815";
+    mockApi(
+      runtime({ weight_first_enabled: false, monitor: null, scale_automation: undefined }),
+      "AI-сервис камер недоступен",
+      false,
+      {
+        ...current.scale_automation!,
+        enabled: false,
+        state: "manual_required",
+        active: {
+          request_id: requestId,
+          stage: "done",
+          action: null,
+          wagon_id: null,
+          retryable: false,
+          error_code: "automatic_scale_disabled",
+        },
+      },
+    );
+
+    render(<VehiclePlateCameraWorkspace />);
+
+    expect(screen.getByRole("region", { name: "Автоматика весов" })).toHaveTextContent("НУЖЕН ОПЕРАТОР");
+    expect(screen.getByRole("button", { name: "Подтвердить ручную обработку" })).toBeEnabled();
+    expect(screen.queryByText(requestId)).not.toBeInTheDocument();
+  });
+
+  it("shows acknowledgement loading and request errors without exposing the request id", async () => {
+    mocks.auth.permissions = ["grain.weigh"];
+    const current = runtime();
+    const requestId = "c4e7a4b1-7d77-4700-9ca7-f37b82083815";
+    let rejectRequest: (reason?: unknown) => void = () => undefined;
+    mocks.post.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectRequest = reject;
+      }),
+    );
+    mockApi(
+      runtime({
+        scale_automation: {
+          ...current.scale_automation!,
+          enabled: true,
+          state: "manual_required",
+          active: {
+            request_id: requestId,
+            stage: "done",
+            action: null,
+            wagon_id: null,
+            retryable: false,
+            error_code: "recognition_failed",
+          },
+        },
+      }),
+    );
+
+    render(<VehiclePlateCameraWorkspace />);
+    fireEvent.click(screen.getByRole("button", { name: "Подтвердить ручную обработку" }));
+
+    expect(screen.getByRole("button", { name: "Подтверждение…" })).toBeDisabled();
+    expect(screen.queryByText(requestId)).not.toBeInTheDocument();
+    await act(async () => rejectRequest(new Error("offline")));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Не удалось подтвердить ручную обработку");
+    expect(screen.getByRole("button", { name: "Подтвердить ручную обработку" })).toBeEnabled();
+    expect(mocks.scaleReload).not.toHaveBeenCalled();
+  });
+
+  it("does not offer acknowledgement without an active manual-required request", () => {
+    mocks.auth.permissions = ["grain.weigh"];
+    const current = runtime();
+    mockApi(
+      runtime({
+        scale_automation: {
+          ...current.scale_automation!,
+          enabled: true,
+          state: "manual_required",
+          active: null,
+        },
+      }),
+    );
+
+    render(<VehiclePlateCameraWorkspace />);
+
+    expect(screen.queryByRole("button", { name: "Подтвердить ручную обработку" })).not.toBeInTheDocument();
+  });
+
+  it("fails closed when the automatic watcher heartbeat is stale", () => {
+    const current = runtime();
+    mockApi(
+      runtime({
+        weight_first_enabled: true,
+        scale_automation: {
+          ...current.scale_automation!,
+          enabled: true,
+          state: "idle",
+          heartbeat_stale: true,
+        },
+      }),
+    );
+
+    render(<VehiclePlateCameraWorkspace />);
+
+    expect(screen.getByRole("region", { name: "Автоматика весов" })).toHaveTextContent("АВТОМАТИКА НЕ ОТВЕЧАЕТ");
+    expect(screen.queryByText("ОЖИДАЕТ МАШИНУ")).not.toBeInTheDocument();
+  });
+
+  it("fails closed when a standalone poll errors after retaining idle data", () => {
+    const current = runtime();
+    const idleAutomation: ScaleAutomationRuntime = {
+      ...current.scale_automation!,
+      enabled: true,
+      state: "idle",
+    };
+    mockApi(runtime({ scale_automation: idleAutomation }), "", false, idleAutomation, "CRM runtime недоступен");
+
+    render(<VehiclePlateCameraWorkspace />);
+
+    expect(screen.getByRole("region", { name: "Автоматика весов" })).toHaveTextContent("АВТОМАТИКА: НЕТ СВЯЗИ");
+    expect(screen.queryByText("ОЖИДАЕТ МАШИНУ")).not.toBeInTheDocument();
+  });
+
+  it("uses the embedded runtime as a rolling-deploy fallback while Camera-PC is healthy", () => {
+    const current = runtime();
+    const idleAutomation: ScaleAutomationRuntime = {
+      ...current.scale_automation!,
+      enabled: true,
+      state: "idle",
+    };
+    mockApi(runtime({ scale_automation: idleAutomation }), "", false, null, "Endpoint not deployed");
+
+    render(<VehiclePlateCameraWorkspace />);
+
+    expect(screen.getByRole("region", { name: "Автоматика весов" })).toHaveTextContent("ОЖИДАЕТ МАШИНУ");
+    expect(screen.queryByText("АВТОМАТИКА: НЕТ СВЯЗИ")).not.toBeInTheDocument();
+  });
+
+  it("does not report automation as healthy when an older runtime omits its state", () => {
+    mockApi(runtime({ weight_first_enabled: true, scale_automation: undefined }));
+
+    render(<VehiclePlateCameraWorkspace />);
+
+    expect(screen.getByRole("region", { name: "Автоматика весов" })).toHaveTextContent("СТАТУС АВТОМАТИКИ НЕДОСТУПЕН");
+    expect(screen.queryByText("ОЖИДАЕТ МАШИНУ")).not.toBeInTheDocument();
   });
 
   it("shows source mismatch and does not claim that the ROI is visible", () => {
@@ -267,7 +563,7 @@ describe("VehiclePlateCameraWorkspace", () => {
 
     expect(screen.getByRole("status")).toHaveTextContent("Перетащите голубые точки");
     expect(screen.getByTestId("vehicle-roi-layer")).toHaveAttribute("aria-label", "Редактор зоны остановки");
-    expect(mocks.visiblePolling).toHaveBeenLastCalledWith(mocks.reload, 5_000, false);
+    expect(mocks.visiblePolling).toHaveBeenCalledWith(mocks.reload, 5_000, false);
 
     fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
 

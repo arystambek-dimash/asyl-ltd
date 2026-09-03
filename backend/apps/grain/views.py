@@ -15,7 +15,7 @@ from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
 from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.models import EventLog
 
-from . import scale, services, vehicle_weight_capture
+from . import passage_scale_automation, scale, services, vehicle_weight_capture
 from . import statuses as st
 from .models import GrainSupply, Silo, SiloType, Wagon
 from .scale_preview import get_scale_preview
@@ -45,6 +45,68 @@ class TruckScaleReadingView(PermAPIViewMixin, APIView):
             raise NotFound("Весовая не найдена.")
         response = Response(get_scale_preview(scale_key))
         response["Cache-Control"] = "no-store, max-age=0"
+        return response
+
+
+class AutomaticPassageScaleAcknowledgeView(PermAPIViewMixin, APIView):
+    """Explicitly resolve a latched automatic-scale failure."""
+
+    required_perms: ClassVar[dict[str, str]] = {"post": "grain.weigh"}
+
+    def post(self, request):
+        if not isinstance(request.data, dict) or set(request.data) != {
+            "request_id",
+            "resolved",
+        }:
+            raise ValidationError(
+                {
+                    "detail": "Передайте request_id и явное подтверждение resolved.",
+                    "code": "automatic_scale_ack_invalid",
+                }
+            )
+        raw_request_id = request.data.get("request_id")
+        if not isinstance(raw_request_id, str):
+            raise ValidationError(
+                {
+                    "detail": "request_id должен быть canonical UUID.",
+                    "code": "automatic_scale_ack_invalid",
+                }
+            )
+        try:
+            request_id = UUID(raw_request_id)
+        except ValueError as exc:
+            raise ValidationError(
+                {
+                    "detail": "request_id должен быть canonical UUID.",
+                    "code": "automatic_scale_ack_invalid",
+                }
+            ) from exc
+        if str(request_id) != raw_request_id or request.data.get("resolved") is not True:
+            raise ValidationError(
+                {
+                    "detail": "Подтвердите ручную обработку текущей операции.",
+                    "code": "automatic_scale_ack_invalid",
+                }
+            )
+        runtime = passage_scale_automation.acknowledge_failure(
+            request_id,
+            user=request.user,
+        )
+        response = Response(
+            {"acknowledged": True, "scale_automation": runtime}
+        )
+        response["Cache-Control"] = "no-store"
+        return response
+
+
+class AutomaticPassageScaleRuntimeView(PermAPIViewMixin, APIView):
+    """Permission-safe CRM projection independent of the Camera-PC."""
+
+    required_perms: ClassVar[dict[str, str]] = {"get": "grain.view"}
+
+    def get(self, request):
+        response = Response(passage_scale_automation.scale_automation_runtime())
+        response["Cache-Control"] = "no-store"
         return response
 
 

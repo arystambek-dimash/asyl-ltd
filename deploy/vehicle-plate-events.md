@@ -181,7 +181,7 @@ could not confirm the immediate refresh; the monitor's normal two-second ROI
 reload still picks it up after recovery. All GET and PUT responses are
 `no-store`, and non-superusers cannot change the polygon.
 
-## Weight-first truck-export weighing (active mode)
+## Weight-first truck-export weighing (manual trigger)
 
 The operator creates an export passage first. The existing commands remain the
 only business trigger:
@@ -277,13 +277,16 @@ AI_SERVICE_URL=http://<TAILSCALE-IP-CAMERA-PC>:8890
 AI_SERVICE_API_KEY=<same 32-512 character plaintext key whose SHA-256 is on camera-PC>
 VEHICLE_PLATE_AUTO_EXPORT_ENABLED=0
 VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=1
+VEHICLE_PLATE_AUTO_SCALE_ENABLED=0
 VEHICLE_PLATE_WEIGHT_FIRST_CAMERA=cam1
 VEHICLE_PLATE_WEIGHT_FIRST_SOURCE=main
 VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS=12
 ```
 
-Both mode flags set to `1` make Django fail startup. On camera-PC the matching
-lane must be on-demand only:
+Legacy camera-first mode cannot run together with either weight-triggered
+mode. Manual weight-first and automatic scale polling may coexist because both
+share the physical-scale mutex and Camera-PC idempotency contract. On
+camera-PC the matching lane must be on-demand only:
 
 ```dotenv
 AI_VEHICLE_AUTO_ENABLED=false
@@ -298,14 +301,89 @@ The browser stream is derived safely from the provisioned go2rtc convention:
 slots are deliberately limited to `cam1..cam32`, matching the static aliases.
 
 The protected production `.env` is the source of these non-secret toggles.
-`AI_SERVICE_API_KEY` remains backend-only. Rollback to manual weighing sets
-both mode flags to `0`; it does not remove capture audit rows or migrations.
+`AI_SERVICE_API_KEY` remains backend-only. Rollback to plain manual weighing
+sets all three mode flags to `0`; it does not remove capture audit rows or
+migrations.
 
-The current scale controller exposes a pull-only current-value GET and no
-durable stable episode identifier. Therefore background polling of
-`stable=true` is intentionally not a trigger: it cannot distinguish one truck
-remaining on the scale from the next truck. A future fully automatic flow must
-POST a unique `stable_episode_id`; it can then reuse this coordinator safely.
+## Automatic scale-first truck export (default off)
+
+`passage-scale-monitor` is a dedicated sequential process. It polls the truck
+scale every second, but a numeric change is never itself a business trigger.
+The PostgreSQL state machine starts `unarmed` and requires several consecutive
+fresh, stable readings at or below the configured empty threshold. It then
+accepts several stable occupied readings within the configured tolerance,
+commits one `AutomaticPassageCapture`, performs one strict scale read, and
+calls the same on-demand Camera-PC endpoint with that capture UUID.
+
+After OCR, locked CRM state determines the action. A new plate creates an
+export passage and records its empty entry weight (`arrived -> at_silo`). The
+same plate on exactly one valid automatic passage records the loaded exit
+weight and completes the existing status chain (`at_silo -> ... -> completed`).
+Errors and ambiguous CRM state stop at `manual_required` without a partial
+weight or status update.
+
+A completed or failed capture remains attached to the lane in
+`awaiting_clear`. Further jitter and stable readings are ignored. Several new
+fresh zero/low readings re-arm a successful episode. For a failed episode they
+only record that the scale is physically clear: `manual_required` remains
+latched until a `grain.weigh` operator finishes the manual correction and
+clicks **Подтвердить ручную обработку**. The UI sends the current UUID to
+`POST /api/grain/automatic-passage-scale/acknowledge/`; acknowledging before
+physical clear still cannot re-arm the lane. Acknowledgement also never reuses
+an older `cleared_at`: even if that failed episode was already clear, the lane
+returns to `unarmed` and requires a fresh post-ack clear streak. `stale`,
+disconnected, malformed, unstable, or `weight_kg=null` responses never count
+as an empty scale. Thus a restart while a truck is parked cannot duplicate it,
+and an unattended error cannot disappear between five-second UI polls.
+
+The CRM polls
+`GET /api/grain/automatic-passage-scale/runtime/` independently from
+Camera-PC, so a camera diagnostics outage cannot hide `recognizing`,
+`applying`, or a latched `manual_required` state. The response exposes only a
+safe operation UUID, stage, action, wagon ID, retry flag, and bounded error
+code—never the recognized plate, weight, upstream address, or raw payload.
+Turning the kill switch off stops and terminalizes new work, releases a
+completed/acknowledged lane for manual controls, and still keeps an unacknowledged
+failure visible until the operator confirms it.
+
+Recovery never obtains a later physical sample: an interrupted claim without
+a stored weight becomes terminal, a stored `recognizing` capture calls only
+`vehicle-recognition-retry` with the original UUID/timestamp, and an
+`applying` capture reuses the stored event. The final strict weight must still
+match the observed candidate within tolerance before Camera-PC is contacted.
+If the process dies during the final allowed camera call, its unknown outcome
+gets one lookup-only retry before the attempt is declared exhausted.
+
+```dotenv
+VEHICLE_PLATE_AUTO_EXPORT_ENABLED=0
+VEHICLE_PLATE_AUTO_SCALE_ENABLED=1
+VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS=1
+VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG=500
+VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS=2
+VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS=3
+VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG=50
+VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS=3
+VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS=60
+```
+
+The heartbeat maximum age must cover the configured poll interval, preview
+and strict scale timeouts, Camera-PC timeout, and database apply margin;
+startup rejects a shorter self-defeating value. Active passage deletion takes
+the same persistent lane mutex as episode claiming, so an in-flight loaded
+exit cannot race deletion and become a false new entry. A manually created
+passage waiting for its entry weight, and any durable manual weight-first
+capture still in `processing`, reserve the same physical lane; empty polls
+during operator or OCR latency therefore cannot arm a competing automatic
+episode. While a manually owned passage remains `at_silo`, an otherwise
+unknown plate is also never classified as a new automatic entry: it stops at
+`manual_required`, because the stored manual plate may contain a typo.
+
+The kill switch defaults to `0`. Before enabling it, verify that physically
+empty scales produce fresh stable zero/low readings. The controller currently
+seen on site may return `stale=true`, `weight_kg=null` while empty; that is
+safely reported as unavailable and will never arm automation. Update that edge
+behavior (or add a durable `stable_episode_id`) and validate a full
+empty-entry-clear-loaded-exit-clear rehearsal before rollout.
 
 ## Legacy camera-first truck export (disabled in weight-first mode)
 
@@ -461,11 +539,18 @@ of this physical preflight is uncertain.
    off.
 2. From the server repository, validate without printing interpolated secrets:
    `docker compose -f docker-compose.prod.yml config --quiet`.
-3. Deploy Asyl with `AUTO_EXPORT=0` and `WEIGHT_FIRST=1`. The additive capture
-   migration runs during normal startup. On a test vehicle, verify entry uses
-   one scale read, the saved number matches the camera and the capture status is
+3. Deploy Asyl first with `AUTO_EXPORT=0`, `WEIGHT_FIRST=1` and
+   `AUTO_SCALE=0`. The additive capture/state migration runs during normal
+   startup. On a test vehicle, verify the manual weight-first path uses one
+   scale read, the saved number matches the camera and its capture is
    `completed`; repeat the same request UUID and verify no second weighing.
-4. If the release health gate fails, the existing deploy workflow restores the
+4. Verify the empty scale produces fresh stable low readings, then rehearse the
+   automatic process in a controlled window: clear -> empty entry -> clear ->
+   loaded exit -> clear. Only then set `VEHICLE_PLATE_AUTO_SCALE_ENABLED=1`.
+   Confirm the UI returns to `ОЖИДАЕТ МАШИНУ` and each physical occupancy owns
+   exactly one automatic capture. Disable this one flag immediately if the UI
+   reports `НУЖЕН ОПЕРАТОР` unexpectedly.
+5. If the release health gate fails, the existing deploy workflow restores the
    prior application image and checkout automatically. The database is not
    automatically restored; the migration is additive and the existing backup
    procedure remains available for a deliberate recovery.
@@ -482,3 +567,5 @@ To disable weight-first without touching bag counting, set
 `VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=0` and recreate only the normal application
 release. Existing vehicle events and capture audit remain in the CRM. Do not
 reset the camera-PC SQLite database or its counters as part of this rollback.
+Automatic polling has an independent immediate business kill switch:
+`VEHICLE_PLATE_AUTO_SCALE_ENABLED=0`.

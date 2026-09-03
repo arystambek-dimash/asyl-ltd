@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.permissions import IsSuperUser, PermAPIViewMixin
+from apps.grain.passage_scale_automation import scale_automation_runtime
 
 from .. import ai
 
@@ -305,13 +306,15 @@ def project_vehicle_runtime(camera: str, info, roi) -> dict:
     on_demand = _project_on_demand(runtime.get("on_demand"))
     on_demand_camera_configured = camera in on_demand["cameras"]
     weight_first_enabled = bool(settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED)
+    scale_automation = scale_automation_runtime()
+    on_demand_required = weight_first_enabled or scale_automation["enabled"]
     projected_roi = _project_roi(roi, camera)
     source = (
         _source(
             settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE,
             "VEHICLE_PLATE_WEIGHT_FIRST_SOURCE",
         )
-        if weight_first_enabled
+        if on_demand_required
         else automation_source
     )
 
@@ -319,17 +322,17 @@ def project_vehicle_runtime(camera: str, info, roi) -> dict:
         diagnostic = "model_disabled"
     elif not ready:
         diagnostic = "model_not_ready"
-    elif weight_first_enabled and not on_demand["enabled"]:
+    elif on_demand_required and not on_demand["enabled"]:
         diagnostic = "on_demand_disabled"
-    elif weight_first_enabled and not on_demand_camera_configured:
+    elif on_demand_required and not on_demand_camera_configured:
         diagnostic = "on_demand_camera_not_configured"
-    elif weight_first_enabled and (
+    elif on_demand_required and (
         not projected_roi["configured"] or not projected_roi["enabled"]
     ):
         diagnostic = "on_demand_roi_not_ready"
-    elif weight_first_enabled and projected_roi["source"] != source:
+    elif on_demand_required and projected_roi["source"] != source:
         diagnostic = "on_demand_roi_source_mismatch"
-    elif weight_first_enabled:
+    elif on_demand_required:
         diagnostic = "on_demand_ready"
     elif not automation_enabled:
         diagnostic = "automation_disabled"
@@ -347,6 +350,7 @@ def project_vehicle_runtime(camera: str, info, roi) -> dict:
         "automation_enabled": automation_enabled,
         "camera_configured": camera_configured,
         "weight_first_enabled": weight_first_enabled,
+        "scale_automation": scale_automation,
         "on_demand_enabled": on_demand["enabled"],
         "on_demand_camera_configured": on_demand_camera_configured,
         "source": source,
@@ -387,9 +391,7 @@ class VehiclePlateRuntimeView(PermAPIViewMixin, APIView):
                 status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         try:
-            camera = ai.camera_id(
-                cam or settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA
-            )
+            camera = ai.camera_id(cam or settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA)
             payload = project_vehicle_runtime(
                 camera,
                 ai.vehicle_number_info(),
@@ -434,7 +436,10 @@ class VehiclePlateRuntimeView(PermAPIViewMixin, APIView):
             camera = ai.camera_id(cam)
             expected_source = (
                 settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE
-                if settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED
+                if (
+                    settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED
+                    or settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED
+                )
                 and camera == settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA
                 else "main"
             )

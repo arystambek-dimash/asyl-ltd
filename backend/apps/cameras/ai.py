@@ -7,6 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from numbers import Real
 from uuid import UUID
 
@@ -324,17 +325,34 @@ def _recognize_vehicle_from_camera(
 
     confirmation = payload.get("confirmation")
     number = payload.get("vehicle_number")
-    source = payload.get("source")
+    frames_scanned = payload.get("frames_scanned")
+    configured_source = settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE
+    expected_optional_metadata = {
+        "request_id": raw_request_id,
+        "camera": camera,
+        "source": configured_source,
+        "stable_weight_at": stable_weight_at,
+    }
     if (
-        payload.get("ok") is not True
-        or payload.get("status") != "recognized"
-        or payload.get("request_id") != raw_request_id
-        or payload.get("camera") != camera
+        payload.get("status") != "recognized"
+        or ("ok" in payload and payload.get("ok") is not True)
         or not isinstance(number, str)
         or VEHICLE_PLATE_RE.fullmatch(number) is None
-        or source not in {"main", "sub"}
-        or source != settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE
         or not isinstance(confirmation, Mapping)
+        or isinstance(frames_scanned, bool)
+        or not isinstance(frames_scanned, int)
+        or not 1 <= frames_scanned <= 1_000_000
+        or any(
+            field in payload and payload.get(field) != expected
+            for field, expected in expected_optional_metadata.items()
+        )
+        or (
+            "recognized_at" in payload
+            and (
+                not isinstance(payload.get("recognized_at"), str)
+                or not payload.get("recognized_at")
+            )
+        )
     ):
         raise AiProtocolError(
             "AI-сервис вернул некорректный результат номера"
@@ -360,7 +378,20 @@ def _recognize_vehicle_from_camera(
         raise AiProtocolError(
             "AI-сервис вернул некорректную уверенность OCR"
         )
-    return payload
+    # The production endpoint intentionally returns only recognition data.
+    # Bind missing audit metadata to this already validated HTTP request.  If
+    # a newer Camera-PC returns those optional fields, the checks above still
+    # reject any cross-request or cross-camera conflict before normalization.
+    normalized = dict(payload)
+    normalized.update(expected_optional_metadata)
+    normalized["ok"] = True
+    normalized.setdefault(
+        "recognized_at",
+        datetime.now(UTC)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z"),
+    )
+    return normalized
 
 
 def recognize_vehicle_from_camera(

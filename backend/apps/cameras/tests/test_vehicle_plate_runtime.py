@@ -228,6 +228,49 @@ def test_vehicle_runtime_projects_weight_first_readiness_without_legacy_monitor(
     assert response.data["monitor"] is None
 
 
+def test_vehicle_runtime_projects_independent_automatic_scale_state(
+    api_client,
+    grain_viewer,
+    settings,
+):
+    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED = False
+    info = deepcopy(INFO)
+    info["automation"].update(enabled=False, configured_cameras=[], monitors={})
+    scale_runtime = {
+        "enabled": True,
+        "state": "recognizing",
+        "last_checked_at": "2026-09-03T07:30:00Z",
+        "heartbeat_stale": False,
+        "active": {
+            "request_id": "c4e7a4b1-7d77-4700-9ca7-f37b82083815",
+            "stage": "recognizing",
+            "action": None,
+            "wagon_id": None,
+            "retryable": False,
+            "error_code": None,
+        },
+    }
+    api_client.force_authenticate(grain_viewer)
+
+    with (
+        patch.object(ai, "vehicle_number_info", return_value=info),
+        patch.object(ai, "vehicle_roi", return_value=deepcopy(ROI)),
+        patch(
+            "apps.cameras.api_views.vehicle_runtime.scale_automation_runtime",
+            return_value=scale_runtime,
+        ),
+    ):
+        response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
+
+    assert response.status_code == 200
+    assert response.data["diagnostic"] == "on_demand_ready"
+    assert response.data["weight_first_enabled"] is False
+    assert response.data["scale_automation"] == scale_runtime
+    assert response.data["monitor"] is None
+    assert "weight_kg" not in repr(response.data["scale_automation"])
+
+
 @pytest.mark.parametrize(
     ("configured_source", "expected_stream"),
     [("sub", "cam7"), ("main", "cam7main")],

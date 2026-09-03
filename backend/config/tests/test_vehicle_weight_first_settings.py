@@ -13,11 +13,24 @@ def _import_settings(**overrides: str) -> subprocess.CompletedProcess[str]:
     for name in (
         "SENTRY_BACKEND_DSN",
         "VEHICLE_PLATE_AUTO_EXPORT_ENABLED",
+        "VEHICLE_PLATE_AUTO_SCALE_ENABLED",
+        "VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS",
+        "VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG",
+        "VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS",
+        "VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS",
+        "VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG",
+        "VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS",
+        "VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE",
+        "VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS",
         "VEHICLE_PLATE_WEIGHT_FIRST_ENABLED",
         "VEHICLE_PLATE_WEIGHT_FIRST_CAMERA",
         "VEHICLE_PLATE_WEIGHT_FIRST_SOURCE",
+        "VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS",
         "AI_SERVICE_URL",
         "AI_SERVICE_API_KEY",
+        "TRUCK_SCALE_API_URL",
+        "TRUCK_SCALE_TIMEOUT_SECONDS",
+        "TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS",
     ):
         environment.pop(name, None)
     environment.update(
@@ -25,6 +38,7 @@ def _import_settings(**overrides: str) -> subprocess.CompletedProcess[str]:
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTEST_RUNNING": "1",
             "VEHICLE_PLATE_AUTO_EXPORT_ENABLED": "0",
+            "VEHICLE_PLATE_AUTO_SCALE_ENABLED": "0",
             "VEHICLE_PLATE_WEIGHT_FIRST_ENABLED": "1",
             "VEHICLE_PLATE_WEIGHT_FIRST_CAMERA": "cam1",
             "VEHICLE_PLATE_WEIGHT_FIRST_SOURCE": "main",
@@ -84,3 +98,83 @@ def test_weight_first_settings_fail_before_physical_scale_io(overrides, message)
 
     assert result.returncode != 0
     assert message in result.stderr
+
+
+def test_auto_scale_accepts_complete_scale_and_camera_contract():
+    result = _import_settings(
+        VEHICLE_PLATE_WEIGHT_FIRST_ENABLED="0",
+        VEHICLE_PLATE_AUTO_SCALE_ENABLED="1",
+        TRUCK_SCALE_API_URL="http://scale-pc.internal:8000/api/v1/weight",
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "truck_scale_url",
+    ["", "scale-pc.internal/weight", "ftp://scale-pc/weight", "http://:8000"],
+)
+def test_auto_scale_rejects_missing_or_invalid_scale_url(truck_scale_url):
+    result = _import_settings(
+        VEHICLE_PLATE_WEIGHT_FIRST_ENABLED="0",
+        VEHICLE_PLATE_AUTO_SCALE_ENABLED="1",
+        TRUCK_SCALE_API_URL=truck_scale_url,
+    )
+
+    assert result.returncode != 0
+    assert "TRUCK_SCALE_API_URL" in result.stderr
+
+
+def test_auto_scale_and_legacy_camera_first_are_mutually_exclusive():
+    result = _import_settings(
+        VEHICLE_PLATE_WEIGHT_FIRST_ENABLED="0",
+        VEHICLE_PLATE_AUTO_SCALE_ENABLED="1",
+        VEHICLE_PLATE_AUTO_EXPORT_ENABLED="1",
+        TRUCK_SCALE_API_URL="http://scale-pc.internal:8000/api/v1/weight",
+    )
+
+    assert result.returncode != 0
+    assert "cannot both be enabled" in result.stderr
+
+
+def test_auto_scale_rejects_heartbeat_shorter_than_a_valid_iteration():
+    result = _import_settings(
+        VEHICLE_PLATE_WEIGHT_FIRST_ENABLED="0",
+        VEHICLE_PLATE_AUTO_SCALE_ENABLED="1",
+        VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS="10",
+        VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS="5",
+        VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS="30",
+        TRUCK_SCALE_API_URL="http://scale-pc.internal:8000/api/v1/weight",
+    )
+
+    assert result.returncode != 0
+    assert "VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS" in result.stderr
+
+
+def test_disabled_auto_scale_rejects_heartbeat_shorter_than_poll_cadence():
+    result = _import_settings(
+        VEHICLE_PLATE_WEIGHT_FIRST_ENABLED="0",
+        VEHICLE_PLATE_AUTO_SCALE_ENABLED="0",
+        VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS="10",
+        VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS="5",
+    )
+
+    assert result.returncode != 0
+    assert "VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS" in result.stderr
+    assert "poll cadence" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS", "0.1"),
+        ("VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS", "0"),
+        ("VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS", "1"),
+        ("VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS", "11"),
+    ],
+)
+def test_auto_scale_tuning_is_bounded(name, value):
+    result = _import_settings(**{name: value})
+
+    assert result.returncode != 0
+    assert name in result.stderr

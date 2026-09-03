@@ -41,9 +41,18 @@ vi.mock("@/components/require-perm", () => ({
   RequirePerm: ({ children }: { children: ReactNode }) => children,
 }));
 vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ children, actions }: { children: ReactNode; actions?: ReactNode }) => (
+  AppShell: ({
+    children,
+    actions,
+    description,
+  }: {
+    children: ReactNode;
+    actions?: ReactNode;
+    description?: string;
+  }) => (
     <main>
       {actions}
+      {description && <p>{description}</p>}
       {children}
     </main>
   ),
@@ -72,8 +81,23 @@ vi.mock("@/components/grain/wagon-table", () => ({
   WagonTable: () => null,
 }));
 vi.mock("@/components/ui/modal", () => ({
-  Modal: ({ open, title, children }: { open: boolean; title: string; children: ReactNode }) =>
-    open ? <section aria-label={title}>{children}</section> : null,
+  Modal: ({
+    open,
+    title,
+    description,
+    children,
+  }: {
+    open: boolean;
+    title: string;
+    description?: string;
+    children: ReactNode;
+  }) =>
+    open ? (
+      <section aria-label={title}>
+        {description && <p>{description}</p>}
+        {children}
+      </section>
+    ) : null,
 }));
 
 describe("Grain passage creation", () => {
@@ -127,6 +151,7 @@ describe("Grain passage creation", () => {
     expect(screen.getByRole("tab", { name: "На территории" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Завершённые" })).toBeInTheDocument();
     expect(visiblePollingMock).toHaveBeenLastCalledWith(reloadMock, 10_000, true);
+    expect(screen.getByText(/Доступность автоматики показана во вкладке «Камера проходной»/)).toBeInTheDocument();
   });
 
   it("keeps the intake and export camera tabs isolated", async () => {
@@ -160,6 +185,7 @@ describe("Grain passage creation", () => {
 
     await user.click(screen.getByRole("tab", { name: "Вывоз" }));
     await user.click(screen.getByRole("button", { name: "Открыть вывоз" }));
+    expect(screen.getByText(/Используйте ручное оформление, если автоматика/)).toBeInTheDocument();
     expect(useApiMock).toHaveBeenCalledWith("/grain/wagons/vehicle-plate-candidates/");
     expect(visiblePollingMock).toHaveBeenCalledWith(expect.any(Function), 10_000, undefined);
     expect(screen.queryByRole("region", { name: "Распознанные номера" })).not.toBeInTheDocument();

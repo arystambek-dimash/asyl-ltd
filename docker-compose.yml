@@ -69,6 +69,15 @@ services:
       VEHICLE_PLATE_WEIGHT_FIRST_CAMERA: "${VEHICLE_PLATE_WEIGHT_FIRST_CAMERA:-cam1}"
       VEHICLE_PLATE_WEIGHT_FIRST_SOURCE: "${VEHICLE_PLATE_WEIGHT_FIRST_SOURCE:-main}"
       VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS: "${VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS:-12}"
+      VEHICLE_PLATE_AUTO_SCALE_ENABLED: "${VEHICLE_PLATE_AUTO_SCALE_ENABLED:-0}"
+      VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS: "${VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS:-1}"
+      VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG: "${VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG:-500}"
+      VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS: "${VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS:-2}"
+      VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS: "${VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS:-3}"
+      VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG: "${VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG:-50}"
+      VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS: "${VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS:-3}"
+      VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE: "${VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE:-/tmp/passage-scale-monitor/heartbeat.json}"
+      VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS: "${VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS:-60}"
       VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME: "${VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME:-Отруби}"
       VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS: "${VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS:-15}"
       VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS: "${VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS:-60}"
@@ -98,6 +107,34 @@ services:
       - mediadata:/app/media
     ports:
       - "8000:8000"
+
+  passage-scale-monitor:
+    profiles: ["hardware"]
+    build: ./backend
+    environment:
+      <<: *backend-environment
+      APP_SERVICE: passage-scale-monitor
+      DJANGO_COLLECTSTATIC: "0"
+    entrypoint: []
+    command: ["python", "manage.py", "monitor_passage_scale"]
+    depends_on:
+      backend:
+        condition: service_started
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    init: true
+    stop_grace_period: 60s
+    tmpfs:
+      - /tmp/passage-scale-monitor:rw,noexec,nosuid,nodev,size=1m,mode=1777
+    healthcheck:
+      test: ["CMD", "python", "/app/passage_scale_monitor_healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
 
   celery-payments:
     build: ./backend

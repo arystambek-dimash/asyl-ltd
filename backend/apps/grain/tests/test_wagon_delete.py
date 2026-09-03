@@ -6,17 +6,27 @@
 Активный рейс удаляется только сильным правом и с обязательной причиной.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from decimal import Decimal
+from threading import Event
 from unittest.mock import patch
 
 import pytest
+from django.db import close_old_connections, connection, connections, transaction
+from django.utils import timezone
+from rest_framework.exceptions import ValidationError
+
 from apps.catalog.models import Product  # noqa: F401  (регистрация приложений)
 from apps.eventlog.models import EventLog
+from apps.grain import passage_scale_automation as automation
 from apps.grain import scale, services
 from apps.grain import statuses as st
 from apps.grain.models import (
+    AutomaticPassageCapture,
     GrainMovement,
     GrainSupply,
+    PassageScaleAutomationState,
     PassageWeightCapture,
     Silo,
     SiloReservation,
@@ -24,7 +34,6 @@ from apps.grain.models import (
     Wagon,
     WeighingRecord,
 )
-from django.utils import timezone
 
 pytestmark = pytest.mark.django_db
 
@@ -256,6 +265,170 @@ def test_processing_weight_capture_blocks_wagon_deletion(
     assert Wagon.objects.filter(pk=wagon.pk).exists()
     capture.refresh_from_db()
     assert capture.wagon_id == wagon.pk
+
+
+def test_unresolved_automatic_capture_blocks_active_passage_deletion(
+    auth_client,
+    grain_admin,
+):
+    wagon = Wagon.objects.create(
+        number="555BBB02",
+        direction=Wagon.PASSAGE,
+        workflow="simple",
+        cargo_name="Отруби",
+        status=st.AT_SILO,
+        arrived_at=timezone.now(),
+        gross_weight_kg=12_000,
+        number_source="camera",
+    )
+    capture = AutomaticPassageCapture.objects.create(
+        idempotency_key="8858f757-7e90-4ca2-924f-3ce701912a42",
+        camera="cam1",
+        weight_kg=30_000,
+        status=AutomaticPassageCapture.PROCESSING,
+        stage=AutomaticPassageCapture.RECOGNIZING,
+    )
+
+    response = auth_client(grain_admin).delete(
+        f"/api/grain/wagons/{wagon.pk}/delete/",
+        {"reason": "Ошибочно зарегистрирован"},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "passage_capture_in_progress"
+    assert Wagon.objects.filter(pk=wagon.pk).exists()
+    capture.refresh_from_db()
+    assert capture.status == AutomaticPassageCapture.PROCESSING
+
+
+@pytest.mark.django_db(transaction=True)
+def test_episode_claim_and_passage_deletion_share_lane_mutex(
+    grain_admin,
+    settings,
+):
+    if connection.vendor != "postgresql":
+        pytest.skip("row-lock contract requires PostgreSQL")
+    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
+    state, _created = PassageScaleAutomationState.objects.update_or_create(
+        scale_number=scale.TRUCK_SCALE_KEY,
+        defaults={"phase": PassageScaleAutomationState.ARMED},
+    )
+    wagon = Wagon.objects.create(
+        number="555BBB02",
+        direction=Wagon.PASSAGE,
+        workflow="simple",
+        cargo_name="Отруби",
+        status=st.AT_SILO,
+        arrived_at=timezone.now(),
+        gross_weight_kg=12_000,
+        number_source="camera",
+    )
+    started = Event()
+
+    def delete_during_claim():
+        close_old_connections()
+        started.set()
+        try:
+            services.delete_wagon(
+                Wagon.objects.get(pk=wagon.pk),
+                type(grain_admin).objects.get(pk=grain_admin.pk),
+                reason="Ошибочно зарегистрирован",
+            )
+        except ValidationError as exc:
+            return str(exc.detail["code"])
+        finally:
+            connections.close_all()
+        return "deleted"
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        with transaction.atomic():
+            locked_state = PassageScaleAutomationState.objects.select_for_update().get(
+                pk=state.pk
+            )
+            capture = AutomaticPassageCapture.objects.create(
+                idempotency_key="bdca1a8d-a62b-4410-a093-6cf2cf1dbf63",
+                camera="cam1",
+            )
+            locked_state.phase = PassageScaleAutomationState.PROCESSING
+            locked_state.current_capture = capture
+            locked_state.save(update_fields=["phase", "current_capture", "updated_at"])
+            # Simulate a rolling deploy where this web process has the flag off
+            # while the old monitor has already claimed the durable lane.
+            settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = False
+            future = pool.submit(delete_during_claim)
+            assert started.wait(timeout=5)
+            with pytest.raises(FutureTimeoutError):
+                future.result(timeout=0.25)
+        assert future.result(timeout=5) == "passage_capture_in_progress"
+    finally:
+        pool.shutdown(wait=True)
+
+    assert Wagon.objects.filter(pk=wagon.pk).exists()
+
+
+def test_successful_passage_deletion_disarms_previously_observed_lane(
+    auth_client,
+    grain_admin,
+    settings,
+):
+    """An occupied snapshot from before DELETE must not start a new trip."""
+
+    wagon = _passage(auth_client, grain_admin)
+    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
+    settings.VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG = 500
+    settings.VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS = 2
+    PassageScaleAutomationState.objects.update_or_create(
+        scale_number=scale.TRUCK_SCALE_KEY,
+        defaults={"phase": PassageScaleAutomationState.ARMED},
+    )
+    occupied_before_delete = scale.ScaleObservation(
+        state="ready",
+        weight_kg=Decimal(30000),
+        connected=True,
+        stable=True,
+        stale=False,
+        age_seconds=Decimal("0.2"),
+        updated_at="2026-09-03T07:30:00Z",
+    )
+
+    response = auth_client(grain_admin).delete(
+        f"/api/grain/wagons/{wagon.pk}/delete/"
+    )
+    assert response.status_code == 200, response.data
+
+    work = automation._advance_lane(occupied_before_delete, now=timezone.now())
+
+    state = PassageScaleAutomationState.objects.get(
+        scale_number=scale.TRUCK_SCALE_KEY
+    )
+    assert work is None
+    assert state.phase == PassageScaleAutomationState.UNARMED
+    assert state.clear_streak == 0
+    assert state.stable_streak == 0
+    assert state.candidate_weight_kg is None
+    assert state.current_capture_id is None
+    assert not AutomaticPassageCapture.objects.exists()
+
+    empty_after_delete = scale.ScaleObservation(
+        state="ready",
+        weight_kg=Decimal(0),
+        connected=True,
+        stable=True,
+        stale=False,
+        age_seconds=Decimal("0.2"),
+        updated_at="2026-09-03T07:30:01Z",
+    )
+    automation._advance_lane(empty_after_delete, now=timezone.now())
+    state.refresh_from_db()
+    assert state.phase == PassageScaleAutomationState.UNARMED
+    assert state.clear_streak == 1
+
+    automation._advance_lane(empty_after_delete, now=timezone.now())
+    state.refresh_from_db()
+    assert state.phase == PassageScaleAutomationState.ARMED
+    assert state.clear_streak == 0
 
 
 def test_active_intake_delete_releases_reservation_without_changing_stock(

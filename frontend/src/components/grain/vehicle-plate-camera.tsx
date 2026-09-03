@@ -2,7 +2,7 @@
 
 import type { AxiosError } from "axios";
 import { useState } from "react";
-import { Check, Focus, PencilLine, ScanLine, VideoOff, X } from "lucide-react";
+import { Check, Focus, PencilLine, Scale, ScanLine, VideoOff, X } from "lucide-react";
 import { CameraStream } from "@/components/camera-stream";
 import {
   isDrawableVehicleRoi,
@@ -13,6 +13,7 @@ import {
 } from "@/components/grain/vehicle-roi-overlay";
 import { Button } from "@/components/ui/button";
 import { api, apiError } from "@/lib/api";
+import { can } from "@/lib/can";
 import { showSuccess } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
@@ -20,6 +21,8 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 
 const VEHICLE_RUNTIME_BOOTSTRAP_URL = "/cameras/vehicle-plate-runtime/";
+const SCALE_AUTOMATION_RUNTIME_URL = "/grain/automatic-passage-scale/runtime/";
+const SCALE_AUTOMATION_ACKNOWLEDGE_URL = "/grain/automatic-passage-scale/acknowledge/";
 const VEHICLE_RUNTIME_POLL_MS = 5_000;
 const DEFAULT_VEHICLE_ROI: NormalizedRoiPoint[] = [
   [0.25, 0.25],
@@ -52,6 +55,29 @@ type VehiclePlateMonitor = {
   };
 };
 
+export type ScaleAutomationRuntime = {
+  enabled: boolean;
+  state:
+    | "disabled"
+    | "idle"
+    | "candidate"
+    | "recognizing"
+    | "applying"
+    | "awaiting_clear"
+    | "manual_required"
+    | "unavailable";
+  last_checked_at: string | null;
+  heartbeat_stale: boolean;
+  active: {
+    request_id: string;
+    stage: "claimed" | "recognizing" | "applying" | "done";
+    action: "entry" | "exit" | null;
+    wagon_id: number | null;
+    retryable: boolean;
+    error_code: string | null;
+  } | null;
+};
+
 export type VehiclePlateRuntime = {
   camera: string;
   enabled: boolean;
@@ -67,6 +93,13 @@ export type VehiclePlateRuntime = {
   diagnostic: string;
   monitor: VehiclePlateMonitor | null;
   roi: VehicleRoiConfig;
+  /** Optional during a rolling deploy; absence must never be shown as healthy. */
+  scale_automation?: ScaleAutomationRuntime;
+};
+
+type ScaleAutomationAcknowledgeResponse = {
+  acknowledged: true;
+  scale_automation: ScaleAutomationRuntime;
 };
 
 type VehicleRoiSaveResponse = {
@@ -145,7 +178,7 @@ export function vehicleAiPresentation(
   if (!runtime.ready) {
     return { label: "AI: НЕ ГОТОВА", detail: "Детектор номера или OCR не загрузился.", tone: "bad" };
   }
-  if (runtime.weight_first_enabled) {
+  if (runtime.weight_first_enabled || runtime.scale_automation?.enabled) {
     if (!runtime.on_demand_enabled) {
       return {
         label: "AI ПО ЗАПРОСУ ВЫКЛ.",
@@ -234,6 +267,93 @@ export function vehicleAiPresentation(
   return { label: "AI ЗАПУСКАЕТСЯ", detail: "ROI загружен, ожидаем первый обработанный кадр.", tone: "warn" };
 }
 
+export function scaleAutomationPresentation(
+  automation: ScaleAutomationRuntime | null | undefined,
+  loading: boolean,
+  error: string,
+): RuntimePresentation {
+  if (error) {
+    return {
+      label: "АВТОМАТИКА: НЕТ СВЯЗИ",
+      detail: "Не удалось проверить фоновый контроль весов. Используйте ручное оформление.",
+      tone: "bad",
+    };
+  }
+  if (!automation) {
+    return loading
+      ? { label: "АВТОМАТИКА: ПРОВЕРКА", detail: "Запрашиваем состояние контроля весов.", tone: "idle" }
+      : {
+          label: "СТАТУС АВТОМАТИКИ НЕДОСТУПЕН",
+          detail: "CRM не получила состояние фонового контроля весов. Ручное оформление остаётся доступным.",
+          tone: "bad",
+        };
+  }
+  if (automation.state === "manual_required") {
+    const wagon = automation.active?.wagon_id;
+    return {
+      label: "НУЖЕН ОПЕРАТОР",
+      detail: wagon
+        ? `Автоматика остановила рейс #${wagon}; завершите его ручными кнопками.`
+        : "Автоматика не смогла продолжить этот заезд; оформите вывоз вручную.",
+      tone: "bad",
+    };
+  }
+  if (automation.heartbeat_stale) {
+    return {
+      label: "АВТОМАТИКА НЕ ОТВЕЧАЕТ",
+      detail: "Фоновый обработчик давно не отмечался. Используйте ручное оформление.",
+      tone: "bad",
+    };
+  }
+  if (!automation.enabled || automation.state === "disabled") {
+    return {
+      label: "РУЧНОЙ РЕЖИМ",
+      detail: "Фоновый контроль весов выключен; рейс можно оформить и взвесить вручную.",
+      tone: "idle",
+    };
+  }
+  if (automation.state === "idle") {
+    return {
+      label: "ОЖИДАЕТ МАШИНУ",
+      detail: "Фоновый сервис проверяет весы каждую секунду и ждёт новый стабильный заезд.",
+      tone: "good",
+    };
+  }
+  if (automation.state === "candidate") {
+    return {
+      label: "ЖДЁТ СТАБИЛЬНЫЙ ВЕС",
+      detail: "Обнаружено изменение веса; ждём стабильное показание перед запуском камеры.",
+      tone: "warn",
+    };
+  }
+  if (automation.state === "recognizing") {
+    return {
+      label: "РАСПОЗНАЁТ НОМЕР",
+      detail: "Камера обрабатывает новый стабильный заезд и подтверждает номер машины.",
+      tone: "warn",
+    };
+  }
+  if (automation.state === "applying") {
+    return {
+      label: "ОБНОВЛЯЕТ РЕЙС",
+      detail: "Номер получен; вес и следующий статус рейса сохраняются.",
+      tone: "warn",
+    };
+  }
+  if (automation.state === "awaiting_clear") {
+    return {
+      label: "ЖДЁТ ОСВОБОЖДЕНИЯ ВЕСОВ",
+      detail: "Вес уже обработан. Новый цикл начнётся только после того, как машина съедет с весов.",
+      tone: "good",
+    };
+  }
+  return {
+    label: "ВЕСЫ НЕДОСТУПНЫ",
+    detail: "Весы или фоновый обработчик недоступны. Используйте ручное оформление.",
+    tone: "bad",
+  };
+}
+
 function vehiclePipelineHint(monitor: VehiclePlateMonitor, source: "main" | "sub"): string {
   if (monitor.scanned_frames === 0) return `С запуска монитор ещё не получил ни одного кадра ${source}.`;
   if (monitor.plate_detections === 0) return "С запуска кадры поступали, но детектор не увидел номерной знак.";
@@ -270,12 +390,15 @@ function roiPresentation(runtime: VehiclePlateRuntime | null, error: string): Ru
  */
 export function VehiclePlateCameraWorkspace() {
   const canManageRoi = useAuth((state) => Boolean(state.me?.is_superuser));
+  const canAcknowledgeManualPassage = useAuth((state) => can(state.me, "grain.weigh"));
   const [streamOnline, setStreamOnline] = useState(false);
   const [editingRoi, setEditingRoi] = useState(false);
   const [roiDraft, setRoiDraft] = useState<NormalizedRoiPoint[]>([]);
   const [savingRoi, setSavingRoi] = useState(false);
   const [roiSaveError, setRoiSaveError] = useState("");
   const [saveNotice, setSaveNotice] = useState<SaveNotice | null>(null);
+  const [acknowledgingRequestId, setAcknowledgingRequestId] = useState("");
+  const [acknowledgeError, setAcknowledgeError] = useState<{ requestId: string; message: string } | null>(null);
   const {
     data: runtime,
     loading: runtimeLoading,
@@ -283,9 +406,45 @@ export function VehiclePlateCameraWorkspace() {
     reload,
     setData: setRuntime,
   } = useApi<VehiclePlateRuntime>(VEHICLE_RUNTIME_BOOTSTRAP_URL);
-  useVisiblePolling(reload, VEHICLE_RUNTIME_POLL_MS, !runtimeLoading && !editingRoi && !savingRoi);
+  const {
+    data: standaloneScaleAutomation,
+    loading: scaleAutomationLoading,
+    error: scaleAutomationError,
+    reload: reloadScaleAutomation,
+    setData: setStandaloneScaleAutomation,
+  } = useApi<ScaleAutomationRuntime>(SCALE_AUTOMATION_RUNTIME_URL);
+  useVisiblePolling(
+    reload,
+    VEHICLE_RUNTIME_POLL_MS,
+    !runtimeLoading && !editingRoi && !savingRoi && !acknowledgingRequestId,
+  );
+  useVisiblePolling(reloadScaleAutomation, VEHICLE_RUNTIME_POLL_MS, !scaleAutomationLoading && !acknowledgingRequestId);
   const aiState = vehicleAiPresentation(runtime, runtimeLoading, runtimeError);
-  const weightFirst = Boolean(runtime?.weight_first_enabled);
+  // The CRM endpoint stays available when Camera-PC diagnostics fail. Keep the
+  // embedded field only as a rolling-deploy fallback for an older backend.
+  const embeddedScaleAutomation = runtime?.scale_automation;
+  const healthyEmbeddedScaleAutomation = runtimeError ? undefined : embeddedScaleAutomation;
+  const scaleAutomation =
+    standaloneScaleAutomation && !scaleAutomationError
+      ? standaloneScaleAutomation
+      : (healthyEmbeddedScaleAutomation ?? standaloneScaleAutomation ?? embeddedScaleAutomation);
+  const usingHealthyEmbeddedFallback = !standaloneScaleAutomation && Boolean(embeddedScaleAutomation) && !runtimeError;
+  const effectiveScaleAutomationError = usingHealthyEmbeddedFallback
+    ? ""
+    : scaleAutomationError || (!standaloneScaleAutomation ? runtimeError : "");
+  const weightFirst = Boolean(
+    runtime?.weight_first_enabled || scaleAutomation?.enabled || scaleAutomation?.state === "manual_required",
+  );
+  const scaleAutomationState = scaleAutomationPresentation(
+    scaleAutomation,
+    !scaleAutomation && scaleAutomationLoading,
+    effectiveScaleAutomationError,
+  );
+  const manualRequiredRequestId =
+    scaleAutomation?.state === "manual_required" ? (scaleAutomation.active?.request_id ?? "") : "";
+  const acknowledgingManualPassage = Boolean(acknowledgingRequestId);
+  const currentAcknowledgeError =
+    acknowledgeError?.requestId === manualRequiredRequestId ? acknowledgeError.message : "";
   const roiState = editingRoi
     ? { label: "ROI РЕДАКТИРУЕТСЯ", detail: "Перетащите точки и сохраните новую зону.", tone: "warn" as const }
     : roiPresentation(runtime, runtimeError);
@@ -360,16 +519,41 @@ export function VehiclePlateCameraWorkspace() {
     }
   }
 
+  async function acknowledgeManualPassage() {
+    const requestId = manualRequiredRequestId;
+    if (!canAcknowledgeManualPassage || !requestId || acknowledgingRequestId) return;
+    setAcknowledgingRequestId(requestId);
+    setAcknowledgeError(null);
+    try {
+      const response = await api.post<ScaleAutomationAcknowledgeResponse>(SCALE_AUTOMATION_ACKNOWLEDGE_URL, {
+        request_id: requestId,
+        resolved: true,
+      });
+      setStandaloneScaleAutomation(response.data.scale_automation);
+      showSuccess("Ручная обработка подтверждена");
+      await reloadScaleAutomation().catch(() => undefined);
+    } catch {
+      // Keep backend diagnostics (which may contain recognition details) out of
+      // the grain.view runtime UI.
+      setAcknowledgeError({
+        requestId,
+        message: "Не удалось подтвердить ручную обработку. Повторите попытку.",
+      });
+    } finally {
+      setAcknowledgingRequestId("");
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-sky-700">
-            {weightFirst ? "Камера распознавания после веса" : "Камера автоматического вывоза"}
+            {weightFirst ? "Автоматический вывоз по весам" : "Камера автоматического вывоза"}
           </p>
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">
             {weightFirst
-              ? "После стабильного показания весов сервис включает распознавание в сохранённой ROI и фиксирует номер в рейсе."
+              ? "Сервис проверяет весы каждую секунду. Новый стабильный заезд запускает OCR; повторный запуск возможен только после освобождения весов."
               : "Камера проходной показывает машину, номер которой используется для автоматического рейса."}
           </p>
         </div>
@@ -468,7 +652,7 @@ export function VehiclePlateCameraWorkspace() {
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-sky-300">Прямой эфир</p>
                 <h2 className="mt-2 text-2xl font-bold tracking-tight">
-                  {weightFirst ? "Вес → номер → рейс" : "Автоматический вывоз"}
+                  {weightFirst ? "Вес → номер → статус" : "Автоматический вывоз"}
                 </h2>
               </div>
               <div className="flex shrink-0 flex-col items-end gap-1.5">
@@ -519,6 +703,45 @@ export function VehiclePlateCameraWorkspace() {
                   <p className="mt-1 text-[11px] leading-4 text-white/45">{roiState.detail}</p>
                 </div>
               </div>
+              {weightFirst ? (
+                <div
+                  role="region"
+                  aria-label="Автоматика весов"
+                  className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4"
+                >
+                  <span
+                    className={cn(
+                      "flex size-10 shrink-0 items-center justify-center rounded-xl border",
+                      TONE_CLASSES[scaleAutomationState.tone],
+                    )}
+                  >
+                    <Scale className="size-5" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] text-white/40">Автоматика весов</p>
+                    <p className="mt-0.5 text-sm font-bold">{scaleAutomationState.label}</p>
+                    <p className="mt-1 text-[11px] leading-4 text-white/45">{scaleAutomationState.detail}</p>
+                    {canAcknowledgeManualPassage && manualRequiredRequestId ? (
+                      <div className="mt-3">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={acknowledgingManualPassage}
+                          onClick={() => void acknowledgeManualPassage()}
+                          className="border-white/20 bg-white/[0.06] text-white hover:bg-white/10 hover:text-white"
+                        >
+                          {acknowledgingManualPassage ? "Подтверждение…" : "Подтвердить ручную обработку"}
+                        </Button>
+                        {currentAcknowledgeError ? (
+                          <p role="alert" className="mt-2 text-[11px] leading-4 text-rose-200">
+                            {currentAcknowledgeError}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
               {runtime?.monitor && !weightFirst ? (
                 <div
                   role="region"

@@ -1,3 +1,4 @@
+import math
 import os
 import re
 import sys
@@ -397,6 +398,18 @@ def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int
     return value
 
 
+def _bounded_float_env(
+    name: str, default: float, minimum: float, maximum: float
+) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
 # Dedicated inbound credential for vehicle-plate events. It deliberately does
 # not reuse AI_SERVICE_API_KEY (outbound backend -> camera-PC). An empty value
 # keeps the webhook fail-closed until provisioned.
@@ -419,6 +432,9 @@ VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES = _bounded_int_env(
 )
 VEHICLE_PLATE_AUTO_EXPORT_ENABLED = env_flag(
     os.environ.get("VEHICLE_PLATE_AUTO_EXPORT_ENABLED", "0")
+)
+VEHICLE_PLATE_AUTO_SCALE_ENABLED = env_flag(
+    os.environ.get("VEHICLE_PLATE_AUTO_SCALE_ENABLED", "0")
 )
 VEHICLE_PLATE_WEIGHT_FIRST_ENABLED = env_flag(
     os.environ.get("VEHICLE_PLATE_WEIGHT_FIRST_ENABLED", "0")
@@ -448,12 +464,83 @@ if not 1 <= VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS <= 30:
     raise ValueError(
         "VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS must be between 1 and 30"
     )
-if VEHICLE_PLATE_AUTO_EXPORT_ENABLED and VEHICLE_PLATE_WEIGHT_FIRST_ENABLED:
+VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS = _bounded_float_env(
+    "VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS", 1.0, 0.5, 10.0
+)
+VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG = _bounded_int_env(
+    "VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG", 500, 0, 10_000
+)
+VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS = _bounded_int_env(
+    "VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS", 2, 1, 10
+)
+VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS = _bounded_int_env(
+    "VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS", 3, 2, 30
+)
+VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG = _bounded_int_env(
+    "VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG", 50, 0, 1_000
+)
+VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS = _bounded_int_env(
+    "VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS", 3, 1, 10
+)
+VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE = os.environ.get(
+    "VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE",
+    "/tmp/passage-scale-monitor/heartbeat.json",
+).strip()
+if not VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE.startswith("/"):
+    raise ValueError("VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE must be absolute")
+VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS = _bounded_int_env(
+    "VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS", 60, 5, 600
+)
+_AUTO_SCALE_HEARTBEAT_SCHEDULING_MARGIN_SECONDS = 10
+_AUTO_SCALE_HEARTBEAT_MIN_AGE_SECONDS = math.ceil(
+    VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS
+    + _AUTO_SCALE_HEARTBEAT_SCHEDULING_MARGIN_SECONDS
+    + (
+        TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS
+        + TRUCK_SCALE_TIMEOUT_SECONDS
+        + VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS
+        if VEHICLE_PLATE_AUTO_SCALE_ENABLED
+        else 0
+    )
+)
+if (
+    VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS
+    < _AUTO_SCALE_HEARTBEAT_MIN_AGE_SECONDS
+):
+    raise ValueError(
+        "VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS must be at least "
+        f"{_AUTO_SCALE_HEARTBEAT_MIN_AGE_SECONDS} for the configured poll cadence"
+        + (" and hardware timeouts" if VEHICLE_PLATE_AUTO_SCALE_ENABLED else "")
+    )
+if VEHICLE_PLATE_AUTO_EXPORT_ENABLED and (
+    VEHICLE_PLATE_WEIGHT_FIRST_ENABLED or VEHICLE_PLATE_AUTO_SCALE_ENABLED
+):
     raise ValueError(
         "VEHICLE_PLATE_AUTO_EXPORT_ENABLED and "
-        "VEHICLE_PLATE_WEIGHT_FIRST_ENABLED cannot both be enabled"
+        "weight-triggered vehicle plate modes cannot both be enabled"
     )
-if VEHICLE_PLATE_WEIGHT_FIRST_ENABLED:
+if VEHICLE_PLATE_AUTO_SCALE_ENABLED:
+    scale_parts = urlsplit(TRUCK_SCALE_API_URL)
+    try:
+        scale_port = scale_parts.port
+        scale_authority_valid = (
+            bool(scale_parts.hostname)
+            and scale_parts.username is None
+            and scale_parts.password is None
+            and (scale_port is None or scale_port > 0)
+        )
+    except ValueError:
+        scale_authority_valid = False
+    if (
+        scale_parts.scheme not in {"http", "https"}
+        or not scale_authority_valid
+        or scale_parts.fragment
+    ):
+        raise ValueError(
+            "TRUCK_SCALE_API_URL must be an absolute HTTP(S) URL when "
+            "VEHICLE_PLATE_AUTO_SCALE_ENABLED=1"
+        )
+if VEHICLE_PLATE_WEIGHT_FIRST_ENABLED or VEHICLE_PLATE_AUTO_SCALE_ENABLED:
     ai_service_parts = urlsplit(AI_SERVICE_URL)
     try:
         ai_service_port = ai_service_parts.port

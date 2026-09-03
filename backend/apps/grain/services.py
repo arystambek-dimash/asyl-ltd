@@ -21,10 +21,12 @@ from apps.eventlog.services import log_event
 from . import scale
 from . import statuses as st
 from .models import (
+    AutomaticPassageCapture,
     GrainMovement,
     GrainSettings,
     GrainSupply,
     LabCheck,
+    PassageScaleAutomationState,
     PassageWeightCapture,
     Silo,
     SiloAllocation,
@@ -382,11 +384,20 @@ def record_scale_weight(
 ) -> Wagon:
     """Read the physical scale, then atomically apply one weighing command.
 
-    Network I/O intentionally happens before the database transaction: a slow
-    scale must not hold a row lock.  The write phase locks and reloads the
-    wagon, so concurrent double clicks cannot record the same transition twice.
+    Intake I/O happens before its database transaction. Passage I/O holds only
+    the singleton automatic-lane mutex (not the Wagon row) for the bounded
+    scale request so the background edge detector cannot re-arm mid-command.
+    The write phase locks and reloads the Wagon in both cases.
     """
     _ensure_scale_action_ready(wagon, action)
+    if wagon.is_passage:
+        with transaction.atomic():
+            _prepare_manual_passage_scale_operation()
+            return _read_and_store_scale_weight(wagon, action, user)
+    return _read_and_store_scale_weight(wagon, action, user)
+
+
+def _read_and_store_scale_weight(wagon: Wagon, action: str, user) -> Wagon:
     expected_status = wagon.status
     scale_key = scale.TRUCK_SCALE_KEY if wagon.is_passage else scale.WAGON_SCALE_KEY
     with scale.authoritative_capture(scale_key):
@@ -1083,6 +1094,7 @@ def vehicle_plate_candidates(*, now=None) -> list[VehiclePlateEvent]:
             processing_status=VehiclePlateEvent.RECEIVED,
             grain_wagon__isnull=True,
             grain_exit_wagon__isnull=True,
+            automatic_passage_capture__isnull=True,
             detected_at__gte=oldest,
             detected_at__lte=newest,
             received_at__gte=oldest,
@@ -1120,6 +1132,9 @@ def _locked_vehicle_plate_event(raw_event_id) -> VehiclePlateEvent:
         and oldest <= event.detected_at <= newest
         and oldest <= event.received_at <= newest
         and not Wagon.objects.filter(vehicle_plate_event=event).exists()
+        and not AutomaticPassageCapture.objects.filter(
+            vehicle_plate_event=event
+        ).exists()
     )
     if not is_available:
         raise _error(
@@ -1137,6 +1152,141 @@ def normalize_passage_number(raw_number) -> str:
     return compact if KZ_VEHICLE_PLATE_RE.fullmatch(compact) else number
 
 
+def _reset_automatic_passage_lane(state: PassageScaleAutomationState) -> None:
+    if (
+        state.phase == PassageScaleAutomationState.UNARMED
+        and state.clear_streak == 0
+        and state.stable_streak == 0
+        and state.candidate_weight_kg is None
+        and state.current_capture_id is None
+    ):
+        return
+    state.phase = PassageScaleAutomationState.UNARMED
+    state.clear_streak = 0
+    state.stable_streak = 0
+    state.candidate_weight_kg = None
+    state.current_capture = None
+    state.save(
+        update_fields=[
+            "phase",
+            "clear_streak",
+            "stable_streak",
+            "candidate_weight_kg",
+            "current_capture",
+            "updated_at",
+        ]
+    )
+
+
+def _lock_automatic_passage_lane() -> tuple[
+    PassageScaleAutomationState | None,
+    AutomaticPassageCapture | None,
+]:
+    """Lock the shared automatic lane before any manual passage row lock."""
+
+    states = PassageScaleAutomationState.objects.select_for_update()
+    if settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED:
+        state, _created = states.get_or_create(
+            scale_number=scale.TRUCK_SCALE_KEY,
+            defaults={"phase": PassageScaleAutomationState.UNARMED},
+        )
+    else:
+        # A rolling deploy can temporarily have an enabled monitor and a
+        # disabled web worker.  Existing durable lane state remains the mutex
+        # regardless of this process's local feature flag; only avoid creating
+        # a brand-new state while the feature is disabled.
+        state = states.filter(scale_number=scale.TRUCK_SCALE_KEY).first()
+        if state is None:
+            return None, None
+    capture = (
+        AutomaticPassageCapture.objects.select_for_update()
+        .filter(pk=state.current_capture_id)
+        .only("status", "acknowledged_at")
+        .first()
+        if state.current_capture_id is not None
+        else None
+    )
+    if not settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED:
+        processing = (
+            capture is not None
+            and capture.status == AutomaticPassageCapture.PROCESSING
+        )
+        unresolved_failure = (
+            capture is not None
+            and capture.status == AutomaticPassageCapture.FAILED
+            and capture.acknowledged_at is None
+        )
+        safe_terminal = (
+            capture is None
+            or capture.status == AutomaticPassageCapture.COMPLETED
+            or (
+                capture.status == AutomaticPassageCapture.FAILED
+                and capture.acknowledged_at is not None
+            )
+        )
+        if not processing and not unresolved_failure and (
+            state.phase
+            in {
+                PassageScaleAutomationState.UNARMED,
+                PassageScaleAutomationState.ARMED,
+                PassageScaleAutomationState.STABILIZING,
+            }
+            or (
+                state.phase == PassageScaleAutomationState.AWAITING_CLEAR
+                and safe_terminal
+            )
+        ):
+            # The web kill switch must release safe terminal/idle state even
+            # when the dedicated monitor is down or still rolling forward.
+            _reset_automatic_passage_lane(state)
+            capture = None
+    return state, capture
+
+
+def _assert_automatic_passage_lane_allows_manual_operation(
+    state: PassageScaleAutomationState | None,
+    capture: AutomaticPassageCapture | None,
+) -> None:
+    if state is None:
+        return
+    blocked = (
+        capture is not None
+        and capture.status == AutomaticPassageCapture.PROCESSING
+    ) or state.phase in {
+        PassageScaleAutomationState.STABILIZING,
+        PassageScaleAutomationState.PROCESSING,
+    } or (
+        state.phase == PassageScaleAutomationState.AWAITING_CLEAR
+        and (capture is None or capture.status != AutomaticPassageCapture.FAILED)
+    )
+    if blocked:
+        raise _error(
+            "Операцию нельзя выполнить, пока автоматические весы "
+            "обрабатывают текущую машину.",
+            "passage_capture_in_progress",
+        )
+
+
+def _fence_automatic_passage_lane_for_manual_mutation(
+    state: PassageScaleAutomationState | None,
+) -> None:
+    """Fence a scale snapshot taken before a successful manual mutation."""
+
+    if state is None or state.phase not in {
+        PassageScaleAutomationState.UNARMED,
+        PassageScaleAutomationState.ARMED,
+    }:
+        return
+    _reset_automatic_passage_lane(state)
+
+
+@transaction.atomic
+def _prepare_manual_passage_scale_operation() -> None:
+    state, capture = _lock_automatic_passage_lane()
+    _assert_automatic_passage_lane_allows_manual_operation(state, capture)
+    _fence_automatic_passage_lane_for_manual_mutation(state)
+
+
 @transaction.atomic
 def create_passage(
     user,
@@ -1150,6 +1300,14 @@ def create_passage(
     cargo_name = (cargo_name or "").strip()
     if not cargo_name:
         raise _error("Укажите, что вывозят", "cargo_required")
+
+    # This is the first database lock. The monitor and all manual passage
+    # mutations use State -> capture/event -> Wagon ordering.
+    automation_state, automatic_capture = _lock_automatic_passage_lane()
+    _assert_automatic_passage_lane_allows_manual_operation(
+        automation_state,
+        automatic_capture,
+    )
 
     plate_event = None
     if vehicle_plate_event_id not in (None, ""):
@@ -1224,6 +1382,7 @@ def create_passage(
         ),
         camera_source=number_camera_source,
     )
+    _fence_automatic_passage_lane_for_manual_mutation(automation_state)
     return wagon
 
 
@@ -1449,6 +1608,7 @@ def _locked_auto_intent(
 ) -> tuple[str | None, Wagon | None, str]:
     passages = list(
         Wagon.objects.select_for_update(of=("self",))
+        .select_related("vehicle_plate_event")
         .filter(
             direction=Wagon.PASSAGE,
             number=event.vehicle_number,
@@ -1477,8 +1637,6 @@ def _locked_auto_intent(
             .filter(
                 direction=Wagon.PASSAGE,
                 number=event.vehicle_number,
-                number_source="camera",
-                vehicle_plate_event__isnull=False,
                 status=st.COMPLETED,
                 exited_at__isnull=False,
                 exited_at__gte=event.detected_at - cooldown,
@@ -1488,13 +1646,39 @@ def _locked_auto_intent(
         )
         if recent_completed is not None:
             return None, recent_completed, "recent_completed_passage"
+
+        manual_reservation = (
+            Wagon.objects.select_for_update(of=("self",))
+            .filter(
+                direction=Wagon.PASSAGE,
+                status=st.AT_SILO,
+                gross_weight_kg__isnull=False,
+                tare_weight_kg__isnull=True,
+            )
+            .exclude(
+                number_source="camera",
+                vehicle_plate_event__processing_status=VehiclePlateEvent.PROCESSED,
+                vehicle_plate_event__processing_action=AUTO_ACTION_ENTRY,
+            )
+            .order_by("id")
+            .first()
+        )
+        if manual_reservation is not None:
+            # A manually opened trip may contain a mistyped plate. Until an
+            # operator completes it, an unknown OCR result cannot safely be
+            # distinguished from that same truck returning loaded.
+            return None, manual_reservation, "manual_active_passage"
         return AUTO_ACTION_ENTRY, None, ""
     if len(passages) != 1:
         return None, None, "ambiguous_active_passage"
 
     wagon = passages[0]
     camera_owned = (
-        wagon.number_source == "camera" and wagon.vehicle_plate_event_id is not None
+        wagon.number_source == "camera"
+        and wagon.vehicle_plate_event_id is not None
+        and wagon.vehicle_plate_event.processing_status
+        == VehiclePlateEvent.PROCESSED
+        and wagon.vehicle_plate_event.processing_action == AUTO_ACTION_ENTRY
     )
     valid_state = (
         camera_owned
@@ -1521,6 +1705,9 @@ def _begin_vehicle_plate_automation(
     *,
     now,
     allow_capture: bool,
+    expected_camera: str = VEHICLE_PLATE_CAMERA,
+    expected_source: str = VEHICLE_PLATE_SOURCE,
+    durable_scale_sample: bool = False,
 ) -> VehiclePlateAutomationResult | _AutomationClaim:
     hint = VehiclePlateEvent.objects.get(pk=event_pk)
     _lock_auto_lane_mutex(hint)
@@ -1532,7 +1719,7 @@ def _begin_vehicle_plate_automation(
     ):
         return _terminal_automation_result(event)
 
-    if event.camera != VEHICLE_PLATE_CAMERA or event.source != VEHICLE_PLATE_SOURCE:
+    if event.camera != expected_camera or event.source != expected_source:
         event.processing_attempts += 1
         _finish_auto_event(
             event,
@@ -1557,7 +1744,7 @@ def _begin_vehicle_plate_automation(
         )
         return _terminal_automation_result(event, already_processed=False)
 
-    if not _auto_event_is_fresh(event, now):
+    if not durable_scale_sample and not _auto_event_is_fresh(event, now):
         event.processing_attempts += 1
         _finish_auto_event(
             event,
@@ -1579,6 +1766,27 @@ def _begin_vehicle_plate_automation(
                 action=event.processing_action,
                 error="automation_busy",
                 retryable=True,
+            )
+        if durable_scale_sample and event.processing_action in {
+            AUTO_ACTION_ENTRY,
+            AUTO_ACTION_EXIT,
+        }:
+            # Unlike the legacy webhook path, the automatic scale coordinator
+            # has already persisted the exact physical sample.  Reclaiming a
+            # stale DB apply is therefore safe and must not read the scale or
+            # ask Camera-PC to create a second recognition request.
+            event.processing_attempts += 1
+            event.processing_started_at = now
+            event.save(
+                update_fields=[
+                    "processing_attempts",
+                    "processing_started_at",
+                ]
+            )
+            return _AutomationClaim(
+                event_id=event.pk,
+                action=event.processing_action,
+                attempt=event.processing_attempts,
             )
         _finish_auto_event(
             event,
@@ -1881,6 +2089,38 @@ def process_vehicle_plate_event(
         )
 
 
+def apply_automatic_passage_scale_sample(
+    event_pk: int,
+    *,
+    reading: scale.ScaleReading,
+    user=None,
+) -> VehiclePlateAutomationResult:
+    """Apply a previously persisted automatic weight/OCR pair.
+
+    This path deliberately performs no hardware I/O.  Its caller owns a
+    durable scale sample and Camera-PC idempotency key, so an interrupted DB
+    apply can be reclaimed after the normal lane lease without sampling a
+    later vehicle.
+    """
+
+    claim_or_result = _begin_vehicle_plate_automation(
+        event_pk,
+        now=timezone.now(),
+        allow_capture=True,
+        expected_camera=settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA,
+        expected_source=settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE,
+        durable_scale_sample=True,
+    )
+    if isinstance(claim_or_result, VehiclePlateAutomationResult):
+        return claim_or_result
+    return _apply_vehicle_plate_automation(
+        claim_or_result,
+        reading=reading,
+        weight_kg=_whole_scale_weight_kg(reading),
+        user=user,
+    )
+
+
 # ── Удаление рейса ─────────────────────────────────────────────────────────
 
 
@@ -1927,12 +2167,45 @@ def delete_wagon(
 
     Проход силоса не касается, откатывать там нечего.
     """
+    automation_state = None
+    automatic_lane_capture = None
+    if wagon.is_passage:
+        # This singleton is the mutex shared with the poller's edge detector.
+        # It must be locked before Wagon even in a mixed-version/flag rollout,
+        # otherwise State -> capture -> Wagon can deadlock with Wagon -> capture.
+        automation_state, automatic_lane_capture = _lock_automatic_passage_lane()
+        _assert_automatic_passage_lane_allows_manual_operation(
+            automation_state,
+            automatic_lane_capture,
+        )
     try:
         wagon = Wagon.objects.select_for_update(of=("self",)).get(pk=wagon.pk)
     except Wagon.DoesNotExist as exc:
         raise NotFound(
             {"detail": "Рейс уже удалён", "code": "wagon_not_found"}
         ) from exc
+    automatic_capture = (
+        automatic_lane_capture
+        if automatic_lane_capture is not None
+        and automatic_lane_capture.status == AutomaticPassageCapture.PROCESSING
+        else None
+    )
+    if wagon.is_passage and automatic_capture is None:
+        automatic_capture = (
+            AutomaticPassageCapture.objects.select_for_update()
+            .filter(status=AutomaticPassageCapture.PROCESSING)
+            .only("pk")
+            .first()
+        )
+    if automatic_capture is not None:
+        # OCR may not have produced a plate yet, so the durable capture cannot
+        # safely be tied to one wagon here. Conservatively freeze passage
+        # deletion for the short processing window; otherwise a concurrent
+        # exit could be reinterpreted as a new entry after this wagon vanished.
+        raise _error(
+            "Рейс нельзя удалить, пока автоматические весы обрабатывают машину.",
+            "passage_capture_in_progress",
+        )
     processing_capture = (
         PassageWeightCapture.objects.select_for_update()
         .filter(wagon=wagon, status=PassageWeightCapture.PROCESSING)
@@ -2059,6 +2332,9 @@ def delete_wagon(
         },
     )
     wagon.delete()
+    # Fence an occupied snapshot obtained just before this transaction. Fresh
+    # confirmed clear readings are required before the monitor may trigger.
+    _fence_automatic_passage_lane_for_manual_mutation(automation_state)
     # Поставка без вагонов больше ничего не ждёт.
     if supply and not supply.wagons.exists():
         supply.status = "closed"

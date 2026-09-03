@@ -433,7 +433,10 @@ exit 0
 
             self.assertEqual(result.returncode, 0, result.stderr)
             commands = docker_log.read_text(encoding="utf-8")
-            stop = "stop -t 60 backend camera-monitor ai-stock-monitor"
+            stop = (
+                "stop -t 60 backend camera-monitor ai-stock-monitor "
+                "passage-scale-monitor"
+            )
             cutover = "backend manage.py check_camera_cutover"
             self.assertIn(stop, commands)
             self.assertLess(commands.index(stop), commands.index(cutover))
@@ -454,7 +457,8 @@ exit 0
             self.assertIn("resuming the previous camera writers", result.stderr)
             commands = docker_log.read_text(encoding="utf-8")
             self.assertIn(
-                "start backend camera-monitor ai-stock-monitor",
+                "start backend camera-monitor ai-stock-monitor "
+                "passage-scale-monitor",
                 commands,
             )
             self.assertNotIn(" up -d ", f" {commands} ")
@@ -677,6 +681,27 @@ exit 0
 
 
 class ProductionManifestTests(unittest.TestCase):
+    def test_passage_scale_monitor_is_liveness_checked_and_non_public(self) -> None:
+        compose = PROD_COMPOSE.read_text(encoding="utf-8")
+        monitor = compose.split("\n  passage-scale-monitor:\n", 1)[1].split(
+            "\n  celery-payments:\n",
+            1,
+        )[0]
+
+        self.assertIn('APP_SERVICE: passage-scale-monitor', monitor)
+        self.assertIn('entrypoint: []', monitor)
+        self.assertIn(
+            'command: ["python", "manage.py", "monitor_passage_scale"]',
+            monitor,
+        )
+        self.assertIn("backend:\n        condition: service_healthy", monitor)
+        self.assertIn("init: true", monitor)
+        self.assertIn("stop_grace_period: 60s", monitor)
+        self.assertIn("/app/passage_scale_monitor_healthcheck.py", monitor)
+        self.assertIn("restart: unless-stopped", monitor)
+        self.assertIn("logging: *default-logging", monitor)
+        self.assertNotIn("ports:", monitor)
+
     def test_camera_monitor_waits_for_migrated_healthy_backend(self) -> None:
         compose = PROD_COMPOSE.read_text(encoding="utf-8")
         monitor = compose.split("\n  camera-monitor:\n", 1)[1].split(

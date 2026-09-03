@@ -405,9 +405,7 @@ class PassageWeightCapture(models.Model):
             ),
             models.CheckConstraint(
                 name="grain_passage_capture_status_valid",
-                condition=models.Q(
-                    status__in=["processing", "completed", "failed"]
-                ),
+                condition=models.Q(status__in=["processing", "completed", "failed"]),
             ),
             models.CheckConstraint(
                 name="grain_passage_capture_stage_valid",
@@ -419,6 +417,182 @@ class PassageWeightCapture(models.Model):
                 fields=["wagon", "action"],
                 condition=models.Q(status__in=["processing", "completed"]),
                 name="grain_one_active_passage_capture",
+            ),
+        ]
+
+
+class AutomaticPassageCapture(models.Model):
+    """One durable automatic operation for one observed scale occupancy.
+
+    The polling loop commits this row before contacting either the strict
+    scale endpoint or Camera-PC.  A terminal row remains attached to the lane
+    state until fresh zero readings prove that the vehicle has left the scale;
+    a failed operation also requires explicit operator acknowledgement.  This
+    makes a process/container restart fail closed instead of recognizing the
+    same parked vehicle twice.
+    """
+
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    STATUSES = [
+        (PROCESSING, "Выполняется"),
+        (COMPLETED, "Завершено"),
+        (FAILED, "Нужен оператор"),
+    ]
+
+    CLAIMED = "claimed"
+    RECOGNIZING = "recognizing"
+    APPLYING = "applying"
+    DONE = "done"
+    STAGES = [
+        (CLAIMED, "Весы захвачены"),
+        (RECOGNIZING, "Распознавание номера"),
+        (APPLYING, "Сохранение рейса"),
+        (DONE, "Завершено"),
+    ]
+
+    idempotency_key = models.UUIDField(unique=True)
+    scale_number = models.CharField(max_length=50, default="truck")
+    status = models.CharField(max_length=12, choices=STATUSES, default=PROCESSING)
+    stage = models.CharField(max_length=16, choices=STAGES, default=CLAIMED)
+    camera = models.CharField(max_length=32)
+    camera_source = models.CharField(max_length=4, blank=True, default="")
+    stable_weight_at = models.DateTimeField(null=True, blank=True)
+    trigger_weight_kg = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    weight_kg = models.PositiveBigIntegerField(null=True, blank=True)
+    scale_age_seconds = models.DecimalField(
+        max_digits=10,
+        decimal_places=3,
+        null=True,
+        blank=True,
+    )
+    scale_updated_at = models.CharField(max_length=64, blank=True, default="")
+    vehicle_number = models.CharField(max_length=30, blank=True, default="")
+    recognized_at = models.DateTimeField(null=True, blank=True)
+    confirmation_votes = models.PositiveSmallIntegerField(null=True, blank=True)
+    detector_confidence = models.DecimalField(
+        max_digits=7,
+        decimal_places=6,
+        null=True,
+        blank=True,
+    )
+    ocr_confidence = models.DecimalField(
+        max_digits=7,
+        decimal_places=6,
+        null=True,
+        blank=True,
+    )
+    ai_payload_json = models.JSONField(default=dict, blank=True)
+    recognition_attempts = models.PositiveSmallIntegerField(default=0)
+    final_lookup_attempted = models.BooleanField(default=False)
+    retryable = models.BooleanField(default=False)
+    response_status = models.PositiveSmallIntegerField(null=True, blank=True)
+    error_code = models.CharField(max_length=64, blank=True, default="")
+    error_detail = models.CharField(max_length=300, blank=True, default="")
+    processing_started_at = models.DateTimeField(null=True, blank=True)
+    vehicle_plate_event = models.OneToOneField(
+        "cameras.VehiclePlateEvent",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="automatic_passage_capture",
+    )
+    wagon = models.ForeignKey(
+        Wagon,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="automatic_passage_captures",
+    )
+    action = models.CharField(max_length=10, blank=True, default="")
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+    acknowledged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    started_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    cleared_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [
+            models.CheckConstraint(
+                name="grain_auto_capture_status_valid",
+                condition=models.Q(status__in=["processing", "completed", "failed"]),
+            ),
+            models.CheckConstraint(
+                name="grain_auto_capture_stage_valid",
+                condition=models.Q(
+                    stage__in=["claimed", "recognizing", "applying", "done"]
+                ),
+            ),
+            models.CheckConstraint(
+                name="grain_auto_capture_action_valid",
+                condition=models.Q(action__in=["", "entry", "exit"]),
+            ),
+        ]
+
+
+class PassageScaleAutomationState(models.Model):
+    """Persistent fail-closed edge detector for one physical truck scale."""
+
+    UNARMED = "unarmed"
+    ARMED = "armed"
+    STABILIZING = "stabilizing"
+    PROCESSING = "processing"
+    AWAITING_CLEAR = "awaiting_clear"
+    PHASES = [
+        (UNARMED, "Ожидает подтверждения пустых весов"),
+        (ARMED, "Ожидает машину"),
+        (STABILIZING, "Подтверждает стабильный вес"),
+        (PROCESSING, "Обрабатывает взвешивание"),
+        (AWAITING_CLEAR, "Ожидает освобождения весов"),
+    ]
+
+    scale_number = models.CharField(max_length=50, unique=True, default="truck")
+    phase = models.CharField(max_length=20, choices=PHASES, default=UNARMED)
+    clear_streak = models.PositiveSmallIntegerField(default=0)
+    stable_streak = models.PositiveSmallIntegerField(default=0)
+    candidate_weight_kg = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    current_capture = models.OneToOneField(
+        AutomaticPassageCapture,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="lane_state",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["scale_number"]
+        constraints = [
+            models.CheckConstraint(
+                name="grain_passage_scale_phase_valid",
+                condition=models.Q(
+                    phase__in=[
+                        "unarmed",
+                        "armed",
+                        "stabilizing",
+                        "processing",
+                        "awaiting_clear",
+                    ]
+                ),
             ),
         ]
 
