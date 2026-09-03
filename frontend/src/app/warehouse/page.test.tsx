@@ -143,11 +143,8 @@ describe("WarehousePage multi-warehouse inventory", () => {
 
     expect(screen.getByRole("heading", { name: "Склады" })).toBeInTheDocument();
     expect(screen.getByLabelText("Склад")).toHaveValue("2");
-    expect(screen.getByRole("button", { name: "Открыть склад Основной склад" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
-    expect(screen.getByRole("button", { name: "Открыть склад Резервный склад" })).toHaveTextContent("1 позиция");
+    expect(screen.queryByRole("group", { name: "Быстрый выбор склада" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Открыть склад/ })).not.toBeInTheDocument();
     expect(screen.queryByText("Корпус 1")).not.toBeInTheDocument();
     expect(screen.queryByText("Корпус 2")).not.toBeInTheDocument();
     expect(useApiMock).toHaveBeenCalledWith("/stock/?warehouse=2");

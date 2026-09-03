@@ -49,18 +49,6 @@ function stockTone(bags: number): { tone: "destructive" | "warning" | "success";
 const QUICK_AMOUNTS = [10, 50, 100, 500];
 type StockOperation = "add" | "remove" | "transfer";
 
-function stockPositionLabel(count: number) {
-  const mod10 = count % 10;
-  const mod100 = count % 100;
-  const noun =
-    mod10 === 1 && mod100 !== 11
-      ? "позиция"
-      : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
-        ? "позиции"
-        : "позиций";
-  return `${count} ${noun}`;
-}
-
 const LEGACY_WAREHOUSE: Warehouse = {
   id: 0,
   code: "main",
@@ -150,13 +138,6 @@ function WarehousePageInner() {
   const items = useMemo(() => stock ?? [], [stock]);
   const currentProductIds = new Set(items.map((item) => item.product));
   const availableProducts = products ? products.filter((item) => !currentProductIds.has(item.id)) : [];
-  const warehouseStockCounts = useMemo(() => {
-    const counts = new Map<number, number>();
-    for (const item of allStock ?? []) {
-      counts.set(item.warehouse, (counts.get(item.warehouse) ?? 0) + 1);
-    }
-    return counts;
-  }, [allStock]);
   const destinationWarehouses = useMemo(
     () => activeWarehouses.filter((item) => item.id !== selectedWarehouseId),
     [activeWarehouses, selectedWarehouseId],
@@ -374,45 +355,6 @@ function WarehousePageInner() {
               </option>
             ))}
           </Select>
-        </div>
-        <div
-          role="group"
-          className="grid gap-2 border-t bg-[var(--muted)]/20 p-3 sm:grid-cols-2 sm:p-4 lg:grid-cols-3"
-          aria-label="Быстрый выбор склада"
-        >
-          {activeWarehouses.map((warehouse) => (
-            <button
-              key={warehouse.id}
-              type="button"
-              aria-label={`Открыть склад ${warehouse.name}`}
-              aria-current={warehouse.id === selectedWarehouse.id ? "page" : undefined}
-              onClick={() => selectWarehouse(warehouse.id)}
-              className={cn(
-                "flex min-w-0 items-center gap-3 rounded-lg border bg-[var(--card)] p-3 text-left outline-none transition-colors hover:bg-[var(--accent)] focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/40",
-                warehouse.id === selectedWarehouse.id && "border-[var(--primary)] bg-[var(--primary)]/6",
-              )}
-            >
-              <span
-                className={cn(
-                  "flex size-9 shrink-0 items-center justify-center rounded-md bg-[var(--muted)] text-[var(--muted-foreground)]",
-                  warehouse.id === selectedWarehouse.id && "bg-[var(--primary)]/12 text-[var(--primary)]",
-                )}
-              >
-                <Building2 className="size-4" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5">
-                  <span className="truncate text-sm font-semibold">{warehouse.name}</span>
-                  {warehouse.is_default && <Badge tone="success">Основной</Badge>}
-                </span>
-                <span className="mt-0.5 block text-xs text-[var(--muted-foreground)]">
-                  {allStock === null
-                    ? "Загрузка товаров…"
-                    : stockPositionLabel(warehouseStockCounts.get(warehouse.id) ?? 0)}
-                </span>
-              </span>
-            </button>
-          ))}
         </div>
       </CardContent>
     </Card>
