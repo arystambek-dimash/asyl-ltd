@@ -39,23 +39,29 @@ class Command(BaseCommand):
                             "camera-ai always-on="
                             + ",".join(always_on.get("cameras", []))
                         )
+                    except Exception:
+                        # A control-plane failure must not disable the separate
+                        # wagon OCR path for this monitor iteration.
+                        log.exception("Always-on AI reconciliation failed")
+                    try:
                         wagon_number = continuous.reconcile_wagon_number()
                         self.stdout.write(
                             "camera-ai wagon-number="
                             + str(wagon_number.get("camera") or "unassigned")
                         )
+                    except Exception:
+                        log.exception("Wagon-number camera reconciliation failed")
+                    try:
                         # Камера вместо датчика прибытия: увидела табличку —
-                        # приход открывается сам. Свой период опроса внутри.
+                        # приход открывается сам. Свой период опроса внутри и
+                        # не зависит от optional role-assignment API.
                         plate = continuous.poll_wagon_plate()
                         if plate.get("created"):
                             self.stdout.write(
                                 f"camera-ai wagon-arrival=#{plate['created']}"
                             )
                     except Exception:
-                        # Camera health and the durable desired configuration
-                        # remain valid while a restarted Windows service comes
-                        # back. Retry on the next monitor iteration.
-                        log.exception("Always-on AI reconciliation failed")
+                        log.exception("Wagon plate polling failed")
             except Exception:
                 # Let Docker restart a broken one-shot startup, while a long
                 # running monitor survives transient DB failures and retries.

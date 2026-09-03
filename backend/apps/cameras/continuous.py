@@ -490,7 +490,24 @@ def reconcile() -> dict:
 def reconcile_wagon_number() -> dict:
     """Keep the durable wagon-number camera role in sync after restarts."""
     desired = MonoblockCameraSettings.wagon_number_source() or None
-    current = ai.wagon_number_status()
+    try:
+        current = ai.wagon_number_status()
+    except ai.AiError as exc:
+        if exc.status != 404:
+            raise
+        # Older camera-PC runtimes expose the on-demand wagon detector but
+        # not the optional role-assignment API.  The CRM-owned assignment is
+        # still effective for poll_wagon_plate(), so keep using it locally
+        # without attempting an unsupported PUT.  Network/auth/server errors
+        # remain hard failures and are retried by the monitor loop.
+        return {
+            "camera": desired,
+            "source": "main",
+            "stream": desired,
+            "assigned": desired is not None,
+            "mode": "wagon_number_24_7",
+            "role_api_supported": False,
+        }
     if current.get("camera") != desired or current.get("source") != "main":
         current = ai.configure_wagon_number(desired, "main")
     return current
