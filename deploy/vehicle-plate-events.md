@@ -98,7 +98,7 @@ stable fields are `schema_version`, `event_id`, `event_type`, `detected_at`,
 ```
 
 Validation requires schema version `1`, `vehicle_plate_detected`, a UUID
-`event_id`, Kazakhstan plate format `123ABC02`, camera `cam<N>`, source `main`
+`event_id`, Kazakhstan plate format `123ABC02` or the two-letter series `160AL17`, camera `cam<N>`, source `main`
 or `sub`, and an ISO 8601 timestamp with a timezone. The `Idempotency-Key`
 must match `event_id`.
 

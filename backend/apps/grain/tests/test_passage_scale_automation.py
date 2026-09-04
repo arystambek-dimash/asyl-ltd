@@ -2362,3 +2362,34 @@ def test_missing_evidence_photo_never_affects_the_weighing(settings, tmp_path):
     assert results[-1].action == "entry"
     assert not weighing.photo
     assert Wagon.objects.get().entry_weight_kg == 12_010
+
+
+def test_two_letter_kazakhstan_series_is_a_valid_recognized_plate():
+    observations = [
+        _observation("0"),
+        _observation("0"),
+        _observation("9700"),
+        _observation("9740"),
+    ]
+
+    with (
+        patch.object(
+            scale,
+            "read_truck_scale_observation",
+            side_effect=observations,
+        ),
+        patch.object(scale, "read_truck_scale", return_value=_reading("9740")),
+        patch.object(
+            camera_ai,
+            "recognize_vehicle_from_camera",
+            side_effect=lambda _camera, key, stable_at: _recognized(
+                key, stable_at, number="160AL17"
+            ),
+        ),
+    ):
+        results = _monitor_sequence(observations)
+
+    wagon = Wagon.objects.get()
+    assert results[-1].action == "entry"
+    assert wagon.number == "160AL17"
+    assert wagon.entry_weight_kg == 9_740
