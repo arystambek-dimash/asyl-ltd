@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataGate } from "@/components/ui/data-state";
 import { GrainWagonDeleteDialog } from "@/components/grain/wagon-delete-dialog";
+import { PassageNumberEditor } from "@/components/grain/passage-number-editor";
+import { WagonPhotos } from "@/components/grain/wagon-photos";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
@@ -678,11 +680,19 @@ function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
         >
           <ArrowLeft className="size-4" />
         </Link>
-        <h2 className="text-xl font-semibold tracking-tight">Вагон {wagon.number || `#${wagon.id}`}</h2>
+        <h2 className="text-xl font-semibold tracking-tight">
+          {wagon.direction === "passage" ? "Машина" : "Вагон"} {wagon.number || `#${wagon.id}`}
+        </h2>
         <Badge tone={GRAIN_STATUS_TONE[wagon.status] ?? "muted"} dot>
           {wagon.status_label}
         </Badge>
         {wagon.unplanned && <Badge tone="warning">внеплановый</Badge>}
+        <PassageNumberEditor
+          key={`${wagon.id}:${wagon.number}`}
+          wagon={wagon}
+          canEdit={can(me, "grain.arrive")}
+          onChanged={refresh}
+        />
         {canDelete && (
           <Button
             className="ml-auto"
@@ -727,6 +737,8 @@ function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
             wagon={wagon}
             onChanged={refresh}
           />
+
+          <WagonPhotos wagon={wagon} />
 
           <Card>
             <CardHeader className="p-4 pb-2">
@@ -807,12 +819,24 @@ function WagonPageInner({ params }: { params: Promise<{ id: string }> }) {
               </CardHeader>
               <CardContent className="p-4 pt-0 text-sm">
                 {(wagon.weighings ?? []).map((row) => (
-                  <InfoRow key={row.id} label={row.kind === "gross" ? "Брутто" : "Тара"}>
+                  <InfoRow
+                    key={row.id}
+                    label={
+                      wagon.direction === "passage"
+                        ? row.kind === "gross"
+                          ? "Въезд"
+                          : "Выезд"
+                        : row.kind === "gross"
+                          ? "Брутто"
+                          : "Тара"
+                    }
+                  >
                     <span className="tabular-nums">{formatKg(row.weight_kg)}</span>
                     <span className="block text-[10px] font-normal text-[var(--muted-foreground)]">
                       {formatDateTime(row.created_at)}
                       {row.operator_name ? ` · ${row.operator_name}` : ""}
                       {row.manual_reason ? ` · ${row.manual_reason}` : ""}
+                      {row.photo_url ? " · есть фото" : ""}
                     </span>
                   </InfoRow>
                 ))}

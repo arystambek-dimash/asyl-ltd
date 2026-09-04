@@ -106,7 +106,7 @@ REST_FRAMEWORK = {
             "THROTTLE_PORTAL_ORDER_CREATE", "10/min"
         ),
         "truck_scale_preview": os.environ.get(
-            "THROTTLE_TRUCK_SCALE_PREVIEW", "30/min"
+            "THROTTLE_TRUCK_SCALE_PREVIEW", "60/min"
         ),
         "vehicle_plate_webhook": os.environ.get(
             "THROTTLE_VEHICLE_PLATE_WEBHOOK", "120/min"

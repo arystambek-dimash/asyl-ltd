@@ -17,14 +17,19 @@ from apps.eventlog.models import EventLog
 
 from . import passage_scale_automation, scale, services, vehicle_weight_capture
 from . import statuses as st
-from .models import GrainSupply, Silo, SiloType, Wagon
+from .models import GrainSupply, Silo, SiloType, UnassignedWeighing, Wagon
 from .scale_preview import get_scale_preview
 from .serializers import (
     AutomaticPassageScaleSettingsSerializer,
     GrainMovementSerializer,
     GrainSupplySerializer,
+    PassageNumberSerializer,
     SiloSerializer,
     SiloTypeSerializer,
+    UnassignedAssignSerializer,
+    UnassignedCreatePassageSerializer,
+    UnassignedDiscardSerializer,
+    UnassignedWeighingSerializer,
     VehiclePlateCandidateSerializer,
     WagonBriefSerializer,
     WagonSerializer,
@@ -308,6 +313,7 @@ class WagonViewSet(
         "arrive": "grain.arrive",
         "camera_arrive": "grain.arrive",
         "passage": "grain.arrive",
+        "set_number": "grain.arrive",
         "vehicle_plate_candidates": "grain.arrive",
         "delete_wagon": "grain.delete",
         "approve": "grain.dispatch",
@@ -430,6 +436,18 @@ class WagonViewSet(
             vehicle_plate_event_id=request.data.get("vehicle_plate_event_id"),
         )
         return Response(WagonSerializer(wagon).data, status=201)
+
+    @action(detail=True, methods=["patch", "post"], url_path="number")
+    def set_number(self, request, pk=None):
+        """Дописать или поправить номер машины, который камера не прочла."""
+        serializer = PassageNumberSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        wagon = services.set_passage_number(
+            self.get_object(),
+            serializer.validated_data["number"],
+            request.user,
+        )
+        return self._done(wagon)
 
     @action(
         detail=False,
@@ -598,6 +616,75 @@ class WagonViewSet(
                 }
                 for event in events
             ]
+        )
+
+
+class UnassignedWeighingViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
+    """Веса автовесов без номера, которые ждут привязки оператором."""
+
+    queryset = UnassignedWeighing.objects.select_related("wagon", "resolved_by").order_by(
+        "-id"
+    )
+    serializer_class = UnassignedWeighingSerializer
+    pagination_class = OptInPageNumberPagination
+    required_perms = {
+        "list": "grain.view",
+        "retrieve": "grain.view",
+        "assign": "grain.weigh",
+        "create_passage": "grain.weigh",
+        "discard": "grain.weigh",
+    }
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if self.action != "list":
+            # Detail routes must still resolve rows that just left "open".
+            return qs
+        status = self.request.query_params.get("status", UnassignedWeighing.OPEN)
+        if status != "all":
+            qs = qs.filter(status=status)
+        return qs
+
+    def _done(self, item: UnassignedWeighing):
+        item.refresh_from_db()
+        response = Response(UnassignedWeighingSerializer(item).data)
+        response["Cache-Control"] = "no-store"
+        return response
+
+    @action(detail=True, methods=["post"], url_path="assign")
+    def assign(self, request, pk=None):
+        serializer = UnassignedAssignSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        wagon = Wagon.objects.filter(pk=serializer.validated_data["wagon"]).first()
+        if wagon is None:
+            raise NotFound("Рейс не найден")
+        return self._done(
+            services.assign_unassigned_weighing(self.get_object(), wagon, request.user)
+        )
+
+    @action(detail=True, methods=["post"], url_path="create-passage")
+    def create_passage(self, request, pk=None):
+        serializer = UnassignedCreatePassageSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return self._done(
+            services.create_passage_from_unassigned_weighing(
+                self.get_object(),
+                request.user,
+                number=serializer.validated_data["number"],
+                cargo_name=serializer.validated_data["cargo_name"],
+            )
+        )
+
+    @action(detail=True, methods=["post"], url_path="discard")
+    def discard(self, request, pk=None):
+        serializer = UnassignedDiscardSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return self._done(
+            services.discard_unassigned_weighing(
+                self.get_object(),
+                request.user,
+                reason=serializer.validated_data["reason"],
+            )
         )
 
 

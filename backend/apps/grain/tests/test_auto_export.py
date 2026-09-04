@@ -207,8 +207,8 @@ def test_wrong_lane_is_store_only_and_never_reads_truck_scale():
     assert not Wagon.objects.exists()
 
 
-def test_manual_same_plate_blocks_automation_without_scale_read():
-    Wagon.objects.create(
+def test_manual_same_plate_arrived_passage_receives_the_automatic_entry():
+    manual = Wagon.objects.create(
         number="123ABC02",
         direction=Wagon.PASSAGE,
         workflow="simple",
@@ -219,40 +219,47 @@ def test_manual_same_plate_blocks_automation_without_scale_read():
     )
     plate_event = event()
 
-    with patch.object(scale, "read_truck_scale") as read_scale:
+    with patch.object(scale, "read_truck_scale", return_value=reading("12000")):
         result = services.process_vehicle_plate_event(
             plate_event.pk,
             allow_capture=True,
         )
 
-    assert result.status == "manual_required"
-    assert result.error == "passage_state_mismatch"
-    read_scale.assert_not_called()
+    manual.refresh_from_db()
+    assert (result.status, result.action, result.wagon_id) == (
+        "processed",
+        "entry",
+        manual.pk,
+    )
     assert Wagon.objects.count() == 1
+    assert manual.status == st.AT_SILO
+    assert manual.entry_weight_kg == 12_000
+    assert manual.number_source == "manual"
+    assert manual.vehicle_plate_event_id == plate_event.pk
 
 
-def test_blank_active_passage_blocks_auto_entry_without_scale_read():
+def test_blank_active_passage_does_not_block_a_new_automatic_entry():
     Wagon.objects.create(
-        number="   ",
+        number="",
         direction=Wagon.PASSAGE,
         workflow="simple",
         cargo_name="Отруби",
-        status=st.ARRIVED,
-        number_source="manual",
+        status=st.AT_SILO,
+        number_source="camera",
         arrived_at=timezone.now(),
+        gross_weight_kg=11_000,
     )
     plate_event = event()
 
-    with patch.object(scale, "read_truck_scale") as read_scale:
+    with patch.object(scale, "read_truck_scale", return_value=reading("12000")):
         result = services.process_vehicle_plate_event(
             plate_event.pk,
             allow_capture=True,
         )
 
-    assert result.status == "manual_required"
-    assert result.error == "unidentified_active_passage"
-    read_scale.assert_not_called()
-    assert Wagon.objects.count() == 1
+    assert (result.status, result.action) == ("processed", "entry")
+    assert Wagon.objects.count() == 2
+    assert Wagon.objects.get(number="123ABC02").entry_weight_kg == 12_000
 
 
 def test_second_event_before_minimum_gap_fails_closed_without_scale_read():

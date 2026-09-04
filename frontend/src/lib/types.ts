@@ -955,6 +955,26 @@ export interface GrainWeighing {
   manual_reason: string;
   previous_weight_kg: number | null;
   operator_name: string | null;
+  /** Подписанная ссылка на кадр машины с Camera-PC; null — фото нет. */
+  photo_url?: string | null;
+  created_at: string;
+}
+
+/** Вес с автовесов без распознанного номера, который ждёт привязки к рейсу. */
+export interface GrainUnassignedWeighing {
+  id: number;
+  weight_kg: number;
+  stable_weight_at: string;
+  scale_number: string;
+  camera: string;
+  photo_url: string | null;
+  reason: string;
+  status: "open" | "assigned" | "discarded";
+  wagon: number | null;
+  wagon_number: string;
+  action: "" | "entry" | "exit";
+  resolved_by_name: string | null;
+  resolved_at: string | null;
   created_at: string;
 }
 
@@ -1061,6 +1081,9 @@ export interface GrainWagon {
   lab_checks?: GrainLabCheck[];
   allocations?: GrainAllocation[];
   vehicle_recognition_captures?: PassageWeightCapture[];
+  /** Фото машины на въезде/выезде (последнее взвешивание с кадром). */
+  entry_photo_url?: string | null;
+  exit_photo_url?: string | null;
 }
 
 export interface GrainSupply {

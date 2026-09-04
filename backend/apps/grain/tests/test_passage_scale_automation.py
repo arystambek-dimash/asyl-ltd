@@ -320,13 +320,15 @@ def test_manual_create_resets_nearly_confirmed_clear_snapshot():
     automation._advance_lane(empty_before_create, now=timezone.now())
 
     state.refresh_from_db()
+    # The pre-create snapshot (streak 1) was discarded by the manual create;
+    # this poll counts from zero again instead of arming the lane.
     assert state.phase == PassageScaleAutomationState.UNARMED
-    assert state.clear_streak == 0
+    assert state.clear_streak == 1
     assert Wagon.objects.count() == 1
     assert not AutomaticPassageCapture.objects.exists()
 
 
-def test_pending_manual_passage_reserves_lane_until_entry_weight_is_recorded():
+def test_preregistered_manual_passage_is_weighed_by_automation_when_plate_matches():
     wagon = services.create_passage(
         None,
         number="999XYZ01",
@@ -335,8 +337,9 @@ def test_pending_manual_passage_reserves_lane_until_entry_weight_is_recorded():
     observations = [
         _observation("0"),
         _observation("0"),
-        _observation("0"),
         _observation("12000"),
+        _observation("12020"),
+        _observation("12010"),
         _observation("12010"),
     ]
     with (
@@ -345,46 +348,36 @@ def test_pending_manual_passage_reserves_lane_until_entry_weight_is_recorded():
             "read_truck_scale_observation",
             side_effect=observations,
         ),
-        patch.object(scale, "read_truck_scale") as strict_read,
-        patch.object(camera_ai, "recognize_vehicle_from_camera") as recognize,
+        patch.object(
+            scale,
+            "read_truck_scale",
+            return_value=_reading("12010"),
+        ) as strict_read,
+        patch.object(
+            camera_ai,
+            "recognize_vehicle_from_camera",
+            side_effect=lambda _camera, key, stable_at: _recognized(
+                key, stable_at, number="999XYZ01"
+            ),
+        ) as recognize,
     ):
         results = _monitor_sequence(observations)
 
-    state = PassageScaleAutomationState.objects.get(
-        scale_number=scale.TRUCK_SCALE_KEY
-    )
-    assert {result.state for result in results} == {"candidate"}
-    assert state.phase == PassageScaleAutomationState.UNARMED
-    assert state.clear_streak == 0
+    capture = AutomaticPassageCapture.objects.get()
+    wagon.refresh_from_db()
+    # The dispatcher's passage does not block the lane any more: automation
+    # recognizes its plate and records the empty weight into that same trip.
+    assert results[3].action == "entry"
+    assert capture.status == AutomaticPassageCapture.COMPLETED
+    assert capture.wagon_id == wagon.pk
     assert Wagon.objects.count() == 1
-    assert not AutomaticPassageCapture.objects.exists()
-    strict_read.assert_not_called()
-    recognize.assert_not_called()
-
-    services.record_passage_entry_weight(
-        wagon,
-        12_000,
-        None,
-        source="manual",
-        manual_reason="Контрольное ручное взвешивание",
-    )
-    with patch.object(
-        scale,
-        "read_truck_scale_observation",
-        side_effect=[
-            _observation("12000"),
-            _observation("0"),
-            _observation("0"),
-        ],
-    ):
-        automation.monitor_once()
-        automation.monitor_once()
-        released = automation.monitor_once()
-
-    state.refresh_from_db()
-    assert released.state == "idle"
-    assert state.phase == PassageScaleAutomationState.ARMED
-    assert not AutomaticPassageCapture.objects.exists()
+    assert wagon.status == st.AT_SILO
+    assert wagon.entry_weight_kg == 12_010
+    assert wagon.number == "999XYZ01"
+    assert wagon.number_source == "manual"
+    assert wagon.vehicle_plate_event_id is not None
+    strict_read.assert_called_once_with(scale.TRUCK_SCALE_KEY)
+    assert recognize.call_count == 1
 
 
 @pytest.mark.parametrize(
@@ -757,7 +750,7 @@ def test_minimal_production_camera_response_completes_automatic_entry():
     )
 
 
-def test_wrong_manual_plate_cannot_become_duplicate_automatic_entry():
+def test_unknown_plate_is_a_new_entry_even_while_manual_passage_is_on_site():
     manual_wagon = Wagon.objects.create(
         number="999XYZ01",
         direction=Wagon.PASSAGE,
@@ -803,12 +796,17 @@ def test_wrong_manual_plate_cannot_become_duplicate_automatic_entry():
     state = PassageScaleAutomationState.objects.get(
         scale_number=scale.TRUCK_SCALE_KEY
     )
-    assert results[-1].state == "manual_required"
-    assert capture.status == AutomaticPassageCapture.FAILED
-    assert capture.error_code == "manual_active_passage"
+    new_wagon = Wagon.objects.get(number="123ABC02")
+    # Automation never waits for a human: an unknown plate opens its own
+    # trip and the manually registered one is left exactly as it was.
+    assert results[-1].action == "entry"
+    assert results[-1].state == "awaiting_clear"
+    assert capture.status == AutomaticPassageCapture.COMPLETED
+    assert capture.wagon_id == new_wagon.pk
     assert state.phase == PassageScaleAutomationState.AWAITING_CLEAR
-    assert state.current_capture_id == capture.pk
-    assert Wagon.objects.count() == 1
+    assert Wagon.objects.count() == 2
+    assert new_wagon.status == st.AT_SILO
+    assert new_wagon.entry_weight_kg == 30_010
     assert manual_wagon.number == "999XYZ01"
     assert manual_wagon.status == st.AT_SILO
     assert manual_wagon.exit_weight_kg is None
@@ -1107,15 +1105,31 @@ def test_changed_weight_at_authoritative_read_fails_closed_before_camera():
 
     capture = AutomaticPassageCapture.objects.get()
     state = PassageScaleAutomationState.objects.get(scale_number=scale.TRUCK_SCALE_KEY)
-    assert results[-1].state == "manual_required"
+    # Nothing was recorded, so nobody has to acknowledge anything: the lane
+    # only waits for the scale to become empty again.
+    assert results[-1].state == "awaiting_clear"
     assert results[-1].error_code == "automatic_scale_candidate_changed"
     assert capture.status == AutomaticPassageCapture.FAILED
     assert capture.error_code == "automatic_scale_candidate_changed"
+    assert capture.requires_acknowledgement is False
+    assert capture.needs_operator is False
     assert capture.trigger_weight_kg == Decimal(12010)
     assert capture.weight_kg is None
     assert state.phase == PassageScaleAutomationState.AWAITING_CLEAR
     assert not Wagon.objects.exists()
     recognize.assert_not_called()
+
+    with patch.object(
+        scale,
+        "read_truck_scale_observation",
+        side_effect=[_observation("0"), _observation("0")],
+    ):
+        automation.monitor_once()
+        released = automation.monitor_once()
+
+    state.refresh_from_db()
+    assert released.state == "idle"
+    assert state.phase == PassageScaleAutomationState.ARMED
 
 
 def test_stale_observation_never_counts_toward_confirmed_clear():
@@ -1797,7 +1811,7 @@ def test_unknown_final_camera_outcome_gets_one_idempotent_retrieval():
     strict_read.assert_not_called()
 
 
-def test_exhausted_explicit_camera_retries_do_not_call_dependencies_again():
+def test_exhausted_camera_retries_apply_weight_without_plate_and_without_dependencies():
     capture = AutomaticPassageCapture.objects.create(
         idempotency_key=uuid4(),
         scale_number=scale.TRUCK_SCALE_KEY,
@@ -1832,9 +1846,18 @@ def test_exhausted_explicit_camera_retries_do_not_call_dependencies_again():
         result = automation.monitor_once(now=timezone.now())
 
     capture.refresh_from_db()
-    assert result.state == "manual_required"
-    assert capture.status == AutomaticPassageCapture.FAILED
+    wagon = Wagon.objects.get()
+    # The camera can no longer help, but the weight is real: it becomes a
+    # passage without a number and the lane waits only for a clear scale.
+    assert result.state == "awaiting_clear"
+    assert result.action == "entry"
+    assert capture.status == AutomaticPassageCapture.COMPLETED
+    assert capture.plate_unresolved is True
     assert capture.error_code == "vehicle_recognition_attempts_exhausted"
+    assert capture.wagon_id == wagon.pk
+    assert wagon.number == ""
+    assert wagon.status == st.AT_SILO
+    assert wagon.entry_weight_kg == 12_000
     read_observation.assert_not_called()
     strict_read.assert_not_called()
     recognize.assert_not_called()
@@ -2094,3 +2117,248 @@ def test_disabled_monitor_does_not_touch_scale_or_persistent_lane(settings):
     assert not PassageScaleAutomationState.objects.exists()
     assert not AutomaticPassageCapture.objects.exists()
     read_observation.assert_not_called()
+
+
+def _no_match(*_args, **_kwargs):
+    raise camera_ai.AiError(
+        422,
+        "vehicle number was not confirmed inside the ROI",
+        {"status": "no_match", "retryable": False, "frames_scanned": 20},
+    )
+
+
+def test_no_match_gets_a_second_attempt_with_new_uuid_and_fresh_scale_read():
+    observations = [
+        _observation("0"),
+        _observation("0"),
+        _observation("12000"),
+        _observation("12020"),
+        _observation("12010"),
+        _observation("12010"),
+    ]
+    answers = [_no_match, lambda _camera, key, stable_at: _recognized(key, stable_at)]
+
+    with (
+        patch.object(
+            scale,
+            "read_truck_scale_observation",
+            side_effect=observations,
+        ),
+        patch.object(
+            scale,
+            "read_truck_scale",
+            return_value=_reading("12010"),
+        ) as strict_read,
+        patch.object(
+            camera_ai,
+            "recognize_vehicle_from_camera",
+            side_effect=lambda camera, key, stable_at: answers.pop(0)(
+                camera, key, stable_at
+            ),
+        ) as recognize,
+    ):
+        results = _monitor_sequence(observations)
+
+    capture = AutomaticPassageCapture.objects.get()
+    wagon = Wagon.objects.get()
+    first_key = recognize.call_args_list[0].args[1]
+    second_key = recognize.call_args_list[1].args[1]
+    assert [result.state for result in results[3:5]] == ["recognizing", "awaiting_clear"]
+    assert results[4].action == "entry"
+    assert capture.status == AutomaticPassageCapture.COMPLETED
+    assert capture.recognition_attempts == 2
+    assert first_key == capture.idempotency_key
+    assert second_key == capture.attempt_request_id != capture.idempotency_key
+    assert capture.needs_new_attempt is False
+    assert strict_read.call_count == 2
+    assert wagon.number == "123ABC02"
+    assert wagon.entry_weight_kg == 12_010
+    weighing = WeighingRecord.objects.get(wagon=wagon)
+    assert weighing.photo_request_id == capture.attempt_request_id
+
+
+def test_exhausted_attempts_without_open_passages_create_blank_passage_and_rearm(
+    settings,
+):
+    settings.VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS = 2
+    observations = [
+        _observation("0"),
+        _observation("0"),
+        _observation("12000"),
+        _observation("12020"),
+        _observation("12010"),
+        _observation("12010"),
+        _observation("0"),
+        _observation("0"),
+        _observation("0"),
+    ]
+
+    with (
+        patch.object(
+            scale,
+            "read_truck_scale_observation",
+            side_effect=observations,
+        ),
+        patch.object(scale, "read_truck_scale", return_value=_reading("12010")),
+        patch.object(
+            camera_ai,
+            "recognize_vehicle_from_camera",
+            side_effect=_no_match,
+        ) as recognize,
+        patch.object(camera_ai, "fetch_vehicle_recognition_frame", return_value=None),
+    ):
+        results = _monitor_sequence(observations)
+
+    capture = AutomaticPassageCapture.objects.get()
+    wagon = Wagon.objects.get()
+    state = PassageScaleAutomationState.objects.get(scale_number=scale.TRUCK_SCALE_KEY)
+    assert recognize.call_count == 2
+    # Iteration 4 resumes durable work (second attempt + plate-less apply)
+    # without consuming a scale observation, so the clear streak starts one
+    # poll later than the observation list suggests.
+    assert results[4].action == "entry"
+    assert [result.state for result in results[4:]] == [
+        "awaiting_clear",
+        "awaiting_clear",
+        "awaiting_clear",
+        "awaiting_clear",
+        "idle",
+    ]
+    assert capture.status == AutomaticPassageCapture.COMPLETED
+    assert capture.plate_unresolved is True
+    assert capture.acknowledged_at is None
+    assert wagon.number == ""
+    assert wagon.number_source == "camera"
+    assert wagon.status == st.AT_SILO
+    assert wagon.entry_weight_kg == 12_010
+    assert wagon.cargo_name == "Отруби"
+    assert state.phase == PassageScaleAutomationState.ARMED
+    assert state.current_capture_id is None
+
+
+def test_exhausted_attempts_with_open_passage_park_an_unassigned_weighing(settings):
+    from apps.grain.models import UnassignedWeighing
+
+    settings.VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS = 1
+    open_passage = Wagon.objects.create(
+        number="999XYZ01",
+        direction=Wagon.PASSAGE,
+        workflow="simple",
+        cargo_name="Отруби",
+        status=st.AT_SILO,
+        arrived_at=timezone.now() - timedelta(minutes=5),
+        gross_weight_kg=12_000,
+        number_source="manual",
+    )
+    observations = [
+        _observation("0"),
+        _observation("0"),
+        _observation("30000"),
+        _observation("30010"),
+    ]
+
+    with (
+        patch.object(
+            scale,
+            "read_truck_scale_observation",
+            side_effect=observations,
+        ),
+        patch.object(scale, "read_truck_scale", return_value=_reading("30010")),
+        patch.object(
+            camera_ai,
+            "recognize_vehicle_from_camera",
+            side_effect=_no_match,
+        ),
+    ):
+        results = _monitor_sequence(observations)
+
+    capture = AutomaticPassageCapture.objects.get()
+    item = UnassignedWeighing.objects.get()
+    open_passage.refresh_from_db()
+    assert results[-1].action == "unassigned"
+    assert results[-1].state == "awaiting_clear"
+    assert capture.status == AutomaticPassageCapture.COMPLETED
+    assert capture.action == "unassigned"
+    assert capture.wagon_id is None
+    assert item.capture_id == capture.pk
+    assert item.weight_kg == 30_010
+    assert item.status == UnassignedWeighing.OPEN
+    assert item.reason == "open_passages_exist"
+    assert item.photo_request_id == capture.idempotency_key
+    assert Wagon.objects.count() == 1
+    assert open_passage.exit_weight_kg is None
+
+
+def test_completed_capture_stores_evidence_photo_from_camera_pc(settings, tmp_path):
+    settings.MEDIA_ROOT = tmp_path
+    observations = [
+        _observation("0"),
+        _observation("0"),
+        _observation("12000"),
+        _observation("12010"),
+    ]
+    jpeg = b"\xff\xd8\xff\xe0" + b"0" * 64
+
+    with (
+        patch.object(
+            scale,
+            "read_truck_scale_observation",
+            side_effect=observations,
+        ),
+        patch.object(scale, "read_truck_scale", return_value=_reading("12010")),
+        patch.object(
+            camera_ai,
+            "recognize_vehicle_from_camera",
+            side_effect=lambda _camera, key, stable_at: _recognized(key, stable_at),
+        ),
+        patch.object(
+            camera_ai,
+            "fetch_vehicle_recognition_frame",
+            return_value=jpeg,
+        ) as fetch_frame,
+    ):
+        _monitor_sequence(observations)
+
+    capture = AutomaticPassageCapture.objects.get()
+    weighing = WeighingRecord.objects.get()
+    fetch_frame.assert_called_once_with("cam1", str(capture.idempotency_key))
+    assert weighing.photo_request_id == capture.idempotency_key
+    assert weighing.photo_camera == "cam1"
+    assert weighing.photo.name.endswith(f"{capture.idempotency_key}.jpg")
+    with weighing.photo.open("rb") as handle:
+        assert handle.read() == jpeg
+
+
+def test_missing_evidence_photo_never_affects_the_weighing(settings, tmp_path):
+    settings.MEDIA_ROOT = tmp_path
+    observations = [
+        _observation("0"),
+        _observation("0"),
+        _observation("12000"),
+        _observation("12010"),
+    ]
+
+    with (
+        patch.object(
+            scale,
+            "read_truck_scale_observation",
+            side_effect=observations,
+        ),
+        patch.object(scale, "read_truck_scale", return_value=_reading("12010")),
+        patch.object(
+            camera_ai,
+            "recognize_vehicle_from_camera",
+            side_effect=lambda _camera, key, stable_at: _recognized(key, stable_at),
+        ),
+        patch.object(
+            camera_ai,
+            "fetch_vehicle_recognition_frame",
+            side_effect=camera_ai.AiUnavailable("camera pc offline"),
+        ),
+    ):
+        results = _monitor_sequence(observations)
+
+    weighing = WeighingRecord.objects.get()
+    assert results[-1].action == "entry"
+    assert not weighing.photo
+    assert Wagon.objects.get().entry_weight_kg == 12_010

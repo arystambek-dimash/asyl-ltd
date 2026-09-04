@@ -3,7 +3,14 @@
 import { RefreshCw, Scale } from "lucide-react";
 import type { TruckScalePreview } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
+import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { cn } from "@/lib/utils";
+
+/**
+ * Живое показание весов в шапке. Опрос раз в 3 с укладывается в серверный
+ * лимит превью (30 запросов в минуту) и останавливается на скрытой вкладке.
+ */
+const LIVE_SCALE_POLL_MS = 3_000;
 
 const TONNES_FORMATTER = new Intl.NumberFormat("ru-RU", {
   minimumFractionDigits: 2,
@@ -62,6 +69,7 @@ export function LiveScaleStatus({ active, scaleKey, label }: { active: boolean; 
   const { data, loading, error, reload } = useApi<TruckScalePreview>(
     active ? `/truck-scales/${scaleKey}/reading/` : null,
   );
+  useVisiblePolling(reload, LIVE_SCALE_POLL_MS, active);
 
   if (!active) return null;
 

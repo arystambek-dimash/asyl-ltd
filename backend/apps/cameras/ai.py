@@ -429,6 +429,59 @@ def retry_vehicle_recognition_from_camera(
     )
 
 
+VEHICLE_FRAME_TIMEOUT = 5.0
+VEHICLE_FRAME_MAX_BYTES = 4 * 1024 * 1024
+_JPEG_MAGIC = b"\xff\xd8\xff"
+
+
+def fetch_vehicle_recognition_frame(cam: str, request_id: UUID | str) -> bytes | None:
+    """Download the evidence JPEG Camera-PC kept for one recognition request.
+
+    ``None`` means "no photo" (unknown request, retention expired, or the
+    camera PC is unreachable). Callers treat the photo as best-effort audit
+    material and never let its absence change accounting.
+    """
+
+    camera = camera_id(cam)
+    raw_request_id = str(request_id)
+    try:
+        parsed = UUID(raw_request_id)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("request_id must be a canonical UUID") from exc
+    if str(parsed) != raw_request_id:
+        raise ValueError("request_id must be a canonical UUID")
+
+    request = urllib.request.Request(
+        f"{AI_URL}/cameras/{camera}/vehicle-recognition/{raw_request_id}/frame",
+        method="GET",
+        headers={"X-Api-Key": AI_KEY, "Accept": "image/jpeg"},
+    )
+    try:
+        response = urllib.request.urlopen(request, timeout=VEHICLE_FRAME_TIMEOUT)
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        if exc.code == 404:
+            return None
+        raise AiError(exc.code, f"AI-сервис: ошибка {exc.code}") from exc
+    except (http.client.HTTPException, TimeoutError, OSError) as exc:
+        raise AiUnavailable(str(exc)) from exc
+    try:
+        content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0]
+        if content_type.strip().lower() != "image/jpeg":
+            raise AiProtocolError("AI-сервис вернул кадр в неожиданном формате")
+        try:
+            data = response.read(VEHICLE_FRAME_MAX_BYTES + 1)
+        except (http.client.HTTPException, TimeoutError, OSError) as exc:
+            raise AiUnavailable(str(exc)) from exc
+    finally:
+        response.close()
+    if len(data) > VEHICLE_FRAME_MAX_BYTES:
+        raise AiProtocolError("AI-сервис вернул слишком большой кадр")
+    if not data.startswith(_JPEG_MAGIC):
+        raise AiProtocolError("AI-сервис вернул некорректный кадр")
+    return bytes(data)
+
+
 def status(cam: str) -> dict | None:
     """Статус и живой счётчик; None — модель на камере не запущена."""
     return _call("GET", _path(cam), none_on_404=True)

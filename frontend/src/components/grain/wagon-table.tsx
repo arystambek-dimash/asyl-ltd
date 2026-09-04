@@ -19,7 +19,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { GrainWagonDeleteDialog } from "@/components/grain/wagon-delete-dialog";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { can } from "@/lib/can";
-import { formatKg, GRAIN_STATUS_TONE, isFinishedGrainWagon } from "@/lib/grain";
+import { formatKg, GRAIN_STATUS_TONE, isFinishedGrainWagon, isPassagePlateMissing } from "@/lib/grain";
 import type { GrainWagon, Me } from "@/lib/types";
 import { cn, formatDateTime } from "@/lib/utils";
 
@@ -236,7 +236,14 @@ export function WagonTable({
                   <TR key={wagon.id}>
                     <TD>
                       <Link href={`/grain/wagons/${wagon.id}`} className="block min-w-0 hover:underline">
-                        <span className="block truncate font-semibold">{wagon.number || `#${wagon.id}`}</span>
+                        <span className="block truncate font-semibold">
+                          {wagon.number || `#${wagon.id}`}
+                          {isPassagePlateMissing(wagon) && (
+                            <Badge tone="warning" className="ml-2 align-middle">
+                              номер не распознан
+                            </Badge>
+                          )}
+                        </span>
                         <span className="block truncate text-[11px] text-[var(--muted-foreground)]">
                           {passage
                             ? wagon.cargo_name || "Вывоз"

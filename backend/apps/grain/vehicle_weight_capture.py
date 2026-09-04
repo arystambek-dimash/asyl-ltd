@@ -20,6 +20,7 @@ from apps.cameras import ai as camera_ai
 
 from . import scale
 from .models import PassageWeightCapture, Wagon
+from .weighing_photos import attach_photo
 
 KZ_VEHICLE_PLATE_RE = re.compile(r"^[0-9]{3}[A-Z]{3}[0-9]{2}$")
 
@@ -710,6 +711,8 @@ def _apply_capture(capture_id: int, user) -> Wagon:
         "scale_number": capture.scale_number,
         "scale_age_seconds": capture.scale_age_seconds,
         "scale_updated_at": capture.scale_updated_at or None,
+        "photo_request_id": capture.idempotency_key,
+        "photo_camera": capture.camera,
     }
     if capture.action == PassageWeightCapture.ENTRY:
         services.record_passage_entry_weight(wagon, capture.weight_kg, user, **kwargs)
@@ -805,7 +808,7 @@ def _recognize_and_apply(
             return _completed_wagon_or_raise(failed)
 
     try:
-        return _apply_capture(capture_id, user)
+        wagon = _apply_capture(capture_id, user)
     except _ApplyRejected as error:
         failed = _finish_capture_error(
             capture_id,
@@ -844,6 +847,9 @@ def _recognize_and_apply(
             retryable=True,
         )
         return _completed_wagon_or_raise(failed)
+    # The weight is committed; the evidence photo is best effort.
+    attach_photo(capture.camera, capture.idempotency_key)
+    return wagon
 
 
 def capture_passage_weight_and_plate(

@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Camera, Check, Plus, ScanLine, TrainFront, Truck } from "lucide-react";
 import { GrainToolbar } from "@/components/grain/grain-toolbar";
+import { UnassignedWeighingsPanel } from "@/components/grain/unassigned-weighings";
 import { AppShell } from "@/components/layout/app-shell";
 import { VehiclePlateCameraWorkspace } from "@/components/grain/vehicle-plate-camera";
 import { WagonNumberCameraWorkspace } from "@/components/grain/wagon-number-camera";
@@ -783,6 +784,10 @@ function GrainPageInner() {
           <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
             {notice}
           </p>
+        )}
+
+        {direction === "passage" && tab !== "camera" && (
+          <UnassignedWeighingsPanel canWeigh={canWeigh} onChanged={refreshAll} />
         )}
 
         {tab === "camera" ? (

@@ -1,4 +1,6 @@
+import { api } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
+import type { GrainWagon } from "@/lib/types";
 
 const FINISHED_WAGON_STATUSES = new Set(["completed", "cancelled", "return_to_supplier", "exited"]);
 
@@ -63,3 +65,19 @@ export const GRAIN_MOVEMENT_LABELS: Record<string, string> = {
   adjustment: "Корректировка",
   inventory_correction: "Инвентаризация",
 };
+
+/**
+ * Абсолютный адрес приватного файла бэкенда по относительной ссылке вида
+ * `/api/grain/photos/...`. API-клиент знает свой origin, `<img>` — нет.
+ */
+export function apiFileUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  if (/^https?:\/\//.test(path)) return path;
+  const base = (api.defaults?.baseURL ?? "").replace(/\/api\/?$/, "");
+  return `${base}${path}`;
+}
+
+/** Вывоз, у которого камера не смогла прочитать номер: оператор допишет его позже. */
+export function isPassagePlateMissing(wagon: Pick<GrainWagon, "direction" | "number">): boolean {
+  return wagon.direction === "passage" && !wagon.number.trim();
+}

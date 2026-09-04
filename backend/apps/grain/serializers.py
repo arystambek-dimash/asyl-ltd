@@ -13,9 +13,11 @@ from .models import (
     Silo,
     SiloAllocation,
     SiloType,
+    UnassignedWeighing,
     Wagon,
     WeighingRecord,
 )
+from .photos import KIND_UNASSIGNED, KIND_WEIGHING, photo_url
 from .statuses import WAGON_STATUS_LABELS
 
 
@@ -155,6 +157,7 @@ class WeighingRecordSerializer(serializers.ModelSerializer):
     operator_name = serializers.CharField(
         source="operator.username", default=None, read_only=True
     )
+    photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = WeighingRecord
@@ -167,8 +170,67 @@ class WeighingRecordSerializer(serializers.ModelSerializer):
             "manual_reason",
             "previous_weight_kg",
             "operator_name",
+            "photo_url",
             "created_at",
         ]
+
+    def get_photo_url(self, record: WeighingRecord) -> str | None:
+        return photo_url(KIND_WEIGHING, record)
+
+
+class UnassignedWeighingSerializer(serializers.ModelSerializer):
+    photo_url = serializers.SerializerMethodField()
+    wagon_number = serializers.CharField(
+        source="wagon.number", default="", read_only=True
+    )
+    resolved_by_name = serializers.CharField(
+        source="resolved_by.username", default=None, read_only=True
+    )
+
+    class Meta:
+        model = UnassignedWeighing
+        fields = [
+            "id",
+            "weight_kg",
+            "stable_weight_at",
+            "scale_number",
+            "camera",
+            "photo_url",
+            "reason",
+            "status",
+            "wagon",
+            "wagon_number",
+            "action",
+            "resolved_by_name",
+            "resolved_at",
+            "created_at",
+        ]
+
+    def get_photo_url(self, item: UnassignedWeighing) -> str | None:
+        return photo_url(KIND_UNASSIGNED, item)
+
+
+class PassageNumberSerializer(serializers.Serializer):
+    number = serializers.CharField(max_length=30, allow_blank=False, trim_whitespace=True)
+
+
+class UnassignedAssignSerializer(serializers.Serializer):
+    wagon = serializers.IntegerField(min_value=1)
+
+
+class UnassignedCreatePassageSerializer(serializers.Serializer):
+    number = serializers.CharField(
+        max_length=30, allow_blank=True, required=False, default=""
+    )
+    cargo_name = serializers.CharField(
+        max_length=100, allow_blank=True, required=False, default=""
+    )
+
+
+class UnassignedDiscardSerializer(serializers.Serializer):
+    reason = serializers.CharField(
+        max_length=200, allow_blank=True, required=False, default=""
+    )
 
 
 class LabCheckSerializer(serializers.ModelSerializer):
@@ -264,6 +326,8 @@ class WagonSerializer(serializers.ModelSerializer):
     weight_difference_percent = serializers.SerializerMethodField()
     weight_matches = serializers.SerializerMethodField()
     vehicle_recognition_captures = serializers.SerializerMethodField()
+    entry_photo_url = serializers.SerializerMethodField()
+    exit_photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Wagon
@@ -309,7 +373,23 @@ class WagonSerializer(serializers.ModelSerializer):
             "lab_checks",
             "allocations",
             "vehicle_recognition_captures",
+            "entry_photo_url",
+            "exit_photo_url",
         ]
+
+    def _latest_photo_url(self, wagon: Wagon, kind: str) -> str | None:
+        # ``weighings`` is prefetched and ordered by ``-id``: the first record
+        # with a photo is the most recent weighing of that kind.
+        for record in wagon.weighings.all():
+            if record.kind == kind and record.photo:
+                return photo_url(KIND_WEIGHING, record)
+        return None
+
+    def get_entry_photo_url(self, wagon: Wagon) -> str | None:
+        return self._latest_photo_url(wagon, "gross")
+
+    def get_exit_photo_url(self, wagon: Wagon) -> str | None:
+        return self._latest_photo_url(wagon, "tare")
 
     def get_status_label(self, wagon: Wagon) -> str:
         if wagon.is_passage and wagon.status == "at_silo":

@@ -290,6 +290,14 @@ class Wagon(models.Model):
         return exit_weight - entry if self.is_passage else entry - exit_weight
 
 
+def weighing_photo_path(instance, filename: str) -> str:
+    return f"grain/weighings/{instance.wagon_id}/{filename}"
+
+
+def unassigned_weighing_photo_path(instance, filename: str) -> str:
+    return f"grain/unassigned/{filename}"
+
+
 class WeighingRecord(models.Model):
     """Журнал всех взвешиваний, включая повторные и ручные правки."""
 
@@ -309,10 +317,81 @@ class WeighingRecord(models.Model):
         on_delete=models.SET_NULL,
         related_name="+",
     )
+    # Кадр машины с Camera-PC на момент взвешивания. Заполняется после
+    # фиксации веса и никогда не блокирует саму операцию.
+    photo = models.FileField(upload_to=weighing_photo_path, null=True, blank=True)
+    photo_request_id = models.UUIDField(null=True, blank=True, db_index=True)
+    photo_camera = models.CharField(max_length=32, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["-id"]
+
+
+class UnassignedWeighing(models.Model):
+    """Вес с автовесов, который не удалось привязать к рейсу без оператора.
+
+    Появляется, когда номер не распознан, а на территории уже есть открытые
+    проходы: угадывать, чей это выезд, нельзя. Автоматика не останавливается,
+    вес и фото сохраняются здесь, оператор привязывает их позже.
+    """
+
+    OPEN = "open"
+    ASSIGNED = "assigned"
+    DISCARDED = "discarded"
+    STATUSES = [(OPEN, "Ожидает"), (ASSIGNED, "Привязано"), (DISCARDED, "Отклонено")]
+
+    capture = models.OneToOneField(
+        "AutomaticPassageCapture",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="unassigned_weighing",
+    )
+    weight_kg = models.PositiveBigIntegerField()
+    stable_weight_at = models.DateTimeField()
+    scale_number = models.CharField(max_length=50, blank=True, default="")
+    scale_age_seconds = models.DecimalField(
+        max_digits=10, decimal_places=3, null=True, blank=True
+    )
+    scale_updated_at = models.CharField(max_length=64, blank=True, default="")
+    camera = models.CharField(max_length=32, blank=True, default="")
+    photo = models.FileField(
+        upload_to=unassigned_weighing_photo_path, null=True, blank=True
+    )
+    photo_request_id = models.UUIDField(null=True, blank=True, db_index=True)
+    reason = models.CharField(max_length=64, blank=True, default="")
+    status = models.CharField(max_length=12, choices=STATUSES, default=OPEN)
+    wagon = models.ForeignKey(
+        Wagon,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="unassigned_weighings",
+    )
+    action = models.CharField(max_length=10, blank=True, default="")
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [
+            models.CheckConstraint(
+                name="grain_unassigned_weighing_status_valid",
+                condition=models.Q(status__in=["open", "assigned", "discarded"]),
+            ),
+            models.CheckConstraint(
+                name="grain_unassigned_weighing_action_valid",
+                condition=models.Q(action__in=["", "entry", "exit"]),
+            ),
+        ]
 
 
 class PassageWeightCapture(models.Model):
@@ -495,6 +574,18 @@ class AutomaticPassageCapture(models.Model):
     ai_payload_json = models.JSONField(default=dict, blank=True)
     recognition_attempts = models.PositiveSmallIntegerField(default=0)
     final_lookup_attempted = models.BooleanField(default=False)
+    # Каждая попытка OCR — отдельный запрос к Camera-PC со своим UUID и
+    # свежей меткой стабильного веса: Camera-PC не принимает триггер старше
+    # нескольких секунд и кэширует ответ по UUID.
+    attempt_request_id = models.UUIDField(null=True, blank=True)
+    attempt_stable_weight_at = models.DateTimeField(null=True, blank=True)
+    needs_new_attempt = models.BooleanField(default=False)
+    # Номер так и не распознан: вес применяется без номера (рейс без номера
+    # или неопознанное взвешивание), лента освобождается сама.
+    plate_unresolved = models.BooleanField(default=False)
+    # Только сбой записи в базу оставляет ленту заблокированной до
+    # подтверждения оператором; сбои распознавания не требуют человека.
+    requires_acknowledgement = models.BooleanField(default=True)
     retryable = models.BooleanField(default=False)
     response_status = models.PositiveSmallIntegerField(null=True, blank=True)
     error_code = models.CharField(max_length=64, blank=True, default="")
@@ -543,9 +634,19 @@ class AutomaticPassageCapture(models.Model):
             ),
             models.CheckConstraint(
                 name="grain_auto_capture_action_valid",
-                condition=models.Q(action__in=["", "entry", "exit"]),
+                condition=models.Q(action__in=["", "entry", "exit", "unassigned"]),
             ),
         ]
+
+    @property
+    def needs_operator(self) -> bool:
+        """Latched failure that only a human may release."""
+
+        return (
+            self.status == self.FAILED
+            and self.requires_acknowledgement
+            and self.acknowledged_at is None
+        )
 
 
 class PassageScaleAutomationState(models.Model):

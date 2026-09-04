@@ -32,6 +32,7 @@ from .models import (
     SiloAllocation,
     SiloReservation,
     SiloType,
+    UnassignedWeighing,
     Wagon,
     WeighingRecord,
 )
@@ -48,6 +49,7 @@ AUTO_ACTION_ENTRY = "entry"
 AUTO_ACTION_EXIT = "exit"
 AUTO_ACTION_IGNORED = "ignored"
 AUTO_ACTION_MANUAL_ENTRY = "manual_entry"
+AUTO_ACTION_UNASSIGNED = "unassigned"
 
 
 def _error(detail: str, code: str) -> ValidationError:
@@ -303,6 +305,8 @@ def _record_weighing(
     manual_reason="",
     scale_age_seconds=None,
     scale_updated_at=None,
+    photo_request_id=None,
+    photo_camera="",
 ):
     try:
         weight_kg = int(weight_kg)
@@ -322,6 +326,9 @@ def _record_weighing(
         manual_reason=manual_reason,
         previous_weight_kg=previous,
         operator=user,
+        # Сам кадр подтягивается после фиксации веса по этому идентификатору.
+        photo_request_id=photo_request_id,
+        photo_camera=photo_camera or "",
     )
     scale_payload = {}
     if scale_age_seconds is not None:
@@ -1204,7 +1211,7 @@ def _lock_automatic_passage_lane() -> tuple[
     capture = (
         AutomaticPassageCapture.objects.select_for_update()
         .filter(pk=state.current_capture_id)
-        .only("status", "acknowledged_at")
+        .only("status", "acknowledged_at", "requires_acknowledgement")
         .first()
         if state.current_capture_id is not None
         else None
@@ -1214,17 +1221,13 @@ def _lock_automatic_passage_lane() -> tuple[
             capture is not None
             and capture.status == AutomaticPassageCapture.PROCESSING
         )
-        unresolved_failure = (
-            capture is not None
-            and capture.status == AutomaticPassageCapture.FAILED
-            and capture.acknowledged_at is None
-        )
+        unresolved_failure = capture is not None and capture.needs_operator
         safe_terminal = (
             capture is None
             or capture.status == AutomaticPassageCapture.COMPLETED
             or (
                 capture.status == AutomaticPassageCapture.FAILED
-                and capture.acknowledged_at is not None
+                and not capture.needs_operator
             )
         )
         if not processing and not unresolved_failure and (
@@ -1489,6 +1492,7 @@ class VehiclePlateAutomationResult:
     retryable: bool = False
     wagon_id: int | None = None
     weight_kg: int | None = None
+    unassigned_id: int | None = None
 
     def as_payload(self) -> dict:
         payload = {
@@ -1498,6 +1502,8 @@ class VehiclePlateAutomationResult:
             "wagon_id": self.wagon_id,
             "weight_kg": self.weight_kg,
         }
+        if self.unassigned_id is not None:
+            payload["unassigned_id"] = self.unassigned_id
         return payload
 
 
@@ -1609,9 +1615,16 @@ def _finish_auto_event(
 def _locked_auto_intent(
     event: VehiclePlateEvent,
 ) -> tuple[str | None, Wagon | None, str]:
+    """Decide entry or exit for a recognized plate without an operator.
+
+    An unknown plate is always a new entry, even while blank-number or
+    manually created passages are on site: automation must never stop and
+    wait for a human. A plate that matches exactly one on-site passage is an
+    entry when that passage still waits for its empty weight and an exit when
+    it already carries one.
+    """
     passages = list(
         Wagon.objects.select_for_update(of=("self",))
-        .select_related("vehicle_plate_event")
         .filter(
             direction=Wagon.PASSAGE,
             number=event.vehicle_number,
@@ -1620,18 +1633,6 @@ def _locked_auto_intent(
         .order_by("id")[:2]
     )
     if not passages:
-        unidentified = (
-            Wagon.objects.select_for_update(of=("self",))
-            .filter(
-                direction=Wagon.PASSAGE,
-                number__regex=r"^\s*$",
-                status__in=st.ON_SITE_STATUSES,
-            )
-            .order_by("id")
-            .first()
-        )
-        if unidentified is not None:
-            return None, unidentified, "unidentified_active_passage"
         cooldown = timedelta(
             seconds=settings.VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS
         )
@@ -1649,43 +1650,17 @@ def _locked_auto_intent(
         )
         if recent_completed is not None:
             return None, recent_completed, "recent_completed_passage"
-
-        manual_reservation = (
-            Wagon.objects.select_for_update(of=("self",))
-            .filter(
-                direction=Wagon.PASSAGE,
-                status=st.AT_SILO,
-                gross_weight_kg__isnull=False,
-                tare_weight_kg__isnull=True,
-            )
-            .exclude(
-                number_source="camera",
-                vehicle_plate_event__processing_status=VehiclePlateEvent.PROCESSED,
-                vehicle_plate_event__processing_action=AUTO_ACTION_ENTRY,
-            )
-            .order_by("id")
-            .first()
-        )
-        if manual_reservation is not None:
-            # A manually opened trip may contain a mistyped plate. Until an
-            # operator completes it, an unknown OCR result cannot safely be
-            # distinguished from that same truck returning loaded.
-            return None, manual_reservation, "manual_active_passage"
         return AUTO_ACTION_ENTRY, None, ""
     if len(passages) != 1:
         return None, None, "ambiguous_active_passage"
 
     wagon = passages[0]
-    camera_owned = (
-        wagon.number_source == "camera"
-        and wagon.vehicle_plate_event_id is not None
-        and wagon.vehicle_plate_event.processing_status
-        == VehiclePlateEvent.PROCESSED
-        and wagon.vehicle_plate_event.processing_action == AUTO_ACTION_ENTRY
-    )
+    if wagon.status == st.ARRIVED and wagon.entry_weight_kg is None:
+        # A dispatcher pre-registered this plate; the truck now stands on the
+        # scale for its empty weight.
+        return AUTO_ACTION_ENTRY, wagon, ""
     valid_state = (
-        camera_owned
-        and wagon.status == st.AT_SILO
+        wagon.status == st.AT_SILO
         and wagon.entry_weight_kg is not None
         and wagon.exit_weight_kg is None
         and wagon.arrived_at is not None
@@ -1697,8 +1672,6 @@ def _locked_auto_intent(
     )
     if event.detected_at < minimum_exit_at:
         return None, wagon, "entry_exit_too_close"
-    if event.vehicle_number != wagon.number:
-        return None, wagon, "passage_state_mismatch"
     return AUTO_ACTION_EXIT, wagon, ""
 
 
@@ -1927,6 +1900,8 @@ def _apply_vehicle_plate_automation(
     reading: scale.ScaleReading,
     weight_kg: int,
     user,
+    photo_request_id=None,
+    photo_camera: str = "",
 ) -> VehiclePlateAutomationResult:
     scale.configure_authoritative_db_timeouts()
     hint = VehiclePlateEvent.objects.get(pk=claim.event_id)
@@ -1958,42 +1933,75 @@ def _apply_vehicle_plate_automation(
         )
         return _terminal_automation_result(event, already_processed=False)
 
-    kwargs = _auto_scale_kwargs(reading)
+    kwargs = {
+        **_auto_scale_kwargs(reading),
+        "photo_request_id": photo_request_id,
+        "photo_camera": photo_camera,
+    }
     if action == AUTO_ACTION_ENTRY:
-        try:
-            with transaction.atomic():
-                wagon = Wagon.objects.create(
-                    supply=None,
-                    number=event.vehicle_number,
-                    direction=Wagon.PASSAGE,
-                    workflow="simple",
-                    cargo_name=settings.VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME,
-                    status=st.ARRIVED,
-                    arrived_at=event.detected_at,
-                    arrived_by=user,
-                    number_source="camera",
-                    number_camera_source=event.camera,
-                    vehicle_plate_event=event,
-                    note="Автоматически оформлено по событию камеры",
+        if wagon is None:
+            try:
+                with transaction.atomic():
+                    wagon = Wagon.objects.create(
+                        supply=None,
+                        number=event.vehicle_number,
+                        direction=Wagon.PASSAGE,
+                        workflow="simple",
+                        cargo_name=settings.VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME,
+                        status=st.ARRIVED,
+                        arrived_at=event.detected_at,
+                        arrived_by=user,
+                        number_source="camera",
+                        number_camera_source=event.camera,
+                        vehicle_plate_event=event,
+                        note="Автоматически оформлено по событию камеры",
+                    )
+            except IntegrityError:
+                _finish_auto_event(
+                    event,
+                    status=VehiclePlateEvent.FAILED,
+                    action=action,
+                    error="ambiguous_active_passage",
                 )
-        except IntegrityError:
-            _finish_auto_event(
-                event,
-                status=VehiclePlateEvent.FAILED,
-                action=action,
-                error="ambiguous_active_passage",
+                return _terminal_automation_result(event, already_processed=False)
+            _log(
+                wagon,
+                "passage",
+                f"Проход {wagon.number}: автоматический заезд за «{wagon.cargo_name}»",
+                user,
+                cargo_name=wagon.cargo_name,
+                vehicle_plate_event_id=str(event.event_id),
+                camera_source=event.camera,
+                auto=True,
             )
-            return _terminal_automation_result(event, already_processed=False)
-        _log(
-            wagon,
-            "passage",
-            f"Проход {wagon.number}: автоматический заезд за «{wagon.cargo_name}»",
-            user,
-            cargo_name=wagon.cargo_name,
-            vehicle_plate_event_id=str(event.event_id),
-            camera_source=event.camera,
-            auto=True,
-        )
+        else:
+            # The dispatcher registered this plate ahead of time; bind the
+            # camera event to that passage instead of creating a twin.
+            try:
+                with transaction.atomic():
+                    wagon.vehicle_plate_event = event
+                    wagon.number_camera_source = event.camera
+                    wagon.save(
+                        update_fields=["vehicle_plate_event", "number_camera_source"]
+                    )
+            except IntegrityError:
+                _finish_auto_event(
+                    event,
+                    status=VehiclePlateEvent.FAILED,
+                    action=action,
+                    error="vehicle_plate_event_unavailable",
+                )
+                return _terminal_automation_result(event, already_processed=False)
+            _log(
+                wagon,
+                "passage",
+                f"Проход {wagon.number}: автоматический заезд по заранее "
+                "зарегистрированному рейсу",
+                user,
+                vehicle_plate_event_id=str(event.event_id),
+                camera_source=event.camera,
+                auto=True,
+            )
         record_passage_entry_weight(
             wagon,
             weight_kg,
@@ -2097,6 +2105,8 @@ def apply_automatic_passage_scale_sample(
     *,
     reading: scale.ScaleReading,
     user=None,
+    photo_request_id=None,
+    photo_camera: str = "",
 ) -> VehiclePlateAutomationResult:
     """Apply a previously persisted automatic weight/OCR pair.
 
@@ -2121,7 +2131,267 @@ def apply_automatic_passage_scale_sample(
         reading=reading,
         weight_kg=_whole_scale_weight_kg(reading),
         user=user,
+        photo_request_id=photo_request_id,
+        photo_camera=photo_camera,
     )
+
+
+@transaction.atomic
+def apply_unidentified_passage_scale_sample(
+    *,
+    reading: scale.ScaleReading,
+    camera: str,
+    request_id,
+    stable_weight_at,
+    capture: AutomaticPassageCapture | None = None,
+    user=None,
+) -> VehiclePlateAutomationResult:
+    """Apply a durable scale sample whose plate could not be recognized.
+
+    With no open passage on site the truck can only be a new entry, so a
+    passage without a number is created and weighed; the operator fills in
+    the plate later. With open passages the weight may be somebody's exit and
+    guessing would corrupt accounting, so it is parked as an unassigned
+    weighing together with its photo. Either way the lane is released.
+    """
+
+    weight_kg = _whole_scale_weight_kg(reading)
+    kwargs = {
+        **_auto_scale_kwargs(reading),
+        "photo_request_id": request_id,
+        "photo_camera": camera,
+    }
+    open_passages = list(
+        Wagon.objects.select_for_update(of=("self",))
+        .filter(direction=Wagon.PASSAGE, status__in=st.ON_SITE_STATUSES)
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    if not open_passages:
+        wagon = Wagon.objects.create(
+            supply=None,
+            number="",
+            direction=Wagon.PASSAGE,
+            workflow="simple",
+            cargo_name=settings.VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME,
+            status=st.ARRIVED,
+            arrived_at=stable_weight_at,
+            arrived_by=user,
+            number_source="camera",
+            number_camera_source=camera,
+            note="Автоматически оформлено по весам: номер не распознан, укажите его вручную",
+        )
+        _log(
+            wagon,
+            "passage",
+            f"Проход #{wagon.pk}: автоматический заезд, номер не распознан",
+            user,
+            cargo_name=wagon.cargo_name,
+            camera_source=camera,
+            auto=True,
+            plate_unresolved=True,
+        )
+        record_passage_entry_weight(
+            wagon,
+            weight_kg,
+            user,
+            occurred_at=stable_weight_at,
+            **kwargs,
+        )
+        return VehiclePlateAutomationResult(
+            status="processed",
+            action=AUTO_ACTION_ENTRY,
+            wagon_id=wagon.pk,
+            weight_kg=weight_kg,
+        )
+
+    item = UnassignedWeighing.objects.create(
+        capture=capture,
+        weight_kg=weight_kg,
+        stable_weight_at=stable_weight_at,
+        scale_number=scale.TRUCK_SCALE_KEY,
+        scale_age_seconds=reading.age_seconds,
+        scale_updated_at=reading.updated_at or "",
+        camera=camera,
+        photo_request_id=request_id,
+        reason="open_passages_exist",
+    )
+    log_event(
+        "grain_unassigned_weighing",
+        f"Взвешивание {weight_kg} кг без номера: на территории "
+        f"{len(open_passages)} маш., нужна привязка к рейсу",
+        user=user,
+        payload={
+            "unassigned_id": item.pk,
+            "weight_kg": weight_kg,
+            "open_passage_ids": open_passages,
+            "camera_source": camera,
+            "auto": True,
+        },
+    )
+    return VehiclePlateAutomationResult(
+        status="processed",
+        action=AUTO_ACTION_UNASSIGNED,
+        weight_kg=weight_kg,
+        unassigned_id=item.pk,
+    )
+
+
+def _unassigned_scale_kwargs(item: UnassignedWeighing) -> dict:
+    return {
+        "source": "scale",
+        "scale_number": item.scale_number,
+        "scale_age_seconds": item.scale_age_seconds,
+        "scale_updated_at": item.scale_updated_at or None,
+        "photo_request_id": item.photo_request_id,
+        "photo_camera": item.camera,
+    }
+
+
+def _move_unassigned_photo(item: UnassignedWeighing, wagon: Wagon, kind: str) -> None:
+    if not item.photo:
+        return
+    weighing = (
+        WeighingRecord.objects.filter(wagon=wagon, kind=kind).order_by("-id").first()
+    )
+    if weighing is None or weighing.photo:
+        return
+    # Same storage, same file: only the reference moves.
+    weighing.photo.name = item.photo.name
+    weighing.save(update_fields=["photo"])
+
+
+@transaction.atomic
+def assign_unassigned_weighing(
+    item: UnassignedWeighing,
+    wagon: Wagon,
+    user,
+) -> UnassignedWeighing:
+    """Attach a parked weight to the passage the operator points at."""
+
+    item = UnassignedWeighing.objects.select_for_update().get(pk=item.pk)
+    if item.status != UnassignedWeighing.OPEN:
+        raise _error("Это взвешивание уже обработано", "unassigned_weighing_resolved")
+    wagon = Wagon.objects.select_for_update(of=("self",)).get(pk=wagon.pk)
+    if not wagon.is_passage:
+        raise _error("Привязать взвешивание можно только к вывозу", "not_passage")
+    kwargs = _unassigned_scale_kwargs(item)
+    if wagon.status == st.ARRIVED and wagon.gross_weight_kg is None:
+        record_passage_entry_weight(
+            wagon, item.weight_kg, user, occurred_at=item.stable_weight_at, **kwargs
+        )
+        action, kind = AUTO_ACTION_ENTRY, "gross"
+    elif wagon.status == st.AT_SILO and wagon.tare_weight_kg is None:
+        record_passage_exit_weight(
+            wagon, item.weight_kg, user, occurred_at=item.stable_weight_at, **kwargs
+        )
+        action, kind = AUTO_ACTION_EXIT, "tare"
+    else:
+        raise _error("Этот рейс сейчас не ждёт взвешивания", "wagon_not_awaiting_weight")
+    _move_unassigned_photo(item, wagon, kind)
+    item.status = UnassignedWeighing.ASSIGNED
+    item.wagon = wagon
+    item.action = action
+    item.resolved_by = user
+    item.resolved_at = timezone.now()
+    item.save(update_fields=["status", "wagon", "action", "resolved_by", "resolved_at"])
+    _log(
+        wagon,
+        "unassigned_weighing",
+        f"Проход {wagon.number or f'#{wagon.pk}'}: привязано взвешивание "
+        f"{item.weight_kg} кг ({'заезд' if action == AUTO_ACTION_ENTRY else 'выезд'})",
+        user,
+        unassigned_id=item.pk,
+        action=action,
+        weight_kg=item.weight_kg,
+    )
+    return item
+
+
+@transaction.atomic
+def create_passage_from_unassigned_weighing(
+    item: UnassignedWeighing,
+    user,
+    *,
+    number="",
+    cargo_name="",
+) -> UnassignedWeighing:
+    """Open a new passage for a parked weight and record it as the entry."""
+
+    locked = UnassignedWeighing.objects.select_for_update().get(pk=item.pk)
+    if locked.status != UnassignedWeighing.OPEN:
+        raise _error("Это взвешивание уже обработано", "unassigned_weighing_resolved")
+    wagon = create_passage(
+        user,
+        number=number,
+        cargo_name=cargo_name or settings.VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME,
+    )
+    return assign_unassigned_weighing(locked, wagon, user)
+
+
+@transaction.atomic
+def discard_unassigned_weighing(
+    item: UnassignedWeighing,
+    user,
+    *,
+    reason="",
+) -> UnassignedWeighing:
+    item = UnassignedWeighing.objects.select_for_update().get(pk=item.pk)
+    if item.status != UnassignedWeighing.OPEN:
+        raise _error("Это взвешивание уже обработано", "unassigned_weighing_resolved")
+    item.status = UnassignedWeighing.DISCARDED
+    item.resolved_by = user
+    item.resolved_at = timezone.now()
+    item.save(update_fields=["status", "resolved_by", "resolved_at"])
+    log_event(
+        "grain_unassigned_weighing_discarded",
+        f"Неопознанное взвешивание {item.weight_kg} кг отклонено",
+        user=user,
+        payload={
+            "unassigned_id": item.pk,
+            "weight_kg": item.weight_kg,
+            "reason": str(reason or "")[:200],
+        },
+    )
+    return item
+
+
+@transaction.atomic
+def set_passage_number(wagon: Wagon, raw_number, user) -> Wagon:
+    """Fill in or correct the plate of a passage the camera could not read."""
+
+    wagon = Wagon.objects.select_for_update(of=("self",)).get(pk=wagon.pk)
+    if not wagon.is_passage:
+        raise _error("Номер можно менять только у вывоза", "not_passage")
+    if wagon.status in st.TERMINAL_STATUSES:
+        raise _error("Рейс уже завершён", "wagon_finished")
+    number = normalize_passage_number(raw_number)
+    if not number:
+        raise _error("Укажите номер машины", "number_required")
+    if len(number) > 30:
+        raise _error("Номер слишком длинный", "bad_number")
+    previous = wagon.number
+    if previous == number:
+        return wagon
+    wagon.number = number
+    wagon.number_source = "manual"
+    try:
+        with transaction.atomic():
+            wagon.save(update_fields=["number", "number_source"])
+    except IntegrityError as exc:
+        raise _error(
+            f"Машина {number} уже находится на территории",
+            "passage_already_on_site",
+        ) from exc
+    _log(
+        wagon,
+        "number",
+        f"Проход #{wagon.pk}: номер «{previous or '—'}» → «{number}»",
+        user,
+        previous_number=previous,
+        number=number,
+    )
+    return wagon
 
 
 # ── Удаление рейса ─────────────────────────────────────────────────────────

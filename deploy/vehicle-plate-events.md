@@ -319,26 +319,52 @@ on-demand Camera-PC endpoint with that capture UUID. Empty, unsafe, changed, or
 failed observations reset the complete interval; a monitor restart also fences
 the candidate and requires a new confirmed clear edge.
 
-After OCR, locked CRM state determines the action. A new plate creates an
-export passage and records its empty entry weight (`arrived -> at_silo`). The
-same plate on exactly one valid automatic passage records the loaded exit
-weight and completes the existing status chain (`at_silo -> ... -> completed`).
-Errors and ambiguous CRM state stop at `manual_required` without a partial
-weight or status update.
+After OCR, locked CRM state determines the action. A plate with no on-site
+passage creates an export passage and records its empty entry weight
+(`arrived -> at_silo`). A plate that matches a passage still waiting for its
+empty weight (for example one a dispatcher registered by hand) records the
+entry into that passage. The same plate on exactly one on-site passage that
+already carries an entry weight records the loaded exit weight and completes
+the status chain (`at_silo -> ... -> completed`). An unknown plate is always a
+new entry, even while blank-number or manual passages are on site: automation
+never stops to ask whether a human mistyped a plate.
 
-A completed or failed capture remains attached to the lane in
-`awaiting_clear`. Further jitter and stable readings are ignored. Several new
-fresh zero/low readings re-arm a successful episode. For a failed episode they
-only record that the scale is physically clear: `manual_required` remains
-latched until a `grain.weigh` operator finishes the manual correction and
-clicks **Подтвердить ручную обработку**. The UI sends the current UUID to
-`POST /api/grain/automatic-passage-scale/acknowledge/`; acknowledging before
-physical clear still cannot re-arm the lane. Acknowledgement also never reuses
-an older `cleared_at`: even if that failed episode was already clear, the lane
-returns to `unarmed` and requires a fresh post-ack clear streak. `stale`,
+Camera-PC answers `no_match` after one 8-second window, but trucks stand on
+the scale for 30-60 seconds. The monitor therefore asks again: each attempt
+re-reads the strict scale (the weight must still match the stored sample
+within tolerance) and sends a new Camera-PC request whose UUID is
+`uuid5(capture UUID, "attempt-N")`, up to
+`VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS` attempts. Configuration
+failures (missing ROI, model, key, camera) skip the retries.
+
+When the plate is still unknown the weighing is applied without a number
+instead of waiting for an operator: with no open passage on site a passage
+with an empty number is created and weighed (the operator fills in the plate
+later from the wagon card, where a **номер не распознан** badge and the photo
+help); with open passages on site the weight is parked as an
+**unassigned weighing** (`/api/grain/unassigned-weighings/`) together with its
+photo, and the Grain page shows a panel where a `grain.weigh` operator binds
+it to a passage (entry or exit), opens a new passage from it, or discards it.
+Either way the lane goes to `awaiting_clear` and re-arms by itself after the
+confirmed clear streak.
+
+`manual_required` with the **Подтвердить ручную обработку** acknowledgement
+remains only for failures that happened while writing the business result
+(database apply errors). Scale-read failures before a sample was stored and
+recognition failures never latch the lane: `requires_acknowledgement=false`
+on the capture, the lane re-arms after a fresh confirmed clear. `stale`,
 disconnected, malformed, unstable, or `weight_kg=null` responses never count
 as an empty scale. Thus a restart while a truck is parked cannot duplicate it,
 and an unattended error cannot disappear between five-second UI polls.
+
+Every completed capture (recognized or plate-less) then fetches the evidence
+frame Camera-PC kept for the last attempt
+(`GET /cameras/<cam>/vehicle-recognition/<uuid>/frame`) and stores it on the
+`WeighingRecord` (or the unassigned weighing) under `MEDIA_ROOT/grain/`. The
+wagon detail exposes `entry_photo_url`/`exit_photo_url` as signed links valid
+for one hour (`/api/grain/photos/<kind>/<id>/?token=...`); the media
+directory itself is never served by nginx. A missing photo never changes the
+weighing. The manual weight-first button stores the photo the same way.
 
 The CRM polls
 `GET /api/grain/automatic-passage-scale/runtime/` independently from

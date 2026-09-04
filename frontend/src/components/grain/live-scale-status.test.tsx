@@ -7,9 +7,14 @@ import { LiveScaleStatus } from "./live-scale-status";
 const mocks = vi.hoisted(() => ({
   useApi: vi.fn(),
   reload: vi.fn(),
+  useVisiblePolling: vi.fn(),
 }));
 
 vi.mock("@/lib/use-api", () => ({ useApi: mocks.useApi }));
+vi.mock("@/lib/use-visible-polling", () => ({
+  useVisiblePolling: (poll: () => Promise<unknown>, intervalMs: number, active?: boolean) =>
+    mocks.useVisiblePolling(poll, intervalMs, active),
+}));
 
 function preview(overrides: Partial<TruckScalePreview> = {}): TruckScalePreview {
   return {
@@ -37,22 +42,24 @@ describe("LiveScaleStatus", () => {
   beforeEach(() => {
     mocks.useApi.mockReset();
     mocks.reload.mockReset();
+    mocks.useVisiblePolling.mockReset();
     mocks.reload.mockResolvedValue(undefined);
   });
 
-  it("shows the current stable truck weight without starting periodic polling", () => {
+  it("shows the current stable truck weight and keeps it live while the tab is visible", () => {
     mockApi(preview());
 
     render(<LiveScaleStatus active scaleKey="truck" label="Вывоз" />);
 
     expect(mocks.useApi).toHaveBeenCalledWith("/truck-scales/truck/reading/");
+    expect(mocks.useVisiblePolling).toHaveBeenCalledWith(mocks.reload, 3000, true);
     expect(screen.getByText("3,66 т")).toBeInTheDocument();
     expect(screen.getByText("Вывоз · Снимок стабилен")).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Весы «Вывоз»: 3,66 т, Снимок стабилен" })).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Весы «Вывоз»: 3,66 т, Снимок стабилен");
   });
 
-  it("refreshes only when the operator explicitly asks", async () => {
+  it("also refreshes immediately when the operator asks", async () => {
     const user = userEvent.setup();
     mockApi(preview());
 
