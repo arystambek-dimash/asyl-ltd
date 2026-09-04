@@ -13,6 +13,10 @@ from django.db.models import Sum
 
 from .statuses import EXPECTED, ON_SITE_STATUSES, WAGON_STATUSES
 
+PASSAGE_SCALE_DEFAULT_STABLE_WEIGHT_SECONDS = 10
+PASSAGE_SCALE_MIN_STABLE_WEIGHT_SECONDS = 2
+PASSAGE_SCALE_MAX_STABLE_WEIGHT_SECONDS = 60
+
 
 class GrainSettings(models.Model):
     """Единственная строка настроек модуля (порог расхождения и датчиков)."""
@@ -564,6 +568,10 @@ class PassageScaleAutomationState(models.Model):
     phase = models.CharField(max_length=20, choices=PHASES, default=UNARMED)
     clear_streak = models.PositiveSmallIntegerField(default=0)
     stable_streak = models.PositiveSmallIntegerField(default=0)
+    stable_weight_seconds = models.PositiveSmallIntegerField(
+        default=PASSAGE_SCALE_DEFAULT_STABLE_WEIGHT_SECONDS
+    )
+    stability_started_at = models.DateTimeField(null=True, blank=True)
     candidate_weight_kg = models.DecimalField(
         max_digits=12,
         decimal_places=2,
@@ -592,6 +600,17 @@ class PassageScaleAutomationState(models.Model):
                         "processing",
                         "awaiting_clear",
                     ]
+                ),
+            ),
+            models.CheckConstraint(
+                name="grain_passage_scale_stable_seconds_valid",
+                condition=models.Q(
+                    stable_weight_seconds__gte=(
+                        PASSAGE_SCALE_MIN_STABLE_WEIGHT_SECONDS
+                    ),
+                    stable_weight_seconds__lte=(
+                        PASSAGE_SCALE_MAX_STABLE_WEIGHT_SECONDS
+                    ),
                 ),
             ),
         ]

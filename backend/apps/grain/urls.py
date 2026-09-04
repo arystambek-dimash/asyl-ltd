@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     AutomaticPassageScaleAcknowledgeView,
     AutomaticPassageScaleRuntimeView,
+    AutomaticPassageScaleSettingsView,
     GrainSupplyViewSet,
     SiloTypeViewSet,
     SiloViewSet,
@@ -29,6 +30,10 @@ urlpatterns = [
     path(
         "grain/automatic-passage-scale/runtime/",
         AutomaticPassageScaleRuntimeView.as_view(),
+    ),
+    path(
+        "grain/automatic-passage-scale/settings/",
+        AutomaticPassageScaleSettingsView.as_view(),
     ),
     path(
         "truck-scales/<str:scale_key>/reading/",

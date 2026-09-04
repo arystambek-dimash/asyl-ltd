@@ -11,7 +11,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.pagination import OptInPageNumberPagination
-from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
+from apps.common.permissions import IsSuperUser, PermAPIViewMixin, PermViewSetMixin
 from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.models import EventLog
 
@@ -20,6 +20,7 @@ from . import statuses as st
 from .models import GrainSupply, Silo, SiloType, Wagon
 from .scale_preview import get_scale_preview
 from .serializers import (
+    AutomaticPassageScaleSettingsSerializer,
     GrainMovementSerializer,
     GrainSupplySerializer,
     SiloSerializer,
@@ -108,6 +109,48 @@ class AutomaticPassageScaleRuntimeView(PermAPIViewMixin, APIView):
         response = Response(passage_scale_automation.scale_automation_runtime())
         response["Cache-Control"] = "no-store"
         return response
+
+
+class AutomaticPassageScaleSettingsView(PermAPIViewMixin, APIView):
+    """Expose lane timing to grain staff; mutation is superuser-only."""
+
+    required_perms: ClassVar[dict[str, str]] = {"get": "grain.view"}
+
+    def get_permissions(self):
+        if self.request.method.lower() in {"patch", "put"}:
+            return [IsSuperUser()]
+        return super().get_permissions()
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        response["Cache-Control"] = "no-store"
+        return response
+
+    def get(self, request):
+        return Response(passage_scale_automation.scale_automation_settings())
+
+    def patch(self, request):
+        if not isinstance(request.data, dict) or set(request.data) != {
+            "stable_weight_seconds"
+        }:
+            raise ValidationError(
+                {
+                    "detail": "Передайте только stable_weight_seconds.",
+                    "code": "automatic_scale_settings_invalid",
+                }
+            )
+        serializer = AutomaticPassageScaleSettingsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return Response(
+            passage_scale_automation.update_scale_automation_settings(
+                stable_weight_seconds=serializer.validated_data[
+                    "stable_weight_seconds"
+                ],
+                user=request.user,
+            )
+        )
+
+    put = patch
 
 
 def _get_supply(supply_id) -> GrainSupply | None:

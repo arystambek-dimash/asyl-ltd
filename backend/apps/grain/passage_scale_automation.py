@@ -29,6 +29,7 @@ from apps.eventlog.services import log_event
 from . import scale, services
 from . import statuses as st
 from .models import (
+    PASSAGE_SCALE_DEFAULT_STABLE_WEIGHT_SECONDS,
     AutomaticPassageCapture,
     PassageScaleAutomationState,
     PassageWeightCapture,
@@ -116,6 +117,7 @@ def _is_occupied(observation: scale.ScaleObservation) -> bool:
 def _reset_candidate(state: PassageScaleAutomationState, *, phase: str) -> None:
     state.phase = phase
     state.stable_streak = 0
+    state.stability_started_at = None
     state.candidate_weight_kg = None
 
 
@@ -123,10 +125,32 @@ def _save_state(state: PassageScaleAutomationState, *fields: str) -> None:
     state.save(update_fields=[*fields, "updated_at"])
 
 
+@transaction.atomic
+def _discard_unobserved_candidate() -> None:
+    """Require a new full interval after a scale observation outage."""
+
+    state = (
+        PassageScaleAutomationState.objects.select_for_update()
+        .filter(scale_number=scale.TRUCK_SCALE_KEY)
+        .first()
+    )
+    if state is None or state.phase != PassageScaleAutomationState.STABILIZING:
+        return
+    _reset_candidate(state, phase=PassageScaleAutomationState.ARMED)
+    _save_state(
+        state,
+        "phase",
+        "stable_streak",
+        "stability_started_at",
+        "candidate_weight_kg",
+    )
+
+
 def _rearm_lane(state: PassageScaleAutomationState) -> None:
     state.phase = PassageScaleAutomationState.ARMED
     state.clear_streak = 0
     state.stable_streak = 0
+    state.stability_started_at = None
     state.candidate_weight_kg = None
     state.current_capture = None
     _save_state(
@@ -134,6 +158,7 @@ def _rearm_lane(state: PassageScaleAutomationState) -> None:
         "phase",
         "clear_streak",
         "stable_streak",
+        "stability_started_at",
         "candidate_weight_kg",
         "current_capture",
     )
@@ -296,12 +321,14 @@ def _claim_pending_work(*, now) -> tuple[bool, _Work | None]:
         state.phase = PassageScaleAutomationState.UNARMED
         state.clear_streak = 0
         state.stable_streak = 0
+        state.stability_started_at = None
         state.candidate_weight_kg = None
         _save_state(
             state,
             "phase",
             "clear_streak",
             "stable_streak",
+            "stability_started_at",
             "candidate_weight_kg",
         )
         return True, None
@@ -319,6 +346,7 @@ def _disarm_lane(state: PassageScaleAutomationState) -> None:
     state.phase = PassageScaleAutomationState.UNARMED
     state.clear_streak = 0
     state.stable_streak = 0
+    state.stability_started_at = None
     state.candidate_weight_kg = None
     state.current_capture = None
     _save_state(
@@ -326,6 +354,7 @@ def _disarm_lane(state: PassageScaleAutomationState) -> None:
         "phase",
         "clear_streak",
         "stable_streak",
+        "stability_started_at",
         "candidate_weight_kg",
         "current_capture",
     )
@@ -342,6 +371,7 @@ def _reset_idle_lane(state: PassageScaleAutomationState) -> None:
         state.phase == PassageScaleAutomationState.UNARMED
         and state.clear_streak == 0
         and state.stable_streak == 0
+        and state.stability_started_at is None
         and state.candidate_weight_kg is None
         and state.current_capture_id is None
     ):
@@ -405,12 +435,14 @@ def _prepare_disabled_lane(*, now) -> None:
         state.phase = PassageScaleAutomationState.UNARMED
         state.clear_streak = 0
         state.stable_streak = 0
+        state.stability_started_at = None
         state.candidate_weight_kg = None
         _save_state(
             state,
             "phase",
             "clear_streak",
             "stable_streak",
+            "stability_started_at",
             "candidate_weight_kg",
         )
         return
@@ -445,12 +477,14 @@ def _prepare_disabled_lane(*, now) -> None:
     state.phase = PassageScaleAutomationState.AWAITING_CLEAR
     state.clear_streak = 0
     state.stable_streak = 0
+    state.stability_started_at = None
     state.candidate_weight_kg = None
     _save_state(
         state,
         "phase",
         "clear_streak",
         "stable_streak",
+        "stability_started_at",
         "candidate_weight_kg",
     )
 
@@ -498,12 +532,14 @@ def _advance_lane(
             state.phase = PassageScaleAutomationState.UNARMED
             state.clear_streak = 0
             state.stable_streak = 0
+            state.stability_started_at = None
             state.candidate_weight_kg = None
             _save_state(
                 state,
                 "phase",
                 "clear_streak",
                 "stable_streak",
+                "stability_started_at",
                 "candidate_weight_kg",
             )
             return None
@@ -572,27 +608,51 @@ def _advance_lane(
             return None
         state.phase = PassageScaleAutomationState.STABILIZING
         state.stable_streak = 1
+        state.stability_started_at = now
         state.candidate_weight_kg = observation.weight_kg
-        _save_state(state, "phase", "stable_streak", "candidate_weight_kg")
-        if settings.VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS > 1:
-            return None
+        _save_state(
+            state,
+            "phase",
+            "stable_streak",
+            "stability_started_at",
+            "candidate_weight_kg",
+        )
+        return None
 
     elif state.phase == PassageScaleAutomationState.STABILIZING:
         if not _is_occupied(observation):
             _reset_candidate(state, phase=PassageScaleAutomationState.ARMED)
-            _save_state(state, "phase", "stable_streak", "candidate_weight_kg")
+            _save_state(
+                state,
+                "phase",
+                "stable_streak",
+                "stability_started_at",
+                "candidate_weight_kg",
+            )
             return None
         tolerance = Decimal(settings.VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG)
         candidate = state.candidate_weight_kg
-        if candidate is None or abs(observation.weight_kg - candidate) > tolerance:
+        started_at = state.stability_started_at
+        if (
+            candidate is None
+            or started_at is None
+            or now < started_at
+            or abs(observation.weight_kg - candidate) > tolerance
+        ):
             state.stable_streak = 1
+            state.stability_started_at = now
             state.candidate_weight_kg = observation.weight_kg
-            _save_state(state, "stable_streak", "candidate_weight_kg")
+            _save_state(
+                state,
+                "stable_streak",
+                "stability_started_at",
+                "candidate_weight_kg",
+            )
             return None
         state.stable_streak += 1
-        state.candidate_weight_kg = observation.weight_kg
-        if state.stable_streak < settings.VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS:
-            _save_state(state, "stable_streak", "candidate_weight_kg")
+        stable_for = (now - started_at).total_seconds()
+        if stable_for < state.stable_weight_seconds or state.stable_streak < 2:
+            _save_state(state, "stable_streak")
             return None
 
     capture = AutomaticPassageCapture.objects.create(
@@ -605,6 +665,7 @@ def _advance_lane(
     state.phase = PassageScaleAutomationState.PROCESSING
     state.clear_streak = 0
     state.stable_streak = 0
+    state.stability_started_at = None
     state.candidate_weight_kg = None
     state.current_capture = capture
     _save_state(
@@ -612,6 +673,7 @@ def _advance_lane(
         "phase",
         "clear_streak",
         "stable_streak",
+        "stability_started_at",
         "candidate_weight_kg",
         "current_capture",
     )
@@ -1173,6 +1235,7 @@ def _publish_runtime(*, now, unavailable: bool = False) -> dict:
     capture = state.current_capture if state is not None else None
     payload = {
         "enabled": True,
+        "stable_weight_seconds": _stable_weight_seconds(state),
         "state": _public_state(state, capture, unavailable=unavailable),
         "last_checked_at": now.astimezone(UTC).isoformat().replace("+00:00", "Z"),
         "heartbeat_stale": False,
@@ -1195,12 +1258,78 @@ def _durable_lane() -> tuple[
     return state, capture
 
 
+def _stable_weight_seconds(
+    state: PassageScaleAutomationState | None,
+) -> int:
+    if state is None:
+        return PASSAGE_SCALE_DEFAULT_STABLE_WEIGHT_SECONDS
+    return int(state.stable_weight_seconds)
+
+
+def scale_automation_settings() -> dict:
+    """Return the durable operator-editable timing for the truck lane."""
+
+    state = (
+        PassageScaleAutomationState.objects.filter(scale_number=scale.TRUCK_SCALE_KEY)
+        .only("stable_weight_seconds")
+        .first()
+    )
+    return {"stable_weight_seconds": _stable_weight_seconds(state)}
+
+
+@transaction.atomic
+def update_scale_automation_settings(
+    *,
+    stable_weight_seconds: int,
+    user,
+) -> dict:
+    """Update lane timing without letting an in-flight candidate fire early."""
+
+    state, _created = (
+        PassageScaleAutomationState.objects.select_for_update().get_or_create(
+            scale_number=scale.TRUCK_SCALE_KEY,
+            defaults={"phase": PassageScaleAutomationState.UNARMED},
+        )
+    )
+    previous = int(state.stable_weight_seconds)
+    changed = previous != stable_weight_seconds
+    update_fields = ["stable_weight_seconds"] if changed else []
+    if state.phase == PassageScaleAutomationState.STABILIZING:
+        # A shorter value must not retroactively accept a partly observed
+        # vehicle. The next occupied poll starts one complete new interval.
+        _reset_candidate(state, phase=PassageScaleAutomationState.ARMED)
+        update_fields.extend(
+            [
+                "phase",
+                "stable_streak",
+                "stability_started_at",
+                "candidate_weight_kg",
+            ]
+        )
+    state.stable_weight_seconds = stable_weight_seconds
+    if update_fields:
+        _save_state(state, *update_fields)
+    if changed:
+        log_event(
+            "grain_auto_scale_settings_updated",
+            "Изменено время подтверждения стабильного веса",
+            user=user,
+            payload={
+                "scale_number": scale.TRUCK_SCALE_KEY,
+                "previous_stable_weight_seconds": previous,
+                "stable_weight_seconds": stable_weight_seconds,
+            },
+        )
+    return {"stable_weight_seconds": stable_weight_seconds}
+
+
 def _durable_runtime_fallback(*, last_checked_at: str | None = None) -> dict:
     """Project durable lane state when the best-effort heartbeat is unusable."""
 
     state, capture = _durable_lane()
     return {
         "enabled": True,
+        "stable_weight_seconds": _stable_weight_seconds(state),
         "state": _public_state(state, capture, unavailable=True),
         "last_checked_at": last_checked_at,
         "heartbeat_stale": True,
@@ -1302,6 +1431,7 @@ def scale_automation_runtime(*, now=None) -> dict:
             # unresolved operation that still requires an explicit audit ack.
             return {
                 "enabled": False,
+                "stable_weight_seconds": _stable_weight_seconds(durable_state),
                 "state": "manual_required",
                 "last_checked_at": None,
                 "heartbeat_stale": False,
@@ -1309,6 +1439,7 @@ def scale_automation_runtime(*, now=None) -> dict:
             }
         return {
             "enabled": False,
+            "stable_weight_seconds": _stable_weight_seconds(durable_state),
             "state": "disabled",
             "last_checked_at": None,
             "heartbeat_stale": False,
@@ -1338,6 +1469,7 @@ def scale_automation_runtime(*, now=None) -> dict:
             )
         )
     durable_state, durable_capture = _durable_lane()
+    stable_weight_seconds = _stable_weight_seconds(durable_state)
     durable_public_state = _public_state(
         durable_state,
         durable_capture,
@@ -1356,6 +1488,7 @@ def scale_automation_runtime(*, now=None) -> dict:
         # previous idle poll, so expose progress immediately from PostgreSQL.
         return {
             "enabled": True,
+            "stable_weight_seconds": stable_weight_seconds,
             "state": durable_public_state,
             "last_checked_at": payload.get("last_checked_at"),
             "heartbeat_stale": False,
@@ -1364,6 +1497,7 @@ def scale_automation_runtime(*, now=None) -> dict:
     if durable_public_state == "manual_required":
         return {
             "enabled": True,
+            "stable_weight_seconds": stable_weight_seconds,
             "state": "manual_required",
             "last_checked_at": payload.get("last_checked_at"),
             "heartbeat_stale": False,
@@ -1376,6 +1510,7 @@ def scale_automation_runtime(*, now=None) -> dict:
     ):
         return {
             "enabled": True,
+            "stable_weight_seconds": stable_weight_seconds,
             "state": "awaiting_clear",
             "last_checked_at": payload.get("last_checked_at"),
             "heartbeat_stale": False,
@@ -1383,6 +1518,7 @@ def scale_automation_runtime(*, now=None) -> dict:
         }
     return {
         "enabled": True,
+        "stable_weight_seconds": stable_weight_seconds,
         "state": payload["state"],
         "last_checked_at": payload.get("last_checked_at"),
         "heartbeat_stale": False,
@@ -1398,6 +1534,9 @@ def monitor_once(*, now=None) -> MonitorIteration:
         _prepare_disabled_lane(now=current)
         payload = {
             "enabled": False,
+            "stable_weight_seconds": scale_automation_settings()[
+                "stable_weight_seconds"
+            ],
             "state": "disabled",
             "last_checked_at": current.astimezone(UTC)
             .isoformat()
@@ -1423,6 +1562,7 @@ def monitor_once(*, now=None) -> MonitorIteration:
     try:
         observation = scale.read_truck_scale_observation(scale.TRUCK_SCALE_KEY)
     except APIException as error:
+        _discard_unobserved_candidate()
         _publish_runtime(now=current, unavailable=True)
         code = error.get_codes()
         return MonitorIteration(

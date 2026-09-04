@@ -3,6 +3,8 @@ from rest_framework import serializers
 from apps.cameras.models import VehiclePlateEvent
 
 from .models import (
+    PASSAGE_SCALE_MAX_STABLE_WEIGHT_SECONDS,
+    PASSAGE_SCALE_MIN_STABLE_WEIGHT_SECONDS,
     GrainMovement,
     GrainSettings,
     GrainSupply,
@@ -376,6 +378,29 @@ class WagonBriefSerializer(WagonSerializer):
             "exited_at",
             "created_at",
         ]
+
+
+class AutomaticPassageScaleSettingsSerializer(serializers.Serializer):
+    stable_weight_seconds = serializers.JSONField()
+
+    def validate(self, attrs):
+        value = attrs.get("stable_weight_seconds")
+        if type(value) is not int or not (
+            PASSAGE_SCALE_MIN_STABLE_WEIGHT_SECONDS
+            <= value
+            <= PASSAGE_SCALE_MAX_STABLE_WEIGHT_SECONDS
+        ):
+            raise serializers.ValidationError(
+                {
+                    "stable_weight_seconds": (
+                        "Укажите целое число секунд от "
+                        f"{PASSAGE_SCALE_MIN_STABLE_WEIGHT_SECONDS} до "
+                        f"{PASSAGE_SCALE_MAX_STABLE_WEIGHT_SECONDS}."
+                    ),
+                    "code": "bad_stable_weight_seconds",
+                }
+            )
+        return {"stable_weight_seconds": value}
 
 
 class VehiclePlateCandidateSerializer(serializers.ModelSerializer):

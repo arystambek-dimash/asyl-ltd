@@ -2,7 +2,7 @@
 
 import type { AxiosError } from "axios";
 import { useState } from "react";
-import { Check, Focus, PencilLine, Scale, ScanLine, VideoOff, X } from "lucide-react";
+import { Check, Clock3, Focus, PencilLine, Scale, ScanLine, VideoOff, X } from "lucide-react";
 import { CameraStream } from "@/components/camera-stream";
 import {
   isDrawableVehicleRoi,
@@ -12,6 +12,8 @@ import {
   type VehicleRoiConfig,
 } from "@/components/grain/vehicle-roi-overlay";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { showSuccess } from "@/lib/toast";
@@ -23,7 +25,11 @@ import { useAuth } from "@/store/auth";
 const VEHICLE_RUNTIME_BOOTSTRAP_URL = "/cameras/vehicle-plate-runtime/";
 const SCALE_AUTOMATION_RUNTIME_URL = "/grain/automatic-passage-scale/runtime/";
 const SCALE_AUTOMATION_ACKNOWLEDGE_URL = "/grain/automatic-passage-scale/acknowledge/";
+const SCALE_AUTOMATION_SETTINGS_URL = "/grain/automatic-passage-scale/settings/";
 const VEHICLE_RUNTIME_POLL_MS = 5_000;
+const MIN_STABLE_WEIGHT_SECONDS = 2;
+const MAX_STABLE_WEIGHT_SECONDS = 60;
+const STABLE_WEIGHT_PRESETS = [5, 10, 15, 20, 30] as const;
 const DEFAULT_VEHICLE_ROI: NormalizedRoiPoint[] = [
   [0.25, 0.25],
   [0.75, 0.25],
@@ -57,6 +63,8 @@ type VehiclePlateMonitor = {
 
 export type ScaleAutomationRuntime = {
   enabled: boolean;
+  /** Optional while old backend instances are draining during a rolling deploy. */
+  stable_weight_seconds?: number;
   state:
     | "disabled"
     | "idle"
@@ -76,6 +84,10 @@ export type ScaleAutomationRuntime = {
     retryable: boolean;
     error_code: string | null;
   } | null;
+};
+
+type ScaleAutomationSettings = {
+  stable_weight_seconds: number;
 };
 
 export type VehiclePlateRuntime = {
@@ -122,6 +134,24 @@ const TONE_CLASSES: Record<RuntimePresentation["tone"], string> = {
   bad: "border-rose-400/25 bg-rose-400/10 text-rose-200",
   idle: "border-white/15 bg-white/[0.06] text-white/60",
 };
+
+function validStableWeightSeconds(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= MIN_STABLE_WEIGHT_SECONDS &&
+    value <= MAX_STABLE_WEIGHT_SECONDS
+  );
+}
+
+function secondsLabel(seconds: number): string {
+  const mod100 = seconds % 100;
+  if (mod100 >= 11 && mod100 <= 14) return `${seconds} секунд`;
+  const mod10 = seconds % 10;
+  if (mod10 === 1) return `${seconds} секунду`;
+  if (mod10 >= 2 && mod10 <= 4) return `${seconds} секунды`;
+  return `${seconds} секунд`;
+}
 
 function draftRoi(points: NormalizedRoiPoint[], source: "main" | "sub"): VehicleRoiConfig {
   return {
@@ -315,14 +345,18 @@ export function scaleAutomationPresentation(
   if (automation.state === "idle") {
     return {
       label: "ОЖИДАЕТ МАШИНУ",
-      detail: "Фоновый сервис проверяет весы каждую секунду и ждёт новый стабильный заезд.",
+      detail: validStableWeightSeconds(automation.stable_weight_seconds)
+        ? `Фоновый сервис проверяет весы каждую секунду. OCR запустится, когда вес останется стабильным ${secondsLabel(automation.stable_weight_seconds)}.`
+        : "Фоновый сервис проверяет весы каждую секунду и ждёт новый стабильный заезд.",
       tone: "good",
     };
   }
   if (automation.state === "candidate") {
     return {
       label: "ЖДЁТ СТАБИЛЬНЫЙ ВЕС",
-      detail: "Обнаружено изменение веса; ждём стабильное показание перед запуском камеры.",
+      detail: validStableWeightSeconds(automation.stable_weight_seconds)
+        ? `Обнаружено изменение веса; перед запуском камеры оно должно быть стабильным ${secondsLabel(automation.stable_weight_seconds)}.`
+        : "Обнаружено изменение веса; ждём стабильное показание перед запуском камеры.",
       tone: "warn",
     };
   }
@@ -389,7 +423,8 @@ function roiPresentation(runtime: VehiclePlateRuntime | null, error: string): Ru
  * this component only selects the logical stream name.
  */
 export function VehiclePlateCameraWorkspace() {
-  const canManageRoi = useAuth((state) => Boolean(state.me?.is_superuser));
+  const isSuperuser = useAuth((state) => Boolean(state.me?.is_superuser));
+  const canManageRoi = isSuperuser;
   const canAcknowledgeManualPassage = useAuth((state) => can(state.me, "grain.weigh"));
   const [streamOnline, setStreamOnline] = useState(false);
   const [editingRoi, setEditingRoi] = useState(false);
@@ -399,6 +434,10 @@ export function VehiclePlateCameraWorkspace() {
   const [saveNotice, setSaveNotice] = useState<SaveNotice | null>(null);
   const [acknowledgingRequestId, setAcknowledgingRequestId] = useState("");
   const [acknowledgeError, setAcknowledgeError] = useState<{ requestId: string; message: string } | null>(null);
+  const [stableWeightSettingsOpen, setStableWeightSettingsOpen] = useState(false);
+  const [stableWeightSecondsDraft, setStableWeightSecondsDraft] = useState("");
+  const [savingStableWeightSeconds, setSavingStableWeightSeconds] = useState(false);
+  const [stableWeightSettingsSaveError, setStableWeightSettingsSaveError] = useState("");
   const {
     data: runtime,
     loading: runtimeLoading,
@@ -413,12 +452,24 @@ export function VehiclePlateCameraWorkspace() {
     reload: reloadScaleAutomation,
     setData: setStandaloneScaleAutomation,
   } = useApi<ScaleAutomationRuntime>(SCALE_AUTOMATION_RUNTIME_URL);
+  const {
+    data: scaleAutomationSettings,
+    loading: scaleAutomationSettingsLoading,
+    error: scaleAutomationSettingsError,
+    reload: reloadScaleAutomationSettings,
+    setData: setScaleAutomationSettings,
+  } = useApi<ScaleAutomationSettings>(SCALE_AUTOMATION_SETTINGS_URL);
   useVisiblePolling(
     reload,
     VEHICLE_RUNTIME_POLL_MS,
     !runtimeLoading && !editingRoi && !savingRoi && !acknowledgingRequestId,
   );
   useVisiblePolling(reloadScaleAutomation, VEHICLE_RUNTIME_POLL_MS, !scaleAutomationLoading && !acknowledgingRequestId);
+  useVisiblePolling(
+    reloadScaleAutomationSettings,
+    VEHICLE_RUNTIME_POLL_MS,
+    !scaleAutomationSettingsLoading && !savingStableWeightSeconds,
+  );
   const aiState = vehicleAiPresentation(runtime, runtimeLoading, runtimeError);
   // The CRM endpoint stays available when Camera-PC diagnostics fail. Keep the
   // embedded field only as a rolling-deploy fallback for an older backend.
@@ -435,8 +486,28 @@ export function VehiclePlateCameraWorkspace() {
   const weightFirst = Boolean(
     runtime?.weight_first_enabled || scaleAutomation?.enabled || scaleAutomation?.state === "manual_required",
   );
+  const stableWeightSeconds = validStableWeightSeconds(scaleAutomation?.stable_weight_seconds)
+    ? scaleAutomation.stable_weight_seconds
+    : validStableWeightSeconds(scaleAutomationSettings?.stable_weight_seconds)
+      ? scaleAutomationSettings.stable_weight_seconds
+      : null;
+  const canOpenStableWeightSettings =
+    isSuperuser &&
+    weightFirst &&
+    !scaleAutomationSettingsLoading &&
+    !scaleAutomationSettingsError &&
+    validStableWeightSeconds(scaleAutomationSettings?.stable_weight_seconds);
+  const stableWeightSecondsValue = Number(stableWeightSecondsDraft);
+  const canSaveStableWeightSeconds =
+    stableWeightSecondsDraft.trim() !== "" &&
+    validStableWeightSeconds(stableWeightSecondsValue) &&
+    !savingStableWeightSeconds;
+  const scaleAutomationWithSettings =
+    scaleAutomation && stableWeightSeconds !== null
+      ? { ...scaleAutomation, stable_weight_seconds: stableWeightSeconds }
+      : scaleAutomation;
   const scaleAutomationState = scaleAutomationPresentation(
-    scaleAutomation,
+    scaleAutomationWithSettings,
     !scaleAutomation && scaleAutomationLoading,
     effectiveScaleAutomationError,
   );
@@ -544,6 +615,47 @@ export function VehiclePlateCameraWorkspace() {
     }
   }
 
+  function openStableWeightSettings() {
+    if (!canOpenStableWeightSettings || stableWeightSeconds === null) return;
+    setStableWeightSecondsDraft(String(stableWeightSeconds));
+    setStableWeightSettingsSaveError("");
+    setStableWeightSettingsOpen(true);
+  }
+
+  function closeStableWeightSettings() {
+    if (savingStableWeightSeconds) return;
+    setStableWeightSettingsOpen(false);
+    setStableWeightSettingsSaveError("");
+  }
+
+  async function saveStableWeightSettings() {
+    if (!isSuperuser || !canSaveStableWeightSeconds) return;
+    setSavingStableWeightSeconds(true);
+    setStableWeightSettingsSaveError("");
+    try {
+      const response = await api.patch<ScaleAutomationSettings>(SCALE_AUTOMATION_SETTINGS_URL, {
+        stable_weight_seconds: stableWeightSecondsValue,
+      });
+      if (!validStableWeightSeconds(response.data?.stable_weight_seconds)) {
+        throw new Error("invalid automatic passage scale settings response");
+      }
+      setScaleAutomationSettings(response.data);
+      if (standaloneScaleAutomation) {
+        setStandaloneScaleAutomation({
+          ...standaloneScaleAutomation,
+          stable_weight_seconds: response.data.stable_weight_seconds,
+        });
+      }
+      setStableWeightSettingsOpen(false);
+      showSuccess("Время ожидания стабильного веса сохранено");
+      await Promise.all([reloadScaleAutomation(), reloadScaleAutomationSettings()]).catch(() => undefined);
+    } catch (cause) {
+      setStableWeightSettingsSaveError(apiError(cause));
+    } finally {
+      setSavingStableWeightSeconds(false);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -553,29 +665,43 @@ export function VehiclePlateCameraWorkspace() {
           </p>
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">
             {weightFirst
-              ? "Сервис проверяет весы каждую секунду. Новый стабильный заезд запускает OCR; повторный запуск возможен только после освобождения весов."
+              ? stableWeightSeconds
+                ? `Сервис проверяет весы каждую секунду. Вес должен оставаться стабильным ${secondsLabel(stableWeightSeconds)}, затем запускается OCR. Повторный запуск возможен только после освобождения весов.`
+                : "Сервис проверяет весы каждую секунду. OCR запускается после настроенного времени стабильного веса; повторный запуск возможен только после освобождения весов."
               : "Камера проходной показывает машину, номер которой используется для автоматического рейса."}
           </p>
         </div>
-        {canManageRoi ? (
-          editingRoi ? (
-            <div className="flex flex-wrap items-center gap-2" aria-label="Действия редактора ROI">
-              <Button variant="outline" disabled={savingRoi} onClick={cancelRoiEditor}>
-                <X className="size-4" /> Отмена
+        {canManageRoi || (isSuperuser && weightFirst) ? (
+          <div className="flex flex-wrap items-center gap-2">
+            {isSuperuser && weightFirst && !editingRoi ? (
+              <Button
+                variant="outline"
+                disabled={!canOpenStableWeightSettings}
+                onClick={openStableWeightSettings}
+                title={scaleAutomationSettingsError ? "Настройка ожидания временно недоступна" : undefined}
+              >
+                <Clock3 className="size-4" /> Настроить ожидание
               </Button>
-              <Button disabled={!canSaveRoi} onClick={() => void saveRoi()}>
-                <Check className="size-4" /> {savingRoi ? "Сохранение…" : "Сохранить ROI"}
+            ) : null}
+            {canManageRoi && editingRoi ? (
+              <div className="flex flex-wrap items-center gap-2" aria-label="Действия редактора ROI">
+                <Button variant="outline" disabled={savingRoi} onClick={cancelRoiEditor}>
+                  <X className="size-4" /> Отмена
+                </Button>
+                <Button disabled={!canSaveRoi} onClick={() => void saveRoi()}>
+                  <Check className="size-4" /> {savingRoi ? "Сохранение…" : "Сохранить ROI"}
+                </Button>
+              </div>
+            ) : canManageRoi ? (
+              <Button
+                variant="outline"
+                disabled={!runtime || runtimeLoading || Boolean(runtimeError)}
+                onClick={startRoiEditor}
+              >
+                <PencilLine className="size-4" /> Изменить ROI
               </Button>
-            </div>
-          ) : (
-            <Button
-              variant="outline"
-              disabled={!runtime || runtimeLoading || Boolean(runtimeError)}
-              onClick={startRoiEditor}
-            >
-              <PencilLine className="size-4" /> Изменить ROI
-            </Button>
-          )
+            ) : null}
+          </div>
         ) : null}
       </div>
 
@@ -772,6 +898,81 @@ export function VehiclePlateCameraWorkspace() {
           </div>
         </div>
       </section>
+
+      <Modal
+        open={stableWeightSettingsOpen}
+        onClose={closeStableWeightSettings}
+        eyebrow="Настройка суперпользователя"
+        title="Ожидание стабильного веса"
+        description="Укажите, сколько секунд вес должен оставаться стабильным перед запуском распознавания номера."
+        footer={
+          <>
+            <Button variant="ghost" disabled={savingStableWeightSeconds} onClick={closeStableWeightSettings}>
+              Отмена
+            </Button>
+            <Button disabled={!canSaveStableWeightSeconds} onClick={() => void saveStableWeightSettings()}>
+              <Check className="size-4" /> {savingStableWeightSeconds ? "Сохранение…" : "Сохранить"}
+            </Button>
+          </>
+        }
+      >
+        <div className="rounded-2xl border bg-slate-50 p-4">
+          <label htmlFor="stable-weight-seconds" className="block text-sm font-bold text-slate-800">
+            Время стабильного веса
+          </label>
+          <p id="stable-weight-seconds-hint" className="mt-1 text-xs text-slate-500">
+            От {MIN_STABLE_WEIGHT_SECONDS} до {MAX_STABLE_WEIGHT_SECONDS} секунд
+          </p>
+          <div className="relative mt-3 max-w-40">
+            <Input
+              id="stable-weight-seconds"
+              type="number"
+              min={MIN_STABLE_WEIGHT_SECONDS}
+              max={MAX_STABLE_WEIGHT_SECONDS}
+              step={1}
+              inputMode="numeric"
+              value={stableWeightSecondsDraft}
+              aria-describedby="stable-weight-seconds-hint"
+              disabled={savingStableWeightSeconds}
+              onChange={(event) => setStableWeightSecondsDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && canSaveStableWeightSeconds) {
+                  event.preventDefault();
+                  void saveStableWeightSettings();
+                }
+              }}
+              className="pr-10 text-center text-lg font-bold tabular-nums"
+              autoFocus
+            />
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">
+              сек.
+            </span>
+          </div>
+          <div className="mt-4 grid grid-cols-5 gap-2" aria-label="Готовые варианты ожидания">
+            {STABLE_WEIGHT_PRESETS.map((seconds) => (
+              <button
+                type="button"
+                key={seconds}
+                disabled={savingStableWeightSeconds}
+                onClick={() => setStableWeightSecondsDraft(String(seconds))}
+                className={cn(
+                  "rounded-lg border py-2 text-xs font-bold transition-colors disabled:opacity-60",
+                  stableWeightSecondsValue === seconds
+                    ? "border-blue-600 bg-blue-600 text-white"
+                    : "bg-white text-slate-600 hover:border-blue-300",
+                )}
+              >
+                {seconds}
+              </button>
+            ))}
+          </div>
+        </div>
+        {stableWeightSettingsSaveError ? (
+          <p role="alert" className="mt-3 text-sm text-[var(--destructive)]">
+            {stableWeightSettingsSaveError}
+          </p>
+        ) : null}
+      </Modal>
     </div>
   );
 }

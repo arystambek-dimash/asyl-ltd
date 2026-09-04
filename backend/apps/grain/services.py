@@ -1157,6 +1157,7 @@ def _reset_automatic_passage_lane(state: PassageScaleAutomationState) -> None:
         state.phase == PassageScaleAutomationState.UNARMED
         and state.clear_streak == 0
         and state.stable_streak == 0
+        and state.stability_started_at is None
         and state.candidate_weight_kg is None
         and state.current_capture_id is None
     ):
@@ -1164,6 +1165,7 @@ def _reset_automatic_passage_lane(state: PassageScaleAutomationState) -> None:
     state.phase = PassageScaleAutomationState.UNARMED
     state.clear_streak = 0
     state.stable_streak = 0
+    state.stability_started_at = None
     state.candidate_weight_kg = None
     state.current_capture = None
     state.save(
@@ -1171,6 +1173,7 @@ def _reset_automatic_passage_lane(state: PassageScaleAutomationState) -> None:
             "phase",
             "clear_streak",
             "stable_streak",
+            "stability_started_at",
             "candidate_weight_kg",
             "current_capture",
             "updated_at",

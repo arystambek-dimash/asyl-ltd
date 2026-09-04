@@ -84,6 +84,16 @@ def _reading(weight: str) -> scale.ScaleReading:
     )
 
 
+def _monitor_sequence(observations, *, step_seconds=10, started_at=None):
+    sequence_started_at = started_at or timezone.now()
+    return [
+        automation.monitor_once(
+            now=sequence_started_at + timedelta(seconds=index * step_seconds)
+        )
+        for index, _observation_value in enumerate(observations)
+    ]
+
+
 def _recognized(request_id, stable_weight_at, *, number="123ABC02") -> dict:
     return {
         "ok": True,
@@ -123,6 +133,143 @@ def test_startup_arms_only_after_consecutive_fresh_empty_observations():
     assert not AutomaticPassageCapture.objects.exists()
     strict_read.assert_not_called()
     recognize.assert_not_called()
+
+
+def test_occupied_candidate_requires_real_elapsed_stable_duration():
+    state = PassageScaleAutomationState.objects.create(
+        scale_number=scale.TRUCK_SCALE_KEY,
+        phase=PassageScaleAutomationState.ARMED,
+        stable_weight_seconds=10,
+    )
+    started_at = timezone.now()
+
+    assert automation._advance_lane(_observation("12000"), now=started_at) is None
+    assert (
+        automation._advance_lane(
+            _observation("12040"), now=started_at + timedelta(seconds=9)
+        )
+        is None
+    )
+    state.refresh_from_db()
+    assert state.phase == PassageScaleAutomationState.STABILIZING
+    assert state.stability_started_at == started_at
+    assert state.candidate_weight_kg == Decimal("12000")
+
+    work = automation._advance_lane(
+        _observation("12020"), now=started_at + timedelta(seconds=10)
+    )
+
+    assert work is not None
+    capture = AutomaticPassageCapture.objects.get(pk=work.capture_id)
+    state.refresh_from_db()
+    assert capture.trigger_weight_kg == Decimal("12020")
+    assert state.phase == PassageScaleAutomationState.PROCESSING
+    assert state.stability_started_at is None
+    assert state.candidate_weight_kg is None
+
+
+def test_changed_candidate_restarts_full_elapsed_duration_from_new_anchor():
+    state = PassageScaleAutomationState.objects.create(
+        scale_number=scale.TRUCK_SCALE_KEY,
+        phase=PassageScaleAutomationState.ARMED,
+        stable_weight_seconds=10,
+    )
+    started_at = timezone.now()
+
+    automation._advance_lane(_observation("12000"), now=started_at)
+    automation._advance_lane(
+        _observation("12060"), now=started_at + timedelta(seconds=9)
+    )
+    assert (
+        automation._advance_lane(
+            _observation("12070"), now=started_at + timedelta(seconds=18)
+        )
+        is None
+    )
+    state.refresh_from_db()
+    assert state.stability_started_at == started_at + timedelta(seconds=9)
+    assert state.candidate_weight_kg == Decimal("12060")
+
+    work = automation._advance_lane(
+        _observation("12080"), now=started_at + timedelta(seconds=19)
+    )
+    assert work is not None
+
+
+def test_unsafe_sample_clears_elapsed_candidate():
+    state = PassageScaleAutomationState.objects.create(
+        scale_number=scale.TRUCK_SCALE_KEY,
+        phase=PassageScaleAutomationState.ARMED,
+    )
+    started_at = timezone.now()
+    automation._advance_lane(_observation("12000"), now=started_at)
+
+    assert (
+        automation._advance_lane(
+            _stale_observation(), now=started_at + timedelta(seconds=9)
+        )
+        is None
+    )
+
+    state.refresh_from_db()
+    assert state.phase == PassageScaleAutomationState.ARMED
+    assert state.stability_started_at is None
+    assert state.candidate_weight_kg is None
+    assert state.stable_streak == 0
+
+
+def test_observation_error_clears_elapsed_candidate_before_recovery():
+    state = PassageScaleAutomationState.objects.create(
+        scale_number=scale.TRUCK_SCALE_KEY,
+        phase=PassageScaleAutomationState.ARMED,
+    )
+    started_at = timezone.now()
+    with patch.object(
+        scale,
+        "read_truck_scale_observation",
+        side_effect=[
+            _observation("12000"),
+            scale.TruckScaleUnavailable(),
+            _observation("12010"),
+        ],
+    ):
+        first = automation.monitor_once(now=started_at)
+        unavailable = automation.monitor_once(
+            now=started_at + timedelta(seconds=10)
+        )
+        recovered = automation.monitor_once(
+            now=started_at + timedelta(seconds=11)
+        )
+
+    state.refresh_from_db()
+    assert [first.state, unavailable.state, recovered.state] == [
+        "candidate",
+        "unavailable",
+        "candidate",
+    ]
+    assert state.phase == PassageScaleAutomationState.STABILIZING
+    assert state.stability_started_at == started_at + timedelta(seconds=11)
+    assert state.candidate_weight_kg == Decimal("12010")
+    assert not AutomaticPassageCapture.objects.exists()
+
+
+def test_migrated_stabilizing_state_without_started_at_starts_new_timer():
+    state = PassageScaleAutomationState.objects.create(
+        scale_number=scale.TRUCK_SCALE_KEY,
+        phase=PassageScaleAutomationState.STABILIZING,
+        stable_streak=9,
+        stability_started_at=None,
+        candidate_weight_kg=Decimal("12000"),
+    )
+    current = timezone.now()
+
+    assert automation._advance_lane(_observation("12010"), now=current) is None
+
+    state.refresh_from_db()
+    assert state.stable_streak == 1
+    assert state.stability_started_at == current
+    assert state.candidate_weight_kg == Decimal("12010")
+    assert not AutomaticPassageCapture.objects.exists()
 
 
 @pytest.mark.parametrize("manual_number", ["", "999XYZ01"])
@@ -201,7 +348,7 @@ def test_pending_manual_passage_reserves_lane_until_entry_weight_is_recorded():
         patch.object(scale, "read_truck_scale") as strict_read,
         patch.object(camera_ai, "recognize_vehicle_from_camera") as recognize,
     ):
-        results = [automation.monitor_once() for _ in observations]
+        results = _monitor_sequence(observations)
 
     state = PassageScaleAutomationState.objects.get(
         scale_number=scale.TRUCK_SCALE_KEY
@@ -441,7 +588,7 @@ def test_processing_manual_exit_capture_keeps_automatic_lane_unarmed():
         patch.object(scale, "read_truck_scale") as strict_read,
         patch.object(camera_ai, "recognize_vehicle_from_camera") as recognize,
     ):
-        results = [automation.monitor_once() for _ in observations]
+        results = _monitor_sequence(observations)
 
     state = PassageScaleAutomationState.objects.get(
         scale_number=scale.TRUCK_SCALE_KEY
@@ -528,7 +675,7 @@ def test_one_occupied_episode_creates_one_entry_even_while_vehicle_stays_on_scal
             side_effect=lambda _camera, key, stable_at: _recognized(key, stable_at),
         ) as recognize,
     ):
-        results = [automation.monitor_once() for _ in observations]
+        results = _monitor_sequence(observations)
 
     capture = AutomaticPassageCapture.objects.get()
     state = PassageScaleAutomationState.objects.get(scale_number=scale.TRUCK_SCALE_KEY)
@@ -590,7 +737,7 @@ def test_minimal_production_camera_response_completes_automatic_entry():
             return_value=(200, production_response),
         ) as camera_request,
     ):
-        results = [automation.monitor_once() for _ in observations]
+        results = _monitor_sequence(observations)
 
     capture = AutomaticPassageCapture.objects.get()
     wagon = Wagon.objects.get()
@@ -649,7 +796,7 @@ def test_wrong_manual_plate_cannot_become_duplicate_automatic_entry():
             ),
         ) as recognize,
     ):
-        results = [automation.monitor_once() for _ in observations]
+        results = _monitor_sequence(observations)
 
     capture = AutomaticPassageCapture.objects.get()
     manual_wagon.refresh_from_db()
@@ -807,6 +954,8 @@ def test_disable_cannot_split_business_apply_from_capture_completion(settings):
 
 
 def test_confirmed_clear_rearms_lane_and_next_episode_completes_exit():
+    step_seconds = 10
+    sequence_started_at = timezone.now()
     entry_observations = [
         _observation("0"),
         _observation("0"),
@@ -837,12 +986,21 @@ def test_confirmed_clear_rearms_lane_and_next_episode_completes_exit():
             side_effect=lambda _camera, key, stable_at: _recognized(key, stable_at),
         ) as recognize,
     ):
-        entry_results = [automation.monitor_once() for _ in entry_observations]
+        entry_results = _monitor_sequence(
+            entry_observations,
+            step_seconds=step_seconds,
+            started_at=sequence_started_at,
+        )
         wagon = Wagon.objects.get(pk=entry_results[-1].wagon_id)
         Wagon.objects.filter(pk=wagon.pk).update(
             arrived_at=timezone.now() - timedelta(minutes=2)
         )
-        exit_results = [automation.monitor_once() for _ in exit_observations]
+        exit_results = _monitor_sequence(
+            exit_observations,
+            step_seconds=step_seconds,
+            started_at=sequence_started_at
+            + timedelta(seconds=len(entry_observations) * step_seconds),
+        )
 
     wagon.refresh_from_db()
     captures = list(AutomaticPassageCapture.objects.order_by("id"))
@@ -945,7 +1103,7 @@ def test_changed_weight_at_authoritative_read_fails_closed_before_camera():
         ),
         patch.object(camera_ai, "recognize_vehicle_from_camera") as recognize,
     ):
-        results = [automation.monitor_once() for _ in observations]
+        results = _monitor_sequence(observations)
 
     capture = AutomaticPassageCapture.objects.get()
     state = PassageScaleAutomationState.objects.get(scale_number=scale.TRUCK_SCALE_KEY)
@@ -986,7 +1144,7 @@ def test_stale_observation_never_counts_toward_confirmed_clear():
         "read_truck_scale_observation",
         side_effect=observations,
     ):
-        results = [automation.monitor_once() for _ in observations]
+        results = _monitor_sequence(observations)
 
     state = PassageScaleAutomationState.objects.get(scale_number=scale.TRUCK_SCALE_KEY)
     capture.refresh_from_db()
@@ -1095,6 +1253,110 @@ def test_scale_runtime_requires_grain_view_permission(
     assert response.status_code == 403
 
 
+def test_scale_settings_are_readable_by_grain_view_and_superuser_only_mutable(
+    api_client,
+    auth_client,
+    user_with_perms,
+):
+    viewer = user_with_perms("auto-scale-settings-viewer", codes=["grain.view"])
+    response = auth_client(viewer).get("/api/grain/automatic-passage-scale/settings/")
+    assert response.status_code == 200
+    assert response.data == {"stable_weight_seconds": 10}
+    assert response["Cache-Control"] == "no-store"
+
+    denied = auth_client(viewer).patch(
+        "/api/grain/automatic-passage-scale/settings/",
+        {"stable_weight_seconds": 15},
+        format="json",
+    )
+    assert denied.status_code == 403
+
+    no_view = user_with_perms("auto-scale-settings-no-view", codes=["grain.weigh"])
+    api_client.force_authenticate(no_view)
+    assert (
+        api_client.get("/api/grain/automatic-passage-scale/settings/").status_code
+        == 403
+    )
+
+
+def test_scale_settings_update_resets_stabilizing_candidate_and_is_audited(
+    auth_client,
+    user_with_perms,
+):
+    admin = user_with_perms("auto-scale-settings-admin", codes=[])
+    admin.is_superuser = True
+    admin.save(update_fields=["is_superuser"])
+    started_at = timezone.now() - timedelta(seconds=9)
+    state = PassageScaleAutomationState.objects.create(
+        scale_number=scale.TRUCK_SCALE_KEY,
+        phase=PassageScaleAutomationState.STABILIZING,
+        stable_streak=10,
+        stability_started_at=started_at,
+        candidate_weight_kg=Decimal("12000"),
+    )
+
+    response = auth_client(admin).put(
+        "/api/grain/automatic-passage-scale/settings/",
+        {"stable_weight_seconds": 15},
+        format="json",
+    )
+
+    assert response.status_code == 200, response.data
+    assert response.data == {"stable_weight_seconds": 15}
+    assert response["Cache-Control"] == "no-store"
+    state.refresh_from_db()
+    assert state.stable_weight_seconds == 15
+    assert state.phase == PassageScaleAutomationState.ARMED
+    assert state.stable_streak == 0
+    assert state.stability_started_at is None
+    assert state.candidate_weight_kg is None
+    audit = EventLog.objects.get(event_type="grain_auto_scale_settings_updated")
+    assert audit.user_id == admin.pk
+    assert audit.payload == {
+        "scale_number": scale.TRUCK_SCALE_KEY,
+        "previous_stable_weight_seconds": 10,
+        "stable_weight_seconds": 15,
+    }
+    runtime = auth_client(admin).get("/api/grain/automatic-passage-scale/runtime/")
+    assert runtime.status_code == 200
+    assert runtime.data["stable_weight_seconds"] == 15
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"stable_weight_seconds": True},
+        {"stable_weight_seconds": 1},
+        {"stable_weight_seconds": 61},
+        {"stable_weight_seconds": 10.5},
+        {"stable_weight_seconds": "10"},
+        {"stable_weight_seconds": 10, "unexpected": 1},
+    ],
+)
+def test_scale_settings_reject_noncanonical_or_out_of_range_payload(
+    auth_client,
+    user_with_perms,
+    payload,
+):
+    admin = user_with_perms(
+        f"auto-scale-settings-invalid-{len(str(payload))}", codes=[]
+    )
+    admin.is_superuser = True
+    admin.save(update_fields=["is_superuser"])
+
+    response = auth_client(admin).patch(
+        "/api/grain/automatic-passage-scale/settings/",
+        payload,
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert not EventLog.objects.filter(
+        event_type="grain_auto_scale_settings_updated"
+    ).exists()
+
+
 def test_latched_scale_failure_runtime_remains_available_when_camera_pc_is_down(
     auth_client,
     user_with_perms,
@@ -1182,6 +1444,7 @@ def test_runtime_uses_durable_recognition_stage_over_previous_idle_cache():
 
     assert runtime == {
         "enabled": True,
+        "stable_weight_seconds": 10,
         "state": "recognizing",
         "last_checked_at": checked_at,
         "heartbeat_stale": False,
@@ -1478,7 +1741,7 @@ def test_acknowledgement_does_not_reuse_old_clear_after_manual_fallback(
         patch.object(scale, "read_truck_scale") as strict_read,
         patch.object(camera_ai, "recognize_vehicle_from_camera") as recognize,
     ):
-        results = [automation.monitor_once() for _ in observations]
+        results = _monitor_sequence(observations)
 
     state.refresh_from_db()
     assert [result.state for result in results] == [
@@ -1822,6 +2085,7 @@ def test_disabled_monitor_does_not_touch_scale_or_persistent_lane(settings):
     assert result.state == "disabled"
     assert automation.scale_automation_runtime() == {
         "enabled": False,
+        "stable_weight_seconds": 10,
         "state": "disabled",
         "last_checked_at": None,
         "heartbeat_stale": False,

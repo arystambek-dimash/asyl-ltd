@@ -311,9 +311,13 @@ migrations.
 scale every second, but a numeric change is never itself a business trigger.
 The PostgreSQL state machine starts `unarmed` and requires several consecutive
 fresh, stable readings at or below the configured empty threshold. It then
-accepts several stable occupied readings within the configured tolerance,
-commits one `AutomaticPassageCapture`, performs one strict scale read, and
-calls the same on-demand Camera-PC endpoint with that capture UUID.
+requires an occupied weight to remain fresh, stable, and within the configured
+tolerance for the durable `stable_weight_seconds` interval (10 seconds by
+default). Only after that real elapsed interval does it commit one
+`AutomaticPassageCapture`, perform one strict scale read, and call the same
+on-demand Camera-PC endpoint with that capture UUID. Empty, unsafe, changed, or
+failed observations reset the complete interval; a monitor restart also fences
+the candidate and requires a new confirmed clear edge.
 
 After OCR, locked CRM state determines the action. A new plate creates an
 export passage and records its empty entry weight (`arrived -> at_silo`). The
@@ -342,6 +346,13 @@ Camera-PC, so a camera diagnostics outage cannot hide `recognizing`,
 `applying`, or a latched `manual_required` state. The response exposes only a
 safe operation UUID, stage, action, wagon ID, retry flag, and bounded error
 code—never the recognized plate, weight, upstream address, or raw payload.
+The same response includes the active `stable_weight_seconds`. Grain viewers
+may read the durable value through
+`GET /api/grain/automatic-passage-scale/settings/`; only a superuser may change
+it with an exact integer from 2 through 60 via `PATCH` or `PUT`. The Camera Gate
+screen polls this setting and exposes the editor only to a superuser. Changing
+it while a candidate is stabilizing resets that candidate, so the newly chosen
+full interval must pass before OCR.
 Turning the kill switch off stops and terminalizes new work, releases a
 completed/acknowledged lane for manual controls, and still keeps an unacknowledged
 failure visible until the operator confirms it.
@@ -365,6 +376,10 @@ VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG=50
 VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS=3
 VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS=60
 ```
+
+`VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS` remains accepted only for
+configuration compatibility. It no longer controls the occupied trigger; the
+durable UI/API setting `stable_weight_seconds` is authoritative.
 
 The heartbeat maximum age must cover the configured poll interval, preview
 and strict scale timeouts, Camera-PC timeout, and database apply margin;
