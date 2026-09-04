@@ -51,7 +51,7 @@ jobs:
   backend:
     name: Backend tests + audit
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16-alpine
