@@ -38,7 +38,12 @@ const nextConfig: NextConfig = {
       },
       {
         source: "/train",
-        destination: "/shipping",
+        destination: "/monoblock",
+        permanent: false,
+      },
+      {
+        source: "/shipping",
+        destination: "/monoblock",
         permanent: false,
       },
     ];

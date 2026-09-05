@@ -523,10 +523,10 @@ function LiveQueue({ m }: { m: DashboardMetrics }) {
           <p className="text-xs text-[var(--muted-foreground)]">{m.queue.length} машин в работе</p>
         </div>
         <Link
-          href="/shipping"
+          href="/monoblock"
           className="ml-auto inline-flex items-center gap-1.5 text-xs font-medium text-[var(--ring)] hover:underline"
         >
-          Открыть пост <ArrowUpRight className="size-3.5" />
+          Открыть моноблок <ArrowUpRight className="size-3.5" />
         </Link>
       </div>
       <div className="grid divide-y sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-4">

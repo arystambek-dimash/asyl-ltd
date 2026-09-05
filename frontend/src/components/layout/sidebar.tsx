@@ -9,7 +9,6 @@ import {
   Boxes,
   ClipboardList,
   Users,
-  Truck,
   CarFront,
   ScrollText,
   ListChecks,
@@ -67,9 +66,14 @@ function staffSections(): NavSection[] {
           icon: HandCoins,
           perm: ["payments.confirm", "payments.create", "reports.view", "payments.view"],
         },
-        // Единый пост: машины и вагоны вместе — лайв-этапы и моноблок отгрузки.
-        { href: "/shipping", label: "Пост погрузки", icon: Truck, perm: ["shipping.view", "train.view"] },
-        { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "shipping.load" },
+        // Единый пост отгрузки: очередь машин и вагонов, камеры и AI-подсчёт.
+        // Права — ровно те, что бэкенд принимает на GET /orders/?post_board=1.
+        {
+          href: "/monoblock",
+          label: "Моноблок",
+          icon: ScanLine,
+          perm: ["shipping.load", "shipping.view", "train.view"],
+        },
         { href: "/warehouse", label: "Склады", icon: Boxes, perm: "warehouse.view" },
         // Силосы имеют отдельное право независимо от зернового процесса.
         { href: "/warehouse/silos", label: "Силосы", icon: Warehouse, perm: "silos.view" },

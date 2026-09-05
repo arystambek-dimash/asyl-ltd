@@ -25,9 +25,7 @@ vi.mock("@/components/layout/app-shell", () => ({
   AppShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
-vi.mock("@/components/shipping/shipment-launcher", () => ({
-  ShipmentLauncher: () => <div>Запуск отгрузки</div>,
-}));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 vi.mock("@/lib/use-visible-polling", () => ({
   useVisiblePolling: () => undefined,
@@ -283,8 +281,8 @@ describe("доступ к AI 24/7 на странице моноблока", () 
 
     render(<MonoblockPage />);
 
-    expect(screen.getByText("Сегодня: —")).toBeInTheDocument();
-    expect(screen.queryByText("Сегодня: 0")).not.toBeInTheDocument();
+    expect(screen.getByText(/насчитано сегодня —/)).toBeInTheDocument();
+    expect(screen.queryByText(/насчитано сегодня 0/)).not.toBeInTheDocument();
   });
 
   it("считает отсутствующий sync-контракт недоступной аналитикой", () => {
@@ -296,7 +294,7 @@ describe("доступ к AI 24/7 на странице моноблока", () 
 
     render(<MonoblockPage />);
 
-    expect(screen.getByText("Сегодня: —")).toBeInTheDocument();
+    expect(screen.getByText(/насчитано сегодня —/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Открыть прямой эфир камеры Пост погрузки" })).toHaveTextContent("—");
   });
 
@@ -345,5 +343,51 @@ describe("доступ к AI 24/7 на странице моноблока", () 
     expect(mocks.urls).not.toContain("/cameras/always-on-analytics/");
     expect(mocks.urls).toContain("/cameras/shipping-continuous-settings/");
     expect(mocks.urls).toContain("/cameras/shipping-continuous-analytics/");
+  });
+});
+
+describe("гейтинг данных вкладки «Отгрузка»", () => {
+  it("view-only не запрашивает monoblock-settings и видит очередь без вкладок", () => {
+    mocks.me = { ...employee, permissions: ["shipping.view"] };
+    render(<MonoblockPage />);
+
+    expect(screen.getByText("Очередь отгрузки")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /AI 24\/7/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(mocks.urls).not.toContain("/cameras/monoblock-settings/");
+    expect(mocks.urls).not.toContain("/cameras/always-on-settings/");
+    expect(mocks.urls).toContain("/cameras/ai/sessions/");
+    expect(mocks.urls).toContain("/cameras/ai/history/?post_board=1");
+    expect(mocks.urls).toContain("/cameras/shipping-settings/");
+    expect(mocks.urls).toContain("/cameras/shipping-continuous-settings/");
+  });
+
+  it("train.view видит таблицу и не запрашивает чужие настройки", () => {
+    mocks.me = { ...employee, permissions: ["train.view"] };
+    render(<MonoblockPage />);
+
+    expect(screen.getByText("Очередь отгрузки")).toBeInTheDocument();
+    expect(screen.getByText("Нет заказов на посту")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(mocks.urls).toContain("/orders/?post_board=1");
+    expect(mocks.urls).toContain("/cameras/");
+    expect(mocks.urls).not.toContain("/cameras/ai/sessions/");
+    expect(mocks.urls).not.toContain("/cameras/ai/history/?post_board=1");
+    expect(mocks.urls).not.toContain("/cameras/monoblock-settings/");
+    expect(mocks.urls).not.toContain("/cameras/shipping-settings/");
+    expect(mocks.urls).not.toContain("/cameras/shipping-continuous-settings/");
+    expect(mocks.urls).not.toContain("/cameras/monoblock-devices/");
+  });
+
+  it("настройка «Отгруженные» видна только с правом управления системой", () => {
+    const { unmount } = render(<MonoblockPage />);
+    expect(screen.queryByRole("button", { name: /Отгруженные:/ })).not.toBeInTheDocument();
+    unmount();
+
+    mocks.me = { ...employee, permissions: ["shipping.load", "sys_permissions.manage"] };
+    render(<MonoblockPage />);
+    expect(screen.getByRole("button", { name: /Отгруженные: сегодня/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Камеры моноблока/ })).toBeInTheDocument();
+    expect(mocks.urls).toContain("/cameras/shipping-settings/");
   });
 });

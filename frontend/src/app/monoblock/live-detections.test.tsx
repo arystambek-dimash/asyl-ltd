@@ -37,9 +37,7 @@ vi.mock("@/components/layout/app-shell", () => ({
   AppShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
-vi.mock("@/components/shipping/shipment-launcher", () => ({
-  ShipmentLauncher: () => null,
-}));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 vi.mock("@/components/camera-stream", () => ({
   CameraStream: ({ onStateChange }: { onStateChange?: (online: boolean) => void }) => (

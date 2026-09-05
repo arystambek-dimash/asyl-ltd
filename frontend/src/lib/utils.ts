@@ -144,6 +144,16 @@ export function formatDateTime(value: string | Date): string {
   return DATE_TIME_FORMATTER.format(new Date(value));
 }
 
+/** Русская форма слова по числу: pluralRu(3, ["вагон", "вагона", "вагонов"]) → «вагона». */
+export function pluralRu(count: number, forms: [string, string, string]): string {
+  const n = Math.abs(count) % 100;
+  const last = n % 10;
+  if (n > 10 && n < 20) return forms[2];
+  if (last === 1) return forms[0];
+  if (last >= 2 && last <= 4) return forms[1];
+  return forms[2];
+}
+
 // Телефон по шаблону +7 (___) ___-__-__ — форматирует ввод по мере набора.
 export function formatPhone(value: string): string {
   const digits = value.replace(/\D/g, "").replace(/^8/, "7").slice(0, 11);

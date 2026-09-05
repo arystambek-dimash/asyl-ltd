@@ -1,7 +1,16 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
-export function ProgressBar({ pct, className }: { pct: number; className?: string }) {
+export function ProgressBar({
+  pct,
+  tone,
+  className,
+}: {
+  pct: number;
+  /** destructive — перебор счёта: заполнение красное независимо от процента. */
+  tone?: "destructive";
+  className?: string;
+}) {
   const clamped = Math.max(0, Math.min(pct, 100));
   return (
     <div
@@ -15,7 +24,11 @@ export function ProgressBar({ pct, className }: { pct: number; className?: strin
       <div
         className={cn(
           "h-full rounded-full transition-all",
-          clamped >= 100 ? "bg-[var(--success)]" : "bg-[var(--ring)]",
+          tone === "destructive"
+            ? "bg-[var(--destructive)]"
+            : clamped >= 100
+              ? "bg-[var(--success)]"
+              : "bg-[var(--ring)]",
         )}
         style={{ width: `${clamped}%` }}
       />

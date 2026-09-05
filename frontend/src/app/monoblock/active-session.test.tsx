@@ -1,39 +1,16 @@
+import { createRef } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { CameraFeed } from "@/components/camera-wall";
+import type { BagCounterHandle } from "@/components/shipping/bag-counter";
+import { ShippingRowDetail } from "@/components/shipping/shipping-row-detail";
+import type { AiCountingSession, Order } from "@/lib/types";
 import type { AiStatus } from "@/lib/use-ai-counter";
-import MonoblockPage from "./page";
 
 const mocks = vi.hoisted(() => ({
   aiStatus: null as AiStatus | null,
-}));
-
-vi.mock("@/store/auth", () => ({
-  useAuth: () => ({
-    me: {
-      id: 1,
-      username: "monoblock-cam2",
-      is_client: false,
-      is_superuser: false,
-      is_monoblock: true,
-      monoblock_name: "Моноблок 2",
-      monoblock_camera: "cam2",
-      permissions: ["shipping.load"],
-      position: null,
-      client_id: null,
-      sales_department: null,
-    },
-    loading: false,
-  }),
-}));
-
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
-
-vi.mock("@/components/shipping/shipment-launcher", () => ({
-  ShipmentLauncher: () => null,
 }));
 
 vi.mock("@/components/camera-stream", () => ({
@@ -90,71 +67,78 @@ vi.mock("@/lib/use-ai-counter", () => ({
   }),
 }));
 
-vi.mock("@/lib/use-visible-polling", () => ({
-  useVisiblePolling: () => undefined,
-}));
-
-vi.mock("@/lib/use-api", () => ({
-  useApi: (url: string | null) => {
-    let data: unknown = null;
-    if (url === "/orders/?post_board=1") data = [];
-    if (url === "/cameras/") {
-      data = [
-        {
-          id: "nvr:cam2",
-          name: "cam2",
-          zone: "Конвейер вагон",
-          src: "cam2",
-          kind: "nvr-channel",
-          online: true,
-          line_config: {
-            configured: true,
-            line: { x1: 0.2, y1: 0.3, x2: 0.8, y2: 0.3 },
-            direction: "down",
-          },
-        },
-      ];
-    }
-    if (url === "/cameras/ai/sessions/") {
-      data = [
-        {
-          id: 100,
-          order_id: 404,
-          order_client_name: "Мурат Дг",
-          order_truck_number: "",
-          camera: "cam2",
-          status: "active",
-          started_at: "2026-08-27T05:20:24Z",
-          started_by_id: 1,
-          started_by_name: "loader@example.com",
-          can_stop: true,
-          last_status: { total: 0 },
-        },
-      ];
-    }
-    if (url === "/cameras/monoblock-settings/") {
-      data = {
-        camera_sources: ["cam2"],
-        locked: true,
-        device_id: 1,
-        device_name: "Моноблок 2",
-        updated_at: null,
-      };
-    }
-    if (url === "/cameras/monoblock-devices/") data = [];
-    return {
-      data,
-      error: "",
-      loading: false,
-      reload: vi.fn().mockResolvedValue(undefined),
-      setData: vi.fn(),
-    };
+const camera: CameraFeed = {
+  id: "nvr:cam2",
+  name: "cam2",
+  zone: "Конвейер вагон",
+  src: "cam2",
+  kind: "nvr-channel",
+  online: true,
+  line_config: {
+    configured: true,
+    coordinate_space: "normalized",
+    line: { x1: 0.2, y1: 0.3, x2: 0.8, y2: 0.3 },
+    direction: "down",
   },
-}));
+};
+
+const session: AiCountingSession = {
+  id: 100,
+  order_id: 404,
+  order_client_name: "Мурат Дг",
+  order_truck_number: "",
+  camera: "cam2",
+  status: "active",
+  started_at: "2026-08-27T05:20:24Z",
+  started_by_id: 1,
+  started_by_name: "loader@example.com",
+  can_stop: true,
+  last_status: { total: 0 },
+};
+
+const order: Order = {
+  id: 404,
+  client: 1,
+  client_name: "Мурат Дг",
+  currency: "KZT",
+  status: "loading",
+  transport_type: "truck",
+  truck_number: "",
+  items: [],
+  total_amount: "0.00",
+  paid_total: "0.00",
+  is_fully_paid: true,
+  debt_override: false,
+  created_at: "2026-08-27T00:00:00Z",
+  loading_camera: "cam2",
+};
+
+function renderDetail() {
+  render(
+    <ShippingRowDetail
+      order={order}
+      session={session}
+      camera={camera}
+      cameraSrc="cam2"
+      canCount
+      canLoad
+      isKiosk
+      busy={false}
+      bagCounterRef={createRef<BagCounterHandle>()}
+      onSaveBags={vi.fn().mockResolvedValue(undefined)}
+      onAccept={vi.fn().mockResolvedValue({ ok: true, error: "" })}
+      onResetAi={vi.fn()}
+      onStopAi={vi.fn()}
+      onSessionChanged={vi.fn()}
+      finish={{ disabled: false, onClick: vi.fn() }}
+    />,
+  );
+}
 
 beforeEach(() => {
   mocks.aiStatus = {
     running: true,
+    status: "online",
     stream: "cam2ai",
     total: 0,
     detections: [{ bbox: [64, 72, 256, 288], class_name: "Blue_50", confidence: 0.82, counted: false }],
@@ -168,17 +152,17 @@ beforeEach(() => {
 describe("активная AI-отгрузка", () => {
   it("показывает базовый поток и рисует рамки с живой линией поверх него", async () => {
     const user = userEvent.setup();
-    render(<MonoblockPage />);
+    renderDetail();
 
     const stream = screen.getByTestId("active-session-stream");
     expect(stream).toHaveAttribute("data-src", "cam2");
     expect(stream).not.toHaveAttribute("data-src", "cam2ai");
-    expect(screen.getByText("ПОДКЛЮЧЕНИЕ ВИДЕО")).toBeInTheDocument();
+    expect(screen.getByText("Подключение видео")).toBeInTheDocument();
     expect(screen.queryByTestId("active-session-detections")).not.toBeInTheDocument();
 
     await user.click(stream);
 
-    expect(screen.getByText("СЧИТЫВАНИЕ")).toBeInTheDocument();
+    expect(screen.getByText("AI считает")).toBeInTheDocument();
     expect(screen.getByTestId("active-session-detections")).toHaveTextContent("Blue_50");
     expect(screen.getByTestId("active-session-detections")).toHaveAttribute("data-frame", "640x360");
     expect(screen.getByTestId("active-session-line")).toHaveAttribute("data-line", "0.1,0.4,0.9,0.6");
@@ -186,9 +170,9 @@ describe("активная AI-отгрузка", () => {
   });
 
   it("использует сохранённую линию камеры, если процессор ещё не прислал живую", async () => {
-    mocks.aiStatus = { running: true, stream: "cam2ai", total: 0 };
+    mocks.aiStatus = { running: true, status: "online", stream: "cam2ai", total: 0 };
     const user = userEvent.setup();
-    render(<MonoblockPage />);
+    renderDetail();
 
     await user.click(screen.getByTestId("active-session-stream"));
 

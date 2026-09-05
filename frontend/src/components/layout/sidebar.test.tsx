@@ -101,6 +101,19 @@ describe("подсветка активного пункта", () => {
     expect(screen.queryByRole("link", { name: "Отчёты" })).not.toBeInTheDocument();
   });
 
+  it("ведёт на моноблок по любому из прав отгрузки, без отдельного поста погрузки", () => {
+    const { rerender } = render(<Sidebar me={{ ...factoryUser, permissions: ["shipping.view"] }} />);
+
+    expect(screen.getByRole("link", { name: "Моноблок" })).toHaveAttribute("href", "/monoblock");
+    expect(screen.queryByRole("link", { name: "Пост погрузки" })).not.toBeInTheDocument();
+
+    rerender(<Sidebar me={{ ...factoryUser, permissions: ["train.view"] }} />);
+    expect(screen.getByRole("link", { name: "Моноблок" })).toBeInTheDocument();
+
+    rerender(<Sidebar me={{ ...factoryUser, permissions: ["shipping.ship"] }} />);
+    expect(screen.queryByRole("link", { name: "Моноблок" })).not.toBeInTheDocument();
+  });
+
   it("показывает журнал машин только с правом просмотра событий", () => {
     const { rerender } = render(<Sidebar me={{ ...factoryUser, permissions: ["events.view"] }} />);
 
