@@ -320,6 +320,10 @@ services:
         condition: service_started
     init: true
     stop_grace_period: 60s
+    # The monitor stores weighing photos; the backend serves them from the
+    # same volume, so both must see one directory.
+    volumes:
+      - mediadata:/app/media
     tmpfs:
       - /tmp/passage-scale-monitor:rw,noexec,nosuid,nodev,size=1m,mode=1777
     # This is deliberately a liveness check. Hardware readiness is reported by

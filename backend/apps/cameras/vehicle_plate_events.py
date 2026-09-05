@@ -34,7 +34,7 @@ from .models import VehiclePlateEvent
 
 log = logging.getLogger(__name__)
 
-VEHICLE_NUMBER_RE = re.compile(r"^[0-9]{3}[A-Z]{2,3}[0-9]{2}$")
+VEHICLE_NUMBER_RE = re.compile(r"^(?:[0-9]{3}[A-Z]{2,3}[0-9]{2}|[A-Z][0-9]{3}[A-Z]{3})$")
 VEHICLE_NUMBER_SEARCH_RE = re.compile(r"^[0-9A-Z]{1,8}$")
 CAMERA_RE = re.compile(r"^cam[1-9][0-9]{0,28}$")
 ISO8601_DATETIME_RE = re.compile(
@@ -144,7 +144,7 @@ class VehiclePlateWebhookSerializer(serializers.Serializer):
             or VEHICLE_NUMBER_RE.fullmatch(vehicle_number) is None
         ):
             raise serializers.ValidationError(
-                {"vehicle_number": "Ожидается формат 123ABC02 или 160AL17"}
+                {"vehicle_number": "Ожидается формат 123ABC02, 160AL17 или X209LAN"}
             )
 
         camera = attrs["camera"]

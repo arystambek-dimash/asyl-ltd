@@ -83,22 +83,26 @@ describe("UnassignedWeighingsPanel", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("shows the parked weight with an absolute photo link and only waiting passages as targets", async () => {
+  it("shows the parked weight, its photo link, a likely exit and only waiting passages as targets", async () => {
     mockApi([item], [loaded, finished]);
     render(<UnassignedWeighingsPanel canWeigh />);
 
     expect(screen.getByText("Неопознанные взвешивания")).toBeInTheDocument();
     expect(screen.getByText("30 010 кг")).toBeInTheDocument();
+    expect(screen.getByText(/похоже на выезд 465BDS13/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Машина на весах" })).toHaveAttribute(
       "href",
       "https://crm.test/api/grain/photos/unassigned/5/?token=abc",
     );
 
-    await userEvent.click(screen.getByRole("button", { name: /Привязать к рейсу/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Привязать" }));
     const select = screen.getByLabelText("Рейс для привязки") as HTMLSelectElement;
-    const labels = Array.from(select.options).map((option) => option.textContent ?? "");
+    const labels = Array.from(select.options).map((option) => option.textContent);
     expect(labels).toHaveLength(2);
-    expect(labels[1]).toMatch(/^465BDS13 · ждёт вес гружёной · заехала 12.000 кг$/);
+    expect(labels[0]).toBe("Выберите рейс…");
+    expect(labels[1]).toMatch(/^465BDS13 · ждёт вес гружёной/);
+    // A loaded weight preselects the most likely exit.
+    expect(select.value).toBe("11");
   });
 
   it("binds the weight to the chosen passage and refreshes the caller", async () => {
@@ -107,7 +111,7 @@ describe("UnassignedWeighingsPanel", () => {
     const onChanged = vi.fn();
     render(<UnassignedWeighingsPanel canWeigh onChanged={onChanged} />);
 
-    await userEvent.click(screen.getByRole("button", { name: /Привязать к рейсу/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Привязать" }));
     await userEvent.selectOptions(screen.getByLabelText("Рейс для привязки"), "11");
     await userEvent.click(screen.getByRole("button", { name: /^Привязать$/ }));
 
@@ -120,7 +124,7 @@ describe("UnassignedWeighingsPanel", () => {
     postMock.mockRejectedValueOnce({ response: { data: { code: "wagon_not_awaiting_weight" } } });
     render(<UnassignedWeighingsPanel canWeigh />);
 
-    await userEvent.click(screen.getByRole("button", { name: /Отклонить/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Отклонить взвешивание" }));
     await userEvent.click(screen.getByRole("button", { name: /^Отклонить$/ }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Рейс сейчас не ждёт взвешивания");
@@ -131,7 +135,27 @@ describe("UnassignedWeighingsPanel", () => {
     mockApi([item], [loaded]);
     render(<UnassignedWeighingsPanel canWeigh={false} />);
 
-    expect(screen.queryByRole("button", { name: /Привязать к рейсу/ })).not.toBeInTheDocument();
-    expect(screen.getByText("номер не распознан")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Привязать" })).not.toBeInTheDocument();
+    expect(screen.getByText(/похоже на выезд/)).toBeInTheDocument();
+  });
+
+  it("suggests a new trip for an empty truck", () => {
+    mockApi([{ ...item, id: 6, weight_kg: 3_900 }], [loaded]);
+    render(<UnassignedWeighingsPanel canWeigh />);
+
+    expect(screen.getByText("3 900 кг")).toBeInTheDocument();
+    expect(screen.getByText(/похоже на новый заезд/)).toBeInTheDocument();
+  });
+
+  it("collapses a long queue to the latest rows until expanded", async () => {
+    const many = Array.from({ length: 5 }, (_value, index) => ({ ...item, id: 100 + index }));
+    mockApi(many, [loaded]);
+    render(<UnassignedWeighingsPanel canWeigh />);
+
+    expect(screen.getAllByText("30 010 кг")).toHaveLength(3);
+    await userEvent.click(screen.getByRole("button", { name: /Показать ещё 2/ }));
+    expect(screen.getAllByText("30 010 кг")).toHaveLength(5);
+    await userEvent.click(screen.getByRole("button", { name: /Свернуть/ }));
+    expect(screen.getAllByText("30 010 кг")).toHaveLength(3);
   });
 });

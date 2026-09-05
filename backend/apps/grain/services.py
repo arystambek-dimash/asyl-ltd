@@ -43,7 +43,7 @@ VEHICLE_PLATE_MAX_AGE = timedelta(minutes=5)
 VEHICLE_PLATE_MAX_FUTURE = timedelta(minutes=1)
 VEHICLE_PLATE_CANDIDATE_LIMIT = 5
 VEHICLE_PLATE_AUTO_MAX_FUTURE = timedelta(seconds=5)
-KZ_VEHICLE_PLATE_RE = re.compile(r"^[0-9]{3}[A-Z]{2,3}[0-9]{2}$")
+KZ_VEHICLE_PLATE_RE = re.compile(r"^(?:[0-9]{3}[A-Z]{2,3}[0-9]{2}|[A-Z][0-9]{3}[A-Z]{3})$")
 
 AUTO_ACTION_ENTRY = "entry"
 AUTO_ACTION_EXIT = "exit"

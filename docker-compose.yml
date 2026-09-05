@@ -117,6 +117,8 @@ services:
       DJANGO_COLLECTSTATIC: "0"
     entrypoint: []
     command: ["python", "manage.py", "monitor_passage_scale"]
+    volumes:
+      - mediadata:/app/media
     depends_on:
       backend:
         condition: service_started

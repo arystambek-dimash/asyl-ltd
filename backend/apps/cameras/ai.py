@@ -23,8 +23,9 @@ MAX_ERROR_JSON_RESPONSE_BYTES = 64 * 1024
 WAGON_PLATE_TIMEOUT = 15
 WAGON_PLATE_MAX_BYTES = 12 * 1024 * 1024
 VEHICLE_RUNTIME_PROBE_TIMEOUT = 2.0
-# Kazakhstan series may carry two or three letters: 123ABC02 and 160AL17.
-VEHICLE_PLATE_RE = re.compile(r"^[0-9]{3}[A-Z]{2,3}[0-9]{2}$")
+# Kazakhstan plates: 123ABC02, the two-letter series 160AL17, and the 1993
+# standard still carried by old trucks: X209LAN.
+VEHICLE_PLATE_RE = re.compile(r"^(?:[0-9]{3}[A-Z]{2,3}[0-9]{2}|[A-Z][0-9]{3}[A-Z]{3})$")
 MAX_VEHICLE_CONFIRMATION_VOTES = 32_767
 
 ALWAYS_ON_CACHE_KEY = "cameras:always-on-status:v2"
