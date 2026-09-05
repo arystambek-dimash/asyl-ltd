@@ -916,7 +916,12 @@ class VehicleOrientationSample(models.Model):
         related_name="+",
     )
     reviewed_at = models.DateTimeField(null=True, blank=True)
+    # sent_at — «текущая метка доставлена»: сбрасывается при перемаркировке,
+    # чтобы кадр ушёл заново. delivered_at — «ПК держит копию кадра»: живёт
+    # от первой удачной отправки до подтверждённого удаления на ПК, и только
+    # по нему решается, надо ли просить ПК забыть кадр.
     sent_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
     last_error = models.CharField(max_length=200, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -937,3 +942,22 @@ class VehicleOrientationSample(models.Model):
     @property
     def sample_id(self) -> str:
         return f"{self.record_kind}-{self.record_id}"
+
+
+class VehicleOrientationDatasetState(models.Model):
+    """Состояние сборщика датасета ориентации — одна строка (pk=1).
+
+    ``collect_since`` — водораздел сбора: взвешивания, созданные раньше него,
+    ``collect()`` не смотрит. Его двигает очистка датасета (``purge_all`` —
+    на «сейчас», ``purge_samples`` с отсечкой — на неё), иначе ночной сбор
+    воссоздал бы только что стёртые образцы из тех же фото и снова отправил
+    их на Camera-PC. Стёртый период в датасет больше не возвращается.
+    """
+
+    collect_since = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def load(cls) -> "VehicleOrientationDatasetState":
+        row, _ = cls.objects.get_or_create(pk=1)
+        return row

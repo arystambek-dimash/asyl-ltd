@@ -669,14 +669,43 @@ Camera-PC (`POST /vehicle-orientation/samples`):
 - an operator correction (the missed-entry swap, a re-assigned weighing)
   changes the label and the frame is sent again, which relabels it on the PC.
 
-Reviewing the dataset: the CRM page **Датасет ориентации** (`/grain/orientation`,
-sidebar under «Приход и вывоз»; read with `grain.view`, edit with `grain.admin`)
-shows every frame with its label, source (по рейсу / по весу / вручную), the
-classifier's contradicting verdict on conflicts, and the Camera-PC training
-report (`GET /api/grain/orientation-samples/summary/`, cached 30 s, probe
-timeout 2 s). «Передом»/«Задом» sets a manual label that automatic relabelling
-never overrides and re-sends the frame; «Исключить» drops it and, when Camera-PC
+Reviewing the dataset: the CRM page **Датасет ориентации** is an owner-only
+tool, reached by the direct URL `/grain/orientation` (no sidebar link); the API
+(`/api/grain/orientation-samples/`) is superuser-only and answers 403 to every
+employee, whatever their `grain.*` permissions. The page shows every frame with
+its label, source (по рейсу / по весу / вручную), the classifier's
+contradicting verdict on conflicts, and the Camera-PC training report
+(`GET /api/grain/orientation-samples/summary/`, cached 30 s, probe timeout
+2 s). «Передом»/«Задом» sets a manual label that automatic relabelling never
+overrides and re-sends the frame; «Исключить» drops it and, when Camera-PC
 already holds a copy, removes it there (`DELETE /vehicle-orientation/samples/<id>`).
+A row remembers two things separately: `sent_at` (the current label was
+delivered; reset by a relabel so the frame goes again) and `delivered_at` (the
+PC holds a copy; cleared only when the PC confirms the removal). Only
+`delivered_at` decides whether a purge has to contact the PC, so a relabelled
+frame is never deleted from the CRM while its old copy stays on the PC.
+
+Purging the dataset once the model has learnt from it: «Очистить датасет…» on
+the page calls `POST /api/grain/orientation-samples/purge/` with
+`{older_than_days: null}` (everything, one `DELETE /vehicle-orientation/samples`
+on the PC) or `{older_than_days: N}` (frames captured more than N days ago,
+removed one by one). Every call handles at most `PURGE_BATCH` (100) rows so it
+fits the 60 s nginx timeout and answers
+`{deleted, removed_from_pc, pc_unavailable, remaining}`; the page repeats the
+request while `remaining > 0` (it stops when `pc_unavailable` is set — the next
+batch would meet the same rows). The same job from the shell:
+`manage.py purge_orientation_samples --all|--older-than-days N [--keep-pc]`
+loops over the batches itself and prints the totals; `--keep-pc` deletes CRM
+rows only. Weighing photos are never touched — they are the evidence of the
+trip. A purge also moves the collection watermark
+(`VehicleOrientationDatasetState.collect_since`: «now» for `--all`, the cutoff
+for `--older-than-days`), so the nightly `collect()` never re-labels and
+re-uploads frames from a purged period, however young they are; the watermark
+only ever moves forward. If the Camera-PC is down during a purge, rows it still
+holds are kept in the CRM as excluded with `removal_pending`: the nightly
+`export_removals` asks the PC to forget them once it is back, and until the
+next purge those rows stay excluded (they are never trained on and never
+re-collected).
 
 Camera-PC keeps the frames in `orientation-dataset/` and at 02:30 local runs
 `ASYL-AI-Orientation-Training`: ROI crops, a deterministic 20 % hold-out,

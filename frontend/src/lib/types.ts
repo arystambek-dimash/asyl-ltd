@@ -1050,6 +1050,16 @@ export interface GrainOrientationSummary {
   camera_pc: GrainOrientationCameraPc | null;
 }
 
+/** Ответ POST /grain/orientation-samples/purge/ — один пакет; клиент повторяет запрос, пока есть `remaining`. */
+export interface GrainOrientationPurgeResult {
+  deleted: number;
+  removed_from_pc: number;
+  /** ПК камер не ответил: отправленные ему кадры остались в CRM исключёнными до ночного экспорта. */
+  pc_unavailable: boolean;
+  /** Сколько кадров под тот же фильтр ещё осталось после этого пакета. */
+  remaining: number;
+}
+
 export interface GrainLabCheck {
   id: number;
   moisture: string | null;

@@ -1,3 +1,4 @@
+from datetime import timedelta
 from typing import ClassVar
 from uuid import UUID
 
@@ -6,6 +7,7 @@ from django.conf import settings
 from django.db import transaction
 from django.core.cache import cache
 from django.db.models import Count, Q
+from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, ValidationError
@@ -756,8 +758,11 @@ def _camera_pc_orientation() -> dict | None:
     return info or None
 
 
-class VehicleOrientationSampleViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
+class VehicleOrientationSampleViewSet(viewsets.ReadOnlyModelViewSet):
     """Разметка датасета ориентации: кадры, автоматические метки, конфликты.
+
+    Датасет — инструмент владельца: все действия только суперпользователю,
+    операторам страница не показывается и API отвечает 403.
 
     Фильтры списка: ``label=front|rear``, ``source=trip|weight|manual``,
     ``kind=weighing|unassigned``; флаги ``conflict=1`` (только конфликты),
@@ -773,13 +778,7 @@ class VehicleOrientationSampleViewSet(PermViewSetMixin, viewsets.ReadOnlyModelVi
     )
     serializer_class = VehicleOrientationSampleSerializer
     pagination_class = OptInPageNumberPagination
-    required_perms = {
-        "list": "grain.view",
-        "retrieve": "grain.view",
-        "summary": "grain.view",
-        "label": "grain.admin",
-        "exclude": "grain.admin",
-    }
+    permission_classes = [IsSuperUser]
 
     @staticmethod
     def _bad_filter(name: str, value: str):
@@ -897,6 +896,42 @@ class VehicleOrientationSampleViewSet(PermViewSetMixin, viewsets.ReadOnlyModelVi
                 "camera_pc": camera_pc,
             }
         )
+        response["Cache-Control"] = "no-store"
+        return response
+
+    @action(detail=False, methods=["post"], url_path="purge")
+    def purge(self, request):
+        """Стереть датасет из CRM и с Camera-PC, когда модель уже обучилась.
+
+        Тело ``{"older_than_days": null}`` — весь датасет одним запросом к
+        ПК; ``{"older_than_days": N}`` (N ≥ 1) — только кадры старше N дней,
+        по одному. Ключ обязателен: «удалить всё» должно быть сказано явно.
+        Один запрос стирает не больше ``PURGE_BATCH`` строк (укладываемся в
+        таймаут nginx): ответ — счётчики ``purge_samples`` с ``remaining``,
+        клиент повторяет запрос, пока ``remaining`` > 0 и ПК отвечает.
+        ``pc_unavailable`` означает, что часть строк осталась исключёнными до
+        ночного экспорта — повторять до возвращения ПК бессмысленно. Очистка
+        двигает водораздел сбора: стёртый период ночью не собирается заново.
+        Фото взвешиваний не трогаются. Неверное тело — 400 ``bad_purge``.
+        """
+        data = request.data
+        if not isinstance(data, dict) or "older_than_days" not in data:
+            raise ValidationError(
+                {"detail": "Укажите older_than_days: null или число дней.", "code": "bad_purge"}
+            )
+        days = data["older_than_days"]
+        if days is None:
+            result = orientation_dataset.purge_all()
+        else:
+            if isinstance(days, bool) or not isinstance(days, int) or days < 1:
+                raise ValidationError(
+                    {"detail": "older_than_days должно быть null или целым ≥ 1.", "code": "bad_purge"}
+                )
+            cutoff = timezone.now() - timedelta(days=days)
+            result = orientation_dataset.purge_samples(
+                self.get_queryset().filter(captured_at__lt=cutoff), cutoff=cutoff
+            )
+        response = Response(result)
         response["Cache-Control"] = "no-store"
         return response
 

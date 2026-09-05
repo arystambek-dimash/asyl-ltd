@@ -34,19 +34,26 @@ export function RequirePerm({
   if (!allowed) {
     return (
       <AppShell title={title}>
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-            <span className="flex size-12 items-center justify-center rounded-full bg-[var(--muted)]">
-              <ShieldOff className="size-6 text-[var(--muted-foreground)]" />
-            </span>
-            <div className="text-lg font-semibold">Нет доступа</div>
-            <p className="max-w-sm text-sm text-[var(--muted-foreground)]">
-              У вас нет прав для просмотра этого раздела. Обратитесь к администратору.
-            </p>
-          </CardContent>
-        </Card>
+        <NoAccessCard />
       </AppShell>
     );
   }
   return <>{children}</>;
+}
+
+/** Заглушка «Нет доступа» — общая для RequirePerm и страниц с собственной проверкой. */
+export function NoAccessCard() {
+  return (
+    <Card>
+      <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
+        <span className="flex size-12 items-center justify-center rounded-full bg-[var(--muted)]">
+          <ShieldOff className="size-6 text-[var(--muted-foreground)]" />
+        </span>
+        <div className="text-lg font-semibold">Нет доступа</div>
+        <p className="max-w-sm text-sm text-[var(--muted-foreground)]">
+          У вас нет прав для просмотра этого раздела. Обратитесь к администратору.
+        </p>
+      </CardContent>
+    </Card>
+  );
 }

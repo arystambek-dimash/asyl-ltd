@@ -1,24 +1,29 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
-import { Ban, Camera, Cpu, Images, LoaderCircle, Radio, RefreshCw, Undo2 } from "lucide-react";
+import { useCallback, useId, useMemo, useRef, useState } from "react";
+import { Ban, Camera, Cpu, Images, LoaderCircle, Radio, RefreshCw, Trash2, Undo2 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
-import { RequirePerm } from "@/components/require-perm";
+import { NoAccessCard } from "@/components/require-perm";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/data-state";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { LoadMore } from "@/components/ui/load-more";
+import { Modal } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
 import { Tabs, type TabDef } from "@/components/ui/tabs";
 import { api, apiError } from "@/lib/api";
-import { can } from "@/lib/can";
 import { apiFileUrl, formatKg } from "@/lib/grain";
 import type {
   GrainOrientationCameraPc,
   GrainOrientationLabel,
+  GrainOrientationPurgeResult,
   GrainOrientationSample,
   GrainOrientationSummary,
   GrainOrientationTrainingReport,
+  Me,
   VehicleOrientation,
 } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
@@ -27,8 +32,16 @@ import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { cn, formatDateTime } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 
+const PAGE_TITLE = "Датасет ориентации";
 const LIST_URL = "/grain/orientation-samples/";
 const SUMMARY_URL = "/grain/orientation-samples/summary/";
+const PURGE_URL = "/grain/orientation-samples/purge/";
+/** Обученной модели старые кадры не нужны; месяц — запас на разбор конфликтов. */
+const DEFAULT_PURGE_DAYS = 30;
+/** Датасет живёт 60 дней (VEHICLE_ORIENTATION_SAMPLE_MAX_AGE_DAYS); 10 лет — заведомо «ничего». */
+const MAX_PURGE_DAYS = 3650;
+/** Бэкенд удаляет пакетами; предел на случай, если ПК всё время отдаёт remaining > 0. */
+const MAX_PURGE_BATCHES = 100;
 /** Кратно ряду сетки (2–4 карточки), чтобы страница заканчивалась полным рядом. */
 const PAGE_SIZE = 48;
 /** Датасет пополняется ночным экспортом и редкими правками: частый опрос не нужен. */
@@ -43,6 +56,9 @@ type Scope = (typeof SCOPES)[number];
 
 const LABEL_FILTERS = ["all", "front", "rear"] as const;
 type LabelFilter = (typeof LABEL_FILTERS)[number];
+
+const PURGE_MODES = ["older", "all"] as const;
+type PurgeMode = (typeof PURGE_MODES)[number];
 
 /** Как вкладка фильтра ложится в параметры списка. */
 const SCOPE_QUERY: Record<Scope, Record<string, string>> = {
@@ -94,6 +110,16 @@ function isScope(value: string): value is Scope {
 
 function isLabelFilter(value: string): value is LabelFilter {
   return (LABEL_FILTERS as readonly string[]).includes(value);
+}
+
+function isPurgeMode(value: string): value is PurgeMode {
+  return (PURGE_MODES as readonly string[]).includes(value);
+}
+
+/** Срок в днях из поля ввода; null — пусто или не целое число от 1 до MAX_PURGE_DAYS. */
+function purgeDays(value: string): number | null {
+  const days = Number(value);
+  return value.trim() !== "" && Number.isInteger(days) && days >= 1 && days <= MAX_PURGE_DAYS ? days : null;
 }
 
 function scopeCount(summary: GrainOrientationSummary | null, scope: Scope): number | undefined {
@@ -435,10 +461,164 @@ function SampleCard({
   );
 }
 
-function OrientationDatasetPageInner() {
-  const { me } = useAuth();
-  const canEdit = can(me, "grain.admin");
+/**
+ * Чистка датасета, когда модель уже дообучилась: кадры удаляются из CRM и с ПК
+ * камер. Бэкенд удаляет пакетами, поэтому запрос повторяется, пока есть
+ * `remaining`; ход, итог и ошибки показываем в самой модалке — со страницы их
+ * не видно. Монтируется только открытой: состояние свежее при каждом открытии.
+ */
+function PurgeDialog({ open, onClose, onPurged }: { open: boolean; onClose: () => void; onPurged: () => void }) {
+  const modeId = useId();
+  const daysId = useId();
+  const [mode, setMode] = useState<PurgeMode>("older");
+  const [days, setDays] = useState(String(DEFAULT_PURGE_DAYS));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  /** Сумма deleted/removed_from_pc по всем пакетам; pc_unavailable и remaining — с последнего. */
+  const [progress, setProgress] = useState<GrainOrientationPurgeResult | null>(null);
+
+  const olderThanDays = mode === "older" ? purgeDays(days) : null;
+  const invalid = mode === "older" && olderThanDays === null;
+  // Итог показываем, когда пакеты кончились и не оборвались ошибкой; после
+  // ошибки форма остаётся для повтора, а счётчик — под ней.
+  const finished = progress !== null && !busy && !error;
+
+  async function purge() {
+    if (invalid || busy) return;
+    setBusy(true);
+    setError("");
+    const body = { older_than_days: olderThanDays };
+    // Повтор после ошибки продолжает счёт той же чистки.
+    let totals = progress ?? { deleted: 0, removed_from_pc: 0, pc_unavailable: false, remaining: 0 };
+    let batches = 0;
+    try {
+      for (let batch = 0; batch < MAX_PURGE_BATCHES; batch += 1) {
+        const { data } = await api.post<GrainOrientationPurgeResult>(PURGE_URL, body);
+        batches += 1;
+        totals = {
+          deleted: totals.deleted + data.deleted,
+          removed_from_pc: totals.removed_from_pc + data.removed_from_pc,
+          pc_unavailable: data.pc_unavailable,
+          remaining: data.remaining,
+        };
+        setProgress(totals);
+        // Без ПК следующий пакет оставит те же строки исключёнными — крутиться
+        // до предела бессмысленно. Ответ без remaining считаем последним.
+        if (data.pc_unavailable || !(data.remaining > 0)) break;
+      }
+    } catch (cause) {
+      setError(apiError(cause));
+    } finally {
+      setBusy(false);
+      if (batches > 0) onPurged();
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+      eyebrow="Подтверждение"
+      title="Очистить датасет?"
+      description="Кадры удаляются из CRM и с ПК камер без возможности восстановления."
+      className="max-w-md"
+      footer={
+        finished ? (
+          <Button type="button" variant="outline" onClick={onClose}>
+            Готово
+          </Button>
+        ) : (
+          <>
+            <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
+              Отмена
+            </Button>
+            <Button type="button" variant="destructive" onClick={() => void purge()} disabled={busy || invalid}>
+              {busy ? "Удаление…" : "Удалить кадры"}
+            </Button>
+          </>
+        )
+      }
+    >
+      <div className="flex flex-col gap-3">
+        {finished ? (
+          <div role="status" className="flex flex-col gap-3">
+            <dl className="grid grid-cols-2 gap-2">
+              <Stat label="Удалено из CRM" value={progress.deleted} />
+              <Stat label="Удалено с ПК" value={progress.removed_from_pc} />
+            </dl>
+            {progress.pc_unavailable ? (
+              <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-950">
+                ПК камер недоступен: кадры, уже отправленные на ПК, остались в CRM как исключённые. Повторите очистку,
+                когда ПК будет доступен
+              </p>
+            ) : (
+              progress.remaining > 0 && (
+                <p className="text-sm text-[var(--muted-foreground)]">
+                  Осталось ещё {progress.remaining.toLocaleString("ru-RU")} кадров — повторите очистку.
+                </p>
+              )
+            )}
+          </div>
+        ) : (
+          <>
+            <div>
+              <Label htmlFor={modeId}>Какие кадры</Label>
+              <Select
+                id={modeId}
+                value={mode}
+                onChange={(event) => isPurgeMode(event.target.value) && setMode(event.target.value)}
+                disabled={busy}
+                data-autofocus
+              >
+                <option value="older">Старше N дней</option>
+                <option value="all">Все кадры</option>
+              </Select>
+            </div>
+            {mode === "older" && (
+              <div>
+                <Label htmlFor={daysId}>Старше, дней</Label>
+                <Input
+                  id={daysId}
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={MAX_PURGE_DAYS}
+                  step={1}
+                  value={days}
+                  onChange={(event) => setDays(event.target.value)}
+                  disabled={busy}
+                />
+                <p className="mt-1 text-[11px] text-[var(--muted-foreground)]">
+                  Более свежие кадры останутся — на случай разбора конфликтов.
+                </p>
+              </div>
+            )}
+            {progress && (
+              <p role="status" className="text-sm tabular-nums text-[var(--muted-foreground)]">
+                Удалено {progress.deleted.toLocaleString("ru-RU")} кадров{busy ? "…" : ""}
+              </p>
+            )}
+          </>
+        )}
+        {error && (
+          <p
+            role="alert"
+            className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]"
+          >
+            {error}
+          </p>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function OrientationDatasetPageInner({ me }: { me: Me }) {
+  const canEdit = me.is_superuser;
   const [scope, setScope] = useState<Scope>("all");
+  const [purgeOpen, setPurgeOpen] = useState(false);
   const [labelFilter, setLabelFilter] = useState<LabelFilter>("all");
   /** Ответы своих правок поверх списка, пока опрос не принесёт их же с сервера. */
   const [overrides, setOverrides] = useState<Record<number, GrainOrientationSample>>({});
@@ -472,6 +652,12 @@ function OrientationDatasetPageInner() {
     void summary.reload();
   }
 
+  // Удалённых кадров в ответах уже нет — сбрасываем и локальные правки поверх них.
+  function handlePurged() {
+    setOverrides({});
+    void refresh();
+  }
+
   const samples = list.items.map((row) => freshest(row, overrides[row.id]));
   const hasFilters = scope !== "all" || labelFilter !== "all";
   const initialLoading = list.loading && list.items.length === 0;
@@ -490,19 +676,25 @@ function OrientationDatasetPageInner() {
 
   return (
     <AppShell
-      title="Датасет ориентации"
+      title={PAGE_TITLE}
       section="Приход и вывоз"
       description="Кадры с весовой с меткой «передом = заезд, задом = выезд». Проверьте и поправьте метку, если модель или вес ошиблись"
       actions={
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-9 shrink-0"
-          disabled={list.loading}
-          onClick={() => void refresh()}
-        >
-          <RefreshCw className={cn(list.loading && "animate-spin")} /> Обновить
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="outline" size="sm" className="h-9" disabled={list.loading} onClick={() => void refresh()}>
+            <RefreshCw className={cn(list.loading && "animate-spin")} /> Обновить
+          </Button>
+          {canEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 text-[var(--destructive)]"
+              onClick={() => setPurgeOpen(true)}
+            >
+              <Trash2 /> Очистить датасет…
+            </Button>
+          )}
+        </div>
       }
     >
       <SummaryCard summary={summary.data} loading={summary.loading} error={summary.error} />
@@ -573,14 +765,33 @@ function OrientationDatasetPageInner() {
           )}
         </CardContent>
       </Card>
+
+      {canEdit && purgeOpen && <PurgeDialog open onClose={() => setPurgeOpen(false)} onPurged={handlePurged} />}
     </AppShell>
   );
 }
 
+/**
+ * Страница только для владельца: операторам она не показывается и не линкуется,
+ * а бэкенд отвечает 403 всем, кроме суперпользователя. Пока сессия читается —
+ * та же заглушка, что у RequirePerm.
+ */
 export default function OrientationDatasetPage() {
-  return (
-    <RequirePerm perm="grain.view" title="Датасет ориентации">
-      <OrientationDatasetPageInner />
-    </RequirePerm>
-  );
+  const { me, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <AppShell title={PAGE_TITLE}>
+        <p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+      </AppShell>
+    );
+  }
+  if (!me?.is_superuser) {
+    return (
+      <AppShell title={PAGE_TITLE}>
+        <NoAccessCard />
+      </AppShell>
+    );
+  }
+  return <OrientationDatasetPageInner me={me} />;
 }

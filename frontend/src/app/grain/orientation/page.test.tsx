@@ -1,15 +1,15 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import OrientationDatasetPage from "./page";
-import type { GrainOrientationSample, GrainOrientationSummary, Me } from "@/lib/types";
+import type { GrainOrientationPurgeResult, GrainOrientationSample, GrainOrientationSummary, Me } from "@/lib/types";
 
 const getMock = vi.hoisted(() => vi.fn());
 const postMock = vi.hoisted(() => vi.fn());
 const pollingMock = vi.hoisted(() => vi.fn());
-const auth = vi.hoisted(() => ({ me: null as unknown }));
+const auth = vi.hoisted(() => ({ me: null as unknown, loading: false }));
 
 vi.mock("@/lib/api", () => ({
   api: { get: getMock, post: postMock, defaults: { baseURL: "https://crm.test/api" } },
@@ -20,10 +20,7 @@ vi.mock("@/lib/use-visible-polling", () => ({
   useVisiblePolling: (poll: () => Promise<unknown>, intervalMs: number) => pollingMock(poll, intervalMs),
 }));
 vi.mock("@/store/auth", () => ({
-  useAuth: () => ({ me: auth.me }),
-}));
-vi.mock("@/components/require-perm", () => ({
-  RequirePerm: ({ children }: { children: ReactNode }) => children,
+  useAuth: () => ({ me: auth.me, loading: auth.loading }),
 }));
 vi.mock("@/components/layout/app-shell", () => ({
   AppShell: ({
@@ -46,16 +43,23 @@ vi.mock("@/components/layout/app-shell", () => ({
   ),
 }));
 
-const admin = {
+/** Страница только для владельца: права grain.* роли не играют. */
+const owner = {
   id: 1,
-  username: "admin",
+  username: "owner",
   is_client: false,
-  is_superuser: false,
+  is_superuser: true,
   is_monoblock: false,
-  permissions: ["grain.view", "grain.admin"],
+  permissions: [] as string[],
 } as Me;
 
-const viewer = { ...admin, id: 2, username: "viewer", permissions: ["grain.view"] } as Me;
+const admin = {
+  ...owner,
+  id: 2,
+  username: "admin",
+  is_superuser: false,
+  permissions: ["grain.view", "grain.admin"],
+} as Me;
 
 const tripSample: GrainOrientationSample = {
   id: 5,
@@ -147,12 +151,23 @@ function listCalls() {
     .filter((url) => !url.startsWith("/grain/orientation-samples/summary/"));
 }
 
+async function openPurgeDialog(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Очистить датасет…" }));
+  return screen.findByRole("dialog", { name: "Очистить датасет?" });
+}
+
+/** Последний пакет чистки: бэкенд больше ничего не нашёл под фильтр. */
+function purgeBatch(deleted: number, removedFromPc: number, remaining = 0): GrainOrientationPurgeResult {
+  return { deleted, removed_from_pc: removedFromPc, pc_unavailable: false, remaining };
+}
+
 describe("OrientationDatasetPage", () => {
   beforeEach(() => {
     getMock.mockReset();
     postMock.mockReset();
     pollingMock.mockReset();
-    auth.me = admin;
+    auth.me = owner;
+    auth.loading = false;
   });
 
   it("shows the summary, the Camera-PC report and the cards with badges and signed photo links", async () => {
@@ -209,7 +224,7 @@ describe("OrientationDatasetPage", () => {
         ...tripSample,
         label: "rear",
         label_source: "manual",
-        reviewed_by_name: "admin",
+        reviewed_by_name: "owner",
         reviewed_at: "2026-09-05T09:00:00Z",
         sent_at: null,
       },
@@ -223,7 +238,7 @@ describe("OrientationDatasetPage", () => {
     expect(postMock).toHaveBeenCalledWith("/grain/orientation-samples/5/label/", { label: "rear" });
     expect(await within(card).findByText("Задом → выезд")).toBeInTheDocument();
     expect(within(card).getByText("вручную")).toBeInTheDocument();
-    expect(within(card).getByText(/проверил admin/)).toBeInTheDocument();
+    expect(within(card).getByText(/проверил owner/)).toBeInTheDocument();
     expect(within(card).getByText("ждёт отправки")).toBeInTheDocument();
     expect(within(card).getByRole("button", { name: "Задом" })).toBeDisabled();
     expect(within(card).getByRole("button", { name: "Передом" })).toBeEnabled();
@@ -244,17 +259,41 @@ describe("OrientationDatasetPage", () => {
     expect(within(card).getByRole("button", { name: "Исключить" })).toBeInTheDocument();
   });
 
-  it("hides the actions from a viewer without grain.admin", async () => {
-    auth.me = viewer;
+  it("shows the loading placeholder while the session is being read", () => {
+    auth.me = null;
+    auth.loading = true;
+    mockList([tripSample]);
+    render(<OrientationDatasetPage />);
+
+    expect(screen.getByRole("heading", { name: "Датасет ориентации" })).toBeInTheDocument();
+    expect(screen.getByText("Загрузка…")).toBeInTheDocument();
+    expect(getMock).not.toHaveBeenCalled();
+  });
+
+  it("denies a staff user with grain.admin who is not a superuser and never requests the dataset", async () => {
+    auth.me = admin;
+    mockList([tripSample]);
+    render(<OrientationDatasetPage />);
+
+    expect(await screen.findByText("Нет доступа")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Датасет ориентации" })).toBeInTheDocument();
+    expect(screen.queryByRole("article")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Очистить датасет…" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Обновить" })).not.toBeInTheDocument();
+    expect(getMock).not.toHaveBeenCalled();
+    expect(pollingMock).not.toHaveBeenCalled();
+  });
+
+  it("lets the superuser edit labels and purge the dataset", async () => {
     mockList([tripSample, excludedSample]);
     render(<OrientationDatasetPage />);
 
-    await screen.findByRole("article", { name: "Кадр weighing-5" });
-    expect(screen.queryByRole("button", { name: "Передом" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Задом" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Исключить" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Вернуть" })).not.toBeInTheDocument();
-    expect(screen.getByText("Передом → заезд")).toBeInTheDocument();
+    const card = await screen.findByRole("article", { name: "Кадр weighing-5" });
+    expect(within(card).getByRole("button", { name: "Передом" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Задом" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Исключить" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Вернуть" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Очистить датасет…" })).toBeInTheDocument();
   });
 
   it("maps the filters to query params and restarts from the first page", async () => {
@@ -311,5 +350,201 @@ describe("OrientationDatasetPage", () => {
     const before = getMock.mock.calls.length;
     await user.click(screen.getByRole("button", { name: "Обновить" }));
     await waitFor(() => expect(getMock.mock.calls.length).toBe(before + 2));
+  });
+
+  it("purges every frame, shows the result inside the dialog and refreshes the page", async () => {
+    const user = userEvent.setup();
+    mockList([tripSample, conflictSample]);
+    postMock.mockResolvedValue({ data: purgeBatch(12, 10) });
+    render(<OrientationDatasetPage />);
+    await screen.findByRole("article", { name: "Кадр weighing-5" });
+
+    const dialog = await openPurgeDialog(user);
+    // По умолчанию — безопасный вариант «старше 30 дней»; фокус на первом поле.
+    expect(within(dialog).getByLabelText("Какие кадры")).toHaveValue("older");
+    expect(within(dialog).getByLabelText("Какие кадры")).toHaveFocus();
+    expect(within(dialog).getByLabelText("Старше, дней")).toHaveValue(30);
+
+    await user.selectOptions(within(dialog).getByLabelText("Какие кадры"), "all");
+    expect(within(dialog).queryByLabelText("Старше, дней")).not.toBeInTheDocument();
+    const before = getMock.mock.calls.length;
+    await user.click(within(dialog).getByRole("button", { name: "Удалить кадры" }));
+
+    expect(postMock).toHaveBeenCalledWith("/grain/orientation-samples/purge/", { older_than_days: null });
+    const result = await within(dialog).findByRole("status");
+    expect(within(result).getByText("Удалено из CRM").nextElementSibling).toHaveTextContent("12");
+    expect(within(result).getByText("Удалено с ПК").nextElementSibling).toHaveTextContent("10");
+    expect(within(result).queryByText(/ПК камер недоступен/)).not.toBeInTheDocument();
+    expect(within(result).queryByText(/повторите очистку/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Удалить кадры" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+    // Пакет был последним — второго запроса нет; список и сводка перечитаны один раз.
+    expect(postMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(getMock.mock.calls.length).toBe(before + 2));
+
+    await user.click(within(dialog).getByRole("button", { name: "Готово" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("repeats the purge while batches remain, showing live progress, and sums the counters", async () => {
+    const user = userEvent.setup();
+    mockList([tripSample, conflictSample]);
+    let finishSecondBatch!: (value: { data: GrainOrientationPurgeResult }) => void;
+    postMock
+      .mockResolvedValueOnce({ data: purgeBatch(5, 4, 3) })
+      .mockImplementationOnce(() => new Promise((resolve) => (finishSecondBatch = resolve)));
+    render(<OrientationDatasetPage />);
+    await screen.findByRole("article", { name: "Кадр weighing-5" });
+
+    const dialog = await openPurgeDialog(user);
+    const before = getMock.mock.calls.length;
+    await user.click(within(dialog).getByRole("button", { name: "Удалить кадры" }));
+
+    // Между пакетами — живой счётчик, кнопки заблокированы, страница ещё не перечитана.
+    expect(await within(dialog).findByRole("status")).toHaveTextContent("Удалено 5 кадров…");
+    expect(within(dialog).getByRole("button", { name: "Удаление…" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Отмена" })).toBeDisabled();
+    expect(within(dialog).getByLabelText("Какие кадры")).toBeDisabled();
+    expect(postMock).toHaveBeenCalledTimes(2);
+    expect(getMock.mock.calls.length).toBe(before);
+
+    await act(async () => finishSecondBatch({ data: purgeBatch(3, 3) }));
+
+    const result = await within(dialog).findByText("Удалено из CRM");
+    expect(result.nextElementSibling).toHaveTextContent("8");
+    expect(within(dialog).getByText("Удалено с ПК").nextElementSibling).toHaveTextContent("7");
+    expect(postMock).toHaveBeenCalledTimes(2);
+    expect(postMock.mock.calls.map(([, body]) => body)).toEqual([{ older_than_days: 30 }, { older_than_days: 30 }]);
+    expect(within(dialog).getByRole("button", { name: "Готово" })).toBeInTheDocument();
+    await waitFor(() => expect(getMock.mock.calls.length).toBe(before + 2));
+  });
+
+  it("stops after 100 batches and asks to run the purge again", async () => {
+    const user = userEvent.setup();
+    mockList([tripSample]);
+    postMock.mockResolvedValue({ data: purgeBatch(2, 2, 1) });
+    render(<OrientationDatasetPage />);
+    await screen.findByRole("article", { name: "Кадр weighing-5" });
+
+    const dialog = await openPurgeDialog(user);
+    await user.click(within(dialog).getByRole("button", { name: "Удалить кадры" }));
+
+    expect(await within(dialog).findByText("Удалено из CRM")).toBeInTheDocument();
+    expect(postMock).toHaveBeenCalledTimes(100);
+    expect(within(dialog).getByText("Удалено из CRM").nextElementSibling).toHaveTextContent("200");
+    expect(within(dialog).getByText("Осталось ещё 1 кадров — повторите очистку.")).toBeInTheDocument();
+  });
+
+  it("purges frames older than N days and stops on the first batch without the Camera-PC", async () => {
+    const user = userEvent.setup();
+    mockList([tripSample]);
+    postMock.mockResolvedValue({ data: { deleted: 3, removed_from_pc: 0, pc_unavailable: true, remaining: 4 } });
+    render(<OrientationDatasetPage />);
+    await screen.findByRole("article", { name: "Кадр weighing-5" });
+
+    const dialog = await openPurgeDialog(user);
+    const days = within(dialog).getByLabelText("Старше, дней");
+    const confirm = within(dialog).getByRole("button", { name: "Удалить кадры" });
+    expect(days).toHaveAttribute("max", "3650");
+    await user.clear(days);
+    expect(confirm).toBeDisabled();
+    await user.type(days, "3651");
+    expect(confirm).toBeDisabled();
+    await user.clear(days);
+    await user.type(days, "3650");
+    expect(confirm).toBeEnabled();
+    await user.clear(days);
+    await user.type(days, "7");
+    expect(confirm).toBeEnabled();
+    await user.click(confirm);
+
+    expect(postMock).toHaveBeenCalledWith("/grain/orientation-samples/purge/", { older_than_days: 7 });
+    const result = await within(dialog).findByRole("status");
+    expect(within(result).getByText("Удалено из CRM").nextElementSibling).toHaveTextContent("3");
+    expect(
+      within(result).getByText(
+        "ПК камер недоступен: кадры, уже отправленные на ПК, остались в CRM как исключённые. Повторите очистку, когда ПК будет доступен",
+      ),
+    ).toBeInTheDocument();
+    expect(within(result).queryByText(/Осталось ещё/)).not.toBeInTheDocument();
+    // Без ПК следующий пакет оставил бы те же строки — цикл прерван, хотя remaining > 0.
+    expect(postMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens a fresh dialog every time: earlier choices and results are not carried over", async () => {
+    const user = userEvent.setup();
+    mockList([tripSample]);
+    postMock.mockResolvedValue({ data: purgeBatch(1, 1) });
+    render(<OrientationDatasetPage />);
+    await screen.findByRole("article", { name: "Кадр weighing-5" });
+
+    let dialog = await openPurgeDialog(user);
+    await user.selectOptions(within(dialog).getByLabelText("Какие кадры"), "all");
+    await user.click(within(dialog).getByRole("button", { name: "Удалить кадры" }));
+    await within(dialog).findByRole("button", { name: "Готово" });
+    await user.click(within(dialog).getByRole("button", { name: "Готово" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    dialog = await openPurgeDialog(user);
+    expect(within(dialog).queryByRole("status")).not.toBeInTheDocument();
+    expect(within(dialog).getByLabelText("Какие кадры")).toHaveValue("older");
+    expect(within(dialog).getByLabelText("Какие кадры")).toHaveFocus();
+    expect(within(dialog).getByLabelText("Старше, дней")).toHaveValue(30);
+    expect(within(dialog).getByRole("button", { name: "Удалить кадры" })).toBeEnabled();
+
+    // Закрытие без чистки тоже не оставляет следов.
+    await user.selectOptions(within(dialog).getByLabelText("Какие кадры"), "all");
+    await user.click(within(dialog).getByRole("button", { name: "Отмена" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    dialog = await openPurgeDialog(user);
+    expect(within(dialog).getByLabelText("Какие кадры")).toHaveValue("older");
+  });
+
+  it("keeps the counter and the error inside the dialog when a later batch fails", async () => {
+    const user = userEvent.setup();
+    mockList([tripSample]);
+    postMock
+      .mockResolvedValueOnce({ data: purgeBatch(5, 5, 2) })
+      .mockRejectedValueOnce({ response: { status: 502, data: { detail: "ПК не отвечает" } } })
+      .mockResolvedValueOnce({ data: purgeBatch(2, 2) });
+    render(<OrientationDatasetPage />);
+    await screen.findByRole("article", { name: "Кадр weighing-5" });
+
+    const dialog = await openPurgeDialog(user);
+    const before = getMock.mock.calls.length;
+    await user.click(within(dialog).getByRole("button", { name: "Удалить кадры" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Кадр уже удалён с ПК");
+    expect(within(dialog).getByRole("status")).toHaveTextContent("Удалено 5 кадров");
+    expect(within(dialog).queryByText("Удалено из CRM")).not.toBeInTheDocument();
+    const retry = within(dialog).getByRole("button", { name: "Удалить кадры" });
+    expect(retry).toBeEnabled();
+    // Первый пакет что-то удалил — страница перечитана, несмотря на ошибку.
+    await waitFor(() => expect(getMock.mock.calls.length).toBe(before + 2));
+
+    await user.click(retry);
+    expect(await within(dialog).findByText("Удалено из CRM")).toBeInTheDocument();
+    expect(within(dialog).getByText("Удалено из CRM").nextElementSibling).toHaveTextContent("7");
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+    expect(postMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps a failed purge's error inside the dialog and lets the owner retry", async () => {
+    const user = userEvent.setup();
+    mockList([tripSample]);
+    postMock.mockRejectedValueOnce({ response: { status: 502, data: { detail: "ПК не отвечает" } } });
+    render(<OrientationDatasetPage />);
+    await screen.findByRole("article", { name: "Кадр weighing-5" });
+
+    const dialog = await openPurgeDialog(user);
+    const before = getMock.mock.calls.length;
+    await user.click(within(dialog).getByRole("button", { name: "Удалить кадры" }));
+
+    expect(postMock).toHaveBeenCalledWith("/grain/orientation-samples/purge/", { older_than_days: 30 });
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Кадр уже удалён с ПК");
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(within(dialog).queryByRole("status")).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Удалить кадры" })).toBeEnabled();
+    expect(getMock.mock.calls.length).toBe(before);
   });
 });

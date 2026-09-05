@@ -26,6 +26,7 @@ from .models import (
     VEHICLE_ORIENTATION_FRONT,
     VEHICLE_ORIENTATION_REAR,
     UnassignedWeighing,
+    VehicleOrientationDatasetState,
     VehicleOrientationSample,
     Wagon,
     WeighingRecord,
@@ -34,6 +35,10 @@ from .models import (
 log = logging.getLogger(__name__)
 
 PHOTO_MISSING = "photo_missing"
+# Сколько строк стирает один вызов ``purge_samples``: каждый отправленный
+# кадр — отдельный запрос к Camera-PC, а API-запрос должен уложиться в
+# таймаут nginx (60 с). Вызывающий повторяет, пока ``remaining`` > 0.
+PURGE_BATCH = 100
 # Где живёт исходный кадр: record_kind образца → модель взвешивания.
 RECORD_MODELS = {
     VehicleOrientationSample.WEIGHING: WeighingRecord,
@@ -130,7 +135,8 @@ def _upsert(
     ):
         return "unchanged"
     # A corrected trip changes the truth about this frame: send it again so
-    # Camera-PC relabels the stored sample.
+    # Camera-PC relabels the stored sample. delivered_at stays: the PC still
+    # holds the old copy until the new one replaces it.
     sample.label = label.value
     sample.label_source = label.source
     sample.conflict = conflict
@@ -151,10 +157,38 @@ def _upsert(
     return "updated"
 
 
-def collect(*, limit: int | None = None) -> dict[str, int]:
-    """Label every recent frame that has a photo; returns counters."""
+def _collect_since():
+    """С какого момента смотреть взвешивания: окно давности или водораздел очистки."""
 
     since = timezone.now() - timedelta(days=settings.VEHICLE_ORIENTATION_SAMPLE_MAX_AGE_DAYS)
+    watermark = (
+        VehicleOrientationDatasetState.objects.filter(pk=1)
+        .values_list("collect_since", flat=True)
+        .first()
+    )
+    if watermark is not None and watermark > since:
+        return watermark
+    return since
+
+
+def _advance_watermark(cutoff) -> None:
+    """Сдвинуть водораздел сбора вперёд до ``cutoff``; назад он не ходит."""
+
+    state = VehicleOrientationDatasetState.load()
+    if state.collect_since is not None and state.collect_since >= cutoff:
+        return
+    state.collect_since = cutoff
+    state.save(update_fields=["collect_since", "updated_at"])
+
+
+def collect(*, limit: int | None = None) -> dict[str, int]:
+    """Label every recent frame that has a photo; returns counters.
+
+    Взвешивания старше водораздела очистки (``VehicleOrientationDatasetState``)
+    не рассматриваются: стёртый датасет не должен воскреснуть ночью.
+    """
+
+    since = _collect_since()
     counters = {"created": 0, "updated": 0, "unchanged": 0, "unlabelled": 0}
     records = (
         WeighingRecord.objects.exclude(photo="")
@@ -235,7 +269,11 @@ def _photo_bytes(sample: VehicleOrientationSample) -> bytes | None:
 
 
 def set_manual_label(sample: VehicleOrientationSample, label: str, user) -> VehicleOrientationSample:
-    """A reviewer says what the frame shows; Camera-PC gets the frame (again)."""
+    """A reviewer says what the frame shows; Camera-PC gets the frame (again).
+
+    ``delivered_at`` не трогаем: пока новая метка не доставлена, на ПК лежит
+    старая копия, и очистка обязана попросить ПК забыть её.
+    """
 
     if label not in {VEHICLE_ORIENTATION_FRONT, VEHICLE_ORIENTATION_REAR}:
         raise ValueError("label must be front or rear")
@@ -269,7 +307,7 @@ def exclude_sample(sample: VehicleOrientationSample, user) -> VehicleOrientation
     """Drop a frame from the dataset; a copy already on Camera-PC is removed."""
 
     sample.excluded = True
-    sample.removal_pending = sample.sent_at is not None
+    sample.removal_pending = sample.delivered_at is not None
     sample.conflict = False
     sample.reviewed_by = user
     sample.reviewed_at = timezone.now()
@@ -311,10 +349,133 @@ def export_removals(*, limit: int) -> dict[str, int]:
             continue
         sample.removal_pending = False
         sample.sent_at = None
+        sample.delivered_at = None
         sample.last_error = ""
-        sample.save(update_fields=["removal_pending", "sent_at", "last_error", "updated_at"])
+        sample.save(
+            update_fields=["removal_pending", "sent_at", "delivered_at", "last_error", "updated_at"]
+        )
         counters["removed"] += 1
     return counters
+
+
+def _on_camera_pc(sample: VehicleOrientationSample) -> bool:
+    """Camera-PC could hold a copy: the frame was delivered or is queued for removal.
+
+    Именно ``delivered_at``, а не ``sent_at``: последний сбрасывается при
+    перемаркировке и неудачной повторной отправке, пока ПК держит кадр.
+    """
+
+    return sample.delivered_at is not None or sample.removal_pending
+
+
+def _delete_rows(queryset) -> int:
+    """Удалить строки датасета; фото взвешиваний не трогаем никогда."""
+
+    _, per_model = queryset.delete()
+    return per_model.get(VehicleOrientationSample._meta.label, 0)
+
+
+def purge_samples(
+    queryset,
+    *,
+    remove_from_pc: bool = True,
+    cutoff=None,
+    limit: int = PURGE_BATCH,
+) -> dict:
+    """Удалить пакет образцов из CRM и их копии с Camera-PC.
+
+    За вызов обрабатывается не больше ``limit`` строк (по ``id``): каждый
+    отправленный кадр — отдельный запрос к ПК, и API-вызов должен уложиться
+    в таймаут. ``remaining`` — сколько строк выборки осталось после пакета;
+    вызывающий повторяет, пока оно не станет 0 (при ``pc_unavailable``
+    повторять бессмысленно до возвращения ПК: оставленные строки попадут в
+    следующий пакет снова).
+
+    Кадры, которых ПК не получал, просто удаляются. Для доставленных сначала
+    просим ПК забыть кадр (404 — уже забыт). Если ПК не отвечает, к нему
+    больше не стучимся: такие строки остаются исключёнными с
+    ``removal_pending`` — ночной ``export_removals`` доделает; ошибка ответа
+    по одному кадру пишется в ``last_error``, строка тоже остаётся. С
+    ``remove_from_pc=False`` ПК не трогаем и удаляем всё.
+
+    ``cutoff`` — отсечка «кадры старше N дней»: водораздел сбора двигается к
+    ней, чтобы ночной ``collect()`` не воссоздал стёртое из тех же фото.
+
+    Возвращает ``{"deleted", "removed_from_pc", "pc_unavailable", "remaining"}``.
+    Фото на WeighingRecord/UnassignedWeighing — свидетельство рейса, они
+    остаются.
+    """
+
+    if cutoff is not None:
+        _advance_watermark(cutoff)
+    result = {"deleted": 0, "removed_from_pc": 0, "pc_unavailable": False, "remaining": 0}
+    doomed: list[int] = []
+    kept: list[int] = []
+    for sample in list(queryset.order_by("id")[:limit]):
+        if not remove_from_pc or not _on_camera_pc(sample):
+            doomed.append(sample.pk)
+            continue
+        if result["pc_unavailable"]:
+            kept.append(sample.pk)
+            continue
+        try:
+            camera_ai.delete_orientation_sample(sample.sample_id)
+        except camera_ai.AiUnavailable as exc:
+            result["pc_unavailable"] = True
+            sample.last_error = str(exc)[:200]
+            sample.save(update_fields=["last_error", "updated_at"])
+            kept.append(sample.pk)
+            log.warning("Orientation sample purge stopped: Camera-PC unavailable: %s", exc)
+            continue
+        except camera_ai.AiError as exc:
+            sample.last_error = str(exc)[:200]
+            sample.save(update_fields=["last_error", "updated_at"])
+            kept.append(sample.pk)
+            continue
+        result["removed_from_pc"] += 1
+        doomed.append(sample.pk)
+    if kept:
+        VehicleOrientationSample.objects.filter(pk__in=kept).update(
+            excluded=True,
+            removal_pending=True,
+            conflict=False,
+            updated_at=timezone.now(),
+        )
+    result["deleted"] = _delete_rows(VehicleOrientationSample.objects.filter(pk__in=doomed))
+    result["remaining"] = queryset.exclude(pk__in=doomed + kept).count()
+    log.info("Orientation dataset purge %s (kept for nightly removal: %s)", result, len(kept))
+    return result
+
+
+def purge_all(*, remove_from_pc: bool = True) -> dict:
+    """Стереть весь датасет: одним запросом на Camera-PC, затем все строки CRM.
+
+    Водораздел сбора встаёт на «сейчас»: всё, что снято до очистки, в датасет
+    не вернётся. Если массовое удаление ПК не поддерживает или он не
+    отвечает, уходим на покадровое ``purge_samples`` одним пакетом — оно
+    само решит, что удалить сейчас, а что оставить ночному экспорту, а
+    вызывающий повторяет по ``remaining``. Результат в том же виде, что у
+    ``purge_samples``.
+    """
+
+    _advance_watermark(timezone.now())
+    queryset = VehicleOrientationSample.objects.all()
+    if remove_from_pc:
+        try:
+            removed = camera_ai.clear_orientation_samples()
+        except (camera_ai.AiUnavailable, camera_ai.AiError) as exc:
+            log.warning("Orientation dataset bulk clear failed, purging per sample: %s", exc)
+            return purge_samples(queryset, remove_from_pc=True, limit=PURGE_BATCH)
+    else:
+        removed = 0
+    result = {
+        "deleted": _delete_rows(queryset),
+        "removed_from_pc": removed,
+        "pc_unavailable": False,
+        "remaining": 0,
+    }
+    log.info("Orientation dataset purge %s", result)
+    return result
 
 
 def export_pending(*, limit: int) -> dict[str, int]:
@@ -354,9 +515,9 @@ def export_pending(*, limit: int) -> dict[str, int]:
             sample.save(update_fields=["last_error", "updated_at"])
             counters["failed"] += 1
             continue
-        sample.sent_at = timezone.now()
+        sample.sent_at = sample.delivered_at = timezone.now()
         sample.last_error = ""
-        sample.save(update_fields=["sent_at", "last_error", "updated_at"])
+        sample.save(update_fields=["sent_at", "delivered_at", "last_error", "updated_at"])
         counters["sent"] += 1
     return counters
 
@@ -377,6 +538,7 @@ def run(*, limit: int | None = None) -> dict:
 
 
 __all__ = [
+    "PURGE_BATCH",
     "Label",
     "collect",
     "exclude_sample",
@@ -386,6 +548,8 @@ __all__ = [
     "label_unassigned",
     "label_weighing",
     "load_records",
+    "purge_all",
+    "purge_samples",
     "run",
     "set_manual_label",
 ]

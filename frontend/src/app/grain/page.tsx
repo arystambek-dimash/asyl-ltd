@@ -1,9 +1,8 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Camera, Check, Images, Plus, ScanLine, TrainFront, Truck } from "lucide-react";
+import { ArrowRight, Camera, Check, Plus, ScanLine, TrainFront, Truck } from "lucide-react";
 import { GrainToolbar } from "@/components/grain/grain-toolbar";
 import { UnassignedWeighingsPanel } from "@/components/grain/unassigned-weighings";
 import { AppShell } from "@/components/layout/app-shell";
@@ -12,7 +11,7 @@ import { WagonNumberCameraWorkspace } from "@/components/grain/wagon-number-came
 import { FlowEmptyState, WagonTable } from "@/components/grain/wagon-table";
 import { RequirePerm } from "@/components/require-perm";
 import { Badge } from "@/components/ui/badge";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,7 +26,7 @@ import type { GrainSilo, GrainSupply, GrainType, GrainWagon, VehiclePlateCandida
 import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
-import { cn, formatDateTime } from "@/lib/utils";
+import { formatDateTime } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 
 type GrainTab = "expected" | "on_site" | "finished" | "camera";
@@ -745,30 +744,18 @@ function GrainPageInner() {
           : "Вывоз можно оформлять автоматически по стабильному весу и номеру камеры либо вручную. Доступность автоматики показана во вкладке «Камера проходной»."
       }
       actions={
-        <div className="flex min-w-0 items-center gap-2">
-          <GrainToolbar
-            direction={direction}
-            canArrive={canArrive}
-            canSupply={canSupply}
-            canWeigh={canWeigh}
-            onPassage={openPassage}
-            onArrival={() => openArrival()}
-            onSupply={() => {
-              selectDirection("intake");
-              setSupplyOpen(true);
-            }}
-          />
-          {/* Кадры весовой с метками «передом/задом» относятся только к машинам вывоза. */}
-          {direction === "passage" && (
-            <Link
-              href="/grain/orientation"
-              title="Проверить метки кадров классификатора ориентации"
-              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-9 shrink-0 px-3")}
-            >
-              <Images className="size-4" /> Датасет ориентации
-            </Link>
-          )}
-        </div>
+        <GrainToolbar
+          direction={direction}
+          canArrive={canArrive}
+          canSupply={canSupply}
+          canWeigh={canWeigh}
+          onPassage={openPassage}
+          onArrival={() => openArrival()}
+          onSupply={() => {
+            selectDirection("intake");
+            setSupplyOpen(true);
+          }}
+        />
       }
     >
       <div className="space-y-4">

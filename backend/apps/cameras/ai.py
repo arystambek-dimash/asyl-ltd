@@ -477,6 +477,25 @@ _JPEG_MAGIC = b"\xff\xd8\xff"
 ORIENTATION_SAMPLE_TIMEOUT = 20.0
 
 
+def _orientation_error(status: int, payload: Mapping) -> AiError:
+    """Ошибка эндпоинтов датасета: текст берём из ответа, иначе по коду."""
+
+    detail = payload.get("error") or payload.get("detail")
+    if not isinstance(detail, str) or not detail.strip():
+        detail = f"AI-сервис: ошибка {status}"
+    return AiError(status, detail, payload)
+
+
+def _orientation_done(status: int) -> bool:
+    """Успех эндпоинтов датасета — только 2xx.
+
+    urllib не следует редиректам для POST с телом и DELETE: 3xx приходит
+    сюда кортежем со статусом, а кадр при этом не сохранён и не удалён.
+    """
+
+    return 200 <= status < 300
+
+
 def post_orientation_sample(
     *,
     sample_id: str,
@@ -507,16 +526,17 @@ def post_orientation_sample(
         extra_headers=headers,
         timeout_seconds=ORIENTATION_SAMPLE_TIMEOUT,
     )
-    if status >= 400:
-        detail = payload.get("error") or payload.get("detail")
-        if not isinstance(detail, str) or not detail.strip():
-            detail = f"AI-сервис: ошибка {status}"
-        raise AiError(status, detail, payload)
+    if not _orientation_done(status):
+        raise _orientation_error(status, payload)
     return payload
 
 
 def delete_orientation_sample(sample_id: str) -> bool:
-    """Remove one training frame from Camera-PC; ``False`` when it had none."""
+    """Remove one training frame from Camera-PC; ``False`` when it had none.
+
+    Только 2xx — удалено, 404 — ПК такого кадра не держит; всё остальное
+    (в том числе 3xx) — ``AiError``, кадр считается оставшимся на ПК.
+    """
 
     status, payload = _request(
         "DELETE",
@@ -525,12 +545,30 @@ def delete_orientation_sample(sample_id: str) -> bool:
     )
     if status == 404:
         return False
-    if status >= 400:
-        detail = payload.get("error") or payload.get("detail")
-        if not isinstance(detail, str) or not detail.strip():
-            detail = f"AI-сервис: ошибка {status}"
-        raise AiError(status, detail, payload)
+    if not _orientation_done(status):
+        raise _orientation_error(status, payload)
     return bool(payload.get("removed", True))
+
+
+def clear_orientation_samples() -> int:
+    """Стереть весь датасет на Camera-PC одним запросом; вернуть число кадров.
+
+    ``DELETE /vehicle-orientation/samples`` без идентификатора. Любой ответ
+    не 2xx (в том числе 404 на старой прошивке ПК без этого эндпоинта и 3xx)
+    — ``AiError``: вызывающий откатывается на удаление по одному кадру.
+    """
+
+    status, payload = _request(
+        "DELETE",
+        "/vehicle-orientation/samples",
+        timeout_seconds=ORIENTATION_SAMPLE_TIMEOUT,
+    )
+    if not _orientation_done(status):
+        raise _orientation_error(status, payload)
+    try:
+        return int(payload.get("removed", 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def vehicle_orientation_info() -> dict:

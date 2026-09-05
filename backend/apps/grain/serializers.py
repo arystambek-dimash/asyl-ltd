@@ -249,6 +249,7 @@ class VehicleOrientationSampleSerializer(serializers.ModelSerializer):
             "conflict",
             "excluded",
             "sent_at",
+            "delivered_at",
             "last_error",
             "reviewed_by_name",
             "reviewed_at",
