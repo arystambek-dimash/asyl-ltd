@@ -389,3 +389,38 @@ def test_safe_ai_payload_keeps_a_bounded_orientation_block():
         "confidence": 0.93,
         "raw_label": "rearrearrearrear",
     }
+
+
+def test_two_plausible_parked_entries_are_never_paired_by_guess():
+    _parked(3880, ago=timedelta(hours=2), orientation="front")
+    _parked(3900, ago=timedelta(hours=1), orientation="front")
+
+    result = _apply(_event(), "8760", orientation="rear")
+
+    assert result.action == "unassigned"
+    assert UnassignedWeighing.objects.get(pk=result.unassigned_id).reason == "entry_missing"
+    assert not Wagon.objects.exists()
+
+
+def test_one_confident_front_among_unknown_parked_weights_is_still_paired():
+    _parked(3900, ago=timedelta(hours=2), orientation="")
+    front = _parked(3880, ago=timedelta(hours=1), orientation="front")
+
+    result = _apply(_event(), "8760", orientation="rear")
+
+    front.refresh_from_db()
+    assert result.action == "exit"
+    assert front.status == UnassignedWeighing.ASSIGNED
+
+
+def test_two_parked_loaded_weights_cancel_the_stale_trip_instead_of_guessing():
+    stale = _open_trip(entry=3880, entered_ago=timedelta(hours=3))
+    _parked(8700, ago=timedelta(hours=2), orientation="rear")
+    _parked(10160, ago=timedelta(hours=1), orientation="rear")
+
+    result = _apply(_event(), "3900", orientation="front")
+
+    stale.refresh_from_db()
+    assert result.action == "entry"
+    assert stale.status == st.CANCELLED
+    assert UnassignedWeighing.objects.filter(status=UnassignedWeighing.OPEN).count() == 2

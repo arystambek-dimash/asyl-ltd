@@ -11,6 +11,7 @@ from .views import (
     SiloViewSet,
     TruckScaleReadingView,
     UnassignedWeighingViewSet,
+    VehicleOrientationSampleViewSet,
     WagonViewSet,
 )
 
@@ -22,6 +23,11 @@ router.register(
     "grain/unassigned-weighings",
     UnassignedWeighingViewSet,
     basename="grain-unassigned-weighing",
+)
+router.register(
+    "grain/orientation-samples",
+    VehicleOrientationSampleViewSet,
+    basename="grain-orientation-sample",
 )
 router.register(
     "grain/silo-types", SiloTypeViewSet, basename="grain-silo-type")

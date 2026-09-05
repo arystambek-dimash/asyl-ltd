@@ -987,6 +987,69 @@ export interface GrainUnassignedWeighing {
   created_at: string;
 }
 
+/** Метка кадра в датасете ориентации: передом к камере — заезд, задом — выезд. */
+export type GrainOrientationLabel = Exclude<VehicleOrientation, "">;
+
+/** Кадр весовой, который CRM собирает для дообучения классификатора ориентации на Camera-PC. */
+export interface GrainOrientationSample {
+  id: number;
+  /** `${record_kind}-${record_id}` — ключ кадра на Camera-PC. */
+  sample_id: string;
+  record_kind: "weighing" | "unassigned";
+  record_id: number;
+  label: GrainOrientationLabel;
+  /** trip — по завершённому рейсу, weight — по весу, manual — поправил человек. */
+  label_source: "trip" | "weight" | "manual";
+  weight_kg: number;
+  captured_at: string;
+  /** Что сказал классификатор в момент кадра; пусто — не отвечал. */
+  model_orientation: VehicleOrientation;
+  /** Классификатор уверенно противоречил автоматической метке: кадр придержан до проверки. */
+  conflict: boolean;
+  /** Человек убрал кадр из датасета. */
+  excluded: boolean;
+  /** Когда Camera-PC принял кадр; null — ещё не отправлен. */
+  sent_at: string | null;
+  last_error: string;
+  reviewed_by_name: string | null;
+  reviewed_at: string | null;
+  /** Подписанная ссылка на кадр (см. apiFileUrl); null — фото нет. */
+  photo_url: string | null;
+  vehicle_number: string;
+  wagon: number | null;
+}
+
+/** Отчёт ночного обучения на Camera-PC; статусы задаёт ПК, поэтому строка. */
+export interface GrainOrientationTrainingReport {
+  status: string;
+  ran_at: string | null;
+  promoted: boolean;
+  samples?: number | Record<string, number> | null;
+  baseline?: { accuracy: number | null } | null;
+  candidate?: { accuracy: number | null } | null;
+  reason: string;
+  current_model: string | null;
+}
+
+export interface GrainOrientationCameraPc {
+  enabled: boolean;
+  /** Описание активной модели в формате ПК; поля не фиксированы. */
+  model?: Record<string, unknown> | null;
+  dataset?: { front: number; rear: number } | null;
+  training?: GrainOrientationTrainingReport | null;
+}
+
+export interface GrainOrientationSummary {
+  total: number;
+  by_label: { front: number; rear: number };
+  by_source: { trip: number; weight: number; manual: number };
+  conflicts: number;
+  excluded: number;
+  unsent: number;
+  /** null — ПК камер не ответил. */
+  camera_pc: GrainOrientationCameraPc | null;
+}
+
 export interface GrainLabCheck {
   id: number;
   moisture: string | null;

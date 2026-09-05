@@ -1782,8 +1782,30 @@ def _locked_open_unassigned():
     )
 
 
+def _single_parked(parked, *, preferred_orientation: str):
+    """The one parked weight that fits, or ``None`` when pairing would be a guess.
+
+    Two plausible frames mean two trucks: an operator must choose, so the
+    automation parks the weight instead of attaching it to the wrong trip.
+    """
+
+    candidates = list(parked.exclude(orientation=_other_orientation(preferred_orientation)))
+    if len(candidates) == 1:
+        return candidates[0]
+    verdicts = [item for item in candidates if item.orientation == preferred_orientation]
+    return verdicts[0] if len(verdicts) == 1 else None
+
+
+def _other_orientation(orientation: str) -> str:
+    return (
+        VEHICLE_ORIENTATION_REAR
+        if orientation == VEHICLE_ORIENTATION_FRONT
+        else VEHICLE_ORIENTATION_FRONT
+    )
+
+
 def _locked_missed_entry_candidate(*, before, lighter_than: int):
-    """Latest parked empty (front-facing) weight that precedes ``before``."""
+    """The single parked empty (front-facing) weight that precedes ``before``."""
 
     oldest = before - timedelta(
         hours=settings.VEHICLE_PLATE_AUTO_MISSED_ENTRY_MAX_AGE_HOURS
@@ -1793,26 +1815,18 @@ def _locked_missed_entry_candidate(*, before, lighter_than: int):
         stable_weight_at__lt=before,
         weight_kg__lt=lighter_than,
     )
-    front = parked.filter(orientation=VEHICLE_ORIENTATION_FRONT).order_by(
-        "-stable_weight_at"
-    )
-    unknown = parked.filter(orientation="").order_by("-stable_weight_at")
-    return front.first() or unknown.first()
+    return _single_parked(parked, preferred_orientation=VEHICLE_ORIENTATION_FRONT)
 
 
 def _locked_missed_exit_candidate(*, after, before, heavier_than: int):
-    """Latest parked loaded (rear-facing) weight inside the open trip."""
+    """The single parked loaded (rear-facing) weight inside the open trip."""
 
     parked = _locked_open_unassigned().filter(
         stable_weight_at__gt=after,
         stable_weight_at__lt=before,
         weight_kg__gt=heavier_than,
     )
-    rear = parked.filter(orientation=VEHICLE_ORIENTATION_REAR).order_by(
-        "-stable_weight_at"
-    )
-    unknown = parked.filter(orientation="").order_by("-stable_weight_at")
-    return rear.first() or unknown.first()
+    return _single_parked(parked, preferred_orientation=VEHICLE_ORIENTATION_REAR)
 
 
 def _close_passage_after_missed_exit(

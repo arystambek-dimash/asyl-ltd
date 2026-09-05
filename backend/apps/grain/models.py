@@ -875,3 +875,65 @@ class GrainMovement(models.Model):
 
     def delete(self, *args, **kwargs):
         raise RuntimeError("Движение зерна нельзя удалить: оформите обратную операцию")
+
+
+class VehicleOrientationSample(models.Model):
+    """Кадр с меткой «передом/задом», отправленный на Camera-PC для дообучения.
+
+    Датасет собирается сам: у завершённого рейса кадр заезда — передом, кадр
+    выезда — задом (это работает и для тяжёлых машин); без завершённого рейса
+    метку даёт вес (пустая легче VEHICLE_ORIENTATION_EMPTY_MAX_KG, гружёная
+    тяжелее VEHICLE_ORIENTATION_LOADED_MIN_KG, между — кадр пропускается).
+    Кадр, на котором классификатор был уверен в обратном, не отправляется, а
+    помечается конфликтом: такие кадры смотрит человек.
+    """
+
+    WEIGHING = "weighing"
+    UNASSIGNED = "unassigned"
+    KINDS = [(WEIGHING, "Взвешивание"), (UNASSIGNED, "Неопознанное взвешивание")]
+    BY_TRIP = "trip"
+    BY_WEIGHT = "weight"
+    # A human looked at the frame: automatic relabelling never overrides it.
+    BY_MANUAL = "manual"
+
+    record_kind = models.CharField(max_length=12, choices=KINDS)
+    record_id = models.PositiveBigIntegerField()
+    label = models.CharField(max_length=8, choices=VEHICLE_ORIENTATIONS[1:])
+    label_source = models.CharField(max_length=8)
+    weight_kg = models.PositiveBigIntegerField()
+    captured_at = models.DateTimeField()
+    model_orientation = models.CharField(max_length=8, blank=True, default="")
+    conflict = models.BooleanField(default=False)
+    # Excluded by a human (not a truck, unreadable frame): never trained on;
+    # removal_pending asks Camera-PC to drop a copy it already received.
+    excluded = models.BooleanField(default=False)
+    removal_pending = models.BooleanField(default=False)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=200, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["record_kind", "record_id"],
+                name="grain_one_orientation_sample_per_record",
+            ),
+            models.CheckConstraint(
+                name="grain_orientation_sample_label_valid",
+                condition=models.Q(label__in=["front", "rear"]),
+            ),
+        ]
+
+    @property
+    def sample_id(self) -> str:
+        return f"{self.record_kind}-{self.record_id}"

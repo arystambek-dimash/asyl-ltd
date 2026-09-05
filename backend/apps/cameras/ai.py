@@ -130,17 +130,26 @@ def _request(
     *,
     timeout_seconds: float | None = None,
     idempotency_key: str | None = None,
+    raw_body: bytes | None = None,
+    content_type: str | None = None,
+    extra_headers: Mapping[str, str] | None = None,
 ) -> tuple[int, dict]:
     request_headers = {
         "X-Api-Key": AI_KEY,
-        "Content-Type": "application/json",
+        "Content-Type": content_type or "application/json",
     }
     if idempotency_key is not None:
         request_headers["Idempotency-Key"] = idempotency_key
+    if extra_headers:
+        request_headers.update(extra_headers)
+    if raw_body is not None:
+        data = bytes(raw_body)
+    else:
+        data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
         f"{AI_URL}{path}",
         method=method,
-        data=json.dumps(body).encode() if body is not None else None,
+        data=data,
         headers=request_headers,
     )
     try:
@@ -463,6 +472,78 @@ def retry_vehicle_recognition_from_camera(
 VEHICLE_FRAME_TIMEOUT = 5.0
 VEHICLE_FRAME_MAX_BYTES = 4 * 1024 * 1024
 _JPEG_MAGIC = b"\xff\xd8\xff"
+
+
+ORIENTATION_SAMPLE_TIMEOUT = 20.0
+
+
+def post_orientation_sample(
+    *,
+    sample_id: str,
+    label: str,
+    jpeg: bytes,
+    weight_kg: int | None = None,
+    captured_at: str | None = None,
+    source: str = "crm",
+) -> dict:
+    """Hand one labelled scale-camera frame to Camera-PC for self-training."""
+
+    if label not in VEHICLE_ORIENTATIONS:
+        raise ValueError("label must be front or rear")
+    headers = {
+        "X-Sample-Id": str(sample_id),
+        "X-Sample-Label": label,
+        "X-Sample-Source": source,
+    }
+    if weight_kg is not None:
+        headers["X-Sample-Weight-Kg"] = str(int(weight_kg))
+    if captured_at:
+        headers["X-Sample-Captured-At"] = str(captured_at)
+    status, payload = _request(
+        "POST",
+        "/vehicle-orientation/samples",
+        raw_body=bytes(jpeg),
+        content_type="image/jpeg",
+        extra_headers=headers,
+        timeout_seconds=ORIENTATION_SAMPLE_TIMEOUT,
+    )
+    if status >= 400:
+        detail = payload.get("error") or payload.get("detail")
+        if not isinstance(detail, str) or not detail.strip():
+            detail = f"AI-сервис: ошибка {status}"
+        raise AiError(status, detail, payload)
+    return payload
+
+
+def delete_orientation_sample(sample_id: str) -> bool:
+    """Remove one training frame from Camera-PC; ``False`` when it had none."""
+
+    status, payload = _request(
+        "DELETE",
+        f"/vehicle-orientation/samples/{sample_id}",
+        timeout_seconds=ORIENTATION_SAMPLE_TIMEOUT,
+    )
+    if status == 404:
+        return False
+    if status >= 400:
+        detail = payload.get("error") or payload.get("detail")
+        if not isinstance(detail, str) or not detail.strip():
+            detail = f"AI-сервис: ошибка {status}"
+        raise AiError(status, detail, payload)
+    return bool(payload.get("removed", True))
+
+
+def vehicle_orientation_info() -> dict:
+    """Dataset size, model and last training report of the orientation classifier."""
+
+    return (
+        _call(
+            "GET",
+            "/vehicle-orientation",
+            timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
+        )
+        or {}
+    )
 
 
 def fetch_vehicle_recognition_frame(cam: str, request_id: UUID | str) -> bytes | None:

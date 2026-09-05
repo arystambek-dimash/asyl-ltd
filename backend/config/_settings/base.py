@@ -237,6 +237,7 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TASK_DEFAULT_QUEUE = "default"
 CELERY_TASK_ROUTES = {
     "orders.reconcile_apipay": {"queue": "payments"},
+    "grain.export_orientation_samples": {"queue": "payments"},
 }
 
 try:
@@ -272,7 +273,16 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
     "visibility_timeout": _apipay_task_lock_seconds,
 }
 
+from celery.schedules import crontab  # noqa: E402 - beat schedule below
+
 CELERY_BEAT_SCHEDULE = {
+    # The CRM labels the day's scale-camera frames and hands them to Camera-PC
+    # before its 02:30 local self-training run of the orientation classifier.
+    "export-orientation-samples": {
+        "task": "grain.export_orientation_samples",
+        "schedule": crontab(hour=1, minute=30),
+        "options": {"queue": "payments", "expires": 3600},
+    },
     "reconcile-apipay": {
         "task": "orders.reconcile_apipay",
         "schedule": _apipay_reconcile_interval,
@@ -588,4 +598,21 @@ VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS = _bounded_int_env(
 # гружёный выезд без открытого рейса.
 VEHICLE_PLATE_AUTO_MISSED_ENTRY_MAX_AGE_HOURS = _bounded_int_env(
     "VEHICLE_PLATE_AUTO_MISSED_ENTRY_MAX_AGE_HOURS", 24, 1, 168
+)
+# Self-collecting dataset for the Camera-PC front/rear classifier: labels
+# come from completed trips, or from the weight when no trip closed yet.
+VEHICLE_ORIENTATION_DATASET_ENABLED = os.environ.get(
+    "VEHICLE_ORIENTATION_DATASET_ENABLED", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+VEHICLE_ORIENTATION_EMPTY_MAX_KG = _bounded_int_env(
+    "VEHICLE_ORIENTATION_EMPTY_MAX_KG", 5000, 500, 50000
+)
+VEHICLE_ORIENTATION_LOADED_MIN_KG = _bounded_int_env(
+    "VEHICLE_ORIENTATION_LOADED_MIN_KG", 6000, 500, 100000
+)
+VEHICLE_ORIENTATION_EXPORT_BATCH = _bounded_int_env(
+    "VEHICLE_ORIENTATION_EXPORT_BATCH", 300, 1, 5000
+)
+VEHICLE_ORIENTATION_SAMPLE_MAX_AGE_DAYS = _bounded_int_env(
+    "VEHICLE_ORIENTATION_SAMPLE_MAX_AGE_DAYS", 60, 1, 730
 )

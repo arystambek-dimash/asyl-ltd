@@ -22,6 +22,7 @@ import {
   ScanLine,
   Warehouse,
   Wheat,
+  Images,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { can } from "@/lib/can";
@@ -75,6 +76,8 @@ function staffSections(): NavSection[] {
         { href: "/warehouse/silos", label: "Силосы", icon: Warehouse, perm: "silos.view" },
         // Проходная вагонов: заявки, приход, взвешивание и выход.
         { href: "/grain", label: "Приход и вывоз", icon: Wheat, perm: "grain.view" },
+        // Кадры весовой для дообучения классификатора «передом/задом»: проверка меток.
+        { href: "/grain/orientation", label: "Датасет ориентации", icon: Images, perm: "grain.view" },
         { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
         { href: "/stores", label: "Магазины", icon: Store, perm: "clients.view" },
         { href: "/catalog/products", label: "Товары", icon: Package, perm: "catalog.view" },

@@ -650,11 +650,45 @@ unassigned panel: binding an earlier, lighter (or front-facing) weight to an
 `at_silo` trip swaps it into the entry, re-labels the booked weight as the
 exit and completes the trip.
 
-Retraining the classifier: export `WeighingRecord.photo` frames, crop them
-with the cam1 ROI, sort into `front/` and `rear/`, run `yolo11n-cls` for 60
-epochs at 224 px, replace `cv_service/models/vehicle-orientation.pt` and its
-SHA in `cv_service/models/README.md`, then reinstall on the Camera-PC with
-`-VehicleOrientationModelPath`.
+The classifier retrains itself. Every night at 01:30 (Almaty) the celery beat
+task `grain.export_orientation_samples` (`apps/grain/orientation_dataset.py`,
+manual: `manage.py export_orientation_samples [--collect-only] [--limit N]`)
+labels every recent frame with a photo and posts new or relabelled ones to
+Camera-PC (`POST /vehicle-orientation/samples`):
+
+- a completed trip is the ground truth: its entry frame is `front`, its exit
+  frame `rear`, whatever the truck weighs (so a 9 t empty KAMAZ is still an
+  entry);
+- a frame without a closed trip is labelled by weight only when it is clear:
+  below `VEHICLE_ORIENTATION_EMPTY_MAX_KG` (5000) is `front`, above
+  `VEHICLE_ORIENTATION_LOADED_MIN_KG` (6000) is `rear`, in between is skipped;
+  weights of cancelled trips are never used;
+- a frame the classifier itself was confidently wrong about is held back as a
+  `conflict` in `VehicleOrientationSample` for a human look, so the loop never
+  learns from its own mistakes;
+- an operator correction (the missed-entry swap, a re-assigned weighing)
+  changes the label and the frame is sent again, which relabels it on the PC.
+
+Reviewing the dataset: the CRM page **Датасет ориентации** (`/grain/orientation`,
+sidebar under «Приход и вывоз»; read with `grain.view`, edit with `grain.admin`)
+shows every frame with its label, source (по рейсу / по весу / вручную), the
+classifier's contradicting verdict on conflicts, and the Camera-PC training
+report (`GET /api/grain/orientation-samples/summary/`, cached 30 s, probe
+timeout 2 s). «Передом»/«Задом» sets a manual label that automatic relabelling
+never overrides and re-sends the frame; «Исключить» drops it and, when Camera-PC
+already holds a copy, removes it there (`DELETE /vehicle-orientation/samples/<id>`).
+
+Camera-PC keeps the frames in `orientation-dataset/` and at 02:30 local runs
+`ASYL-AI-Orientation-Training`: ROI crops, a deterministic 20 % hold-out,
+fine-tuning of the current model, and promotion to
+`models/vehicle-orientation.trained.pt` only if the candidate is at least as
+accurate as the model in service (and at least 0.95 with every class recall at
+least 0.90). The service reloads the promoted file on the next recognition
+without a restart; `GET /vehicle-orientation` (and the `orientation` block of
+`/api/cameras/vehicle-plate-runtime/` via `ai.vehicle_orientation_info()`)
+shows dataset counts and the last training report. Deleting the trained file
+on the PC returns to the shipped base model. `VEHICLE_ORIENTATION_DATASET_ENABLED=0`
+stops the export.
 
 ## Late bag events after a posted shift
 

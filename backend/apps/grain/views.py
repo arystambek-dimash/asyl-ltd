@@ -4,20 +4,38 @@ from uuid import UUID
 from config.throttles import TruckScalePreviewRateThrottle
 from django.conf import settings
 from django.db import transaction
+from django.core.cache import cache
+from django.db.models import Count, Q
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.cameras import ai as camera_ai
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import IsSuperUser, PermAPIViewMixin, PermViewSetMixin
 from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.models import EventLog
 
-from . import passage_scale_automation, scale, services, vehicle_weight_capture
+from . import (
+    orientation_dataset,
+    passage_scale_automation,
+    scale,
+    services,
+    vehicle_weight_capture,
+)
 from . import statuses as st
-from .models import GrainSupply, Silo, SiloType, UnassignedWeighing, Wagon
+from .models import (
+    VEHICLE_ORIENTATION_FRONT,
+    VEHICLE_ORIENTATION_REAR,
+    GrainSupply,
+    Silo,
+    SiloType,
+    UnassignedWeighing,
+    VehicleOrientationSample,
+    Wagon,
+)
 from .scale_preview import get_scale_preview
 from .serializers import (
     AutomaticPassageScaleSettingsSerializer,
@@ -30,6 +48,7 @@ from .serializers import (
     UnassignedCreatePassageSerializer,
     UnassignedDiscardSerializer,
     UnassignedWeighingSerializer,
+    VehicleOrientationSampleSerializer,
     VehiclePlateCandidateSerializer,
     WagonBriefSerializer,
     WagonSerializer,
@@ -686,6 +705,200 @@ class UnassignedWeighingViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet)
                 reason=serializer.validated_data["reason"],
             )
         )
+
+
+# Фильтры списка образцов: параметр → (поле, допустимые значения).
+_ORIENTATION_SAMPLE_FILTERS = {
+    "label": ("label", {VEHICLE_ORIENTATION_FRONT, VEHICLE_ORIENTATION_REAR}),
+    "source": (
+        "label_source",
+        {
+            VehicleOrientationSample.BY_TRIP,
+            VehicleOrientationSample.BY_WEIGHT,
+            VehicleOrientationSample.BY_MANUAL,
+        },
+    ),
+    "kind": (
+        "record_kind",
+        {VehicleOrientationSample.WEIGHING, VehicleOrientationSample.UNASSIGNED},
+    ),
+}
+# Флаги «только …»: параметр → условие при значении 1.
+_ORIENTATION_SAMPLE_FLAGS = {
+    "conflict": Q(conflict=True),
+    "excluded": Q(excluded=True),
+    "unsent": Q(sent_at__isnull=True),
+}
+# Без ?page плоский список ограничен, как и журнал силоса.
+ORIENTATION_SAMPLE_FLAT_LIMIT = 200
+
+
+ORIENTATION_PC_CACHE_KEY = "grain.orientation.camera_pc"
+ORIENTATION_PC_CACHE_SECONDS = 30
+
+
+def _camera_pc_orientation() -> dict | None:
+    """Состояние классификатора на ПК камер для страницы датасета.
+
+    Страница опрашивает сводку каждые 30 с из нескольких вкладок; короткий
+    таймаут и кэш не дают зависшему ПК держать воркер gunicorn. Недоступный
+    ПК тоже кэшируется, чтобы не стучаться на каждый опрос.
+    """
+
+    cached = cache.get(ORIENTATION_PC_CACHE_KEY)
+    if cached is not None:
+        return cached or None
+    try:
+        info = dict(camera_ai.vehicle_orientation_info() or {})
+    except (camera_ai.AiUnavailable, camera_ai.AiError, ValueError, TypeError):
+        info = {}
+    cache.set(ORIENTATION_PC_CACHE_KEY, info, ORIENTATION_PC_CACHE_SECONDS)
+    return info or None
+
+
+class VehicleOrientationSampleViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
+    """Разметка датасета ориентации: кадры, автоматические метки, конфликты.
+
+    Фильтры списка: ``label=front|rear``, ``source=trip|weight|manual``,
+    ``kind=weighing|unassigned``; флаги ``conflict=1`` (только конфликты),
+    ``unsent=1`` (ещё не на Camera-PC), ``excluded=1`` (только исключённые —
+    по умолчанию они скрыты). Неверное значение — 400 ``bad_filter``.
+    Пагинация opt-in: без ``?page``/``?page_size`` ответ — плоский список
+    (не более ``ORIENTATION_SAMPLE_FLAT_LIMIT`` новых строк), с ними —
+    страница ``page_size`` ≤ 100 (по умолчанию 50).
+    """
+
+    queryset = VehicleOrientationSample.objects.select_related("reviewed_by").order_by(
+        "-captured_at", "-id"
+    )
+    serializer_class = VehicleOrientationSampleSerializer
+    pagination_class = OptInPageNumberPagination
+    required_perms = {
+        "list": "grain.view",
+        "retrieve": "grain.view",
+        "summary": "grain.view",
+        "label": "grain.admin",
+        "exclude": "grain.admin",
+    }
+
+    @staticmethod
+    def _bad_filter(name: str, value: str):
+        return ValidationError(
+            {
+                "detail": f"Недопустимое значение фильтра {name}: {value!r}.",
+                "code": "bad_filter",
+            }
+        )
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if self.action != "list":
+            # Деталь и действия видят и исключённые строки.
+            return qs
+        params = self.request.query_params
+        for name, (field, allowed) in _ORIENTATION_SAMPLE_FILTERS.items():
+            value = params.get(name)
+            if value is None:
+                continue
+            if value not in allowed:
+                raise self._bad_filter(name, value)
+            qs = qs.filter(**{field: value})
+        flags = {}
+        for name, condition in _ORIENTATION_SAMPLE_FLAGS.items():
+            value = params.get(name, "0")
+            if value not in {"0", "1"}:
+                raise self._bad_filter(name, value)
+            flags[name] = value == "1"
+            if flags[name]:
+                qs = qs.filter(condition)
+        if not flags["excluded"]:
+            qs = qs.filter(excluded=False)
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        rows = page if page is not None else list(queryset[:ORIENTATION_SAMPLE_FLAT_LIMIT])
+        context = self.get_serializer_context()
+        context["records"] = orientation_dataset.load_records(rows)
+        data = self.get_serializer(rows, many=True, context=context).data
+        if page is not None:
+            return self.get_paginated_response(data)
+        return Response(data)
+
+    def _done(self, sample: VehicleOrientationSample):
+        sample.refresh_from_db()
+        response = Response(self.get_serializer(sample).data)
+        response["Cache-Control"] = "no-store"
+        return response
+
+    @action(detail=True, methods=["post"], url_path="label")
+    def label(self, request, pk=None):
+        """Человек сказал, как стоит машина; кадр уйдёт на Camera-PC заново."""
+        label = request.data.get("label") if hasattr(request.data, "get") else None
+        if label not in {VEHICLE_ORIENTATION_FRONT, VEHICLE_ORIENTATION_REAR}:
+            raise ValidationError(
+                {"detail": "Метка должна быть front или rear.", "code": "bad_label"}
+            )
+        return self._done(
+            orientation_dataset.set_manual_label(self.get_object(), label, request.user)
+        )
+
+    @action(detail=True, methods=["post"], url_path="exclude")
+    def exclude(self, request, pk=None):
+        """Не машина или нечитаемый кадр: убрать из датасета."""
+        return self._done(
+            orientation_dataset.exclude_sample(self.get_object(), request.user)
+        )
+
+    @action(detail=False, methods=["get"], url_path="summary")
+    def summary(self, request):
+        """Счётчики датасета и состояние классификатора на Camera-PC.
+
+        ``total``/``by_label``/``by_source``/``conflicts``/``unsent`` считают
+        кадры в датасете (без исключённых), ``excluded`` — отдельно.
+        ``camera_pc`` — null, когда ПК камер недоступен: страница не ломается.
+        """
+        active = Q(excluded=False)
+        stats = self.get_queryset().aggregate(
+            total=Count("id", filter=active),
+            front=Count("id", filter=active & Q(label=VEHICLE_ORIENTATION_FRONT)),
+            rear=Count("id", filter=active & Q(label=VEHICLE_ORIENTATION_REAR)),
+            trip=Count(
+                "id",
+                filter=active & Q(label_source=VehicleOrientationSample.BY_TRIP),
+            ),
+            weight=Count(
+                "id",
+                filter=active & Q(label_source=VehicleOrientationSample.BY_WEIGHT),
+            ),
+            manual=Count(
+                "id",
+                filter=active & Q(label_source=VehicleOrientationSample.BY_MANUAL),
+            ),
+            conflicts=Count("id", filter=active & Q(conflict=True)),
+            # Псевдоним не может совпадать с именем поля модели.
+            dropped=Count("id", filter=Q(excluded=True)),
+            unsent=Count("id", filter=active & Q(sent_at__isnull=True)),
+        )
+        camera_pc = _camera_pc_orientation()
+        response = Response(
+            {
+                "total": stats["total"],
+                "by_label": {"front": stats["front"], "rear": stats["rear"]},
+                "by_source": {
+                    "trip": stats["trip"],
+                    "weight": stats["weight"],
+                    "manual": stats["manual"],
+                },
+                "conflicts": stats["conflicts"],
+                "excluded": stats["dropped"],
+                "unsent": stats["unsent"],
+                "camera_pc": camera_pc,
+            }
+        )
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 class SiloViewSet(PermViewSetMixin, viewsets.ModelViewSet):

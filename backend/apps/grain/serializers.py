@@ -1,3 +1,5 @@
+from functools import cached_property
+
 from rest_framework import serializers
 
 from apps.cameras.models import VehiclePlateEvent
@@ -14,9 +16,11 @@ from .models import (
     SiloAllocation,
     SiloType,
     UnassignedWeighing,
+    VehicleOrientationSample,
     Wagon,
     WeighingRecord,
 )
+from .orientation_dataset import load_records
 from .photos import KIND_UNASSIGNED, KIND_WEIGHING, photo_url
 from .statuses import WAGON_STATUS_LABELS
 
@@ -211,6 +215,78 @@ class UnassignedWeighingSerializer(serializers.ModelSerializer):
 
     def get_photo_url(self, item: UnassignedWeighing) -> str | None:
         return photo_url(KIND_UNASSIGNED, item)
+
+
+class VehicleOrientationSampleSerializer(serializers.ModelSerializer):
+    """Строка датасета ориентации для страницы разметки.
+
+    Фото и номер машины живут на исходном взвешивании. Список кладёт строки
+    страницы в ``context["records"]`` (см. ``load_records``), чтобы не ходить
+    в базу за каждой; без контекста (деталь, ответ действия) запись грузится
+    по одной.
+    """
+
+    sample_id = serializers.CharField(read_only=True)
+    reviewed_by_name = serializers.CharField(
+        source="reviewed_by.username", default=None, read_only=True
+    )
+    photo_url = serializers.SerializerMethodField()
+    vehicle_number = serializers.SerializerMethodField()
+    wagon = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VehicleOrientationSample
+        fields = [
+            "id",
+            "sample_id",
+            "record_kind",
+            "record_id",
+            "label",
+            "label_source",
+            "weight_kg",
+            "captured_at",
+            "model_orientation",
+            "conflict",
+            "excluded",
+            "sent_at",
+            "last_error",
+            "reviewed_by_name",
+            "reviewed_at",
+            "photo_url",
+            "vehicle_number",
+            "wagon",
+        ]
+
+    @cached_property
+    def _own_records(self) -> dict:
+        return {}
+
+    def _record(self, sample: VehicleOrientationSample):
+        key = (sample.record_kind, sample.record_id)
+        records = self.context.get("records")
+        if records is None:
+            records = self._own_records
+            if key not in records:
+                records.update(load_records([sample]))
+                records.setdefault(key, None)
+        return records.get(key)
+
+    def get_photo_url(self, sample: VehicleOrientationSample) -> str | None:
+        # record_kind совпадает с видом подписанной ссылки: weighing/unassigned.
+        return photo_url(sample.record_kind, self._record(sample))
+
+    def get_vehicle_number(self, sample: VehicleOrientationSample) -> str:
+        record = self._record(sample)
+        if record is None:
+            return ""
+        number = getattr(record, "vehicle_number", "")
+        if not number and record.wagon_id:
+            number = record.wagon.number
+        return number or ""
+
+    def get_wagon(self, sample: VehicleOrientationSample) -> int | None:
+        record = self._record(sample)
+        return record.wagon_id if record is not None else None
 
 
 class PassageNumberSerializer(serializers.Serializer):
