@@ -499,6 +499,17 @@ def _safe_ai_payload(payload: Mapping | None) -> dict:
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             safe[field] = min(value, 1_000_000)
 
+    orientation = payload.get("orientation")
+    if isinstance(orientation, Mapping):
+        label, confidence = camera_ai.vehicle_orientation(payload)
+        safe_orientation: dict[str, object] = {"label": label or None}
+        if confidence is not None:
+            safe_orientation["confidence"] = confidence
+        raw_label = orientation.get("raw_label")
+        if isinstance(raw_label, str):
+            safe_orientation["raw_label"] = raw_label[:16]
+        safe["orientation"] = safe_orientation
+
     confirmation = payload.get("confirmation")
     if isinstance(confirmation, Mapping):
         safe_confirmation: dict[str, int | float] = {}

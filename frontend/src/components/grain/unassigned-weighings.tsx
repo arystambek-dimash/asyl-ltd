@@ -16,8 +16,24 @@ import { cn, formatDateTime } from "@/lib/utils";
 const CANDIDATES_URL = "/grain/wagons/?scope=on_site&direction=passage";
 /** Больше этого числа строк панель сворачивает: оператору важны последние. */
 const COLLAPSED_ROWS = 3;
-/** Пустая машина весит около 4 т, гружёная 8–11 т: граница для подсказки. */
+/** Пустая машина весит около 4 т, гружёная 8–11 т: граница для подсказки без камеры. */
 const LOADED_THRESHOLD_KG = 6_000;
+
+/**
+ * Камера весовой смотрит вдоль весов: машина передом — заезжает, задом —
+ * выезжает. Это главный признак; вес — запасной, когда камера не ответила.
+ */
+function looksLoaded(item: GrainUnassignedWeighing) {
+  if (item.orientation === "rear") return true;
+  if (item.orientation === "front") return false;
+  return item.weight_kg >= LOADED_THRESHOLD_KG;
+}
+
+function orientationHint(item: GrainUnassignedWeighing) {
+  if (item.orientation === "rear") return "камера: задом → выезд";
+  if (item.orientation === "front") return "камера: передом → заезд";
+  return "";
+}
 
 /** Панель работает поверх общего useApi; чужой или битый ответ просто не показывается. */
 function isUnassignedWeighing(value: unknown): value is GrainUnassignedWeighing {
@@ -58,7 +74,7 @@ function candidateLabel(wagon: GrainWagon) {
  * чтобы самый вероятный стоял первым, но выбор остаётся за оператором.
  */
 function rankCandidates(item: GrainUnassignedWeighing, candidates: GrainWagon[]) {
-  const loaded = item.weight_kg >= LOADED_THRESHOLD_KG;
+  const loaded = looksLoaded(item);
   const waiting = candidates.filter((wagon) => awaitsEntry(wagon) || awaitsExit(wagon));
   return waiting.sort((a, b) => {
     const score = (wagon: GrainWagon) => {
@@ -85,10 +101,11 @@ function UnassignedRow({
   onResolved: () => void;
 }) {
   const ranked = rankCandidates(item, candidates);
-  const loaded = item.weight_kg >= LOADED_THRESHOLD_KG;
+  const loaded = looksLoaded(item);
+  const cameraHint = orientationHint(item);
   const [mode, setMode] = useState<"idle" | "assign" | "create" | "discard">("idle");
   const [wagonId, setWagonId] = useState(() => (ranked[0] && loaded ? String(ranked[0].id) : ""));
-  const [number, setNumber] = useState("");
+  const [number, setNumber] = useState(item.vehicle_number ?? "");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -129,15 +146,19 @@ function UnassignedRow({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span className="text-base font-semibold tabular-nums">{formatKg(item.weight_kg)}</span>
+            {item.vehicle_number && <span className="font-mono text-sm font-semibold">{item.vehicle_number}</span>}
             <span className="text-xs text-[var(--muted-foreground)]">{loaded ? "гружёная" : "пустая"}</span>
             <span className="text-xs text-[var(--muted-foreground)]">· {formatDateTime(item.stable_weight_at)}</span>
           </div>
           <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">
-            {loaded
-              ? ranked[0] && awaitsExit(ranked[0])
-                ? `похоже на выезд ${ranked[0].number || `#${ranked[0].id}`}`
-                : "номер не распознан, похоже на выезд"
-              : "номер не распознан, похоже на новый заезд"}
+            {item.reason === "entry_missing"
+              ? "выезд без заезда: рейс с этим номером не найден"
+              : loaded
+                ? ranked[0] && awaitsExit(ranked[0])
+                  ? `похоже на выезд ${ranked[0].number || `#${ranked[0].id}`}`
+                  : "номер не распознан, похоже на выезд"
+                : "номер не распознан, похоже на новый заезд"}
+            {cameraHint && <span className="ml-1 text-amber-700">· {cameraHint}</span>}
           </div>
         </div>
         {canWeigh && mode === "idle" && (

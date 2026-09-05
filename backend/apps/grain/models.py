@@ -13,6 +13,15 @@ from django.db.models import Sum
 
 from .statuses import EXPECTED, ON_SITE_STATUSES, WAGON_STATUSES
 
+# Ориентация машины на кадре весовой: передом к камере — заезд, задом — выезд.
+VEHICLE_ORIENTATION_FRONT = "front"
+VEHICLE_ORIENTATION_REAR = "rear"
+VEHICLE_ORIENTATIONS = [
+    ("", "Не определена"),
+    (VEHICLE_ORIENTATION_FRONT, "Передом к камере"),
+    (VEHICLE_ORIENTATION_REAR, "Задом к камере"),
+]
+
 PASSAGE_SCALE_DEFAULT_STABLE_WEIGHT_SECONDS = 10
 PASSAGE_SCALE_MIN_STABLE_WEIGHT_SECONDS = 2
 PASSAGE_SCALE_MAX_STABLE_WEIGHT_SECONDS = 60
@@ -322,6 +331,10 @@ class WeighingRecord(models.Model):
     photo = models.FileField(upload_to=weighing_photo_path, null=True, blank=True)
     photo_request_id = models.UUIDField(null=True, blank=True, db_index=True)
     photo_camera = models.CharField(max_length=32, blank=True, default="")
+    # Как машина стояла на кадре: заезд ждём передом, выезд — задом.
+    orientation = models.CharField(
+        max_length=8, blank=True, default="", choices=VEHICLE_ORIENTATIONS
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -360,7 +373,13 @@ class UnassignedWeighing(models.Model):
         upload_to=unassigned_weighing_photo_path, null=True, blank=True
     )
     photo_request_id = models.UUIDField(null=True, blank=True, db_index=True)
+    # open_passages_exist — номер не прочитан при открытых рейсах;
+    # entry_missing — выезд с прочитанным номером, у которого нет заезда.
     reason = models.CharField(max_length=64, blank=True, default="")
+    vehicle_number = models.CharField(max_length=30, blank=True, default="")
+    orientation = models.CharField(
+        max_length=8, blank=True, default="", choices=VEHICLE_ORIENTATIONS
+    )
     status = models.CharField(max_length=12, choices=STATUSES, default=OPEN)
     wagon = models.ForeignKey(
         Wagon,
@@ -572,6 +591,16 @@ class AutomaticPassageCapture(models.Model):
         blank=True,
     )
     ai_payload_json = models.JSONField(default=dict, blank=True)
+    # Ответ классификатора ориентации Camera-PC: front/rear и его уверенность.
+    orientation = models.CharField(
+        max_length=8, blank=True, default="", choices=VEHICLE_ORIENTATIONS
+    )
+    orientation_confidence = models.DecimalField(
+        max_digits=7,
+        decimal_places=6,
+        null=True,
+        blank=True,
+    )
     recognition_attempts = models.PositiveSmallIntegerField(default=0)
     final_lookup_attempted = models.BooleanField(default=False)
     # Каждая попытка OCR — отдельный запрос к Camera-PC со своим UUID и

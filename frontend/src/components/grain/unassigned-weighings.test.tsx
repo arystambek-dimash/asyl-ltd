@@ -28,6 +28,8 @@ const item: GrainUnassignedWeighing = {
   camera: "cam1",
   photo_url: "/api/grain/photos/unassigned/5/?token=abc",
   reason: "open_passages_exist",
+  vehicle_number: "",
+  orientation: "",
   status: "open",
   wagon: null,
   wagon_number: "",
@@ -157,5 +159,44 @@ describe("UnassignedWeighingsPanel", () => {
     expect(screen.getAllByText("30 010 кг")).toHaveLength(5);
     await userEvent.click(screen.getByRole("button", { name: /Свернуть/ }));
     expect(screen.getAllByText("30 010 кг")).toHaveLength(3);
+  });
+});
+
+describe("UnassignedWeighingsPanel camera orientation", () => {
+  beforeEach(() => {
+    postMock.mockReset();
+    useApiMock.mockReset();
+    pollingMock.mockReset();
+  });
+
+  it("trusts the camera over the weight: a light rear-facing truck is an exit", () => {
+    mockApi([{ ...item, id: 7, weight_kg: 5_000, orientation: "rear" }], [loaded]);
+    render(<UnassignedWeighingsPanel canWeigh />);
+
+    expect(screen.getByText("гружёная")).toBeInTheDocument();
+    expect(screen.getByText(/похоже на выезд 465BDS13/)).toBeInTheDocument();
+    expect(screen.getByText(/камера: задом → выезд/)).toBeInTheDocument();
+  });
+
+  it("shows the plate of an exit without an entry and prefills it for a new trip", async () => {
+    mockApi(
+      [{ ...item, id: 8, weight_kg: 8_760, orientation: "rear", reason: "entry_missing", vehicle_number: "854ANB13" }],
+      [loaded],
+    );
+    render(<UnassignedWeighingsPanel canWeigh />);
+
+    expect(screen.getByText("854ANB13")).toBeInTheDocument();
+    expect(screen.getByText(/выезд без заезда/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Новый рейс" }));
+    expect(screen.getByLabelText("Номер машины")).toHaveValue("854ANB13");
+  });
+
+  it("marks a front-facing truck as a new entry regardless of weight", () => {
+    mockApi([{ ...item, id: 9, weight_kg: 8_000, orientation: "front" }], [loaded]);
+    render(<UnassignedWeighingsPanel canWeigh />);
+
+    expect(screen.getByText("пустая")).toBeInTheDocument();
+    expect(screen.getByText(/похоже на новый заезд/)).toBeInTheDocument();
+    expect(screen.getByText(/камера: передом → заезд/)).toBeInTheDocument();
   });
 });

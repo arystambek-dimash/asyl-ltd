@@ -26,6 +26,35 @@ VEHICLE_RUNTIME_PROBE_TIMEOUT = 2.0
 # Kazakhstan plates: 123ABC02, the two-letter series 160AL17, and the 1993
 # standard still carried by old trucks: X209LAN.
 VEHICLE_PLATE_RE = re.compile(r"^(?:[0-9]{3}[A-Z]{2,3}[0-9]{2}|[A-Z][0-9]{3}[A-Z]{3})$")
+
+VEHICLE_ORIENTATIONS = frozenset({"front", "rear"})
+
+
+def vehicle_orientation(payload: Mapping | None) -> tuple[str, float | None]:
+    """Read the optional Camera-PC front/rear verdict as ``(label, confidence)``.
+
+    The classifier is best effort on the camera side, so a missing, undecided
+    or malformed ``orientation`` simply yields an empty label: it must never
+    turn a good plate answer into an error.
+    """
+
+    if not isinstance(payload, Mapping):
+        return "", None
+    orientation = payload.get("orientation")
+    if not isinstance(orientation, Mapping):
+        return "", None
+    confidence = orientation.get("confidence")
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, Real)
+        or not math.isfinite(float(confidence))
+        or not 0 <= float(confidence) <= 1
+    ):
+        confidence = None
+    label = orientation.get("label")
+    if not isinstance(label, str) or label not in VEHICLE_ORIENTATIONS:
+        return "", None if confidence is None else float(confidence)
+    return label, None if confidence is None else float(confidence)
 MAX_VEHICLE_CONFIRMATION_VOTES = 32_767
 
 ALWAYS_ON_CACHE_KEY = "cameras:always-on-status:v2"

@@ -957,8 +957,13 @@ export interface GrainWeighing {
   operator_name: string | null;
   /** Подписанная ссылка на кадр машины с Camera-PC; null — фото нет. */
   photo_url?: string | null;
+  /** Как машина стояла на кадре: front — передом к камере (заезд), rear — задом (выезд). */
+  orientation?: VehicleOrientation;
   created_at: string;
 }
+
+/** Ориентация машины по камере весовой; пустая строка — не определена. */
+export type VehicleOrientation = "" | "front" | "rear";
 
 /** Вес с автовесов без распознанного номера, который ждёт привязки к рейсу. */
 export interface GrainUnassignedWeighing {
@@ -968,7 +973,11 @@ export interface GrainUnassignedWeighing {
   scale_number: string;
   camera: string;
   photo_url: string | null;
+  /** open_passages_exist — номер не прочитан; entry_missing — выезд с номером без заезда. */
   reason: string;
+  /** Номер известен только у выезда без заезда (entry_missing). */
+  vehicle_number: string;
+  orientation: VehicleOrientation;
   status: "open" | "assigned" | "discarded";
   wagon: number | null;
   wagon_number: string;

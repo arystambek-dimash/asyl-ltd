@@ -171,6 +171,7 @@ class WeighingRecordSerializer(serializers.ModelSerializer):
             "previous_weight_kg",
             "operator_name",
             "photo_url",
+            "orientation",
             "created_at",
         ]
 
@@ -197,6 +198,8 @@ class UnassignedWeighingSerializer(serializers.ModelSerializer):
             "camera",
             "photo_url",
             "reason",
+            "vehicle_number",
+            "orientation",
             "status",
             "wagon",
             "wagon_number",

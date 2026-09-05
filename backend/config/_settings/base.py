@@ -584,3 +584,8 @@ VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS = _bounded_int_env(
 VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS = _bounded_int_env(
     "VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS", 60, 10, 86400
 )
+# Как далеко назад искать неопознанный пустой заезд, когда камера видит
+# гружёный выезд без открытого рейса.
+VEHICLE_PLATE_AUTO_MISSED_ENTRY_MAX_AGE_HOURS = _bounded_int_env(
+    "VEHICLE_PLATE_AUTO_MISSED_ENTRY_MAX_AGE_HOURS", 24, 1, 168
+)

@@ -725,7 +725,14 @@ def test_malformed_page_never_advances_the_cursor(payload):
     assert not AlwaysOnCounterCursor.objects.exists()
 
 
-def test_late_event_for_a_terminal_stock_shift_is_not_skipped():
+def test_late_event_for_a_posted_stock_shift_is_counted_without_production():
+    """A restart-gap backfill may deliver bags after their shift was posted.
+
+    The posted batch must stay untouched, but freezing the journal would lose
+    every later event too. The bag is kept in the day's analytics and the
+    imported row records that production never received it.
+    """
+
     event = _event(1, 1)
     occurred_at = _at(1)
     day = production.business_day_for(occurred_at)
@@ -741,14 +748,26 @@ def test_late_event_for_a_terminal_stock_shift_is_not_skipped():
         after_id=0,
     )
 
-    with pytest.raises(event_sync.EventSyncError, match="already posted"):
-        event_sync.apply_page(
-            camera="cam3",
-            page=page,
-            requested_after_id=0,
-        )
-    assert not AlwaysOnImportedEvent.objects.exists()
-    assert not AlwaysOnCounterCursor.objects.exists()
+    processed, ignored, cursor_id = event_sync.apply_page(
+        camera="cam3",
+        page=page,
+        requested_after_id=0,
+    )
+
+    assert (processed, ignored, cursor_id) == (1, 0, 1)
+    imported = AlwaysOnImportedEvent.objects.get(camera="cam3", upstream_event_id=1)
+    assert imported.applied_to_analytics is True
+    assert imported.applied_to_production is False
+    assert AlwaysOnCounterCursor.objects.get(camera="cam3").last_event_id == 1
+    assert AlwaysOnDailyAnalytics.objects.get(camera="cam3").model_total == 1
+    assert not AlwaysOnProductionRun.objects.exists()
+
+    # A replay of the same page recomputes the same eligibility and stays idempotent.
+    assert event_sync.apply_page(camera="cam3", page=page, requested_after_id=1) == (
+        0,
+        0,
+        1,
+    )
 
 
 def test_reconcile_uses_snapshots_only_for_an_explicit_legacy_404():

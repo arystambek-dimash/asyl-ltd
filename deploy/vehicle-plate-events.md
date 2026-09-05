@@ -610,3 +610,57 @@ release. Existing vehicle events and capture audit remain in the CRM. Do not
 reset the camera-PC SQLite database or its counters as part of this rollback.
 Automatic polling has an independent immediate business kill switch:
 `VEHICLE_PLATE_AUTO_SCALE_ENABLED=0`.
+
+## Camera orientation: front = entry, rear = exit
+
+The scale camera looks along the truck scale. A truck that faces it is
+driving in (empty, about to be loaded); a truck that shows its tail is driving
+out (loaded). Since 2026-09-05 the Camera-PC runs a small front/rear
+classifier (`models/vehicle-orientation.pt`, `yolo11n-cls`, classes
+`front,rear`) on the same ROI crop the plate detector scans and returns
+`orientation: {label, confidence, raw_label}` with both `recognized` and
+`no_match` answers. `label` is `null` below
+`AI_VEHICLE_ORIENTATION_CONFIDENCE_THRESHOLD` (0.60) or when the model is
+absent, and the CRM then falls back to the older weight/state rules.
+
+The verdict is stored on `AutomaticPassageCapture.orientation` (+ confidence),
+on every `WeighingRecord.orientation` and on `UnassignedWeighing.orientation`,
+and is the primary entry/exit signal in `apps/grain/services.py`:
+
+- **rear, plate known, no open trip**: the empty entry was missed. The latest
+  parked front-facing (or, without a verdict, lighter) unassigned weighing of
+  the last `VEHICLE_PLATE_AUTO_MISSED_ENTRY_MAX_AGE_HOURS` (24) becomes the
+  entry of a new trip and the current weight closes it. With nothing parked the
+  weight is stored as an unassigned weighing with `reason=entry_missing` and
+  the plate in `vehicle_number`; the panel prefills that plate for a new trip.
+- **front, plate known, trip still open**: the loaded exit was missed. A parked
+  rear-facing (or heavier) weighing inside that trip closes it; otherwise the
+  stale trip is cancelled with an `exit_note`, and a fresh trip takes this entry.
+- **rear, plate not recognized**: exactly one on-site trip waiting for a
+  heavier loaded weight is closed automatically; several candidates park the
+  weight (`open_passages_exist`), none parks it as `entry_missing`. A rear
+  weight never opens a trip any more, even on an empty site.
+- **front, plate not recognized**: always a new blank-number trip, even while
+  other trips are open.
+- Plates that differ by one dropped series letter (`849AT13` vs `849ATT13`)
+  are the same truck when exactly one on-site trip is compatible.
+
+Operators repair a trip whose booked "entry" was really the exit from the
+unassigned panel: binding an earlier, lighter (or front-facing) weight to an
+`at_silo` trip swaps it into the entry, re-labels the booked weight as the
+exit and completes the trip.
+
+Retraining the classifier: export `WeighingRecord.photo` frames, crop them
+with the cam1 ROI, sort into `front/` and `rear/`, run `yolo11n-cls` for 60
+epochs at 224 px, replace `cv_service/models/vehicle-orientation.pt` and its
+SHA in `cv_service/models/README.md`, then reinstall on the Camera-PC with
+`-VehicleOrientationModelPath`.
+
+## Late bag events after a posted shift
+
+A Camera-PC restart-gap backfill can deliver bag events whose shift is already
+posted to stock. Since 2026-09-05 `apps/cameras/event_sync.py` no longer
+refuses such a page (which froze the cam3 journal and failed every deploy
+health gate): the bag is counted in the still-open daily analytics, the
+imported row keeps `applied_to_production=False`, and a warning names the
+camera and count. The posted batch is never mutated.

@@ -7,6 +7,7 @@ and the high-water cursor either all advance or all roll back.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime
@@ -30,6 +31,9 @@ from .models import (
 
 EVENT_PAGE_LIMIT = 500
 EVENT_MAX_PAGES_PER_SYNC = 4
+
+
+log = logging.getLogger(__name__)
 
 
 class EventSyncError(Exception):
@@ -419,6 +423,25 @@ def _mark_events_unsupported(camera: str) -> None:
     )
 
 
+def _production_period_posted(event: CountEvent) -> bool:
+    """True when the event's production shift is already posted to stock."""
+
+    if event.analytics_scope != ANALYTICS_SCOPE_AI247:
+        return False
+    stock_batch = (
+        AlwaysOnStockBatch.objects.select_for_update()
+        .filter(
+            camera=event.camera,
+            business_day=production.business_day_for(event.occurred_at),
+        )
+        .first()
+    )
+    return (
+        stock_batch is not None
+        and stock_batch.status in production.TERMINAL_BATCH_STATUSES
+    )
+
+
 def _assert_open_accounting_period(
     event: CountEvent,
     *,
@@ -427,20 +450,10 @@ def _assert_open_accounting_period(
     """Never mutate an already posted/archived period with a late event."""
 
     if event.analytics_scope == ANALYTICS_SCOPE_AI247:
-        business_day = production.business_day_for(event.occurred_at)
-        if record_production:
-            stock_batch = (
-                AlwaysOnStockBatch.objects.select_for_update()
-                .filter(camera=event.camera, business_day=business_day)
-                .first()
+        if record_production and _production_period_posted(event):
+            raise EventSyncError(
+                "AI /events: event belongs to an already posted production shift"
             )
-            if (
-                stock_batch is not None
-                and stock_batch.status in production.TERMINAL_BATCH_STATUSES
-            ):
-                raise EventSyncError(
-                    "AI /events: event belongs to an already posted production shift"
-                )
         day = timezone.localdate(event.occurred_at)
         daily_row = (
             AlwaysOnDailyAnalytics.objects.select_for_update()
@@ -494,6 +507,7 @@ def apply_page(
         cursor.event_journal_id = page.journal_id
     processed = 0
     ignored = 0
+    late_for_posted_shift = 0
     last_event_at = cursor.last_event_at
     compat_total = (
         cursor.event_compat_total
@@ -603,6 +617,14 @@ def apply_page(
             applies_to_analytics
             and event.analytics_scope == ANALYTICS_SCOPE_AI247
         )
+        if applies_to_production and _production_period_posted(event):
+            # The shift is already posted to stock, so this late bag (a
+            # restart-gap backfill, typically) cannot join it. Refusing the
+            # page would freeze the journal for every later event; instead the
+            # day's analytics keep the count and the imported row records that
+            # production never received it.
+            applies_to_production = False
+            late_for_posted_shift += 1
         applies_to_daily = applies_to_analytics or applies_to_shipping_bootstrap
         imported, created = AlwaysOnImportedEvent.objects.get_or_create(
             camera=camera,
@@ -677,6 +699,14 @@ def apply_page(
 
         current_id = event.upstream_event_id
         last_event_at = event.occurred_at
+
+    if late_for_posted_shift:
+        log.warning(
+            "Camera events arrived after their shift was posted camera=%s "
+            "count=%s: counted in daily analytics only, not in production",
+            camera,
+            late_for_posted_shift,
+        )
 
     # An empty first page is still a successful event-mode cutover.  Preserve
     # a concurrently advanced cursor rather than ever moving it backwards.

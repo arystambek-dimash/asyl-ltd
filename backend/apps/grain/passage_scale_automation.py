@@ -854,6 +854,18 @@ def _persist_next_attempt(
     return capture
 
 
+def _store_orientation(capture: AutomaticPassageCapture, payload) -> None:
+    """Keep the latest decisive front/rear verdict across OCR attempts."""
+
+    label, confidence = camera_ai.vehicle_orientation(payload)
+    if not label:
+        return
+    capture.orientation = label
+    capture.orientation_confidence = (
+        None if confidence is None else Decimal(str(round(confidence, 6)))
+    )
+
+
 @transaction.atomic
 def _persist_recognition(
     capture_id: int,
@@ -927,6 +939,7 @@ def _persist_recognition(
     capture.detector_confidence = Decimal(str(confirmation["detector_confidence"]))
     capture.ocr_confidence = Decimal(str(confirmation["ocr_confidence"]))
     capture.ai_payload_json = safe_payload
+    _store_orientation(capture, payload)
     capture.vehicle_plate_event = event
     capture.stage = AutomaticPassageCapture.APPLYING
     capture.response_status = 200
@@ -943,6 +956,8 @@ def _persist_recognition(
             "detector_confidence",
             "ocr_confidence",
             "ai_payload_json",
+            "orientation",
+            "orientation_confidence",
             "vehicle_plate_event",
             "stage",
             "response_status",
@@ -1041,6 +1056,7 @@ def _resolve_recognition_failure(
         return capture
     if ai_payload is not None:
         capture.ai_payload_json = _safe_ai_payload(ai_payload)
+        _store_orientation(capture, ai_payload)
     now = timezone.now()
     may_try_again = (
         code not in RECOGNITION_FAILURES_WITHOUT_RETRY
@@ -1057,6 +1073,8 @@ def _resolve_recognition_failure(
         capture.save(
             update_fields=[
                 "ai_payload_json",
+                "orientation",
+                "orientation_confidence",
                 "needs_new_attempt",
                 "retryable",
                 "response_status",
@@ -1067,7 +1085,14 @@ def _resolve_recognition_failure(
             ]
         )
         return capture
-    capture.save(update_fields=["ai_payload_json", "updated_at"])
+    capture.save(
+        update_fields=[
+            "ai_payload_json",
+            "orientation",
+            "orientation_confidence",
+            "updated_at",
+        ]
+    )
     _mark_plate_unresolved(capture, now=now, code=code, detail=detail)
     return capture
 
@@ -1154,6 +1179,7 @@ def _apply_recognized_capture(capture_id: int) -> AutomaticPassageCapture:
                 request_id=_attempt_request_id(capture),
                 stable_weight_at=capture.stable_weight_at,
                 capture=capture,
+                orientation=capture.orientation,
             )
         else:
             if capture.vehicle_plate_event_id is None:
@@ -1166,6 +1192,7 @@ def _apply_recognized_capture(capture_id: int) -> AutomaticPassageCapture:
                 reading=reading,
                 photo_request_id=_attempt_request_id(capture),
                 photo_camera=capture.camera,
+                orientation=capture.orientation,
             )
     except _CaptureRejected as error:
         return _finish_error(
