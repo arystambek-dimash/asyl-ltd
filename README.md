@@ -7,7 +7,7 @@
 - **Бэкенд** (`backend/`): Django + DRF + PostgreSQL + Redis, JWT (simplejwt).
 - **Фронтенд** (`frontend/`): Next.js 15 (App Router) + React 19 + Tailwind 4,
   Zustand, Recharts, Radix UI.
-- **Видео**: go2rtc (RTSP → fMP4 без транскодирования), доступ через
+- **Видео**: go2rtc (RTSP → WebRTC), доступ через
   nginx `auth_request` + подписанная cookie.
 - **Инфраструктура**: Docker Compose, nginx (rate-limit, TLS), WireGuard-туннель
   до цехового ПК с камерами и ai_service.
@@ -133,10 +133,12 @@ passage-scale-monitor (отдельный контейнер) — default-off po
 - **Права** — прямые системные permissions по строковым кодам (`orders.confirm`),
   а не Django-группы. Проверка на бэке (`HasPerm`) и на фронте (`can()`).
 - **Отделы продаж** — динамический справочник: сотрудника можно закрепить за
-  отделом, а его код фиксируется в заказе для фильтров и отчётов. Сам отдел
-  не выдаёт permissions и не ограничивает доступ к данным.
+  отделом. Permissions назначаются отдельно. Доступ к заказам и клиентам
+  ограничивается текущим отделом клиента через `sales/access.py`; снимок
+  `Order.department` используется в фильтрах и отчётах, но не заменяет этот scope.
 - **Мягкое удаление**: заказы — в корзину (`deleted_at`), товары — в архив
-  (`is_active=False`). Удалённое автоматически исчезает из списков и отчётов.
+  (`is_active=False`). Операционные списки скрывают удалённые заказы; денежная
+  история сохраняется и отдельные финансовые выборки используют `all_objects`.
 
 ---
 
@@ -299,7 +301,7 @@ Monoblock/AI работает только с заказом, камерой, ч
 
 ### warehouse — склад
 
-- `StockItem(product OneToOne, bags)` — остаток; может быть отрицательным
+- `StockItem(warehouse, product, bags)` — остаток с уникальной парой склад/товар; может быть отрицательным
   (списание в минус при отгрузке).
 - `StockReceipt` — акт приёмки; `StockMovement` — история каждого движения
   (`delta`, `balance_after`, `reason: adjustment/receipt/shipment`).
@@ -539,7 +541,7 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
   Table + SortableHeader, Badge/StatusBadge/PaymentStageBadge, KPI-карточки,
   LicensePlateInput (госномер), DataState (loading/error/empty), Tabs.
   Тема light/dark/system. Паттерны дизайна — Stripe/Linear/UniFi.
-- **Камеры**: `CameraWall`, `CameraStream` (fMP4/MSE от go2rtc),
+- **Камеры**: `CameraWall`, `CameraStream` (WebRTC от go2rtc),
   `useAiCounter` — поллинг статуса AI и управление сессией.
 
 ---
@@ -557,6 +559,7 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 | `camera-monitor` | тот же образ backend, `manage.py monitor_cameras` |
 | `passage-scale-monitor` | тот же образ backend, `manage.py monitor_passage_scale`; секундный polling весов с default-off kill switch и фиксируемым до подтверждения `manual_required` |
 | `celery-payments` | Celery worker только очереди `payments`, concurrency/prefetch = 1; сверка ApiPay |
+| `celery-orientation` | отдельная очередь `orientation`, concurrency/prefetch = 1; экспорт разметки и фото на Camera-PC |
 | `celery-beat` | периодически ставит сверку ApiPay в Redis с expiry; schedule/pid живут в отдельном tmpfs |
 | `db` / `redis` | PostgreSQL 16 / Redis 7 — в изолированной internal-сети `data` |
 | `db-backup` | ежедневный `pg_dump` + бэкап перед каждым деплоем |
@@ -567,6 +570,13 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 
 ### Деплой (`deploy/remote-deploy.sh`)
 
+CI проверяет frontend/backend и инфраструктурные инварианты. Успешный push
+`main` запускает выпуск; ручной запуск также требует успешного последнего CI
+для того же commit. Образы frontend/backend собираются параллельно, затем
+на сервер передаются их digest. Отменённый CI нужно перезапустить, а не
+обходить ручным деплоем. Python dependency audit остаётся информативным,
+но его ошибка теперь видна отдельным warning.
+
 1. Только **immutable digest** образов (`ghcr.io/...@sha256:…`) — `:latest`
    отклоняется; flock от параллельных деплоев.
 2. `git pull --ff-only` → бэкап БД → `docker compose pull` →
@@ -574,11 +584,10 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
    healthcheck проверяет GET `/api/auth/me/`, у `passage-scale-monitor` —
    свежий container-private heartbeat цикла. `degraded` из-за внешних
    весов/камеры считается живым процессом и не вызывает rollback.
-3. **Camera health** не блокирует выпуск приложения: `camera-monitor`
-   продолжает проверять потоки и отправлять алерты, а
-   `wait-for-camera-health.sh` остаётся отдельной ручной диагностикой. Поэтому
-   плановое отключение камер не запускает повторный деплой уже обновлённых
-   контейнеров.
+3. **Camera health** проверяется workflow после запуска контейнеров:
+   `wait-for-camera-health.sh` требует свежий heartbeat и готовый журнал
+   событий (`CAMERA_HEALTH_REQUIRE_EVENTS=1`). Провал проверки приводит
+   к rollback; эти проверки не отключаются ради зелёного статуса выпуска.
 4. `nginx -t && nginx -s reload` (graceful).
 
 Замечания по прод-хостингу (ps.kz): сервер может внезапно ребутнуться —
@@ -693,6 +702,11 @@ DEGRADED/OUTAGE/RECOVERY по-прежнему доставляются неза
 ---
 
 ## Тесты
+
+`pytest.ini` выбирает `config.test_settings`: тестовые пользователи используют
+быстрый hasher, чтобы не тратить время на production PBKDF. Этот модуль
+отказывается загружаться вне тестового процесса; production-настройки
+хеширования паролей не меняются.
 
 ```bash
 cd backend && pytest

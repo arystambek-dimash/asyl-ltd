@@ -1,17 +1,23 @@
 name: CI checks
 
 # Постоянные проверки перед мержем: тесты бэкенда, типы фронта и аудит
-# зависимостей на известные уязвимости. Не блокирует деплой напрямую —
-# запускается на PR и push в main; можно сделать required-проверкой в настройках.
+# зависимостей на известные уязвимости. Успешный push main запускает deploy;
+# ручной deploy также проверяет успешный CI именно выпускаемого commit.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-checks-${{ github.ref }}
-  cancel-in-progress: true
+  # PR superseded commits can be cancelled. A main run is allowed to finish
+  # so release checks cannot be repeatedly interrupted by the next push.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   production-manifests:
@@ -77,7 +83,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-prod.txt
       - name: Install dependencies
         working-directory: backend
         run: |
@@ -86,13 +94,24 @@ jobs:
           pip install pip-audit
       - name: Run tests
         working-directory: backend
-        run: pytest -q
+        run: pytest -q --junitxml=test-results.xml
+      - name: Save backend test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-results
+          path: backend/test-results.xml
+          if-no-files-found: ignore
       - name: Audit Python dependencies
+        id: python_audit
         working-directory: backend
         # Аудит информативен: новая CVE в зависимости не должна внезапно
         # блокировать деплой критичного фикса. Смотрим в логах прогона.
         continue-on-error: true
-        run: pip-audit -r requirements.txt --strict || true
+        run: pip-audit -r requirements-prod.txt --strict
+      - name: Surface advisory audit failure
+        if: steps.python_audit.outcome == 'failure'
+        run: echo '::warning::Python dependency audit failed. Inspect the audit step before releasing.'
 
   frontend:
     name: Frontend checks + build
@@ -107,7 +126,14 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         working-directory: frontend
-        run: npx --yes npm@10.9.8 ci
+        run: npx --yes npm@10.9.8 ci --no-audit --no-fund
+      - name: Restore Next build cache
+        uses: actions/cache@v4
+        with:
+          path: frontend/.next/cache
+          key: next-${{ runner.os }}-node22-${{ hashFiles('frontend/package-lock.json') }}-${{ github.sha }}
+          restore-keys: |
+            next-${{ runner.os }}-node22-${{ hashFiles('frontend/package-lock.json') }}-
       - name: Lint, typecheck and test
         working-directory: frontend
         run: npm run check

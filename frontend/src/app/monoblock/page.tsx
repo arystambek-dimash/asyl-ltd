@@ -1062,7 +1062,7 @@ function AlwaysOnCard({
   }, [detectionsUrl, open, modalView, showDetections, processor.cam]);
 
   const loadProduction = useCallback(
-    async (showLoader = false) => {
+    async (showLoader = false, signal?: AbortSignal) => {
       if (productionMutationInFlight.current) return null;
       const requestSequence = ++productionRequestSequence.current;
       if (showLoader) setProductionLoading(true);
@@ -1070,14 +1070,23 @@ function AlwaysOnCard({
       try {
         const response = await api.get<AlwaysOnProductionPayload>(
           `/cameras/always-on-production/?camera=${encodeURIComponent(processor.cam)}`,
+          { signal },
         );
-        if (requestSequence !== productionRequestSequence.current || productionMutationInFlight.current) {
+        if (
+          signal?.aborted ||
+          requestSequence !== productionRequestSequence.current ||
+          productionMutationInFlight.current
+        ) {
           return null;
         }
         setProduction(response.data);
         return response.data;
       } catch (cause) {
-        if (requestSequence === productionRequestSequence.current && !productionMutationInFlight.current) {
+        if (
+          !signal?.aborted &&
+          requestSequence === productionRequestSequence.current &&
+          !productionMutationInFlight.current
+        ) {
           setProductionError(apiError(cause));
         }
         return null;
@@ -1090,24 +1099,22 @@ function AlwaysOnCard({
     [processor.cam],
   );
 
-  // Полный производственный журнал обновляем только на его собственной
-  // вкладке. Этот endpoint также закрывает устаревшие периоды, поэтому не
-  // дублируем его polling поверх выбранного дня аналитики.
+  // Both views use the same snapshot. Wait for each request before polling
+  // again, and invalidate responses when the modal/camera scope changes.
   useEffect(() => {
-    if (!open || modalView !== "production") return;
-    void loadProduction(true);
-    const timer = window.setInterval(() => void loadProduction(false), 15_000);
-    return () => window.clearInterval(timer);
-  }, [loadProduction, modalView, open]);
-
-  // Сводной аналитике нужен текущий маршрут цвет → товар → склад. Пока день
-  // не выбран, обновляем его отдельно; после выбора дневной запрос становится
-  // единственным polling-источником и не создаёт двойных блокировок на backend.
-  useEffect(() => {
-    if (!open || isShipping || modalView !== "analytics" || selectedDay) return;
-    void loadProduction(false);
-    const timer = window.setInterval(() => void loadProduction(false), 15_000);
-    return () => window.clearInterval(timer);
+    if (!open || (modalView !== "production" && (isShipping || modalView !== "analytics" || selectedDay))) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function poll(first = false) {
+      if (!document.hidden) await loadProduction(first && modalView === "production", controller.signal);
+      if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 15_000);
+    }
+    void poll(true);
+    return () => {
+      controller.abort();
+      productionRequestSequence.current += 1;
+      if (timer) clearTimeout(timer);
+    };
   }, [isShipping, loadProduction, modalView, open, selectedDay]);
 
   // Исторический день запрашиваем отдельно: полный ответ вкладки «Выпуск и

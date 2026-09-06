@@ -3,7 +3,7 @@ import { showToast } from "@/lib/toast";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
 
-export const api = axios.create({ baseURL: BASE_URL });
+export const api = axios.create({ baseURL: BASE_URL, timeout: 60_000 });
 
 const AUTH_STORAGE_KEYS = {
   access: "asyl_access",
@@ -93,7 +93,11 @@ function refreshAccess(refresh: string, epoch: number): Promise<string> {
 
   const controller = new AbortController();
   const promise = axios
-    .post<{ access?: unknown }>(`${BASE_URL}/auth/refresh/`, { refresh }, { signal: controller.signal })
+    .post<{ access?: unknown }>(
+      `${BASE_URL}/auth/refresh/`,
+      { refresh },
+      { signal: controller.signal, timeout: 15_000 },
+    )
     .then((res) => {
       if (epoch !== authEpoch || getRefresh() !== refresh) throw staleAuthRequest();
       const access = res.data.access;
@@ -158,6 +162,20 @@ function errorDetail(e: unknown): string {
   const detail = err.response?.data?.detail;
   if (typeof detail === "string") return detail;
   if (detail && typeof detail === "object") return Object.values(detail).flat().join("; ");
+
+  if (err.code === "ECONNABORTED" || err.code === "ETIMEDOUT") {
+    return "Сервер не подтвердил результат вовремя. Обновите данные перед повтором операции.";
+  }
+  if (err.response?.status === 400) {
+    const body: unknown = err.response.data;
+    if (body && typeof body === "object") {
+      const messages = Object.entries(body)
+        .filter(([field]) => field !== "code")
+        .flatMap(([, value]: [string, unknown]) => (Array.isArray(value) ? value : [value]))
+        .filter((value): value is string => typeof value === "string");
+      if (messages.length) return messages.join("; ");
+    }
+  }
 
   // Без ответа сервера причина другая, и действие пользователя другое:
   // «нет связи» лечится проверкой сети, а не повторным нажатием кнопки.

@@ -18,7 +18,7 @@ from .statuses import public_status_label
 class OrderItemSerializer(serializers.ModelSerializer):
     product_label = serializers.CharField(read_only=True)
     cv_class = serializers.SerializerMethodField()
-    quantity = serializers.IntegerField(min_value=1)
+    quantity = serializers.IntegerField(min_value=1, max_value=2_147_483_647)
     unit_price = serializers.DecimalField(
         max_digits=12,
         decimal_places=2,
@@ -322,7 +322,8 @@ class PaymentQueueSerializer(DepartmentLabelMixin, PaymentSerializer):
 
 
 class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
-    items = OrderItemSerializer(many=True)
+    items = OrderItemSerializer(many=True, allow_empty=False, max_length=100)
+    transport_type = serializers.ChoiceField(choices=Order.TRANSPORT_TYPES, required=False)
     edit_reason = serializers.CharField(
         write_only=True,
         required=False,
@@ -337,9 +338,9 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         required=False,
     )
     payment_method = serializers.CharField(read_only=True)
-    total_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
-    paid_total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
-    remaining_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    total_amount = serializers.DecimalField(max_digits=30, decimal_places=2, read_only=True)
+    paid_total = serializers.DecimalField(max_digits=30, decimal_places=2, read_only=True)
+    remaining_amount = serializers.DecimalField(max_digits=30, decimal_places=2, read_only=True)
     is_fully_paid = serializers.BooleanField(read_only=True)
     is_debt = serializers.BooleanField(read_only=True)
     client_name = serializers.CharField(source="client.name", read_only=True)
@@ -517,6 +518,18 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         return code
 
     def validate(self, attrs):
+        if "prices" in self.initial_data and not isinstance(self.initial_data["prices"], dict):
+            raise serializers.ValidationError({"prices": "Ожидается объект цен по идентификаторам товаров"})
+        items = attrs.get("items")
+        if items is not None:
+            historical_ids = (set(self.instance.items.values_list("product_id", flat=True))
+                              if self.instance is not None else set())
+            if any(not item["product"].is_active and item["product"].pk not in historical_ids
+                   for item in items):
+                raise serializers.ValidationError({"items": "Архивный товар нельзя добавлять в заказ"})
+            product_ids = [item["product"].pk for item in items]
+            if len(product_ids) != len(set(product_ids)):
+                raise serializers.ValidationError({"items": "Объедините повторяющиеся товары в одну строку"})
         if self.instance is not None and attrs.get("template_order") is not None:
             raise serializers.ValidationError({
                 "detail": "Шаблон указывается только при создании заказа",

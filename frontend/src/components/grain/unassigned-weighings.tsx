@@ -13,7 +13,7 @@ import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { cn, formatDateTime } from "@/lib/utils";
 
-const CANDIDATES_URL = "/grain/wagons/?scope=on_site&direction=passage";
+const CANDIDATES_URL = "/grain/passages/?scope=on_site";
 /** Больше этого числа строк панель сворачивает: оператору важны последние. */
 const COLLAPSED_ROWS = 3;
 /** Пустая машина весит около 4 т, гружёная 8–11 т: граница для подсказки без камеры. */
@@ -35,7 +35,7 @@ function orientationHint(item: GrainUnassignedWeighing) {
   return "";
 }
 
-/** Панель работает поверх общего useApi; чужой или битый ответ просто не показывается. */
+/** Validate the queue before offering physical weighing actions. */
 function isUnassignedWeighing(value: unknown): value is GrainUnassignedWeighing {
   if (!value || typeof value !== "object") return false;
   const item = value as Partial<GrainUnassignedWeighing>;
@@ -289,16 +289,21 @@ export function UnassignedWeighingsPanel({
   active?: boolean;
   onChanged?: () => void;
 }) {
-  const { data, reload } = useApi<GrainUnassignedWeighing[]>("/grain/unassigned-weighings/");
-  const { data: candidatesData, reload: reloadCandidates } = useApi<GrainWagon[] | { results: GrainWagon[] }>(
-    CANDIDATES_URL,
-  );
+  const { data, reload, loading, error } = useApi<GrainUnassignedWeighing[]>("/grain/unassigned-weighings/");
+  const {
+    data: candidatesData,
+    reload: reloadCandidates,
+    error: candidatesError,
+  } = useApi<GrainWagon[] | { results: GrainWagon[] }>(CANDIDATES_URL);
   const [expanded, setExpanded] = useState(false);
-  useVisiblePolling(reload, 10_000, active);
+  const refresh = () => Promise.all([reload(), reloadCandidates()]);
+  useVisiblePolling(refresh, 10_000, active);
+  const invalidQueue = data !== null && (!Array.isArray(data) || !data.every(isUnassignedWeighing));
+  const loadError = error || (invalidQueue ? "Сервер вернул некорректный список взвешиваний." : "");
   const items = Array.isArray(data) ? data.filter(isUnassignedWeighing) : [];
   const rawCandidates = Array.isArray(candidatesData) ? candidatesData : (candidatesData?.results ?? []);
   const candidates = Array.isArray(rawCandidates) ? rawCandidates.filter(isWagon) : [];
-  if (!items.length) return null;
+  if (!items.length && !loading && !loadError) return null;
   const visible = expanded ? items : items.slice(0, COLLAPSED_ROWS);
   const hidden = items.length - visible.length;
 
@@ -315,13 +320,26 @@ export function UnassignedWeighingsPanel({
           вес и фото сохранены, номер не прочитался · привяжите к рейсу или создайте новый
         </span>
       </header>
+      {loading && !data && (
+        <p role="status" className="p-3 text-sm">
+          Загружаем неопознанные взвешивания…
+        </p>
+      )}
+      {(loadError || candidatesError) && (
+        <div role="alert" className="p-3 text-sm">
+          <p>{loadError || `Не удалось обновить рейсы для привязки: ${candidatesError}`}</p>
+          <Button size="sm" variant="outline" className="mt-2" onClick={() => void refresh()}>
+            Повторить загрузку
+          </Button>
+        </div>
+      )}
       <ul>
         {visible.map((item) => (
           <UnassignedRow
             key={item.id}
             item={item}
             candidates={candidates}
-            canWeigh={canWeigh}
+            canWeigh={canWeigh && !loadError && !candidatesError}
             onResolved={() => {
               void reload();
               void reloadCandidates();

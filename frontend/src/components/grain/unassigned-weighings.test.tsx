@@ -75,14 +75,45 @@ describe("UnassignedWeighingsPanel", () => {
     pollingMock.mockReset();
   });
 
-  it("renders nothing while the queue is empty or the response is not a queue", () => {
+  it("distinguishes an empty queue from an invalid response", () => {
     mockApi([], []);
     const { container, rerender } = render(<UnassignedWeighingsPanel canWeigh />);
     expect(container).toBeEmptyDOMElement();
 
     mockApi({ results: [{ id: 1 }] }, []);
     rerender(<UnassignedWeighingsPanel canWeigh />);
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.getByRole("alert")).toHaveTextContent("некорректный список");
+  });
+
+  it("shows queue failures and retries both the queue and candidate passages", async () => {
+    const reloadQueue = vi.fn().mockResolvedValue(undefined);
+    const reloadCandidates = vi.fn().mockResolvedValue(undefined);
+    useApiMock.mockImplementation((url: string) => ({
+      data: null,
+      loading: false,
+      error: url.startsWith("/grain/unassigned-weighings/") ? "Весы недоступны" : "",
+      reload: url.startsWith("/grain/unassigned-weighings/") ? reloadQueue : reloadCandidates,
+    }));
+    render(<UnassignedWeighingsPanel canWeigh />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Весы недоступны");
+    await userEvent.click(screen.getByRole("button", { name: "Повторить загрузку" }));
+    expect(reloadQueue).toHaveBeenCalledTimes(1);
+    expect(reloadCandidates).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes candidate passages along with every queue poll", async () => {
+    const reloadQueue = vi.fn().mockResolvedValue(undefined);
+    const reloadCandidates = vi.fn().mockResolvedValue(undefined);
+    useApiMock.mockImplementation((url: string) => ({
+      data: [],
+      loading: false,
+      error: "",
+      reload: url.startsWith("/grain/unassigned-weighings/") ? reloadQueue : reloadCandidates,
+    }));
+    render(<UnassignedWeighingsPanel canWeigh />);
+    await pollingMock.mock.calls[0][0]();
+    expect(reloadQueue).toHaveBeenCalledTimes(1);
+    expect(reloadCandidates).toHaveBeenCalledTimes(1);
   });
 
   it("shows the parked weight, its photo link, a likely exit and only waiting passages as targets", async () => {

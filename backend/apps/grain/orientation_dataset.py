@@ -13,10 +13,14 @@ confidently wrong about is held back as a conflict for a human look.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import timedelta
+from functools import wraps
 
 from django.conf import settings
+from django.db import connection, transaction
+from rest_framework.exceptions import APIException, NotFound
 from django.utils import timezone
 
 from apps.cameras import ai as camera_ai
@@ -44,6 +48,41 @@ RECORD_MODELS = {
     VehicleOrientationSample.WEIGHING: WeighingRecord,
     VehicleOrientationSample.UNASSIGNED: UnassignedWeighing,
 }
+
+
+class OrientationSyncBusy(APIException):
+    status_code = 409
+    default_detail = "Датасет сейчас синхронизируется. Повторите операцию после завершения."
+    default_code = "orientation_sync_busy"
+
+
+def _serialized_dataset_operation(operation):
+    """Fence collection/export/purge across HTTP workers, Celery and CLI.
+
+    PostgreSQL session locks survive the short acknowledgement transactions,
+    without holding business rows during remote I/O. Contention fails fast;
+    losing the connection also releases the lock. Nested purge fallback is
+    reentrant on the same connection and releases one acquisition per call.
+    """
+    @wraps(operation)
+    def run_locked(*args, **kwargs):
+        key = 0x4153594C4F52494E
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_try_advisory_lock(%s)", [key])
+            acquired = cursor.fetchone()[0]
+        if not acquired:
+            raise OrientationSyncBusy()
+        try:
+            return operation(*args, **kwargs)
+        finally:
+            if connection.needs_rollback:
+                # An aborted transaction cannot execute the unlock statement.
+                # Closing releases the session lock and preserves the error.
+                connection.close()
+            elif connection.connection is not None:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_advisory_unlock(%s)", [key])
+    return run_locked
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +138,7 @@ def label_unassigned(item: UnassignedWeighing) -> Label | None:
     return label_for_weight(item.weight_kg)
 
 
+@transaction.atomic
 def _upsert(
     kind: str,
     record_id: int,
@@ -125,6 +165,7 @@ def _upsert(
     )
     if created:
         return "created"
+    _refresh_locked_sample(sample)
     if sample.label_source == VehicleOrientationSample.BY_MANUAL or sample.excluded:
         # A human decided; the automatic rules stay out of it.
         return "unchanged"
@@ -181,6 +222,7 @@ def _advance_watermark(cutoff) -> None:
     state.save(update_fields=["collect_since", "updated_at"])
 
 
+@_serialized_dataset_operation
 def collect(*, limit: int | None = None) -> dict[str, int]:
     """Label every recent frame that has a photo; returns counters.
 
@@ -268,6 +310,15 @@ def _photo_bytes(sample: VehicleOrientationSample) -> bytes | None:
     return data or None
 
 
+def _refresh_locked_sample(sample):
+    try:
+        VehicleOrientationSample.objects.select_for_update().only("pk").get(pk=sample.pk)
+        sample.refresh_from_db()
+    except VehicleOrientationSample.DoesNotExist as exc:
+        raise NotFound("Образец уже удалён") from exc
+
+
+@transaction.atomic
 def set_manual_label(sample: VehicleOrientationSample, label: str, user) -> VehicleOrientationSample:
     """A reviewer says what the frame shows; Camera-PC gets the frame (again).
 
@@ -275,13 +326,14 @@ def set_manual_label(sample: VehicleOrientationSample, label: str, user) -> Vehi
     старая копия, и очистка обязана попросить ПК забыть её.
     """
 
+    _refresh_locked_sample(sample)
     if label not in {VEHICLE_ORIENTATION_FRONT, VEHICLE_ORIENTATION_REAR}:
         raise ValueError("label must be front or rear")
     sample.label = label
     sample.label_source = VehicleOrientationSample.BY_MANUAL
     sample.conflict = False
     sample.excluded = False
-    sample.removal_pending = False
+    # Preserve a possible remote copy from an earlier timed-out POST.
     sample.sent_at = None
     sample.last_error = ""
     sample.reviewed_by = user
@@ -303,11 +355,13 @@ def set_manual_label(sample: VehicleOrientationSample, label: str, user) -> Vehi
     return sample
 
 
+@transaction.atomic
 def exclude_sample(sample: VehicleOrientationSample, user) -> VehicleOrientationSample:
     """Drop a frame from the dataset; a copy already on Camera-PC is removed."""
 
+    _refresh_locked_sample(sample)
     sample.excluded = True
-    sample.removal_pending = sample.delivered_at is not None
+    sample.removal_pending = sample.delivered_at is not None or sample.removal_pending
     sample.conflict = False
     sample.reviewed_by = user
     sample.reviewed_at = timezone.now()
@@ -326,6 +380,7 @@ def exclude_sample(sample: VehicleOrientationSample, user) -> VehicleOrientation
     return sample
 
 
+@_serialized_dataset_operation
 def export_removals(*, limit: int) -> dict[str, int]:
     """Ask Camera-PC to forget frames a reviewer excluded after they were sent."""
 
@@ -347,12 +402,11 @@ def export_removals(*, limit: int) -> dict[str, int]:
             sample.save(update_fields=["last_error", "updated_at"])
             counters["remove_failed"] += 1
             continue
-        sample.removal_pending = False
-        sample.sent_at = None
-        sample.delivered_at = None
-        sample.last_error = ""
-        sample.save(
-            update_fields=["removal_pending", "sent_at", "delivered_at", "last_error", "updated_at"]
+        # A reviewer may have restored/relabelled the sample during HTTP I/O.
+        # Deletion confirms only the old copy; the new label must still export.
+        VehicleOrientationSample.objects.filter(pk=sample.pk).update(
+            removal_pending=False, sent_at=None, delivered_at=None,
+            last_error="", updated_at=timezone.now(),
         )
         counters["removed"] += 1
     return counters
@@ -375,6 +429,7 @@ def _delete_rows(queryset) -> int:
     return per_model.get(VehicleOrientationSample._meta.label, 0)
 
 
+@_serialized_dataset_operation
 def purge_samples(
     queryset,
     *,
@@ -411,7 +466,12 @@ def purge_samples(
     result = {"deleted": 0, "removed_from_pc": 0, "pc_unavailable": False, "remaining": 0}
     doomed: list[int] = []
     kept: list[int] = []
+    # Camera-PC calls have a 20 second deadline. Stop starting new calls
+    # after 8 seconds so a healthy but slow PC cannot consume 100 × 20s.
+    deadline = time.monotonic() + 8
     for sample in list(queryset.order_by("id")[:limit]):
+        if time.monotonic() >= deadline:
+            break
         if not remove_from_pc or not _on_camera_pc(sample):
             doomed.append(sample.pk)
             continue
@@ -447,6 +507,7 @@ def purge_samples(
     return result
 
 
+@_serialized_dataset_operation
 def purge_all(*, remove_from_pc: bool = True) -> dict:
     """Стереть весь датасет: одним запросом на Camera-PC, затем все строки CRM.
 
@@ -478,6 +539,7 @@ def purge_all(*, remove_from_pc: bool = True) -> dict:
     return result
 
 
+@_serialized_dataset_operation
 def export_pending(*, limit: int) -> dict[str, int]:
     """Push labelled frames Camera-PC has not received yet; stops when it is down."""
 
@@ -490,12 +552,24 @@ def export_pending(*, limit: int) -> dict[str, int]:
         .order_by("id")[:limit]
     )
     for sample in pending:
+        with transaction.atomic():
+            _refresh_locked_sample(sample)
+            if sample.excluded or sample.conflict or sample.sent_at is not None:
+                continue
         jpeg = _photo_bytes(sample)
         if jpeg is None:
             sample.last_error = PHOTO_MISSING
             sample.save(update_fields=["last_error", "updated_at"])
             counters["missing"] += 1
             continue
+        # Persist uncertainty before POST: timeout does not prove the PC did
+        # not store the frame. Exclusion/purge must still request its removal.
+        with transaction.atomic():
+            _refresh_locked_sample(sample)
+            if sample.excluded or sample.conflict or sample.sent_at is not None:
+                continue
+            sample.removal_pending = True
+            sample.save(update_fields=["removal_pending"])
         try:
             camera_ai.post_orientation_sample(
                 sample_id=sample.sample_id,
@@ -515,9 +589,19 @@ def export_pending(*, limit: int) -> dict[str, int]:
             sample.save(update_fields=["last_error", "updated_at"])
             counters["failed"] += 1
             continue
-        sample.sent_at = sample.delivered_at = timezone.now()
-        sample.last_error = ""
-        sample.save(update_fields=["sent_at", "delivered_at", "last_error", "updated_at"])
+        with transaction.atomic():
+            current = VehicleOrientationSample.objects.select_for_update().filter(pk=sample.pk).first()
+            if current is not None:
+                now = timezone.now()
+                current.delivered_at = now
+                current.sent_at = now if current.updated_at == sample.updated_at else None
+                # Even a first delivery can finish after the reviewer excluded
+                # the frame. Retain the obligation to remove that remote copy.
+                current.removal_pending = current.excluded
+                current.last_error = ""
+                current.save(update_fields=[
+                    "sent_at", "delivered_at", "removal_pending", "last_error", "updated_at",
+                ])
         counters["sent"] += 1
     return counters
 

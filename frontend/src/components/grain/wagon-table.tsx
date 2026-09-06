@@ -20,7 +20,7 @@ import { GrainWagonDeleteDialog } from "@/components/grain/wagon-delete-dialog";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { can } from "@/lib/can";
 import { groupByDay } from "@/lib/day-groups";
-import { formatKg, GRAIN_STATUS_TONE, isFinishedGrainWagon, isPassagePlateMissing } from "@/lib/grain";
+import { formatKg, grainTripHref, GRAIN_STATUS_TONE, isFinishedGrainWagon, isPassagePlateMissing } from "@/lib/grain";
 import type { GrainWagon, Me } from "@/lib/types";
 import { useLocalDay } from "@/lib/use-local-day";
 import { cn, formatDateTime } from "@/lib/utils";
@@ -277,7 +277,7 @@ export function WagonTable({
                     return (
                       <TR key={wagon.id}>
                         <TD>
-                          <Link href={`/grain/wagons/${wagon.id}`} className="block min-w-0 hover:underline">
+                          <Link href={grainTripHref(wagon)} className="block min-w-0 hover:underline">
                             <span className="block truncate font-semibold">
                               {wagon.number || `#${wagon.id}`}
                               {isPassagePlateMissing(wagon) && (
@@ -349,7 +349,7 @@ export function WagonTable({
                         <TD className="text-right">
                           <div className="flex items-center justify-end gap-1.5">
                             <Link
-                              href={`/grain/wagons/${wagon.id}`}
+                              href={grainTripHref(wagon)}
                               className={buttonVariants({ size: "sm", variant: cta.variant })}
                             >
                               {cta.label} <ArrowRight className="size-4" />

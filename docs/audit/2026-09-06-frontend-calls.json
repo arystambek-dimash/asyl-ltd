@@ -1,0 +1,1605 @@
+[
+  {
+    "file": "frontend/src/app/accounting/debts/clients/[id]/page.tsx",
+    "line": 532,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/payments/`",
+    "type": "Payment[]"
+  },
+  {
+    "file": "frontend/src/app/accounting/debts/clients/[id]/page.tsx",
+    "line": 539,
+    "call": "api.get",
+    "arg": "`/orders/${order.id}/invoice-pdf/`",
+    "type": "Blob"
+  },
+  {
+    "file": "frontend/src/app/accounting/debts/clients/[id]/page.tsx",
+    "line": 820,
+    "call": "useApi",
+    "arg": "`/clients/${id}/debt-detail/`",
+    "type": "ClientDebtDetail"
+  },
+  {
+    "file": "frontend/src/app/accounting/debts/clients/[id]/page.tsx",
+    "line": 825,
+    "call": "useApi",
+    "arg": "canViewReports ? `/clients/${id}/history/` : null",
+    "type": "ClientHistory"
+  },
+  {
+    "file": "frontend/src/app/accounting/debts/stores/[id]/page.tsx",
+    "line": 39,
+    "call": "useApi",
+    "arg": "`/stores/${id}/debt-detail/`",
+    "type": "StoreDebtDetail"
+  },
+  {
+    "file": "frontend/src/app/accounting/debts/stores/[id]/page.tsx",
+    "line": 66,
+    "call": "api.post",
+    "arg": "`/orders/${orderId}/payments/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/accounting/page.tsx",
+    "line": 129,
+    "call": "useApi",
+    "arg": "queueActive && canReviewOrders ? apiUrl(\"/orders/\", { ...queueParams, status: \"pending\" }) : null",
+    "type": "Order[]"
+  },
+  {
+    "file": "frontend/src/app/accounting/page.tsx",
+    "line": 136,
+    "call": "useApi",
+    "arg": "queueActive ? apiUrl(\"/orders/payments-queue/\", queueParams) : null",
+    "type": "PaymentQueueItem[]"
+  },
+  {
+    "file": "frontend/src/app/accounting/page.tsx",
+    "line": 170,
+    "call": "api.post",
+    "arg": "`/orders/${o.id}/confirm/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/accounting/page.tsx",
+    "line": 172,
+    "call": "api.post",
+    "arg": "`/orders/${p.order}/payments/${p.id}/confirm/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/accounting/page.tsx",
+    "line": 174,
+    "call": "api.post",
+    "arg": "`/orders/${p.order}/payments/${p.id}/receive/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/accounting/page.tsx",
+    "line": 176,
+    "call": "api.post",
+    "arg": "`/orders/${p.order}/payments/${p.id}/reject/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/accounting/page.tsx",
+    "line": 180,
+    "call": "api.post",
+    "arg": "`/orders/${event.order}/payments/${paymentId}/reopen/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/accounting/page.tsx",
+    "line": 185,
+    "call": "api.post",
+    "arg": "`/orders/${event.order}/payments/${paymentId}/restore/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/accounting/page.tsx",
+    "line": 430,
+    "call": "api.post",
+    "arg": "\"/stores/check-overdue/\"",
+    "type": "{ checked: number; overdue_notifications: number }"
+  },
+  {
+    "file": "frontend/src/app/accounting/page.tsx",
+    "line": 769,
+    "call": "useApi",
+    "arg": "canReports && validOverview ? reportUrl : null",
+    "type": "ReportSummary"
+  },
+  {
+    "file": "frontend/src/app/accounting/page.tsx",
+    "line": 771,
+    "call": "usePagedApi",
+    "arg": "canPayments && filtersAreValid(journalFilters)\n      ? apiUrl(\"/orders/cashier-log/\", {\n          date_from: journalFilters.dateFrom,\n          date_to: journalFilters.dateTo,\n          department: journalFilters.department,\n          store: journalFilters.store,\n        })\n      : null",
+    "type": "CashierLogItem"
+  },
+  {
+    "file": "frontend/src/app/accounting/page.tsx",
+    "line": 788,
+    "call": "useApi",
+    "arg": "canDebtEntry && validOverview ? debtsUrl : null",
+    "type": "ClientDebt[]"
+  },
+  {
+    "file": "frontend/src/app/accounting/page.tsx",
+    "line": 789,
+    "call": "useApi",
+    "arg": "canReports && canViewClients ? \"/stores/\" : null",
+    "type": "Store[]"
+  },
+  {
+    "file": "frontend/src/app/accounting/page.tsx",
+    "line": 790,
+    "call": "useApi",
+    "arg": "\"/departments/\"",
+    "type": "Department[]"
+  },
+  {
+    "file": "frontend/src/app/catalog/products/page.tsx",
+    "line": 26,
+    "call": "useApi",
+    "arg": "\"/products/\"",
+    "type": "Product[]"
+  },
+  {
+    "file": "frontend/src/app/catalog/products/page.tsx",
+    "line": 32,
+    "call": "useApi",
+    "arg": "\"/products/?archived=1\"",
+    "type": "Product[]"
+  },
+  {
+    "file": "frontend/src/app/catalog/products/page.tsx",
+    "line": 83,
+    "call": "api.patch",
+    "arg": "`/products/${editing.id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/catalog/products/page.tsx",
+    "line": 84,
+    "call": "api.post",
+    "arg": "\"/products/\"",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/catalog/products/page.tsx",
+    "line": 99,
+    "call": "api.post",
+    "arg": "`/products/${arcItem.id}/archive/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/catalog/products/page.tsx",
+    "line": 114,
+    "call": "api.post",
+    "arg": "`/products/${p.id}/restore/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/clients/[id]/page.tsx",
+    "line": 177,
+    "call": "useApi",
+    "arg": "`/clients/${id}/history/`",
+    "type": "History"
+  },
+  {
+    "file": "frontend/src/app/clients/[id]/prices/page.tsx",
+    "line": 20,
+    "call": "useApi",
+    "arg": "`/clients/${id}/prices/`",
+    "type": "ClientPriceSheet"
+  },
+  {
+    "file": "frontend/src/app/clients/[id]/prices/page.tsx",
+    "line": 85,
+    "call": "api.put",
+    "arg": "`/clients/${id}/prices/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/clients/page.tsx",
+    "line": 74,
+    "call": "useApi",
+    "arg": "assignedDepartment ? null : \"/departments/?all=1\"",
+    "type": "Department[]"
+  },
+  {
+    "file": "frontend/src/app/clients/page.tsx",
+    "line": 128,
+    "call": "api.patch",
+    "arg": "`/clients/${editing.id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/clients/page.tsx",
+    "line": 129,
+    "call": "api.post",
+    "arg": "\"/clients/\"",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/clients/page.tsx",
+    "line": 439,
+    "call": "api.post",
+    "arg": "`/clients/${client.id}/password/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/clients/page.tsx",
+    "line": 527,
+    "call": "usePagedApi",
+    "arg": "usePaging ? clientsUrl : null",
+    "type": "Client"
+  },
+  {
+    "file": "frontend/src/app/clients/page.tsx",
+    "line": 528,
+    "call": "useApi",
+    "arg": "usePaging ? null : clientsUrl",
+    "type": "Client[]"
+  },
+  {
+    "file": "frontend/src/app/clients/page.tsx",
+    "line": 532,
+    "call": "useApi",
+    "arg": "\"/departments/\"",
+    "type": "Department[]"
+  },
+  {
+    "file": "frontend/src/app/clients/page.tsx",
+    "line": 543,
+    "call": "useApi",
+    "arg": "canMoney ? clientDebtsUrl : null",
+    "type": "ClientDebt[]"
+  },
+  {
+    "file": "frontend/src/app/clients/page.tsx",
+    "line": 558,
+    "call": "api.delete",
+    "arg": "`/clients/${delItem.id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/clients/page.tsx",
+    "line": 574,
+    "call": "api.post",
+    "arg": "`/clients/${purgeItem.id}/purge/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/events/page.tsx",
+    "line": 96,
+    "call": "usePagedApi",
+    "arg": "url",
+    "type": "EventLog"
+  },
+  {
+    "file": "frontend/src/app/grain/orientation/page.tsx",
+    "line": 343,
+    "call": "api.post",
+    "arg": "`/grain/orientation-samples/${sample.id}/${action}/`",
+    "type": "GrainOrientationSample"
+  },
+  {
+    "file": "frontend/src/app/grain/orientation/page.tsx",
+    "line": 496,
+    "call": "api.post",
+    "arg": "PURGE_URL",
+    "type": "GrainOrientationPurgeResult"
+  },
+  {
+    "file": "frontend/src/app/grain/orientation/page.tsx",
+    "line": 633,
+    "call": "usePagedApi",
+    "arg": "url",
+    "type": "GrainOrientationSample"
+  },
+  {
+    "file": "frontend/src/app/grain/orientation/page.tsx",
+    "line": 634,
+    "call": "useApi",
+    "arg": "SUMMARY_URL",
+    "type": "GrainOrientationSummary"
+  },
+  {
+    "file": "frontend/src/app/grain/page.tsx",
+    "line": 94,
+    "call": "api.post",
+    "arg": "\"/grain/types/\"",
+    "type": "GrainType"
+  },
+  {
+    "file": "frontend/src/app/grain/page.tsx",
+    "line": 157,
+    "call": "useApi",
+    "arg": "\"/grain/types/\"",
+    "type": "GrainType[]"
+  },
+  {
+    "file": "frontend/src/app/grain/page.tsx",
+    "line": 163,
+    "call": "useApi",
+    "arg": "\"/grain/silos/\"",
+    "type": "GrainSilo[]"
+  },
+  {
+    "file": "frontend/src/app/grain/page.tsx",
+    "line": 186,
+    "call": "api.post",
+    "arg": "\"/grain/supplies/\"",
+    "type": "GrainSupply"
+  },
+  {
+    "file": "frontend/src/app/grain/page.tsx",
+    "line": 387,
+    "call": "useApi",
+    "arg": "\"/grain/wagons/vehicle-plate-candidates/\"",
+    "type": "VehiclePlateCandidate[]"
+  },
+  {
+    "file": "frontend/src/app/grain/page.tsx",
+    "line": 417,
+    "call": "api.post",
+    "arg": "\"/grain/wagons/passage/\"",
+    "type": "GrainWagon"
+  },
+  {
+    "file": "frontend/src/app/grain/page.tsx",
+    "line": 571,
+    "call": "api.post",
+    "arg": "\"/grain/wagons/arrive/\"",
+    "type": "GrainWagon"
+  },
+  {
+    "file": "frontend/src/app/grain/page.tsx",
+    "line": 732,
+    "call": "usePagedApi",
+    "arg": "direction === \"intake\" && tab === \"expected\" ? \"/grain/supplies/?status=expected&awaiting_arrival=1\" : null",
+    "type": "GrainSupply"
+  },
+  {
+    "file": "frontend/src/app/grain/page.tsx",
+    "line": 736,
+    "call": "usePagedApi",
+    "arg": "wagonsUrl(tab, direction, effectiveFinishedDay, debouncedSearch)",
+    "type": "GrainWagon"
+  },
+  {
+    "file": "frontend/src/app/grain/page.tsx",
+    "line": 737,
+    "call": "usePagedApi",
+    "arg": "arriveOpen ? \"/grain/supplies/?status=expected&awaiting_arrival=1\" : null",
+    "type": "GrainSupply"
+  },
+  {
+    "file": "frontend/src/app/grain/wagons/[id]/page.tsx",
+    "line": 153,
+    "call": "useApi",
+    "arg": "needSilos ? `/grain/wagons/${wagon.id}/suggest-silos/` : null",
+    "type": "GrainSilo[]"
+  },
+  {
+    "file": "frontend/src/app/grain/wagons/[id]/page.tsx",
+    "line": 154,
+    "call": "useApi",
+    "arg": "wagon.status === \"waiting_for_approval\" ? \"/grain/supplies/?status=expected\" : null",
+    "type": "GrainSupply[]"
+  },
+  {
+    "file": "frontend/src/app/grain/wagons/[id]/page.tsx",
+    "line": 246,
+    "call": "api.post",
+    "arg": "`/grain/wagons/${wagon.id}/${path}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/grain/wagons/[id]/page.tsx",
+    "line": 251,
+    "call": "api.post",
+    "arg": "`/grain/wagons/${wagon.id}/${path}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/grain/wagons/[id]/page.tsx",
+    "line": 646,
+    "call": "useApi",
+    "arg": "`/grain/wagons/${id}/`",
+    "type": "GrainWagon"
+  },
+  {
+    "file": "frontend/src/app/grain/wagons/[id]/page.tsx",
+    "line": 647,
+    "call": "useApi",
+    "arg": "`/grain/wagons/${id}/timeline/`",
+    "type": "GrainTimelineEvent[]"
+  },
+  {
+    "file": "frontend/src/app/management/employees/page.tsx",
+    "line": 56,
+    "call": "useApi",
+    "arg": "\"/employees/\"",
+    "type": "Employee[]"
+  },
+  {
+    "file": "frontend/src/app/management/employees/page.tsx",
+    "line": 57,
+    "call": "useApi",
+    "arg": "canManage ? \"/permissions/\" : null",
+    "type": "Permission[]"
+  },
+  {
+    "file": "frontend/src/app/management/employees/page.tsx",
+    "line": 94,
+    "call": "useApi",
+    "arg": "open && canManage ? \"/departments/?all=1\" : null",
+    "type": "Department[]"
+  },
+  {
+    "file": "frontend/src/app/management/employees/page.tsx",
+    "line": 170,
+    "call": "api.patch",
+    "arg": "`/employees/${editing.id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/management/employees/page.tsx",
+    "line": 172,
+    "call": "api.patch",
+    "arg": "`/employees/${editing.id}/security/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/management/employees/page.tsx",
+    "line": 180,
+    "call": "api.post",
+    "arg": "`/employees/${editing.id}/password/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/management/employees/page.tsx",
+    "line": 185,
+    "call": "api.post",
+    "arg": "\"/employees/\"",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/management/employees/page.tsx",
+    "line": 211,
+    "call": "api.delete",
+    "arg": "`/employees/${deleteEmployee.id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 239,
+    "call": "api.put",
+    "arg": "\"/cameras/monoblock-settings/\"",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 356,
+    "call": "api.patch",
+    "arg": "`/cameras/monoblock-devices/${editing.id}/`",
+    "type": "MonoblockDevice"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 357,
+    "call": "api.post",
+    "arg": "\"/cameras/monoblock-devices/\"",
+    "type": "MonoblockDevice"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 384,
+    "call": "api.delete",
+    "arg": "`/cameras/monoblock-devices/${removing.id}/`",
+    "type": "{\n        deleted?: boolean;\n        always_on_sync_status?: \"synced\" | \"pending\";\n        always_on_detail?: string;\n      }"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 627,
+    "call": "api.put",
+    "arg": "\"/cameras/always-on-settings/\"",
+    "type": "AlwaysOnCameraSettings"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 962,
+    "call": "api.get",
+    "arg": "runtimeSettingsUrl",
+    "type": "AlwaysOnCameraSettings"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 963,
+    "call": "api.get",
+    "arg": "analyticsUrl",
+    "type": "AlwaysOnDailyAnalytics"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1012,
+    "call": "api.get",
+    "arg": "detectionsUrl",
+    "type": "{ processors: AlwaysOnProcessorStatus[] }"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1071,
+    "call": "api.get",
+    "arg": "`/cameras/always-on-production/?camera=${encodeURIComponent(processor.cam)}`",
+    "type": "AlwaysOnProductionPayload"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1135,
+    "call": "api.get",
+    "arg": "`/cameras/always-on-production/?camera=${encodeURIComponent(processor.cam)}&day=${encodeURIComponent(selectedDay)}`",
+    "type": "AlwaysOnProductionPayload"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1166,
+    "call": "api.put",
+    "arg": "\"/cameras/always-on-production/\"",
+    "type": "AlwaysOnProductionPayload"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1188,
+    "call": "api.post",
+    "arg": "`/cameras/always-on-production/batches/${batch.id}/retry/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1780,
+    "call": "useApi",
+    "arg": "`/orders/?post_board=1${boardQuery}`",
+    "type": "Order[]"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1785,
+    "call": "useApi",
+    "arg": "canViewSessions ? \"/cameras/ai/sessions/\" : null",
+    "type": "AiCountingSession[]"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1786,
+    "call": "useApi",
+    "arg": "\"/cameras/\"",
+    "type": "CameraFeed[]"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1791,
+    "call": "useApi",
+    "arg": "canViewCameraSettings ? \"/cameras/monoblock-settings/\" : null",
+    "type": "MonoblockCameraSettings"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1796,
+    "call": "useApi",
+    "arg": "isSuper ? \"/cameras/monoblock-devices/\" : null",
+    "type": "MonoblockDevice[]"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1801,
+    "call": "useApi",
+    "arg": "canViewShipping ? `/cameras/ai/history/?post_board=1${boardQuery}` : null",
+    "type": "AiCountingHistory[]"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1806,
+    "call": "useApi",
+    "arg": "canViewShippingSettings ? \"/cameras/shipping-settings/\" : null",
+    "type": "ShippingBoardSettings"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1812,
+    "call": "useApi",
+    "arg": "canViewAlwaysOn ? \"/cameras/always-on-settings/\" : null",
+    "type": "AlwaysOnCameraSettings"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1817,
+    "call": "useApi",
+    "arg": "canViewAlwaysOn ? \"/cameras/always-on-analytics/\" : null",
+    "type": "AlwaysOnDailyAnalytics"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1822,
+    "call": "useApi",
+    "arg": "canViewContinuous ? \"/cameras/shipping-continuous-settings/\" : null",
+    "type": "AlwaysOnCameraSettings"
+  },
+  {
+    "file": "frontend/src/app/monoblock/page.tsx",
+    "line": 1827,
+    "call": "useApi",
+    "arg": "canViewContinuous ? \"/cameras/shipping-continuous-analytics/\" : null",
+    "type": "AlwaysOnDailyAnalytics"
+  },
+  {
+    "file": "frontend/src/app/orders/[id]/page.tsx",
+    "line": 84,
+    "call": "useApi",
+    "arg": "`/orders/${id}/`",
+    "type": "Order"
+  },
+  {
+    "file": "frontend/src/app/orders/[id]/page.tsx",
+    "line": 85,
+    "call": "useApi",
+    "arg": "order && canViewClients ? `/clients/${order.client}/` : null",
+    "type": "Client"
+  },
+  {
+    "file": "frontend/src/app/orders/[id]/page.tsx",
+    "line": 86,
+    "call": "useApi",
+    "arg": "order?.store && canViewClients ? `/stores/${order.store}/` : null",
+    "type": "Store"
+  },
+  {
+    "file": "frontend/src/app/orders/[id]/page.tsx",
+    "line": 87,
+    "call": "useApi",
+    "arg": "order && can(me, \"events.view\") ? `/events/?order=${order.id}&page_size=5` : null",
+    "type": "EventLogPage"
+  },
+  {
+    "file": "frontend/src/app/orders/[id]/page.tsx",
+    "line": 103,
+    "call": "api.delete",
+    "arg": "`/orders/${id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/orders/[id]/page.tsx",
+    "line": 481,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/reject/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/orders/[id]/page.tsx",
+    "line": 491,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/confirm/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/orders/[id]/page.tsx",
+    "line": 542,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/set-status/`",
+    "type": "{ applied: boolean }"
+  },
+  {
+    "file": "frontend/src/app/orders/[id]/page.tsx",
+    "line": 560,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/confirm/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/orders/[id]/page.tsx",
+    "line": 579,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/status-requests/${req.id}/approve/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/orders/[id]/page.tsx",
+    "line": 587,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/status-requests/${req.id}/reject/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/orders/page.tsx",
+    "line": 233,
+    "call": "useApi",
+    "arg": "\"/departments/?all=1\"",
+    "type": "Department[]"
+  },
+  {
+    "file": "frontend/src/app/orders/page.tsx",
+    "line": 252,
+    "call": "api.patch",
+    "arg": "`/departments/${editing.id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/orders/page.tsx",
+    "line": 253,
+    "call": "api.post",
+    "arg": "\"/departments/\"",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/orders/page.tsx",
+    "line": 268,
+    "call": "api.patch",
+    "arg": "`/departments/${department.id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/orders/page.tsx",
+    "line": 766,
+    "call": "usePagedApi",
+    "arg": "usePaging ? ordersUrl : null",
+    "type": "Order"
+  },
+  {
+    "file": "frontend/src/app/orders/page.tsx",
+    "line": 767,
+    "call": "useApi",
+    "arg": "usePaging ? null : ordersUrl",
+    "type": "Order[]"
+  },
+  {
+    "file": "frontend/src/app/orders/page.tsx",
+    "line": 780,
+    "call": "useApi",
+    "arg": "summaryUrl",
+    "type": "DepartmentSummary[]"
+  },
+  {
+    "file": "frontend/src/app/orders/page.tsx",
+    "line": 781,
+    "call": "useApi",
+    "arg": "\"/departments/\"",
+    "type": "Department[]"
+  },
+  {
+    "file": "frontend/src/app/orders/page.tsx",
+    "line": 805,
+    "call": "useApi",
+    "arg": "canEdit && view === \"orders\" ? \"/orders/trash-preview/\" : null",
+    "type": "{ count: number; results: Order[] }"
+  },
+  {
+    "file": "frontend/src/app/orders/page.tsx",
+    "line": 813,
+    "call": "useApi",
+    "arg": "canEdit && view === \"archive\" ? \"/orders/trash/\" : null",
+    "type": "Order[]"
+  },
+  {
+    "file": "frontend/src/app/orders/page.tsx",
+    "line": 820,
+    "call": "useApi",
+    "arg": "open && canCreate && requestedTemplateId > 0 ? `/orders/${requestedTemplateId}/` : null",
+    "type": "Order"
+  },
+  {
+    "file": "frontend/src/app/orders/page.tsx",
+    "line": 845,
+    "call": "api.delete",
+    "arg": "`/orders/${delItem.id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/orders/page.tsx",
+    "line": 860,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/set-status/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/orders/page.tsx",
+    "line": 1450,
+    "call": "api.post",
+    "arg": "`/orders/${o.id}/restore/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/portal/catalog/page.tsx",
+    "line": 27,
+    "call": "useApi",
+    "arg": "currency ? `/portal/catalog/?currency=${currency}` : \"/portal/catalog/\"",
+    "type": "PortalProduct[]"
+  },
+  {
+    "file": "frontend/src/app/portal/orders/[id]/page.tsx",
+    "line": 70,
+    "call": "useApi",
+    "arg": "`/portal/orders/${id}/`",
+    "type": "PortalOrder"
+  },
+  {
+    "file": "frontend/src/app/portal/orders/new/page.tsx",
+    "line": 38,
+    "call": "useApi",
+    "arg": "currency ? `/portal/catalog/?currency=${currency}` : \"/portal/catalog/\"",
+    "type": "PortalProduct[]"
+  },
+  {
+    "file": "frontend/src/app/portal/orders/new/page.tsx",
+    "line": 39,
+    "call": "useApi",
+    "arg": "\"/portal/stores/\"",
+    "type": "Store[]"
+  },
+  {
+    "file": "frontend/src/app/portal/orders/new/page.tsx",
+    "line": 64,
+    "call": "api.post",
+    "arg": "\"/portal/orders/\"",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/portal/orders/page.tsx",
+    "line": 15,
+    "call": "useApi",
+    "arg": "\"/portal/orders/\"",
+    "type": "PortalOrder[]"
+  },
+  {
+    "file": "frontend/src/app/reports/page.tsx",
+    "line": 510,
+    "call": "useApi",
+    "arg": "\"/departments/\"",
+    "type": "Department[]"
+  },
+  {
+    "file": "frontend/src/app/reports/page.tsx",
+    "line": 523,
+    "call": "useApi",
+    "arg": "url",
+    "type": "ReportSummary"
+  },
+  {
+    "file": "frontend/src/app/stores/page.tsx",
+    "line": 99,
+    "call": "api.patch",
+    "arg": "`/stores/${editing.id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/stores/page.tsx",
+    "line": 100,
+    "call": "api.post",
+    "arg": "\"/stores/\"",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/stores/page.tsx",
+    "line": 268,
+    "call": "usePagedApi",
+    "arg": "\"/stores/\"",
+    "type": "Store"
+  },
+  {
+    "file": "frontend/src/app/stores/page.tsx",
+    "line": 283,
+    "call": "useApi",
+    "arg": "open ? \"/clients/picker/\" : null",
+    "type": "ClientPickerItem[]"
+  },
+  {
+    "file": "frontend/src/app/stores/page.tsx",
+    "line": 292,
+    "call": "api.delete",
+    "arg": "`/stores/${delItem.id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/tasks/page.tsx",
+    "line": 67,
+    "call": "api.post",
+    "arg": "`/tasks/${task.id}/${done ? \"reopen\" : \"complete\"}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/tasks/page.tsx",
+    "line": 185,
+    "call": "useApi",
+    "arg": "`/tasks/${query}`",
+    "type": "Task[]"
+  },
+  {
+    "file": "frontend/src/app/tasks/page.tsx",
+    "line": 209,
+    "call": "useApi",
+    "arg": "canCreate ? \"/task-assignees/\" : null",
+    "type": "TaskAssignee[]"
+  },
+  {
+    "file": "frontend/src/app/tasks/page.tsx",
+    "line": 244,
+    "call": "api.delete",
+    "arg": "`/tasks/${deleting.id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/tasks/page.tsx",
+    "line": 266,
+    "call": "api.patch",
+    "arg": "`/tasks/${editing.id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/tasks/page.tsx",
+    "line": 285,
+    "call": "api.post",
+    "arg": "\"/tasks/\"",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/vehicle-plate-events/page.tsx",
+    "line": 105,
+    "call": "usePagedApi",
+    "arg": "url",
+    "type": "VehiclePlateEvent"
+  },
+  {
+    "file": "frontend/src/app/warehouse/page.tsx",
+    "line": 75,
+    "call": "useApi",
+    "arg": "\"/warehouses/\"",
+    "type": "Warehouse[]"
+  },
+  {
+    "file": "frontend/src/app/warehouse/page.tsx",
+    "line": 92,
+    "call": "useApi",
+    "arg": "stockUrl",
+    "type": "StockItem[]"
+  },
+  {
+    "file": "frontend/src/app/warehouse/page.tsx",
+    "line": 93,
+    "call": "useApi",
+    "arg": "canAdjust && canBrowseCatalog ? \"/products/\" : null",
+    "type": "Product[]"
+  },
+  {
+    "file": "frontend/src/app/warehouse/page.tsx",
+    "line": 96,
+    "call": "useApi",
+    "arg": "legacyWarehouseMode ? null : \"/stock/\"",
+    "type": "StockItem[]"
+  },
+  {
+    "file": "frontend/src/app/warehouse/page.tsx",
+    "line": 219,
+    "call": "api.post",
+    "arg": "\"/stock/transfer/\"",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/warehouse/page.tsx",
+    "line": 226,
+    "call": "api.post",
+    "arg": "\"/stock/adjust/\"",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/warehouse/page.tsx",
+    "line": 885,
+    "call": "api.patch",
+    "arg": "`/warehouses/${editing.id}/`",
+    "type": "Warehouse"
+  },
+  {
+    "file": "frontend/src/app/warehouse/page.tsx",
+    "line": 886,
+    "call": "api.post",
+    "arg": "\"/warehouses/\"",
+    "type": "Warehouse"
+  },
+  {
+    "file": "frontend/src/app/warehouse/silos/page.tsx",
+    "line": 226,
+    "call": "api.post",
+    "arg": "\"/grain/silos/\"",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/warehouse/silos/page.tsx",
+    "line": 305,
+    "call": "api.post",
+    "arg": "\"/grain/silo-types/\"",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/warehouse/silos/page.tsx",
+    "line": 395,
+    "call": "api.patch",
+    "arg": "`/grain/silo-types/${type.id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/warehouse/silos/page.tsx",
+    "line": 509,
+    "call": "api.post",
+    "arg": "`/grain/silos/${silo.id}/adjust/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/app/warehouse/silos/page.tsx",
+    "line": 559,
+    "call": "usePagedApi",
+    "arg": "`/grain/silos/${silo.id}/movements/`",
+    "type": "GrainMovement"
+  },
+  {
+    "file": "frontend/src/app/warehouse/silos/page.tsx",
+    "line": 747,
+    "call": "useApi",
+    "arg": "\"/grain/silos/\"",
+    "type": "GrainSilo[]"
+  },
+  {
+    "file": "frontend/src/app/warehouse/silos/page.tsx",
+    "line": 748,
+    "call": "useApi",
+    "arg": "\"/grain/silo-types/\"",
+    "type": "GrainSiloType[]"
+  },
+  {
+    "file": "frontend/src/components/camera-wall.tsx",
+    "line": 250,
+    "call": "api.get",
+    "arg": "`/cameras/${encodeURIComponent(camera.src)}/counting-line`",
+    "type": "CameraCountingLine"
+  },
+  {
+    "file": "frontend/src/components/camera-wall.tsx",
+    "line": 283,
+    "call": "api.get",
+    "arg": "`/cameras/${encodeURIComponent(lineCameraSource)}/counting-line`",
+    "type": "CameraCountingLine"
+  },
+  {
+    "file": "frontend/src/components/camera-wall.tsx",
+    "line": 355,
+    "call": "api.put",
+    "arg": "`/cameras/${encodeURIComponent(lineCamera.src)}/counting-line`",
+    "type": "CameraCountingLineSave"
+  },
+  {
+    "file": "frontend/src/components/camera-wall.tsx",
+    "line": 392,
+    "call": "api.patch",
+    "arg": "\"/cameras/\"",
+    "type": "{ camera: string; name: string }"
+  },
+  {
+    "file": "frontend/src/components/camera-wall.tsx",
+    "line": 441,
+    "call": "api.get",
+    "arg": "\"/cameras/\"",
+    "type": "CameraFeed[]"
+  },
+  {
+    "file": "frontend/src/components/grain/live-scale-status.tsx",
+    "line": 69,
+    "call": "useApi",
+    "arg": "active ? `/truck-scales/${scaleKey}/reading/` : null",
+    "type": "TruckScalePreview"
+  },
+  {
+    "file": "frontend/src/components/grain/passage-number-editor.tsx",
+    "line": 39,
+    "call": "api.patch",
+    "arg": "`/grain/wagons/${wagon.id}/number/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/grain/unassigned-weighings.tsx",
+    "line": 118,
+    "call": "api.post",
+    "arg": "`/grain/unassigned-weighings/${item.id}/${path}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/grain/unassigned-weighings.tsx",
+    "line": 292,
+    "call": "useApi",
+    "arg": "\"/grain/unassigned-weighings/\"",
+    "type": "GrainUnassignedWeighing[]"
+  },
+  {
+    "file": "frontend/src/components/grain/unassigned-weighings.tsx",
+    "line": 293,
+    "call": "useApi",
+    "arg": "CANDIDATES_URL",
+    "type": "GrainWagon[] | { results: GrainWagon[] }"
+  },
+  {
+    "file": "frontend/src/components/grain/vehicle-plate-camera.tsx",
+    "line": 447,
+    "call": "useApi",
+    "arg": "VEHICLE_RUNTIME_BOOTSTRAP_URL",
+    "type": "VehiclePlateRuntime"
+  },
+  {
+    "file": "frontend/src/components/grain/vehicle-plate-camera.tsx",
+    "line": 454,
+    "call": "useApi",
+    "arg": "SCALE_AUTOMATION_RUNTIME_URL",
+    "type": "ScaleAutomationRuntime"
+  },
+  {
+    "file": "frontend/src/components/grain/vehicle-plate-camera.tsx",
+    "line": 461,
+    "call": "useApi",
+    "arg": "SCALE_AUTOMATION_SETTINGS_URL",
+    "type": "ScaleAutomationSettings"
+  },
+  {
+    "file": "frontend/src/components/grain/vehicle-plate-camera.tsx",
+    "line": 578,
+    "call": "api.put",
+    "arg": "runtimeUrl",
+    "type": "VehicleRoiSaveResponse"
+  },
+  {
+    "file": "frontend/src/components/grain/vehicle-plate-camera.tsx",
+    "line": 599,
+    "call": "api.post",
+    "arg": "SCALE_AUTOMATION_ACKNOWLEDGE_URL",
+    "type": "ScaleAutomationAcknowledgeResponse"
+  },
+  {
+    "file": "frontend/src/components/grain/vehicle-plate-camera.tsx",
+    "line": 636,
+    "call": "api.patch",
+    "arg": "SCALE_AUTOMATION_SETTINGS_URL",
+    "type": "ScaleAutomationSettings"
+  },
+  {
+    "file": "frontend/src/components/grain/wagon-delete-dialog.tsx",
+    "line": 69,
+    "call": "api.delete",
+    "arg": "`/grain/wagons/${wagonId}/delete/`",
+    "type": "DeleteResult"
+  },
+  {
+    "file": "frontend/src/components/grain/wagon-number-camera.tsx",
+    "line": 103,
+    "call": "api.put",
+    "arg": "\"/cameras/wagon-number-settings/\"",
+    "type": "WagonNumberCameraSettings"
+  },
+  {
+    "file": "frontend/src/components/grain/wagon-number-camera.tsx",
+    "line": 291,
+    "call": "useApi",
+    "arg": "\"/cameras/\"",
+    "type": "CameraFeed[]"
+  },
+  {
+    "file": "frontend/src/components/grain/wagon-number-camera.tsx",
+    "line": 297,
+    "call": "useApi",
+    "arg": "\"/cameras/wagon-number-settings/\"",
+    "type": "WagonNumberCameraSettings"
+  },
+  {
+    "file": "frontend/src/components/manual-order-status-modal.tsx",
+    "line": 50,
+    "call": "api.post",
+    "arg": "`/orders/${order!.id}/set-status/`",
+    "type": "{ order: Order }"
+  },
+  {
+    "file": "frontend/src/components/notification-bell.tsx",
+    "line": 19,
+    "call": "useApi",
+    "arg": "\"/portal/notifications/\"",
+    "type": "Notification[]"
+  },
+  {
+    "file": "frontend/src/components/notification-bell.tsx",
+    "line": 32,
+    "call": "api.post",
+    "arg": "`/portal/notifications/${id}/read/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/order-form.tsx",
+    "line": 144,
+    "call": "useApi",
+    "arg": "\"/orders/form-options/\"",
+    "type": "OrderFormOptions"
+  },
+  {
+    "file": "frontend/src/components/order-form.tsx",
+    "line": 184,
+    "call": "useApi",
+    "arg": "clientPricesUrl",
+    "type": "Record<string, string>"
+  },
+  {
+    "file": "frontend/src/components/order-form.tsx",
+    "line": 335,
+    "call": "api.patch",
+    "arg": "`/orders/${editing.id}/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/order-form.tsx",
+    "line": 338,
+    "call": "api.post",
+    "arg": "\"/orders/\"",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/order-price-correction-modal.tsx",
+    "line": 67,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/correct-price/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/orders/archive-dock.tsx",
+    "line": 79,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/restore/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/orders/order-purge-dialog.tsx",
+    "line": 32,
+    "call": "api.delete",
+    "arg": "`/orders/${order.id}/purge/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/payment-chain.tsx",
+    "line": 112,
+    "call": "api.post",
+    "arg": "url",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/payment-chain.tsx",
+    "line": 228,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/payments/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/shipment-rollback-modal.tsx",
+    "line": 42,
+    "call": "api.post",
+    "arg": "`/orders/${order!.id}/rollback-shipment/`",
+    "type": "{ order: Order }"
+  },
+  {
+    "file": "frontend/src/components/shipping/completed-orders-settings-modal.tsx",
+    "line": 37,
+    "call": "api.patch",
+    "arg": "\"/cameras/shipping-settings/\"",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/shipping/counting-history-modal.tsx",
+    "line": 15,
+    "call": "useApi",
+    "arg": "recordingUrl",
+    "type": "AiRecording"
+  },
+  {
+    "file": "frontend/src/components/shipping/use-shipping-actions.ts",
+    "line": 131,
+    "call": "api.delete",
+    "arg": "`/cameras/${session.camera}/ai/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/shipping/use-shipping-actions.ts",
+    "line": 147,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/train/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/shipping/use-shipping-actions.ts",
+    "line": 151,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/load/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/shipping/use-shipping-actions.ts",
+    "line": 154,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/finish-loading/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/shipping/use-shipping-actions.ts",
+    "line": 164,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/train/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/shipping/use-shipping-actions.ts",
+    "line": 165,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/load/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/shipping/use-shipping-actions.ts",
+    "line": 184,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/rewind-loading/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/shipping/use-shipping-actions.ts",
+    "line": 190,
+    "call": "api.post",
+    "arg": "url",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/shipping/use-shipping-actions.ts",
+    "line": 209,
+    "call": "api.post",
+    "arg": "`/cameras/${session.camera}/ai/reset/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/shipping/use-shipping-actions.ts",
+    "line": 220,
+    "call": "api.delete",
+    "arg": "`/cameras/${session.camera}/ai/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/shipping/use-shipping-actions.ts",
+    "line": 233,
+    "call": "api.post",
+    "arg": "`/cameras/${cameraSrc}/ai/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/shipping/use-shipping-actions.ts",
+    "line": 239,
+    "call": "api.post",
+    "arg": "`/orders/${order.id}/train/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/statement-export-modal.tsx",
+    "line": 84,
+    "call": "useApi",
+    "arg": "open ? \"/departments/?all=1\" : null",
+    "type": "Department[]"
+  },
+  {
+    "file": "frontend/src/components/statement-export-modal.tsx",
+    "line": 156,
+    "call": "api.get",
+    "arg": "endpoint",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/task-attachment.tsx",
+    "line": 91,
+    "call": "api.get",
+    "arg": "freshUrl",
+    "type": "Blob"
+  },
+  {
+    "file": "frontend/src/components/transactions-section.tsx",
+    "line": 223,
+    "call": "useApi",
+    "arg": "`/payment-transactions/?${transactionParams.toString()}`",
+    "type": "TransactionPage"
+  },
+  {
+    "file": "frontend/src/components/transactions-section.tsx",
+    "line": 276,
+    "call": "api.get",
+    "arg": "`/payment-transactions/${payment.id}/receipt/`",
+    "type": "Blob"
+  },
+  {
+    "file": "frontend/src/components/transactions-section.tsx",
+    "line": 290,
+    "call": "api.post",
+    "arg": "`/payment-transactions/${refundFor.id}/refund/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/transactions-section.tsx",
+    "line": 311,
+    "call": "api.post",
+    "arg": "`/payment-transactions/${rejectFor.id}/reject/`",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/components/transactions-section.tsx",
+    "line": 329,
+    "call": "api.post",
+    "arg": "`/payment-transactions/${restoreFor.id}/restore/`",
+    "type": "Payment"
+  },
+  {
+    "file": "frontend/src/components/transactions-section.tsx",
+    "line": 344,
+    "call": "api.post",
+    "arg": "`/payment-transactions/${payment.id}/issue/`",
+    "type": "Payment"
+  },
+  {
+    "file": "frontend/src/lib/api.ts",
+    "line": 6,
+    "call": "axios.create",
+    "arg": "{ baseURL: BASE_URL }",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/lib/api.ts",
+    "line": 194,
+    "call": "axios.isCancel",
+    "arg": "error",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/lib/portal-actions.ts",
+    "line": 25,
+    "call": "api.post<PortalOrder>(`/portal/orders/${orderId}/payments/${paymentId}/release/`).then",
+    "arg": "(r) => r.data",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/lib/portal-actions.ts",
+    "line": 25,
+    "call": "api.post",
+    "arg": "`/portal/orders/${orderId}/payments/${paymentId}/release/`",
+    "type": "PortalOrder"
+  },
+  {
+    "file": "frontend/src/lib/portal-actions.ts",
+    "line": 28,
+    "call": "api.patch<PortalOrder>(`/portal/orders/${id}/truck/`, { truck_number }).then",
+    "arg": "(r) => r.data",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/lib/portal-actions.ts",
+    "line": 28,
+    "call": "api.patch",
+    "arg": "`/portal/orders/${id}/truck/`",
+    "type": "PortalOrder"
+  },
+  {
+    "file": "frontend/src/lib/portal-actions.ts",
+    "line": 31,
+    "call": "api.get",
+    "arg": "`/portal/orders/${id}/receipt/`",
+    "type": "Blob"
+  },
+  {
+    "file": "frontend/src/lib/portal-actions.ts",
+    "line": 38,
+    "call": "api.post<{ access: string; refresh: string }>(\"/portal/register/\", payload).then",
+    "arg": "(r) => r.data",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/lib/portal-actions.ts",
+    "line": 38,
+    "call": "api.post",
+    "arg": "\"/portal/register/\"",
+    "type": "{ access: string; refresh: string }"
+  },
+  {
+    "file": "frontend/src/lib/use-ai-counter.ts",
+    "line": 115,
+    "call": "api.get",
+    "arg": "`/cameras/${cam}/ai/?order_id=${orderId}`",
+    "type": "AiStatus"
+  },
+  {
+    "file": "frontend/src/lib/use-ai-counter.ts",
+    "line": 276,
+    "call": "api.post",
+    "arg": "`/cameras/${cam}/ai/`",
+    "type": "AiStatus"
+  },
+  {
+    "file": "frontend/src/lib/use-ai-counter.ts",
+    "line": 283,
+    "call": "api.delete",
+    "arg": "`/cameras/${cam}/ai/`",
+    "type": "AiStatus"
+  },
+  {
+    "file": "frontend/src/lib/use-ai-counter.ts",
+    "line": 299,
+    "call": "api.post",
+    "arg": "`/cameras/${cam}/ai/reset/`",
+    "type": "AiStatus"
+  },
+  {
+    "file": "frontend/src/lib/use-api.ts",
+    "line": 48,
+    "call": "api.get",
+    "arg": "url",
+    "type": "T"
+  },
+  {
+    "file": "frontend/src/lib/use-dashboard-metrics.ts",
+    "line": 35,
+    "call": "useApi",
+    "arg": "operationalUrl",
+    "type": "DashboardOperationalSummary"
+  },
+  {
+    "file": "frontend/src/lib/use-dashboard-metrics.ts",
+    "line": 36,
+    "call": "useApi",
+    "arg": "canStock ? \"/stock/\" : null",
+    "type": "StockItem[]"
+  },
+  {
+    "file": "frontend/src/lib/use-dashboard-metrics.ts",
+    "line": 41,
+    "call": "useApi",
+    "arg": "canFinance ? `/reports/summary/?from=${reportRange.from}&to=${reportRange.to}` : null",
+    "type": "ReportSummary"
+  },
+  {
+    "file": "frontend/src/lib/use-paged-api.ts",
+    "line": 52,
+    "call": "api.get",
+    "arg": "url",
+    "type": "PagedResponse<T>"
+  },
+  {
+    "file": "frontend/src/lib/use-paged-api.ts",
+    "line": 73,
+    "call": "fetchPage",
+    "arg": "1",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/lib/use-paged-api.ts",
+    "line": 77,
+    "call": "fetchPage",
+    "arg": "pageRef.current + 1",
+    "type": ""
+  },
+  {
+    "file": "frontend/src/store/auth.ts",
+    "line": 141,
+    "call": "api.post",
+    "arg": "\"/auth/login/\"",
+    "type": "{ access: string; refresh: string }"
+  },
+  {
+    "file": "frontend/src/store/auth.ts",
+    "line": 164,
+    "call": "api.post",
+    "arg": "\"/auth/initial-password/\"",
+    "type": "{ access: string; refresh: string }"
+  }
+]

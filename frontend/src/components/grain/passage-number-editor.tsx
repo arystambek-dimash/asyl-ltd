@@ -18,10 +18,12 @@ export function PassageNumberEditor({
   wagon,
   canEdit,
   onChanged,
+  onBusyChange,
 }: {
   wagon: GrainWagon;
   canEdit: boolean;
   onChanged: () => void;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const missing = isPassagePlateMissing(wagon);
   const [open, setOpen] = useState(false);
@@ -34,15 +36,17 @@ export function PassageNumberEditor({
 
   async function save() {
     setBusy(true);
+    onBusyChange?.(true);
     setError("");
     try {
-      await api.patch(`/grain/wagons/${wagon.id}/number/`, { number: value });
+      await api.patch(`/grain/passages/${wagon.id}/number/`, { number: value });
       setOpen(false);
       onChanged();
     } catch (e) {
       setError(apiError(e));
     } finally {
       setBusy(false);
+      onBusyChange?.(false);
     }
   }
 

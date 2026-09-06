@@ -2,6 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .photos import WeighingPhotoView
+from .passage_views import PassageViewSet
 from .views import (
     AutomaticPassageScaleAcknowledgeView,
     AutomaticPassageScaleRuntimeView,
@@ -18,6 +19,7 @@ from .views import (
 router = DefaultRouter()
 router.register("grain/supplies", GrainSupplyViewSet, basename="grain-supply")
 router.register("grain/wagons", WagonViewSet, basename="grain-wagon")
+router.register("grain/passages", PassageViewSet, basename="grain-passage")
 router.register("grain/silos", SiloViewSet, basename="grain-silo")
 router.register(
     "grain/unassigned-weighings",

@@ -23,6 +23,7 @@ import {
   Smartphone,
 } from "lucide-react";
 import { useApi } from "@/lib/use-api";
+import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { apiError } from "@/lib/api";
 import { currencySymbol, formatDateTime, formatMoney, formatPortalMoney } from "@/lib/utils";
 import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
@@ -78,6 +79,10 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
   const [releasePart, setReleasePart] = useState<PortalPaymentPart | null>(null);
   const [releaseError, setReleaseError] = useState("");
   const [failedQrImages, setFailedQrImages] = useState<Set<number>>(() => new Set());
+
+  // Payment webhooks and warehouse actions happen outside this page. Keep
+  // the visible order current, including later refunds of a settled payment.
+  useVisiblePolling(reload, 5_000, !busy);
 
   const loadedOrderId = order?.id;
   const availableValue = order?.available_amount ?? order?.remaining_amount ?? "";
@@ -166,6 +171,14 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
   return (
     <AppShell title={`Заказ #${order.id}`} portal>
       <div className="flex flex-col gap-4 max-w-2xl">
+        {loadError && (
+          <div role="alert" className="rounded-lg border border-[var(--destructive)] p-3 text-sm">
+            <p>Не удалось обновить заказ: {loadError} Показаны последние полученные данные.</p>
+            <Button variant="outline" size="sm" onClick={() => void reload()} className="mt-2">
+              Обновить
+            </Button>
+          </div>
+        )}
         <Card>
           <CardHeader className="flex-row items-center justify-between">
             <CardTitle>Заказ #{order.id}</CardTitle>

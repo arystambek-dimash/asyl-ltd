@@ -348,8 +348,6 @@ services:
       APP_SERVICE: celery-payments
     entrypoint: []
     command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--queues=payments", "--concurrency=1", "--prefetch-multiplier=1"]
-    # The nightly orientation-dataset export reads weighing photos from the
-    # shared media volume; without it every frame is reported as missing.
     volumes:
       - mediadata:/app/media
     depends_on:
@@ -363,6 +361,34 @@ services:
       test: ["CMD", "python", "/app/apipay_monitor_healthcheck.py"]
       interval: 30s
       timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - data
+      - default
+
+  celery-orientation:
+    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    environment:
+      <<: *backend-environment
+      DJANGO_COLLECTSTATIC: "0"
+      APP_SERVICE: celery-orientation
+    entrypoint: []
+    command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--queues=orientation", "--hostname=orientation@%h", "--concurrency=1", "--prefetch-multiplier=1"]
+    # Dataset export reads evidence photos, independently of payment work.
+    volumes:
+      - mediadata:/app/media:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    init: true
+    stop_grace_period: 10m
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping --destination orientation@$$HOSTNAME --timeout 3"]
+      interval: 30s
+      timeout: 10s
       retries: 3
       start_period: 60s
     restart: unless-stopped

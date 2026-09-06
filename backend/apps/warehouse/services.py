@@ -225,7 +225,9 @@ def adjust_stock(
         )
     warehouse = resolve_warehouse(warehouse, require_active=require_active)
     item = _locked_stock_item(product, warehouse, create=True)
-    if item.bags + delta < 0:
+    # Shipments may intentionally overdraw stock. A receipt/rollback must be
+    # able to reduce that shortage even when it cannot cover it completely.
+    if delta < 0 and item.bags + delta < 0:
         raise ValidationError(
             {
                 "detail": (

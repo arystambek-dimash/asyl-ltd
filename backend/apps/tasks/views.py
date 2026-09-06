@@ -75,6 +75,8 @@ class TaskViewSet(viewsets.ModelViewSet):
         if raw in (None, ""):
             raise ValidationError({"detail": "Выберите исполнителя",
                                    "code": "assignee_required"})
+        if isinstance(raw, bool) or not str(raw).isdigit() or len(str(raw)) > 18:
+            raise ValidationError({"assignee": "Укажите идентификатор сотрудника"})
         user_model = get_user_model()
         assignee = user_model.objects.filter(pk=raw, is_client=False).first()
         if assignee is None:
@@ -189,7 +191,7 @@ class TaskAssigneeListView(APIView):
 
     def get(self, request):
         from apps.employees.models import Employee
-        rows = (Employee.objects.filter(is_active=True)
+        rows = (Employee.objects.filter(is_active=True, user__is_active=True, user__is_client=False)
                 .select_related("user")
                 .order_by("user__first_name", "user__last_name"))
         return Response([

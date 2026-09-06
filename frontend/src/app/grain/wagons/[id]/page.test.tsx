@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { GrainWagon, PassageWeightCapture } from "@/lib/types";
 import GrainWagonPage from "./page";
+import PassagePage from "../../passages/[id]/page";
 
 const postMock = vi.hoisted(() => vi.fn());
 const deleteMock = vi.hoisted(() => vi.fn());
@@ -132,10 +133,10 @@ describe("StageAction automatic scale capture", () => {
     activeWagon = wagon();
     useApiMock.mockReset();
     useApiMock.mockImplementation((url: string | null) => {
-      if (url === "/grain/wagons/7/") {
-        return { data: activeWagon, loading: false, error: "", reload: wagonReloadMock };
+      if (url === "/grain/wagons/7/" || url === "/grain/passages/7/") {
+        return { data: activeWagon, loading: false, error: "", reload: wagonReloadMock, setData: vi.fn() };
       }
-      if (url === "/grain/wagons/7/timeline/") {
+      if (url === "/grain/wagons/7/timeline/" || url === "/grain/passages/7/timeline/") {
         return { data: [], loading: false, error: "", reload: timelineReloadMock };
       }
       return { data: null, loading: false, error: "", reload: vi.fn() };
@@ -148,20 +149,58 @@ describe("StageAction automatic scale capture", () => {
     await act(async () => {
       render(
         <Suspense fallback={<p>Загрузка…</p>}>
-          <GrainWagonPage params={params} />
+          {activeWagon.direction === "passage" ? <PassagePage params={params} /> : <GrainWagonPage params={params} />}
         </Suspense>,
       );
       await params;
     });
   }
 
+  it("shows outbound weight semantics and a link back to outbound trips", async () => {
+    await renderStage(wagon({ entry_weight_kg: 3620, gross_weight_kg: 3620, status: "at_silo" }));
+    expect(screen.getByRole("link", { name: "К вывозам" })).toHaveAttribute("href", "/grain/passages");
+    expect(screen.getByText("Вес пустой · въезд")).toBeInTheDocument();
+    expect(screen.getByText("Вес гружёной · выезд")).toBeInTheDocument();
+    expect(screen.getByText("Груз на вывоз")).toBeInTheDocument();
+    expect(screen.getByText("История рейса")).toBeInTheDocument();
+    for (const label of ["Брутто", "Тара", "Силос", "Тип зерна", "Точка разгрузки", "История вагона"]) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+  });
+
+  it("redirects a legacy wagon URL by the actual record direction before exposing commands", async () => {
+    const params = Promise.resolve({ id: "7" });
+    await act(async () => {
+      render(
+        <Suspense>
+          <GrainWagonPage params={params} />
+        </Suspense>,
+      );
+      await params;
+    });
+    expect(replaceMock).toHaveBeenCalledWith("/grain/passages/7");
+    expect(screen.queryByRole("button", { name: /Получить вес/ })).not.toBeInTheDocument();
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it("shows history errors instead of reporting an empty journal", async () => {
+    useApiMock.mockImplementation((url: string) =>
+      url.endsWith("/timeline/")
+        ? { data: null, loading: false, error: "История недоступна", reload: timelineReloadMock }
+        : { data: activeWagon, loading: false, error: "", reload: wagonReloadMock, setData: vi.fn() },
+    );
+    await renderStage(wagon());
+    expect(screen.getByRole("alert")).toHaveTextContent("История недоступна");
+    expect(screen.queryByText("Событий пока нет.")).not.toBeInTheDocument();
+  });
+
   it.each([
-    ["simple entry", wagon(), /Получить вес пустой/, "/grain/wagons/7/entry-weight/"],
+    ["simple entry", wagon(), /Получить вес пустой/, "/grain/passages/7/entry-weight/"],
     [
       "simple exit",
       wagon({ status: "at_silo", status_label: "На погрузке" }),
       /Получить вес гружёной/,
-      "/grain/wagons/7/exit-weight/",
+      "/grain/passages/7/exit-weight/",
     ],
   ])("sends an empty POST for %s", async (_name, value, buttonName, endpoint) => {
     const user = userEvent.setup();
@@ -267,7 +306,7 @@ describe("StageAction automatic scale capture", () => {
     await user.click(retry);
 
     expect(postMock).toHaveBeenCalledWith(
-      "/grain/wagons/7/entry-weight/",
+      "/grain/passages/7/entry-weight/",
       {},
       { headers: { "Idempotency-Key": requestId } },
     );
@@ -282,7 +321,7 @@ describe("StageAction automatic scale capture", () => {
     await user.click(await screen.findByRole("button", { name: "Проверить результат повторно" }));
 
     expect(postMock).toHaveBeenCalledWith(
-      "/grain/wagons/7/entry-weight/",
+      "/grain/passages/7/entry-weight/",
       {},
       { headers: { "Idempotency-Key": requestId } },
     );
@@ -372,10 +411,10 @@ describe("Grain wagon deletion", () => {
     timelineReloadMock.mockReset();
     useApiMock.mockReset();
     useApiMock.mockImplementation((url: string | null) => {
-      if (url === "/grain/wagons/7/") {
-        return { data: activeWagon, loading: false, error: "", reload: wagonReloadMock };
+      if (url === "/grain/wagons/7/" || url === "/grain/passages/7/") {
+        return { data: activeWagon, loading: false, error: "", reload: wagonReloadMock, setData: vi.fn() };
       }
-      if (url === "/grain/wagons/7/timeline/") {
+      if (url === "/grain/wagons/7/timeline/" || url === "/grain/passages/7/timeline/") {
         return { data: [], loading: false, error: "", reload: timelineReloadMock };
       }
       return { data: null, loading: false, error: "", reload: vi.fn() };
@@ -389,7 +428,7 @@ describe("Grain wagon deletion", () => {
     await act(async () => {
       render(
         <Suspense fallback={<p>Загрузка…</p>}>
-          <GrainWagonPage params={params} />
+          {activeWagon.direction === "passage" ? <PassagePage params={params} /> : <GrainWagonPage params={params} />}
         </Suspense>,
       );
       await params;
@@ -417,9 +456,9 @@ describe("Grain wagon deletion", () => {
     await user.type(screen.getByLabelText("Причина удаления *"), "Тестовый заезд");
     await user.click(screen.getByRole("button", { name: "Удалить активный рейс" }));
 
-    expect(deleteMock).toHaveBeenCalledWith("/grain/wagons/7/delete/", {
+    expect(deleteMock).toHaveBeenCalledWith("/grain/passages/7/delete/", {
       data: { reason: "Тестовый заезд" },
     });
-    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/grain"));
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/grain/passages"));
   });
 });

@@ -29,7 +29,7 @@ describe("PassageNumberEditor", () => {
     await userEvent.click(screen.getByRole("button", { name: /Сохранить/ }));
 
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-    expect(patchMock).toHaveBeenCalledWith("/grain/wagons/7/number/", { number: "465BDS13" });
+    expect(patchMock).toHaveBeenCalledWith("/grain/passages/7/number/", { number: "465BDS13" });
   });
 
   it("shows the backend rejection next to the field", async () => {
@@ -41,7 +41,7 @@ describe("PassageNumberEditor", () => {
     await userEvent.type(screen.getByLabelText("Номер машины"), "465BDS13");
     await userEvent.click(screen.getByRole("button", { name: /Сохранить/ }));
 
-    await waitFor(() => expect(patchMock).toHaveBeenCalledWith("/grain/wagons/7/number/", { number: "465BDS13" }));
+    await waitFor(() => expect(patchMock).toHaveBeenCalledWith("/grain/passages/7/number/", { number: "465BDS13" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("уже находится на территории");
   });
 

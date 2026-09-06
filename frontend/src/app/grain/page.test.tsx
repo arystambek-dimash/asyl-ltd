@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import GrainPage from "./page";
+import PassagePage from "./passages/page";
 
 const TODAY = "2026-09-06";
 const postMock = vi.hoisted(() => vi.fn());
@@ -127,6 +128,12 @@ describe("Grain passage creation", () => {
     });
   });
 
+  it("opens outbound trips directly from their own route", () => {
+    render(<PassagePage />);
+    expect(screen.getByLabelText("Панель операций")).toHaveAttribute("data-direction", "passage");
+    expect(pagedApiMock).toHaveBeenCalledWith("/grain/passages/?scope=on_site&direction=passage", 50);
+  });
+
   it("loads separate intake and export tables with contextual tabs", async () => {
     const user = userEvent.setup();
     render(<GrainPage />);
@@ -147,7 +154,7 @@ describe("Grain passage creation", () => {
     await user.click(screen.getByRole("tab", { name: "Вывоз" }));
 
     await waitFor(() =>
-      expect(pagedApiMock).toHaveBeenCalledWith("/grain/wagons/?scope=on_site&direction=passage", 50),
+      expect(pagedApiMock).toHaveBeenCalledWith("/grain/passages/?scope=on_site&direction=passage", 50),
     );
     expect(screen.getByLabelText("Панель операций")).toHaveAttribute("data-direction", "passage");
     expect(screen.getByRole("button", { name: "Открыть вывоз" })).toBeInTheDocument();
@@ -155,7 +162,7 @@ describe("Grain passage creation", () => {
     expect(screen.getByRole("tab", { name: "Камера проходной" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "На территории" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Завершённые" })).toBeInTheDocument();
-    expect(visiblePollingMock).toHaveBeenLastCalledWith(reloadMock, 10_000, true);
+    expect(visiblePollingMock).toHaveBeenCalledWith(reloadMock, 10_000, true);
     expect(screen.getByText(/Доступность автоматики показана во вкладке «Камера проходной»/)).toBeInTheDocument();
   });
 
@@ -191,14 +198,14 @@ describe("Grain passage creation", () => {
     await user.click(screen.getByRole("tab", { name: "Вывоз" }));
     await user.click(screen.getByRole("button", { name: "Открыть вывоз" }));
     expect(screen.getByText(/Используйте ручное оформление, если автоматика/)).toBeInTheDocument();
-    expect(useApiMock).toHaveBeenCalledWith("/grain/wagons/vehicle-plate-candidates/");
+    expect(useApiMock).toHaveBeenCalledWith("/grain/passages/vehicle-plate-candidates/");
     expect(visiblePollingMock).toHaveBeenCalledWith(expect.any(Function), 10_000, undefined);
     expect(screen.queryByRole("region", { name: "Распознанные номера" })).not.toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Номер машины"), "123 ABC");
     await user.click(screen.getByRole("button", { name: /Оформить вывоз/ }));
 
-    expect(postMock).toHaveBeenCalledWith("/grain/wagons/passage/", {
+    expect(postMock).toHaveBeenCalledWith("/grain/passages/", {
       number: "123 ABC",
       cargo_name: "Отруби",
       note: "",
@@ -230,7 +237,7 @@ describe("Grain passage creation", () => {
     expect(screen.getByLabelText("Номер машины")).toHaveValue("123ABC02");
 
     await user.click(screen.getByRole("button", { name: /Оформить вывоз/ }));
-    expect(postMock).toHaveBeenCalledWith("/grain/wagons/passage/", {
+    expect(postMock).toHaveBeenCalledWith("/grain/passages/", {
       number: "123ABC02",
       cargo_name: "Отруби",
       note: "",
@@ -261,7 +268,7 @@ describe("Grain passage creation", () => {
     await user.type(screen.getByLabelText("Номер машины"), "999 XYZ 01");
     await user.click(screen.getByRole("button", { name: /Оформить вывоз/ }));
 
-    expect(postMock).toHaveBeenCalledWith("/grain/wagons/passage/", {
+    expect(postMock).toHaveBeenCalledWith("/grain/passages/", {
       number: "999 XYZ 01",
       cargo_name: "Отруби",
       note: "",
@@ -291,7 +298,7 @@ describe("Grain passage creation", () => {
     expect(screen.getByText(/123ABC02 · выбран/)).toBeInTheDocument();
     expect(screen.getByText(/Камера cam1 · main/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Оформить вывоз/ }));
-    expect(postMock).toHaveBeenCalledWith("/grain/wagons/passage/", {
+    expect(postMock).toHaveBeenCalledWith("/grain/passages/", {
       number: "123ABC02",
       cargo_name: "Отруби",
       note: "",
@@ -369,7 +376,7 @@ describe("Grain list filters", () => {
   function lastWagonsUrl() {
     const urls = pagedApiMock.mock.calls
       .map(([url]) => url as string | null)
-      .filter((url) => url?.startsWith("/grain/wagons/"));
+      .filter((url) => url?.startsWith("/grain/wagons/") || url?.startsWith("/grain/passages/"));
     return urls[urls.length - 1];
   }
 
@@ -488,7 +495,7 @@ describe("Grain list filters", () => {
 
     await waitFor(() =>
       expect(lastWagonsUrl()).toBe(
-        "/grain/wagons/?scope=finished&direction=passage&date_from=2026-09-04&date_to=2026-09-04",
+        "/grain/passages/?scope=finished&direction=passage&date_from=2026-09-04&date_to=2026-09-04",
       ),
     );
   });

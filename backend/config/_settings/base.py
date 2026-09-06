@@ -1,5 +1,6 @@
 import math
 import os
+from corsheaders.defaults import default_headers
 import re
 import sys
 from pathlib import Path
@@ -15,6 +16,10 @@ from config.observability import (
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 TESTING = "pytest" in sys.modules or os.environ.get("PYTEST_RUNNING") == "1"
+
+# Weight-capture commands require this header. Allow it for already trusted
+# cross-origin frontends as well as the same-origin production proxy.
+CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key")
 
 APP_RELEASE = os.environ.get("APP_RELEASE", "development").strip() or "development"
 _DEFAULT_APP_ENVIRONMENT = (
@@ -237,7 +242,7 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TASK_DEFAULT_QUEUE = "default"
 CELERY_TASK_ROUTES = {
     "orders.reconcile_apipay": {"queue": "payments"},
-    "grain.export_orientation_samples": {"queue": "payments"},
+    "grain.export_orientation_samples": {"queue": "orientation"},
 }
 
 try:

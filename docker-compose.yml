@@ -169,6 +169,30 @@ services:
       retries: 3
       start_period: 60s
 
+  celery-orientation:
+    build: ./backend
+    environment:
+      <<: *backend-environment
+      APP_SERVICE: celery-orientation
+      DJANGO_COLLECTSTATIC: "0"
+    entrypoint: []
+    command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--queues=orientation", "--hostname=orientation@%h", "--concurrency=1", "--prefetch-multiplier=1"]
+    volumes:
+      - mediadata:/app/media:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    stop_grace_period: 10m
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping --destination orientation@$$HOSTNAME --timeout 3"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
   celery-beat:
     build: ./backend
     environment:

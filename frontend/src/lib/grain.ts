@@ -2,6 +2,15 @@ import { api } from "@/lib/api";
 import { formatMoney } from "@/lib/utils";
 import type { GrainWagon } from "@/lib/types";
 
+export function grainWorkspaceHref(direction: GrainWagon["direction"]): string {
+  return direction === "passage" ? "/grain/passages" : "/grain";
+}
+
+/** Navigation and API commands share the same direction boundary. */
+export function grainTripHref(trip: Pick<GrainWagon, "id" | "direction">): string {
+  return `/grain/${trip.direction === "passage" ? "passages" : "wagons"}/${trip.id}`;
+}
+
 const FINISHED_WAGON_STATUSES = new Set(["completed", "cancelled", "return_to_supplier", "exited"]);
 
 /** Used only to explain the consequence in the UI; deletion eligibility is

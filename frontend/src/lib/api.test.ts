@@ -1,6 +1,6 @@
 import axios, { AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from "axios";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, clearTokens, setTokens } from "@/lib/api";
+import { api, apiError, clearTokens, setTokens } from "@/lib/api";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -23,6 +23,17 @@ function unauthorized(config: InternalAxiosRequestConfig): never {
 
 describe("auth refresh generation", () => {
   const originalAdapter = api.defaults.adapter;
+
+  it("bounds requests and explains an unknown outcome after a timeout", () => {
+    expect(api.defaults.timeout).toBe(60_000);
+    expect(apiError(new AxiosError("timeout", "ECONNABORTED"))).toContain("Обновите данные перед повтором");
+  });
+
+  it("preserves field validation messages from the backend", () => {
+    expect(apiError({ response: { status: 400, data: { assignee: ["Выберите действующего сотрудника"] } } })).toBe(
+      "Выберите действующего сотрудника",
+    );
+  });
 
   beforeEach(() => {
     localStorage.clear();

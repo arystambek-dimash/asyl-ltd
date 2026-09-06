@@ -39,6 +39,14 @@ class TaskSerializer(serializers.ModelSerializer):
     attachments = TaskAttachmentSerializer(many=True, read_only=True)
     can_complete = serializers.SerializerMethodField()
 
+    def validate_assignee(self, value):
+        from .services import validate_assignee
+        return validate_assignee(value)
+
+    def update(self, instance, validated_data):
+        from .services import update_task
+        return update_task(instance, validated_data, self.context["request"].user)
+
     class Meta:
         model = Task
         fields = [

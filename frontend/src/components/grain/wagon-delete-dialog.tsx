@@ -6,7 +6,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, apiError } from "@/lib/api";
-import { formatKg, isFinishedGrainWagon } from "@/lib/grain";
+import { formatKg, grainTripHref, isFinishedGrainWagon } from "@/lib/grain";
 import type { GrainWagon } from "@/lib/types";
 
 type DeleteResult = { reverted_kg?: number };
@@ -43,7 +43,7 @@ export function GrainWagonDeleteDialog({
 
   if (!wagon) return null;
 
-  const wagonId = wagon.id;
+  const tripUrl = grainTripHref(wagon);
   const finished = isFinishedGrainWagon(wagon.status);
   const needsUnrecordedGrainConfirmation =
     wagon.direction === "intake" && UNRECORDED_GRAIN_CONFIRMATION_STATUSES.has(wagon.status);
@@ -66,7 +66,7 @@ export function GrainWagonDeleteDialog({
     try {
       const payload: DeletePayload = { reason: trimmedReason };
       if (needsUnrecordedGrainConfirmation) payload.confirm_unrecorded_grain_handled = true;
-      const { data } = await api.delete<DeleteResult>(`/grain/wagons/${wagonId}/delete/`, {
+      const { data } = await api.delete<DeleteResult>(`${tripUrl}/delete/`, {
         data: payload,
       });
       onClose();

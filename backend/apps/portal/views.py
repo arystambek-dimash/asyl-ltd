@@ -151,7 +151,7 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             create_client_payment(
                 order, method, request.user, amount=request.data.get("amount")
             )
-        order._prefetched_objects_cache.pop("payments", None)
+        order = self.get_queryset().get(pk=order.pk)
         data = self.get_serializer(order).data
         if method == "kaspi":
             data["payment_redirect_url"] = invoice.qr_token_url or None
@@ -202,13 +202,13 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                 # ApiPay may acknowledge cancellation asynchronously. Keep the
                 # amount reserved until webhook/reconciliation proves that the
                 # remotely payable invoice is closed.
-                order._prefetched_objects_cache.pop("payments", None)
+                order = self.get_queryset().get(pk=order.pk)
                 return Response(
                     self.get_serializer(order).data,
                     status=status.HTTP_202_ACCEPTED,
                 )
         release_client_payment(payment, request.user)
-        order._prefetched_objects_cache.pop("payments", None)
+        order = self.get_queryset().get(pk=order.pk)
         return Response(self.get_serializer(order).data)
 
     @action(detail=True, methods=["get"], url_path="invoice")
@@ -276,7 +276,7 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     def request_debt(self, request, pk=None):
         order = self.get_object()
         request_client_debt(order, request.user)
-        order._prefetched_objects_cache.pop("payments", None)
+        order = self.get_queryset().get(pk=order.pk)
         return Response(self.get_serializer(order).data)
 
     @action(detail=True, methods=["patch"], url_path="truck")

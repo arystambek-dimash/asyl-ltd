@@ -3,7 +3,7 @@ import logging
 
 from django.db import transaction
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from apps.eventlog.services import log_event
 
@@ -15,6 +15,32 @@ MAX_ATTACHMENTS = 10
 MAX_ATTACHMENTS_TOTAL_BYTES = 75 * 1024 * 1024
 
 logger = logging.getLogger(__name__)
+
+
+def validate_assignee(assignee):
+    employee = getattr(assignee, "employee", None)
+    if (assignee is None or assignee.is_client or not assignee.is_active
+            or not (assignee.is_superuser or (employee and employee.is_active))):
+        raise ValidationError({"assignee": "Выберите действующего сотрудника"})
+    return assignee
+
+
+def _locked_task(task):
+    try:
+        return Task.objects.select_for_update().get(pk=task.pk)
+    except Task.DoesNotExist as exc:
+        raise NotFound("Задача не найдена") from exc
+
+
+def _assert_can_act(task, user):
+    if not (user.is_superuser or user.pk in (task.assignee_id, task.created_by_id)):
+        raise PermissionDenied("Изменить выполнение задачи может исполнитель или постановщик")
+
+
+def _assert_still_visible(task, user):
+    if not (user.is_superuser or user.has_perm_code("tasks.view")
+            or user.pk in (task.assignee_id, task.created_by_id)):
+        raise NotFound("Задача больше недоступна")
 
 
 def _kind_for(upload) -> str:
@@ -42,9 +68,7 @@ def create_task(*, title: str, body: str, assignee, user, due_date=None,
     if not title:
         raise ValidationError({"detail": "Укажите, что нужно сделать",
                                "code": "empty_title"})
-    if assignee is None:
-        raise ValidationError({"detail": "Выберите исполнителя",
-                               "code": "assignee_required"})
+    validate_assignee(assignee)
     stored_files = []
     try:
         with transaction.atomic():
@@ -77,7 +101,8 @@ def add_attachments(task: Task, uploads, user) -> list[TaskAttachment]:
     stored_files = []
     try:
         with transaction.atomic():
-            locked_task = Task.objects.select_for_update().get(pk=task.pk)
+            locked_task = _locked_task(task)
+            _assert_can_act(locked_task, user)
             existing_sizes = list(
                 locked_task.attachments.values_list("size_bytes", flat=True)
             )
@@ -168,7 +193,8 @@ def add_attachment(task: Task, upload, user) -> TaskAttachment:
 @transaction.atomic
 def complete_task(task: Task, user) -> Task:
     """Закрыть задачу. Повторное закрытие ничего не меняет — операция идемпотентна."""
-    task = Task.objects.select_for_update().get(pk=task.pk)
+    task = _locked_task(task)
+    _assert_can_act(task, user)
     if task.status == Task.DONE:
         return task
     task.status = Task.DONE
@@ -190,7 +216,8 @@ def complete_task(task: Task, user) -> Task:
 @transaction.atomic
 def reopen_task(task: Task, user) -> Task:
     """Вернуть задачу в работу, если её закрыли по ошибке."""
-    task = Task.objects.select_for_update().get(pk=task.pk)
+    task = _locked_task(task)
+    _assert_can_act(task, user)
     if task.status == Task.PENDING:
         return task
     task.status = Task.PENDING
@@ -207,9 +234,9 @@ def reopen_task(task: Task, user) -> Task:
 
 @transaction.atomic
 def reassign_task(task: Task, assignee, user) -> Task:
-    if assignee is None:
-        raise ValidationError({"detail": "Выберите исполнителя",
-                               "code": "assignee_required"})
+    task = _locked_task(task)
+    _assert_still_visible(task, user)
+    validate_assignee(assignee)
     if task.assignee_id == assignee.pk:
         return task
     task.assignee = assignee
@@ -219,4 +246,22 @@ def reassign_task(task: Task, assignee, user) -> Task:
         "task", f"Задача «{task.title}» передана другому исполнителю",
         user=user, payload={"task_id": task.pk, "assignee_id": assignee.pk},
     )
+    return task
+
+
+@transaction.atomic
+def update_task(task: Task, changes: dict, user) -> Task:
+    """PATCH and the reassign action share notification and locking rules."""
+    task = _locked_task(task)
+    _assert_still_visible(task, user)
+    assignee = changes.get("assignee")
+    fields = []
+    for field in ("title", "body", "due_date"):
+        if field in changes:
+            setattr(task, field, changes[field])
+            fields.append(field)
+    if fields:
+        task.save(update_fields=[*fields, "updated_at"])
+    if assignee is not None:
+        task = reassign_task(task, assignee, user)
     return task

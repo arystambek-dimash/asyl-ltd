@@ -46,6 +46,7 @@ from .models import (
     Wagon,
 )
 from .scale_preview import get_scale_preview
+from .queries import silo_overview
 from .serializers import (
     AutomaticPassageScaleSettingsSerializer,
     GrainMovementSerializer,
@@ -305,6 +306,7 @@ class GrainSupplyViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             else:
                 services.add_wagon_numbers(supply, numbers, self.request.user)
 
+    @transaction.atomic
     def perform_update(self, serializer):
         numbers = serializer.validated_data.pop("wagon_numbers", None)
         supply = serializer.save()
@@ -334,7 +336,7 @@ class GrainSupplyViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         return Response(WagonBriefSerializer(created, many=True).data, status=201)
 
 
-class WagonViewSet(
+class GrainTripViewSet(
     SerializerViewSetMixin,
     PermViewSetMixin,
     viewsets.ReadOnlyModelViewSet,
@@ -352,31 +354,8 @@ class WagonViewSet(
     serializer_action_classes = {"list": WagonBriefSerializer}
     pagination_class = OptInPageNumberPagination
     required_perms = {
-        "list": "grain.view",
-        "retrieve": "grain.view",
-        "arrive": "grain.arrive",
-        "camera_arrive": "grain.arrive",
-        "passage": "grain.arrive",
-        "set_number": "grain.arrive",
-        "vehicle_plate_candidates": "grain.arrive",
-        "delete_wagon": "grain.delete",
-        "approve": "grain.dispatch",
-        "gross": "grain.weigh",
-        "tare": "grain.weigh",
-        "entry_weight": "grain.weigh",
-        "exit_weight": "grain.weigh",
-        "lab": "grain.lab",
-        "suggest_silos_action": "grain.dispatch",
-        "assign_silo_action": "grain.dispatch",
-        "change_silo_action": "grain.dispatch",
-        "start_unloading_action": "grain.unload",
-        "pause_unloading": "grain.unload",
-        "finish_unloading_action": "grain.unload",
-        "resolve_discrepancy_action": "grain.inventory",
-        "resolve_simple_discrepancy_action": "grain.inventory",
-        "inventory": "grain.inventory",
-        "exit": "grain.exit",
-        "timeline": "grain.view",
+        "list": "grain.view", "retrieve": "grain.view",
+        "delete_wagon": "grain.delete", "timeline": "grain.view",
     }
 
     def get_queryset(self):
@@ -417,6 +396,80 @@ class WagonViewSet(
     def _done(self, wagon: Wagon):
         wagon.refresh_from_db()
         return Response(WagonSerializer(wagon).data)
+
+    @action(detail=True, methods=["delete"], url_path="delete")
+    def delete_wagon(self, request, pk=None):
+        """Удалить допустимый рейс с безопасным откатом учёта."""
+        if hasattr(request.data, "__contains__") and "reason" in request.data:
+            reason = request.data.get("reason")
+        else:
+            # Transitional fallback for callers using the previous contract.
+            reason = request.query_params.get("reason") or ""
+        result = services.delete_wagon(
+            self.get_object(),
+            request.user,
+            reason=reason,
+            confirm_unrecorded_grain_handled=(
+                request.data.get("confirm_unrecorded_grain_handled", False)
+                if hasattr(request.data, "get")
+                else False
+            ),
+        )
+        return Response(result)
+
+    @action(detail=True, methods=["get"], url_path="timeline")
+    def timeline(self, request, pk=None):
+        wagon = self.get_object()
+        events = (
+            EventLog.objects.filter(
+                event_type__startswith="grain_", payload__wagon_id=wagon.pk
+            )
+            .select_related("user")
+            .order_by("created_at")[:200]
+        )
+        return Response(
+            [
+                {
+                    "id": event.id,
+                    "event_type": event.event_type,
+                    "message": event.message,
+                    "user_name": event.user.username if event.user else None,
+                    "payload": event.payload,
+                    "created_at": event.created_at,
+                }
+                for event in events
+            ]
+        )
+
+
+class WagonViewSet(GrainTripViewSet):
+    required_perms = {
+        "list": "grain.view",
+        "retrieve": "grain.view",
+        "arrive": "grain.arrive",
+        "camera_arrive": "grain.arrive",
+        "passage": "grain.arrive",
+        "set_number": "grain.arrive",
+        "vehicle_plate_candidates": "grain.arrive",
+        "delete_wagon": "grain.delete",
+        "approve": "grain.dispatch",
+        "gross": "grain.weigh",
+        "tare": "grain.weigh",
+        "entry_weight": "grain.weigh",
+        "exit_weight": "grain.weigh",
+        "lab": "grain.lab",
+        "suggest_silos_action": "grain.dispatch",
+        "assign_silo_action": "grain.dispatch",
+        "change_silo_action": "grain.dispatch",
+        "start_unloading_action": "grain.unload",
+        "pause_unloading": "grain.unload",
+        "finish_unloading_action": "grain.unload",
+        "resolve_discrepancy_action": "grain.inventory",
+        "resolve_simple_discrepancy_action": "grain.inventory",
+        "inventory": "grain.inventory",
+        "exit": "grain.exit",
+        "timeline": "grain.view",
+    }
 
     @action(detail=False, methods=["post"], url_path="arrive")
     def arrive(self, request):
@@ -464,26 +517,6 @@ class WagonViewSet(
             self.get_object(), "gross", request.user
         )
         return self._done(wagon)
-
-    @action(detail=True, methods=["delete"], url_path="delete")
-    def delete_wagon(self, request, pk=None):
-        """Удалить допустимый рейс с безопасным откатом учёта."""
-        if hasattr(request.data, "__contains__") and "reason" in request.data:
-            reason = request.data.get("reason")
-        else:
-            # Transitional fallback for callers using the previous contract.
-            reason = request.query_params.get("reason") or ""
-        result = services.delete_wagon(
-            self.get_object(),
-            request.user,
-            reason=reason,
-            confirm_unrecorded_grain_handled=(
-                request.data.get("confirm_unrecorded_grain_handled", False)
-                if hasattr(request.data, "get")
-                else False
-            ),
-        )
-        return Response(result)
 
     @action(detail=False, methods=["post"], url_path="passage")
     def passage(self, request):
@@ -654,29 +687,6 @@ class WagonViewSet(
             )
         )
 
-    @action(detail=True, methods=["get"], url_path="timeline")
-    def timeline(self, request, pk=None):
-        wagon = self.get_object()
-        events = (
-            EventLog.objects.filter(
-                event_type__startswith="grain_", payload__wagon_id=wagon.pk
-            )
-            .select_related("user")
-            .order_by("created_at")[:200]
-        )
-        return Response(
-            [
-                {
-                    "id": event.id,
-                    "event_type": event.event_type,
-                    "message": event.message,
-                    "user_name": event.user.username if event.user else None,
-                    "payload": event.payload,
-                    "created_at": event.created_at,
-                }
-                for event in events
-            ]
-        )
 
 
 class UnassignedWeighingViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
@@ -976,9 +986,7 @@ class VehicleOrientationSampleViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class SiloViewSet(PermViewSetMixin, viewsets.ModelViewSet):
-    queryset = Silo.objects.select_related("silo_type").prefetch_related(
-        "default_for_types"
-    )
+    queryset = silo_overview()
     serializer_class = SiloSerializer
     pagination_class = OptInPageNumberPagination
     required_perms = {

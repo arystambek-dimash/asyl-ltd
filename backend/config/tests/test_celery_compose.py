@@ -5,6 +5,20 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+@pytest.mark.parametrize("compose_file", ["docker-compose.yml", "docker-compose.prod.yml"])
+def test_orientation_has_its_own_worker_and_media(compose_file):
+    from django.conf import settings
+    compose = (REPO_ROOT / compose_file).read_text(encoding="utf-8")
+    worker = _service_block(compose, "celery-orientation")
+    assert settings.CELERY_TASK_ROUTES["grain.export_orientation_samples"]["queue"] == "orientation"
+    assert "--queues=orientation" in worker
+    assert "--queues=payments" not in worker
+    assert "mediadata:/app/media:ro" in worker
+    assert "--concurrency=1" in worker
+    assert "inspect ping --destination orientation@$$HOSTNAME" in worker
+    assert "restart: unless-stopped" in worker
+
+
 def _service_block(compose: str, service: str) -> str:
     marker = f"  {service}:\n"
     start = compose.index(marker)

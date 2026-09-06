@@ -264,7 +264,8 @@ class Wagon(models.Model):
         ]
 
     def __str__(self):
-        return f"Вагон {self.number or f'#{self.pk}'}"
+        label = "Вывоз" if self.is_passage else "Вагон"
+        return f"{label} {self.number or f'#{self.pk}'}"
 
     @property
     def planned_weight_kg(self) -> int | None:

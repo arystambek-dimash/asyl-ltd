@@ -58,6 +58,20 @@ def _error(detail: str, code: str) -> ValidationError:
     return ValidationError({"detail": detail, "code": code})
 
 
+def _lock_wagon(wagon: Wagon) -> None:
+    """Refresh the caller's instance only after acquiring its row lock.
+
+    Classic intake callers reuse the same instance between commands. Keep
+    that contract while validating every command against committed state.
+    The caller must hold an atomic transaction until the command completes.
+    """
+    try:
+        Wagon.objects.select_for_update().only("pk").get(pk=wagon.pk)
+        wagon.refresh_from_db()
+    except Wagon.DoesNotExist as exc:
+        raise NotFound("Вагон не найден") from exc
+
+
 def _log(wagon: Wagon, event: str, message: str, user, **payload):
     log_event(
         f"grain_{event}",
@@ -74,7 +88,7 @@ def _log(wagon: Wagon, event: str, message: str, user, **payload):
 
 
 def ensure_transition(wagon: Wagon, target: str):
-    if not st.can_transition(wagon.status, target):
+    if not st.can_transition(wagon.status, target, passage=wagon.is_passage):
         current = st.WAGON_STATUS_LABELS.get(wagon.status, wagon.status)
         wanted = st.WAGON_STATUS_LABELS.get(target, target)
         raise _error(
@@ -165,8 +179,14 @@ def prepare_simple_supply(supply: GrainSupply, user) -> GrainSupply:
     return supply
 
 
+@transaction.atomic
 def add_wagon_numbers(supply: GrainSupply, numbers: list[str], user) -> list[Wagon]:
     """Дозаполнение номеров: вагоны можно заявить и без номеров заранее."""
+    if not isinstance(numbers, list) or any(
+        not isinstance(number, str) or len(number.strip()) > 30
+        for number in numbers
+    ):
+        raise _error("Укажите список номеров длиной до 30 символов", "bad_wagon_numbers")
     created = []
     for raw in numbers:
         number = (raw or "").strip()
@@ -180,7 +200,17 @@ def add_wagon_numbers(supply: GrainSupply, numbers: list[str], user) -> list[Wag
                 f"Вагон {number} уже заявлен или на территории",
                 "wagon_number_busy",
             )
-        wagon = Wagon.objects.create(supply=supply, number=number)
+        try:
+            with transaction.atomic():
+                wagon = Wagon.objects.create(supply=supply, number=number)
+        except IntegrityError as exc:
+            if Wagon.objects.filter(
+                number=number, status__in=st.ON_SITE_STATUSES | {st.EXPECTED}
+            ).exists():
+                raise _error(
+                    f"Вагон {number} уже заявлен или на территории", "wagon_number_busy"
+                ) from exc
+            raise
         _log(wagon, "supply", f"Вагон {number} добавлен в поставку #{supply.pk}", user)
         created.append(wagon)
     return created
@@ -277,6 +307,7 @@ def register_arrival(
 
 @transaction.atomic
 def approve_unplanned(wagon: Wagon, user, supply: GrainSupply | None = None) -> Wagon:
+    _lock_wagon(wagon)
     if wagon.status != st.WAITING_FOR_APPROVAL:
         raise _error("Вагон не ждёт подтверждения", "wagon_not_waiting")
     if supply is not None:
@@ -339,11 +370,15 @@ def _record_weighing(
         scale_payload["scale_age_seconds"] = str(scale_age_seconds)
     if scale_updated_at is not None:
         scale_payload["scale_updated_at"] = scale_updated_at
+    if wagon.is_passage:
+        label = "вес пустой на въезде" if kind == "gross" else "вес гружёной на выезде"
+        message = f"Вывоз {wagon.number or f'#{wagon.pk}'}: {label} {weight_kg} кг"
+    else:
+        message = f"Вагон {wagon.number}: {'брутто' if kind == 'gross' else 'тара'} {weight_kg} кг"
     _log(
         wagon,
         "weighing",
-        f"Вагон {wagon.number}: {'брутто' if kind == 'gross' else 'тара'} "
-        f"{weight_kg} кг",
+        message,
         user,
         kind=kind,
         weight_kg=weight_kg,
@@ -484,6 +519,7 @@ def _store_scale_weight(
 
 @transaction.atomic
 def record_gross(wagon: Wagon, weight_kg: int, user, **kwargs) -> Wagon:
+    _lock_wagon(wagon)
     ensure_transition(wagon, st.GROSS_WEIGHED)
     wagon.gross_weight_kg = _record_weighing(wagon, "gross", weight_kg, user, **kwargs)
     wagon.save(update_fields=["gross_weight_kg"])
@@ -498,6 +534,7 @@ def record_gross(wagon: Wagon, weight_kg: int, user, **kwargs) -> Wagon:
 @transaction.atomic
 def record_simple_entry_weight(wagon: Wagon, weight_kg: int, user, **kwargs) -> Wagon:
     """Входные весы → сразу маршрут к заранее назначенному силосу."""
+    _lock_wagon(wagon)
     if wagon.workflow != "simple":
         raise _error("Для вагона используется старый маршрут", "not_simple_flow")
     ensure_transition(wagon, st.AT_SILO)
@@ -533,6 +570,7 @@ DECISION_STATUS = {
 
 @transaction.atomic
 def record_lab_check(wagon: Wagon, decision: str, user, **fields) -> LabCheck:
+    _lock_wagon(wagon)
     if decision not in DECISION_STATUS:
         raise _error("Неизвестное решение лаборатории", "bad_lab_decision")
     target = DECISION_STATUS[decision]
@@ -553,13 +591,37 @@ def record_lab_check(wagon: Wagon, decision: str, user, **fields) -> LabCheck:
 # ── Силосы: подбор и резерв ────────────────────────────────────────────────
 
 
+def _needs_quarantine_silo(wagon: Wagon) -> bool:
+    # SILO_ASSIGNED replaces QUARANTINE; the laboratory decision remains the
+    # durable source when the operator later changes the destination.
+    decision = wagon.lab_checks.order_by("-id").values_list("decision", flat=True).first()
+    if decision is not None:
+        return decision == "quarantine"
+    return wagon.status == st.QUARANTINE or bool(
+        wagon.assigned_silo_id and wagon.assigned_silo.is_quarantine
+    )
+
+
+def _validate_silo_compatibility(wagon: Wagon, silo: Silo) -> None:
+    if silo.status != "active":
+        raise _error("Силос недоступен", "silo_inactive")
+    if _needs_quarantine_silo(wagon) != silo.is_quarantine:
+        raise _error("Карантинный маршрут не соответствует вагону", "quarantine_silo_required")
+    supply = wagon.supply
+    if supply and silo.grain_culture and supply.culture and silo.grain_culture != supply.culture:
+        raise _error("Культура зерна не соответствует силосу", "silo_culture_mismatch")
+    if (supply and silo.grain_class and supply.grain_class
+            and silo.grain_class != supply.grain_class and not silo.allow_mixing):
+        raise _error("Класс зерна не соответствует силосу", "silo_class_mismatch")
+
+
 def suggest_silos(wagon: Wagon):
     """Подходящие силосы; настроенный маршрут прихода идёт первым."""
     culture = wagon.supply.culture if wagon.supply else ""
     grain_class = wagon.supply.grain_class if wagon.supply else ""
     need = wagon.planned_weight_kg or 0
     silos = Silo.objects.filter(status="active").select_related("silo_type")
-    if wagon.status == st.QUARANTINE:
+    if _needs_quarantine_silo(wagon):
         silos = silos.filter(is_quarantine=True)
     else:
         silos = silos.filter(is_quarantine=False)
@@ -598,28 +660,26 @@ def assign_silo(
     wagon: Wagon, silo: Silo, user, expected_kg: int | None = None
 ) -> Wagon:
     target = st.SILO_ASSIGNED
-    ensure_transition(wagon, target)
-    # Резерв: явный ввод → вес по документам/ожиданиям → брутто (нетто всегда
-    # меньше брутто, так что бронь по брутто безопасна).
-    amount = int(expected_kg or wagon.planned_weight_kg or wagon.gross_weight_kg or 0)
-    if amount <= 0:
-        raise _error(
-            "Укажите ожидаемый вес вагона для резерва места",
-            "reserve_amount_required",
-        )
     shortage: int | None = None
     with transaction.atomic():
-        locked = Silo.objects.select_for_update().get(pk=silo.pk)
-        if locked.status != "active":
-            raise _error("Силос недоступен", "silo_inactive")
-        if wagon.status == st.QUARANTINE and not locked.is_quarantine:
+        _lock_wagon(wagon)
+        ensure_transition(wagon, target)
+        amount = int(expected_kg or wagon.planned_weight_kg or wagon.gross_weight_kg or 0)
+        if amount <= 0:
             raise _error(
-                "Карантинный вагон можно направить только в карантинный силос",
-                "quarantine_silo_required",
+                "Укажите ожидаемый вес вагона для резерва места",
+                "reserve_amount_required",
             )
+        locked = Silo.objects.select_for_update().get(pk=silo.pk)
+        _validate_silo_compatibility(wagon, locked)
         free = locked.free_capacity_kg
         if free < amount:
             shortage = free
+            if st.can_transition(wagon.status, st.INSUFFICIENT_CAPACITY):
+                _set_status(
+                    wagon, st.INSUFFICIENT_CAPACITY, user,
+                    f"В силосе «{silo.name}» нет места под вагон {wagon.number}",
+                )
         else:
             SiloReservation.objects.update_or_create(
                 wagon=wagon,
@@ -637,14 +697,7 @@ def assign_silo(
                 reserved_kg=amount,
             )
     if shortage is not None:
-        # Статус фиксируем ВНЕ атомарного блока: он должен пережить ошибку,
-        # которую мы поднимаем для вызывающего.
-        _set_status(
-            wagon,
-            st.INSUFFICIENT_CAPACITY,
-            user,
-            f"В силосе «{silo.name}» нет места под вагон {wagon.number}",
-        )
+        # Raise after committing the shortage state under the wagon lock.
         raise _error(
             f"В силосе «{silo.name}» свободно {shortage} кг — "
             f"меньше требуемых {amount} кг",
@@ -656,6 +709,7 @@ def assign_silo(
 @transaction.atomic
 def change_silo(wagon: Wagon, new_silo: Silo, reason: str, user) -> Wagon:
     """Смена силоса во время процесса — с историей и пере-резервом."""
+    _lock_wagon(wagon)
     if wagon.status not in {st.SILO_ASSIGNED, st.UNLOADING}:
         raise _error(
             "Менять силос можно только до завершения разгрузки",
@@ -664,10 +718,22 @@ def change_silo(wagon: Wagon, new_silo: Silo, reason: str, user) -> Wagon:
     if not reason:
         raise _error("Укажите причину смены силоса", "silo_change_reason")
     old = wagon.assigned_silo
-    new_silo = Silo.objects.select_for_update().get(pk=new_silo.pk)
+    # Moving a reservation changes capacity at both ends. Lock in one order
+    # so simultaneous A → B and B → A moves cannot deadlock.
+    locked_silos = {
+        silo.pk: silo for silo in Silo.objects.select_for_update()
+        .filter(pk__in=[pk for pk in (wagon.assigned_silo_id, new_silo.pk) if pk])
+        .order_by("pk")
+    }
+    new_silo = locked_silos.get(new_silo.pk)
+    if new_silo is None:
+        raise NotFound("Силос не найден")
+    _validate_silo_compatibility(wagon, new_silo)
     reservation = getattr(wagon, "reservation", None)
     amount = reservation.amount_kg if reservation else (wagon.planned_weight_kg or 0)
-    if new_silo.free_capacity_kg < amount:
+    own_reserve = (reservation.amount_kg if reservation and reservation.active
+                   and reservation.silo_id == new_silo.pk else 0)
+    if new_silo.free_capacity_kg + own_reserve < amount:
         raise _error(
             f"В силосе «{new_silo.name}» недостаточно места", "insufficient_capacity"
         )
@@ -695,6 +761,7 @@ def change_silo(wagon: Wagon, new_silo: Silo, reason: str, user) -> Wagon:
 
 @transaction.atomic
 def start_unloading(wagon: Wagon, user) -> Wagon:
+    _lock_wagon(wagon)
     ensure_transition(wagon, st.UNLOADING)
     wagon.unloading_started_at = timezone.now()
     wagon.unloading_paused = False
@@ -709,7 +776,9 @@ def start_unloading(wagon: Wagon, user) -> Wagon:
     return wagon
 
 
+@transaction.atomic
 def set_unloading_paused(wagon: Wagon, paused: bool, user) -> Wagon:
+    _lock_wagon(wagon)
     if wagon.status != st.UNLOADING:
         raise _error("Вагон сейчас не разгружается", "wagon_not_unloading")
     wagon.unloading_paused = paused
@@ -727,6 +796,7 @@ def set_unloading_paused(wagon: Wagon, paused: bool, user) -> Wagon:
 
 @transaction.atomic
 def finish_unloading(wagon: Wagon, user, note: str = "") -> Wagon:
+    _lock_wagon(wagon)
     ensure_transition(wagon, st.UNLOADING_COMPLETED)
     wagon.unloading_finished_at = timezone.now()
     wagon.unloading_paused = False
@@ -757,6 +827,7 @@ def _discrepancy_percent(wagon: Wagon) -> Decimal | None:
 
 @transaction.atomic
 def record_tare(wagon: Wagon, weight_kg: int, user, **kwargs) -> Wagon:
+    _lock_wagon(wagon)
     ensure_transition(wagon, st.TARE_WEIGHED)
     tare = _record_weighing(wagon, "tare", weight_kg, user, **kwargs)
     if wagon.gross_weight_kg is None:
@@ -801,6 +872,7 @@ def _complete_simple_wagon(wagon: Wagon, user) -> Wagon:
 @transaction.atomic
 def record_simple_exit_weight(wagon: Wagon, weight_kg: int, user, **kwargs) -> Wagon:
     """Выходные весы: рассчитать нетто, сверить ожидание и завершить приход."""
+    _lock_wagon(wagon)
     if wagon.workflow != "simple":
         raise _error("Для вагона используется старый маршрут", "not_simple_flow")
     ensure_transition(wagon, st.TARE_WEIGHED)
@@ -842,6 +914,7 @@ def record_simple_exit_weight(wagon: Wagon, weight_kg: int, user, **kwargs) -> W
 def resolve_simple_discrepancy(
     wagon: Wagon, action: str, user, reason: str = ""
 ) -> Wagon:
+    _lock_wagon(wagon)
     if wagon.workflow != "simple" or wagon.status != st.WEIGHT_DISCREPANCY:
         raise _error("У прихода нет расхождения для проверки", "no_discrepancy")
     if action == "confirm":
@@ -873,6 +946,7 @@ def resolve_simple_discrepancy(
 
 @transaction.atomic
 def resolve_discrepancy(wagon: Wagon, action: str, user, reason: str = "") -> Wagon:
+    _lock_wagon(wagon)
     if wagon.status != st.WEIGHT_DISCREPANCY:
         raise _error("У вагона нет расхождения", "no_discrepancy")
     if action == "confirm":
@@ -944,15 +1018,31 @@ def inventory_wagon(wagon: Wagon, user, allocations: list[dict] | None = None) -
     if wagon.net_weight_kg is None:
         raise _error("Сначала рассчитайте нетто", "net_weight_required")
 
+    if allocations is not None and not isinstance(allocations, list):
+        raise _error("Распределения должны быть списком", "bad_allocations")
     if allocations:
-        total = sum(int(part.get("amount_kg") or 0) for part in allocations)
+        parts = []
+        for part in allocations:
+            if not isinstance(part, dict):
+                raise _error("Укажите силос и целый вес для каждой части", "bad_allocations")
+            parsed = {}
+            for field in ("silo_id", "amount_kg"):
+                raw = part.get(field)
+                if (isinstance(raw, bool) or not isinstance(raw, (int, str))
+                        or not str(raw).isdigit() or len(str(raw)) > 18 or int(raw) <= 0):
+                    raise _error("Силос и вес должны быть положительными целыми числами", "bad_allocations")
+                parsed[field] = int(raw)
+            source = part.get("measurement_source", "manual")
+            if source not in SiloAllocation.MEASUREMENT_SOURCES:
+                raise _error("Неизвестный источник измерения", "bad_measurement_source")
+            parts.append({**parsed, "measurement_source": source})
+        total = sum(part["amount_kg"] for part in parts)
         if total != wagon.net_weight_kg:
             raise _error(
                 f"Сумма распределений {total} кг не равна нетто "
                 f"{wagon.net_weight_kg} кг",
                 "allocation_mismatch",
             )
-        parts = allocations
     else:
         if wagon.assigned_silo_id is None:
             raise _error("Силос не назначен", "silo_required")
@@ -964,8 +1054,13 @@ def inventory_wagon(wagon: Wagon, user, allocations: list[dict] | None = None) -
             }
         ]
 
+    silo_ids = {part["silo_id"] for part in parts}
+    silos = {silo.pk: silo for silo in Silo.objects.select_for_update()
+             .filter(pk__in=silo_ids).order_by("pk")}
+    if len(silos) != len(silo_ids):
+        raise _error("Силос не найден", "silo_not_found")
     for part in parts:
-        silo = Silo.objects.select_for_update().get(pk=part["silo_id"])
+        silo = silos[part["silo_id"]]
         _apply_income(
             silo,
             int(part["amount_kg"]),
@@ -1000,13 +1095,19 @@ def register_exit(
     *,
     occurred_at=None,
 ) -> Wagon:
+    _lock_wagon(wagon)
     ensure_transition(wagon, st.EXITED)
     wagon.exited_at = occurred_at or timezone.now()
     wagon.exit_note = note
     wagon.save(update_fields=["exited_at", "exit_note"])
-    _set_status(wagon, st.EXITED, user, f"Вагон {wagon.number} выехал")
-    _set_status(wagon, st.COMPLETED, user, f"Цикл вагона {wagon.number} завершён")
-    supply = wagon.supply
+    trip_label = f"Вывоз {wagon.number or f'#{wagon.pk}'}" if wagon.is_passage else f"Вагон {wagon.number}"
+    _set_status(wagon, st.EXITED, user, f"{trip_label}: выезд зафиксирован")
+    _set_status(wagon, st.COMPLETED, user, f"{trip_label}: рейс завершён")
+    # Different wagons can finish together. Serialize the final completion
+    # check so the last committed exit observes the others and closes supply.
+    # NO KEY UPDATE allows unrelated FK inserts without a lock upgrade cycle.
+    supply = (GrainSupply.objects.select_for_update(no_key=True).get(pk=wagon.supply_id)
+              if wagon.supply_id else None)
     if (
         supply
         and not supply.wagons.exclude(
@@ -1384,7 +1485,7 @@ def create_passage(
     _log(
         wagon,
         "passage",
-        f"Проход {wagon.number or f'#{wagon.pk}'}: заезд за «{cargo_name}»",
+        f"Вывоз {wagon.number or f'#{wagon.pk}'}: заезд за «{cargo_name}»",
         user,
         cargo_name=cargo_name,
         vehicle_plate_event_id=(
@@ -1419,7 +1520,7 @@ def record_passage_entry_weight(
         wagon,
         st.AT_SILO,
         user,
-        f"Проход {wagon.number or f'#{wagon.pk}'}: заезд {wagon.gross_weight_kg} кг, "
+        f"Вывоз {wagon.number or f'#{wagon.pk}'}: заезд {wagon.gross_weight_kg} кг, "
         f"загрузка «{wagon.cargo_name}»",
         entry_weight_kg=wagon.gross_weight_kg,
     )
@@ -1474,7 +1575,7 @@ def _finish_passage_exit(
         wagon,
         st.TARE_WEIGHED,
         user,
-        f"Проход {wagon.number or f'#{wagon.pk}'}: выезд {exit_weight} кг, "
+        f"Вывоз {wagon.number or f'#{wagon.pk}'}: выезд {exit_weight} кг, "
         f"вывезено {wagon.net_weight_kg} кг «{wagon.cargo_name}»",
         entry_weight_kg=wagon.gross_weight_kg,
         exit_weight_kg=exit_weight,
@@ -1486,7 +1587,7 @@ def _finish_passage_exit(
         wagon,
         st.INVENTORIED,
         user,
-        f"Проход {wagon.number or f'#{wagon.pk}'}: вывоз зафиксирован",
+        f"Вывоз {wagon.number or f'#{wagon.pk}'}: вывоз зафиксирован",
     )
     _set_status(wagon, st.EXIT_ALLOWED, user, "Выезд разрешён")
     return register_exit(
@@ -1765,7 +1866,7 @@ def _resolve_unassigned_automatically(
     _log(
         wagon,
         "unassigned_weighing",
-        f"Проход {wagon.number or f'#{wagon.pk}'}: неопознанное взвешивание "
+        f"Вывоз {wagon.number or f'#{wagon.pk}'}: неопознанное взвешивание "
         f"{item.weight_kg} кг привязано автоматически "
         f"({'заезд' if action == AUTO_ACTION_ENTRY else 'выезд'})",
         user,
@@ -1917,7 +2018,7 @@ def _passage_for_exit_without_entry(
     _log(
         wagon,
         "passage",
-        f"Проход {wagon.number}: заезд восстановлен из неопознанного "
+        f"Вывоз {wagon.number}: заезд восстановлен из неопознанного "
         f"взвешивания {item.weight_kg} кг, машина уже выезжает",
         user,
         cargo_name=wagon.cargo_name,
@@ -1983,7 +2084,7 @@ def _swap_missed_entry(
     _log(
         wagon,
         "unassigned_weighing",
-        f"Проход {wagon.number or f'#{wagon.pk}'}: заезд был пропущен — "
+        f"Вывоз {wagon.number or f'#{wagon.pk}'}: заезд был пропущен — "
         f"{item.weight_kg} кг записано как заезд, прежний вес {booked_exit} кг "
         "стал выездом",
         user,
@@ -2296,7 +2397,7 @@ def _apply_vehicle_plate_automation(
             _log(
                 wagon,
                 "passage",
-                f"Проход {wagon.number}: автоматический заезд за «{wagon.cargo_name}»",
+                f"Вывоз {wagon.number}: автоматический заезд за «{wagon.cargo_name}»",
                 user,
                 cargo_name=wagon.cargo_name,
                 vehicle_plate_event_id=str(event.event_id),
@@ -2324,7 +2425,7 @@ def _apply_vehicle_plate_automation(
             _log(
                 wagon,
                 "passage",
-                f"Проход {wagon.number}: автоматический заезд по заранее "
+                f"Вывоз {wagon.number}: автоматический заезд по заранее "
                 "зарегистрированному рейсу",
                 user,
                 vehicle_plate_event_id=str(event.event_id),
@@ -2370,7 +2471,7 @@ def _apply_vehicle_plate_automation(
             _log(
                 wagon,
                 "passage",
-                f"Проход {wagon.number}: камера прочитала номер как "
+                f"Вывоз {wagon.number}: камера прочитала номер как "
                 f"{event.vehicle_number}, рейс сопоставлен по цифрам и региону",
                 user,
                 recognized_number=event.vehicle_number,
@@ -2588,7 +2689,7 @@ def apply_unidentified_passage_scale_sample(
             _log(
                 wagon,
                 "passage",
-                f"Проход {wagon.number or f'#{wagon.pk}'}: автоматический выезд — "
+                f"Вывоз {wagon.number or f'#{wagon.pk}'}: автоматический выезд — "
                 "номер не распознан, но это единственная машина, ждущая вес гружёной",
                 user,
                 camera_source=camera,
@@ -2716,7 +2817,7 @@ def assign_unassigned_weighing(
     _log(
         wagon,
         "unassigned_weighing",
-        f"Проход {wagon.number or f'#{wagon.pk}'}: привязано взвешивание "
+        f"Вывоз {wagon.number or f'#{wagon.pk}'}: привязано взвешивание "
         f"{item.weight_kg} кг ({'заезд' if action == AUTO_ACTION_ENTRY else 'выезд'})",
         user,
         unassigned_id=item.pk,

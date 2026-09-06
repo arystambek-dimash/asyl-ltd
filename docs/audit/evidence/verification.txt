@@ -1,0 +1,31 @@
+ASyl technical audit, 2026-09-06
+Base commit: f28daca8f357d15c17a8450a6b94393afe9d70ef
+
+Baseline backend: 2104 passed, 3 subtests passed
+Final backend: 2131 passed, 3 subtests passed in 408.66s
+Baseline frontend: 516 passed / 79 files
+Final frontend: 520 passed / 79 files; format, lint and typecheck passed
+Frontend production build: passed
+Compose and deployment checks: 39 passed
+Django system check: no issues
+Django makemigrations check: no changes
+pip check: no broken requirements
+npm audit after PostCSS update: 0 known vulnerabilities
+pip-audit of resolved production dependencies: 36 packages, 0 known vulnerabilities
+
+Silo list query measurements (authenticated local API, isolated PostgreSQL):
+5 silos: 3 SQL queries
+25 silos: 3 SQL queries
+
+Browser flow (isolated PostgreSQL and real local Django/Next servers):
+UI login -> JWT -> portal order
+UI cash payment -> POST portal pay -> Payment requested, amount 20000.00 KZT
+Separate authenticated cashier API -> 200 -> Payment confirmed
+Database Order: settled; paid_total 20000.00; remaining_amount 0.00
+Existing browser page without reload: paid; receipt button displayed
+Offline: refresh error displayed with last snapshot
+Online: error cleared after successful polling
+JavaScript errors / Next error overlay: none observed
+
+No live ApiPay, Camera-PC, scales, deployment or production data used.
+Temporary servers stopped; all audit databases removed.

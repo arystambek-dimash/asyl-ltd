@@ -26,9 +26,9 @@ from .statuses import WAGON_STATUS_LABELS
 
 
 class SiloSerializer(serializers.ModelSerializer):
-    current_balance_kg = serializers.IntegerField(read_only=True)
-    reserved_kg = serializers.IntegerField(read_only=True)
-    free_capacity_kg = serializers.IntegerField(read_only=True)
+    current_balance_kg = serializers.SerializerMethodField()
+    reserved_kg = serializers.SerializerMethodField()
+    free_capacity_kg = serializers.SerializerMethodField()
     fill_percent = serializers.SerializerMethodField()
     active_wagons = serializers.SerializerMethodField()
     sensor_difference_kg = serializers.SerializerMethodField()
@@ -75,9 +75,25 @@ class SiloSerializer(serializers.ModelSerializer):
     def get_fill_percent(self, silo: Silo) -> int:
         if not silo.total_capacity_kg:
             return 0
-        return round(silo.current_balance_kg * 100 / silo.total_capacity_kg)
+        return round(self.get_current_balance_kg(silo) * 100 / silo.total_capacity_kg)
+
+    def get_current_balance_kg(self, silo):
+        if hasattr(silo, "_balance_kg"):
+            return silo._balance_kg
+        return silo.current_balance_kg
+
+    def get_reserved_kg(self, silo):
+        if hasattr(silo, "_reserved_kg"):
+            return silo._reserved_kg
+        return silo.reserved_kg
+
+    def get_free_capacity_kg(self, silo):
+        return silo.total_capacity_kg - self.get_current_balance_kg(silo) - self.get_reserved_kg(silo)
 
     def get_active_wagons(self, silo: Silo):
+        if hasattr(silo, "_active_wagons"):
+            return [{"id": row.pk, "number": row.number, "status": row.status}
+                    for row in silo._active_wagons]
         rows = silo.assigned_wagons.exclude(
             status__in=["completed", "cancelled", "return_to_supplier", "exited"],
         ).values("id", "number", "status")
@@ -86,7 +102,7 @@ class SiloSerializer(serializers.ModelSerializer):
     def get_sensor_difference_kg(self, silo: Silo):
         if silo.sensor_estimated_kg is None:
             return None
-        return silo.sensor_estimated_kg - silo.current_balance_kg
+        return silo.sensor_estimated_kg - self.get_current_balance_kg(silo)
 
     def get_is_default_route(self, silo: Silo) -> bool:
         return silo.default_for_types.exists()

@@ -145,5 +145,19 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
 }
 
 
-def can_transition(current: str, target: str) -> bool:
-    return target in VALID_TRANSITIONS.get(current, set())
+# Stored values remain compatible with historical weighings and events. The
+# outbound process does not permit laboratory, silo assignment or unloading.
+PASSAGE_TRANSITIONS: dict[str, set[str]] = {
+    ARRIVED: {AT_SILO, BLOCKED, CANCELLED},
+    AT_SILO: {TARE_WEIGHED, BLOCKED, CANCELLED},
+    TARE_WEIGHED: {INVENTORIED},
+    INVENTORIED: {EXIT_ALLOWED},
+    EXIT_ALLOWED: {EXITED, BLOCKED},
+    EXITED: {COMPLETED},
+    BLOCKED: {ARRIVED, AT_SILO, EXIT_ALLOWED, CANCELLED},
+}
+
+
+def can_transition(current: str, target: str, *, passage: bool = False) -> bool:
+    transitions = PASSAGE_TRANSITIONS if passage else VALID_TRANSITIONS
+    return target in transitions.get(current, set())
