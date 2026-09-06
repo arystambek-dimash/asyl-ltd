@@ -154,6 +154,8 @@ services:
       - --queues=payments
       - --concurrency=1
       - --prefetch-multiplier=1
+    volumes:
+      - mediadata:/app/media
     depends_on:
       db:
         condition: service_healthy
