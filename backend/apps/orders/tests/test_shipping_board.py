@@ -68,15 +68,23 @@ def test_post_board_is_available_to_train_loader(
     assert {item["id"] for item in response.data} == {active.id}
 
 
-def test_post_board_hides_future_arrivals_but_keeps_overdue_and_long_loadings(
-    auth_client, operator
-):
+def test_post_board_shows_todays_waiting_orders_and_all_active_work(auth_client, operator):
+    """Очередь «сегодня»: старые подтверждённые заказы не засоряют доску.
+
+    Их находят поиском по номеру или выбором дня; работа на посту (погрузка
+    на третий день) видна всегда.
+    """
+
     client = Client.objects.create_with_user(first_name="Board", last_name="Days", phone="5")
     today = timezone.localdate()
     future = _order(client, "confirmed", arrival_date=today + timedelta(days=1))
     overdue = _order(client, "confirmed", arrival_date=today - timedelta(days=2))
     planned_today = _order(client, "confirmed", arrival_date=today)
-    unplanned = _order(client, "confirmed")
+    unplanned_today = _order(client, "confirmed")
+    stale_unplanned = _order(client, "confirmed")
+    Order.objects.filter(pk=stale_unplanned.pk).update(
+        created_at=timezone.now() - timedelta(days=3)
+    )
     long_loading = _order(client, "loading")
     Shipment.objects.create(
         order=long_loading,
@@ -87,8 +95,15 @@ def test_post_board_hides_future_arrivals_but_keeps_overdue_and_long_loadings(
     response = auth_client(operator).get("/api/orders/?post_board=1")
 
     assert response.status_code == 200
-    assert _ids(response) == {overdue.id, planned_today.id, unplanned.id, long_loading.id}
-    assert future.id not in _ids(response)
+    assert _ids(response) == {planned_today.id, unplanned_today.id, long_loading.id}
+    assert {future.id, overdue.id, stale_unplanned.id}.isdisjoint(_ids(response))
+
+    # Старая очередь остаётся доступной: по дню её создания и через поиск.
+    stale_day = (today - timedelta(days=3)).isoformat()
+    by_day = auth_client(operator).get(f"/api/orders/?post_board=1&day={stale_day}")
+    assert stale_unplanned.id in _ids(by_day)
+    found = auth_client(operator).get(f"/api/orders/?post_board=1&search={stale_unplanned.id}")
+    assert _ids(found) == {stale_unplanned.id}
 
 
 def test_post_board_explicit_day_shows_that_days_traffic_only(auth_client, operator):

@@ -44,13 +44,14 @@ def for_post_board(
     """Проекция живого поста: сегодняшняя работа, выбранный день или поиск.
 
     По умолчанию (``day`` пуст или сегодня) — всё, что сейчас на посту, плюс
-    подтверждённые заказы без даты приезда или с датой не позже сегодня:
-    машина может приехать позже плана, и ждущая работа прошлых дней не
-    прячется; будущие приезды доску не засоряют. Выехавшие — за окно
-    ``completed_order_days``.
+    подтверждённые заказы сегодняшнего дня: с плановым приездом сегодня
+    или созданные сегодня без даты. Старая очередь подтверждённых доску не
+    засоряет — её находят поиском по номеру или выбором дня. Выехавшие — за
+    окно ``completed_order_days``.
 
     Другой день ``D`` — что происходило именно тогда: выехали ``D``, заехали
-    или начали грузиться ``D``, либо подтверждённые с приездом на ``D``.
+    или начали грузиться ``D``, подтверждённые с приездом на ``D`` или
+    созданные ``D`` без даты приезда.
 
     Непустой ``search`` игнорирует правило дня: ищет по номеру машины,
     клиенту и номеру заказа среди статусов доски, выехавшие — за последний
@@ -68,14 +69,14 @@ def for_post_board(
         if search.isascii() and search.isdigit():
             match |= Q(id=int(search))
         return queryset.filter(scope & match)
+    waiting_on = lambda when: Q(status="confirmed") & (  # noqa: E731 - small local predicate
+        Q(arrival_date=when) | Q(arrival_date__isnull=True, created_at__date=when)
+    )
     if day is None or day == today:
         since = today - timedelta(days=max(0, completed_order_days - 1))
         return queryset.filter(
             Q(status__in=BOARD_ACTIVE_STATUSES)
-            | (
-                Q(status="confirmed")
-                & (Q(arrival_date__isnull=True) | Q(arrival_date__lte=today))
-            )
+            | waiting_on(today)
             | Q(status="shipped", shipment__shipped_at__date__gte=since)
         )
     return queryset.filter(
@@ -87,7 +88,7 @@ def for_post_board(
                 | Q(shipment__loading_started_at__date=day)
             )
         )
-        | Q(status="confirmed", arrival_date=day)
+        | waiting_on(day)
     )
 
 
