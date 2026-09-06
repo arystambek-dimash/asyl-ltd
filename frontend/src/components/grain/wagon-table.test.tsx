@@ -10,6 +10,7 @@ vi.mock("@/lib/api", () => ({
   api: { delete: deleteMock },
   apiError: () => "Ошибка удаления",
 }));
+vi.mock("@/lib/use-local-day", () => ({ useLocalDay: () => "2026-09-06" }));
 
 const me = {
   id: 1,
@@ -171,6 +172,103 @@ describe("WagonTable", () => {
     renderTable([]);
 
     expect(screen.getByText("Пусто")).toBeInTheDocument();
+  });
+});
+
+describe("WagonTable — разбивка по дням", () => {
+  /** Текст строк таблицы сверху вниз: заголовки направлений, дней и рейсы. */
+  function rowTexts() {
+    return screen.getAllByRole("row").map((row) => row.textContent ?? "");
+  }
+
+  function indexOf(prefix: string) {
+    const index = rowTexts().findIndex((text) => text.startsWith(prefix));
+    expect(index, prefix).toBeGreaterThan(-1);
+    return index;
+  }
+
+  it("groups on-site rows by arrival day with «Сегодня»/«Вчера» headers and counts", () => {
+    // Строки приходят вперемешку: день не должен повториться, а свежие — сверху.
+    renderTable([
+      wagon({ id: 1, number: "Поезд-1", arrived_at: "2026-09-05T18:00:00" }),
+      wagon({ id: 2, number: "Поезд-2", arrived_at: "2026-09-06T09:00:00" }),
+      wagon({ id: 3, number: "Поезд-3", arrived_at: "2026-09-01T08:00:00" }),
+      wagon({ id: 4, number: "Поезд-4", arrived_at: "2026-09-06T11:30:00" }),
+    ]);
+
+    const today = screen.getByText("Сегодня").closest("tr") as HTMLTableRowElement;
+    expect(within(today).getByText("2")).toBeInTheDocument();
+    expect(screen.getAllByText("Сегодня")).toHaveLength(1);
+    expect(screen.getByText("Вчера")).toBeInTheDocument();
+    // Intl для ru-RU дописывает « г.»: «1 сентября 2026 г.».
+    expect(screen.getByText(/^1 сентября 2026/)).toBeInTheDocument();
+
+    expect(indexOf("Приход")).toBeLessThan(indexOf("Сегодня"));
+    expect(indexOf("Сегодня")).toBeLessThan(indexOf("Поезд-4"));
+    expect(indexOf("Поезд-4")).toBeLessThan(indexOf("Поезд-2"));
+    expect(indexOf("Поезд-2")).toBeLessThan(indexOf("Вчера"));
+    expect(indexOf("Вчера")).toBeLessThan(indexOf("Поезд-1"));
+    expect(indexOf("Поезд-1")).toBeLessThan(indexOf("1 сентября 2026"));
+    expect(indexOf("1 сентября 2026")).toBeLessThan(indexOf("Поезд-3"));
+  });
+
+  it("uses the exit day for finished rows and the arrival day otherwise", () => {
+    renderTable([
+      wagon({
+        id: 5,
+        number: "555 AAA",
+        direction: "passage",
+        status: "completed",
+        status_label: "Завершён",
+        arrived_at: "2026-09-05T08:00:00",
+        exited_at: "2026-09-06T10:00:00",
+      }),
+      wagon({
+        id: 6,
+        number: "666 BBB",
+        direction: "passage",
+        arrived_at: "2026-09-05T09:00:00",
+        exited_at: null,
+      }),
+    ]);
+
+    expect(indexOf("Сегодня")).toBeLessThan(indexOf("555 AAA"));
+    expect(indexOf("555 AAA")).toBeLessThan(indexOf("Вчера"));
+    expect(indexOf("Вчера")).toBeLessThan(indexOf("666 BBB"));
+  });
+
+  it("keeps rows without any date in a last «Без даты» group", () => {
+    renderTable([
+      wagon({ id: 7, number: "Поезд-7" }),
+      wagon({ id: 8, number: "Поезд-8", arrived_at: "2026-09-06T09:00:00" }),
+      wagon({ id: 9, number: "Поезд-9", created_at: "2026-09-04T09:00:00" }),
+    ]);
+
+    expect(indexOf("Сегодня")).toBeLessThan(indexOf("Поезд-8"));
+    expect(indexOf("Поезд-8")).toBeLessThan(indexOf("4 сентября 2026"));
+    expect(indexOf("4 сентября 2026")).toBeLessThan(indexOf("Поезд-9"));
+    expect(indexOf("Поезд-9")).toBeLessThan(indexOf("Без даты"));
+    expect(indexOf("Без даты")).toBeLessThan(indexOf("Поезд-7"));
+    const undated = screen.getByText("Без даты").closest("tr") as HTMLTableRowElement;
+    expect(within(undated).getByText("1")).toBeInTheDocument();
+  });
+
+  it("splits days separately inside each direction group", () => {
+    renderTable([
+      wagon({ id: 1, number: "Поезд-1", arrived_at: "2026-09-06T09:00:00" }),
+      wagon({
+        id: 2,
+        number: "123 ABC",
+        direction: "passage",
+        cargo_name: "Отруби",
+        arrived_at: "2026-09-06T10:00:00",
+      }),
+    ]);
+
+    expect(screen.getAllByText("Сегодня")).toHaveLength(2);
+    expect(indexOf("Приход")).toBeLessThan(indexOf("Поезд-1"));
+    expect(indexOf("Поезд-1")).toBeLessThan(indexOf("Вывоз"));
+    expect(indexOf("Вывоз")).toBeLessThan(indexOf("123 ABC"));
   });
 });
 

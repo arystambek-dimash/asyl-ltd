@@ -12,11 +12,15 @@ from apps.shipments.models import Shipment
 pytestmark = pytest.mark.django_db
 
 
-def _order(client, status, shipped_at=None):
-    order = Order.objects.create(client=client, status=status)
+def _order(client, status, shipped_at=None, **fields):
+    order = Order.objects.create(client=client, status=status, **fields)
     if shipped_at is not None:
         Shipment.objects.create(order=order, shipped_at=shipped_at)
     return order
+
+
+def _ids(response) -> set[int]:
+    return {item["id"] for item in response.data}
 
 
 def test_post_board_defaults_to_active_orders_and_todays_completed(auth_client, operator):
@@ -62,6 +66,140 @@ def test_post_board_is_available_to_train_loader(
 
     assert response.status_code == 200
     assert {item["id"] for item in response.data} == {active.id}
+
+
+def test_post_board_hides_future_arrivals_but_keeps_overdue_and_long_loadings(
+    auth_client, operator
+):
+    client = Client.objects.create_with_user(first_name="Board", last_name="Days", phone="5")
+    today = timezone.localdate()
+    future = _order(client, "confirmed", arrival_date=today + timedelta(days=1))
+    overdue = _order(client, "confirmed", arrival_date=today - timedelta(days=2))
+    planned_today = _order(client, "confirmed", arrival_date=today)
+    unplanned = _order(client, "confirmed")
+    long_loading = _order(client, "loading")
+    Shipment.objects.create(
+        order=long_loading,
+        arrived_at=timezone.now() - timedelta(days=3),
+        loading_started_at=timezone.now() - timedelta(days=3),
+    )
+
+    response = auth_client(operator).get("/api/orders/?post_board=1")
+
+    assert response.status_code == 200
+    assert _ids(response) == {overdue.id, planned_today.id, unplanned.id, long_loading.id}
+    assert future.id not in _ids(response)
+
+
+def test_post_board_explicit_day_shows_that_days_traffic_only(auth_client, operator):
+    client = Client.objects.create_with_user(first_name="Board", last_name="Day", phone="6")
+    yesterday = timezone.now() - timedelta(days=1)
+    shipped_yesterday = _order(client, "shipped", yesterday)
+    shipped_today = _order(client, "shipped", timezone.now())
+    arrived_yesterday = _order(client, "arrived")
+    Shipment.objects.create(order=arrived_yesterday, arrived_at=yesterday)
+    arrived_today = _order(client, "arrived")
+    Shipment.objects.create(order=arrived_today, arrived_at=timezone.now())
+    planned_yesterday = _order(
+        client, "confirmed", arrival_date=timezone.localdate() - timedelta(days=1)
+    )
+    _order(client, "confirmed")
+
+    day = (timezone.localdate() - timedelta(days=1)).isoformat()
+    response = auth_client(operator).get(f"/api/orders/?post_board=1&day={day}")
+
+    assert response.status_code == 200
+    assert _ids(response) == {
+        shipped_yesterday.id, arrived_yesterday.id, planned_yesterday.id
+    }
+    assert shipped_today.id not in _ids(response)
+    assert arrived_today.id not in _ids(response)
+
+
+def test_post_board_today_as_explicit_day_matches_default(auth_client, operator):
+    client = Client.objects.create_with_user(first_name="Board", last_name="Today", phone="7")
+    waiting = _order(client, "confirmed")
+    long_loading = _order(client, "loading")
+    Shipment.objects.create(
+        order=long_loading, arrived_at=timezone.now() - timedelta(days=2)
+    )
+
+    today = timezone.localdate().isoformat()
+    response = auth_client(operator).get(f"/api/orders/?post_board=1&day={today}")
+
+    assert response.status_code == 200
+    assert _ids(response) == {waiting.id, long_loading.id}
+
+
+def test_post_board_search_finds_plate_across_days(auth_client, operator):
+    client = Client.objects.create_with_user(first_name="Board", last_name="Search", phone="8")
+    today = timezone.localdate()
+    old_trip = _order(
+        client, "shipped", timezone.now() - timedelta(days=5), truck_number="327ABC01"
+    )
+    future_trip = _order(
+        client, "confirmed", arrival_date=today + timedelta(days=3),
+        truck_number="327XYZ02",
+    )
+    too_old = _order(
+        client, "shipped", timezone.now() - timedelta(days=40), truck_number="327OLD03"
+    )
+    other_plate = _order(client, "confirmed", truck_number="555AAA01")
+    _order(client, "pending", truck_number="327PEN04")
+
+    response = auth_client(operator).get("/api/orders/?post_board=1&search=327")
+
+    assert response.status_code == 200
+    assert _ids(response) == {old_trip.id, future_trip.id}
+    assert too_old.id not in _ids(response)
+    assert other_plate.id not in _ids(response)
+
+
+def test_post_board_search_matches_client_and_order_number(auth_client, operator):
+    magnum = Client.objects.create_with_user(
+        first_name="Магнум", last_name="Плюс", phone="9"
+    )
+    other = Client.objects.create_with_user(first_name="Другой", phone="10")
+    by_client = _order(magnum, "confirmed", arrival_date=timezone.localdate() + timedelta(days=1))
+    by_number = _order(other, "loaded")
+    _order(other, "confirmed")
+
+    client = auth_client(operator)
+    assert _ids(client.get("/api/orders/?post_board=1&search=Магн")) == {by_client.id}
+    assert _ids(client.get(f"/api/orders/?post_board=1&search={by_number.id}")) == {by_number.id}
+    assert _ids(client.get("/api/orders/?post_board=1&search=%20%20")) >= {by_number.id}
+
+
+def test_post_board_search_matches_plate_typed_with_spaces(auth_client, operator):
+    """Номер хранится слитно (327XXX17), а оператор набирает «327 XXX 17»."""
+    client = Client.objects.create_with_user(first_name="Board", last_name="Plate", phone="11")
+    spaced = _order(client, "loading", truck_number="327XXX17")
+    _order(client, "loading", truck_number="327YYY17")
+
+    response = auth_client(operator).get(
+        "/api/orders/", {"post_board": "1", "search": "327 XXX 17"}
+    )
+
+    assert response.status_code == 200
+    assert _ids(response) == {spaced.id}
+
+
+def test_post_board_search_with_unicode_digit_is_not_an_order_number(auth_client, operator):
+    """``"²".isdigit()`` истинно, но ``int("²")`` падает — поиск не отдаёт 500."""
+    client = Client.objects.create_with_user(first_name="Board", last_name="Digit", phone="12")
+    _order(client, "loading", truck_number="327ZZZ17")
+
+    response = auth_client(operator).get("/api/orders/", {"post_board": "1", "search": "²"})
+
+    assert response.status_code == 200
+    assert _ids(response) == set()
+
+
+def test_post_board_rejects_garbage_day(auth_client, operator):
+    response = auth_client(operator).get("/api/orders/?post_board=1&day=yesterday")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "bad_date"
 
 
 def test_dashboard_operational_returns_authoritative_data(

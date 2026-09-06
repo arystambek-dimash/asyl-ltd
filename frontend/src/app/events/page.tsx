@@ -11,6 +11,7 @@ import { ErrorAlert } from "@/components/ui/data-state";
 import { LoadMore } from "@/components/ui/load-more";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useDebounced } from "@/lib/use-debounced";
+import { groupByDay } from "@/lib/day-groups";
 import { useLocalDay } from "@/lib/use-local-day";
 import { translateOrderStatusMessage } from "@/lib/constants";
 import {
@@ -50,11 +51,6 @@ const EVENT_META: Record<string, EventMeta> = {
 };
 
 const FALLBACK_META: EventMeta = { label: "Событие", icon: Activity, color: "var(--muted-foreground)" };
-const EVENT_DAY_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
-  day: "numeric",
-  month: "long",
-  year: "numeric",
-});
 const EVENT_TIME_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
   hour: "2-digit",
   minute: "2-digit",
@@ -63,15 +59,6 @@ const EVENTS_PER_PAGE = 100;
 
 function metaFor(eventType: string): EventMeta {
   return EVENT_META[eventType] ?? { ...FALLBACK_META, label: eventType };
-}
-
-function dateGroupLabel(d: Date, currentDay: string): string {
-  const today = new Date(`${currentDay}T12:00:00`);
-  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const diffDays = Math.round((startOf(today) - startOf(d)) / 86_400_000);
-  if (diffDays === 0) return "Сегодня";
-  if (diffDays === 1) return "Вчера";
-  return EVENT_DAY_FORMATTER.format(d);
 }
 
 function EventsPageInner() {
@@ -109,20 +96,7 @@ function EventsPageInner() {
   } = usePagedApi<EventLog>(url, EVENTS_PER_PAGE);
 
   // Группируем события по календарному дню (сохраняя порядок ленты).
-  const groups = useMemo(() => {
-    const out: { key: string; label: string; items: EventLog[] }[] = [];
-    for (const e of events) {
-      const d = new Date(e.created_at);
-      const key = d.toDateString();
-      let g = out[out.length - 1];
-      if (!g || g.key !== key) {
-        g = { key, label: dateGroupLabel(d, currentDay), items: [] };
-        out.push(g);
-      }
-      g.items.push(e);
-    }
-    return out;
-  }, [currentDay, events]);
+  const groups = useMemo(() => groupByDay(events, (e) => new Date(e.created_at), currentDay), [currentDay, events]);
 
   const hasFilters = Boolean(type || order || search || dateFrom || dateTo);
 

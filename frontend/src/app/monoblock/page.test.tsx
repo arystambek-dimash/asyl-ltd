@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -7,6 +7,7 @@ import MonoblockPage from "./page";
 
 const mocks = vi.hoisted(() => ({
   me: null as Me | null,
+  today: "2026-09-06",
   urls: [] as (string | null)[],
   cameras: [] as Array<Record<string, unknown>>,
   alwaysOnSources: [] as string[],
@@ -31,11 +32,13 @@ vi.mock("@/lib/use-visible-polling", () => ({
   useVisiblePolling: () => undefined,
 }));
 
+vi.mock("@/lib/use-local-day", () => ({ useLocalDay: () => mocks.today }));
+
 vi.mock("@/lib/use-api", () => ({
   useApi: (url: string | null) => {
     mocks.urls.push(url);
     let data: unknown = null;
-    if (url === "/orders/?post_board=1" || url === "/cameras/ai/sessions/") data = [];
+    if (url?.startsWith("/orders/?post_board=1") || url === "/cameras/ai/sessions/") data = [];
     if (url === "/cameras/") data = mocks.cameras;
     if (url === "/cameras/monoblock-settings/") {
       data = {
@@ -193,8 +196,16 @@ const employee: Me = {
   sales_department: null,
 };
 
+/** Плитка StatCard по подписи: подпись и значение лежат в разных узлах. */
+function statCard(label: string) {
+  const card = screen.getByText(label).closest(".rounded-lg");
+  if (!(card instanceof HTMLElement)) throw new Error(`Плитка «${label}» не найдена`);
+  return within(card);
+}
+
 beforeEach(() => {
   mocks.me = employee;
+  mocks.today = "2026-09-06";
   mocks.urls = [];
   mocks.cameras = [];
   mocks.alwaysOnSources = [];
@@ -309,8 +320,8 @@ describe("доступ к AI 24/7 на странице моноблока", () 
     render(<MonoblockPage />);
     await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
 
-    expect(screen.getByText(/Сегодня:\s*—/)).toBeInTheDocument();
-    expect(screen.getAllByText(/Всего:\s*—/)).not.toHaveLength(0);
+    expect(statCard("Сегодня").getByText("—")).toBeInTheDocument();
+    expect(statCard("Всего").getByText("—")).toBeInTheDocument();
   });
 
   it("при ошибке analytics API показывает прочерк даже при старом успешном payload", async () => {
@@ -324,8 +335,8 @@ describe("доступ к AI 24/7 на странице моноблока", () 
     render(<MonoblockPage />);
     await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
 
-    expect(screen.getByText(/Сегодня:\s*—/)).toBeInTheDocument();
-    expect(screen.getAllByText(/Всего:\s*—/)).not.toHaveLength(0);
+    expect(statCard("Сегодня").getByText("—")).toBeInTheDocument();
+    expect(statCard("Всего").getByText("—")).toBeInTheDocument();
   });
 
   it("не показывает вкладку и не запрашивает мониторинг техническому моноблоку", () => {
@@ -389,5 +400,84 @@ describe("гейтинг данных вкладки «Отгрузка»", () =
     expect(screen.getByRole("button", { name: /Отгруженные: сегодня/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Камеры моноблока/ })).toBeInTheDocument();
     expect(mocks.urls).toContain("/cameras/shipping-settings/");
+  });
+});
+
+describe("день и поиск очереди отгрузки", () => {
+  const boardUrls = () => mocks.urls.filter((url) => url?.startsWith("/orders/"));
+  const historyUrls = () => mocks.urls.filter((url) => url?.startsWith("/cameras/ai/history/"));
+
+  it("по умолчанию запрашивает доску без фильтров", () => {
+    mocks.me = { ...employee, permissions: ["shipping.load", "shipping.view"] };
+    render(<MonoblockPage />);
+
+    expect(boardUrls().at(-1)).toBe("/orders/?post_board=1");
+    expect(historyUrls().at(-1)).toBe("/cameras/ai/history/?post_board=1");
+    expect(screen.getByLabelText("Поиск")).toBeInTheDocument();
+    expect(screen.getByLabelText("День")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Сегодня" })).toBeDisabled();
+  });
+
+  it("выбранный день уходит в запрос доски и истории, «Сегодня» его сбрасывает", async () => {
+    mocks.me = { ...employee, permissions: ["shipping.load", "shipping.view"] };
+    const user = userEvent.setup();
+    render(<MonoblockPage />);
+
+    fireEvent.change(screen.getByLabelText("День"), { target: { value: "2025-12-31" } });
+
+    expect(boardUrls().at(-1)).toBe("/orders/?post_board=1&day=2025-12-31");
+    expect(historyUrls().at(-1)).toBe("/cameras/ai/history/?post_board=1&day=2025-12-31");
+    expect(screen.getByText("Показан день 31.12.2025")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Сегодня" }));
+
+    expect(boardUrls().at(-1)).toBe("/orders/?post_board=1");
+    expect(screen.queryByText(/Показан день/)).not.toBeInTheDocument();
+  });
+
+  it("выбор сегодняшней даты не замораживает киоск на вчера после полуночи", () => {
+    mocks.me = { ...employee, permissions: ["shipping.load", "shipping.view"] };
+    const { rerender } = render(<MonoblockPage />);
+
+    fireEvent.change(screen.getByLabelText("День"), { target: { value: "2026-09-06" } });
+    expect(boardUrls().at(-1)).toBe("/orders/?post_board=1");
+    expect(screen.getByRole("button", { name: "Сегодня" })).toBeDisabled();
+
+    mocks.today = "2026-09-07";
+    rerender(<MonoblockPage />);
+
+    expect(boardUrls().at(-1)).toBe("/orders/?post_board=1");
+    expect(screen.getByLabelText("День")).toHaveValue("2026-09-07");
+    expect(screen.getByRole("button", { name: "Сегодня" })).toBeDisabled();
+    expect(screen.queryByText(/Показан день/)).not.toBeInTheDocument();
+  });
+
+  it("поиск уходит в запрос после задержки ввода", async () => {
+    const user = userEvent.setup();
+    render(<MonoblockPage />);
+
+    await user.type(screen.getByLabelText("Поиск"), "327 ABC");
+
+    // До задержки ввода строки ещё принадлежат очереди — шапка не обещает результаты.
+    expect(boardUrls().at(-1)).toBe("/orders/?post_board=1");
+    expect(screen.getByText("Очередь отгрузки")).toBeInTheDocument();
+    expect(screen.getByLabelText("День")).toBeEnabled();
+    await waitFor(() => expect(boardUrls().at(-1)).toBe("/orders/?post_board=1&search=327%20ABC"));
+    expect(screen.getByText("Результаты поиска")).toBeInTheDocument();
+    expect(screen.getByLabelText("День")).toBeDisabled();
+  });
+
+  it("киоск тоже видит поиск и выбор дня", () => {
+    mocks.me = {
+      ...employee,
+      username: "monoblock-cam2",
+      is_monoblock: true,
+      monoblock_name: "Моноблок 2",
+      monoblock_camera: "cam2",
+    };
+    render(<MonoblockPage />);
+
+    expect(screen.getByLabelText("Поиск")).toBeInTheDocument();
+    expect(screen.getByLabelText("День")).toBeInTheDocument();
   });
 });

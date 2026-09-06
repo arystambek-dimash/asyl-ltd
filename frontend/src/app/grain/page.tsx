@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Camera, Check, Plus, ScanLine, TrainFront, Truck } from "lucide-react";
+import { ArrowRight, Camera, Check, Plus, ScanLine, Search, TrainFront, Truck } from "lucide-react";
 import { GrainToolbar } from "@/components/grain/grain-toolbar";
 import { UnassignedWeighingsPanel } from "@/components/grain/unassigned-weighings";
 import { AppShell } from "@/components/layout/app-shell";
@@ -24,6 +24,8 @@ import { can } from "@/lib/can";
 import { formatKg } from "@/lib/grain";
 import type { GrainSilo, GrainSupply, GrainType, GrainWagon, VehiclePlateCandidate } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
+import { useDebounced } from "@/lib/use-debounced";
+import { useLocalDay } from "@/lib/use-local-day";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { formatDateTime } from "@/lib/utils";
@@ -49,6 +51,34 @@ const PASSAGE_TABS = [
   { key: "finished", label: "Завершённые" },
   { key: "camera", label: "Камера проходной", icon: ScanLine },
 ];
+
+/**
+ * Адрес списка рейсов. scope и direction идут первыми, фильтры — только
+ * когда заданы. День завершённых — это один календарный день: date_from и
+ * date_to совпадают, бэкенд сравнивает с датой выезда.
+ */
+function wagonsUrl(tab: GrainTab, direction: GrainDirection, finishedDay: string, search: string): string | null {
+  if (tab !== "on_site" && tab !== "finished") return null;
+  const query = new URLSearchParams({ scope: tab, direction });
+  if (tab === "finished" && finishedDay) {
+    query.set("date_from", finishedDay);
+    query.set("date_to", finishedDay);
+  }
+  if (search) query.set("search", search);
+  return `/grain/wagons/?${query.toString()}`;
+}
+
+const EMPTY_LIST_TEXT = {
+  intake: { on_site: "На территории нет поездов на приём", finished: "Завершённых приходов пока нет" },
+  passage: { on_site: "На территории нет машин на вывоз", finished: "Завершённых вывозов пока нет" },
+} as const;
+
+/** Пустая таблица объясняет, почему пусто: фильтр, день или действительно нет рейсов. */
+function wagonsEmptyText(direction: GrainDirection, tab: GrainTab, finishedDay: string, search: string): string {
+  if (search) return "По запросу ничего не найдено";
+  if (tab === "finished" && finishedDay) return "За этот день завершённых рейсов нет";
+  return EMPTY_LIST_TEXT[direction][tab === "finished" ? "finished" : "on_site"];
+}
 
 function GrainTypeCreator({ onCreated, onCancel }: { onCreated: (type: GrainType) => void; onCancel: () => void }) {
   const [name, setName] = useState("");
@@ -685,20 +715,35 @@ function GrainPageInner() {
   const [passageOpen, setPassageOpen] = useState(false);
   const [arrivalSupply, setArrivalSupply] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
+  // Завершённые по умолчанию идут за календарём: null — «сегодня» по часам
+  // страницы (после полуночи день сменится сам), '' — все дни, строка —
+  // явно выбранный день.
+  const today = useLocalDay();
+  const [finishedDay, setFinishedDay] = useState<string | null>(null);
+  const effectiveFinishedDay = finishedDay ?? today;
+  const [search, setSearch] = useState("");
+  // Поиск не должен дёргать API на каждую букву.
+  const debouncedSearch = useDebounced(search.trim());
+  const listTab = tab === "on_site" || tab === "finished";
+  // Архив («Все дни») не опрашиваем: опрос сбрасывал бы список на первую
+  // страницу и схлопывал «Показать ещё» во время просмотра старых дней.
+  const pollWagons = listTab && !(tab === "finished" && !effectiveFinishedDay);
 
   const supplies = usePagedApi<GrainSupply>(
     direction === "intake" && tab === "expected" ? "/grain/supplies/?status=expected&awaiting_arrival=1" : null,
     50,
   );
-  const wagons = usePagedApi<GrainWagon>(
-    tab === "on_site" || tab === "finished" ? `/grain/wagons/?scope=${tab}&direction=${direction}` : null,
-    50,
-  );
+  const wagons = usePagedApi<GrainWagon>(wagonsUrl(tab, direction, effectiveFinishedDay, debouncedSearch), 50);
   const arrivalSupplies = usePagedApi<GrainSupply>(
     arriveOpen ? "/grain/supplies/?status=expected&awaiting_arrival=1" : null,
     100,
   );
-  useVisiblePolling(wagons.reload, 10_000, tab === "on_site" || tab === "finished");
+  useVisiblePolling(wagons.reload, 10_000, pollWagons);
+
+  /** Выбор сегодняшней даты возвращает режим «за календарём», а не замораживает день. */
+  function pickFinishedDay(value: string) {
+    setFinishedDay(value === today ? null : value);
+  }
 
   function refreshAll() {
     void supplies.reload();
@@ -780,6 +825,36 @@ function GrainPageInner() {
           label="Статус рейсов"
         />
 
+        {listTab && (
+          <div className="flex flex-wrap items-center gap-2">
+            {tab === "finished" && (
+              <>
+                <Input
+                  type="date"
+                  aria-label="День"
+                  value={effectiveFinishedDay}
+                  onChange={(event) => pickFinishedDay(event.target.value)}
+                  className="w-auto"
+                />
+                <Button variant="ghost" size="sm" disabled={!effectiveFinishedDay} onClick={() => setFinishedDay("")}>
+                  Все дни
+                </Button>
+              </>
+            )}
+            <div className="relative w-full sm:ml-auto sm:w-72">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+              <Input
+                type="search"
+                aria-label="Поиск"
+                className="pl-8"
+                placeholder="Номер, груз, поставщик"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </div>
+          </div>
+        )}
+
         {notice && (
           <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
             {notice}
@@ -811,24 +886,22 @@ function GrainPageInner() {
         ) : (
           <>
             {wagons.error && <ErrorAlert message={wagons.error} onRetry={() => void wagons.reload()} />}
-            <WagonTable
-              wagons={wagons.items}
-              me={me}
-              direction={direction}
-              emptyText={
-                direction === "intake"
-                  ? tab === "on_site"
-                    ? "На территории нет поездов на приём"
-                    : "Завершённых приходов пока нет"
-                  : tab === "on_site"
-                    ? "На территории нет машин на вывоз"
-                    : "Завершённых вывозов пока нет"
-              }
-              onDeleted={() => {
-                setNotice(tab === "finished" ? "Рейс удалён, остаток силоса пересчитан." : "Активный рейс удалён.");
-                refreshAll();
-              }}
-            />
+            {/* Первая загрузка списка: пока строк нет, показываем заглушку, а не
+                «ничего не найдено». При опросе строки уже есть — таблица остаётся. */}
+            {wagons.loading && wagons.items.length === 0 ? (
+              <DataGate loading />
+            ) : (
+              <WagonTable
+                wagons={wagons.items}
+                me={me}
+                direction={direction}
+                emptyText={wagonsEmptyText(direction, tab, effectiveFinishedDay, debouncedSearch)}
+                onDeleted={() => {
+                  setNotice(tab === "finished" ? "Рейс удалён, остаток силоса пересчитан." : "Активный рейс удалён.");
+                  refreshAll();
+                }}
+              />
+            )}
             <LoadMore
               shown={wagons.items.length}
               total={wagons.count}

@@ -41,6 +41,7 @@ import { RequirePerm } from "@/components/require-perm";
 import { CompletedOrdersSettingsModal } from "@/components/shipping/completed-orders-settings-modal";
 import { ShippingTable } from "@/components/shipping/shipping-table";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -48,8 +49,7 @@ import { Modal } from "@/components/ui/modal";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { StatCard } from "@/components/ui/stat-card";
 import { Tabs, type TabDef } from "@/components/ui/tabs";
-import { motion } from "motion/react";
-import { ColorDot, Eyebrow, Hairline, Metric, Panel, SectionHead } from "@/components/monoblock/ui";
+import { ColorDot, Hairline, Metric, Panel, SectionHead, StatusChip } from "@/components/monoblock/ui";
 import { brandMeta } from "@/lib/monoblock-brands";
 import { colorMeta, normalizedColor } from "@/lib/monoblock-colors";
 import { api, apiError } from "@/lib/api";
@@ -77,9 +77,10 @@ import type {
 } from "@/lib/types";
 import { dayColorBreakdown, fullDay, shortDay } from "@/lib/day-analytics";
 import { useApi } from "@/lib/use-api";
-import { useRovingTabs } from "@/lib/use-roving-tabs";
+import { useDebounced } from "@/lib/use-debounced";
+import { useLocalDay } from "@/lib/use-local-day";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
-import { cn, pluralRu } from "@/lib/utils";
+import { cn, formatIsoDate, pluralRu } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 
 // Заказы — как на посту: 30 с слишком медленно для очереди, 10 с достаточно.
@@ -97,7 +98,8 @@ const DETECTIONS_STALE_MS = 2_500;
 // каждые 3 секунды на экране, который висит открытым весь день.
 const SLOW_POLL_MS = 30_000;
 const ALWAYS_ON_MODAL_VIEWS = ["live", "production", "analytics"] as const;
-const SHIPPING_MODAL_VIEWS: readonly (typeof ALWAYS_ON_MODAL_VIEWS)[number][] = ["live", "analytics"];
+type ModalView = (typeof ALWAYS_ON_MODAL_VIEWS)[number];
+const SHIPPING_MODAL_VIEWS: readonly ModalView[] = ["live", "analytics"];
 type MonoblockTab = "shipments" | "monoblock";
 
 /** Заказ, занимающий камеру отгрузки, — подпись плитки. */
@@ -108,11 +110,16 @@ interface ShippingTileBinding {
   target: number | null;
 }
 
-const MODAL_TABS: { key: (typeof ALWAYS_ON_MODAL_VIEWS)[number]; label: string; icon: LucideIcon }[] = [
+const MODAL_TABS: { key: ModalView; label: string; icon: LucideIcon }[] = [
   { key: "live", label: "Прямой эфир", icon: Video },
   { key: "production", label: "Выпуск и склад", icon: PackageCheck },
   { key: "analytics", label: "Аналитика", icon: BarChart3 },
 ];
+
+/** Панель вкладки модалки: общий Tabs не связывает панели по id, роль и подпись ставим сами. */
+function modalPanelProps(view: ModalView) {
+  return { role: "tabpanel" as const, "aria-label": MODAL_TABS.find((tab) => tab.key === view)?.label };
+}
 
 function CameraChoice({
   camera,
@@ -752,7 +759,6 @@ function AlwaysOnCard({
   analyticsError,
   canManage,
   scope = "ai_247",
-  variant = "card",
   bound,
 }: {
   processor: AlwaysOnProcessorStatus;
@@ -763,9 +769,7 @@ function AlwaysOnCard({
   analyticsError?: string;
   canManage: boolean;
   scope?: "shipping" | "ai_247";
-  /** tile — тёмная плитка полосы камер отгрузки; меняется только триггер, модалка та же. */
-  variant?: "card" | "tile";
-  /** Заказ, за которым закреплена камера (сессия или loading_camera). */
+  /** Заказ, за которым закреплена камера отгрузки (сессия или loading_camera). */
   bound?: ShippingTileBinding;
 }) {
   const isShipping = scope === "shipping";
@@ -775,13 +779,7 @@ function AlwaysOnCard({
   const modalViews = isShipping ? SHIPPING_MODAL_VIEWS : ALWAYS_ON_MODAL_VIEWS;
   const visibleModalTabs = MODAL_TABS.filter((tab) => modalViews.includes(tab.key));
   const [open, setOpen] = useState(false);
-  const [modalView, setModalView] = useState<(typeof ALWAYS_ON_MODAL_VIEWS)[number]>("live");
-  const modalTabs = useRovingTabs({
-    tabs: modalViews,
-    active: modalView,
-    onChange: setModalView,
-    label: "Режим мониторинга камеры",
-  });
+  const [modalView, setModalView] = useState<ModalView>("live");
   const [streamOnline, setStreamOnline] = useState(false);
   // Рамки модели можно скрыть: иногда оператору нужно посмотреть на сам кадр.
   const [showDetections, setShowDetections] = useState(true);
@@ -1216,86 +1214,37 @@ function AlwaysOnCard({
       : inSession || bound
         ? { dot: "bg-[var(--ring)]", label: "идёт погрузка" }
         : current.running
-          ? { dot: "bg-[var(--success)]", label: "фоновый подсчёт" }
+          ? { dot: "bg-[var(--success)]", label: isShipping ? "фоновый подсчёт" : "считает 24/7" }
           : { dot: "bg-[var(--warning)]", label: "переподключение" };
+  // Вторая строка плитки: камере отгрузки важен занявший её заказ, камере
+  // AI 24/7 — есть ли мешки в кадре прямо сейчас.
+  const tileDetail = isShipping
+    ? bound
+      ? `#${bound.orderId} · ${bound.clientName} · ${bound.total}/${bound.target ?? "—"}`
+      : "свободна"
+    : `Мешки в кадре: ${bagsPresent === true ? "есть" : bagsPresent === false ? "нет" : "нет данных"}`;
 
   return (
     <>
-      {variant === "tile" ? (
-        <button
-          type="button"
-          onClick={showStream}
-          aria-label={`Открыть прямой эфир камеры ${camera?.zone || processor.cam}`}
-          className="relative block aspect-[16/7] w-full overflow-hidden rounded-lg bg-[#141416] text-left focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/50 xl:aspect-video"
-        >
-          <span className="absolute left-3 top-3 flex items-center gap-1.5 text-[11px] text-white/80">
-            <span className={cn("size-2 rounded-full", tileStatus.dot)} />
-            {tileStatus.label}
-          </span>
-          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-right">
-            <span className="block text-[28px] font-semibold leading-none tabular-nums text-white">{todayDisplay}</span>
-            <span className="mt-1 block text-[11px] text-white/60">сегодня</span>
-          </span>
-          <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-3 pb-2.5 pt-6">
-            <span className="block truncate text-[14px] font-medium text-white">{camera?.zone || processor.cam}</span>
-            <span className="block truncate text-[12px] text-white/70">
-              {bound ? `#${bound.orderId} · ${bound.clientName} · ${bound.total}/${bound.target ?? "—"}` : "свободна"}
-            </span>
-          </span>
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={showStream}
-          aria-label={`Открыть прямой эфир камеры ${camera?.zone || processor.cam}`}
-          className="group relative w-full overflow-hidden rounded-[20px] border border-slate-200 bg-white p-4 text-left shadow-[0_10px_32px_rgba(44,65,103,0.06)] transition duration-200 hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_16px_38px_rgba(44,65,103,0.12)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-        >
-          <span className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-blue-500 to-emerald-400" />
-          <span className="flex items-start gap-3">
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 transition group-hover:bg-blue-600 group-hover:text-white">
-              <Cpu className="size-5" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-bold text-slate-800">{camera?.zone || processor.cam}</span>
-                <span className="text-right">
-                  <span className="block text-2xl font-black tabular-nums tracking-tight text-slate-900">
-                    {todayDisplay}
-                  </span>
-                  <span className="block text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-                    сегодня
-                  </span>
-                </span>
-              </span>
-              <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
-                <span className="flex items-center gap-1.5">
-                  <span
-                    className={cn(
-                      "size-1.5 rounded-full",
-                      current.running ? "animate-pulse bg-emerald-400" : "bg-amber-400",
-                    )}
-                  />
-                  {inSession ? "режим отгрузки" : current.running ? "фоновый подсчёт" : "переподключение"}
-                </span>
-                <span>{inSession ? "AI-видео отгрузки" : "технический архив 48 ч"}</span>
-                <span
-                  className={cn(
-                    "font-semibold",
-                    bagsPresent === true
-                      ? "text-emerald-600"
-                      : bagsPresent === false
-                        ? "text-slate-500"
-                        : "text-amber-600",
-                  )}
-                >
-                  Мешки в кадре: {bagsPresent === true ? "есть" : bagsPresent === false ? "нет" : "нет данных"}
-                </span>
-                <span className="ml-auto font-semibold text-slate-500">Всего: {allTimeDisplay}</span>
-              </span>
-            </span>
-          </span>
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={showStream}
+        aria-label={`Открыть прямой эфир камеры ${camera?.zone || processor.cam}`}
+        className="relative block aspect-[16/7] w-full overflow-hidden rounded-lg bg-[#141416] text-left focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/50 xl:aspect-video"
+      >
+        <span className="absolute left-3 top-3 flex items-center gap-1.5 text-[11px] text-white/80">
+          <span className={cn("size-2 rounded-full", tileStatus.dot)} />
+          {tileStatus.label}
+        </span>
+        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-right">
+          <span className="block text-[28px] font-semibold leading-none tabular-nums text-white">{todayDisplay}</span>
+          <span className="mt-1 block text-[11px] text-white/60">сегодня</span>
+        </span>
+        <span className="absolute inset-x-0 bottom-0 px-3 pb-2.5">
+          <span className="block truncate text-[14px] font-medium text-white">{camera?.zone || processor.cam}</span>
+          <span className="block truncate text-[12px] text-white/70">{tileDetail}</span>
+        </span>
+      </button>
 
       <Modal
         open={open}
@@ -1310,44 +1259,22 @@ function AlwaysOnCard({
         className="max-w-5xl"
         mobileFullscreen
       >
-        <div
-          {...modalTabs.tabListProps}
-          className="mb-4 flex w-full gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-slate-100 p-1 sm:w-auto sm:inline-flex"
-        >
-          {visibleModalTabs.map((tab) => {
-            const active = modalView === tab.key;
-            const Icon = tab.icon;
-            return (
-              <button
-                type="button"
-                key={tab.key}
-                {...modalTabs.getTabProps(tab.key)}
-                className={cn(
-                  "relative flex shrink-0 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition sm:flex-none sm:px-4",
-                  active ? "text-slate-900" : "text-slate-500 hover:text-slate-800",
-                )}
-              >
-                {active && (
-                  <motion.span
-                    layoutId="modal-tab-pill"
-                    transition={{ type: "spring", stiffness: 420, damping: 34 }}
-                    className="absolute inset-0 rounded-lg bg-white shadow-sm motion-reduce:transition-none"
-                  />
-                )}
-                <span className="relative z-10 flex items-center gap-2">
-                  <Icon className="size-4" /> {tab.label}
-                </span>
-              </button>
-            );
-          })}
-        </div>
+        <Tabs
+          tabs={visibleModalTabs}
+          active={modalView}
+          onChange={(key) => setModalView(key as ModalView)}
+          variant="segment"
+          label="Режим мониторинга камеры"
+          className="mb-4 max-w-full overflow-x-auto [&>button]:shrink-0 [&>button]:whitespace-nowrap"
+        />
 
         {modalView === "live" ? (
           <div
-            {...modalTabs.getTabPanelProps("live")}
-            className="grid overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 shadow-[0_24px_70px_rgba(15,23,42,0.22)] sm:rounded-[22px] lg:grid-cols-[minmax(0,1fr)_260px]"
+            {...modalPanelProps("live")}
+            className="grid overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--card)] lg:grid-cols-[minmax(0,1fr)_260px]"
           >
-            <div className="relative aspect-video min-h-0 overflow-hidden bg-[#111827] lg:aspect-auto lg:min-h-[460px]">
+            {/* Видео остаётся тёмным, как плитки: на чёрном кадре рамки и линия читаются лучше. */}
+            <div className="relative aspect-video min-h-0 overflow-hidden bg-[#141416] lg:aspect-auto lg:min-h-[460px]">
               {camera?.src ? (
                 <CameraStream
                   src={camera.src}
@@ -1371,16 +1298,16 @@ function AlwaysOnCard({
                 </>
               )}
               {!streamOnline && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950 text-white/45">
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#141416] text-white/45">
                   <VideoOff className="size-8" />
                   <span className="text-sm">Подключаем прямой поток…</span>
                 </div>
               )}
-              <div className="absolute left-2.5 top-2.5 flex items-center gap-2 rounded-full border border-white/15 bg-black/45 px-2.5 py-1 text-[10px] font-semibold text-white backdrop-blur-md sm:left-4 sm:top-4 sm:px-3 sm:py-1.5 sm:text-xs">
+              <div className="absolute left-2.5 top-2.5 flex items-center gap-2 rounded-full border border-white/15 bg-black/45 px-2.5 py-1 text-[11px] font-medium text-white backdrop-blur-md sm:left-4 sm:top-4 sm:px-3 sm:py-1.5 sm:text-xs">
                 <span
-                  className={cn("size-2 rounded-full", streamOnline ? "animate-pulse bg-emerald-400" : "bg-amber-400")}
+                  className={cn("size-2 rounded-full", streamOnline ? "bg-[var(--success)]" : "bg-[var(--warning)]")}
                 />
-                {streamOnline ? "ПРЯМОЙ ЭФИР" : "ПОДКЛЮЧЕНИЕ"}
+                {streamOnline ? "В эфире" : "Подключение"}
               </div>
               {streamOnline && (
                 <button
@@ -1388,10 +1315,10 @@ function AlwaysOnCard({
                   onClick={() => setShowDetections((current) => !current)}
                   aria-pressed={showDetections}
                   className={cn(
-                    "absolute right-2.5 top-2.5 flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold backdrop-blur-md transition sm:right-4 sm:top-4 sm:px-3 sm:py-1.5 sm:text-xs",
+                    "absolute right-2.5 top-2.5 flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium backdrop-blur-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] sm:right-4 sm:top-4 sm:px-3 sm:py-1.5 sm:text-xs",
                     showDetections
-                      ? "border-emerald-400/40 bg-emerald-500/20 text-emerald-100"
-                      : "border-white/15 bg-black/45 text-white/60 hover:text-white",
+                      ? "border-[var(--success)]/50 bg-[var(--success)]/25 text-white"
+                      : "border-white/15 bg-black/45 text-white/70",
                   )}
                 >
                   <ScanLine className="size-3.5" />
@@ -1405,61 +1332,64 @@ function AlwaysOnCard({
                   нельзя: оператор видит включённую кнопку и пустое видео и
                   считает, что сломалась модель, хотя счёт при этом идёт. */}
               {streamOnline && showDetections && current.running && current.detections === undefined && (
-                <div className="absolute bottom-2.5 left-2.5 right-2.5 rounded-lg border border-amber-400/30 bg-black/70 px-3 py-2 text-[11px] text-amber-100 backdrop-blur-md sm:bottom-4 sm:left-4 sm:right-auto sm:max-w-md">
+                <div className="absolute bottom-2.5 left-2.5 right-2.5 rounded-md border border-[var(--warning)]/50 bg-black/70 px-3 py-2 text-[11px] text-white/85 backdrop-blur-md sm:bottom-4 sm:left-4 sm:right-auto sm:max-w-md">
                   Рамки недоступны: на ПК цеха стоит версия AI-сервиса без их передачи. Счёт мешков при этом работает —
                   обновите сервис, чтобы увидеть распознавание.
                 </div>
               )}
             </div>
 
-            <aside className="flex flex-col justify-between border-t border-white/10 bg-slate-900 p-4 text-white sm:p-5 lg:border-l lg:border-t-0">
+            <aside className="flex flex-col justify-between gap-5 border-t border-[var(--border)] p-4 sm:p-5 lg:border-l lg:border-t-0">
               <div>
-                <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/45">
-                  <CalendarDays className="size-3.5" /> Реальный итог за сегодня
-                </div>
-                <div className="mt-1 text-5xl font-black tabular-nums tracking-tight sm:mt-2 sm:text-7xl">
-                  {todayDisplay}
-                </div>
-                <div className="mt-1 text-sm text-white/45">
-                  {analyticsAvailable ? "мешков · накоплено CRM" : "аналитика не синхронизирована"}
+                <Metric
+                  label={
+                    <span className="inline-flex items-center gap-1.5">
+                      <CalendarDays className="size-3.5" /> Реальный итог за сегодня
+                    </span>
+                  }
+                  value={todayDisplay}
+                  unit={analyticsAvailable ? "меш." : undefined}
+                />
+                <div className="mt-1 text-[12px] text-[var(--muted-foreground)]">
+                  {analyticsAvailable ? "накоплено CRM" : "аналитика не синхронизирована"}
                 </div>
 
-                <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:mt-7 sm:block sm:space-y-2.5 sm:text-sm">
-                  <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
-                    <span className="text-white/55">За всё время</span>
-                    <span className="font-semibold tabular-nums">{allTimeDisplay}</span>
+                <div className="mt-4 grid grid-cols-2 gap-x-4 text-[13px] sm:mt-6 sm:block">
+                  <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] py-2">
+                    <span className="text-[var(--muted-foreground)]">За всё время</span>
+                    <span className="font-medium tabular-nums text-[var(--foreground)]">{allTimeDisplay}</span>
                   </div>
-                  <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
-                    <span className="text-white/55">Текущий цикл</span>
-                    <span className="font-semibold tabular-nums">{currentCycleDisplay}</span>
+                  <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] py-2">
+                    <span className="text-[var(--muted-foreground)]">Текущий цикл</span>
+                    <span className="font-medium tabular-nums text-[var(--foreground)]">{currentCycleDisplay}</span>
                   </div>
-                  <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
-                    <span className="text-white/55">Модель</span>
-                    <span className={cn("font-semibold", current.running ? "text-emerald-400" : "text-amber-300")}>
+                  <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] py-2">
+                    <span className="text-[var(--muted-foreground)]">Модель</span>
+                    <StatusChip tone={current.running ? "ok" : "warn"}>
                       {current.running ? "работает" : "ожидает связь"}
-                    </span>
+                    </StatusChip>
                   </div>
-                  <div className="flex items-center justify-between rounded-xl bg-white/[0.06] px-3 py-2.5">
-                    <span className="text-white/55">Режим</span>
-                    <span className="font-semibold">{inSession ? "отгрузка" : "24/7"}</span>
+                  <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] py-2">
+                    <span className="text-[var(--muted-foreground)]">Режим</span>
+                    <span className="font-medium text-[var(--foreground)]">{inSession ? "отгрузка" : "24/7"}</span>
                   </div>
                   {(currentDaily?.adjustment ?? 0) < 0 && (
-                    <div className="col-span-2 flex items-center justify-between rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5">
-                      <span className="text-amber-100/65">Корректировка</span>
-                      <span className="font-semibold tabular-nums text-amber-200">{currentDaily?.adjustment}</span>
+                    <div className="col-span-2 flex items-center justify-between gap-3 border-b border-[var(--border)] py-2">
+                      <span className="text-[var(--muted-foreground)]">Корректировка</span>
+                      <span className="font-medium tabular-nums text-[var(--warning)]">{currentDaily?.adjustment}</span>
                     </div>
                   )}
                 </div>
               </div>
               {(!analyticsAvailable || current.error || liveDetail) && (
-                <p className="mt-5 rounded-xl border border-amber-300/15 bg-amber-300/10 px-3 py-2.5 text-xs leading-relaxed text-amber-100/80">
+                <p className="rounded-md border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2.5 text-[12px] leading-relaxed text-[var(--foreground)]">
                   {!analyticsAvailable ? analyticsDetail : current.error || liveDetail}
                 </p>
               )}
             </aside>
           </div>
         ) : modalView === "production" ? (
-          <div {...modalTabs.getTabPanelProps("production")}>
+          <div {...modalPanelProps("production")}>
             <AlwaysOnProductionPanel
               payload={production}
               loading={productionLoading}
@@ -1471,10 +1401,10 @@ function AlwaysOnCard({
             />
           </div>
         ) : modalView === "analytics" ? (
-          <div {...modalTabs.getTabPanelProps("analytics")} className="space-y-4">
+          <div {...modalPanelProps("analytics")} className="space-y-4">
             {!analyticsAvailable && (
-              <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              <div className="flex items-start gap-3 rounded-md border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-4 py-3 text-sm text-[var(--foreground)]">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-[var(--warning)]" />
                 <p>
                   <b>Аналитика не синхронизирована.</b> {analyticsDetail} Живой счётчик модели может продолжать
                   увеличиваться, но неподтверждённые события не показываются как ноль.
@@ -1483,27 +1413,23 @@ function AlwaysOnCard({
             )}
             <div className="grid gap-4 sm:grid-cols-3">
               <Panel className="p-5">
-                <Metric label="Сегодня" value={todayDisplay} unit={analyticsAvailable ? "меш." : undefined} size="lg" />
+                <Metric label="Сегодня" value={todayDisplay} unit={analyticsAvailable ? "меш." : undefined} />
               </Panel>
               <Panel className="p-5">
-                <Metric label="За всё время" value={allTimeDisplay} size="lg" accent="blue" />
+                <Metric label="За всё время" value={allTimeDisplay} />
               </Panel>
               <Panel className="p-5">
-                <Eyebrow>{isShipping ? "Основной цвет" : "Основная продукция"}</Eyebrow>
-                {dominant ? (
+                <Metric
+                  label={isShipping ? "Основной цвет" : "Основная продукция"}
+                  value={dominant ? dominant.total : "—"}
+                  unit={dominant ? "меш." : undefined}
+                />
+                {dominant && (
                   <>
-                    <div className="mt-2 flex items-center gap-2">
+                    <div className="mt-2 flex min-w-0 items-center gap-2 text-[13px] font-medium text-[var(--foreground)]">
                       <ColorDot className={colorMeta(dominant.color).dot} />
-                      <span
-                        className={cn(
-                          "font-black tracking-tight text-slate-900",
-                          dominantHasProduct ? "text-lg leading-tight sm:text-xl" : "text-2xl",
-                        )}
-                      >
+                      <span className="truncate">
                         {dominantHasProduct ? dominantReceiptDestination.productLabel : colorMeta(dominant.color).label}
-                      </span>
-                      <span className="ml-auto text-sm font-semibold tabular-nums text-slate-400">
-                        {dominant.total}
                       </span>
                     </div>
                     {!isShipping && dominantReceiptDestination && (
@@ -1515,8 +1441,6 @@ function AlwaysOnCard({
                       />
                     )}
                   </>
-                ) : (
-                  <div className="mt-2 text-2xl font-bold text-slate-300">—</div>
                 )}
               </Panel>
             </div>
@@ -1525,13 +1449,17 @@ function AlwaysOnCard({
               <Panel className="p-5 sm:p-6">
                 <SectionHead
                   title="Учтено по дням"
-                  aside={<span className="text-[11px] font-medium tabular-nums text-slate-400">макс. {chartMax}</span>}
+                  aside={
+                    <span className="text-[11px] tabular-nums text-[var(--muted-foreground)]">макс. {chartMax}</span>
+                  }
                 />
                 <div className="mt-5 overflow-x-auto pb-1">
                   <div className="h-56 min-w-[520px] sm:h-64">
                     <div className="flex h-[188px] items-end gap-2 sm:h-[216px]">
                       {(currentDaily?.history ?? []).map((item) => {
                         const active = item.day === selectedDay;
+                        // Число дня живёт в aria-label и в панели разбора по
+                        // клику: подсказка по наведению на планшете недоступна.
                         return (
                           <button
                             type="button"
@@ -1539,16 +1467,13 @@ function AlwaysOnCard({
                             aria-pressed={active}
                             aria-label={`Аналитика за ${fullDay(item.day)}: ${item.total} мешков`}
                             onClick={() => setSelectedDay(active ? null : item.day)}
-                            className="group flex h-full min-w-0 flex-1 cursor-pointer flex-col justify-end rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                            className="flex h-full min-w-0 flex-1 cursor-pointer flex-col justify-end rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                           >
-                            <div className="relative flex flex-1 items-end justify-center">
-                              <span className="pointer-events-none absolute -top-7 z-10 hidden whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[10px] font-semibold text-white shadow-lg group-hover:block">
-                                {item.total} меш.
-                              </span>
+                            <div className="flex flex-1 items-end justify-center">
                               <div
                                 className={cn(
-                                  "w-full max-w-8 rounded-md transition-all duration-500 group-hover:brightness-105",
-                                  active ? "bg-blue-600" : "bg-slate-200 group-hover:bg-slate-300",
+                                  "w-full max-w-8 rounded-sm",
+                                  active ? "bg-[var(--ring)]" : "bg-[var(--muted-foreground)]/35",
                                   selectedDay && !active && "opacity-60",
                                 )}
                                 style={{
@@ -1558,8 +1483,8 @@ function AlwaysOnCard({
                             </div>
                             <span
                               className={cn(
-                                "mt-2 block truncate text-center text-[9px] font-medium",
-                                active ? "font-bold text-blue-600" : "text-slate-400",
+                                "mt-2 block truncate text-center text-[10px]",
+                                active ? "font-semibold text-[var(--foreground)]" : "text-[var(--muted-foreground)]",
                               )}
                             >
                               {shortDay(item.day)}
@@ -1571,7 +1496,9 @@ function AlwaysOnCard({
                   </div>
                 </div>
                 {!selectedPoint && (
-                  <p className="mt-4 text-center text-xs text-slate-400">Нажмите на столбик, чтобы раскрыть день</p>
+                  <p className="mt-4 text-center text-[12px] text-[var(--muted-foreground)]">
+                    Нажмите на столбик, чтобы раскрыть день
+                  </p>
                 )}
               </Panel>
 
@@ -1594,15 +1521,19 @@ function AlwaysOnCard({
                       <div key={item.color}>
                         <div className="mb-1.5 flex items-center gap-2 text-sm">
                           <ColorDot className={colorMeta(item.color).dot} />
-                          <span className="min-w-0 truncate font-medium text-slate-600">
+                          <span className="min-w-0 truncate font-medium text-[var(--foreground)]">
                             {hasProduct ? destination.productLabel : colorMeta(item.color).label}
                           </span>
-                          <span className="ml-auto font-bold tabular-nums text-slate-900">{item.total}</span>
-                          <span className="w-9 text-right text-xs tabular-nums text-slate-400">{item.percent}%</span>
+                          <span className="ml-auto font-semibold tabular-nums text-[var(--foreground)]">
+                            {item.total}
+                          </span>
+                          <span className="w-9 text-right text-[12px] tabular-nums text-[var(--muted-foreground)]">
+                            {item.percent}%
+                          </span>
                         </div>
-                        <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                        <div className="h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
                           <div
-                            className={cn("h-full rounded-full transition-all duration-500", colorMeta(item.color).bar)}
+                            className={cn("h-full rounded-full", colorMeta(item.color).bar)}
                             style={{ width: `${item.percent}%` }}
                           />
                         </div>
@@ -1618,7 +1549,7 @@ function AlwaysOnCard({
                     );
                   })}
                   {!currentDaily?.colors?.length && (
-                    <div className="py-10 text-center text-sm text-slate-400">
+                    <div className="py-10 text-center text-sm text-[var(--muted-foreground)]">
                       {isShipping ? "Цветов пока нет" : "Продукции пока нет"}
                     </div>
                   )}
@@ -1629,9 +1560,7 @@ function AlwaysOnCard({
             {selectedPoint && (
               <Panel className="p-5 sm:p-6">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h4 className="text-[15px] font-semibold tracking-tight text-slate-900">
-                    {fullDay(selectedPoint.day)}
-                  </h4>
+                  <h4 className="text-[15px] font-semibold tracking-tight">{fullDay(selectedPoint.day)}</h4>
                   <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
                     {!isShipping && (
                       <AlwaysOnDayColorViewToggle
@@ -1640,13 +1569,9 @@ function AlwaysOnCard({
                         onChange={setSelectedDayColorView}
                       />
                     )}
-                    <button
-                      type="button"
-                      onClick={() => setSelectedDay(null)}
-                      className="rounded-lg px-2 py-1 text-xs font-semibold text-slate-400 transition hover:bg-slate-50 hover:text-slate-700"
-                    >
+                    <Button variant="ghost" size="sm" onClick={() => setSelectedDay(null)}>
                       Закрыть
-                    </button>
+                    </Button>
                   </div>
                 </div>
 
@@ -1681,14 +1606,14 @@ function AlwaysOnCard({
                             >
                               <div className="flex items-center gap-2">
                                 <ColorDot className={colorMeta(item.color).dot} />
-                                <span className="min-w-0 truncate text-xs font-medium text-slate-600">
+                                <span className="min-w-0 truncate text-[12px] font-medium text-[var(--foreground)]">
                                   {colorMeta(item.color).label}
                                 </span>
-                                <span className="ml-auto text-xs tabular-nums text-slate-400">{item.percent}%</span>
+                                <span className="ml-auto text-[12px] tabular-nums text-[var(--muted-foreground)]">
+                                  {item.percent}%
+                                </span>
                               </div>
-                              <div className="mt-1 text-2xl font-black tabular-nums tracking-tight text-slate-900">
-                                {item.total}
-                              </div>
+                              <Metric value={item.total} size="sm" className="mt-1" />
                             </div>
                           );
                         }
@@ -1711,18 +1636,18 @@ function AlwaysOnCard({
                                 destination={destination}
                                 colorLabel={hasProduct ? undefined : colorMeta(item.color).label}
                               />
-                              <span className="ml-auto text-xs tabular-nums text-slate-400">{item.percent}%</span>
+                              <span className="ml-auto text-[12px] tabular-nums text-[var(--muted-foreground)]">
+                                {item.percent}%
+                              </span>
                             </div>
-                            <div className="mt-1 text-2xl font-black tabular-nums tracking-tight text-slate-900">
-                              {item.total}
-                            </div>
+                            <Metric value={item.total} size="sm" className="mt-1" />
                             <div className="mt-1.5 flex min-w-0 items-center gap-2">
                               <ColorDot className={colorMeta(item.color).dot} />
                               <span
                                 title={hasProduct ? `Бренд: ${brandLabel}` : colorAndBrandLabel}
                                 className={cn(
                                   "truncate text-[11px] font-medium",
-                                  brand ? "text-slate-500" : "text-slate-400",
+                                  brand ? "text-[var(--foreground)]" : "text-[var(--muted-foreground)]",
                                 )}
                               >
                                 {hasProduct ? `Бренд: ${brandLabel}` : colorAndBrandLabel}
@@ -1759,21 +1684,25 @@ function AlwaysOnCard({
   );
 }
 
-/** Плитка камеры отгрузки: без стрима, тап открывает модалку AlwaysOnCard. */
-function ShippingCameraTile({
+/** Плитка непрерывной камеры (отгрузка или AI 24/7): без стрима, тап открывает модалку AlwaysOnCard. */
+function ContinuousCameraTile({
+  scope,
   source,
   settings,
   analytics,
   analyticsError,
   camera,
   bound,
+  canManage = false,
 }: {
+  scope: "shipping" | "ai_247";
   source: string;
   settings: AlwaysOnCameraSettings;
   analytics: AlwaysOnDailyAnalytics | null;
   analyticsError: string;
   camera?: PlayableCamera;
   bound?: ShippingTileBinding;
+  canManage?: boolean;
 }) {
   const processor = settings.processors.find((item) => item.cam === source) ?? {
     cam: source,
@@ -1781,19 +1710,18 @@ function ShippingCameraTile({
     mode: "always_on" as const,
     recording: false,
     total: 0,
-    analytics_scope: "shipping" as const,
+    analytics_scope: scope,
   };
   return (
     <AlwaysOnCard
-      variant="tile"
-      scope="shipping"
+      scope={scope}
       processor={processor}
       camera={camera}
       detail={settings.camera_readiness?.[source]?.detail || settings.detail}
       readiness={settings.camera_readiness?.[source]}
       daily={analytics?.cameras.find((item) => item.camera === source)}
       analyticsError={analyticsError}
-      canManage={false}
+      canManage={canManage}
       bound={bound}
     />
   );
@@ -1823,7 +1751,33 @@ function MonoblockPageInner() {
   const canViewCameraSettings = canLoad || canManage;
   const canViewShippingSettings = canViewShipping || canManage;
 
-  const { data: orders, error, reload: reloadOrders } = useApi<Order[]>("/orders/?post_board=1");
+  // Доска живёт сегодняшним днём; другой день и поиск — явный выбор
+  // оператора. URL без фильтров остаётся ровно "/orders/?post_board=1".
+  const today = useLocalDay();
+  const [day, setDay] = useState("");
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebounced(search.trim(), 300);
+  const boardQuery = useMemo(() => {
+    let query = "";
+    if (day && day !== today) query += `&day=${day}`;
+    if (debouncedSearch) query += `&search=${encodeURIComponent(debouncedSearch)}`;
+    return query;
+  }, [day, debouncedSearch, today]);
+  const boardFilter = useMemo(
+    () => ({
+      day,
+      today,
+      search,
+      appliedSearch: debouncedSearch,
+      // Сегодняшняя дата хранится как '' — «за календарём»: иначе после
+      // полуночи киоск застыл бы на вчерашнем дне, выбранном явно.
+      onDayChange: (value: string) => setDay(value === today ? "" : value),
+      onSearchChange: setSearch,
+    }),
+    [day, debouncedSearch, search, today],
+  );
+
+  const { data: orders, error, reload: reloadOrders } = useApi<Order[]>(`/orders/?post_board=1${boardQuery}`);
   const {
     data: sessions,
     error: sessionsError,
@@ -1844,7 +1798,7 @@ function MonoblockPageInner() {
     data: histories,
     error: historiesError,
     reload: reloadHistories,
-  } = useApi<AiCountingHistory[]>(canViewShipping ? "/cameras/ai/history/?post_board=1" : null);
+  } = useApi<AiCountingHistory[]>(canViewShipping ? `/cameras/ai/history/?post_board=1${boardQuery}` : null);
   const {
     data: shippingSettings,
     error: shippingSettingsError,
@@ -1968,7 +1922,10 @@ function MonoblockPageInner() {
   }, [orders]);
   const completedDays = shippingSettings?.completed_orders_days ?? 1;
   const completedLabel = completedDays <= 1 ? "сегодня" : `за ${completedDays} дн.`;
-  const shippedCaption = counts.shipped > 0 ? `${completedLabel} · ${counts.shippedBags} меш.` : completedLabel;
+  // Плитки считаются из тех же строк, что и таблица: под поиском или чужим
+  // днём подпись «сегодня» была бы неправдой.
+  const boardScopeLabel = debouncedSearch ? "по поиску" : day && day !== today ? formatIsoDate(day) : completedLabel;
+  const shippedCaption = counts.shipped > 0 ? `${boardScopeLabel} · ${counts.shippedBags} меш.` : boardScopeLabel;
   const waitingCaption =
     counts.wagons > 0
       ? `в очереди · ${counts.wagons} ${pluralRu(counts.wagons, ["вагон", "вагона", "вагонов"])}`
@@ -2003,6 +1960,33 @@ function MonoblockPageInner() {
       target: orderedBagCount(order) || null,
     };
   }
+
+  /* ── AI 24/7: сводка контура из уже опрошенных настроек ───────────────── */
+  const alwaysOnCounts = useMemo(() => {
+    const sources = alwaysOnSettings?.camera_sources ?? [];
+    const processors = indexFirstBy(alwaysOnSettings?.processors ?? [], (item) => item.cam);
+    return {
+      total: sources.length,
+      running: sources.filter((source) => processors.get(source)?.running).length,
+      busy: sources.filter((source) => processors.get(source)?.mode === "session").length,
+    };
+  }, [alwaysOnSettings]);
+  const alwaysOnCamerasCaption =
+    alwaysOnCounts.busy > 0
+      ? `${alwaysOnCounts.busy} ${pluralRu(alwaysOnCounts.busy, ["занята", "заняты", "заняты"])} отгрузкой`
+      : "фоновый подсчёт 24/7";
+  const alwaysOnSync =
+    alwaysOnSettings?.sync_status !== "synced"
+      ? { value: "ожидание", caption: alwaysOnSettings?.detail || "ПК камер ещё не подтвердил контур" }
+      : alwaysOnAnalyticsAvailable
+        ? { value: "в норме", caption: "ПК камер на связи, журнал синхронизирован" }
+        : {
+            value: "нет журнала",
+            caption:
+              alwaysOnAnalyticsError ||
+              alwaysOnAnalytics?.analytics_sync?.detail ||
+              "журнал событий не синхронизирован",
+          };
 
   const pageTabs: TabDef[] = [
     { key: "shipments", label: "Отгрузка", count: counts.loading },
@@ -2063,80 +2047,67 @@ function MonoblockPageInner() {
 
           {activeTab === "monoblock" ? (
             !alwaysOnSettings?.camera_sources.length ? (
-              <div className="flex min-h-56 flex-col items-center justify-center rounded-[24px] border border-dashed border-slate-200 bg-slate-50/70 p-8 text-center">
-                <span className="flex size-14 items-center justify-center rounded-full bg-white text-slate-300 shadow-sm">
-                  <Cpu className="size-6" />
-                </span>
-                <p className="mt-3 text-sm font-semibold text-slate-600">Бесконечный цикл пока не запущен</p>
-                <p className="mt-1 max-w-sm text-xs text-slate-400">
+              <Card className="rounded-lg px-4 py-12 text-center">
+                <div className="text-[14px]">Бесконечный цикл пока не запущен</div>
+                <div className="mx-auto mt-1 max-w-md text-[12px] text-[var(--muted-foreground)]">
                   {canManageAlwaysOn
                     ? "Выберите камеры в настройке «AI 24/7» — модель начнёт считать круглосуточно; исходный substream будет храниться в техническом архиве 48 часов, а фоновый AI-overlay не публикуется."
                     : "Камеры для постоянного подсчёта пока не настроены. Обратитесь к сотруднику с правом управления AI 24/7."}
-                </p>
-              </div>
-            ) : (
-              <section className="rounded-[24px] border border-blue-100 bg-gradient-to-br from-blue-50/80 via-white to-emerald-50/40 p-5">
-                <div className="mb-4 flex items-center gap-3">
-                  <span className="flex size-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-[0_8px_22px_rgba(37,99,235,0.25)]">
-                    <Cpu className="size-5" />
-                  </span>
-                  <div>
-                    <h2 className="text-[18px] font-bold tracking-tight text-slate-800">Постоянный AI-контур</h2>
-                    <p className="text-[12px] text-slate-400">
-                      Бесконечный цикл: модель считает круглосуточно, исходный substream хранится 48 часов; фоновый
-                      AI-overlay не публикуется
-                    </p>
-                  </div>
-                  <div className="ml-auto flex items-center gap-2">
-                    <span className="flex items-center gap-2 rounded-full border border-blue-100 bg-white px-3 py-1 text-[11px] font-semibold text-blue-700 shadow-sm">
-                      <CalendarDays className="size-3.5" /> Сегодня:{" "}
-                      {alwaysOnAnalyticsAvailable ? (alwaysOnAnalytics?.total ?? 0) : "—"}
-                      <span className="text-slate-300">·</span>
-                      Всего:{" "}
-                      {alwaysOnAnalyticsAvailable
-                        ? (alwaysOnAnalytics?.all_time_total ?? alwaysOnAnalytics?.total ?? 0)
-                        : "—"}
-                    </span>
-                    <span
-                      className={cn(
-                        "rounded-full border bg-white px-3 py-1 text-[11px] font-semibold shadow-sm",
-                        alwaysOnSettings.sync_status === "synced" && alwaysOnAnalyticsAvailable
-                          ? "text-emerald-600"
-                          : "text-amber-600",
-                      )}
-                    >
-                      {alwaysOnSettings.sync_status !== "synced"
-                        ? "ожидает связь"
-                        : alwaysOnAnalyticsAvailable
-                          ? "синхронизировано"
-                          : "журнал не синхронизирован"}
-                    </span>
-                  </div>
                 </div>
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  {alwaysOnSettings.camera_sources.map((source) => {
-                    const processor = alwaysOnSettings.processors.find((item) => item.cam === source) ?? {
-                      cam: source,
-                      running: false,
-                      mode: "always_on" as const,
-                      recording: false,
-                      total: 0,
-                    };
-                    return (
-                      <AlwaysOnCard
+              </Card>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                  <StatCard
+                    label="Сегодня"
+                    value={alwaysOnAnalyticsAvailable ? (alwaysOnAnalytics?.total ?? 0) : "—"}
+                    caption={alwaysOnAnalyticsAvailable ? "мешков" : "журнал не синхронизирован"}
+                  />
+                  <StatCard
+                    label="Всего"
+                    value={
+                      alwaysOnAnalyticsAvailable
+                        ? (alwaysOnAnalytics?.all_time_total ?? alwaysOnAnalytics?.total ?? 0)
+                        : "—"
+                    }
+                    caption="за всё время"
+                  />
+                  <StatCard
+                    label="Камер считают"
+                    value={`${alwaysOnCounts.running}/${alwaysOnCounts.total}`}
+                    caption={alwaysOnCamerasCaption}
+                    tone={
+                      alwaysOnCounts.total > 0 && alwaysOnCounts.running === alwaysOnCounts.total
+                        ? "success"
+                        : undefined
+                    }
+                  />
+                  <StatCard label="Синхронизация" value={alwaysOnSync.value} caption={alwaysOnSync.caption} />
+                </div>
+
+                <section className="flex flex-col gap-3">
+                  <div className="flex flex-wrap items-center gap-x-1.5 text-[12px] text-[var(--muted-foreground)]">
+                    <span>Камеры AI 24/7 · считают круглосуточно</span>
+                    <span>
+                      · {alwaysOnCounts.running} из {alwaysOnCounts.total} в работе
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                    {alwaysOnSettings.camera_sources.map((source) => (
+                      <ContinuousCameraTile
                         key={source}
-                        processor={processor}
-                        camera={playable.find((item) => item.src === source)}
-                        detail={alwaysOnSettings.detail}
-                        readiness={alwaysOnSettings.camera_readiness?.[source]}
-                        daily={alwaysOnAnalytics?.cameras.find((item) => item.camera === source)}
+                        scope="ai_247"
+                        source={source}
+                        settings={alwaysOnSettings}
+                        analytics={alwaysOnAnalytics}
                         analyticsError={alwaysOnAnalyticsError}
+                        camera={camerasBySrc.get(source)}
                         canManage={canManageAlwaysOn}
                       />
-                    );
-                  })}
-                </div>
-              </section>
+                    ))}
+                  </div>
+                </section>
+              </>
             )
           ) : (
             <>
@@ -2183,8 +2154,9 @@ function MonoblockPageInner() {
                   {stripSources.length ? (
                     <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
                       {stripSources.map((source) => (
-                        <ShippingCameraTile
+                        <ContinuousCameraTile
                           key={source}
+                          scope="shipping"
                           source={source}
                           settings={shippingContinuousSettings}
                           analytics={shippingContinuousAnalytics}
@@ -2234,6 +2206,7 @@ function MonoblockPageInner() {
                 }
                 cameraLocked={!!cameraSettings?.locked}
                 completedOrdersDays={completedDays}
+                filter={boardFilter}
                 reloadOrders={reloadOrders}
                 reloadSessions={reloadSessions}
                 reloadHistories={canViewShipping ? reloadHistories : undefined}

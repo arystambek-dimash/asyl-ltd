@@ -3,6 +3,7 @@
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
+from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 
 
@@ -74,6 +75,28 @@ def parse_money_param(raw: str | None, name: str) -> Decimal | None:
             }
         )
     return value
+
+
+def parse_search_param(raw: str | None, max_length: int = 60) -> str:
+    """Normalize a free-text ``?search=`` value.
+
+    Whitespace around the query never matters to the operator, and a bounded
+    length keeps ``icontains`` filters from being driven by arbitrary input.
+    """
+    return (raw or "").strip()[:max_length]
+
+
+def plate_search_q(field: str, search: str) -> Q:
+    """Совпадение номера машины, набранного с пробелами или дефисами.
+
+    Номера хранятся слитно (465BDS13), а оператор вводит «465 BDS 13» или
+    «465-BDS-13» — поэтому ``field`` сверяется ещё и с уплотнённым запросом.
+    """
+    condition = Q(**{f"{field}__icontains": search})
+    compact = "".join(search.replace("-", " ").split())
+    if compact and compact != search:
+        condition |= Q(**{f"{field}__icontains": compact})
+    return condition
 
 
 def parse_store_id(raw: str | None) -> int | None:

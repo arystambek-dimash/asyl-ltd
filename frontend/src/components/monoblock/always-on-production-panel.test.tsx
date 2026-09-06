@@ -157,7 +157,7 @@ describe("AlwaysOnProductionPanel", () => {
       />,
     );
 
-    const previewPanel = screen.getByText("Предварительный приход").closest(".rounded-2xl");
+    const previewPanel = screen.getByText("Предварительный приход").closest('[data-testid="always-on-panel"]');
     if (!(previewPanel instanceof HTMLElement)) throw new Error("Карточка предварительного прихода не найдена");
     const bound = within(previewPanel).getByText("Мука красная · 50 кг").closest('[data-receipt-binding="bound"]');
     const unbound = previewPanel.querySelector('[data-receipt-binding="unbound"]');

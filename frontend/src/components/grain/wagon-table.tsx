@@ -19,8 +19,10 @@ import { buttonVariants } from "@/components/ui/button";
 import { GrainWagonDeleteDialog } from "@/components/grain/wagon-delete-dialog";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { can } from "@/lib/can";
+import { groupByDay } from "@/lib/day-groups";
 import { formatKg, GRAIN_STATUS_TONE, isFinishedGrainWagon, isPassagePlateMissing } from "@/lib/grain";
 import type { GrainWagon, Me } from "@/lib/types";
+import { useLocalDay } from "@/lib/use-local-day";
 import { cn, formatDateTime } from "@/lib/utils";
 
 function WagonStatusBadge({ wagon }: { wagon: Pick<GrainWagon, "status" | "status_label"> }) {
@@ -157,6 +159,34 @@ const GROUP_META = {
 } as const;
 
 /**
+ * День рейса для разбивки таблицы: у завершённого — выезд, у остальных —
+ * заезд. Резерв — создание записи, чтобы рейс без отметок не терялся.
+ */
+function wagonDayDate(wagon: GrainWagon): Date | null {
+  const finished = isFinishedGrainWagon(wagon.status);
+  const raw = (finished ? wagon.exited_at : null) ?? wagon.arrived_at ?? wagon.created_at ?? null;
+  return raw ? new Date(raw) : null;
+}
+
+/** Свежие сверху, без даты — в конец: тогда день в таблице не повторяется. */
+function sortByDayDesc(wagons: GrainWagon[]): GrainWagon[] {
+  const times = new Map(
+    wagons.map((wagon) => {
+      const time = wagonDayDate(wagon)?.getTime();
+      return [wagon, time == null || Number.isNaN(time) ? null : time] as const;
+    }),
+  );
+  return [...wagons].sort((left, right) => {
+    const a = times.get(left) ?? null;
+    const b = times.get(right) ?? null;
+    if (a === b) return 0;
+    if (a === null) return 1;
+    if (b === null) return -1;
+    return b - a;
+  });
+}
+
+/**
  * Таблица рейсов, разбитая на «Приход» и «Вывоз».
  *
  * Колонки общие, потому что оба сценария — это два взвешивания и итог. Что
@@ -180,6 +210,7 @@ export function WagonTable({
   onDeleted?: () => void;
 }) {
   const [pendingDelete, setPendingDelete] = useState<GrainWagon | null>(null);
+  const currentDay = useLocalDay();
   const canDelete = Boolean(onDeleted) && can(me, "grain.delete");
   const visibleWagons = direction ? wagons.filter((wagon) => (wagon.direction ?? "intake") === direction) : wagons;
 
@@ -188,11 +219,10 @@ export function WagonTable({
   }
 
   const groups = (["intake", "passage"] as const)
-    .map((direction) => ({
-      direction,
-      ...GROUP_META[direction],
-      rows: visibleWagons.filter((wagon) => (wagon.direction ?? "intake") === direction),
-    }))
+    .map((key) => {
+      const rows = sortByDayDesc(visibleWagons.filter((wagon) => (wagon.direction ?? "intake") === key));
+      return { direction: key, ...GROUP_META[key], rows, days: groupByDay(rows, wagonDayDate, currentDay) };
+    })
     .filter((group) => group.rows.length > 0);
 
   return (
@@ -225,107 +255,122 @@ export function WagonTable({
                   </div>
                 </td>
               </tr>
-              {group.rows.map((wagon) => {
-                const cta = wagonCta(wagon, me);
-                const finished = isFinishedGrainWagon(wagon.status);
-                const passage = wagon.direction === "passage";
-                const since = finished
-                  ? wagon.exited_at && `выехал ${formatDateTime(wagon.exited_at)}`
-                  : wagon.arrived_at && formatDateTime(wagon.arrived_at);
-                return (
-                  <TR key={wagon.id}>
-                    <TD>
-                      <Link href={`/grain/wagons/${wagon.id}`} className="block min-w-0 hover:underline">
-                        <span className="block truncate font-semibold">
-                          {wagon.number || `#${wagon.id}`}
-                          {isPassagePlateMissing(wagon) && (
-                            <Badge tone="warning" className="ml-2 align-middle">
-                              номер не распознан
-                            </Badge>
-                          )}
+              {group.days.map((day) => (
+                <Fragment key={day.key}>
+                  <tr className="bg-[var(--muted)]/25">
+                    <td colSpan={8} className="border-b border-[var(--border)] px-3 py-1.5 sm:px-4">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[12px] font-semibold">{day.label}</span>
+                        <span className="ml-auto text-[11px] tabular-nums text-[var(--muted-foreground)]">
+                          {day.items.length}
                         </span>
-                        <span className="block truncate text-[11px] text-[var(--muted-foreground)]">
-                          {passage
-                            ? wagon.cargo_name || "Вывоз"
-                            : [wagon.supplier, wagon.grain_type_name || wagon.culture, wagon.assigned_silo_name]
-                                .filter(Boolean)
-                                .join(" · ") || "Приход"}
-                        </span>
-                        {wagon.number_source === "camera" && (
-                          <span className="mt-0.5 flex items-center gap-1 text-[11px] text-[var(--muted-foreground)]">
-                            <Camera className="size-3 shrink-0" /> Камера {wagon.number_camera_source || "не указана"}
-                          </span>
-                        )}
-                      </Link>
-                    </TD>
-                    <TD>
-                      <StageCell wagon={wagon} />
-                    </TD>
-                    <TD>
-                      <WagonStatusBadge wagon={wagon} />
-                    </TD>
-                    <TD className="text-right">
-                      <WeightCell
-                        value={wagon.entry_weight_kg ?? wagon.gross_weight_kg}
-                        pendingLabel={passage ? "ждёт весов" : "весы не подключены"}
-                      />
-                    </TD>
-                    <TD className="text-right">
-                      <WeightCell
-                        value={wagon.exit_weight_kg ?? wagon.tare_weight_kg}
-                        pendingLabel={passage ? "ждёт весов" : "весы не подключены"}
-                      />
-                    </TD>
-                    <TD className="text-right">
-                      {wagon.net_weight_kg != null ? (
-                        <>
-                          <span className="block font-bold tabular-nums">{formatKg(wagon.net_weight_kg)}</span>
-                          {wagon.weight_difference_kg != null && (
-                            <span
-                              className={cn(
-                                "block text-[11px] tabular-nums",
-                                wagon.weight_matches === false
-                                  ? "text-[var(--destructive)]"
-                                  : "text-[var(--muted-foreground)]",
+                      </div>
+                    </td>
+                  </tr>
+                  {day.items.map((wagon) => {
+                    const cta = wagonCta(wagon, me);
+                    const finished = isFinishedGrainWagon(wagon.status);
+                    const passage = wagon.direction === "passage";
+                    const since = finished
+                      ? wagon.exited_at && `выехал ${formatDateTime(wagon.exited_at)}`
+                      : wagon.arrived_at && formatDateTime(wagon.arrived_at);
+                    return (
+                      <TR key={wagon.id}>
+                        <TD>
+                          <Link href={`/grain/wagons/${wagon.id}`} className="block min-w-0 hover:underline">
+                            <span className="block truncate font-semibold">
+                              {wagon.number || `#${wagon.id}`}
+                              {isPassagePlateMissing(wagon) && (
+                                <Badge tone="warning" className="ml-2 align-middle">
+                                  номер не распознан
+                                </Badge>
                               )}
-                            >
-                              Δ {wagon.weight_difference_kg > 0 ? "+" : ""}
-                              {formatKg(wagon.weight_difference_kg)}
+                            </span>
+                            <span className="block truncate text-[11px] text-[var(--muted-foreground)]">
+                              {passage
+                                ? wagon.cargo_name || "Вывоз"
+                                : [wagon.supplier, wagon.grain_type_name || wagon.culture, wagon.assigned_silo_name]
+                                    .filter(Boolean)
+                                    .join(" · ") || "Приход"}
+                            </span>
+                            {wagon.number_source === "camera" && (
+                              <span className="mt-0.5 flex items-center gap-1 text-[11px] text-[var(--muted-foreground)]">
+                                <Camera className="size-3 shrink-0" /> Камера{" "}
+                                {wagon.number_camera_source || "не указана"}
+                              </span>
+                            )}
+                          </Link>
+                        </TD>
+                        <TD>
+                          <StageCell wagon={wagon} />
+                        </TD>
+                        <TD>
+                          <WagonStatusBadge wagon={wagon} />
+                        </TD>
+                        <TD className="text-right">
+                          <WeightCell
+                            value={wagon.entry_weight_kg ?? wagon.gross_weight_kg}
+                            pendingLabel={passage ? "ждёт весов" : "весы не подключены"}
+                          />
+                        </TD>
+                        <TD className="text-right">
+                          <WeightCell
+                            value={wagon.exit_weight_kg ?? wagon.tare_weight_kg}
+                            pendingLabel={passage ? "ждёт весов" : "весы не подключены"}
+                          />
+                        </TD>
+                        <TD className="text-right">
+                          {wagon.net_weight_kg != null ? (
+                            <>
+                              <span className="block font-bold tabular-nums">{formatKg(wagon.net_weight_kg)}</span>
+                              {wagon.weight_difference_kg != null && (
+                                <span
+                                  className={cn(
+                                    "block text-[11px] tabular-nums",
+                                    wagon.weight_matches === false
+                                      ? "text-[var(--destructive)]"
+                                      : "text-[var(--muted-foreground)]",
+                                  )}
+                                >
+                                  Δ {wagon.weight_difference_kg > 0 ? "+" : ""}
+                                  {formatKg(wagon.weight_difference_kg)}
+                                </span>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-[13px] text-[var(--muted-foreground)]">
+                              {passage ? "после погрузки" : "после разгрузки"}
                             </span>
                           )}
-                        </>
-                      ) : (
-                        <span className="text-[13px] text-[var(--muted-foreground)]">
-                          {passage ? "после погрузки" : "после разгрузки"}
-                        </span>
-                      )}
-                    </TD>
-                    <TD>
-                      <span className="text-[12px] text-[var(--muted-foreground)]">{since || "—"}</span>
-                    </TD>
-                    <TD className="text-right">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <Link
-                          href={`/grain/wagons/${wagon.id}`}
-                          className={buttonVariants({ size: "sm", variant: cta.variant })}
-                        >
-                          {cta.label} <ArrowRight className="size-4" />
-                        </Link>
-                        {canDelete && (
-                          <button
-                            type="button"
-                            aria-label={`Удалить рейс ${wagon.number || `#${wagon.id}`}`}
-                            onClick={() => setPendingDelete(wagon)}
-                            className="flex size-8 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/10 hover:text-[var(--destructive)]"
-                          >
-                            <Trash2 className="size-4" />
-                          </button>
-                        )}
-                      </div>
-                    </TD>
-                  </TR>
-                );
-              })}
+                        </TD>
+                        <TD>
+                          <span className="text-[12px] text-[var(--muted-foreground)]">{since || "—"}</span>
+                        </TD>
+                        <TD className="text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <Link
+                              href={`/grain/wagons/${wagon.id}`}
+                              className={buttonVariants({ size: "sm", variant: cta.variant })}
+                            >
+                              {cta.label} <ArrowRight className="size-4" />
+                            </Link>
+                            {canDelete && (
+                              <button
+                                type="button"
+                                aria-label={`Удалить рейс ${wagon.number || `#${wagon.id}`}`}
+                                onClick={() => setPendingDelete(wagon)}
+                                className="flex size-8 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/10 hover:text-[var(--destructive)]"
+                              >
+                                <Trash2 className="size-4" />
+                              </button>
+                            )}
+                          </div>
+                        </TD>
+                      </TR>
+                    );
+                  })}
+                </Fragment>
+              ))}
             </Fragment>
           ))}
         </TBody>

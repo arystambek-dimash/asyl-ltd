@@ -6,7 +6,8 @@ from config.throttles import TruckScalePreviewRateThrottle
 from django.conf import settings
 from django.db import transaction
 from django.core.cache import cache
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
@@ -17,6 +18,12 @@ from rest_framework.views import APIView
 from apps.cameras import ai as camera_ai
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import IsSuperUser, PermAPIViewMixin, PermViewSetMixin
+from apps.common.query_params import (
+    filter_date_range,
+    parse_date_range,
+    parse_search_param,
+    plate_search_q,
+)
 from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.models import EventLog
 
@@ -234,6 +241,22 @@ def _passage_capture_idempotency_key(request) -> UUID:
     return value
 
 
+def _filter_wagon_search(qs, raw_search):
+    """Поиск по номеру, грузу и поставщику без учёта регистра.
+
+    Номер сверяется и с уплотнённым запросом («465 BDS 13» → 465BDS13) — тем же
+    правилом, что и номер машины на доске погрузки.
+    """
+    search = parse_search_param(raw_search)
+    if not search:
+        return qs
+    return qs.filter(
+        plate_search_q("number", search)
+        | Q(cargo_name__icontains=search)
+        | Q(supply__supplier__icontains=search)
+    )
+
+
 def _record_stage_weight(request, wagon: Wagon, action: str) -> Wagon:
     if settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED and wagon.is_passage:
         return vehicle_weight_capture.capture_passage_weight_and_plate(
@@ -358,7 +381,8 @@ class WagonViewSet(
 
     def get_queryset(self):
         qs = super().get_queryset()
-        scope = self.request.query_params.get("scope")
+        params = self.request.query_params
+        scope = params.get("scope")
         if scope == "expected":
             qs = qs.filter(status=st.EXPECTED)
         elif scope == "on_site":
@@ -367,12 +391,27 @@ class WagonViewSet(
             qs = qs.filter(status=st.EXIT_ALLOWED)
         elif scope == "finished":
             qs = qs.filter(status__in=st.TERMINAL_STATUSES | {st.EXITED})
-        status = self.request.query_params.get("status")
+        status = params.get("status")
         if status:
             qs = qs.filter(status=status)
-        direction = self.request.query_params.get("direction")
+        direction = params.get("direction")
         if direction in Wagon.DIRECTIONS:
             qs = qs.filter(direction=direction)
+        # День завершённого рейса — выезд; отменённый без выезда живёт на дне
+        # заезда (резерв — создание записи), как ``wagonDayDate`` на фронте.
+        # У остальных — заезд. Ошибки формата отдаются теми же кодами, что и
+        # в журнале событий (bad_date/bad_range).
+        date_from, date_to = parse_date_range(params)
+        if scope == "finished":
+            qs = qs.annotate(day_at=Coalesce("exited_at", "arrived_at", "created_at"))
+            day_field = "day_at"
+        else:
+            day_field = "arrived_at"
+        qs = filter_date_range(qs, day_field, date_from, date_to)
+        qs = _filter_wagon_search(qs, params.get("search"))
+        if scope == "finished":
+            # Свежие дни сверху; внутри дня — по времени, затем по id.
+            qs = qs.order_by(F("day_at").desc(nulls_last=True), "-id")
         return qs
 
     def _done(self, wagon: Wagon):

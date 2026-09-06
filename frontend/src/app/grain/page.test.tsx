@@ -5,16 +5,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import GrainPage from "./page";
 
+const TODAY = "2026-09-06";
 const postMock = vi.hoisted(() => vi.fn());
 const pushMock = vi.hoisted(() => vi.fn());
 const reloadMock = vi.hoisted(() => vi.fn());
 const pagedApiMock = vi.hoisted(() => vi.fn());
 const useApiMock = vi.hoisted(() => vi.fn());
 const visiblePollingMock = vi.hoisted(() => vi.fn());
+const localDayMock = vi.hoisted(() => vi.fn<() => string>());
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: pushMock }),
 }));
+vi.mock("@/lib/use-local-day", () => ({ useLocalDay: () => localDayMock() }));
 vi.mock("@/lib/api", () => ({
   api: { post: postMock },
   apiError: () => "Не удалось оформить вывоз",
@@ -25,6 +28,7 @@ vi.mock("@/lib/can", () => ({
 vi.mock("@/lib/use-api", () => ({
   useApi: (url: string | null) => useApiMock(url),
 }));
+vi.mock("@/lib/use-debounced", () => ({ useDebounced: (value: string) => value }));
 vi.mock("@/lib/use-visible-polling", () => ({
   useVisiblePolling: (poll: () => Promise<unknown>, intervalMs: number, active?: boolean) =>
     visiblePollingMock(poll, intervalMs, active),
@@ -78,7 +82,7 @@ vi.mock("@/components/grain/vehicle-plate-camera", () => ({
 }));
 vi.mock("@/components/grain/wagon-table", () => ({
   FlowEmptyState: () => null,
-  WagonTable: () => null,
+  WagonTable: ({ emptyText }: { emptyText: string }) => <p data-testid="wagon-table">{emptyText}</p>,
 }));
 vi.mock("@/components/ui/modal", () => ({
   Modal: ({
@@ -102,6 +106,7 @@ vi.mock("@/components/ui/modal", () => ({
 
 describe("Grain passage creation", () => {
   beforeEach(() => {
+    localDayMock.mockReturnValue(TODAY);
     postMock.mockReset();
     postMock.mockResolvedValue({ data: { id: 91, number: "123 ABC" } });
     pushMock.mockReset();
@@ -356,5 +361,155 @@ describe("Grain passage creation", () => {
     expect(await screen.findByText(/Выбранный номер больше недоступен/)).toBeInTheDocument();
     expect(screen.getByText(/123ABC02 · недоступен/)).toBeInTheDocument();
     expect(screen.queryByText(/456DEF02 · недоступен/)).not.toBeInTheDocument();
+  });
+});
+
+describe("Grain list filters", () => {
+  /** Последний адрес списка рейсов: после него хук ещё вызывается для поставок. */
+  function lastWagonsUrl() {
+    const urls = pagedApiMock.mock.calls
+      .map(([url]) => url as string | null)
+      .filter((url) => url?.startsWith("/grain/wagons/"));
+    return urls[urls.length - 1];
+  }
+
+  const emptyList = {
+    items: [],
+    count: 0,
+    hasMore: false,
+    loading: false,
+    loadingMore: false,
+    error: "",
+    reload: reloadMock,
+    loadMore: vi.fn(),
+  };
+
+  beforeEach(() => {
+    localDayMock.mockReturnValue(TODAY);
+    reloadMock.mockReset();
+    pagedApiMock.mockReset();
+    useApiMock.mockReset();
+    useApiMock.mockReturnValue({ data: [], loading: false, error: "", reload: reloadMock });
+    visiblePollingMock.mockReset();
+    pagedApiMock.mockReturnValue(emptyList);
+  });
+
+  it("shows finished trips for today by default and «Все дни» drops the day filter and polling", async () => {
+    const user = userEvent.setup();
+    render(<GrainPage />);
+
+    expect(screen.queryByLabelText("День")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Завершённые" }));
+
+    expect(screen.getByLabelText("День")).toHaveValue(TODAY);
+    await waitFor(() =>
+      expect(lastWagonsUrl()).toBe(
+        `/grain/wagons/?scope=finished&direction=intake&date_from=${TODAY}&date_to=${TODAY}`,
+      ),
+    );
+    expect(visiblePollingMock).toHaveBeenLastCalledWith(reloadMock, 10_000, true);
+
+    await user.click(screen.getByRole("button", { name: "Все дни" }));
+    expect(screen.getByLabelText("День")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Все дни" })).toBeDisabled();
+    await waitFor(() => expect(lastWagonsUrl()).toBe("/grain/wagons/?scope=finished&direction=intake"));
+    // Архив не опрашивается: иначе подгруженные «Показать ещё» страницы схлопывались бы.
+    expect(visiblePollingMock).toHaveBeenLastCalledWith(reloadMock, 10_000, false);
+  });
+
+  it("follows the calendar on the finished tab until a different day is picked explicitly", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<GrainPage />);
+    await user.click(screen.getByRole("tab", { name: "Завершённые" }));
+
+    // Полночь на долгоживущей вкладке: день по умолчанию сменяется сам.
+    localDayMock.mockReturnValue("2026-09-07");
+    rerender(<GrainPage />);
+    expect(screen.getByLabelText("День")).toHaveValue("2026-09-07");
+    await waitFor(() =>
+      expect(lastWagonsUrl()).toBe(
+        "/grain/wagons/?scope=finished&direction=intake&date_from=2026-09-07&date_to=2026-09-07",
+      ),
+    );
+
+    // Явно выбранный чужой день закреплён и полночь его не трогает.
+    const day = screen.getByLabelText("День");
+    await user.clear(day);
+    await user.type(day, "2026-09-04");
+    localDayMock.mockReturnValue("2026-09-08");
+    rerender(<GrainPage />);
+    expect(screen.getByLabelText("День")).toHaveValue("2026-09-04");
+    await waitFor(() =>
+      expect(lastWagonsUrl()).toBe(
+        "/grain/wagons/?scope=finished&direction=intake&date_from=2026-09-04&date_to=2026-09-04",
+      ),
+    );
+
+    // Выбор сегодняшней даты возвращает режим «за календарём».
+    await user.clear(day);
+    await user.type(day, "2026-09-08");
+    localDayMock.mockReturnValue("2026-09-09");
+    rerender(<GrainPage />);
+    expect(screen.getByLabelText("День")).toHaveValue("2026-09-09");
+    await waitFor(() =>
+      expect(lastWagonsUrl()).toBe(
+        "/grain/wagons/?scope=finished&direction=intake&date_from=2026-09-09&date_to=2026-09-09",
+      ),
+    );
+  });
+
+  it("gates the table on the first load and keeps it during polling", () => {
+    pagedApiMock.mockReturnValue({ ...emptyList, loading: true });
+    const { rerender } = render(<GrainPage />);
+
+    expect(screen.getByText("Загрузка…")).toBeInTheDocument();
+    expect(screen.queryByTestId("wagon-table")).not.toBeInTheDocument();
+
+    const wagon = { id: 1, number: "123 ABC", direction: "intake", status: "arrived" };
+    pagedApiMock.mockReturnValue({ ...emptyList, items: [wagon], count: 1, loading: true });
+    rerender(<GrainPage />);
+    expect(screen.queryByText("Загрузка…")).not.toBeInTheDocument();
+    expect(screen.getByTestId("wagon-table")).toBeInTheDocument();
+
+    pagedApiMock.mockReturnValue(emptyList);
+    rerender(<GrainPage />);
+    expect(screen.getByTestId("wagon-table")).toHaveTextContent("На территории нет поездов на приём");
+  });
+
+  it("requests a picked day for finished export trips", async () => {
+    const user = userEvent.setup();
+    render(<GrainPage />);
+
+    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    await user.click(screen.getByRole("tab", { name: "Завершённые" }));
+    const day = screen.getByLabelText("День");
+    await user.clear(day);
+    await user.type(day, "2026-09-04");
+
+    await waitFor(() =>
+      expect(lastWagonsUrl()).toBe(
+        "/grain/wagons/?scope=finished&direction=passage&date_from=2026-09-04&date_to=2026-09-04",
+      ),
+    );
+  });
+
+  it("passes the search text to the on-site list without a day filter", async () => {
+    const user = userEvent.setup();
+    render(<GrainPage />);
+
+    const search = screen.getByLabelText("Поиск");
+    expect(search).toHaveAttribute("placeholder", "Номер, груз, поставщик");
+    await user.type(search, "Колос");
+
+    await waitFor(() =>
+      expect(lastWagonsUrl()).toBe(
+        "/grain/wagons/?scope=on_site&direction=intake&search=%D0%9A%D0%BE%D0%BB%D0%BE%D1%81",
+      ),
+    );
+    expect(pagedApiMock).toHaveBeenCalledWith(lastWagonsUrl(), 50);
+    expect(screen.queryByLabelText("День")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Ожидаются" }));
+    expect(screen.queryByLabelText("Поиск")).not.toBeInTheDocument();
   });
 });

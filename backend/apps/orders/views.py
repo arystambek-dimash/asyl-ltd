@@ -35,6 +35,7 @@ from .invoices import build_invoice_pdf, build_payment_receipt_pdf
 from .debt import order_remaining
 from .querysets import (
     for_post_board,
+    post_board_params,
     with_order_api_relations,
     with_payment_api_relations,
 )
@@ -714,7 +715,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                     "completed_orders_days"
                 ).first()
                 days = row.completed_orders_days if row else 1
-                qs = for_post_board(qs, days)
+                qs = for_post_board(qs, days, **post_board_params(params))
             for field in ("department", "status", "payment_status"):
                 value = params.get(field)
                 if value:

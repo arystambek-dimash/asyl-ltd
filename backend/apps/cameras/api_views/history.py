@@ -15,7 +15,7 @@ from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm
 from apps.orders.models import Order
-from apps.orders.querysets import for_post_board
+from apps.orders.querysets import for_post_board, post_board_params
 from apps.sales.access import scope_by_client_department
 
 from .. import recordings
@@ -164,6 +164,7 @@ class CameraAiSessionHistoryView(APIView):
                         client_path="client",
                     ),
                     completed_days,
+                    **post_board_params(request.query_params),
                 )
             )
         elif raw_order_ids:

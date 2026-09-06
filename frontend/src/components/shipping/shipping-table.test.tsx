@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CameraFeed } from "@/components/camera-wall";
@@ -247,6 +247,111 @@ describe("ShippingTable", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Сервер не ответил");
     expect(screen.getByRole("dialog", { name: "Оформить выезд?" })).toBeInTheDocument();
+  });
+
+  it("renders the day and search controls of the header filter", async () => {
+    const user = userEvent.setup();
+    const onDayChange = vi.fn();
+    const onSearchChange = vi.fn();
+    renderTable({
+      filter: { day: "", today: "2026-09-06", search: "", appliedSearch: "", onDayChange, onSearchChange },
+    });
+
+    expect(screen.getByText("Очередь отгрузки")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Номер, клиент или № заказа")).toBe(screen.getByLabelText("Поиск"));
+    expect(screen.getByLabelText("День")).toHaveValue("2026-09-06");
+    expect(screen.getByLabelText("День")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Сегодня" })).toBeDisabled();
+    expect(screen.queryByText(/Показан день/)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("День"), { target: { value: "2026-09-05" } });
+    expect(onDayChange).toHaveBeenCalledWith("2026-09-05");
+    await user.type(screen.getByLabelText("Поиск"), "3");
+    expect(onSearchChange).toHaveBeenCalledWith("3");
+  });
+
+  it("marks another day as a view and keeps the kiosk from auto-expanding there", async () => {
+    const user = userEvent.setup();
+    const onDayChange = vi.fn();
+    renderTable({
+      capabilities: { canLoad: true, isKiosk: true, kioskCamera: "cam2" },
+      filter: {
+        day: "2026-09-05",
+        today: "2026-09-06",
+        search: "",
+        appliedSearch: "",
+        onDayChange,
+        onSearchChange: vi.fn(),
+      },
+    });
+
+    expect(screen.getByText("Показан день 05.09.2026")).toBeInTheDocument();
+    expect(screen.getByText(/^Выехали · 1$/)).toBeInTheDocument();
+    expect(screen.queryByTestId("row-detail")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Сегодня" }));
+    expect(onDayChange).toHaveBeenCalledWith("");
+  });
+
+  it("labels an applied search as results, drops the day line and locks the day", () => {
+    renderTable({
+      orders: [shipped],
+      sessions: [],
+      capabilities: { canViewShipping: true },
+      filter: {
+        day: "2026-09-05",
+        today: "2026-09-06",
+        search: "327",
+        appliedSearch: "327",
+        onDayChange: vi.fn(),
+        onSearchChange: vi.fn(),
+      },
+    });
+
+    expect(screen.getByText("Результаты поиска")).toBeInTheDocument();
+    expect(screen.queryByText(/Показан день/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Выехали · за 30 дн\./)).toBeInTheDocument();
+    expect(screen.getByLabelText("День")).toBeDisabled();
+  });
+
+  it("shows the search empty state only for the applied query", () => {
+    renderTable({
+      orders: [],
+      sessions: [],
+      filter: {
+        day: "",
+        today: "2026-09-06",
+        search: "327",
+        appliedSearch: "327",
+        onDayChange: vi.fn(),
+        onSearchChange: vi.fn(),
+      },
+    });
+
+    expect(screen.getByText("Ничего не найдено")).toBeInTheDocument();
+  });
+
+  it("keeps the queue header while typed text is not yet applied", () => {
+    renderTable({
+      orders: [],
+      sessions: [],
+      filter: {
+        day: "",
+        today: "2026-09-06",
+        search: "32",
+        appliedSearch: "",
+        onDayChange: vi.fn(),
+        onSearchChange: vi.fn(),
+      },
+    });
+
+    // Поле управляется набранным текстом, а шапка и пустое состояние — тем,
+    // что реально запрошено: до задержки ввода это ещё очередь.
+    expect(screen.getByLabelText("Поиск")).toHaveValue("32");
+    expect(screen.getByText("Очередь отгрузки")).toBeInTheDocument();
+    expect(screen.queryByText("Результаты поиска")).not.toBeInTheDocument();
+    expect(screen.getByText("Нет заказов на посту")).toBeInTheDocument();
+    expect(screen.getByLabelText("День")).toBeEnabled();
   });
 
   it("renders a session without an accessible order as its own loading row", () => {

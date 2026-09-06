@@ -2,7 +2,7 @@
 
 import { Fragment, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDown, ChevronRight, Film } from "lucide-react";
+import { ChevronDown, ChevronRight, Film, Search } from "lucide-react";
 import type { CameraFeed } from "@/components/camera-wall";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
 import type { BagCounterHandle } from "@/components/shipping/bag-counter";
@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ErrorAlert } from "@/components/ui/data-state";
+import { Input } from "@/components/ui/input";
 import { PlateBadge } from "@/components/ui/license-plate-input";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
@@ -39,7 +40,7 @@ import type {
   CameraContinuousReadiness,
   Order,
 } from "@/lib/types";
-import { cn, formatDateTime } from "@/lib/utils";
+import { cn, formatDateTime, formatIsoDate } from "@/lib/utils";
 
 export interface ShippingTableCapabilities extends ShippingCapabilities {
   /** shipping.view — история подсчёта и подпись «камера: N». */
@@ -50,6 +51,21 @@ export interface ShippingTableCapabilities extends ShippingCapabilities {
   isKiosk: boolean;
   /** `me.monoblock_camera` — камера, которую киоск считает своей. */
   kioskCamera: string | null;
+}
+
+/** Фильтры шапки очереди. Состояние живёт на странице: она собирает URL опроса. */
+export interface ShippingBoardFilter {
+  /** «ГГГГ-ММ-ДД»; '' — сегодня. */
+  day: string;
+  /** Локальный «сегодня» страницы — день, на котором очередь живёт по умолчанию. */
+  today: string;
+  /** Что набрано в поле; запрос страница шлёт с задержкой. */
+  search: string;
+  /** Запрос, который реально ушёл на сервер (после задержки ввода) — по нему
+   * шапка решает, что показаны результаты поиска, а не очередь. */
+  appliedSearch: string;
+  onDayChange: (day: string) => void;
+  onSearchChange: (search: string) => void;
 }
 
 export interface ShippingTableProps {
@@ -72,6 +88,8 @@ export interface ShippingTableProps {
   cameraLocked: boolean;
   /** Окно группы «Выехали» (бэкенд применяет его сам). */
   completedOrdersDays: number;
+  /** Без фильтра шапка показывает только заголовок. */
+  filter?: ShippingBoardFilter;
   reloadOrders: () => Promise<unknown>;
   reloadSessions: () => Promise<unknown>;
   /** Только при shipping.view. */
@@ -98,6 +116,8 @@ type Dialog =
 
 const LOADING_STATUSES = ["arrived", "loading"];
 const COLUMN_COUNT = 6;
+/** Поиск на посту не смотрит на день, но выехавших ищет за месяц (BOARD_SEARCH_SHIPPED_DAYS на бэкенде). */
+const SEARCH_SHIPPED_DAYS = 30;
 
 function isLoadingStatus(status: string) {
   return LOADING_STATUSES.includes(status);
@@ -161,12 +181,19 @@ export function ShippingTable({
   continuousDetail,
   cameraLocked,
   completedOrdersDays,
+  filter,
   reloadOrders,
   reloadSessions,
   reloadHistories,
 }: ShippingTableProps) {
   const router = useRouter();
   const { canLoad, canTrain, canShip, canRollback, canViewShipping, canOpenOrder, isKiosk, kioskCamera } = capabilities;
+  // Поиск важнее дня: бэкенд при непустом запросе игнорирует правило дня,
+  // и шапка не должна обещать «показан день», которого в строках нет.
+  // Смотрим на применённый запрос, а не на набранный текст: пока задержка
+  // ввода не прошла, строки ещё принадлежат очереди, а не поиску.
+  const searching = !!filter && filter.appliedSearch.trim() !== "";
+  const viewingDay = filter && filter.day && filter.day !== filter.today && !searching ? filter.day : null;
   const flowCapabilities = useMemo<ShippingCapabilities>(
     () => ({ canLoad, canTrain, canShip, canRollback }),
     [canLoad, canRollback, canShip, canTrain],
@@ -222,14 +249,25 @@ export function ShippingTable({
       const sb = b.kind === "order" ? (b.order.shipped_at ?? "") : "";
       return sb.localeCompare(sa) || b.id - a.id;
     });
-    const completedLabel = completedOrdersDays <= 1 ? "сегодня" : `за ${completedOrdersDays} дн.`;
+    const completedLabel = searching
+      ? `за ${SEARCH_SHIPPED_DAYS} дн.`
+      : viewingDay
+        ? ""
+        : completedOrdersDays <= 1
+          ? "сегодня"
+          : `за ${completedOrdersDays} дн.`;
     return [
       { key: "loading", title: "На погрузке", rows: loading, always: true },
       { key: "ready", title: "Готовы к выезду", rows: ready, always: true },
       { key: "waiting", title: "Ожидают погрузки", rows: waiting, always: true },
-      { key: "shipped", title: `Выехали · ${completedLabel}`, rows: shipped, always: false },
+      {
+        key: "shipped",
+        title: completedLabel ? `Выехали · ${completedLabel}` : "Выехали",
+        rows: shipped,
+        always: false,
+      },
     ];
-  }, [completedOrdersDays, historiesByOrderId, orders, ordersById, sessions, sessionsByOrderId]);
+  }, [completedOrdersDays, historiesByOrderId, orders, ordersById, searching, sessions, sessionsByOrderId, viewingDay]);
 
   const rowsByKey = useMemo(() => {
     const map = new Map<string, Row>();
@@ -241,9 +279,11 @@ export function ShippingTable({
   /* ── Раскрытие: одна строка, киоск автораскрывает свою погрузку ─────── */
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
-  const kioskRow = isKiosk
-    ? groups[0].rows.find((row) => row.kind === "order" && row.order.loading_camera === kioskCamera)
-    : undefined;
+  // Чужой день — просмотр, а не работа: свою погрузку киоск там не раскрывает.
+  const kioskRow =
+    isKiosk && !viewingDay
+      ? groups[0].rows.find((row) => row.kind === "order" && row.order.loading_camera === kioskCamera)
+      : undefined;
   const isExpandable = (row: Row) => row.kind === "session" || isLoadingStatus(row.order.status);
   // Строка, ушедшая из погрузки (возврат, завершение с другого места), сама
   // закрывается: панель живёт только у раскрываемых строк.
@@ -681,14 +721,64 @@ export function ShippingTable({
     );
   }
 
-  const emptyTitle = isKiosk ? "Нет заказов, готовых к погрузке" : "Нет заказов на посту";
+  const empty = searching
+    ? { title: "Ничего не найдено", hint: "Проверьте номер машины, клиента или № заказа" }
+    : viewingDay
+      ? { title: "За этот день заказов нет", hint: "Выберите другой день или вернитесь к сегодняшнему" }
+      : {
+          title: isKiosk ? "Нет заказов, готовых к погрузке" : "Нет заказов на посту",
+          hint: "Подтверждённые заказы появятся здесь автоматически",
+        };
+  const controlClass = isKiosk ? "h-11 text-[15px]" : "h-9";
 
   return (
     <Card className="rounded-lg p-0">
-      <div className="flex items-center gap-2 border-b px-4 py-3">
-        <h3 className="text-[15px] font-semibold tracking-tight">Очередь отгрузки</h3>
-        <span className="ml-auto text-[12px] text-[var(--muted-foreground)]">обновляется автоматически</span>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-3">
+        <div className="flex items-baseline gap-2">
+          <h3 className="text-[15px] font-semibold tracking-tight">
+            {searching ? "Результаты поиска" : "Очередь отгрузки"}
+          </h3>
+          <span className="text-[12px] text-[var(--muted-foreground)]">обновляется автоматически</span>
+        </div>
+        {filter && (
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+              <Input
+                aria-label="Поиск"
+                placeholder="Номер, клиент или № заказа"
+                maxLength={60}
+                className={cn(controlClass, "w-[240px] pl-9")}
+                value={filter.search}
+                onChange={(event) => filter.onSearchChange(event.target.value)}
+              />
+            </div>
+            {/* Под поиском день не действует — не даём выбрать то, что не применится. */}
+            <Input
+              type="date"
+              aria-label="День"
+              className={cn(controlClass, "w-[160px]")}
+              value={filter.day || filter.today}
+              disabled={searching}
+              onChange={(event) => filter.onDayChange(event.target.value)}
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              className={controlClass}
+              disabled={!filter.day || filter.day === filter.today}
+              onClick={() => filter.onDayChange("")}
+            >
+              Сегодня
+            </Button>
+          </div>
+        )}
       </div>
+      {viewingDay && (
+        <div className="border-b px-4 py-2 text-[12px] text-[var(--muted-foreground)]">
+          Показан день {formatIsoDate(viewingDay)}
+        </div>
+      )}
       {actionError && (
         <div className="px-4 pt-3">
           <ErrorAlert message={actionError} />
@@ -723,10 +813,8 @@ export function ShippingTable({
           ) : totalRows === 0 ? (
             <TR>
               <TD colSpan={COLUMN_COUNT} className="h-auto py-12 text-center">
-                <div className="text-[14px]">{emptyTitle}</div>
-                <div className="mt-1 text-[12px] text-[var(--muted-foreground)]">
-                  Подтверждённые заказы появятся здесь автоматически
-                </div>
+                <div className="text-[14px]">{empty.title}</div>
+                <div className="mt-1 text-[12px] text-[var(--muted-foreground)]">{empty.hint}</div>
               </TD>
             </TR>
           ) : (

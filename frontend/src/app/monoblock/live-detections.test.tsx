@@ -295,7 +295,7 @@ describe("AI 24/7 live detections", () => {
     await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
 
     expect(screen.getByText(expected)).toBeInTheDocument();
-    expect(screen.getByText("технический архив 48 ч")).toBeInTheDocument();
+    expect(screen.getByText("считает 24/7")).toBeInTheDocument();
   });
 
   it("обновляет наличие мешков из быстрого снимка детекций", async () => {
@@ -756,7 +756,7 @@ describe("AI 24/7 live detections", () => {
     await user.click(screen.getByRole("tab", { name: "Аналитика" }));
     await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith(currentProductionUrl));
 
-    const allTimeColorsPanel = screen.getByText("Продукция").closest(".rounded-2xl");
+    const allTimeColorsPanel = screen.getByText("Продукция").closest('[data-testid="always-on-panel"]');
     if (!(allTimeColorsPanel instanceof HTMLElement)) throw new Error("Общая карточка цветов не найдена");
     expect(within(allTimeColorsPanel).getByText("ДБН 1с 50кг · Красный 50 кг")).toBeInTheDocument();
     const allTimeRedBinding = allTimeColorsPanel.querySelector('[data-receipt-binding="bound"]');
@@ -767,7 +767,7 @@ describe("AI 24/7 live detections", () => {
     expect(within(allTimeColorsPanel).getByText("Зелёный")).toBeInTheDocument();
     expect(allTimeColorsPanel.querySelector('[data-receipt-binding="unbound"]')).toHaveTextContent("Не привязан");
 
-    const dominantPanel = screen.getByText("Основная продукция").closest(".rounded-2xl");
+    const dominantPanel = screen.getByText("Основная продукция").closest('[data-testid="always-on-panel"]');
     if (!(dominantPanel instanceof HTMLElement)) throw new Error("Карточка основного цвета не найдена");
     expect(within(dominantPanel).getByText("ДБН 1с 50кг · Красный 50 кг")).toBeInTheDocument();
     expect(dominantPanel.querySelector('[data-receipt-binding="bound"]')).toHaveTextContent("Склад готовой продукции");
@@ -778,7 +778,7 @@ describe("AI 24/7 live detections", () => {
 
     await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith(productionUrl));
     const heading = screen.getByRole("heading", { name: "24.08.2026" });
-    const dayPanel = heading.closest(".rounded-2xl");
+    const dayPanel = heading.closest('[data-testid="always-on-panel"]');
     if (!(dayPanel instanceof HTMLElement)) throw new Error("Карточка выбранного дня не найдена");
 
     const bagsMetric = within(dayPanel).getByText("Учтено за день").parentElement;
@@ -848,7 +848,7 @@ describe("AI 24/7 live detections", () => {
     await user.click(screen.getByRole("button", { name: "Аналитика за 23.08.2026: 12 мешков" }));
     await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith(legacyProductionUrl));
     const legacyHeading = screen.getByRole("heading", { name: "23.08.2026" });
-    const legacyDayPanel = legacyHeading.closest(".rounded-2xl");
+    const legacyDayPanel = legacyHeading.closest('[data-testid="always-on-panel"]');
     if (!(legacyDayPanel instanceof HTMLElement)) throw new Error("Карточка legacy-дня не найдена");
     await waitFor(() =>
       expect(within(legacyDayPanel).getByRole("button", { name: "Алгоритм" })).toHaveAttribute("aria-pressed", "true"),
@@ -882,7 +882,7 @@ describe("AI 24/7 live detections", () => {
     await user.click(screen.getByRole("button", { name: "Аналитика за 22.08.2026: 40 мешков" }));
     await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith(archivedProductionUrl));
     const archivedHeading = screen.getByRole("heading", { name: "22.08.2026" });
-    const archivedDayPanel = archivedHeading.closest(".rounded-2xl");
+    const archivedDayPanel = archivedHeading.closest('[data-testid="always-on-panel"]');
     if (!(archivedDayPanel instanceof HTMLElement)) throw new Error("Карточка архивного среза не найдена");
     expect(
       await within(archivedDayPanel).findByRole("group", { name: "ДБН вс 50кг · Синий 50 кг: 40 мешков" }),

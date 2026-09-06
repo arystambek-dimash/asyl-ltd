@@ -2193,6 +2193,48 @@ def test_history_post_board_projection_filters_server_side(
     assert [row["id"] for row in response.data] == [active_session.id]
 
 
+def test_history_post_board_follows_day_and_search(
+    api_client,
+    user_with_perms,
+):
+    viewer = user_with_perms("board-history-day", codes=["shipping.view"])
+    client = Client.objects.create_with_user(first_name="Board", phone="1")
+    yesterday = timezone.now() - timedelta(days=1)
+    shipped_yesterday = Order.objects.create(
+        client=client, status="shipped", truck_number="327ABC01"
+    )
+    Shipment.objects.create(order=shipped_yesterday, shipped_at=yesterday)
+    shipped_today = Order.objects.create(
+        client=client, status="shipped", truck_number="555AAA01"
+    )
+    Shipment.objects.create(order=shipped_today, shipped_at=timezone.now())
+    yesterday_session = AiCountingSession.objects.create(
+        order=shipped_yesterday,
+        camera="cam1",
+        status=AiCountingSession.CLOSED,
+        final_total=7,
+    )
+    today_session = AiCountingSession.objects.create(
+        order=shipped_today,
+        camera="cam2",
+        status=AiCountingSession.CLOSED,
+        final_total=8,
+    )
+    api_client.force_authenticate(viewer)
+
+    default = api_client.get("/api/cameras/ai/history/?post_board=1")
+    day = (timezone.localdate() - timedelta(days=1)).isoformat()
+    by_day = api_client.get(f"/api/cameras/ai/history/?post_board=1&day={day}")
+    by_plate = api_client.get("/api/cameras/ai/history/?post_board=1&search=327")
+    bad_day = api_client.get("/api/cameras/ai/history/?post_board=1&day=nope")
+
+    assert [row["id"] for row in default.data] == [today_session.id]
+    assert [row["id"] for row in by_day.data] == [yesterday_session.id]
+    assert [row["id"] for row in by_plate.data] == [yesterday_session.id]
+    assert bad_day.status_code == 400
+    assert bad_day.data["code"] == "bad_date"
+
+
 def test_recording_list_is_resolved_on_camera_pc(
     api_client, user_with_perms, loader, loading_order,
 ):
