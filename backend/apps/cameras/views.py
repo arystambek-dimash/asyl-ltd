@@ -46,6 +46,7 @@ from .api_views.operations import (
     ShippingBoardSettingsView,
     ShippingContinuousAnalyticsView,
     ShippingContinuousDetectionsView,
+    ShippingContinuousHistoryView,
     ShippingContinuousSettingsView,
     WagonNumberCameraSettingsView,
 )
@@ -83,6 +84,7 @@ __all__ = [
     "ShippingBoardSettingsView",
     "ShippingContinuousAnalyticsView",
     "ShippingContinuousDetectionsView",
+    "ShippingContinuousHistoryView",
     "ShippingContinuousSettingsView",
     "VehiclePlateRuntimeView",
     "WagonNumberCameraSettingsView",

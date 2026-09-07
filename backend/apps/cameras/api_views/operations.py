@@ -10,7 +10,16 @@ from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm, IsStaff, IsSuperUser, PermAPIViewMixin
 
-from .. import ai, analytics, continuous, event_sync, health, production, recordings
+from .. import (
+    ai,
+    analytics,
+    continuous,
+    event_sync,
+    health,
+    production,
+    recordings,
+    shipping_history,
+)
 from ..models import (
     ANALYTICS_SCOPE_AI247,
     ANALYTICS_SCOPE_SHIPPING,
@@ -23,12 +32,13 @@ from ..policies import (
     reserve_camera_roles,
 )
 from ..serializers import (
-    AnalyticsRangeSerializer,
     AlwaysOnAnalyticsArchiveSerializer,
     AlwaysOnAnalyticsSubtractSerializer,
     AlwaysOnProductMappingsSerializer,
+    AnalyticsRangeSerializer,
     CameraSourcesSerializer,
     ShippingBoardSettingsSerializer,
+    ShippingHistorySerializer,
     WagonNumberCameraSettingsSerializer,
 )
 from ..sessions import lock_camera_binding
@@ -170,9 +180,7 @@ class AlwaysOnCameraSettingsView(PermAPIViewMixin, APIView):
         row = row or MonoblockCameraSettings.objects.filter(singleton=True).first()
         desired = MonoblockCameraSettings.ai247_sources(row)
         active_other = MonoblockCameraSettings.shipping_sources(row)
-        blocked = MonoblockCameraSettings.reserved_sources(
-            ANALYTICS_SCOPE_SHIPPING
-        )
+        blocked = MonoblockCameraSettings.reserved_sources(ANALYTICS_SCOPE_SHIPPING)
         filtered_live = _filtered_live(
             live,
             desired,
@@ -428,6 +436,33 @@ class ShippingContinuousAnalyticsView(APIView):
 
     def get(self, request):
         return Response(_analytics_payload(request, ANALYTICS_SCOPE_SHIPPING))
+
+
+class ShippingContinuousHistoryView(APIView):
+    """Exact day periods for configured shipping cameras, without stock data."""
+
+    def get_permissions(self):
+        return [HasPerm(*SHIPPING_CONTINUOUS_READ_PERMISSIONS)]
+
+    def get(self, request):
+        serializer = ShippingHistorySerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        camera = serializer.validated_data["camera"]
+        if (
+            camera not in MonoblockCameraSettings.shipping_sources()
+            or not ContinuousCameraRole.objects.filter(
+                camera=camera, analytics_scope=ANALYTICS_SCOPE_SHIPPING
+            ).exists()
+        ):
+            raise ValidationError(
+                {
+                    "camera": "Камера не закреплена за контуром отгрузки",
+                    "code": "camera_not_in_shipping",
+                }
+            )
+        return Response(
+            shipping_history.day_payload(camera, day=serializer.validated_data["day"])
+        )
 
 
 class WagonNumberCameraSettingsView(APIView):
@@ -702,4 +737,6 @@ def _analytics_payload(request, scope):
     serializer.is_valid(raise_exception=True)
     params = dict(serializer.validated_data)
     camera = params.pop("camera", None)
-    return analytics.today_payload(scope, camera_sources=[camera] if camera else None, **params)
+    return analytics.today_payload(
+        scope, camera_sources=[camera] if camera else None, **params
+    )

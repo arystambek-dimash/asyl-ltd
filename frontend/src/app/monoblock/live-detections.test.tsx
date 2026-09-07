@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import MonoblockPage from "./page";
-import type { AlwaysOnDailyAnalytics } from "@/lib/types";
+import type { AlwaysOnDailyAnalytics, ShippingCameraDayHistory } from "@/lib/types";
 
 const mocks = vi.hoisted(() => ({
   responses: new Map<string, unknown>(),
@@ -136,6 +136,172 @@ const analytics = {
   cameras: [],
 };
 
+const shippingHistoryUrl = (day: string) => `/cameras/shipping-continuous-history/?camera=cam2&day=${day}`;
+
+function shippingDayHistory(day = "2026-08-24"): ShippingCameraDayHistory {
+  const active = day === "2026-08-24";
+  const rawRuns: ShippingCameraDayHistory["day_runs"] = [
+    {
+      id: 1,
+      camera: "cam2",
+      business_day: day,
+      color: "red",
+      started_at: `${day}T09:00:00+05:00`,
+      last_counted_at: `${day}T09:01:00+05:00`,
+      ended_at: `${day}T09:01:00+05:00`,
+      model_bags: 4,
+      is_approximate: false,
+      status: "closed",
+    },
+    {
+      id: 5,
+      camera: "cam2",
+      business_day: day,
+      color: "blue",
+      started_at: `${day}T09:02:00+05:00`,
+      last_counted_at: `${day}T09:03:00+05:00`,
+      ended_at: `${day}T09:03:00+05:00`,
+      model_bags: 3,
+      is_approximate: false,
+      status: "closed",
+    },
+    {
+      id: 8,
+      camera: "cam2",
+      business_day: day,
+      color: "red",
+      started_at: `${day}T09:04:00+05:00`,
+      last_counted_at: `${day}T09:05:00+05:00`,
+      ended_at: active ? null : `${day}T09:05:00+05:00`,
+      model_bags: 5,
+      is_approximate: false,
+      status: active ? "active" : "closed",
+    },
+  ];
+  return {
+    camera: "cam2",
+    timezone: "Asia/Almaty",
+    selected_day: day,
+    history_status: "complete",
+    history_detail: "",
+    day_runs: rawRuns,
+    algorithm_day_runs: [
+      {
+        ...rawRuns[0],
+        model_bags: 12,
+        last_counted_at: rawRuns[2].last_counted_at,
+        ended_at: rawRuns[2].ended_at,
+        status: rawRuns[2].status,
+      },
+    ],
+    run_smoothing: {
+      n_min: 10,
+      changed: true,
+      raw_run_count: 3,
+      algorithm_run_count: 1,
+      raw_model_total: 12,
+      algorithm_model_total: 12,
+      raw_model_per_color: { red: 9, blue: 3 },
+      algorithm_model_per_color: { red: 12 },
+      raw_colors: [
+        { color: "red", total: 9, percent: 75 },
+        { color: "blue", total: 3, percent: 25 },
+      ],
+      algorithm_colors: [{ color: "red", total: 12, percent: 100 }],
+    },
+  };
+}
+
+function setupShippingHistory(
+  getHistory: (day: string, options?: { signal?: AbortSignal }) => Promise<{ data: ShippingCameraDayHistory }> = async (
+    day,
+  ) => ({ data: shippingDayHistory(day) }),
+) {
+  const history = ["2026-08-23", "2026-08-24"].map((day) => ({
+    day,
+    model_total: 12,
+    model_per_color: { red: 9, blue: 3 },
+    model_per_brand: {},
+    colors: [
+      { color: "red", total: 9, percent: 75 },
+      { color: "blue", total: 3, percent: 25 },
+    ],
+    brands: [],
+    adjustment: 0,
+    total: 12,
+    updated_at: null,
+  }));
+  const historyPoint = history[1];
+  const shippingProcessor = { ...processor, analytics_scope: "shipping" };
+  const shippingSettings = { ...alwaysOnSettings, analytics_scope: "shipping", processors: [shippingProcessor] };
+  const sync = { status: "synced", available: true, detail: "" };
+  const shippingAnalytics = {
+    ...analytics,
+    analytics_scope: "shipping",
+    analytics_sync: sync,
+    total: 12,
+    all_time_total: 24,
+    model_all_time_total: 24,
+    history,
+    colors: historyPoint.colors,
+    cameras: [
+      {
+        camera: "cam2",
+        ...historyPoint,
+        all_time_total: 24,
+        history,
+        dominant_color: "red",
+        dominant_brand: null,
+        analytics_sync: sync,
+      },
+    ],
+  };
+  mocks.responses.set("/cameras/monoblock-settings/", {
+    camera_sources: ["cam2"],
+    blocked_camera_sources: [],
+    continuous_camera_sources: ["cam2"],
+    continuous_source: "sub",
+    continuous_sync_status: "synced",
+    continuous_detail: "",
+    camera_readiness: { cam2: { status: "synced", detail: "" } },
+    locked: false,
+    device_id: null,
+    device_name: null,
+    updated_at: null,
+  });
+  mocks.responses.set("/cameras/shipping-continuous-settings/", shippingSettings);
+  mocks.responses.set("/cameras/shipping-continuous-analytics/", shippingAnalytics);
+  mocks.responses.set("/cameras/always-on-settings/", { ...alwaysOnSettings, camera_sources: [], processors: [] });
+  mocks.apiGet.mockClear();
+  mocks.apiGet.mockImplementation((url: unknown, options?: { signal?: AbortSignal }) => {
+    if (url === "/cameras/shipping-continuous-detections/")
+      return Promise.resolve({ data: { processors: [shippingProcessor] } });
+    if (url === "/cameras/shipping-continuous-settings/") return Promise.resolve({ data: shippingSettings });
+    if (url === "/cameras/shipping-continuous-analytics/") return Promise.resolve({ data: shippingAnalytics });
+    if (typeof url === "string" && url.startsWith("/cameras/shipping-continuous-history/?"))
+      return getHistory(new URL(url, "http://localhost").searchParams.get("day") ?? "", options);
+    return Promise.reject(new Error(`Unexpected GET ${String(url)}`));
+  });
+}
+
+async function openShippingDay(user: ReturnType<typeof userEvent.setup>, { range = false } = {}) {
+  render(<MonoblockPage />);
+  await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+  await user.click(screen.getByRole("tab", { name: "Аналитика" }));
+  if (range) await user.click(screen.getByRole("button", { name: "7 дней" }));
+  await user.click(
+    screen.getByRole("button", {
+      name: range ? "Аналитика за 24.08.2026: 12 мешков" : "Подсчёт по времени: 24.08.2026, 12 мешков",
+    }),
+  );
+}
+
+function selectedDayPanel(day: string) {
+  const panel = screen.getByRole("heading", { name: day }).closest('[data-testid="always-on-panel"]');
+  if (!(panel instanceof HTMLElement)) throw new Error("Карточка выбранного дня не найдена");
+  return panel;
+}
+
 beforeEach(() => {
   mocks.requestedUrls = [];
   mocks.permissions = ["shipping.load"];
@@ -213,88 +379,208 @@ describe("AI 24/7 live detections", () => {
     expect(label.parentElement).toHaveTextContent("Текущий цикл17");
   });
 
-  it("не запрашивает выпуск AI 24/7 при разборе дня камеры отгрузки", async () => {
+  it("показывает периоды отгрузки и переключает алгоритм без запросов выпуска AI 24/7", async () => {
     const user = userEvent.setup();
-    const day = "2026-08-24";
-    const historyPoint = {
-      day,
-      model_total: 12,
-      model_per_color: { red: 9, blue: 3 },
-      model_per_brand: {},
-      colors: [
-        { color: "red", total: 9, percent: 75 },
-        { color: "blue", total: 3, percent: 25 },
-      ],
-      brands: [],
-      adjustment: 0,
-      total: 12,
-      updated_at: null,
-    };
-    const shippingProcessor = { ...processor, analytics_scope: "shipping" };
-    const shippingSettings = {
-      ...alwaysOnSettings,
-      analytics_scope: "shipping",
-      processors: [shippingProcessor],
-      camera_readiness: { cam2: { status: "synced", detail: "" } },
-    };
-    const shippingAnalytics = {
-      ...analytics,
-      analytics_scope: "shipping",
-      analytics_sync: { status: "synced", available: true, detail: "" },
-      total: 12,
-      all_time_total: 12,
-      model_all_time_total: 12,
-      history: [historyPoint],
-      colors: historyPoint.colors,
-      cameras: [
-        {
-          camera: "cam2",
-          ...historyPoint,
-          all_time_total: 12,
-          history: [historyPoint],
-          dominant_color: "red",
-          dominant_brand: null,
-          analytics_sync: { status: "synced", available: true, detail: "" },
-        },
-      ],
-    };
-    mocks.responses.set("/cameras/monoblock-settings/", {
-      camera_sources: ["cam2"],
-      blocked_camera_sources: [],
-      continuous_camera_sources: ["cam2"],
-      continuous_source: "sub",
-      continuous_sync_status: "synced",
-      continuous_detail: "",
-      camera_readiness: { cam2: { status: "synced", detail: "" } },
-      locked: false,
-      device_id: null,
-      device_name: null,
-      updated_at: null,
-    });
-    mocks.responses.set("/cameras/shipping-continuous-settings/", shippingSettings);
-    mocks.responses.set("/cameras/shipping-continuous-analytics/", shippingAnalytics);
-    mocks.responses.set("/cameras/always-on-settings/", { ...alwaysOnSettings, camera_sources: [], processors: [] });
-    mocks.apiGet.mockClear();
-    mocks.apiGet.mockImplementation((url: unknown) => {
-      if (url === "/cameras/shipping-continuous-detections/") {
-        return Promise.resolve({ data: { processors: [shippingProcessor] } });
-      }
-      if (url === "/cameras/shipping-continuous-settings/") return Promise.resolve({ data: shippingSettings });
-      if (url === "/cameras/shipping-continuous-analytics/") return Promise.resolve({ data: shippingAnalytics });
-      return Promise.reject(new Error(`Unexpected GET ${String(url)}`));
+    setupShippingHistory();
+    await openShippingDay(user);
+
+    const panel = selectedDayPanel("24.08.2026");
+    const algorithmRun = await within(panel).findByRole("group", { name: "Период Красный: 12 мешков" });
+    expect(algorithmRun).toHaveTextContent("09:00");
+    expect(algorithmRun).toHaveTextContent("идёт сейчас");
+    expect(within(panel).getByRole("group", { name: "Красный: 12 мешков" })).toHaveTextContent("100%");
+    expect(within(panel).getByRole("button", { name: "Алгоритм" })).toHaveAttribute("aria-pressed", "true");
+    expect(mocks.apiGet).toHaveBeenCalledWith(shippingHistoryUrl("2026-08-24"), {
+      signal: expect.any(AbortSignal),
     });
 
-    render(<MonoblockPage />);
+    await user.click(within(panel).getByRole("button", { name: "Сырые данные" }));
+    const firstRed = within(panel).getByRole("group", { name: "Период Красный: 4 мешков" });
+    const blue = within(panel).getByRole("group", { name: "Период Синий: 3 мешков" });
+    const lastRed = within(panel).getByRole("group", { name: "Период Красный: 5 мешков" });
+    expect(firstRed).toHaveTextContent("09:00");
+    expect(firstRed).toHaveTextContent("09:01");
+    expect(blue).toHaveTextContent("09:02");
+    expect(blue).toHaveTextContent("09:03");
+    expect(lastRed).toHaveTextContent("09:04");
+    expect(lastRed).toHaveTextContent("идёт сейчас");
+    expect(within(panel).getAllByText("идёт сейчас")).toHaveLength(1);
+    expect(within(panel).getByRole("group", { name: "Красный: 9 мешков" })).toHaveTextContent("75%");
+    expect(within(panel).getByRole("group", { name: "Синий: 3 мешков" })).toHaveTextContent("25%");
+    expect(within(panel).getByText("Учтено за день").parentElement).toHaveTextContent("12");
+    expect(within(panel).queryByText("Цвета и продукция за день")).not.toBeInTheDocument();
+    expect(panel.querySelector("[data-receipt-binding]")).toBeNull();
+    expect(within(panel).queryByText(/Не привязан|Куда приходовать|Бренд недоступен/)).not.toBeInTheDocument();
+    expect(mocks.requestedUrls.some((url) => url.startsWith("/cameras/always-on-production/"))).toBe(false);
+    expect(mocks.apiPut).not.toHaveBeenCalled();
+    expect(mocks.apiPost).not.toHaveBeenCalled();
+  });
+
+  it.each(["incomplete", "pending"] as const)(
+    "объясняет %s историю отгрузки и позволяет обновить её без ложного пустого журнала",
+    async (historyStatus) => {
+      const user = userEvent.setup();
+      const detail = "Для части мешков сохранён только общий итог, точное время неизвестно.";
+      let ready = false;
+      setupShippingHistory(async (day) => ({
+        data: ready
+          ? shippingDayHistory(day)
+          : { ...shippingDayHistory(day), history_status: historyStatus, history_detail: detail, day_runs: [] },
+      }));
+      await openShippingDay(user);
+      const panel = selectedDayPanel("24.08.2026");
+      expect(await within(panel).findByText(detail)).toBeInTheDocument();
+      expect(within(panel).getByRole("button", { name: "Алгоритм" })).toBeDisabled();
+      expect(within(panel).getByRole("button", { name: "Сырые данные" })).toBeDisabled();
+      expect(within(panel).queryByRole("group", { name: /^Период / })).not.toBeInTheDocument();
+      expect(within(panel).queryByText("Детализация за 24.08.2026 недоступна.")).not.toBeInTheDocument();
+      expect(within(panel).getByText("Учтено за день").parentElement).toHaveTextContent("12");
+      expect(within(panel).getByRole("group", { name: "Красный: 9 мешков" })).toBeInTheDocument();
+
+      ready = true;
+      await user.click(within(panel).getByRole("button", { name: "Обновить" }));
+      expect(await within(panel).findByRole("group", { name: "Период Красный: 12 мешков" })).toBeInTheDocument();
+      expect(within(panel).queryByText(detail)).not.toBeInTheDocument();
+      expect(within(panel).getByRole("button", { name: "Сырые данные" })).toBeEnabled();
+    },
+  );
+
+  it("показывает ошибку запроса журнала отгрузки и повторяет только дневную детализацию", async () => {
+    const user = userEvent.setup();
+    let attempts = 0;
+    setupShippingHistory(async (day) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("Connection lost");
+      return { data: shippingDayHistory(day) };
+    });
+    await openShippingDay(user);
+    const panel = selectedDayPanel("24.08.2026");
+    expect(await within(panel).findByRole("alert")).toHaveTextContent("Ошибка тестового API");
+    expect(within(panel).getByRole("button", { name: "Алгоритм" })).toBeDisabled();
+    expect(within(panel).queryByRole("group", { name: /^Период / })).not.toBeInTheDocument();
+    expect(within(panel).getByText("Учтено за день").parentElement).toHaveTextContent("12");
+    const beforeRetry = mocks.requestedUrls.length;
+    await user.click(within(panel).getByRole("button", { name: "Повторить" }));
+    expect(await within(panel).findByRole("group", { name: "Период Красный: 12 мешков" })).toBeInTheDocument();
+    expect(within(panel).queryByRole("alert")).not.toBeInTheDocument();
+    expect(attempts).toBe(2);
+    expect(mocks.requestedUrls.slice(beforeRetry)).toEqual([shippingHistoryUrl("2026-08-24")]);
+  });
+
+  it("отменяет дневной запрос отгрузки и игнорирует поздний ответ после выбора другого дня", async () => {
+    const user = userEvent.setup();
+    let resolveOld: ((value: { data: ShippingCameraDayHistory }) => void) | undefined;
+    let firstSignal: AbortSignal | undefined;
+    setupShippingHistory((day, options) => {
+      if (day === "2026-08-24") {
+        firstSignal = options?.signal;
+        return new Promise((resolve) => {
+          resolveOld = resolve;
+        });
+      }
+      return Promise.resolve({ data: shippingDayHistory(day) });
+    });
+    await openShippingDay(user, { range: true });
+    expect(within(selectedDayPanel("24.08.2026")).getByText("Загружаем периоды дня…")).toBeInTheDocument();
+    expect(firstSignal?.aborted).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Аналитика за 23.08.2026: 12 мешков" }));
+    expect(firstSignal?.aborted).toBe(true);
+    const panel = selectedDayPanel("23.08.2026");
+    const run = await within(panel).findByRole("group", { name: "Период Красный: 12 мешков" });
+    expect(run).toHaveTextContent("09:05");
+    expect(within(panel).queryByText("идёт сейчас")).not.toBeInTheDocument();
+    await act(async () => {
+      resolveOld?.({ data: shippingDayHistory("2026-08-24") });
+    });
+    expect(within(panel).getByRole("group", { name: "Период Красный: 12 мешков" })).toBeInTheDocument();
+    expect(within(panel).queryByText("идёт сейчас")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "24.08.2026" })).not.toBeInTheDocument();
+  });
+
+  it("отменяет дневной запрос при закрытии камеры и не возвращает старые периоды после открытия", async () => {
+    const user = userEvent.setup();
+    let resolveOld: ((value: { data: ShippingCameraDayHistory }) => void) | undefined;
+    let firstSignal: AbortSignal | undefined;
+    let attempts = 0;
+    setupShippingHistory((day, options) => {
+      attempts += 1;
+      if (attempts === 1) {
+        firstSignal = options?.signal;
+        return new Promise((resolve) => {
+          resolveOld = resolve;
+        });
+      }
+      const current = shippingDayHistory(day);
+      return Promise.resolve({
+        data: {
+          ...current,
+          algorithm_day_runs: current.algorithm_day_runs?.map((run) => ({
+            ...run,
+            started_at: `${day}T11:00:00+05:00`,
+            last_counted_at: `${day}T11:05:00+05:00`,
+          })),
+        },
+      });
+    });
+    await openShippingDay(user);
+    expect(firstSignal?.aborted).toBe(false);
+    await user.keyboard("{Escape}");
+    expect(firstSignal?.aborted).toBe(true);
     await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
     await user.click(screen.getByRole("tab", { name: "Аналитика" }));
-    await user.click(screen.getByRole("button", { name: "Подробнее о дне: 24.08.2026, 12 мешков" }));
+    await user.click(screen.getByRole("button", { name: "Подсчёт по времени: 24.08.2026, 12 мешков" }));
+    const panel = selectedDayPanel("24.08.2026");
+    expect(await within(panel).findByRole("group", { name: "Период Красный: 12 мешков" })).toHaveTextContent("11:00");
+    await act(async () => {
+      resolveOld?.({ data: shippingDayHistory("2026-08-24") });
+    });
+    expect(within(panel).getByRole("group", { name: "Период Красный: 12 мешков" })).toHaveTextContent("11:00");
+    expect(attempts).toBe(2);
+  });
 
-    expect(screen.getByText("Цвета мешков за день")).toBeInTheDocument();
-    expect(screen.queryByText("Цвета и продукция за день")).not.toBeInTheDocument();
-    expect(screen.queryByText("Журнал периодов выпуска")).not.toBeInTheDocument();
-    expect(mocks.apiGet.mock.calls.some(([url]) => String(url).startsWith("/cameras/always-on-production/"))).toBe(
-      false,
-    );
+  it("обновляет периоды текущего дня и прекращает polling после закрытия детализации", async () => {
+    const user = userEvent.setup();
+    let attempts = 0;
+    let resolveFirst: ((value: { data: ShippingCameraDayHistory }) => void) | undefined;
+    setupShippingHistory((day) => {
+      attempts += 1;
+      if (attempts === 1)
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      const current = shippingDayHistory(day);
+      current.day_runs = current.day_runs.map((run) => ({ ...run, status: "closed", ended_at: run.last_counted_at }));
+      current.algorithm_day_runs = current.algorithm_day_runs?.map((run) => ({
+        ...run,
+        status: "closed",
+        ended_at: run.last_counted_at,
+      }));
+      return Promise.resolve({ data: current });
+    });
+    await openShippingDay(user);
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        resolveFirst?.({ data: shippingDayHistory() });
+      });
+      const panel = selectedDayPanel("24.08.2026");
+      expect(within(panel).getByText("идёт сейчас")).toBeInTheDocument();
+      expect(attempts).toBe(1);
+      await act(async () => {
+        vi.advanceTimersByTime(15_000);
+      });
+      expect(attempts).toBe(2);
+      expect(within(panel).queryByText("идёт сейчас")).not.toBeInTheDocument();
+      expect(within(panel).getByRole("group", { name: "Период Красный: 12 мешков" })).toHaveTextContent("09:05");
+      fireEvent.click(within(panel).getByRole("button", { name: "Закрыть" }));
+      await act(async () => {
+        vi.advanceTimersByTime(30_000);
+      });
+      expect(attempts).toBe(2);
+      expect(screen.queryByRole("heading", { name: "24.08.2026" })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([
@@ -797,7 +1083,7 @@ describe("AI 24/7 live detections", () => {
 
     await user.click(screen.getByRole("button", { name: "Аналитика за 24.08.2026: 153 мешков" }));
 
-    await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith(productionUrl));
+    await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith(productionUrl, { signal: expect.any(AbortSignal) }));
     const heading = screen.getByRole("heading", { name: "24.08.2026" });
     const dayPanel = heading.closest('[data-testid="always-on-panel"]');
     if (!(dayPanel instanceof HTMLElement)) throw new Error("Карточка выбранного дня не найдена");
@@ -867,7 +1153,9 @@ describe("AI 24/7 live detections", () => {
     // Предыдущий API не знает об algorithm_day_runs/run_smoothing: оба
     // режима должны без ошибки показать исходный дневной срез.
     await user.click(screen.getByRole("button", { name: "Аналитика за 23.08.2026: 12 мешков" }));
-    await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith(legacyProductionUrl));
+    await waitFor(() =>
+      expect(mocks.apiGet).toHaveBeenCalledWith(legacyProductionUrl, { signal: expect.any(AbortSignal) }),
+    );
     const legacyHeading = screen.getByRole("heading", { name: "23.08.2026" });
     const legacyDayPanel = legacyHeading.closest('[data-testid="always-on-panel"]');
     if (!(legacyDayPanel instanceof HTMLElement)) throw new Error("Карточка legacy-дня не найдена");
@@ -901,7 +1189,9 @@ describe("AI 24/7 live detections", () => {
     // Append-only production runs include the part already moved to an
     // archive. Never mix that full ledger (140) with the active slice (40).
     await user.click(screen.getByRole("button", { name: "Аналитика за 22.08.2026: 40 мешков" }));
-    await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith(archivedProductionUrl));
+    await waitFor(() =>
+      expect(mocks.apiGet).toHaveBeenCalledWith(archivedProductionUrl, { signal: expect.any(AbortSignal) }),
+    );
     const archivedHeading = screen.getByRole("heading", { name: "22.08.2026" });
     const archivedDayPanel = archivedHeading.closest('[data-testid="always-on-panel"]');
     if (!(archivedDayPanel instanceof HTMLElement)) throw new Error("Карточка архивного среза не найдена");
@@ -909,7 +1199,9 @@ describe("AI 24/7 live detections", () => {
       await within(archivedDayPanel).findByRole("group", { name: "ДБН вс 50кг · Синий 50 кг: 40 мешков" }),
     ).toBeInTheDocument();
     expect(within(archivedDayPanel).queryByRole("group", { name: /ДБН 1с 50кг/ })).not.toBeInTheDocument();
-    expect(within(archivedDayPanel).getByRole("status")).toHaveTextContent("часть дня уже перенесена в архив");
+    expect(within(archivedDayPanel).getByRole("status")).toHaveTextContent(
+      "журнал не совпадает с итогом выбранного дня",
+    );
     expect(within(archivedDayPanel).queryByText("меш.")).not.toBeInTheDocument();
   });
 

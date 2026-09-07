@@ -235,9 +235,32 @@ class AnalyticsRangeSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         from django.utils import timezone
+
         if "date_from" in attrs or "date_to" in attrs:
             start = attrs.setdefault("date_from", timezone.localdate())
             end = attrs.setdefault("date_to", timezone.localdate())
             if start > end or (end - start).days >= 366:
                 raise serializers.ValidationError("Выберите период от 1 до 366 дней")
         return attrs
+
+
+class ShippingHistorySerializer(serializers.Serializer):
+    camera = serializers.CharField(max_length=32)
+    day = serializers.DateField()
+
+    def validate_camera(self, value):
+        try:
+            return ai.normalize(value)
+        except ai.AiError as exc:
+            raise serializers.ValidationError("Неизвестная камера") from exc
+
+    def validate_day(self, value):
+        from datetime import date
+
+        # UTC conversion and the exclusive next midnight need representable
+        # neighbouring days at both ends of Python's calendar.
+        if value in (date.min, date.max):
+            raise serializers.ValidationError(
+                "Выберите дату от 02.01.0001 до 30.12.9999"
+            )
+        return value

@@ -74,5 +74,8 @@ export function normalizedColor(value: string | null | undefined): string {
 }
 
 export function colorMeta(color: string): ColorMeta {
+  if (["unclassified", "unknown"].includes(normalizedColor(color))) {
+    return { ...FALLBACK, label: "Не определён" };
+  }
   return COLOR_META[normalizedColor(color)] ?? { ...FALLBACK, label: color };
 }

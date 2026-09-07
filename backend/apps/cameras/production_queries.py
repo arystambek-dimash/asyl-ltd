@@ -112,10 +112,15 @@ def _is_run_smoothing_barrier(run: dict) -> bool:
     A partial legacy run carries the bag count for the whole cross-midnight
     interval rather than only the selected calendar day.  Approximate rows do
     not preserve an authoritative colour sequence either.  Neither is safe to
-    merge or use as a sandwich neighbour.
+    merge or use as a sandwich neighbour. Explicitly missing classifications
+    are also barriers: smoothing must not turn unknown evidence into a colour.
     """
 
-    return bool(run.get("is_partial_for_day") or run.get("is_approximate"))
+    return bool(
+        run.get("is_partial_for_day")
+        or run.get("is_approximate")
+        or run.get("color") in {"unclassified", "unknown"}
+    )
 
 
 def _merge_algorithm_runs(left: dict, right: dict) -> dict:

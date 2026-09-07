@@ -809,26 +809,29 @@ export interface AlwaysOnStockPreview {
   product_label: string | null;
   configured: boolean;
 }
-export interface AlwaysOnProductionPayload {
+/** Read-only day detail shared by shipment and production cameras. */
+export interface CameraDayHistory {
   camera: string;
+  timezone: string;
+  selected_day: string | null;
+  day_runs: AlwaysOnProductionRun[];
+  algorithm_day_runs?: AlwaysOnProductionRun[];
+  run_smoothing?: AlwaysOnRunSmoothing;
+  dominant_brand_by_color?: Record<string, string | null>;
+}
+export interface ShippingCameraDayHistory extends CameraDayHistory {
+  selected_day: string;
+  history_status: "complete" | "incomplete" | "pending";
+  history_detail: string;
+}
+export interface AlwaysOnProductionPayload extends CameraDayHistory {
   /** Optional while the frontend and backend are rolled out independently. */
   warehouse?: number;
   warehouse_name?: string;
   warehouses?: Array<Omit<Warehouse, "address"> & { address?: string }>;
-  timezone: string;
   close_time: string;
   current_business_day: string;
   next_run_at: string;
-  /** Запрошенная через `?day=` календарная дата аналитики. */
-  selected_day: string | null;
-  /** Полный журнал выбранного дня; `runs` остаётся короткой общей лентой. */
-  day_runs: AlwaysOnProductionRun[];
-  /** Те же периоды после read-only фильтра коротких «сэндвичей»; сырой журнал не меняется. */
-  algorithm_day_runs?: AlwaysOnProductionRun[];
-  /** Сравнение сырого и алгоритмического вида выбранного дня. */
-  run_smoothing?: AlwaysOnRunSmoothing;
-  /** Доминирующий бренд каждого цвета по исходным событиям выбранного дня. */
-  dominant_brand_by_color?: Record<string, string | null>;
   fully_configured: boolean;
   available_colors: string[];
   mappings: AlwaysOnProductMapping[];

@@ -65,6 +65,7 @@ import type {
   MonoblockCameraSettings,
   Order,
   ShippingBoardSettings,
+  ShippingCameraDayHistory,
 } from "@/lib/types";
 import { dayColorBreakdown, fullDay } from "@/lib/day-analytics";
 import { useApi } from "@/lib/use-api";
@@ -534,7 +535,10 @@ function AlwaysOnCard({
   const [productionSaving, setProductionSaving] = useState(false);
   const productionRequestSequence = useRef(0);
   const productionMutationInFlight = useRef(false);
-  const [selectedProductionDay, setSelectedProductionDay] = useState<AlwaysOnProductionPayload | null>(null);
+  const [selectedDayHistory, setSelectedDayHistory] = useState<
+    AlwaysOnProductionPayload | ShippingCameraDayHistory | null
+  >(null);
+  const selectedProductionDay = selectedDayHistory && "mappings" in selectedDayHistory ? selectedDayHistory : null;
   const [selectedProductionLoading, setSelectedProductionLoading] = useState(false);
   const [selectedProductionError, setSelectedProductionError] = useState<string | null>(null);
   const [selectedProductionReload, setSelectedProductionReload] = useState(0);
@@ -620,16 +624,19 @@ function AlwaysOnCard({
   const selectedColors = selectedPoint?.colors?.length ? selectedPoint.colors : dayColorBreakdown(selectedPoint);
   // Дневная детализация приходит отдельным запросом. Проверка даты не даёт
   // на один рендер показать ответ предыдущего столбика после быстрого клика.
-  const selectedDayProduction =
-    selectedProductionDay?.selected_day === selectedPoint?.day ? selectedProductionDay : null;
-  const selectedRawRuns = selectedDayProduction?.day_runs ?? null;
-  const smoothing = selectedDayProduction?.run_smoothing;
-  const serverAlgorithmRuns = selectedDayProduction?.algorithm_day_runs;
+  const selectedHistory = selectedDayHistory?.selected_day === selectedPoint?.day ? selectedDayHistory : null;
+  const selectedRawRuns = selectedHistory?.day_runs ?? null;
+  const smoothing = selectedHistory?.run_smoothing;
+  const serverAlgorithmRuns = selectedHistory?.algorithm_day_runs;
+  const historyComplete =
+    selectedHistory && ("history_status" in selectedHistory ? selectedHistory.history_status === "complete" : true);
   const algorithmViewAvailable = Boolean(serverAlgorithmRuns && smoothing);
   const selectedAlgorithmRuns = serverAlgorithmRuns && smoothing ? serverAlgorithmRuns : selectedRawRuns;
   const rawRunsTotal = selectedRawRuns?.reduce((sum, run) => sum + run.model_bags, 0);
   const runsMatchSelectedAnalytics = Boolean(
     selectedPoint &&
+    historyComplete &&
+    !selectedProductionError &&
     selectedRawRuns &&
     !selectedRawRuns.some((run) => run.is_partial_for_day) &&
     rawRunsTotal === selectedPoint.model_total &&
@@ -637,7 +644,7 @@ function AlwaysOnCard({
       (smoothing.raw_model_total === selectedPoint.model_total &&
         smoothing.algorithm_model_total === selectedPoint.model_total)),
   );
-  const selectedVisibleRuns = selectedDayProduction
+  const selectedVisibleRuns = selectedHistory
     ? runsMatchSelectedAnalytics
       ? selectedDayColorView === "algorithm"
         ? selectedAlgorithmRuns
@@ -645,9 +652,11 @@ function AlwaysOnCard({
       : []
     : null;
   const runMismatchMessage =
-    selectedDayProduction && !runsMatchSelectedAnalytics
-      ? "Периоды не показаны: журнал не совпадает с выбранным срезом аналитики — например, часть дня уже перенесена в архив."
-      : null;
+    selectedHistory && "history_status" in selectedHistory && !historyComplete
+      ? selectedHistory.history_detail
+      : selectedHistory && !runsMatchSelectedAnalytics
+        ? "Периоды недоступны: журнал не совпадает с итогом выбранного дня."
+        : null;
   // Старые интервалы могут пересекать границу дня, а append-only журнал —
   // границу переноса в архив. В обоих случаях не смешиваем разные срезы.
   const selectedVisibleColors =
@@ -656,7 +665,7 @@ function AlwaysOnCard({
         ? smoothing.algorithm_colors
         : smoothing.raw_colors
       : selectedColors;
-  const selectedMappings = selectedDayProduction?.mappings ?? production?.mappings ?? null;
+  const selectedMappings = selectedProductionDay?.mappings ?? production?.mappings ?? null;
   const selectedReceiptMapping = useMemo<AlwaysOnReceiptMappingContext>(
     () => ({
       status:
@@ -664,23 +673,23 @@ function AlwaysOnCard({
           ? "unavailable"
           : selectedMappings
             ? "ready"
-            : selectedDayProduction || production
+            : selectedHistory || production
               ? "unavailable"
               : "loading",
       mappings: selectedMappings,
-      products: selectedDayProduction?.products ?? production?.products,
-      warehouse: selectedDayProduction?.warehouse ?? production?.warehouse,
-      warehouseName: selectedDayProduction?.warehouse_name ?? production?.warehouse_name,
+      products: selectedProductionDay?.products ?? production?.products,
+      warehouse: selectedProductionDay?.warehouse ?? production?.warehouse,
+      warehouseName: selectedProductionDay?.warehouse_name ?? production?.warehouse_name,
     }),
-    [selectedDayProduction, selectedMappings, selectedProductionError, production, productionError],
+    [selectedHistory, selectedProductionDay, selectedMappings, selectedProductionError, production, productionError],
   );
-  const selectedBrandsByColor = selectedDayProduction?.dominant_brand_by_color;
+  const selectedBrandsByColor = selectedHistory?.dominant_brand_by_color;
   const selectedBrandByColor = new Map(
     Object.entries(selectedBrandsByColor ?? {}).map(([color, brand]) => [normalizedColor(color), brand]),
   );
   const selectedBrandStatus = selectedBrandsByColor
     ? "ready"
-    : selectedProductionError || selectedDayProduction
+    : selectedProductionError || selectedHistory
       ? "unavailable"
       : "loading";
   useEffect(() => {
@@ -882,30 +891,37 @@ function AlwaysOnCard({
   // склад» нельзя подменять дневным срезом. Текущий выбранный день обновляем,
   // пока окно открыто — так строка «идёт сейчас» и количество не замирают.
   useEffect(() => {
-    if (isShipping || !open || modalView !== "analytics" || !selectedDay) {
-      setSelectedProductionDay(null);
+    if (!open || modalView !== "analytics" || !selectedDay) {
+      setSelectedDayHistory(null);
       setSelectedProductionError(null);
       setSelectedProductionLoading(false);
       return;
     }
 
     let disposed = false;
+    const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | null = null;
     const pollCurrentDay = selectedDay === currentDaily?.day;
 
     const pull = async (showLoader: boolean) => {
       if (showLoader) {
-        setSelectedProductionDay(null);
+        setSelectedDayHistory(null);
         setSelectedProductionLoading(true);
+        setSelectedProductionError(null);
       }
-      setSelectedProductionError(null);
       try {
-        const response = await api.get<AlwaysOnProductionPayload>(
-          `/cameras/always-on-production/?camera=${encodeURIComponent(processor.cam)}&day=${encodeURIComponent(selectedDay)}`,
-        );
+        const params = new URLSearchParams({ camera: processor.cam, day: selectedDay });
+        const response = isShipping
+          ? await api.get<ShippingCameraDayHistory>(`/cameras/shipping-continuous-history/?${params}`, {
+              signal: controller.signal,
+            })
+          : await api.get<AlwaysOnProductionPayload>(`/cameras/always-on-production/?${params}`, {
+              signal: controller.signal,
+            });
         if (disposed) return;
+        setSelectedProductionError(null);
         setProductionError(null);
-        setSelectedProductionDay(response.data);
+        setSelectedDayHistory(response.data);
       } catch (cause) {
         if (!disposed) setSelectedProductionError(apiError(cause));
       } finally {
@@ -919,6 +935,7 @@ function AlwaysOnCard({
     void pull(true);
     return () => {
       disposed = true;
+      controller.abort();
       if (timer) clearTimeout(timer);
     };
   }, [currentDaily?.day, isShipping, modalView, open, processor.cam, selectedDay, selectedProductionReload]);
@@ -1199,13 +1216,15 @@ function AlwaysOnCard({
                     {fullDay(selectedPoint.day)}
                   </h4>
                   <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-                    {!isShipping && (
-                      <AlwaysOnDayColorViewToggle
-                        view={selectedDayColorView}
-                        nMin={smoothing?.n_min ?? 10}
-                        onChange={setSelectedDayColorView}
-                      />
-                    )}
+                    <AlwaysOnDayColorViewToggle
+                      view={selectedDayColorView}
+                      nMin={smoothing?.n_min ?? 10}
+                      disabled={
+                        isShipping &&
+                        (!runsMatchSelectedAnalytics || !algorithmViewAvailable || !!selectedProductionError)
+                      }
+                      onChange={setSelectedDayColorView}
+                    />
                     <Button variant="ghost" size="sm" onClick={() => selectAnalyticsDay(null)}>
                       Закрыть
                     </Button>
@@ -1299,21 +1318,17 @@ function AlwaysOnCard({
                   </>
                 )}
 
-                {!isShipping && (
-                  <>
-                    <Hairline className="my-5" />
-                    <AlwaysOnDayRunLog
-                      day={selectedPoint.day}
-                      runs={selectedVisibleRuns}
-                      timezone={selectedDayProduction?.timezone || "Asia/Almaty"}
-                      loading={selectedProductionLoading}
-                      error={selectedProductionError}
-                      unavailableReason={runMismatchMessage}
-                      receiptMapping={selectedReceiptMapping}
-                      onRetry={() => setSelectedProductionReload((value) => value + 1)}
-                    />
-                  </>
-                )}
+                <Hairline className="my-5" />
+                <AlwaysOnDayRunLog
+                  day={selectedPoint.day}
+                  runs={selectedVisibleRuns}
+                  timezone={selectedHistory?.timezone || "Asia/Almaty"}
+                  loading={selectedProductionLoading}
+                  error={selectedProductionError}
+                  unavailableReason={runMismatchMessage}
+                  receiptMapping={isShipping ? undefined : selectedReceiptMapping}
+                  onRetry={() => setSelectedProductionReload((value) => value + 1)}
+                />
               </Panel>
             )}
           </div>

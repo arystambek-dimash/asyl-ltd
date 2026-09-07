@@ -24,6 +24,7 @@ from .views import (
     ShippingBoardSettingsView,
     ShippingContinuousAnalyticsView,
     ShippingContinuousDetectionsView,
+    ShippingContinuousHistoryView,
     ShippingContinuousSettingsView,
     VehiclePlateRuntimeView,
     WagonNumberCameraSettingsView,
@@ -60,6 +61,10 @@ urlpatterns = [
         ShippingContinuousAnalyticsView.as_view(),
     ),
     path(
+        "cameras/shipping-continuous-history/",
+        ShippingContinuousHistoryView.as_view(),
+    ),
+    path(
         "cameras/wagon-number-settings/",
         WagonNumberCameraSettingsView.as_view(),
     ),
@@ -89,7 +94,10 @@ urlpatterns = [
     path("cameras/ai/sessions/", CameraAiSessionListView.as_view()),
     path("cameras/ai/history/", CameraAiSessionHistoryView.as_view()),
     path("cameras/ai/history/<int:pk>/recording/", CameraAiRecordingView.as_view()),
-    path("cameras/ai/history/<int:pk>/recording/video/", CameraAiRecordingVideoView.as_view()),
+    path(
+        "cameras/ai/history/<int:pk>/recording/video/",
+        CameraAiRecordingVideoView.as_view(),
+    ),
     path("cameras/<str:cam>/counting-line", CameraCountingLineView.as_view()),
     path(
         "cameras/vehicle-plate-runtime/",

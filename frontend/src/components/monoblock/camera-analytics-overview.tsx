@@ -180,7 +180,9 @@ export function CameraAnalyticsOverview({
               </p>
             </div>
             <div>
-              <p className="text-xs text-[var(--muted-foreground)]">Дней с выпуском</p>
+              <p className="text-xs text-[var(--muted-foreground)]">
+                {isShipping ? "Дней с подсчётом" : "Дней с выпуском"}
+              </p>
               <p className="mt-1 text-xl font-semibold tabular-nums">
                 {daysWithBags} <span className="text-xs font-normal text-[var(--muted-foreground)]">из {days}</span>
               </p>
@@ -319,10 +321,10 @@ export function CameraAnalyticsOverview({
                 variant="outline"
                 className="mt-5 w-full justify-between"
                 aria-pressed={selectedDay === dayPoint.day}
-                aria-label={`${isShipping ? "Подробнее о дне" : "Выпуск по времени"}: ${fullDay(dayPoint.day)}, ${dayPoint.total} мешков`}
+                aria-label={`${isShipping ? "Подсчёт по времени" : "Выпуск по времени"}: ${fullDay(dayPoint.day)}, ${dayPoint.total} мешков`}
                 onClick={() => onSelectDay(selectedDay === dayPoint.day ? null : dayPoint.day)}
               >
-                {isShipping ? "Подробнее о дне" : "Выпуск по времени"}
+                {isShipping ? "Подсчёт по времени" : "Выпуск по времени"}
                 {selectedDay === dayPoint.day ? <ArrowDown className="size-4" /> : <ChevronRight className="size-4" />}
               </Button>
             )}

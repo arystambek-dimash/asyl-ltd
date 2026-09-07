@@ -208,7 +208,7 @@ describe("AlwaysOnProductionPanel", () => {
 
   it.each([
     ["white", "Белый"],
-    ["unclassified", "unclassified"],
+    ["unclassified", "Не определён"],
   ])("разрешает сопоставить цвет %s с товаром для нового склада", (color, colorLabel) => {
     render(
       <AlwaysOnProductionPanel

@@ -231,10 +231,12 @@ export type AlwaysOnDayColorView = "algorithm" | "raw";
 export function AlwaysOnDayColorViewToggle({
   view,
   nMin,
+  disabled = false,
   onChange,
 }: {
   view: AlwaysOnDayColorView;
   nMin: number;
+  disabled?: boolean;
   onChange: (view: AlwaysOnDayColorView) => void;
 }) {
   return (
@@ -251,9 +253,10 @@ export function AlwaysOnDayColorViewToggle({
         <button
           type="button"
           aria-pressed={view === "algorithm"}
+          disabled={disabled}
           onClick={() => onChange("algorithm")}
           className={cn(
-            "rounded-md px-2.5 py-1 text-[11px] font-semibold transition",
+            "rounded-md px-2.5 py-1 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50",
             view === "algorithm"
               ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
               : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
@@ -264,9 +267,10 @@ export function AlwaysOnDayColorViewToggle({
         <button
           type="button"
           aria-pressed={view === "raw"}
+          disabled={disabled}
           onClick={() => onChange("raw")}
           className={cn(
-            "rounded-md px-2.5 py-1 text-[11px] font-semibold transition",
+            "rounded-md px-2.5 py-1 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50",
             view === "raw"
               ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
               : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
@@ -334,7 +338,12 @@ export function AlwaysOnDayRunLog({
           className="mt-3 flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-3 text-xs text-amber-800"
         >
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-          <span>{unavailableReason}</span>
+          <span className="min-w-0 flex-1">{unavailableReason}</span>
+          {onRetry && (
+            <Button variant="ghost" size="sm" onClick={onRetry} className="shrink-0">
+              <RefreshCw className="size-3" /> Обновить
+            </Button>
+          )}
         </div>
       ) : orderedRuns.length ? (
         <div className="mt-2 max-h-[19rem] divide-y divide-[var(--border)] overflow-y-auto overscroll-contain">
