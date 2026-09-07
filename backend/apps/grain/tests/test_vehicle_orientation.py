@@ -150,6 +150,91 @@ def test_rear_without_open_trip_or_parked_entry_is_parked_with_the_plate():
     assert not Wagon.objects.exists()
 
 
+def test_rear_with_plate_names_and_closes_the_only_blank_trip():
+    blank = _open_trip("", entry=3960)  # front entry whose plate was not read
+    event = _event("233LUB13")
+
+    result = _apply(event, "9200", orientation="rear")
+
+    blank.refresh_from_db()
+    assert (result.action, result.wagon_id) == ("exit", blank.pk)
+    assert blank.number == "233LUB13"
+    assert (blank.number_source, blank.number_camera_source) == ("camera", "cam1")
+    assert blank.exit_vehicle_plate_event_id == event.pk
+    assert blank.status == st.COMPLETED
+    assert (blank.entry_weight_kg, blank.exit_weight_kg, blank.net_weight_kg) == (
+        3960,
+        9200,
+        5240,
+    )
+    assert Wagon.objects.count() == 1
+    assert not UnassignedWeighing.objects.exists()
+    exit_record = blank.weighings.get(kind="tare")
+    assert (exit_record.weight_kg, exit_record.orientation) == (9200, "rear")
+
+
+def test_rear_with_plate_ignores_a_blank_trip_opened_seconds_ago():
+    fresh = _open_trip("", entry=3960, entered_ago=timedelta(seconds=10))
+
+    result = _apply(_event("233LUB13"), "9200", orientation="rear")
+
+    fresh.refresh_from_db()
+    parked = UnassignedWeighing.objects.get(pk=result.unassigned_id)
+    assert (result.action, parked.reason) == ("unassigned", "entry_missing")
+    assert (fresh.number, fresh.status, fresh.exit_weight_kg) == ("", st.AT_SILO, None)
+
+
+def test_rear_with_plate_never_guesses_between_two_blank_trips():
+    _open_trip("", entry=3960)
+    _open_trip("", entry=4100)
+
+    result = _apply(_event("233LUB13"), "9200", orientation="rear")
+
+    parked = UnassignedWeighing.objects.get(pk=result.unassigned_id)
+    assert result.action == "unassigned"
+    assert (parked.reason, parked.vehicle_number) == ("entry_missing", "233LUB13")
+    assert Wagon.objects.filter(number="", status=st.AT_SILO).count() == 2
+
+
+def test_rear_with_plate_ignores_a_blank_trip_heavier_than_the_exit_weight():
+    heavy = _open_trip("", entry=9500)
+
+    result = _apply(_event("233LUB13"), "9200", orientation="rear")
+
+    heavy.refresh_from_db()
+    parked = UnassignedWeighing.objects.get(pk=result.unassigned_id)
+    assert (result.action, parked.reason) == ("unassigned", "entry_missing")
+    assert (heavy.number, heavy.status, heavy.exit_weight_kg) == ("", st.AT_SILO, None)
+
+
+def test_rear_with_plate_ignores_a_blank_trip_older_than_the_entry_window():
+    stale = _open_trip("", entry=3960, entered_ago=timedelta(hours=30))
+
+    result = _apply(_event("233LUB13"), "9200", orientation="rear")
+
+    stale.refresh_from_db()
+    parked = UnassignedWeighing.objects.get(pk=result.unassigned_id)
+    assert (result.action, parked.reason) == ("unassigned", "entry_missing")
+    assert (stale.number, stale.status, stale.exit_weight_kg) == ("", st.AT_SILO, None)
+
+
+def test_rear_with_plate_pairs_the_blank_trip_while_a_named_trip_stays_open():
+    named = _open_trip("465BDS13", entry=3760)
+    blank = _open_trip("", entry=3960)
+
+    result = _apply(_event("233LUB13"), "9200", orientation="rear")
+
+    named.refresh_from_db()
+    blank.refresh_from_db()
+    assert (result.action, result.wagon_id) == ("exit", blank.pk)
+    assert (blank.number, blank.status) == ("233LUB13", st.COMPLETED)
+    assert (named.number, named.status, named.exit_weight_kg) == (
+        "465BDS13",
+        st.AT_SILO,
+        None,
+    )
+
+
 def test_front_with_open_trip_closes_it_from_the_parked_loaded_weight():
     stale = _open_trip(entry=3880, entered_ago=timedelta(hours=3))
     parked = _parked(8700, ago=timedelta(hours=1), orientation="rear")
@@ -389,6 +474,54 @@ def test_safe_ai_payload_keeps_a_bounded_orientation_block():
         "confidence": 0.93,
         "raw_label": "rearrearrearrear",
     }
+
+
+def test_safe_ai_payload_keeps_bounded_no_match_diagnostics():
+    read = {
+        "frame": 7,
+        "variant": "two_row",
+        "raw_text": "2 684 13BFE",
+        "number": None,
+        "confidence": 0.81,
+        "detector_confidence": 0.68,
+        "bbox_w": 92.0,
+        "bbox_h": 61.5,
+    }
+    safe = vehicle_weight_capture._safe_ai_payload(
+        {
+            "status": "no_match",
+            "detected_frames": 19,
+            "ocr_candidates": 21,
+            "accepted_reads": 2,
+            "confirmation_votes": 3,
+            "confirmation_window_seconds": 10.0,
+            "best_detector_confidence": 0.68,
+            "votes": {"684BFE13": 2, "": 5, "X" * 40: 1, "bad": "many"},
+            "last_reads": [read] * 12 + ["junk", {"confidence": float("nan")}],
+        }
+    )
+
+    assert (safe["detected_frames"], safe["ocr_candidates"], safe["accepted_reads"]) == (
+        19,
+        21,
+        2,
+    )
+    assert (safe["confirmation_votes"], safe["confirmation_window_seconds"]) == (3, 10.0)
+    assert safe["best_detector_confidence"] == 0.68
+    assert safe["votes"] == {"684BFE13": 2}
+    assert len(safe["last_reads"]) == 8
+    assert safe["last_reads"][0] == {
+        "frame": 7,
+        "variant": "two_row",
+        "raw_text": "2 684 13BFE",
+        "confidence": 0.81,
+        "detector_confidence": 0.68,
+        "bbox_w": 92.0,
+        "bbox_h": 61.5,
+    }
+    assert "last_reads" not in vehicle_weight_capture._safe_ai_payload(
+        {"status": "no_match", "last_reads": "not a list"}
+    )
 
 
 def test_two_plausible_parked_entries_are_never_paired_by_guess():

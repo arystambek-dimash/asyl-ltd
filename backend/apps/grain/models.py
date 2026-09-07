@@ -375,7 +375,9 @@ class UnassignedWeighing(models.Model):
     )
     photo_request_id = models.UUIDField(null=True, blank=True, db_index=True)
     # open_passages_exist — номер не прочитан при открытых рейсах;
-    # entry_missing — выезд с прочитанным номером, у которого нет заезда.
+    # entry_missing — гружёный выезд, которому не нашлось заезда: ни рейса под
+    # прочитанным номером, ни припаркованного пустого веса, ни единственного
+    # безымянного рейса, ждущего выезда (при нескольких безымянных не гадаем).
     reason = models.CharField(max_length=64, blank=True, default="")
     vehicle_number = models.CharField(max_length=30, blank=True, default="")
     orientation = models.CharField(

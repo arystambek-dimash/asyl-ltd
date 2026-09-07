@@ -630,9 +630,16 @@ and is the primary entry/exit signal in `apps/grain/services.py`:
 - **rear, plate known, no open trip**: the empty entry was missed. The latest
   parked front-facing (or, without a verdict, lighter) unassigned weighing of
   the last `VEHICLE_PLATE_AUTO_MISSED_ENTRY_MAX_AGE_HOURS` (24) becomes the
-  entry of a new trip and the current weight closes it. With nothing parked the
-  weight is stored as an unassigned weighing with `reason=entry_missing` and
-  the plate in `vehicle_number`; the panel prefills that plate for a new trip.
+  entry of a new trip and the current weight closes it. With nothing parked,
+  exactly one blank-number `at_silo` trip (an entry booked without a plate:
+  front verdict, or no verdict on an empty site) that entered within the same
+  24 h window before this event, at least the minimum trip duration ago, and
+  weighs less than this loaded weight is the same truck: it takes the plate read on the way out
+  (`number_source=camera`) and the current weight closes it; named trips do
+  not count as candidates, and two or more blank trips are never guessed
+  between. Only then is the weight stored as an unassigned weighing with
+  `reason=entry_missing` and the plate in `vehicle_number`; the panel prefills
+  that plate for a new trip.
 - **front, plate known, trip still open**: the loaded exit was missed. A parked
   rear-facing (or heavier) weighing inside that trip closes it; otherwise the
   stale trip is cancelled with an `exit_note`, and a fresh trip takes this entry.

@@ -494,10 +494,19 @@ def _safe_ai_payload(payload: Mapping | None) -> dict:
         "fresh_frames_seen",
         "frames_scanned",
         "ambiguous_frames",
+        "detected_frames",
+        "ocr_candidates",
+        "accepted_reads",
+        "confirmation_votes",
     ):
         value = payload.get(field)
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             safe[field] = min(value, 1_000_000)
+    for field in ("best_detector_confidence", "confirmation_window_seconds"):
+        number = _bounded_float(payload.get(field), upper=1e6 if field.endswith("seconds") else 1)
+        if number is not None:
+            safe[field] = number
+    _copy_no_match_diagnostics(payload, safe)
 
     orientation = payload.get("orientation")
     if isinstance(orientation, Mapping):
@@ -529,6 +538,68 @@ def _safe_ai_payload(payload: Mapping | None) -> dict:
         if safe_confirmation:
             safe["confirmation"] = safe_confirmation
     return safe
+
+
+def _bounded_float(value: object, *, upper: float) -> float | None:
+    """A finite float inside ``[0, upper]``, else ``None``."""
+
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and 0 <= number <= upper else None
+
+
+# ``no_match`` answers carry the last OCR reads and the vote tally so an
+# operator can tell a detector miss from a misread. They are copied within
+# the same bounds the Camera-PC promises, never trusted for size.
+MAX_NO_MATCH_VOTES = 8
+MAX_NO_MATCH_READS = 8
+MAX_NO_MATCH_TEXT = 32
+
+
+def _copy_no_match_diagnostics(payload: Mapping, safe: dict) -> None:
+    votes = payload.get("votes")
+    if isinstance(votes, Mapping):
+        safe_votes: dict[str, int] = {}
+        for number, count in list(votes.items())[:MAX_NO_MATCH_VOTES]:
+            if (
+                isinstance(number, str)
+                and 1 <= len(number) <= MAX_NO_MATCH_TEXT
+                and isinstance(count, int)
+                and not isinstance(count, bool)
+                and count >= 0
+            ):
+                safe_votes[number] = min(count, 1_000_000)
+        if safe_votes:
+            safe["votes"] = safe_votes
+    reads = payload.get("last_reads")
+    if not isinstance(reads, list):
+        return
+    safe_reads: list[dict[str, object]] = []
+    for read in reads[:MAX_NO_MATCH_READS]:
+        if not isinstance(read, Mapping):
+            continue
+        item: dict[str, object] = {}
+        frame = read.get("frame")
+        if isinstance(frame, int) and not isinstance(frame, bool) and frame >= 0:
+            item["frame"] = min(frame, 1_000_000)
+        for field in ("variant", "raw_text", "number"):
+            value = read.get(field)
+            if isinstance(value, str):
+                item[field] = value[:MAX_NO_MATCH_TEXT]
+        for field, upper in (
+            ("confidence", 1),
+            ("detector_confidence", 1),
+            ("bbox_w", 100_000),
+            ("bbox_h", 100_000),
+        ):
+            number = _bounded_float(read.get(field), upper=upper)
+            if number is not None:
+                item[field] = number
+        if item:
+            safe_reads.append(item)
+    if safe_reads:
+        safe["last_reads"] = safe_reads
 
 
 @transaction.atomic

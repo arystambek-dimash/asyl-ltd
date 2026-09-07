@@ -1930,12 +1930,55 @@ def _locked_missed_exit_candidate(*, after, before, heavier_than: int):
     return _single_parked(parked, preferred_orientation=VEHICLE_ORIENTATION_REAR)
 
 
+def _passage_entry_at(wagon: Wagon):
+    return wagon.silo_arrived_at or wagon.arrived_at
+
+
+def _locked_single_blank_trip_awaiting_exit(*, before, lighter_than: int):
+    """The one plate-less trip whose empty entry precedes ``before``.
+
+    A truck weighed on the way in with an unreadable plate opens a blank
+    trip, so when it leaves with its rear plate read there is no trip under
+    that plate. One blank trip lighter than the loaded weight is that entry;
+    several mean several trucks and an operator must choose. The same age
+    window as for parked entries keeps a forgotten blank trip from an earlier
+    day from being closed by today's exit, and the minimum trip duration keeps
+    a trip opened seconds ago from being closed by an unrelated rear read.
+    """
+
+    oldest = before - timedelta(
+        hours=settings.VEHICLE_PLATE_AUTO_MISSED_ENTRY_MAX_AGE_HOURS
+    )
+    latest = before - timedelta(
+        seconds=settings.VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS
+    )
+    blank_trips = (
+        Wagon.objects.select_for_update(of=("self",))
+        .filter(
+            direction=Wagon.PASSAGE,
+            status=st.AT_SILO,
+            number="",
+            gross_weight_kg__isnull=False,
+            tare_weight_kg__isnull=True,
+            gross_weight_kg__lt=lighter_than,
+        )
+        .order_by("id")
+    )
+    candidates = [
+        wagon
+        for wagon in blank_trips
+        if (entry_at := _passage_entry_at(wagon)) is not None
+        and oldest <= entry_at <= latest
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def _close_passage_after_missed_exit(
     stale: Wagon,
     event: VehiclePlateEvent,
     user,
 ) -> None:
-    entry_at = stale.silo_arrived_at or stale.arrived_at
+    entry_at = _passage_entry_at(stale)
     item = _locked_missed_exit_candidate(
         after=entry_at,
         before=event.detected_at,
@@ -1976,6 +2019,30 @@ def _passage_for_exit_without_entry(
         before=event.detected_at, lighter_than=weight_kg
     )
     if item is None:
+        # The entry may have been booked without a plate: a single blank trip
+        # lighter than this weight is that truck, so the plate read on the way
+        # out names it and the caller closes it with this weight.
+        wagon = _locked_single_blank_trip_awaiting_exit(
+            before=event.detected_at, lighter_than=weight_kg
+        )
+        if wagon is not None:
+            wagon.number = event.vehicle_number
+            wagon.number_source = "camera"
+            wagon.number_camera_source = event.camera
+            wagon.save(
+                update_fields=["number", "number_source", "number_camera_source"]
+            )
+            _log(
+                wagon,
+                "passage",
+                f"Вывоз {wagon.number}: номер прочитан на выезде, единственный "
+                "безымянный рейс закрыт автоматически",
+                user,
+                camera_source=event.camera,
+                auto=True,
+                vehicle_plate_event_id=str(event.event_id),
+            )
+            return wagon, None
         parked = UnassignedWeighing.objects.create(
             weight_kg=weight_kg,
             stable_weight_at=event.detected_at,
@@ -2040,7 +2107,7 @@ def _passage_for_exit_without_entry(
 def _is_missed_entry_for(item: UnassignedWeighing, wagon: Wagon) -> bool:
     """A parked weight earlier and lighter than the booked entry is the real entry."""
 
-    entry_at = wagon.silo_arrived_at or wagon.arrived_at
+    entry_at = _passage_entry_at(wagon)
     if entry_at is None or item.stable_weight_at >= entry_at:
         return False
     if item.orientation == VEHICLE_ORIENTATION_REAR:
@@ -2060,7 +2127,7 @@ def _swap_missed_entry(
     """The booked entry was really the loaded exit; the parked weight is the entry."""
 
     booked_exit = wagon.gross_weight_kg
-    booked_exit_at = wagon.silo_arrived_at or wagon.arrived_at
+    booked_exit_at = _passage_entry_at(wagon)
     booked_record = (
         WeighingRecord.objects.filter(wagon=wagon, kind="gross").order_by("-id").first()
     )
@@ -2441,9 +2508,10 @@ def _apply_vehicle_plate_automation(
         )
     else:
         if wagon is None:
-            # A loaded truck shows its tail but has no open trip: its empty
-            # entry was missed. Rebuild the trip from a parked empty weight or
-            # park this weight with the plate for the operator.
+            # A loaded truck shows its tail but has no open trip under its
+            # plate: the empty entry was missed or booked without a number.
+            # Rebuild the trip from a parked empty weight, name the single
+            # blank trip, or park this weight with the plate for the operator.
             wagon, parked = _passage_for_exit_without_entry(
                 event, reading, weight_kg, user, kwargs
             )
@@ -2612,8 +2680,10 @@ def apply_unidentified_passage_scale_sample(
     """Apply a durable scale sample whose plate could not be recognized.
 
     A truck facing the camera is a new entry even while other passages are
-    open, so a passage without a number is created and weighed; the operator
-    fills in the plate later. A truck showing its tail is somebody's exit:
+    open, so a passage without a number is created and weighed; the plate is
+    filled in later by the operator or by the rear read on the way out (see
+    ``_passage_for_exit_without_entry``). A truck showing its tail is
+    somebody's exit:
     with exactly one passage waiting for a heavier loaded weight it closes
     that passage, otherwise the weight is parked as an unassigned weighing
     with its photo. Without a camera verdict only an empty site makes the
