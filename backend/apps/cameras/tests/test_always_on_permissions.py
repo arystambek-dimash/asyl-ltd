@@ -7,7 +7,7 @@ from apps.cameras.models import (
     ANALYTICS_SCOPE_AI247,
     ContinuousCameraRole,
     MonoblockCameraSettings,
-    MonoblockDevice,
+    RetiredMonoblockAccount,
 )
 from apps.catalog.models import Product
 from apps.warehouse.models import Warehouse
@@ -114,18 +114,18 @@ def test_technical_monoblock_account_cannot_get_ai_247_monitoring(
     read_ai_status,
 ):
     user = make_user(username="ai-technical-monoblock")
-    MonoblockDevice.objects.create(
+    RetiredMonoblockAccount.objects.create(
         user=user,
         name="Технический моноблок",
         camera_source="cam9",
     )
-    assert user.has_perm_code("shipping.load") is True
+    assert user.has_perm_code("shipping.load") is False
 
     for endpoint in READ_ENDPOINTS:
         assert auth_client(user).get(endpoint).status_code == 403
 
 
-def test_shipping_continuous_endpoints_are_separate_and_device_scoped(
+def test_shipping_continuous_endpoints_require_employee_permissions(
     auth_client,
     make_user,
     user_with_perms,
@@ -140,7 +140,7 @@ def test_shipping_continuous_endpoints_are_separate_and_device_scoped(
         codes=["ai_247.manage"],
     )
     device_user = make_user(username="shipping-continuous-device")
-    MonoblockDevice.objects.create(
+    RetiredMonoblockAccount.objects.create(
         user=device_user,
         name="Моноблок cam9",
         camera_source="cam9",
@@ -149,14 +149,7 @@ def test_shipping_continuous_endpoints_are_separate_and_device_scoped(
     for endpoint in SHIPPING_READ_ENDPOINTS:
         assert auth_client(shipping_user).get(endpoint).status_code == 200
         assert auth_client(ai247_only).get(endpoint).status_code == 403
-        response = auth_client(device_user).get(endpoint)
-        assert response.status_code == 200
-        if endpoint.endswith("settings/"):
-            assert response.data["camera_sources"] == ["cam9"]
-        elif endpoint.endswith("analytics/"):
-            assert [row["camera"] for row in response.data["cameras"]] == [
-                "cam9"
-            ]
+        assert auth_client(device_user).get(endpoint).status_code == 403
 
 
 MUTATION_REQUESTS = (

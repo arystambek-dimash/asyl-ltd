@@ -21,8 +21,6 @@ from .views import (
     CameraListView,
     CameraTokenView,
     MonoblockCameraSettingsView,
-    MonoblockDeviceDetailView,
-    MonoblockDeviceListView,
     ShippingBoardSettingsView,
     ShippingContinuousAnalyticsView,
     ShippingContinuousDetectionsView,
@@ -47,8 +45,6 @@ urlpatterns = [
     path("cameras/auth/", CameraAuthView.as_view()),
     path("cameras/health/", CameraHealthView.as_view()),
     path("cameras/monoblock-settings/", MonoblockCameraSettingsView.as_view()),
-    path("cameras/monoblock-devices/", MonoblockDeviceListView.as_view()),
-    path("cameras/monoblock-devices/<int:pk>/", MonoblockDeviceDetailView.as_view()),
     path("cameras/always-on-settings/", AlwaysOnCameraSettingsView.as_view()),
     path("cameras/always-on-detections/", AlwaysOnDetectionsView.as_view()),
     path(

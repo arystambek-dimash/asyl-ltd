@@ -140,28 +140,14 @@ class MeSerializer(serializers.ModelSerializer):
     client_id = serializers.SerializerMethodField()
     position = serializers.SerializerMethodField()
     sales_department = serializers.SerializerMethodField()
-    is_monoblock = serializers.SerializerMethodField()
-    monoblock_name = serializers.SerializerMethodField()
-    monoblock_camera = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             "id", "username", "first_name", "last_name",
             "is_client", "is_superuser",
-            "is_monoblock", "monoblock_name", "monoblock_camera",
             "permissions", "position", "client_id", "sales_department"]
 
-    def get_is_monoblock(self, obj):
-        return obj.is_monoblock
-
-    def get_monoblock_name(self, obj):
-        device = obj.active_monoblock_device
-        return device.name if device else None
-
-    def get_monoblock_camera(self, obj):
-        device = obj.active_monoblock_device
-        return device.camera_source if device else None
 
     def get_permissions(self, obj):
         return sorted(obj.perm_codes)

@@ -187,9 +187,7 @@ const employee: Me = {
   username: "loader",
   is_client: false,
   is_superuser: false,
-  is_monoblock: false,
-  monoblock_name: null,
-  monoblock_camera: null,
+
   permissions: ["shipping.load"],
   position: null,
   client_id: null,
@@ -339,21 +337,11 @@ describe("доступ к AI 24/7 на странице моноблока", () 
     expect(statCard("Всего").getByText("—")).toBeInTheDocument();
   });
 
-  it("не показывает вкладку и не запрашивает мониторинг техническому моноблоку", () => {
-    mocks.me = {
-      ...employee,
-      username: "monoblock-cam2",
-      is_monoblock: true,
-      monoblock_name: "Моноблок 2",
-      monoblock_camera: "cam2",
-    };
+  it("не запрашивает удалённые аккаунты моноблоков даже для администратора", () => {
+    mocks.me = { ...employee, is_superuser: true };
     render(<MonoblockPage />);
-
-    expect(screen.queryByRole("tab", { name: /AI 24\/7/ })).not.toBeInTheDocument();
-    expect(mocks.urls).not.toContain("/cameras/always-on-settings/");
-    expect(mocks.urls).not.toContain("/cameras/always-on-analytics/");
-    expect(mocks.urls).toContain("/cameras/shipping-continuous-settings/");
-    expect(mocks.urls).toContain("/cameras/shipping-continuous-analytics/");
+    expect(mocks.urls.some((url) => url?.includes("monoblock-devices"))).toBe(false);
+    expect(screen.queryByRole("button", { name: /^Моноблоки/ })).not.toBeInTheDocument();
   });
 });
 
@@ -467,13 +455,10 @@ describe("день и поиск очереди отгрузки", () => {
     expect(screen.getByLabelText("День")).toBeDisabled();
   });
 
-  it("киоск тоже видит поиск и выбор дня", () => {
+  it("оператор видит поиск и выбор дня", () => {
     mocks.me = {
       ...employee,
       username: "monoblock-cam2",
-      is_monoblock: true,
-      monoblock_name: "Моноблок 2",
-      monoblock_camera: "cam2",
     };
     render(<MonoblockPage />);
 

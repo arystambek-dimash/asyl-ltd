@@ -35,7 +35,6 @@ export interface ShippingRowDetailProps {
   canCount: boolean;
   /** Команды сессии (обнулить/выключить/перезапуск) — shipping.load. */
   canLoad: boolean;
-  isKiosk: boolean;
   /** Действие строки уже выполняется — кнопки панели заблокированы. */
   busy: boolean;
   /** Владелец таблицы читает `saveNow()` перед завершением погрузки. */
@@ -59,7 +58,6 @@ export function ShippingRowDetail({
   occupiedByOrderId = null,
   canCount,
   canLoad,
-  isKiosk,
   busy,
   bagCounterRef,
   onSaveBags,
@@ -147,7 +145,7 @@ export function ShippingRowDetail({
   }
 
   const items = order?.items ?? [];
-  const sessionButton = cn("h-8", isKiosk && "h-10");
+  const sessionButton = "h-8";
   const perColor = ai.status?.per_color ?? session?.last_status?.per_color;
 
   return (

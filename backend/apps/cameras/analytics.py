@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 from django.db import transaction
+from django.db.models import F, Q, Sum
+from django.db.models.functions import Greatest
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -596,6 +598,8 @@ def today_payload(
     analytics_scope: str = ANALYTICS_SCOPE_AI247,
     *,
     camera_sources: list[str] | tuple[str, ...] | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
 ) -> dict:
     if analytics_scope == ANALYTICS_SCOPE_AI247:
         desired = MonoblockCameraSettings.ai247_sources()
@@ -610,7 +614,11 @@ def today_payload(
         }
         desired = [camera for camera in desired if camera in requested]
     day = timezone.localdate()
-    history_start = day - timedelta(days=13)
+    ranged = date_from is not None or date_to is not None
+    history_start = date_from or (day if ranged else day - timedelta(days=13))
+    history_end = date_to or day
+    if history_start > history_end or (history_end - history_start).days >= 366:
+        raise ValidationError({"detail": "Выберите период от 1 до 366 дней", "code": "invalid_analytics_range"})
     # Архивные дни остаются в базе ради истории, но в текущий счёт не входят:
     # их мешки уже посчитаны и перенесены в архив.
     daily_model = _daily_model(analytics_scope)
@@ -640,7 +648,18 @@ def today_payload(
         row.camera: row
         for row in AlwaysOnCounterCursor.objects.filter(camera__in=desired)
     }
-    all_rows = list(daily_model.objects.filter(**daily_filters))
+    queryset = daily_model.objects.filter(**daily_filters)
+    # Range reads load JSON breakdowns only for the selected days and today.
+    # Lifetime counters use a grouped scalar aggregate, not all historical JSON.
+    lifetime = {}
+    if ranged:
+        lifetime = {row["camera"]: row for row in queryset.order_by().values("camera").annotate(
+            total=Sum(Greatest(F("model_total") + F("adjustment"), 0)),
+            model=Sum("model_total"), adjustment=Sum("adjustment"),
+        )}
+        queryset = queryset.filter(Q(day__range=(history_start, history_end)) | Q(day=day))
+    all_rows = list(queryset)
+    period_rows = [row for row in all_rows if history_start <= row.day <= history_end] if ranged else all_rows
     rows_by_camera: dict[
         str,
         list[AlwaysOnDailyAnalytics | ShippingDailyAnalytics],
@@ -654,18 +673,21 @@ def today_payload(
     for camera in desired:
         camera_rows = rows_by_camera.get(camera, [])
         by_day = {row.day: row for row in camera_rows}
-        colors = _merge_colors(camera_rows)
+        selected_rows = [row for row in camera_rows if history_start <= row.day <= history_end] if ranged else camera_rows
+        colors = _merge_colors(selected_rows)
         color_items = _color_payload(colors)
-        brands = _merge_brands(camera_rows)
+        brands = _merge_brands(selected_rows)
         brand_items = _brand_payload(brands)
         cameras.append(
             _row_payload(by_day.get(day), camera, day, analytics_scope)
             | {
-                "all_time_total": sum(row.total for row in camera_rows),
+                "all_time_total": lifetime.get(camera, {}).get("total", sum(row.total for row in camera_rows)),
+                **({"date_from": history_start.isoformat(), "date_to": history_end.isoformat(),
+                    "period_total": sum(row.total for row in selected_rows)} if ranged else {}),
                 "history": _history_payload(
                     by_day,
                     history_start,
-                    day,
+                    history_end,
                     analytics_scope,
                 ),
                 "colors": color_items,
@@ -682,7 +704,7 @@ def today_payload(
 
     aggregate_by_day: dict[date, dict] = {}
     for row in all_rows:
-        if row.day < history_start:
+        if row.day < history_start or row.day > history_end:
             continue
         item = aggregate_by_day.setdefault(
             row.day,
@@ -715,7 +737,7 @@ def today_payload(
             ) + value
     history = []
     current = history_start
-    while current <= day:
+    while current <= history_end:
         item = aggregate_by_day.get(
             current,
             {
@@ -738,21 +760,23 @@ def today_payload(
             }
         )
         current += timedelta(days=1)
-    all_colors = _merge_colors(all_rows)
-    all_brands = _merge_brands(all_rows)
+    all_colors = _merge_colors(period_rows)
+    all_brands = _merge_brands(period_rows)
     brand_items = _brand_payload(all_brands)
     sync_rows = [item["analytics_sync"] for item in cameras]
     return {
         "analytics_scope": analytics_scope,
         "analytics_sync": _aggregate_sync_payload(sync_rows),
         "day": day.isoformat(),
+        **({"date_from": history_start.isoformat(), "date_to": history_end.isoformat(),
+            "period_total": sum(row.total for row in period_rows)} if ranged else {}),
         "total": sum(item["total"] for item in cameras),
         "all_time_total": sum(item["all_time_total"] for item in cameras),
         # Сумма цветов описывает распознанное моделью, итог — уже с ручными
         # поправками. Без этих двух чисел экран показывал бы «11670+2649+836,
         # а всего 15154» без объяснения, откуда разница.
-        "model_all_time_total": sum(row.model_total for row in all_rows),
-        "adjustment": sum(row.adjustment for row in all_rows),
+        "model_all_time_total": sum(row["model"] for row in lifetime.values()) if ranged else sum(row.model_total for row in all_rows),
+        "adjustment": sum(row["adjustment"] for row in lifetime.values()) if ranged else sum(row.adjustment for row in all_rows),
         "history": history,
         "colors": _color_payload(all_colors),
         "dominant_color": _color_payload(all_colors)[0]["color"]

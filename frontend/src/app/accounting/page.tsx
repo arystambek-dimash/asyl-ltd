@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useVisiblePolling } from "@/lib/use-visible-polling";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
@@ -112,7 +113,7 @@ function useCashierQueue(
   enabled: boolean,
   canReviewOrders: boolean,
   queueFilters: CashFilters,
-  onChanged?: () => void,
+  onChanged?: () => Promise<unknown>,
 ) {
   const queueActive = enabled && filtersAreValid(queueFilters);
   const queueParams = {
@@ -124,6 +125,7 @@ function useCashierQueue(
   // Кассе нужны заявки на подтверждение и оплаты — отбор отдела общий.
   const {
     data: pending,
+    loading: pendingLoading,
     error: pendingError,
     reload: reloadPending,
   } = useApi<Order[]>(
@@ -131,6 +133,7 @@ function useCashierQueue(
   );
   const {
     data: queue,
+    loading: queueLoading,
     error: queueError,
     reload: reloadQueue,
   } = useApi<PaymentQueueItem[]>(queueActive ? apiUrl("/orders/payments-queue/", queueParams) : null);
@@ -138,29 +141,36 @@ function useCashierQueue(
   const [error, setError] = useState("");
   const loadError = pendingError || queueError;
 
-  function reloadAll() {
-    void reloadPending();
-    void reloadQueue();
-    onChanged?.();
+  const refresh = useCallback(async () => {
+    await Promise.all([reloadPending(), reloadQueue()]);
+  }, [reloadPending, reloadQueue]);
+  async function reloadAll() {
+    await Promise.all([refresh(), onChanged?.()]);
   }
 
+  const mutationInFlight = useRef(false);
   async function act(fn: () => Promise<unknown>, done?: string) {
+    if (mutationInFlight.current) return;
+    mutationInFlight.current = true;
     setBusy(true);
     setError("");
     try {
       await fn();
-      reloadAll();
+      await reloadAll();
       // Без подтверждения удачное действие выглядит как «ничего не произошло»,
       // и кассир жмёт кнопку второй раз.
       if (done) showSuccess(done);
     } catch (e) {
       setError(apiError(e));
     } finally {
+      mutationInFlight.current = false;
       setBusy(false);
     }
   }
 
   return {
+    loading: pendingLoading || queueLoading,
+    refresh,
     pendingOrders: pending ?? [],
     toReview: queue ?? [],
     busy,
@@ -224,7 +234,7 @@ function ConfirmQueueSection({
               <CardTitle>Заявки на подтверждение</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
-              {q.pendingOrders.length === 0 && (
+              {!q.loading && !q.loadError && q.pendingOrders.length === 0 && (
                 <p className="text-sm text-[var(--muted-foreground)]">Нет заявок, ожидающих подтверждения.</p>
               )}
               {q.pendingOrders.map((o) => {
@@ -267,7 +277,7 @@ function ConfirmQueueSection({
             <CardTitle>Оплаты к подтверждению</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            {q.toReview.length === 0 && (
+            {!q.loading && !q.loadError && q.toReview.length === 0 && (
               <p className="text-sm text-[var(--muted-foreground)]">Нет оплат, ожидающих подтверждения.</p>
             )}
             {q.toReview.map((p) => (
@@ -746,6 +756,7 @@ function CashierInner() {
   const overviewFilters = filtersByTab.overview;
   const validOverview = filtersAreValid(overviewFilters);
   const reportUrl = apiUrl("/reports/summary/", {
+    section: "income",
     from: overviewFilters.dateFrom,
     to: overviewFilters.dateTo,
     department: overviewFilters.department,
@@ -764,12 +775,13 @@ function CashierInner() {
   // Кассовая аналитика — тот же серверный отчёт, что и на «Отчётах».
   const {
     data: summary,
+    loading: summaryLoading,
     error: summaryError,
     reload: reloadSummary,
-  } = useApi<ReportSummary>(canReports && validOverview ? reportUrl : null);
+  } = useApi<Pick<ReportSummary, "income">>(canReports && tab === "overview" && validOverview ? reportUrl : null);
   const journalFilters = filtersByTab.journal;
   const journalLog = usePagedApi<CashierLogItem>(
-    canPayments && filtersAreValid(journalFilters)
+    canPayments && tab === "journal" && filtersAreValid(journalFilters)
       ? apiUrl("/orders/cashier-log/", {
           date_from: journalFilters.dateFrom,
           date_to: journalFilters.dateTo,
@@ -779,23 +791,49 @@ function CashierInner() {
       : null,
     50,
   );
-  const queue = useCashierQueue(canPayments, canReviewOrders, filtersByTab.confirm, journalLog.reload);
   const {
     data: debts,
     loading: debtsLoading,
     error: debtsError,
     reload: reloadDebts,
-  } = useApi<ClientDebt[]>(canDebtEntry && validOverview ? debtsUrl : null);
+  } = useApi<ClientDebt[]>(canDebtEntry && tab === "overview" && validOverview ? debtsUrl : null);
   const { data: stores } = useApi<Store[]>(canReports && canViewClients ? "/stores/" : null);
   const { data: departments } = useApi<Department[]>("/departments/");
 
+  const overviewQueueUrl = apiUrl("/orders/payments-queue/", {
+    date_from: overviewFilters.dateFrom,
+    date_to: overviewFilters.dateTo,
+    department: overviewFilters.department,
+    store: overviewFilters.store,
+  });
+  const {
+    data: overviewQueue,
+    loading: overviewQueueLoading,
+    error: overviewQueueError,
+    reload: reloadOverviewQueue,
+  } = useApi<PaymentQueueItem[]>(canPayments && tab === "overview" && validOverview ? overviewQueueUrl : null);
+  async function reloadOverview() {
+    await Promise.all([reloadSummary(), reloadDebts(), reloadOverviewQueue()]);
+  }
+  async function paymentChanged() {
+    await Promise.all([reloadOverview(), journalLog.reload()]);
+  }
+  const queue = useCashierQueue(canPayments, canReviewOrders, filtersByTab.confirm, paymentChanged);
+  const refreshQueue = queue.refresh;
+  useVisiblePolling(reloadOverview, 30_000, tab === "overview" && validOverview && !queue.busy);
+  useVisiblePolling(refreshQueue, 30_000, canPayments && !queue.busy);
+  useEffect(() => {
+    if (tab === "confirm") void refreshQueue();
+  }, [tab, refreshQueue]);
+
+  const overviewPayments = overviewQueue ?? [];
   const toReviewByCurrency = sumMoneyByCurrency(
-    queue.toReview,
+    overviewPayments,
     (payment) => payment.amount,
     (payment) => payment.currency,
   );
   const toReviewCashByCurrency = sumMoneyByCurrency(
-    queue.toReview.filter((payment) => payment.method === "cash"),
+    overviewPayments.filter((payment) => payment.method === "cash"),
     (payment) => payment.amount,
     (payment) => payment.currency,
   );
@@ -804,6 +842,9 @@ function CashierInner() {
   const otherReviewCurrencies = Object.entries(toReviewByCurrency).filter(
     ([currency, value]) => currency !== toReviewCurrency && value > 0,
   );
+  const incomeReady = validOverview && !summaryLoading && !summaryError && summary !== null;
+  const queueReady = validOverview && !overviewQueueLoading && !overviewQueueError && overviewQueue !== null;
+  const debtsReady = validOverview && !debtsLoading && !debtsError && debts !== null;
   const debtRows = validOverview ? (debts ?? []) : [];
   // Валюты не складываются: 1000 ₸ и 5 $ не дают «1005». Крупно — основная
   // валюта, остальные отдельной строкой под ней.
@@ -847,7 +888,7 @@ function CashierInner() {
     ...(canDebtEntry ? [{ key: "overview", label: canReports ? "Общее" : "Долги" }] : []),
     ...(canPayments
       ? [
-          { key: "confirm", label: "Подтверждение", count: queue.pendingOrders.length + queue.toReview.length },
+          { key: "confirm", label: "Заявки и оплаты", count: queue.pendingOrders.length + queue.toReview.length },
           { key: "journal", label: "Журнал" },
         ]
       : []),
@@ -887,6 +928,9 @@ function CashierInner() {
         {tab === "overview" && canDebtEntry && (
           <>
             {canReports && summaryError && <ErrorAlert message={summaryError} onRetry={reloadSummary} />}
+            {canPayments && overviewQueueError && (
+              <ErrorAlert message={overviewQueueError} onRetry={reloadOverviewQueue} />
+            )}
             <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {canReports && (
                 <SummaryCard
@@ -898,63 +942,75 @@ function CashierInner() {
                         : "Чистое поступление за всё время"
                   }
                   tone={incomeTotal < 0 ? "destructive" : "success"}
-                  value={money(incomeTotal, incomeCurrency)}
-                  rows={[
-                    { label: "Наличные, нетто", value: money(cashTotal, incomeCurrency) },
-                    { label: "Безналичные, нетто", value: money(cashlessTotal, incomeCurrency) },
-                    ...otherIncomeCurrencies.map(([currency, value]) => ({
-                      label: "Также чистыми",
-                      value: money(value, currency),
-                    })),
-                    ...(refundedTotal > 0
-                      ? [
-                          { label: "Поступило до возвратов", value: money(grossIncomeTotal, incomeCurrency) },
-                          { label: "Возвращено", value: money(refundedTotal, incomeCurrency) },
+                  value={incomeReady ? money(incomeTotal, incomeCurrency) : "—"}
+                  rows={
+                    !incomeReady
+                      ? []
+                      : [
+                          { label: "Наличные, нетто", value: money(cashTotal, incomeCurrency) },
+                          { label: "Безналичные, нетто", value: money(cashlessTotal, incomeCurrency) },
+                          ...otherIncomeCurrencies.map(([currency, value]) => ({
+                            label: "Также чистыми",
+                            value: money(value, currency),
+                          })),
+                          ...(refundedTotal > 0
+                            ? [
+                                { label: "Поступило до возвратов", value: money(grossIncomeTotal, incomeCurrency) },
+                                { label: "Возвращено", value: money(refundedTotal, incomeCurrency) },
+                              ]
+                            : []),
+                          ...otherRefundCurrencies.flatMap(([currency, value]) => [
+                            {
+                              label: `Поступило до возвратов, ${currency}`,
+                              value: money(
+                                amountForCurrency(summary?.income.gross_by_currency ?? {}, "0", currency),
+                                currency,
+                              ),
+                            },
+                            { label: `Возвращено, ${currency}`, value: money(value, currency) },
+                          ]),
                         ]
-                      : []),
-                    ...otherRefundCurrencies.flatMap(([currency, value]) => [
-                      {
-                        label: `Поступило до возвратов, ${currency}`,
-                        value: money(
-                          amountForCurrency(summary?.income.gross_by_currency ?? {}, "0", currency),
-                          currency,
-                        ),
-                      },
-                      { label: `Возвращено, ${currency}`, value: money(value, currency) },
-                    ]),
-                  ]}
+                  }
                 />
               )}
               {canPayments && (
                 <SummaryCard
                   title="Ожидает подтверждения"
                   tone="primary"
-                  value={money(toReviewSum, toReviewCurrency)}
-                  rows={[
-                    ...otherReviewCurrencies.map(([currency, value]) => ({
-                      label: "Также в очереди",
-                      value: money(value, currency),
-                    })),
-                    { label: "Оплат в очереди", value: String(queue.toReview.length) },
-                    {
-                      label: "Из них наличными",
-                      value: money(toReviewCashByCurrency[toReviewCurrency] ?? 0, toReviewCurrency),
-                    },
-                  ]}
+                  value={queueReady ? money(toReviewSum, toReviewCurrency) : "—"}
+                  rows={
+                    !queueReady
+                      ? []
+                      : [
+                          ...otherReviewCurrencies.map(([currency, value]) => ({
+                            label: "Также в очереди",
+                            value: money(value, currency),
+                          })),
+                          { label: "Оплат в очереди", value: String(overviewPayments.length) },
+                          {
+                            label: "Из них наличными",
+                            value: money(toReviewCashByCurrency[toReviewCurrency] ?? 0, toReviewCurrency),
+                          },
+                        ]
+                  }
                 />
               )}
               <SummaryCard
                 title="Дебиторка"
                 tone="destructive"
-                value={money(debtTotal, debtCurrency)}
-                rows={[
-                  ...otherDebtCurrencies.map(([currency, value]) => ({
-                    label: "Также в долге",
-                    value: money(value, currency),
-                  })),
-                  { label: "Клиентов с долгом", value: String(debtRows.length) },
-                  { label: "С просрочкой", value: String(overdueClients) },
-                ]}
+                value={debtsReady ? money(debtTotal, debtCurrency) : "—"}
+                rows={
+                  !debtsReady
+                    ? []
+                    : [
+                        ...otherDebtCurrencies.map(([currency, value]) => ({
+                          label: "Также в долге",
+                          value: money(value, currency),
+                        })),
+                        { label: "Клиентов с долгом", value: String(debtRows.length) },
+                        { label: "С просрочкой", value: String(overdueClients) },
+                      ]
+                }
               />
             </section>
 
@@ -981,7 +1037,12 @@ function CashierInner() {
         {tab === "journal" && canPayments && <PaymentJournalSection q={queue} log={journalLog} />}
 
         {tab === "transactions" && canTransactions && (
-          <TransactionsSection canConfirm={canPayments} canCreate={canCreatePayments} departments={departments ?? []} />
+          <TransactionsSection
+            canConfirm={canPayments}
+            canCreate={canCreatePayments}
+            departments={departments ?? []}
+            onChanged={queue.reload}
+          />
         )}
       </div>
     </AppShell>

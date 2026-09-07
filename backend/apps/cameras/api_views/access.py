@@ -64,7 +64,7 @@ def _camera_token_user(token: str):
 
     User = get_user_model()
     try:
-        user = User.objects.select_related("monoblock_device").get(pk=user_id)
+        user = User.objects.get(pk=user_id)
     except User.DoesNotExist:
         return None
     if not user.is_active or user.is_client:
@@ -167,11 +167,5 @@ class CameraAuthView(APIView):
         token = request.COOKIES.get(CAM_COOKIE, "")
         user = _camera_token_user(token)
         if user is None:
-            return Response(status=status.HTTP_403_FORBIDDEN)
-        device = getattr(user, "monoblock_device", None)
-        if device is not None and (
-            not device.is_active
-            or source not in {device.camera_source, f"{device.camera_source}ai"}
-        ):
             return Response(status=status.HTTP_403_FORBIDDEN)
         return Response(status=status.HTTP_204_NO_CONTENT)

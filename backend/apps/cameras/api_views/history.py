@@ -21,7 +21,6 @@ from apps.sales.access import scope_by_client_department
 from .. import recordings
 from ..models import AiCountingSession, MonoblockCameraSettings
 from ..policies import (
-    active_device_for,
     can_control_session,
     session_started_by_name,
 )
@@ -50,9 +49,6 @@ class CameraAiSessionListView(APIView):
             request.user,
             client_path="order__client",
         )
-        device = active_device_for(request.user)
-        if device is not None:
-            open_sessions = open_sessions.filter(camera=device.camera_source)
         return Response(
             [
                 {

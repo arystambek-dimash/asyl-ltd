@@ -31,6 +31,7 @@ from .models import (
 from .services import (
     assert_order_user_scope,
     create_client_payment,
+    lock_live_order,
     reject_payment,
     sync_payment_status,
 )
@@ -152,7 +153,7 @@ def _invoice_issue_mutex(payment_id: int):
 
 
 @contextmanager
-def _provider_scope_fence(order_id: int, user):
+def _provider_scope_fence(order_id: int, user, *, require_live: bool = False):
     """Serialize department transfer behind one authorized provider call.
 
     The first local reservation transaction is deliberately short. Re-locking
@@ -161,8 +162,11 @@ def _provider_scope_fence(order_id: int, user):
     administrator transferred the client.
     """
     with transaction.atomic():
-        order = Order.all_objects.select_for_update().get(pk=order_id)
-        assert_order_user_scope(order, user)
+        if require_live:
+            order = lock_live_order(order_id, user)
+        else:
+            order = Order.all_objects.select_for_update().get(pk=order_id)
+            assert_order_user_scope(order, user)
         yield order
 
 
@@ -1215,8 +1219,7 @@ def _fail_reserved_refund(
 def create_cash_refund(
     payment: Payment, user, *, amount: object = None, reason: str = ""
 ) -> PaymentRefund:
-    order = Order.all_objects.select_for_update().get(pk=payment.order_id)
-    assert_order_user_scope(order, user)
+    order = lock_live_order(payment.order_id, user)
     payment = (
         Payment.objects.select_for_update()
         .get(pk=payment.pk)
@@ -1278,10 +1281,7 @@ def create_refund(
     # This prevents two workers from refunding the same balance and avoids
     # holding database locks while ApiPay/Kaspi responds.
     with transaction.atomic():
-        order = Order.all_objects.select_for_update().get(
-            pk=record.payment.order_id
-        )
-        assert_order_user_scope(order, user)
+        order = lock_live_order(record.payment.order_id, user)
         payment = Payment.objects.select_for_update().get(pk=record.payment_id)
         payment.order = order
         if payment.status != "confirmed":
@@ -1320,11 +1320,11 @@ def create_refund(
     order_id = order.pk
     payload: dict[str, Any] = {"amount": float(value), "reason": reason[:500]}
     try:
-        with _provider_scope_fence(order_id, user):
+        with _provider_scope_fence(order_id, user, require_live=True):
             response = api_request(
                 "POST", f"/invoices/{record.invoice_id}/refund", payload
             )
-    except PermissionDenied:
+    except (PermissionDenied, ValidationError):
         _fail_reserved_refund(
             refund_id=generic_refund.pk,
             payment_id=record.payment_id,

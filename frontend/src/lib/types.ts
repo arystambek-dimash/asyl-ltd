@@ -8,9 +8,6 @@ export interface Me {
   last_name?: string;
   is_client: boolean;
   is_superuser: boolean;
-  is_monoblock: boolean;
-  monoblock_name: string | null;
-  monoblock_camera: string | null;
   permissions: string[];
   position: string | null;
   client_id: number | null;
@@ -551,24 +548,7 @@ export interface MonoblockCameraSettings {
   always_on_source?: "sub";
   always_on_sync_status?: "synced" | "pending";
   always_on_detail?: string;
-  locked: boolean;
-  device_id: number | null;
-  device_name: string | null;
   updated_at: string | null;
-}
-export interface MonoblockDevice {
-  id: number;
-  name: string;
-  username: string;
-  camera_source: string;
-  camera_name: string;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
-  /** Present on create/update responses when the durable policy was applied. */
-  always_on_source?: "sub";
-  always_on_sync_status?: "synced" | "pending";
-  always_on_detail?: string;
 }
 /**
  * Рамка мешка на последнем кадре.
@@ -712,6 +692,10 @@ export interface AlwaysOnCountArchive {
   created_at: string;
 }
 export interface AlwaysOnDailyCameraAnalytics {
+  /** Inclusive calendar range, present when date_from/date_to were requested. */
+  date_from?: string;
+  date_to?: string;
+  period_total?: number;
   camera: string;
   day: string;
   model_total: number;

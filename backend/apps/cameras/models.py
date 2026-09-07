@@ -105,14 +105,6 @@ class MonoblockCameraSettings(models.Model):
             for source in (row.camera_sources if row else [])
             if isinstance(source, str) and source
         }
-        # Камера, закреплённая за физическим моноблоком, всегда разрешена для
-        # его рабочего процесса, даже если администратор убрал её из старого
-        # общего списка операторов.
-        configured.update(
-            MonoblockDevice.objects.filter(is_active=True).values_list(
-                "camera_source", flat=True
-            )
-        )
         return configured
 
     @classmethod
@@ -132,9 +124,8 @@ class MonoblockCameraSettings(models.Model):
     ) -> list[str]:
         """Cameras assigned to the independent continuous shipping contour.
 
-        The shared Monoblock picker and active physical devices are two ways to
-        assign a camera to shipping. Keep their order stable and collapse
-        duplicates so every control-plane consumer sees one canonical set.
+        The shared camera settings are the only source of shipping assignments.
+        Keep their order stable and collapse duplicates for all consumers.
         """
 
         if row is None:
@@ -144,10 +135,7 @@ class MonoblockCameraSettings(models.Model):
                 .first()
             )
         configured = row.camera_sources if row else []
-        device_sources = MonoblockDevice.objects.filter(is_active=True).order_by(
-            "id"
-        ).values_list("camera_source", flat=True)
-        return cls._ordered_camera_union(configured, device_sources)
+        return cls._ordered_camera_union(configured)
 
     @classmethod
     def ai247_sources(
@@ -257,13 +245,13 @@ class MonoblockCameraSettings(models.Model):
         return source if isinstance(source, str) else ""
 
 
-class MonoblockDevice(models.Model):
-    """Отдельная учётная запись физического моноблока и одна его камера."""
+class RetiredMonoblockAccount(models.Model):
+    """Архив отключённых технических аккаунтов; не участвует в правах и камерах."""
 
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="monoblock_device",
+        related_name="retired_monoblock_account",
     )
     name = models.CharField(max_length=80)
     camera_source = models.CharField(max_length=32, unique=True)
@@ -273,12 +261,13 @@ class MonoblockDevice(models.Model):
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
-        related_name="created_monoblock_devices",
+        related_name="created_retired_monoblock_accounts",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        db_table = "cameras_monoblockdevice"
         ordering = ["name", "id"]
 
     def __str__(self):

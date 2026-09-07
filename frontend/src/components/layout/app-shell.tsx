@@ -97,7 +97,6 @@ export function AppShell({
     if (!loading && me) {
       if (portal && !me.is_client) router.replace(homeFor(me));
       if (!portal && me.is_client) router.replace("/portal/catalog");
-      if (me.is_monoblock && pathname !== "/monoblock") router.replace("/monoblock");
     }
   }, [loading, me, pathname, portal, router]);
 
@@ -109,7 +108,7 @@ export function AppShell({
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Обучение по системе: первый вход + повторно по кнопке «?» */}
-      {!me.is_client && !me.is_monoblock && <OnboardingTour me={me} />}
+      {!me.is_client && <OnboardingTour me={me} />}
       <Sidebar me={me} mobileOpen={navOpen} onClose={closeNav} />
       <div className="flex flex-1 flex-col overflow-hidden">
         <Topbar me={me} title={title} section={section} tabs={tabs} actions={actions} onMenu={openNav} />

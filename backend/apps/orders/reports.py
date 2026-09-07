@@ -269,7 +269,7 @@ def _income_currency_row():
     }
 
 
-def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
+def summary_report(orders_qs, date_from=None, date_to=None, *, income_only=False) -> dict:
     """Собрать отчёт по живым заказам скоупа."""
     days: dict = {}
 
@@ -291,7 +291,7 @@ def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
         })
 
     shipped_by_currency = defaultdict(_shipping_currency_row)
-    snapshots = _period_shipped_snapshots(orders_qs, date_from, date_to)
+    snapshots = [] if income_only else _period_shipped_snapshots(orders_qs, date_from, date_to)
     total_bags = 0
     for snapshot in snapshots:
         row = day_row(snapshot["day"])
@@ -362,6 +362,35 @@ def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
     income_cashless = (
         income_totals["gross_cashless"] - income_totals["refund_cashless"]
     )
+
+    income = {
+        "total": _d(income_cash + income_cashless),
+        "gross": _d(
+            income_totals["gross_cash"] + income_totals["gross_cashless"]
+        ),
+        "refunded": _d(
+            income_totals["refund_cash"] + income_totals["refund_cashless"]
+        ),
+        "cash": _d(income_cash),
+        "cashless": _d(income_cashless),
+        "payments": payments_total,
+        "refunds": refunds_total,
+        "currency": income_currency,
+        "by_currency": as_money_strings(net_by_currency),
+        "gross_by_currency": as_money_strings(gross_by_currency),
+        "refunded_by_currency": as_money_strings(refunded_by_currency),
+        "cash_by_currency": as_money_strings({
+            currency: values["gross_cash"] - values["refund_cash"]
+            for currency, values in income_by_currency.items()
+        }),
+        "cashless_by_currency": as_money_strings({
+            currency: values["gross_cashless"] - values["refund_cashless"]
+            for currency, values in income_by_currency.items()
+        }),
+    }
+    if income_only:
+        return {"from": date_from.isoformat() if date_from else None,
+                "to": date_to.isoformat() if date_to else None, "income": income}
 
     day_list = []
     for row in sorted(days.values(), key=lambda value: value["date"], reverse=True):
@@ -454,31 +483,7 @@ def summary_report(orders_qs, date_from=None, date_to=None) -> dict:
     return {
         "from": date_from.isoformat() if date_from else None,
         "to": date_to.isoformat() if date_to else None,
-        "income": {
-            "total": _d(income_cash + income_cashless),
-            "gross": _d(
-                income_totals["gross_cash"] + income_totals["gross_cashless"]
-            ),
-            "refunded": _d(
-                income_totals["refund_cash"] + income_totals["refund_cashless"]
-            ),
-            "cash": _d(income_cash),
-            "cashless": _d(income_cashless),
-            "payments": payments_total,
-            "refunds": refunds_total,
-            "currency": income_currency,
-            "by_currency": as_money_strings(net_by_currency),
-            "gross_by_currency": as_money_strings(gross_by_currency),
-            "refunded_by_currency": as_money_strings(refunded_by_currency),
-            "cash_by_currency": as_money_strings({
-                currency: values["gross_cash"] - values["refund_cash"]
-                for currency, values in income_by_currency.items()
-            }),
-            "cashless_by_currency": as_money_strings({
-                currency: values["gross_cashless"] - values["refund_cashless"]
-                for currency, values in income_by_currency.items()
-            }),
-        },
+        "income": income,
         "shipped": {
             "revenue": _d(revenue_totals["revenue"]),
             "paid_amount": _d(revenue_totals["paid_amount"]),

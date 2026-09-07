@@ -122,7 +122,6 @@ function renderDetail() {
       cameraSrc="cam2"
       canCount
       canLoad
-      isKiosk
       busy={false}
       bagCounterRef={createRef<BagCounterHandle>()}
       onSaveBags={vi.fn().mockResolvedValue(undefined)}

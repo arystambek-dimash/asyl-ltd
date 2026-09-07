@@ -5,13 +5,9 @@ events and calls to the camera PC belong to the view/workflow layer, where
 they can be coordinated explicitly.
 """
 
-from django.contrib.auth import get_user_model
-from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from . import ai, services
-from .models import MonoblockDevice
 
 
 class CameraRenameSerializer(serializers.Serializer):
@@ -90,131 +86,6 @@ class CameraSourcesSerializer(serializers.Serializer):
             if source not in sources:
                 sources.append(source)
         return {"camera_sources": sources}
-
-
-class MonoblockDeviceCreateUpdateSerializer(serializers.Serializer):
-    """Validate a dedicated monoblock account without mutating its User."""
-
-    name = serializers.JSONField(required=False, allow_null=True)
-    username = serializers.JSONField(required=False, allow_null=True)
-    camera_source = serializers.JSONField(required=False, allow_null=True)
-    password = serializers.JSONField(required=False, allow_null=True)
-    is_active = serializers.JSONField(required=False, allow_null=True)
-
-    def validate(self, attrs):
-        device = self.instance
-        name = self._clean_text(
-            attrs.get("name", getattr(device, "name", "")),
-            detail="Название обязательно, максимум 80 символов",
-            code="bad_name",
-            max_length=80,
-        )
-        username = self._clean_text(
-            attrs.get(
-                "username",
-                getattr(getattr(device, "user", None), "username", ""),
-            ),
-            detail="Логин обязателен, максимум 150 символов",
-            code="bad_username",
-            max_length=150,
-        )
-        camera = self._camera(
-            attrs.get("camera_source", getattr(device, "camera_source", ""))
-        )
-
-        self._validate_unique_username(username, device)
-        self._validate_unique_camera(camera, device)
-
-        result = {
-            "name": name,
-            "username": username,
-            "camera_source": camera,
-        }
-        if "is_active" in attrs:
-            if type(attrs["is_active"]) is not bool:
-                raise serializers.ValidationError(
-                    {
-                        "detail": "Передайте true или false",
-                        "code": "bad_is_active",
-                    }
-                )
-            result["is_active"] = attrs["is_active"]
-        elif device is None:
-            result["is_active"] = True
-
-        password = attrs.get("password", "")
-        if device is None or password not in (None, ""):
-            if not isinstance(password, str):
-                self._raise_weak_password(["Пароль должен быть строкой."])
-            self._validate_password(password, username, device)
-            result["password"] = password
-        return result
-
-    @staticmethod
-    def _clean_text(value, *, detail, code, max_length):
-        if not isinstance(value, str):
-            raise serializers.ValidationError({"detail": detail, "code": code})
-        value = " ".join(value.split())
-        if not value or len(value) > max_length:
-            raise serializers.ValidationError({"detail": detail, "code": code})
-        return value
-
-    @staticmethod
-    def _camera(raw_camera):
-        if not isinstance(raw_camera, str):
-            raise serializers.ValidationError(
-                {"detail": "Выберите корректную камеру", "code": "bad_camera"}
-            )
-        try:
-            return ai.normalize(raw_camera)
-        except ai.AiError as exc:
-            raise serializers.ValidationError(
-                {"detail": "Выберите корректную камеру", "code": "bad_camera"}
-            ) from exc
-
-    @staticmethod
-    def _validate_unique_username(username, device):
-        users = get_user_model().objects.filter(username__iexact=username)
-        if device is not None:
-            users = users.exclude(pk=device.user_id)
-        if users.exists():
-            raise serializers.ValidationError(
-                {"detail": "Такой логин уже используется", "code": "username_busy"}
-            )
-
-    @staticmethod
-    def _validate_unique_camera(camera, device):
-        devices = MonoblockDevice.objects.filter(camera_source=camera)
-        if device is not None:
-            devices = devices.exclude(pk=device.pk)
-        if devices.exists():
-            raise serializers.ValidationError(
-                {
-                    "detail": "Камера уже закреплена за другим моноблоком",
-                    "code": "camera_busy",
-                }
-            )
-
-    @classmethod
-    def _validate_password(cls, password, username, device):
-        User = get_user_model()
-        current_user = getattr(device, "user", None)
-        candidate = User(
-            username=username,
-            first_name=getattr(current_user, "first_name", ""),
-            last_name=getattr(current_user, "last_name", ""),
-            email=getattr(current_user, "email", ""),
-        )
-        try:
-            validate_password(password, user=candidate)
-        except DjangoValidationError as exc:
-            cls._raise_weak_password(exc.messages)
-
-    @staticmethod
-    def _raise_weak_password(messages):
-        raise serializers.ValidationError(
-            {"detail": "; ".join(messages), "code": "weak_password"}
-        )
 
 
 class WagonNumberCameraSettingsSerializer(serializers.Serializer):
@@ -349,3 +220,24 @@ class CameraAiActionSerializer(serializers.Serializer):
     order_id = serializers.IntegerField(min_value=1)
     session_id = serializers.IntegerField(min_value=1, required=False)
     complete_order = serializers.BooleanField(required=False, default=False)
+
+
+class AnalyticsRangeSerializer(serializers.Serializer):
+    date_from = serializers.DateField(required=False)
+    date_to = serializers.DateField(required=False)
+    camera = serializers.CharField(required=False, max_length=32)
+
+    def validate_camera(self, value):
+        try:
+            return ai.normalize(value)
+        except ai.AiError as exc:
+            raise serializers.ValidationError("Неизвестная камера") from exc
+
+    def validate(self, attrs):
+        from django.utils import timezone
+        if "date_from" in attrs or "date_to" in attrs:
+            start = attrs.setdefault("date_from", timezone.localdate())
+            end = attrs.setdefault("date_to", timezone.localdate())
+            if start > end or (end - start).days >= 366:
+                raise serializers.ValidationError("Выберите период от 1 до 366 дней")
+        return attrs

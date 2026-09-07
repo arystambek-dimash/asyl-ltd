@@ -7,7 +7,6 @@ from apps.orders.models import Order, OrderItem
 from apps.cameras.models import (
     AiCountingSession,
     MonoblockCameraSettings,
-    MonoblockDevice,
 )
 from apps.warehouse.services import receive_stock
 from apps.warehouse.models import StockItem
@@ -232,31 +231,6 @@ def test_loading_camera_must_be_allowed_by_admin(operator):
     assert response.status_code == 400
     assert response.data["code"] == "camera_not_allowed"
     order.refresh_from_db()
-    assert order.loading_camera == ""
-
-
-def test_monoblock_cannot_assign_a_different_allowed_camera(django_user_model):
-    device_user = django_user_model.objects.create_user(
-        username="loading-device", password="pass12345",
-    )
-    MonoblockDevice.objects.create(
-        user=device_user,
-        name="Моноблок 2",
-        camera_source="cam2",
-    )
-    MonoblockCameraSettings.objects.create(camera_sources=["cam2", "cam3"])
-    client = Client.objects.create_with_user(first_name="A", last_name="Device", phone="5")
-    order = Order.objects.create(client=client, status="confirmed")
-
-    response = _client(device_user).post(
-        f"/api/orders/{order.id}/loading-camera/",
-        {"camera": "cam3"},
-        format="json",
-    )
-
-    assert response.status_code == 403
-    order.refresh_from_db()
-    assert order.status == "confirmed"
     assert order.loading_camera == ""
 
 

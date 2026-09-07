@@ -5,7 +5,7 @@ import { AppShell } from "./app-shell";
 
 const mocks = vi.hoisted(() => ({
   auth: {
-    me: { is_client: false, is_monoblock: false } as { is_client: boolean; is_monoblock: boolean } | null,
+    me: { is_client: false } as { is_client: boolean } | null,
     loading: false,
   },
   loadMe: vi.fn(),
@@ -39,7 +39,7 @@ describe("AppShell cross-tab authentication", () => {
   beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
-    mocks.auth.me = { is_client: false, is_monoblock: false };
+    mocks.auth.me = { is_client: false };
     mocks.auth.loading = false;
   });
 

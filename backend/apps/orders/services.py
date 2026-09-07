@@ -669,6 +669,12 @@ def reopen_confirmed_payment(payment: Payment, user) -> Payment:
             ),
             "code": "provider_payment_requires_refund",
         })
+    if (payment.refunded_amount > 0 or payment.pending_refund_amount > 0
+            or payment.payment_refunds.filter(status__in=("pending", "completed")).exists()):
+        raise ValidationError({
+            "detail": "Оплату с возвратом нельзя вернуть на подтверждение: приход и возврат должны остаться в истории.",
+            "code": "payment_has_refunds",
+        })
     previous_confirmed_by = payment.confirmed_by_id
     previous_confirmed_at = payment.confirmed_at
     payment.status = "received"

@@ -1,17 +1,12 @@
 """Camera inventory and monoblock configuration endpoints."""
 
-from typing import ClassVar
-
-from django.contrib.auth import get_user_model
-from django.db import IntegrityError, transaction
-from django.shortcuts import get_object_or_404
+from django.db import transaction
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
-from apps.eventlog.services import log_event
+from apps.common.permissions import HasPerm, IsStaff
 from apps.orders.models import Order
 
 from .. import ai, continuous, services
@@ -20,17 +15,14 @@ from ..models import (
     ANALYTICS_SCOPE_SHIPPING,
     AiCountingSession,
     MonoblockCameraSettings,
-    MonoblockDevice,
 )
 from ..policies import (
-    active_device_for,
     assert_no_pending_shipping_bootstrap,
     reserve_camera_roles,
 )
 from ..serializers import (
     CameraRenameSerializer,
     CameraSourcesSerializer,
-    MonoblockDeviceCreateUpdateSerializer,
 )
 from ..sessions import lock_camera_binding
 
@@ -56,13 +48,6 @@ class CameraListView(APIView):
                     ),
                 }
             )
-        device = active_device_for(request.user)
-        if device is not None:
-            cameras = [
-                camera
-                for camera in cameras
-                if camera.get("src") == device.camera_source
-            ]
         return Response(cameras)
 
     def patch(self, request):
@@ -110,14 +95,6 @@ def _sync_effective_always_on(previous_sources: list[str]) -> tuple[str, str]:
     )
 
 
-def _sync_changed_device_policy(previous_sources: list[str]) -> tuple[str, str]:
-    """Avoid a remote write when a device edit did not change AI membership."""
-
-    if previous_sources == MonoblockCameraSettings.continuous_sources():
-        return "synced", ""
-    return _sync_effective_always_on(previous_sources)
-
-
 def _assert_known_always_on_capacity(
     effective_sources: list[str],
     *,
@@ -159,7 +136,6 @@ class MonoblockCameraSettingsView(APIView):
     @staticmethod
     def _payload(
         settings_row=None,
-        device=None,
         *,
         always_on_sync_status="synced",
         always_on_detail="",
@@ -169,27 +145,11 @@ class MonoblockCameraSettingsView(APIView):
             settings_row
             or MonoblockCameraSettings.objects.filter(singleton=True).first()
         )
-        if device is not None:
-            payload = {
-                "camera_sources": [device.camera_source],
-                "locked": True,
-                "device_id": device.pk,
-                "device_name": device.name,
-                "updated_at": device.updated_at,
-            }
-        else:
-            payload = {
-                "camera_sources": row.camera_sources if row else [],
-                "locked": False,
-                "device_id": None,
-                "device_name": None,
-                "updated_at": row.updated_at if row else None,
-            }
-        visible_sources = (
-            [device.camera_source]
-            if device is not None
-            else MonoblockCameraSettings.shipping_sources(row)
-        )
+        payload = {
+            "camera_sources": row.camera_sources if row else [],
+            "updated_at": row.updated_at if row else None,
+        }
+        visible_sources = MonoblockCameraSettings.shipping_sources(row)
         readiness = continuous.contour_readiness(
             live or {},
             visible_sources,
@@ -230,12 +190,10 @@ class MonoblockCameraSettingsView(APIView):
         }
 
     def get(self, request):
-        device = active_device_for(request.user)
         live = None
         if not ai.enabled():
             return Response(
                 self._payload(
-                    device=device,
                     always_on_sync_status="pending",
                     always_on_detail="AI-сервис не настроен",
                     live=None,
@@ -243,11 +201,7 @@ class MonoblockCameraSettingsView(APIView):
             )
         try:
             live = ai.always_on_status_cached()
-            desired = (
-                [device.camera_source]
-                if device is not None
-                else MonoblockCameraSettings.shipping_sources()
-            )
+            desired = MonoblockCameraSettings.shipping_sources()
             sync_status, detail = continuous.contour_sync_state(
                 live,
                 desired,
@@ -257,7 +211,6 @@ class MonoblockCameraSettingsView(APIView):
             sync_status, detail = "pending", str(exc)
         return Response(
             self._payload(
-                device=device,
                 always_on_sync_status=sync_status,
                 always_on_detail=detail,
                 live=live,
@@ -275,13 +228,7 @@ class MonoblockCameraSettingsView(APIView):
             )
             previous_sources = MonoblockCameraSettings.continuous_sources(row)
             previous_shipping = MonoblockCameraSettings.shipping_sources(row)
-            device_sources = MonoblockDevice.objects.filter(
-                is_active=True
-            ).values_list("camera_source", flat=True)
-            proposed_shipping = MonoblockCameraSettings._ordered_camera_union(
-                sources,
-                device_sources,
-            )
+            proposed_shipping = MonoblockCameraSettings._ordered_camera_union(sources)
             assert_no_pending_shipping_bootstrap(
                 set(previous_shipping) - set(proposed_shipping)
             )
@@ -324,86 +271,6 @@ class MonoblockCameraSettingsView(APIView):
         )
 
 
-def _device_payload(
-    device,
-    names=None,
-    *,
-    always_on_sync_status=None,
-    always_on_detail="",
-):
-    # names передаётся списком: иначе справочник подписей читается заново на
-    # каждую строку ответа.
-    if names is None:
-        names = MonoblockCameraSettings.display_names()
-    payload = {
-        "id": device.pk,
-        "name": device.name,
-        "username": device.user.username,
-        "camera_source": device.camera_source,
-        "camera_name": names.get(device.camera_source, device.camera_source),
-        "is_active": device.is_active,
-        "created_at": device.created_at,
-        "updated_at": device.updated_at,
-    }
-    if always_on_sync_status is not None:
-        payload.update(
-            always_on_source="sub",
-            always_on_sync_status=always_on_sync_status,
-            always_on_detail=always_on_detail,
-        )
-    return payload
-
-
-def _unique_device_validation(exc):
-    cause = getattr(exc, "__cause__", None)
-    diagnostic = getattr(cause, "diag", None)
-    constraint = str(getattr(diagnostic, "constraint_name", "") or "").lower()
-    detail = f"{constraint} {exc}".lower()
-    if "camera_source" in detail:
-        return ValidationError(
-            {
-                "detail": "Камера уже закреплена за другим моноблоком",
-                "code": "camera_busy",
-            }
-        )
-    if "username" in detail:
-        return ValidationError(
-            {"detail": "Такой логин уже используется", "code": "username_busy"}
-        )
-    return None
-
-
-def _assert_device_can_change_binding(
-    device: MonoblockDevice,
-    *,
-    camera: str,
-    is_active: bool,
-) -> None:
-    """Do not strand an open loading by moving or disabling its device."""
-    binding_changes = camera != device.camera_source
-    deactivates = device.is_active and not is_active
-    activates = not device.is_active and is_active
-    if not binding_changes and not deactivates and not activates:
-        return
-
-    affected_cameras = {device.camera_source}
-    if binding_changes:
-        affected_cameras.add(camera)
-    if AiCountingSession.objects.filter(
-        camera__in=affected_cameras,
-        status__in=AiCountingSession.OPEN_STATUSES,
-    ).exists() or Order.objects.filter(
-        loading_camera__in=affected_cameras,
-        status__in=("confirmed", "arrived", "loading"),
-    ).exists():
-        raise ValidationError(
-            {
-                "detail": "Сначала завершите активную отгрузку этого моноблока",
-                "code": "monoblock_busy",
-            }
-        )
-
-
 def _assert_camera_has_no_active_work(camera: str) -> None:
     if AiCountingSession.objects.filter(
         camera=camera,
@@ -416,282 +283,3 @@ def _assert_camera_has_no_active_work(camera: str) -> None:
             "detail": "Сначала завершите активную отгрузку этой камеры",
             "code": "monoblock_busy",
         })
-
-
-class MonoblockDeviceListView(APIView):
-    """Суперпользователь создаёт отдельные аккаунты физических устройств."""
-
-    permission_classes: ClassVar[list[type]] = [IsSuperUser]
-
-    def get(self, request):
-        devices = MonoblockDevice.objects.select_related("user").all()
-        names = MonoblockCameraSettings.display_names()
-        return Response([_device_payload(device, names) for device in devices])
-
-    def post(self, request):
-        serializer = MonoblockDeviceCreateUpdateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
-        name = data["name"]
-        username = data["username"]
-        camera = data["camera_source"]
-        is_active = data["is_active"]
-
-        User = get_user_model()
-        try:
-            with transaction.atomic():
-                # AI reservations take the same mutex before creating OPEN.
-                lock_camera_binding()
-                previous_sources = MonoblockCameraSettings.continuous_sources()
-                reserve_camera_roles(
-                    MonoblockCameraSettings.shipping_sources(),
-                    ANALYTICS_SCOPE_SHIPPING,
-                )
-                reserve_camera_roles(
-                    MonoblockCameraSettings.ai247_sources(),
-                    ANALYTICS_SCOPE_AI247,
-                )
-                reserve_camera_roles([camera], ANALYTICS_SCOPE_SHIPPING)
-                if is_active:
-                    _assert_camera_has_no_active_work(camera)
-                    _camera_role_conflict(
-                        [camera],
-                        MonoblockCameraSettings.ai247_sources(),
-                        owner="AI 24/7",
-                    )
-                    _assert_known_always_on_capacity(
-                        MonoblockCameraSettings._ordered_camera_union(
-                            previous_sources,
-                            [camera],
-                        ),
-                        previous_sources=previous_sources,
-                    )
-                user = User.objects.create_user(
-                    username=username,
-                    password=data["password"],
-                    is_client=False,
-                    is_active=is_active,
-                )
-                device = MonoblockDevice.objects.create(
-                    user=user,
-                    name=name,
-                    camera_source=camera,
-                    is_active=is_active,
-                    created_by=request.user,
-                )
-        except IntegrityError as exc:
-            validation_error = _unique_device_validation(exc)
-            if validation_error is None:
-                raise
-            raise validation_error from exc
-
-        log_event(
-            "monoblock_device",
-            f"Создан моноблок «{name}»",
-            user=request.user,
-            payload={"device_id": device.pk, "username": username, "camera": camera},
-        )
-        sync_status, detail = _sync_changed_device_policy(previous_sources)
-        return Response(
-            _device_payload(
-                device,
-                always_on_sync_status=sync_status,
-                always_on_detail=detail,
-            ),
-            status=(
-                status.HTTP_201_CREATED
-                if sync_status == "synced"
-                else status.HTTP_202_ACCEPTED
-            ),
-        )
-
-
-class MonoblockDeviceDetailView(APIView):
-    permission_classes: ClassVar[list[type]] = [IsSuperUser]
-
-    @staticmethod
-    def _get(pk, *, lock: bool = False):
-        devices = MonoblockDevice.objects.select_related("user")
-        if lock:
-            devices = devices.select_for_update(of=("self",))
-        return get_object_or_404(devices, pk=pk)
-
-    def patch(self, request, pk):
-        try:
-            with transaction.atomic():
-                lock_camera_binding()
-                device = self._get(pk, lock=True)
-                previous_sources = MonoblockCameraSettings.continuous_sources()
-                serializer = MonoblockDeviceCreateUpdateSerializer(
-                    device,
-                    data=request.data,
-                )
-                serializer.is_valid(raise_exception=True)
-                data = serializer.validated_data
-                name = data["name"]
-                username = data["username"]
-                camera = data["camera_source"]
-                is_active = data.get("is_active", device.is_active)
-                password = data.get("password")
-                _assert_device_can_change_binding(
-                    device,
-                    camera=camera,
-                    is_active=is_active,
-                )
-                row = MonoblockCameraSettings.objects.get(singleton=True)
-                other_device_sources = MonoblockDevice.objects.filter(
-                    is_active=True
-                ).exclude(pk=device.pk).values_list("camera_source", flat=True)
-                proposed_device_sources = list(other_device_sources)
-                if is_active:
-                    proposed_device_sources.append(camera)
-                proposed_shipping = MonoblockCameraSettings._ordered_camera_union(
-                    row.camera_sources,
-                    proposed_device_sources,
-                )
-                assert_no_pending_shipping_bootstrap(
-                    set(MonoblockCameraSettings.shipping_sources(row))
-                    - set(proposed_shipping)
-                )
-                # Global mutation lock order is bootstrap marker -> immutable
-                # role. The importer also reaches both tables; keeping this
-                # order prevents a marker/role deadlock during cutover.
-                reserve_camera_roles(
-                    MonoblockCameraSettings.shipping_sources(row),
-                    ANALYTICS_SCOPE_SHIPPING,
-                )
-                reserve_camera_roles(
-                    MonoblockCameraSettings.ai247_sources(row),
-                    ANALYTICS_SCOPE_AI247,
-                )
-                reserve_camera_roles([camera], ANALYTICS_SCOPE_SHIPPING)
-                if is_active:
-                    _camera_role_conflict(
-                        [camera],
-                        MonoblockCameraSettings.ai247_sources(row),
-                        owner="AI 24/7",
-                    )
-                _assert_known_always_on_capacity(
-                    MonoblockCameraSettings._ordered_camera_union(
-                        row.camera_sources,
-                        proposed_device_sources,
-                        row.always_on_camera_sources,
-                    ),
-                    previous_sources=previous_sources,
-                )
-
-                before = {
-                    "name": device.name,
-                    "username": device.user.username,
-                    "camera": device.camera_source,
-                    "is_active": device.is_active,
-                }
-                device.name = name
-                device.camera_source = camera
-                device.is_active = is_active
-                device.save(
-                    update_fields=["name", "camera_source", "is_active", "updated_at"]
-                )
-
-                device.user.username = username
-                device.user.is_active = is_active
-                user_update_fields = ["username", "is_active"]
-                if password:
-                    device.user.set_password(password)
-                    user_update_fields.append("password")
-                device.user.save(update_fields=user_update_fields)
-        except IntegrityError as exc:
-            validation_error = _unique_device_validation(exc)
-            if validation_error is None:
-                raise
-            raise validation_error from exc
-
-        log_event(
-            "monoblock_device",
-            f"Изменён моноблок «{name}»",
-            user=request.user,
-            payload={
-                "device_id": device.pk,
-                "before": before,
-                "after": {
-                    "name": name,
-                    "username": username,
-                    "camera": camera,
-                    "is_active": device.is_active,
-                },
-            },
-        )
-        sync_status, detail = _sync_changed_device_policy(previous_sources)
-        return Response(
-            _device_payload(
-                device,
-                always_on_sync_status=sync_status,
-                always_on_detail=detail,
-            ),
-            status=(
-                status.HTTP_200_OK
-                if sync_status == "synced"
-                else status.HTTP_202_ACCEPTED
-            ),
-        )
-
-    put = patch
-
-    def delete(self, request, pk):
-        with transaction.atomic():
-            lock_camera_binding()
-            device = self._get(pk, lock=True)
-            previous_sources = MonoblockCameraSettings.continuous_sources()
-            row = MonoblockCameraSettings.objects.get(singleton=True)
-            proposed_shipping = MonoblockCameraSettings._ordered_camera_union(
-                row.camera_sources,
-                MonoblockDevice.objects.filter(is_active=True)
-                .exclude(pk=device.pk)
-                .values_list("camera_source", flat=True),
-            )
-            assert_no_pending_shipping_bootstrap(
-                set(MonoblockCameraSettings.shipping_sources(row))
-                - set(proposed_shipping)
-            )
-            if AiCountingSession.objects.filter(
-                camera=device.camera_source,
-                status__in=AiCountingSession.OPEN_STATUSES,
-            ).exists() or Order.objects.filter(
-                loading_camera=device.camera_source,
-                status__in=("confirmed", "arrived", "loading"),
-            ).exists():
-                raise ValidationError(
-                    {
-                        "detail": (
-                            "Сначала завершите активную отгрузку этого моноблока"
-                        ),
-                        "code": "monoblock_busy",
-                    }
-                )
-            snapshot = _device_payload(device)
-            name = device.name
-            device.user.delete()
-
-        log_event(
-            "monoblock_device",
-            f"Удалён моноблок «{name}»",
-            user=request.user,
-            payload={
-                "device_id": snapshot["id"],
-                "name": snapshot["name"],
-                "username": snapshot["username"],
-                "camera": snapshot["camera_source"],
-            },
-        )
-        sync_status, detail = _sync_changed_device_policy(previous_sources)
-        if sync_status == "pending":
-            return Response(
-                {
-                    "deleted": True,
-                    "always_on_source": "sub",
-                    "always_on_sync_status": sync_status,
-                    "always_on_detail": detail,
-                },
-                status=status.HTTP_202_ACCEPTED,
-            )
-        return Response(status=status.HTTP_204_NO_CONTENT)

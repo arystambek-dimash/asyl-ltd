@@ -16,11 +16,6 @@ import {
   ShieldCheck,
   Video,
   VideoOff,
-  MonitorSmartphone,
-  Plus,
-  Pencil,
-  Trash2,
-  KeyRound,
   type LucideIcon,
 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
@@ -44,9 +39,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { StatCard } from "@/components/ui/stat-card";
 import { Tabs, type TabDef } from "@/components/ui/tabs";
 import { ColorDot, Hairline, Metric, Panel, SectionHead, StatusChip } from "@/components/monoblock/ui";
@@ -71,7 +64,6 @@ import type {
   AlwaysOnStockBatch,
   CameraContinuousReadiness,
   MonoblockCameraSettings,
-  MonoblockDevice,
   Order,
   ShippingBoardSettings,
 } from "@/lib/types";
@@ -307,278 +299,6 @@ function CameraSettingsButton({
   );
 }
 
-function MonoblockDevicesButton({
-  cameras,
-  devices,
-  blockedCameraSources = [],
-  reload,
-}: {
-  cameras: (CameraFeed & { src: string })[];
-  devices: MonoblockDevice[];
-  blockedCameraSources?: string[];
-  reload: () => Promise<void>;
-}) {
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<MonoblockDevice | null>(null);
-  const [formOpen, setFormOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [cameraSource, setCameraSource] = useState("");
-  const [active, setActive] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const [policyNotice, setPolicyNotice] = useState("");
-
-  function showForm(device?: MonoblockDevice) {
-    setEditing(device ?? null);
-    setName(device?.name ?? "");
-    setUsername(device?.username ?? "");
-    setPassword("");
-    setCameraSource(device?.camera_source ?? "");
-    setActive(device?.is_active ?? true);
-    setError("");
-    setFormOpen(true);
-  }
-
-  async function save() {
-    setSaving(true);
-    setError("");
-    try {
-      const body = {
-        name,
-        username,
-        camera_source: cameraSource,
-        is_active: active,
-        ...(password ? { password } : {}),
-      };
-      const response = editing
-        ? await api.patch<MonoblockDevice>(`/cameras/monoblock-devices/${editing.id}/`, body)
-        : await api.post<MonoblockDevice>("/cameras/monoblock-devices/", body);
-      await reload();
-      setFormOpen(false);
-      setPolicyNotice(
-        response.status === 202 || response.data.always_on_sync_status === "pending"
-          ? response.data.always_on_detail ||
-              "Настройка сохранена, но камера-ПК ещё не подтвердила непрерывный контур отгрузки. Запуск будет недоступен до синхронизации."
-          : "",
-      );
-    } catch (cause) {
-      setError(apiError(cause));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  // Удаление уносит учётную запись поста: системный confirm не защищал от
-  // повторного нажатия и выпадал из оформления остальных подтверждений.
-  const [removing, setRemoving] = useState<MonoblockDevice | null>(null);
-  const [removeBusy, setRemoveBusy] = useState(false);
-  const [removeError, setRemoveError] = useState("");
-
-  async function confirmRemove() {
-    if (!removing) return;
-    setRemoveBusy(true);
-    setRemoveError("");
-    try {
-      const response = await api.delete<{
-        deleted?: boolean;
-        always_on_sync_status?: "synced" | "pending";
-        always_on_detail?: string;
-      }>(`/cameras/monoblock-devices/${removing.id}/`);
-      await reload();
-      setRemoving(null);
-      if (response.status === 202 || response.data?.always_on_sync_status === "pending") {
-        const detail =
-          response.data?.always_on_detail || "Моноблок удалён, но камера-ПК ещё не подтвердила новый контур отгрузки.";
-        setPolicyNotice(detail);
-        showSuccess("Моноблок удалён; камеры отгрузки ожидают синхронизации");
-      } else {
-        setPolicyNotice("");
-        showSuccess("Моноблок удалён");
-      }
-    } catch (cause) {
-      setRemoveError(apiError(cause));
-    } finally {
-      setRemoveBusy(false);
-    }
-  }
-
-  const occupied = new Set(devices.filter((item) => item.id !== editing?.id).map((item) => item.camera_source));
-
-  return (
-    <>
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => {
-          setError("");
-          setOpen(true);
-        }}
-      >
-        <MonitorSmartphone className="size-4" /> Моноблоки
-        <span className="tabular-nums text-[var(--muted-foreground)]">{devices.length}</span>
-      </Button>
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        eyebrow="Устройства и доступ"
-        title="Учётные записи моноблоков"
-        description="У каждого физического моноблока свой логин и ровно одна логическая камера camN. Активная камера автоматически работает 24/7 через прямое сопоставление substream на камера-ПК."
-        className="max-w-2xl"
-      >
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <p className="text-sm text-slate-500">Оператор входит под этим логином — камера выбирается автоматически.</p>
-          <Button onClick={() => showForm()}>
-            <Plus className="size-4" /> Добавить
-          </Button>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          {devices.map((device) => (
-            <div
-              key={device.id}
-              className={cn(
-                "rounded-2xl border p-4",
-                device.is_active ? "border-slate-200 bg-white" : "border-slate-200 bg-slate-50 opacity-70",
-              )}
-            >
-              <div className="flex items-start gap-3">
-                <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-                  <MonitorSmartphone className="size-5" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate font-bold text-slate-800">{device.name}</div>
-                  <div className="mt-0.5 truncate text-xs text-slate-400">Логин: {device.username}</div>
-                </div>
-                <span className={cn("size-2.5 rounded-full", device.is_active ? "bg-emerald-500" : "bg-slate-300")} />
-              </div>
-              <div className="mt-3 flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700">
-                <Camera className="size-4 text-blue-600" /> {device.camera_name}
-              </div>
-              <div className="mt-3 flex justify-end gap-1">
-                <Button size="icon" variant="ghost" aria-label="Изменить моноблок" onClick={() => showForm(device)}>
-                  <Pencil className="size-4" />
-                </Button>
-                <Button size="icon" variant="ghost" aria-label="Удалить моноблок" onClick={() => setRemoving(device)}>
-                  <Trash2 className="size-4 text-red-500" />
-                </Button>
-              </div>
-            </div>
-          ))}
-        </div>
-        {!devices.length && (
-          <div className="rounded-2xl border border-dashed p-10 text-center text-sm text-slate-400">
-            Моноблоки ещё не зарегистрированы.
-          </div>
-        )}
-        {policyNotice && (
-          <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-            {policyNotice}
-          </p>
-        )}
-        {error && !formOpen && <p className="mt-3 text-sm text-[var(--destructive)]">{error}</p>}
-      </Modal>
-
-      <Modal
-        open={formOpen}
-        onClose={() => setFormOpen(false)}
-        eyebrow={editing ? "Изменение устройства" : "Новое устройство"}
-        title={editing ? "Настроить моноблок" : "Зарегистрировать моноблок"}
-        description="Эти данные используются только на физическом устройстве у камеры."
-        className="max-w-lg"
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setFormOpen(false)} disabled={saving}>
-              Отмена
-            </Button>
-            <Button
-              onClick={() => void save()}
-              disabled={saving || !name || !username || !cameraSource || (!editing && !password)}
-            >
-              <Check className="size-4" /> {saving ? "Сохранение…" : "Сохранить"}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <label className="grid gap-1.5">
-            <Label>Название устройства</Label>
-            <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Моноблок в цехе" />
-          </label>
-          <label className="grid gap-1.5">
-            <Label>Логин</Label>
-            <Input
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-              placeholder="monoblock-workshop"
-              autoComplete="off"
-            />
-          </label>
-          <label className="grid gap-1.5">
-            <Label>{editing ? "Новый пароль (необязательно)" : "Пароль"}</Label>
-            <div className="relative">
-              <KeyRound className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-              <Input
-                type="password"
-                className="pl-9"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                placeholder={editing ? "Оставьте пустым, чтобы не менять" : "Надёжный пароль"}
-                autoComplete="new-password"
-              />
-            </div>
-          </label>
-          <label className="grid gap-1.5">
-            <Label>Закреплённая камера</Label>
-            <select
-              value={cameraSource}
-              onChange={(event) => setCameraSource(event.target.value)}
-              className="h-10 rounded-lg border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20"
-            >
-              <option value="">Выберите камеру</option>
-              {cameras.map((camera) => {
-                const occupiedByDevice = occupied.has(camera.src);
-                const ownedByAi247 = blockedCameraSources.includes(camera.src);
-                return (
-                  <option key={camera.src} value={camera.src} disabled={occupiedByDevice || ownedByAi247}>
-                    {camera.zone} · {camera.src}
-                    {ownedByAi247 ? " · занята AI 24/7" : occupiedByDevice ? " · занята другим моноблоком" : ""}
-                  </option>
-                );
-              })}
-            </select>
-          </label>
-          <label className="flex items-center justify-between rounded-xl border p-3">
-            <span>
-              <span className="block text-sm font-semibold">Устройство активно</span>
-              <span className="text-xs text-slate-400">Отключённый логин не сможет войти</span>
-            </span>
-            <input
-              type="checkbox"
-              checked={active}
-              onChange={(event) => setActive(event.target.checked)}
-              className="size-4 accent-blue-600"
-            />
-          </label>
-          {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
-        </div>
-      </Modal>
-
-      <ConfirmDialog
-        open={removing !== null}
-        onClose={() => !removeBusy && setRemoving(null)}
-        title="Удалить моноблок?"
-        description={
-          removing ? `«${removing.name}» и его учётная запись будут удалены. Пост перестанет входить в систему.` : ""
-        }
-        busy={removeBusy}
-        error={removeError}
-        onConfirm={() => void confirmRemove()}
-      />
-    </>
-  );
-}
-
 function AlwaysOnSettingsButton({
   cameras,
   settings,
@@ -779,6 +499,13 @@ function AlwaysOnCard({
   const modalViews = isShipping ? SHIPPING_MODAL_VIEWS : ALWAYS_ON_MODAL_VIEWS;
   const visibleModalTabs = MODAL_TABS.filter((tab) => modalViews.includes(tab.key));
   const [open, setOpen] = useState(false);
+  const today = useLocalDay();
+  const [dateRange, setDateRange] = useState<{ from: string; to: string } | null>(null);
+  const dateFrom = dateRange?.from ?? today;
+  const dateTo = dateRange?.to ?? today;
+  const rangeDays = (Date.parse(dateTo) - Date.parse(dateFrom)) / 86_400_000 + 1;
+  const rangeValid = Number.isFinite(rangeDays) && rangeDays >= 1 && rangeDays <= 366;
+  const rangeQuery = new URLSearchParams({ camera: processor.cam, date_from: dateFrom, date_to: dateTo }).toString();
   const [modalView, setModalView] = useState<ModalView>("live");
   const [streamOnline, setStreamOnline] = useState(false);
   // Рамки модели можно скрыть: иногда оператору нужно посмотреть на сам кадр.
@@ -821,7 +548,8 @@ function AlwaysOnCard({
     },
     camera?.line_config,
   );
-  const currentDaily = open ? liveDaily : daily;
+  const rangeMatches = liveDaily?.date_from === dateFrom && liveDaily?.date_to === dateTo;
+  const currentDaily = open ? (rangeValid && rangeMatches ? liveDaily : undefined) : daily;
   const todayTotal = currentDaily?.total ?? 0;
   const allTimeTotal = currentDaily?.all_time_total ?? todayTotal;
   const analyticsTransportError = open ? liveAnalyticsError : analyticsError;
@@ -936,12 +664,13 @@ function AlwaysOnCard({
       ? "unavailable"
       : "loading";
   useEffect(() => {
+    if (open) return;
     setLiveProcessor(processor);
     setLiveReadiness(readiness);
     setLiveDaily(daily);
     setLiveDetail(detail || "");
     setLiveAnalyticsError(analyticsError || "");
-  }, [analyticsError, daily, detail, processor, readiness]);
+  }, [analyticsError, daily, detail, open, processor, readiness]);
 
   // Разбор дня — состояние одного просмотра: закрыли окно, выбор снят.
   useEffect(() => {
@@ -953,14 +682,17 @@ function AlwaysOnCard({
   }, [selectedDay]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !rangeValid) return;
+    const controller = new AbortController();
+    setLiveAnalyticsError("");
+    setSelectedDay(null);
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const refresh = async () => {
       try {
         const [settingsResponse, analyticsResponse] = await Promise.all([
-          api.get<AlwaysOnCameraSettings>(runtimeSettingsUrl),
-          api.get<AlwaysOnDailyAnalytics>(analyticsUrl),
+          api.get<AlwaysOnCameraSettings>(runtimeSettingsUrl, { signal: controller.signal }),
+          api.get<AlwaysOnDailyAnalytics>(`${analyticsUrl}?${rangeQuery}`, { signal: controller.signal }),
         ]);
         if (disposed) return;
         const next = settingsResponse.data.processors.find((item) => item.cam === processor.cam);
@@ -993,9 +725,10 @@ function AlwaysOnCard({
     void refresh();
     return () => {
       disposed = true;
+      controller.abort();
       if (timer) clearTimeout(timer);
     };
-  }, [analyticsUrl, open, processor.cam, runtimeSettingsUrl, scope]);
+  }, [analyticsUrl, open, processor.cam, rangeQuery, rangeValid, runtimeSettingsUrl, scope]);
 
   // Быстрый опрос только рамок. Отдельно от тяжёлого снимка: аналитику и
   // настройки незачем перечитывать раз в секунду, а рамка на общем интервале
@@ -1409,7 +1142,41 @@ function AlwaysOnCard({
           </div>
         ) : modalView === "analytics" ? (
           <div {...modalPanelProps("analytics")} className="space-y-4">
-            {!analyticsAvailable && (
+            <div className="flex flex-wrap items-end gap-3" aria-label="Период аналитики">
+              <label className="flex flex-col gap-1 text-sm">
+                С даты
+                <Input
+                  type="date"
+                  aria-label="Аналитика с даты"
+                  value={dateFrom}
+                  onChange={(event) => setDateRange({ from: event.target.value, to: dateTo })}
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                По дату
+                <Input
+                  type="date"
+                  aria-label="Аналитика по дату"
+                  value={dateTo}
+                  onChange={(event) => setDateRange({ from: dateFrom, to: event.target.value })}
+                />
+              </label>
+              <Button variant="outline" onClick={() => setDateRange(null)}>
+                Сегодня
+              </Button>
+              <span className="pb-2 text-xs text-[var(--muted-foreground)]">Календарные дни · до 366 дней</span>
+            </div>
+            {!isShipping && (
+              <p className="text-xs text-[var(--muted-foreground)]">
+                Периоды, перенесённые в архив, здесь не учитываются.
+              </p>
+            )}
+            {!rangeValid && (
+              <p role="alert" className="text-sm text-[var(--destructive)]">
+                Выберите период от 1 до 366 дней. Начало не должно быть позже окончания.
+              </p>
+            )}
+            {!analyticsAvailable && rangeValid && (
               <div className="flex items-start gap-3 rounded-md border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-4 py-3 text-sm text-[var(--foreground)]">
                 <AlertTriangle className="mt-0.5 size-4 shrink-0 text-[var(--warning)]" />
                 <p>
@@ -1420,10 +1187,14 @@ function AlwaysOnCard({
             )}
             <div className="grid gap-4 sm:grid-cols-3">
               <Panel className="p-5">
-                <Metric label="Сегодня" value={todayDisplay} unit={analyticsAvailable ? "меш." : undefined} />
+                <Metric
+                  label={dateFrom === today && dateTo === today ? "Сегодня" : "За выбранный период"}
+                  value={analyticsAvailable ? (currentDaily?.period_total ?? "—") : "—"}
+                  unit={analyticsAvailable ? "меш." : undefined}
+                />
               </Panel>
               <Panel className="p-5">
-                <Metric label="За всё время" value={allTimeDisplay} />
+                <Metric label={isShipping ? "За всё время" : "Всего вне архива"} value={allTimeDisplay} />
               </Panel>
               <Panel className="p-5">
                 <Metric
@@ -1460,8 +1231,11 @@ function AlwaysOnCard({
                     <span className="text-[11px] tabular-nums text-[var(--muted-foreground)]">макс. {chartMax}</span>
                   }
                 />
-                <div className="mt-5 overflow-x-auto pb-1">
-                  <div className="h-56 min-w-[520px] sm:h-64">
+                <div className="mt-5 overflow-x-auto pb-1" role="region" aria-label="График по дням" tabIndex={0}>
+                  <div
+                    className="h-56 sm:h-64"
+                    style={{ minWidth: Math.max(320, (currentDaily?.history.length ?? 0) * 40) }}
+                  >
                     <div className="flex h-[188px] items-end gap-2 sm:h-[216px]">
                       {(currentDaily?.history ?? []).map((item) => {
                         const active = item.day === selectedDay;
@@ -1514,8 +1288,8 @@ function AlwaysOnCard({
                   title={isShipping ? "Цвета мешков" : "Продукция"}
                   hint={
                     isShipping
-                      ? "За всё время в контуре отгрузки."
-                      : "За всё время по данным модели. При наличии привязки название цвета заменяется товаром и складом, а цветовой индикатор сохраняется."
+                      ? "За выбранный период в контуре отгрузки."
+                      : "За выбранный период по данным модели. При наличии привязки название цвета заменяется товаром и складом, а цветовой индикатор сохраняется."
                   }
                 />
                 <div className="mt-5 space-y-4">
@@ -1736,9 +1510,6 @@ function ContinuousCameraTile({
 
 function MonoblockPageInner() {
   const { me } = useAuth();
-  const isSuper = !!me?.is_superuser;
-  const isKiosk = !!me?.is_monoblock;
-  const kioskCamera = me?.monoblock_camera ?? null;
   const canLoad = can(me, "shipping.load");
   const canTrain = can(me, "train.load");
   const canShip = can(me, "shipping.ship");
@@ -1748,9 +1519,9 @@ function MonoblockPageInner() {
   // Техническая учётная запись физического моноблока работает только с
   // отгрузкой своей камеры. Общий производственный мониторинг предназначен
   // сотрудникам, которые входят на эту же страницу по shipping.load.
-  const canViewAlwaysOn = canLoad && !isKiosk;
+  const canViewAlwaysOn = canLoad;
   const canManageAlwaysOn = canViewAlwaysOn && can(me, "ai_247.manage");
-  const canOpenOrder = can(me, "orders.view") && !isKiosk;
+  const canOpenOrder = can(me, "orders.view");
   // Без права URL = null: иначе бэкенд отвечает 403 и страница держит
   // постоянный ErrorAlert. Условия повторяют гейты бэкенда.
   const canViewSessions = canLoad || canViewShipping;
@@ -1796,11 +1567,6 @@ function MonoblockPageInner() {
     error: cameraSettingsError,
     reload: reloadCameraSettings,
   } = useApi<MonoblockCameraSettings>(canViewCameraSettings ? "/cameras/monoblock-settings/" : null);
-  const {
-    data: monoblockDevices,
-    error: monoblockDevicesError,
-    reload: reloadMonoblockDevices,
-  } = useApi<MonoblockDevice[]>(isSuper ? "/cameras/monoblock-devices/" : null);
   const {
     data: histories,
     error: historiesError,
@@ -1865,7 +1631,6 @@ function MonoblockPageInner() {
       Promise.all([
         reloadCameras(),
         ...(canViewCameraSettings ? [reloadCameraSettings()] : []),
-        ...(isSuper ? [reloadMonoblockDevices()] : []),
         ...(canViewContinuous ? [reloadShippingContinuousSettings(), reloadShippingContinuousAnalytics()] : []),
         ...(canViewAlwaysOn ? [reloadAlwaysOnSettings(), reloadAlwaysOnAnalytics()] : []),
       ]),
@@ -1875,7 +1640,6 @@ function MonoblockPageInner() {
     camerasError ||
     sessionsError ||
     cameraSettingsError ||
-    monoblockDevicesError ||
     historiesError ||
     shippingSettingsError ||
     alwaysOnSettingsError ||
@@ -1891,7 +1655,6 @@ function MonoblockPageInner() {
       reloadCameras(),
       reloadSessions(),
       reloadCameraSettings(),
-      reloadMonoblockDevices(),
       reloadHistories(),
       reloadShippingSettings(),
       reloadShippingContinuousSettings(),
@@ -1902,7 +1665,6 @@ function MonoblockPageInner() {
   const reloadMonoblockPolicy = async () => {
     await Promise.all([
       reloadCameraSettings(),
-      reloadMonoblockDevices(),
       reloadShippingContinuousSettings(),
       reloadShippingContinuousAnalytics(),
       reloadAlwaysOnSettings(),
@@ -1937,16 +1699,8 @@ function MonoblockPageInner() {
     counts.wagons > 0
       ? `в очереди · ${counts.wagons} ${pluralRu(counts.wagons, ["вагон", "вагона", "вагонов"])}`
       : "в очереди";
-  // Киоск не видит выехавшие заказы — его четвёртая плитка про свою камеру.
-  const kioskDaily = kioskCamera
-    ? shippingContinuousAnalytics?.cameras.find((item) => item.camera === kioskCamera)
-    : undefined;
-  const kioskAnalyticsAvailable = !shippingContinuousAnalyticsError && kioskDaily?.analytics_sync?.available === true;
-
   /* ── Полоса камер: плитка знает, какой заказ занимает камеру ─────────── */
-  const stripSources = (shippingContinuousSettings?.camera_sources ?? []).filter(
-    (source) => !isKiosk || source === kioskCamera,
-  );
+  const stripSources = shippingContinuousSettings?.camera_sources ?? [];
   function tileBinding(source: string): ShippingTileBinding | undefined {
     const session = sessionsByCamera.get(source);
     const ownerId = session?.order_id ?? cameraOwners[source];
@@ -2028,16 +1782,6 @@ function MonoblockPageInner() {
                   )
                 ) : canManage ? (
                   <>
-                    {isSuper && (
-                      <MonoblockDevicesButton
-                        cameras={playable}
-                        devices={monoblockDevices ?? []}
-                        blockedCameraSources={
-                          cameraSettings?.blocked_camera_sources ?? alwaysOnSettings?.camera_sources ?? []
-                        }
-                        reload={reloadMonoblockPolicy}
-                      />
-                    )}
                     <CameraSettingsButton cameras={playable} settings={cameraSettings} reload={reloadMonoblockPolicy} />
                     <Button variant="outline" size="sm" onClick={() => setCompletedOpen(true)}>
                       <CalendarDays className="size-4" /> Отгруженные: {completedLabel}
@@ -2131,15 +1875,7 @@ function MonoblockPageInner() {
                   caption="ожидают оформления выезда"
                   tone={counts.ready > 0 && canShip ? "success" : undefined}
                 />
-                {isKiosk ? (
-                  <StatCard
-                    label="Насчитано камерой сегодня"
-                    value={kioskAnalyticsAvailable ? (kioskDaily?.total ?? 0) : "—"}
-                    caption={kioskAnalyticsAvailable ? "синхронизировано" : "журнал не синхронизирован"}
-                  />
-                ) : (
-                  <StatCard label="Выехали" value={counts.shipped} caption={shippedCaption} />
-                )}
+                <StatCard label="Выехали" value={counts.shipped} caption={shippedCaption} />
               </div>
 
               {shippingContinuousSettings && (
@@ -2193,8 +1929,6 @@ function MonoblockPageInner() {
                   canRollback,
                   canViewShipping,
                   canOpenOrder,
-                  isKiosk,
-                  kioskCamera,
                 }}
                 monoblockCameras={monoblockCameras}
                 shippingProcessors={shippingContinuousSettings?.processors}
@@ -2211,7 +1945,6 @@ function MonoblockPageInner() {
                   cameraSettings?.always_on_detail ??
                   ""
                 }
-                cameraLocked={!!cameraSettings?.locked}
                 completedOrdersDays={completedDays}
                 filter={boardFilter}
                 reloadOrders={reloadOrders}

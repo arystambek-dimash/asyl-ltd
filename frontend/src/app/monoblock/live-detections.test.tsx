@@ -1,11 +1,13 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import MonoblockPage from "./page";
+import type { AlwaysOnDailyAnalytics } from "@/lib/types";
 
 const mocks = vi.hoisted(() => ({
   responses: new Map<string, unknown>(),
+  requestedUrls: [] as string[],
   apiGet: vi.fn(),
   apiPut: vi.fn(),
   apiPost: vi.fn(),
@@ -21,9 +23,7 @@ vi.mock("@/store/auth", () => ({
       username: "loader",
       is_client: false,
       is_superuser: false,
-      is_monoblock: false,
-      monoblock_name: null,
-      monoblock_camera: null,
+
       permissions: mocks.permissions,
       position: null,
       client_id: null,
@@ -72,12 +72,32 @@ vi.mock("@/lib/use-api", () => ({
 
 vi.mock("@/lib/api", () => ({
   api: {
-    get: (...args: unknown[]) => mocks.apiGet(...args),
+    get: async (url: string, ...args: unknown[]) => {
+      mocks.requestedUrls.push(url);
+      if (url.includes("-analytics/?")) {
+        const parsed = new URL(url, "http://localhost");
+        const response: { data: AlwaysOnDailyAnalytics } = await mocks.apiGet(parsed.pathname, ...args);
+        return {
+          data: {
+            ...response.data,
+            cameras: response.data.cameras.map((camera) => ({
+              ...camera,
+              date_from: parsed.searchParams.get("date_from"),
+              date_to: parsed.searchParams.get("date_to"),
+              period_total: camera.total,
+            })),
+          },
+        };
+      }
+      return mocks.apiGet(url, ...args);
+    },
     put: (...args: unknown[]) => mocks.apiPut(...args),
     post: (...args: unknown[]) => mocks.apiPost(...args),
   },
   apiError: () => "Ошибка тестового API",
 }));
+
+vi.mock("@/lib/use-local-day", () => ({ useLocalDay: () => "2026-08-24" }));
 
 const processor = {
   cam: "cam2",
@@ -117,6 +137,7 @@ const analytics = {
 };
 
 beforeEach(() => {
+  mocks.requestedUrls = [];
   mocks.permissions = ["shipping.load"];
   mocks.apiPut.mockReset();
   mocks.apiPost.mockReset();
@@ -932,4 +953,60 @@ describe("AI 24/7 live detections", () => {
 
     expect(screen.queryByText("Red_50")).not.toBeInTheDocument();
   });
+});
+
+it("requests today by default and replaces the analytics period without accepting an old response", async () => {
+  const user = userEvent.setup();
+  let resolveOld: ((value: { data: unknown }) => void) | undefined;
+  const old = new Promise<{ data: unknown }>((resolve) => {
+    resolveOld = resolve;
+  });
+  const snapshot = (total: number) => ({
+    ...analytics,
+    cameras: [
+      {
+        camera: "cam2",
+        day: "2026-08-24",
+        total,
+        all_time_total: total,
+        colors: [],
+        history: [],
+        analytics_sync: { available: true, status: "synced", detail: "" },
+      },
+    ],
+  });
+  let reads = 0;
+  mocks.apiGet.mockImplementation((url: string) => {
+    if (url === "/cameras/always-on-settings/") return Promise.resolve({ data: alwaysOnSettings });
+    if (url === "/cameras/always-on-analytics/") return ++reads === 1 ? old : Promise.resolve({ data: snapshot(140) });
+    if (url.includes("detections")) return Promise.resolve({ data: { processors: [] } });
+    return Promise.reject(new Error("Нет данных выпуска"));
+  });
+  render(<MonoblockPage />);
+  await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
+  await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+  await user.click(screen.getByRole("tab", { name: "Аналитика" }));
+  expect(screen.getByLabelText("Аналитика с даты")).toHaveValue("2026-08-24");
+  expect(mocks.requestedUrls).toContain(
+    "/cameras/always-on-analytics/?camera=cam2&date_from=2026-08-24&date_to=2026-08-24",
+  );
+  fireEvent.change(screen.getByLabelText("Аналитика с даты"), { target: { value: "2026-08-01" } });
+  await waitFor(() =>
+    expect(mocks.requestedUrls).toContain(
+      "/cameras/always-on-analytics/?camera=cam2&date_from=2026-08-01&date_to=2026-08-24",
+    ),
+  );
+  const periodPanel = screen.getByText("За выбранный период").parentElement;
+  if (!periodPanel) throw new Error("Нет карточки периода");
+  await waitFor(() => expect(within(periodPanel).getByText("140")).toBeInTheDocument());
+  await act(async () => {
+    resolveOld?.({ data: snapshot(999) });
+  });
+  expect(screen.queryByText("999")).not.toBeInTheDocument();
+  const beforeInvalid = mocks.requestedUrls.length;
+  fireEvent.change(screen.getByLabelText("Аналитика с даты"), { target: { value: "2026-08-25" } });
+  expect(screen.getByRole("alert")).toHaveTextContent("Выберите период");
+  expect(mocks.requestedUrls.length).toBe(beforeInvalid);
+  await user.click(screen.getByRole("button", { name: "Сегодня" }));
+  expect(screen.getByLabelText("Аналитика с даты")).toHaveValue("2026-08-24");
 });

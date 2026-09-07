@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import ValidationError
 
 from apps.eventlog.services import log_event
 from apps.warehouse.services import deduct_stock, resolve_warehouse
@@ -34,28 +34,6 @@ def _locked(order, user=None):
     return lock_live_order(order, user)
 
 
-def _device_for(user):
-    return getattr(user, "active_monoblock_device", None)
-
-
-def _assert_device_order_camera(order, user) -> None:
-    """Keep physical monoblocks inside the workflow for their own camera."""
-    device = _device_for(user)
-    if device is not None and order.loading_camera != device.camera_source:
-        raise PermissionDenied("Эта отгрузка закреплена за другим моноблоком")
-
-
-def assert_device_camera_change(order, camera: str, user) -> None:
-    """A device may bind/release only its camera and never another binding."""
-    device = _device_for(user)
-    if device is None:
-        return
-    if order.loading_camera and order.loading_camera != device.camera_source:
-        raise PermissionDenied("Эта отгрузка закреплена за другим моноблоком")
-    if camera and camera != device.camera_source:
-        raise PermissionDenied("Эта камера закреплена за другим моноблоком")
-
-
 def _validate_loading_camera_available(order, camera: str) -> None:
     if not camera:
         return
@@ -85,14 +63,14 @@ def _validate_loading_camera_available(order, camera: str) -> None:
 
 @transaction.atomic
 def _set_loading_camera_locked(order, camera: str, user=None):
-    # Share the same camera-ownership mutex with AI start and device binding.
+    # Share the same camera-ownership mutex with AI start.
     # Taking it before the Order row also prevents A -> B / B -> A camera
     # swaps from acquiring conflicting order locks in opposite directions.
     from apps.cameras.sessions import lock_camera_binding
 
     lock_camera_binding()
     order = _locked(order, user)
-    assert_device_camera_change(order, camera, user)
+
     if camera and order.status not in ("arrived", "loading"):
         raise ValidationError({
             "detail": "Камеру можно закрепить только после въезда и до завершения погрузки",
@@ -199,7 +177,6 @@ def begin_camera_loading(
             "code": "invalid_status",
         })
 
-    assert_device_camera_change(order, camera, user)
     _validate_loading_camera_available(order, camera)
 
     now = timezone.now()
@@ -274,7 +251,7 @@ def record_arrival(order, weigh_in_kg, user):
 @transaction.atomic
 def record_count(order, bags, user):
     order = _locked(order, user)
-    _assert_device_order_camera(order, user)
+
     if order.status in ("arrived", "loading"):
         shipment = _require_shipment(order)
     else:
@@ -312,7 +289,7 @@ def _assert_no_open_ai_session(order) -> None:
 @transaction.atomic
 def finish_loading(order, user):
     order = _locked(order, user)
-    _assert_device_order_camera(order, user)
+
     _require_transport(order, "truck")
     if order.status != "loading":
         raise ValidationError(
@@ -345,7 +322,7 @@ def finish_ai_counting(order, bags: int, user):
     заказанное количество, а расхождение попадает в журнал.
     """
     order = _locked(order, user)
-    _assert_device_order_camera(order, user)
+
     if order.status != "loading":
         raise ValidationError({
             "detail": "Завершить можно только идущую загрузку",
@@ -463,7 +440,7 @@ def rewind_loading(order, user, target_status="confirmed"):
     AI-сессию сначала обязан остановить её автор или администратор.
     """
     order = _locked(order, user)
-    _assert_device_order_camera(order, user)
+
     if target_status not in ("pending", "confirmed", "cancelled"):
         raise ValidationError({
             "detail": "Недопустимый целевой статус возврата",

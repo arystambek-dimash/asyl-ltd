@@ -15,7 +15,6 @@ from apps.cameras.models import (
     AiCountingSession,
     ContinuousCameraRole,
     MonoblockCameraSettings,
-    MonoblockDevice,
 )
 from apps.cameras.views import (
     CAM_COOKIE,
@@ -356,22 +355,8 @@ def test_continuous_sources_and_roles_are_stable_and_disjoint(
     django_user_model,
 ):
     row = MonoblockCameraSettings.objects.create(
-        camera_sources=["cam3", "cam2", "cam3"],
+        camera_sources=["cam3", "cam2", "cam3", "cam5"],
         always_on_camera_sources=["cam4"],
-    )
-    active_user = django_user_model.objects.create_user(username="mono-cam5")
-    inactive_user = django_user_model.objects.create_user(username="mono-cam6")
-    MonoblockDevice.objects.create(
-        user=active_user,
-        name="Активный",
-        camera_source="cam5",
-        is_active=True,
-    )
-    MonoblockDevice.objects.create(
-        user=inactive_user,
-        name="Отключённый",
-        camera_source="cam6",
-        is_active=False,
     )
     ContinuousCameraRole.objects.bulk_create(
         [
@@ -1596,76 +1581,6 @@ def test_auth_reloads_and_revalidates_current_user(
         setattr(operator, field, account_change != "inactive")
         operator.save(update_fields=[field])
 
-    assert _authorize_stream(api_client, token).status_code == 403
-
-
-@pytest.fixture
-def stream_device(django_user_model):
-    user = django_user_model.objects.create_user(
-        username="camera-device",
-        password="device-password-123",
-    )
-    return MonoblockDevice.objects.create(
-        user=user,
-        name="Device cam2",
-        camera_source="cam2",
-    )
-
-
-@pytest.mark.parametrize("source", ["cam2", "cam2ai"])
-def test_monoblock_stream_cookie_allows_own_base_and_ai_stream(
-    api_client,
-    auth_client,
-    stream_device,
-    source,
-):
-    token = _stream_token(auth_client, stream_device.user)
-    response = _authorize_stream(
-        api_client,
-        token,
-        f"/go2rtc/api/ws?src={source}",
-    )
-    assert response.status_code == 204
-
-
-def test_monoblock_stream_cookie_rejects_cross_camera(
-    api_client,
-    auth_client,
-    stream_device,
-):
-    token = _stream_token(auth_client, stream_device.user)
-    response = _authorize_stream(
-        api_client,
-        token,
-        "/go2rtc/api/ws?src=cam3",
-    )
-    assert response.status_code == 403
-
-
-def test_monoblock_stream_cookie_cannot_use_staff_only_cam1_main_alias(
-    api_client,
-    auth_client,
-    stream_device,
-):
-    stream_device.camera_source = "cam1"
-    stream_device.save(update_fields=["camera_source"])
-    token = _stream_token(auth_client, stream_device.user)
-    response = _authorize_stream(
-        api_client,
-        token,
-        "/go2rtc/api/ws?src=cam1main",
-    )
-    assert response.status_code == 403
-
-
-def test_inactive_monoblock_device_stream_cookie_is_rejected(
-    api_client,
-    auth_client,
-    stream_device,
-):
-    token = _stream_token(auth_client, stream_device.user)
-    stream_device.is_active = False
-    stream_device.save(update_fields=["is_active"])
     assert _authorize_stream(api_client, token).status_code == 403
 
 

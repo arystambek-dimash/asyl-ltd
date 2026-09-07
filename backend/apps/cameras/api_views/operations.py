@@ -19,11 +19,11 @@ from ..models import (
     MonoblockCameraSettings,
 )
 from ..policies import (
-    active_device_for,
     assert_no_pending_shipping_bootstrap,
     reserve_camera_roles,
 )
 from ..serializers import (
+    AnalyticsRangeSerializer,
     AlwaysOnAnalyticsArchiveSerializer,
     AlwaysOnAnalyticsSubtractSerializer,
     AlwaysOnProductMappingsSerializer,
@@ -128,31 +128,7 @@ def _assert_reserved_ai247_camera(camera: str) -> str:
     return camera
 
 
-class _HumanAlwaysOnReadPermission(HasPerm):
-    """Allow staff permissions, but never a technical MonoblockDevice account."""
-
-    def has_permission(self, request, view):
-        if getattr(request.user, "monoblock_device", None) is not None:
-            return False
-        return super().has_permission(request, view)
-
-
-class _AlwaysOnPermissionMixin(PermAPIViewMixin):
-    """Use the explicit method map and tighten read access to human users."""
-
-    def get_permissions(self):
-        method = self.request.method.lower()
-        if method in {"head", "options"}:
-            method = "get"
-        codes = self.required_perms.get(method)
-        if method != "get" or codes is None:
-            return super().get_permissions()
-        if isinstance(codes, str):
-            codes = (codes,)
-        return [_HumanAlwaysOnReadPermission(*codes)]
-
-
-class AlwaysOnDetectionsView(_AlwaysOnPermissionMixin, APIView):
+class AlwaysOnDetectionsView(PermAPIViewMixin, APIView):
     """Return lightweight live detection boxes for the AI 24/7 monitor."""
 
     required_perms: ClassVar[dict] = {"get": ALWAYS_ON_READ_PERMISSIONS}
@@ -181,7 +157,7 @@ class AlwaysOnDetectionsView(_AlwaysOnPermissionMixin, APIView):
             )
 
 
-class AlwaysOnCameraSettingsView(_AlwaysOnPermissionMixin, APIView):
+class AlwaysOnCameraSettingsView(PermAPIViewMixin, APIView):
     """Store desired 24/7 processors and synchronize them with camera-PC."""
 
     required_perms: ClassVar[dict] = {
@@ -259,8 +235,8 @@ class AlwaysOnCameraSettingsView(_AlwaysOnPermissionMixin, APIView):
         sources = serializer.validated_data["camera_sources"]
 
         with transaction.atomic():
-            # The same singleton row serializes session reservations, device
-            # assignment and both camera-setting endpoints.
+            # The same singleton row serializes session reservations
+            # and both camera-setting endpoints.
             lock_camera_binding()
             row = MonoblockCameraSettings.objects.select_for_update().get(
                 singleton=True
@@ -341,13 +317,6 @@ class AlwaysOnCameraSettingsView(_AlwaysOnPermissionMixin, APIView):
             )
 
 
-def _shipping_visible_sources(user) -> list[str]:
-    device = active_device_for(user)
-    if device is not None:
-        return [device.camera_source]
-    return MonoblockCameraSettings.shipping_sources()
-
-
 class ShippingContinuousSettingsView(APIView):
     """Read-only runtime state for the independent shipment 24/7 contour."""
 
@@ -387,7 +356,7 @@ class ShippingContinuousSettingsView(APIView):
         }
 
     def get(self, request):
-        cameras = _shipping_visible_sources(request.user)
+        cameras = MonoblockCameraSettings.shipping_sources()
         if not ai.enabled():
             return Response(
                 self._payload(
@@ -428,7 +397,7 @@ class ShippingContinuousDetectionsView(APIView):
         return [HasPerm(*SHIPPING_CONTINUOUS_READ_PERMISSIONS)]
 
     def get(self, request):
-        cameras = _shipping_visible_sources(request.user)
+        cameras = MonoblockCameraSettings.shipping_sources()
         try:
             return Response(
                 _filtered_live(
@@ -458,12 +427,7 @@ class ShippingContinuousAnalyticsView(APIView):
         return [HasPerm(*SHIPPING_CONTINUOUS_READ_PERMISSIONS)]
 
     def get(self, request):
-        return Response(
-            analytics.today_payload(
-                ANALYTICS_SCOPE_SHIPPING,
-                camera_sources=_shipping_visible_sources(request.user),
-            )
-        )
+        return Response(_analytics_payload(request, ANALYTICS_SCOPE_SHIPPING))
 
 
 class WagonNumberCameraSettingsView(APIView):
@@ -547,17 +511,17 @@ class WagonNumberCameraSettingsView(APIView):
             )
 
 
-class AlwaysOnAnalyticsView(_AlwaysOnPermissionMixin, APIView):
+class AlwaysOnAnalyticsView(PermAPIViewMixin, APIView):
     required_perms: ClassVar[dict] = {"get": ALWAYS_ON_READ_PERMISSIONS}
 
     def get(self, request):
         # Counting is owned by the single camera monitor.  A read request must
         # not race its event cursor or apply a cached aggregate snapshot after
         # the durable /events cutover.
-        return Response(analytics.today_payload(ANALYTICS_SCOPE_AI247))
+        return Response(_analytics_payload(request, ANALYTICS_SCOPE_AI247))
 
 
-class AlwaysOnAnalyticsSubtractView(_AlwaysOnPermissionMixin, APIView):
+class AlwaysOnAnalyticsSubtractView(PermAPIViewMixin, APIView):
     required_perms: ClassVar[dict] = {"post": ALWAYS_ON_MANAGE_PERMISSION}
 
     def post(self, request, cam: str):
@@ -575,7 +539,7 @@ class AlwaysOnAnalyticsSubtractView(_AlwaysOnPermissionMixin, APIView):
         )
 
 
-class AlwaysOnAnalyticsArchiveView(_AlwaysOnPermissionMixin, APIView):
+class AlwaysOnAnalyticsArchiveView(PermAPIViewMixin, APIView):
     required_perms: ClassVar[dict] = {
         "get": ALWAYS_ON_READ_PERMISSIONS,
         "post": ALWAYS_ON_MANAGE_PERMISSION,
@@ -642,7 +606,7 @@ class AlwaysOnAnalyticsArchiveView(_AlwaysOnPermissionMixin, APIView):
         return Response(analytics.delete_archive(archive_id, request.user))
 
 
-class AlwaysOnProductionView(_AlwaysOnPermissionMixin, APIView):
+class AlwaysOnProductionView(PermAPIViewMixin, APIView):
     """Production periods, colour routes and scheduled warehouse receipts."""
 
     required_perms: ClassVar[dict] = {
@@ -679,7 +643,7 @@ class AlwaysOnProductionView(_AlwaysOnPermissionMixin, APIView):
     patch = put
 
 
-class AlwaysOnStockRetryView(_AlwaysOnPermissionMixin, APIView):
+class AlwaysOnStockRetryView(PermAPIViewMixin, APIView):
     required_perms: ClassVar[dict] = {"post": ALWAYS_ON_MANAGE_PERMISSION}
 
     def post(self, request, batch_id: int):
@@ -731,3 +695,11 @@ class CameraHealthView(APIView):
             else status.HTTP_503_SERVICE_UNAVAILABLE
         )
         return Response(payload, status=http_status)
+
+
+def _analytics_payload(request, scope):
+    serializer = AnalyticsRangeSerializer(data=request.query_params)
+    serializer.is_valid(raise_exception=True)
+    params = dict(serializer.validated_data)
+    camera = params.pop("camera", None)
+    return analytics.today_payload(scope, camera_sources=[camera] if camera else None, **params)

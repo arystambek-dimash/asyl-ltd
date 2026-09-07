@@ -21,7 +21,6 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from apps.orders.models import Order
 from apps.shipments.services import (
-    assert_device_camera_change,
     begin_camera_loading,
     finish_ai_counting,
 )
@@ -31,10 +30,8 @@ from .models import (
     ANALYTICS_SCOPE_SHIPPING,
     AiCountingSession,
     MonoblockCameraSettings,
-    MonoblockDevice,
 )
 from .policies import (
-    assert_device_camera,
     can_control_session,
     session_started_by_name,
 )
@@ -46,24 +43,6 @@ log = logging.getLogger(__name__)
 # session or Shipment model.
 MAX_COUNTER_TOTAL = 2_147_483_647
 CLEANUP_PENDING_PREFIX = "AI worker cleanup pending: "
-
-
-def _lock_device_camera(user, camera: str) -> None:
-    """Serialize a device start against admin reassignment/deactivation."""
-    sessions.lock_camera_binding()
-    device = (
-        MonoblockDevice.objects.select_for_update()
-        .filter(user_id=user.pk)
-        .first()
-    )
-    if not type(user)._default_manager.filter(pk=user.pk, is_active=True).exists():
-        raise PermissionDenied("Учётная запись отключена администратором")
-    if device is None:
-        return
-    if not device.is_active:
-        raise PermissionDenied("Этот моноблок отключён администратором")
-    if device.camera_source != camera:
-        raise PermissionDenied("Эта камера закреплена за другим моноблоком")
 
 
 def metadata(
@@ -308,7 +287,7 @@ def get_status(camera: str, order_id: int | None, user) -> dict:
     command, which performs reconciliation under mutation permissions.
     """
     camera = ai.normalize(camera)
-    assert_device_camera(user, camera)
+
     session = sessions.current_for_camera(camera)
     info = metadata(session, order_id, camera, user)
 
@@ -377,18 +356,20 @@ def start(
     reconciles it.
     """
     camera = ai.normalize(camera)
-    assert_device_camera(user, camera)
+
     _validate_start(order, camera)
 
     with transaction.atomic():
-        _lock_device_camera(user, camera)
+        sessions.lock_camera_binding()
+        if not type(user)._default_manager.filter(pk=user.pk, is_active=True).exists():
+            raise PermissionDenied("Учётная запись отключена администратором")
         from apps.orders.services import lock_live_order
 
         order = lock_live_order(order, user)
         existing = sessions.current_for_camera(camera)
         _assert_expected_session(existing, expected_session_id)
         _validate_start(order, camera)
-        assert_device_camera_change(order, camera, user)
+
         session, created = sessions.reserve(order, camera, user)
         _assert_expected_session(session, expected_session_id)
 
@@ -495,7 +476,6 @@ def start(
     if validation_error is not None:
         raise validation_error
     return {**live_payload, **metadata(session, order.pk, camera, user)}
-
 
 
 def _save_final_snapshot(session: AiCountingSession, payload: dict) -> int | None:
@@ -634,7 +614,7 @@ def stop(
     later order can reuse the camera.
     """
     camera = ai.normalize(camera)
-    assert_device_camera(user, camera)
+
     final: dict = {}
     cleanup_needed = False
     capture_failure: Exception | None = None
@@ -792,7 +772,7 @@ def reset(
 ) -> dict:
     """Reset an owned live counter while serializing against start/stop."""
     camera = ai.normalize(camera)
-    assert_device_camera(user, camera)
+
     with transaction.atomic():
         session = _locked_open_session(camera)
         _assert_expected_session(session, expected_session_id)

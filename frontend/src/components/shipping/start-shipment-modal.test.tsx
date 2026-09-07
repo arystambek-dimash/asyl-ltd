@@ -66,16 +66,16 @@ describe("StartShipmentModal", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("fixes the kiosk camera without a picker", async () => {
+  it("keeps the active order camera fixed during restart", async () => {
     const user = userEvent.setup();
-    const { onStart } = renderModal({ cameraLocked: true, kioskCamera: "cam2" });
+    const { onStart } = renderModal({ order: { ...order, status: "loading", loading_camera: "cam2" } });
 
     expect(screen.queryByLabelText("Камера")).not.toBeInTheDocument();
     expect(screen.getByText("Пост погрузки")).toBeInTheDocument();
     expect(screen.getByText("· закреплена")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Начать погрузку" }));
-    expect(onStart).toHaveBeenCalledWith(order, "cam2");
+    expect(onStart).toHaveBeenCalledWith({ ...order, status: "loading", loading_camera: "cam2" }, "cam2");
   });
 
   it("keeps the loading camera of an order that already has one", () => {
@@ -112,8 +112,8 @@ describe("StartShipmentModal", () => {
   it("shows a failed start inside the modal", async () => {
     const user = userEvent.setup();
     const { onClose } = renderModal({
-      cameraLocked: true,
-      kioskCamera: "cam2",
+      order: { ...order, status: "loading", loading_camera: "cam2" },
+
       onStart: vi.fn().mockResolvedValue({ ok: false, error: "ПК камер не отвечает" }),
     });
 

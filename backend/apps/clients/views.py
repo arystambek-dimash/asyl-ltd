@@ -524,21 +524,23 @@ class ClientViewSet(
                  "code": "bad_range"})
         store_id = parse_store_id(params.get("store"))
 
-        clients = self.get_queryset()
         department = params.get("department")
+        orders_qs = Order.objects.filter(status="shipped", settlement_intent="debt")
+        if department:
+            orders_qs = orders_qs.filter(department=department)
+        if date_from:
+            orders_qs = orders_qs.filter(created_at__date__gte=date_from)
+        if date_to:
+            orders_qs = orders_qs.filter(created_at__date__lte=date_to)
+        if store_id:
+            orders_qs = orders_qs.filter(store_id=store_id)
+        clients = self.get_queryset().prefetch_related(None).prefetch_related(
+            Prefetch("orders", queryset=orders_qs.prefetch_related("items", "payments")),
+            "stores",
+        )
         rows = []
-        for client in clients.prefetch_related("stores"):
+        for client in clients:
             orders = list(self._debt_orders(client))
-            if department:
-                orders = [o for o in orders if o.department == department]
-            if date_from:
-                orders = [o for o in orders
-                          if timezone.localdate(o.created_at) >= date_from]
-            if date_to:
-                orders = [o for o in orders
-                          if timezone.localdate(o.created_at) <= date_to]
-            if store_id:
-                orders = [o for o in orders if o.store_id == store_id]
             totals = sum_by_currency(orders, order_remaining)
             currency = primary_currency(totals, fallback=client.currency)
             debt = totals.get(currency, Decimal("0"))

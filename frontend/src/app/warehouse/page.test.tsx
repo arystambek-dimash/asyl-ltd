@@ -38,9 +38,7 @@ const me: Me = {
   last_name: "",
   is_client: false,
   is_superuser: false,
-  is_monoblock: false,
-  monoblock_name: null,
-  monoblock_camera: null,
+
   permissions: ["warehouse.view", "warehouse.adjust", "catalog.view"],
   position: null,
   client_id: null,

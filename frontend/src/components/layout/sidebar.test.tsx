@@ -17,9 +17,7 @@ const client: Me = {
   username: "client",
   is_client: true,
   is_superuser: false,
-  is_monoblock: false,
-  monoblock_name: null,
-  monoblock_camera: null,
+
   permissions: [],
   position: null,
   client_id: 1,

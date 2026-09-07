@@ -15,7 +15,6 @@ from apps.cameras.models import (
     ANALYTICS_SCOPE_SHIPPING,
     AiCountingSession,
     MonoblockCameraSettings,
-    MonoblockDevice,
 )
 from apps.cameras.views import RECORDING_TOKEN_SALT
 from apps.catalog.models import Product
@@ -249,46 +248,6 @@ def test_monoblock_accepts_first_crossing_during_durable_session_start(
     order.refresh_from_db()
     assert session.status == AiCountingSession.ACTIVE
     assert order.status == "loading"
-
-
-def test_device_camera_conflict_is_rejected_before_worker_start(
-    api_client,
-    django_user_model,
-):
-    device_user = django_user_model.objects.create_user(
-        username="cam2-device-conflict",
-        password="pass12345",
-    )
-    MonoblockDevice.objects.create(
-        user=device_user,
-        name="Моноблок cam2",
-        camera_source="cam2",
-    )
-    client = Client.objects.create_with_user(
-        first_name="AI",
-        last_name="Camera conflict",
-        phone="camera-conflict",
-    )
-    order = Order.objects.create(
-        client=client,
-        status="confirmed",
-        loading_camera="cam3",
-    )
-    api_client.force_authenticate(device_user)
-
-    with patch.object(ai, "_request") as request:
-        response = api_client.post(
-            "/api/cameras/cam2/ai/",
-            {"order_id": order.pk},
-            format="json",
-        )
-
-    assert response.status_code == 403
-    request.assert_not_called()
-    assert not AiCountingSession.objects.filter(order=order).exists()
-    order.refresh_from_db()
-    assert order.status == "confirmed"
-    assert order.loading_camera == "cam3"
 
 
 def test_monoblock_start_ignores_scale_and_does_not_record_arrival(

@@ -20,8 +20,6 @@ from .api_views.access import (
 from .api_views.configuration import (
     CameraListView,
     MonoblockCameraSettingsView,
-    MonoblockDeviceDetailView,
-    MonoblockDeviceListView,
 )
 from .api_views.counting import (
     CameraAiResetView,
@@ -82,8 +80,6 @@ __all__ = [
     "CameraListView",
     "CameraTokenView",
     "MonoblockCameraSettingsView",
-    "MonoblockDeviceDetailView",
-    "MonoblockDeviceListView",
     "ShippingBoardSettingsView",
     "ShippingContinuousAnalyticsView",
     "ShippingContinuousDetectionsView",

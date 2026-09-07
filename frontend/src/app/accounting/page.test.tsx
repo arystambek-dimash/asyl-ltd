@@ -1,0 +1,127 @@
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, expect, it, vi } from "vitest";
+import CashierPage from "./page";
+
+const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), paid: false, queueError: false }));
+vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: { is_superuser: true, permissions: [] }, loading: false }) }));
+vi.mock("@/components/layout/app-shell", () => ({
+  AppShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+vi.mock("@/components/require-perm", () => ({
+  RequirePerm: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock("@/lib/toast", () => ({ showSuccess: vi.fn() }));
+vi.mock("@/lib/api", () => ({
+  api: { get: (...args: unknown[]) => mocks.get(...args), post: (...args: unknown[]) => mocks.post(...args) },
+  apiError: (error: unknown) => (error instanceof Error ? error.message : "Ошибка"),
+  isCanceledRequest: () => false,
+}));
+
+const queueItem = {
+  id: 1,
+  order: 1,
+  amount: "100",
+  currency: "KZT",
+  method: "cash",
+  status: "received",
+  client_name: "Клиент",
+};
+function card(title: string) {
+  const node = screen.getByText(title).parentElement;
+  if (!node) throw new Error("Карточка отсутствует");
+  return within(node);
+}
+beforeEach(() => {
+  mocks.paid = false;
+  mocks.queueError = false;
+  mocks.get.mockReset();
+  mocks.post.mockReset();
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/reports/summary/") {
+      const value = mocks.paid ? "100" : "0";
+      return {
+        data: {
+          income: {
+            total: value,
+            cash: value,
+            cashless: "0",
+            gross: value,
+            refunded: "0",
+            currency: "KZT",
+            by_currency: { KZT: value },
+          },
+        },
+      };
+    }
+    if (url.pathname === "/orders/payments-queue/") {
+      if (mocks.queueError) throw new Error("Очередь временно недоступна");
+      return { data: mocks.paid ? [] : [queueItem] };
+    }
+    if (url.pathname === "/clients/debts/")
+      return {
+        data: mocks.paid
+          ? []
+          : [
+              {
+                client_id: 1,
+                client_name: "Клиент",
+                client_phone: "",
+                debt_total: "100",
+                debt_currency: "KZT",
+                debt_by_currency: { KZT: "100" },
+                unpaid_count: 1,
+                partial_count: 0,
+                orders_count: 1,
+                stores_count: 0,
+                overdue_count: 0,
+              },
+            ],
+      };
+    if (url.pathname === "/payment-transactions/")
+      return {
+        data: {
+          results: [],
+          page: 1,
+          pages: 1,
+          count: 0,
+          status_counts: {},
+          summary: { paid_by_currency: { KZT: "100", USD: "0" }, refunded_by_currency: { KZT: "0", USD: "0" } },
+        },
+      };
+    return { data: [] };
+  });
+  mocks.post.mockImplementation(async () => {
+    mocks.paid = true;
+    return { data: {} };
+  });
+});
+
+it("confirmation refreshes income, debt and the overview queue when returning to overview", async () => {
+  const user = userEvent.setup();
+  render(<CashierPage />);
+  await waitFor(() => expect(card("Дебиторка").getByText(/100/)).toBeInTheDocument());
+  await user.click(screen.getByRole("tab", { name: /Заявки и оплаты/ }));
+  await user.click(await screen.findByRole("button", { name: "Подтвердить получение" }));
+  await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/orders/1/payments/1/confirm/"));
+  await user.click(screen.getByRole("tab", { name: "Общее" }));
+  await waitFor(() => expect(card("Чистое поступление за всё время").getAllByText(/100/).length).toBeGreaterThan(0));
+  expect(card("Дебиторка").queryByText(/100/)).not.toBeInTheDocument();
+  expect(card("Ожидает подтверждения").getByText("0")).toBeInTheDocument();
+  expect(mocks.get.mock.calls.some(([url]) => url === "/reports/summary/?section=income")).toBe(true);
+});
+
+it("uses overview dates for its payment card and never presents a failed queue as zero", async () => {
+  render(<CashierPage />);
+  await waitFor(() => expect(card("Ожидает подтверждения").getAllByText(/100/).length).toBeGreaterThan(0));
+  mocks.queueError = true;
+  fireEvent.change(screen.getByLabelText("С даты"), { target: { value: "2026-09-01" } });
+  await waitFor(() =>
+    expect(mocks.get.mock.calls.some(([url]) => url === "/orders/payments-queue/?date_from=2026-09-01")).toBe(true),
+  );
+  expect(await screen.findByText("Очередь временно недоступна")).toBeInTheDocument();
+  expect(card("Ожидает подтверждения").getByText("—")).toBeInTheDocument();
+  expect(card("Ожидает подтверждения").queryByText("0")).not.toBeInTheDocument();
+});

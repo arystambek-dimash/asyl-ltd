@@ -49,7 +49,10 @@ const owner = {
   username: "owner",
   is_client: false,
   is_superuser: true,
-  is_monoblock: false,
+  position: null,
+  client_id: null,
+  sales_department: null,
+
   permissions: [] as string[],
 } as Me;
 

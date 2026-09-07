@@ -99,8 +99,6 @@ const noCapabilities: ShippingTableCapabilities = {
   canRollback: false,
   canViewShipping: false,
   canOpenOrder: false,
-  isKiosk: false,
-  kioskCamera: null,
 };
 
 const reloadOrders = vi.fn().mockResolvedValue(undefined);
@@ -121,7 +119,7 @@ function renderTable(
       cameraOwners={{ cam2: 12 }}
       continuousReady
       continuousDetail=""
-      cameraLocked={false}
+
       completedOrdersDays={1}
       reloadOrders={reloadOrders}
       reloadSessions={reloadSessions}
@@ -154,13 +152,16 @@ describe("ShippingTable", () => {
     expect(screen.getAllByText("Пусто")).toHaveLength(2);
   });
 
-  it("gives the kiosk its launcher, hides exit paperwork and auto-expands its own loading", () => {
-    renderTable({ capabilities: { canLoad: true, isKiosk: true, kioskCamera: "cam2" } });
+  it("gives loading staff a launcher and requires an explicit row expansion", async () => {
+    const user = userEvent.setup();
+    renderTable({ capabilities: { canLoad: true } });
 
     expect(within(rowOf(10)).getByRole("button", { name: "Начать погрузку" })).toBeInTheDocument();
     expect(within(rowOf(11)).getByText("Ожидает оформления выезда")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Оформить выезд" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Действия: заказ #11/ })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("row-detail")).not.toBeInTheDocument();
+    await user.click(within(rowOf(12)).getByRole("button", { name: "Раскрыть заказ #12" }));
     expect(screen.getByTestId("row-detail")).toHaveTextContent("панель заказа #12");
     expect(within(rowOf(12)).getByRole("button", { name: "Свернуть заказ #12" })).toHaveAttribute(
       "aria-expanded",
@@ -270,11 +271,11 @@ describe("ShippingTable", () => {
     expect(onSearchChange).toHaveBeenCalledWith("3");
   });
 
-  it("marks another day as a view and keeps the kiosk from auto-expanding there", async () => {
+  it("marks another day as a view without automatic row expansion", async () => {
     const user = userEvent.setup();
     const onDayChange = vi.fn();
     renderTable({
-      capabilities: { canLoad: true, isKiosk: true, kioskCamera: "cam2" },
+      capabilities: { canLoad: true },
       filter: {
         day: "2026-09-05",
         today: "2026-09-06",

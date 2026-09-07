@@ -297,7 +297,10 @@ class ReportSummaryView(APIView):
         store = parse_store_id(request.query_params.get("store"))
         if store:
             qs = qs.filter(store_id=store)
-        return Response(summary_report(qs, date_from, date_to))
+        section = request.query_params.get("section", "all")
+        if section not in ("all", "income"):
+            raise ValidationError({"detail": "Неизвестный раздел отчёта", "code": "invalid_report_section"})
+        return Response(summary_report(qs, date_from, date_to, income_only=section == "income"))
 
 
 class PaymentTransactionListView(APIView):
@@ -695,15 +698,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             self.request.user,
             client_path="client",
         )
-        device = getattr(self.request.user, "active_monoblock_device", None)
-        if device is not None:
-            # Устройство видит только очередь старта и собственную текущую
-            # погрузку; остальная CRM-история ему не раскрывается.
-            qs = qs.filter(
-                Q(status="confirmed")
-                | Q(loading_camera=device.camera_source,
-                    status__in=("arrived", "loading", "loaded"))
-            )
         if self.action == "list":
             params = self.request.query_params
             if params.get("post_board") == "1":
@@ -1019,9 +1013,15 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             request.user,
             client_path="order__client",
         )
-        current_statuses = dict(
-            visible_payments.values_list("pk", "status")
-        )
+        payment_states = {row.pk: row for row in visible_payments.only(
+            "pk", "status", "refunded_amount", "pending_refund_amount",
+        ).prefetch_related("payment_refunds")}
+        current_statuses = {pk: row.status for pk, row in payment_states.items()}
+        payments_with_refunds = {
+            pk for pk, row in payment_states.items()
+            if row.refunded_amount > 0 or row.pending_refund_amount > 0
+            or any(refund.status in ("pending", "completed") for refund in row.payment_refunds.all())
+        }
         closed_provider_payments = set(
             ApiPayInvoice.objects.filter(
                 payment_id__in=payment_ids,
@@ -1033,20 +1033,20 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 payment_id__in=payment_ids,
             ).values_list("payment_id", flat=True)
         )
-        # После цикла confirm → reopen → confirm в журнале несколько событий
-        # confirmed. Кнопка отката должна быть только у самого свежего.
-        latest_confirmation: dict[int, int] = {}
-        latest_rejection: dict[int, int] = {}
-        for event in events:
-            payment_id = event.payload.get("payment_id")
-            if (payment_id is not None
-                    and event.payload.get("payment_stage") == "confirmed"
-                    and payment_id not in latest_confirmation):
-                latest_confirmation[payment_id] = event.id
-            if (payment_id is not None
-                    and event.payload.get("payment_stage") == "rejected"
-                    and payment_id not in latest_rejection):
-                latest_rejection[payment_id] = event.id
+        # Resolve across the complete history, not only this page/date window.
+        # PostgreSQL DISTINCT ON returns one latest event per payment and stage.
+        latest_events = EventLog.objects.filter(
+            event_type="payment", payload__payment_id__in=payment_ids,
+            payload__payment_stage__in=("confirmed", "rejected"),
+            order_id__in={event.order_id for event in events},
+        ).order_by("payload__payment_id", "payload__payment_stage", "-created_at", "-id").distinct(
+            "payload__payment_id", "payload__payment_stage",
+        )
+        latest_confirmation = {}
+        latest_rejection = {}
+        for payload, event_id in latest_events.values_list("payload", "id"):
+            target = latest_confirmation if payload["payment_stage"] == "confirmed" else latest_rejection
+            target[payload["payment_id"]] = event_id
         rows = [{
             "id": event.id,
             "message": public_message(event.message),
@@ -1062,6 +1062,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 and current_statuses.get(event.payload.get("payment_id")) == "confirmed"
                 and latest_confirmation.get(event.payload.get("payment_id")) == event.id
                 and event.payload.get("payment_id") not in provider_payments
+                and event.payload.get("payment_id") not in payments_with_refunds
             ),
             "can_restore": (
                 event.payload.get("payment_stage") == "rejected"
@@ -1106,9 +1107,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 camera = ai.normalize(camera)  # переиспользуем валидатор имени камеры
             except ai.AiError:
                 raise ValidationError({"detail": "Неизвестная камера", "code": "bad_camera"})
-            device = getattr(request.user, "active_monoblock_device", None)
-            if device is not None and device.camera_source != camera:
-                raise PermissionDenied("Эта камера закреплена за другим моноблоком")
             if camera not in MonoblockCameraSettings.allowed_sources():
                 raise ValidationError({
                     "detail": "Эта камера не разрешена администратором для Моноблока",

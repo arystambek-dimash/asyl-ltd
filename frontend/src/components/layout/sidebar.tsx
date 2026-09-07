@@ -154,11 +154,7 @@ function NavLeaf({
 
 function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void }) {
   const pathname = usePathname();
-  const sections: NavSection[] = me.is_client
-    ? PORTAL_SECTIONS
-    : me.is_monoblock
-      ? [{ title: "Работа", items: [{ href: "/monoblock", label: "Моноблок", icon: ScanLine }] }]
-      : staffSections();
+  const sections: NavSection[] = me.is_client ? PORTAL_SECTIONS : staffSections();
   const visible = sections
     .map((s) => ({
       ...s,
@@ -184,7 +180,7 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
         <div className="min-w-0 leading-tight">
           <div className="truncate text-[13px] font-semibold">ASYL-LTD</div>
           <div className="truncate text-[11px] text-[var(--muted-foreground)]">
-            {me.is_client ? "Кабинет клиента" : me.is_monoblock ? me.monoblock_name : "Мельничный комплекс"}
+            {me.is_client ? "Кабинет клиента" : "Мельничный комплекс"}
           </div>
         </div>
       </div>

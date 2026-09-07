@@ -32,10 +32,6 @@ export interface StartShipmentModalProps {
   availability: CameraAvailabilityContext;
   /** Пояснение ПК камер, почему непрерывный контур не готов. */
   continuousDetail?: string;
-  /** Киоск или `cameraSettings.locked`: камера не выбирается, а закреплена. */
-  cameraLocked?: boolean;
-  /** `me.monoblock_camera` киоска; иначе закреплённой считается первая камера. */
-  kioskCamera?: string | null;
   onClose: () => void;
   /** Ошибка результата остаётся в модалке; при успехе модалка закрывается сама. */
   onStart: (order: Order, cameraSrc: string) => Promise<ShippingActionResult>;
@@ -48,8 +44,6 @@ export function StartShipmentModal({
   camerasBySrc,
   availability,
   continuousDetail = "",
-  cameraLocked = false,
-  kioskCamera = null,
   onClose,
   onStart,
 }: StartShipmentModalProps) {
@@ -59,13 +53,7 @@ export function StartShipmentModal({
   const [error, setError] = useState("");
 
   // Заказ в `loading` уже закреплён за камерой (перезапуск после «Выключить AI»);
-  // киоск и закреплённая настройка тоже не выбирают камеру.
-  const fixedSrc =
-    order?.status === "loading" && order.loading_camera
-      ? order.loading_camera
-      : cameraLocked
-        ? (kioskCamera ?? cameras[0]?.src ?? null)
-        : null;
+  const fixedSrc = order?.status === "loading" && order.loading_camera ? order.loading_camera : null;
   const candidates = useMemo<PlayableCamera[]>(() => {
     if (!fixedSrc) return cameras;
     const fixed = cameras.find((camera) => camera.src === fixedSrc) ?? camerasBySrc.get(fixedSrc);

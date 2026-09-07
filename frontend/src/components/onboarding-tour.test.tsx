@@ -9,9 +9,7 @@ const me: Me = {
   username: "operator",
   is_client: false,
   is_superuser: false,
-  is_monoblock: false,
-  monoblock_name: null,
-  monoblock_camera: null,
+
   permissions: [],
   position: "Оператор",
   client_id: null,

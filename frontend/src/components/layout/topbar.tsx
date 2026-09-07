@@ -100,13 +100,7 @@ export function Topbar({
 }) {
   const { logout } = useAuth();
   const router = useRouter();
-  const accountLabel = me.is_client
-    ? "Клиент"
-    : me.is_monoblock
-      ? `Моноблок · ${me.monoblock_camera ?? "без камеры"}`
-      : me.is_superuser
-        ? "Администратор"
-        : me.position || "Сотрудник";
+  const accountLabel = me.is_client ? "Клиент" : me.is_superuser ? "Администратор" : me.position || "Сотрудник";
 
   return (
     <header className="flex min-h-16 flex-wrap items-center gap-2 border-b px-4 py-2 sm:px-8 xl:h-16 xl:flex-nowrap xl:py-0">
@@ -144,7 +138,7 @@ export function Topbar({
         </div>
       )}
       <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-        {!me.is_client && !me.is_monoblock && (
+        {!me.is_client && (
           <button
             onClick={() => window.dispatchEvent(new Event(TOUR_START_EVENT))}
             className="hidden size-8 items-center justify-center rounded-lg border text-[var(--muted-foreground)] hover:text-[var(--foreground)] sm:flex"

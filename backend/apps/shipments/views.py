@@ -36,13 +36,6 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
             self.request.user,
             client_path="client",
         )
-        device = getattr(self.request.user, "active_monoblock_device", None)
-        if device is not None:
-            # A physical post may mutate only its own live loading workflow.
-            qs = qs.filter(
-                loading_camera=device.camera_source,
-                status__in=("arrived", "loading", "loaded"),
-            )
         return qs
 
     @action(detail=True, methods=["post"], url_path="arrive")

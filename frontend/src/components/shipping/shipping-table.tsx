@@ -45,12 +45,8 @@ import { cn, formatDateTime, formatIsoDate } from "@/lib/utils";
 export interface ShippingTableCapabilities extends ShippingCapabilities {
   /** shipping.view — история подсчёта и подпись «камера: N». */
   canViewShipping: boolean;
-  /** orders.view && !isKiosk — пункт «Открыть заказ». */
+  /** orders.view — пункт «Открыть заказ». */
   canOpenOrder: boolean;
-  /** Техническая учётка моноблока: крупные кнопки, автораскрытие своей погрузки. */
-  isKiosk: boolean;
-  /** `me.monoblock_camera` — камера, которую киоск считает своей. */
-  kioskCamera: string | null;
 }
 
 /** Фильтры шапки очереди. Состояние живёт на странице: она собирает URL опроса. */
@@ -84,8 +80,6 @@ export interface ShippingTableProps {
   cameraReadiness?: Record<string, CameraContinuousReadiness>;
   continuousReady: boolean;
   continuousDetail: string;
-  /** `cameraSettings.locked` — камера закреплена настройкой, а не выбирается. */
-  cameraLocked: boolean;
   /** Окно группы «Выехали» (бэкенд применяет его сам). */
   completedOrdersDays: number;
   /** Без фильтра шапка показывает только заголовок. */
@@ -179,7 +173,6 @@ export function ShippingTable({
   cameraReadiness,
   continuousReady,
   continuousDetail,
-  cameraLocked,
   completedOrdersDays,
   filter,
   reloadOrders,
@@ -187,7 +180,7 @@ export function ShippingTable({
   reloadHistories,
 }: ShippingTableProps) {
   const router = useRouter();
-  const { canLoad, canTrain, canShip, canRollback, canViewShipping, canOpenOrder, isKiosk, kioskCamera } = capabilities;
+  const { canLoad, canTrain, canShip, canRollback, canViewShipping, canOpenOrder } = capabilities;
   // Поиск важнее дня: бэкенд при непустом запросе игнорирует правило дня,
   // и шапка не должна обещать «показан день», которого в строках нет.
   // Смотрим на применённый запрос, а не на набранный текст: пока задержка
@@ -276,29 +269,17 @@ export function ShippingTable({
   }, [groups]);
   const totalRows = rowsByKey.size;
 
-  /* ── Раскрытие: одна строка, киоск автораскрывает свою погрузку ─────── */
+  /* ── Раскрытие: одна строка за раз ─────── */
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
-  const [dismissedKey, setDismissedKey] = useState<string | null>(null);
-  // Чужой день — просмотр, а не работа: свою погрузку киоск там не раскрывает.
-  const kioskRow =
-    isKiosk && !viewingDay
-      ? groups[0].rows.find((row) => row.kind === "order" && row.order.loading_camera === kioskCamera)
-      : undefined;
   const isExpandable = (row: Row) => row.kind === "session" || isLoadingStatus(row.order.status);
   // Строка, ушедшая из погрузки (возврат, завершение с другого места), сама
   // закрывается: панель живёт только у раскрываемых строк.
   const expandedRow = expandedKey ? rowsByKey.get(expandedKey) : undefined;
-  const expanded =
-    expandedRow && isExpandable(expandedRow)
-      ? expandedRow.key
-      : kioskRow && dismissedKey !== kioskRow.key
-        ? kioskRow.key
-        : null;
+  const expanded = expandedRow && isExpandable(expandedRow) ? expandedRow.key : null;
   function toggleRow(row: Row) {
     if (!isExpandable(row)) return;
     if (expanded === row.key) {
       setExpandedKey(null);
-      setDismissedKey(row.key);
     } else {
       setExpandedKey(row.key);
     }
@@ -488,9 +469,9 @@ export function ShippingTable({
   }
 
   /* ── Ячейки ──────────────────────────────────────────────────────── */
-  const cellClass = cn(isKiosk && "h-14");
-  const primaryButtonClass = isKiosk ? "h-11 min-w-[168px] text-[15px]" : "h-10";
-  const menuClass = isKiosk ? "size-11" : "size-10";
+  const cellClass = "";
+  const primaryButtonClass = "h-10";
+  const menuClass = "size-10";
 
   function transportCell(row: Row) {
     const expandable = isExpandable(row);
@@ -706,7 +687,6 @@ export function ShippingTable({
         occupiedByOrderId={occupiedBy}
         canCount={canCount}
         canLoad={canLoad}
-        isKiosk={isKiosk}
         busy={actions.busyOrderId === row.id}
         bagCounterRef={bagCounterRef}
         onSaveBags={order ? actions.saveBags(order) : () => Promise.resolve()}
@@ -726,10 +706,10 @@ export function ShippingTable({
     : viewingDay
       ? { title: "За этот день заказов нет", hint: "Выберите другой день или вернитесь к сегодняшнему" }
       : {
-          title: isKiosk ? "Нет заказов, готовых к погрузке" : "Нет заказов на посту",
+          title: "Нет заказов на посту",
           hint: "Подтверждённые заказы появятся здесь автоматически",
         };
-  const controlClass = isKiosk ? "h-11 text-[15px]" : "h-9";
+  const controlClass = "h-9";
 
   return (
     <Card className="rounded-lg p-0">
@@ -885,8 +865,6 @@ export function ShippingTable({
         camerasBySrc={camerasBySrc}
         availability={availability}
         continuousDetail={continuousDetail}
-        cameraLocked={cameraLocked || isKiosk}
-        kioskCamera={kioskCamera}
         onClose={() => setStartOrder(null)}
         onStart={(order, cameraSrc) => actions.startAi(order, cameraSrc)}
       />

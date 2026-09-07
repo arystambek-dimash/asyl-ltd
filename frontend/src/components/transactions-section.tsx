@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, ExternalLink, QrCode, RefreshCcw, RotateCcw, Search, Send, Undo2, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { api, apiError } from "@/lib/api";
 import { downloadBlob } from "@/lib/download";
+import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { useApi } from "@/lib/use-api";
 import { useDebounced } from "@/lib/use-debounced";
 import { cn, formatCurrency, formatDateTime, formatMoney, currencySymbol } from "@/lib/utils";
@@ -194,10 +195,12 @@ const STATUS_FILTERS = [
 
 /* ── Вкладка «Транзакции»: все платежи, возвраты и чеки ─────────────────── */
 export function TransactionsSection({
+  onChanged,
   canConfirm,
   canCreate,
   departments,
 }: {
+  onChanged?: () => Promise<unknown>;
   canConfirm: boolean;
   canCreate: boolean;
   departments: Department[];
@@ -269,6 +272,8 @@ export function TransactionsSection({
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const mutationInFlight = useRef(false);
+  useVisiblePolling(reload, 15_000, page === 1 && !busy);
 
   async function receipt(payment: Payment) {
     setError("");
@@ -283,7 +288,8 @@ export function TransactionsSection({
   }
 
   async function refund() {
-    if (!refundFor) return;
+    if (!refundFor || mutationInFlight.current) return;
+    mutationInFlight.current = true;
     setBusy(true);
     setError("");
     try {
@@ -295,16 +301,18 @@ export function TransactionsSection({
       setRefundFor(null);
       setAmount("");
       setReason("");
-      await refreshFromStart();
+      await Promise.all([refreshFromStart(), onChanged?.()]);
     } catch (e) {
       setError(apiError(e));
     } finally {
+      mutationInFlight.current = false;
       setBusy(false);
     }
   }
 
   async function reject() {
-    if (!rejectFor) return;
+    if (!rejectFor || mutationInFlight.current) return;
+    mutationInFlight.current = true;
     setBusy(true);
     setError("");
     try {
@@ -313,26 +321,29 @@ export function TransactionsSection({
       });
       setRejectFor(null);
       setRejectReason("");
-      await refreshFromStart();
+      await Promise.all([refreshFromStart(), onChanged?.()]);
     } catch (e) {
       setError(apiError(e));
     } finally {
+      mutationInFlight.current = false;
       setBusy(false);
     }
   }
 
   async function restore() {
-    if (!restoreFor) return;
+    if (!restoreFor || mutationInFlight.current) return;
+    mutationInFlight.current = true;
     setBusy(true);
     setError("");
     try {
       const response = await api.post<Payment>(`/payment-transactions/${restoreFor.id}/restore/`);
       setRestoreFor(null);
       if (response.data.provider?.channel === "qr") setQrFor(response.data);
-      await refreshFromStart();
+      await Promise.all([refreshFromStart(), onChanged?.()]);
     } catch (e) {
       setError(apiError(e));
     } finally {
+      mutationInFlight.current = false;
       setBusy(false);
     }
   }
@@ -343,10 +354,11 @@ export function TransactionsSection({
     try {
       const response = await api.post<Payment>(`/payment-transactions/${payment.id}/issue/`);
       if (response.data.provider?.channel === "qr") setQrFor(response.data);
-      await refreshFromStart();
+      await Promise.all([refreshFromStart(), onChanged?.()]);
     } catch (e) {
       setError(apiError(e));
     } finally {
+      mutationInFlight.current = false;
       setBusy(false);
     }
   }
