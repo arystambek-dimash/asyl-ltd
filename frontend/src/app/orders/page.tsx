@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
-import { formatPlate } from "@/components/ui/license-plate-input";
+import { formatTransportNumber } from "@/components/ui/transport-number";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
@@ -1140,8 +1140,10 @@ function OrdersPageInner() {
                     </div>
                     {o.truck_number && (
                       <div>
-                        <div className="text-[11px] text-[var(--muted-foreground)]">Машина</div>
-                        <div className="tabular-nums">{formatPlate(o.truck_number)}</div>
+                        <div className="text-[11px] text-[var(--muted-foreground)]">
+                          {o.transport_type === "train" ? "Вагон" : "Машина"}
+                        </div>
+                        <div className="tabular-nums">{formatTransportNumber(o.truck_number, o.transport_type)}</div>
                       </div>
                     )}
                     {o.arrival_date && (

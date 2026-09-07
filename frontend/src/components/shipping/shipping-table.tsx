@@ -26,7 +26,7 @@ import { Card } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
-import { PlateBadge } from "@/components/ui/license-plate-input";
+import { TransportNumberBadge } from "@/components/ui/transport-number";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { apiError } from "@/lib/api";
@@ -494,13 +494,16 @@ export function ShippingTable({
         )}
         <div className="min-w-0">
           {row.kind === "session" ? (
-            <PlateBadge value={row.session.order_truck_number} size="md" />
-          ) : row.order.transport_type === "train" ? (
-            <Badge tone="outline">Вагон</Badge>
-          ) : row.order.truck_number ? (
-            <PlateBadge value={row.order.truck_number} size="md" />
+            row.session.order_transport_type ? (
+              <TransportNumberBadge
+                value={row.session.order_truck_number}
+                transportType={row.session.order_transport_type}
+              />
+            ) : (
+              <span className="font-medium tabular-nums">{row.session.order_truck_number || "Без номера"}</span>
+            )
           ) : (
-            <Badge tone="muted">Без номера</Badge>
+            <TransportNumberBadge value={row.order.truck_number} transportType={row.order.transport_type} />
           )}
           <div className="mt-1 text-[12px] tabular-nums text-[var(--muted-foreground)]">#{row.id}</div>
         </div>

@@ -531,12 +531,12 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
         {step === "truck" && (
           <Card>
             <CardHeader>
-              <CardTitle>Отправка КАМАЗа</CardTitle>
+              <CardTitle>{order.transport_type === "train" ? "Номер вагона" : "Отправка КАМАЗа"}</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
               <p className="text-sm text-[var(--muted-foreground)]">
-                Укажите номер КАМАЗа для документов и оператора. AI-подсчёт на моноблоке привязывается к самому заказу и
-                выбранной камере.
+                Укажите {order.transport_type === "train" ? "номер вагона из 8 цифр" : "номер КАМАЗа"} для документов и
+                оператора. AI-подсчёт на моноблоке привязывается к самому заказу и выбранной камере.
               </p>
               {order.truck_number && (
                 <p className="text-sm">
@@ -544,8 +544,18 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                 </p>
               )}
               <div className="flex gap-2">
-                <Input placeholder="Номер КАМАЗа" value={truck} onChange={(e) => setTruckVal(e.target.value)} />
-                <Button disabled={busy || !truck} onClick={() => run(() => setTruck(order.id, truck))}>
+                <Input
+                  placeholder={order.transport_type === "train" ? "Номер вагона · 8 цифр" : "Номер КАМАЗа"}
+                  aria-label={order.transport_type === "train" ? "Номер вагона" : "Номер КАМАЗа"}
+                  inputMode={order.transport_type === "train" ? "numeric" : undefined}
+                  maxLength={order.transport_type === "train" ? 8 : undefined}
+                  value={truck}
+                  onChange={(e) => setTruckVal(e.target.value)}
+                />
+                <Button
+                  disabled={busy || !truck || (order.transport_type === "train" && !/^[0-9]{8}$/.test(truck))}
+                  onClick={() => run(() => setTruck(order.id, truck))}
+                >
                   Сохранить
                 </Button>
               </div>
@@ -558,7 +568,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
             <CardContent className="flex flex-col items-center gap-3 py-6 text-center text-sm text-[var(--muted-foreground)]">
               {order.truck_number && (
                 <p>
-                  КАМАЗ: <b>{order.truck_number}</b>
+                  {order.transport_type === "train" ? "Вагон" : "КАМАЗ"}: <b>{order.truck_number}</b>
                 </p>
               )}
               <p>{step === "done" ? "Заказ отгружен и оплачен." : "Заказ в обработке на складе."}</p>

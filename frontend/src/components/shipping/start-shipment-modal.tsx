@@ -6,7 +6,7 @@ import type { CameraFeed } from "@/components/camera-wall";
 import type { ShippingActionResult } from "@/components/shipping/use-shipping-actions";
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
-import { PlateBadge } from "@/components/ui/license-plate-input";
+import { TransportNumberBadge } from "@/components/ui/transport-number";
 import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { orderedBagCount } from "@/lib/orders";
@@ -111,11 +111,7 @@ export function StartShipmentModal({
       {order && (
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center gap-3">
-            {order.truck_number ? (
-              <PlateBadge value={order.truck_number} size="md" />
-            ) : (
-              <span className="text-[12px] text-[var(--muted-foreground)]">Без номера</span>
-            )}
+            <TransportNumberBadge value={order.truck_number} transportType={order.transport_type} />
             <div className="min-w-0">
               <div className="truncate text-[14px] font-medium">{order.client_name || "Без клиента"}</div>
               <div className="text-[12px] tabular-nums text-[var(--muted-foreground)]">{ordered} меш. по заказу</div>

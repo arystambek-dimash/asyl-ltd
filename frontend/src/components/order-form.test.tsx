@@ -401,4 +401,109 @@ describe("OrderForm reference data resilience", () => {
     expect(body).not.toHaveProperty("items");
     expect(body).not.toHaveProperty("prices");
   });
+
+  function numberOrder(overrides: Partial<Order> = {}): Order {
+    const states = new Map<string, unknown>([
+      [
+        "/orders/form-options/",
+        apiState({ clients: [client], products: [product], stores: [], departments: [department] }),
+      ],
+      ["/client-prices/?client=1&currency=KZT", apiState({ "2": "17.50" })],
+    ]);
+    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+    return {
+      id: 22,
+      client: client.id,
+      department: department.code,
+      currency: "KZT",
+      status: "pending",
+      transport_type: "train",
+      truck_number: "00123456",
+      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
+      total_amount: "52.50",
+      paid_total: "0",
+      is_fully_paid: false,
+      debt_override: false,
+      created_at: "2026-09-07",
+      ...overrides,
+    };
+  }
+
+  it("creates a wagon order with its complete number from a template", async () => {
+    const user = userEvent.setup();
+    render(<OrderForm template={numberOrder()} onCancel={vi.fn()} onDone={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    expect(screen.getByLabelText("Номер вагона")).toHaveValue("00123456");
+    await user.clear(screen.getByLabelText("Номер вагона"));
+    await user.type(screen.getByLabelText("Номер вагона"), "00012345");
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
+    expect(postMock).toHaveBeenCalledWith(
+      "/orders/",
+      expect.objectContaining({ transport_type: "train", truck_number: "00012345" }),
+    );
+  });
+
+  it("keeps a wagon number on edit and preserves drafts when switching transport", async () => {
+    const user = userEvent.setup();
+    render(<OrderForm editing={numberOrder()} onCancel={vi.fn()} onDone={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.click(screen.getByRole("button", { name: /Трак/ }));
+    await user.click(screen.getByRole("button", { name: /Железная дорога/ }));
+    expect(screen.getByLabelText("Номер вагона")).toHaveValue("00123456");
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
+    expect(patchMock).toHaveBeenCalledWith(
+      "/orders/22/",
+      expect.objectContaining({ transport_type: "train", truck_number: "00123456" }),
+    );
+  });
+
+  it("explains an incomplete wagon number and permits leaving it unknown", async () => {
+    const user = userEvent.setup();
+    render(<OrderForm editing={numberOrder({ truck_number: "" })} onCancel={vi.fn()} onDone={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.type(screen.getByLabelText("Номер вагона"), "123");
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    expect(screen.getByText(/Номер вагона должен содержать 8 цифр/)).toBeInTheDocument();
+    expect(patchMock).not.toHaveBeenCalled();
+    await user.clear(screen.getByLabelText("Номер вагона"));
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
+    expect(patchMock).toHaveBeenCalledWith("/orders/22/", expect.objectContaining({ truck_number: "" }));
+  });
+
+  it("keeps the loaded wagon number disabled and out of an unrelated patch", async () => {
+    const user = userEvent.setup();
+    render(<OrderForm editing={numberOrder({ status: "loading" })} onCancel={vi.fn()} onDone={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    expect(screen.getByLabelText("Номер вагона")).toBeDisabled();
+    expect(screen.getByLabelText("Номер вагона")).toHaveValue("00123456");
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
+    expect(patchMock.mock.calls[0][1]).not.toHaveProperty("truck_number");
+  });
+
+  it("allows editing an unrelated field while preserving a legacy wagon number", async () => {
+    const user = userEvent.setup();
+    render(<OrderForm editing={numberOrder({ truck_number: "1234567" })} onCancel={vi.fn()} onDone={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    expect(screen.getByLabelText("Номер вагона")).toHaveValue("1234567");
+    await user.type(screen.getByLabelText("Плановая дата прибытия"), "2026-09-08");
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
+    expect(patchMock).toHaveBeenCalledWith(
+      "/orders/22/",
+      expect.objectContaining({ transport_type: "train", truck_number: "1234567", arrival_date: "2026-09-08" }),
+    );
+  });
+
+  it("requires a valid new wagon number when copying a legacy template", async () => {
+    const user = userEvent.setup();
+    render(<OrderForm template={numberOrder({ truck_number: "1234567" })} onCancel={vi.fn()} onDone={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    expect(screen.getByText(/Номер вагона должен содержать 8 цифр/)).toBeInTheDocument();
+    expect(postMock).not.toHaveBeenCalled();
+  });
 });

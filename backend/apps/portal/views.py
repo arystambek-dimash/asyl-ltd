@@ -1,6 +1,5 @@
 from io import BytesIO
 
-from config.throttles import PortalOrderCreateRateThrottle
 from django.db.models import Prefetch, Q
 from django.http import FileResponse
 from django.utils import timezone
@@ -16,17 +15,22 @@ from apps.common.permissions import IsClientUser
 from apps.eventlog.services import log_event
 from apps.orders.apipay import (
     MONEY_RECEIVED_INVOICE_STATUSES,
-    ApiPayAPIError, ApiPayConfigurationError, cancel_invoice,
+    ApiPayAPIError,
+    ApiPayConfigurationError,
+    cancel_invoice,
     start_order_payment,
 )
 from apps.orders.invoices import build_invoice_pdf, build_payment_receipt_pdf
 from apps.orders.models import Order, Payment
 from apps.orders.services import (
-    create_client_payment, release_client_payment, request_client_debt,
+    create_client_payment,
+    release_client_payment,
+    request_client_debt,
     set_truck_number,
 )
 from apps.warehouse.models import Warehouse
 from apps.warehouse.services import DEFAULT_WAREHOUSE_CODE
+from config.throttles import PortalOrderCreateRateThrottle
 
 from .exceptions import Conflict, PaymentProviderError
 from .serializers import CatalogProductSerializer, PortalOrderSerializer
@@ -283,10 +287,10 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     def truck(self, request, pk=None):
         order = self.get_object()
         if order.status != "confirmed":
-            raise Conflict({"detail": "Номер КАМАЗа доступен после подтверждения заказа",
+            raise Conflict({"detail": "Номер транспорта доступен после подтверждения заказа",
                             "code": "invalid_status"})
         value = (request.data.get("truck_number") or "").strip()
         if not value:
-            raise ValidationError({"detail": "Введите номер КАМАЗа", "code": "empty"})
+            raise ValidationError({"detail": "Введите номер транспорта", "code": "empty"})
         set_truck_number(order, value, request.user)
         return Response(self.get_serializer(order).data)

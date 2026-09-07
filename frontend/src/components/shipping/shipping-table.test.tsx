@@ -133,6 +133,16 @@ function rowOf(orderId: number) {
 }
 
 describe("ShippingTable", () => {
+  it("shows full wagon identifiers for orders and independently visible sessions", () => {
+    renderTable({
+      orders: [order({ id: 45, transport_type: "train", truck_number: "00123456" })],
+      sessions: [session({ order_transport_type: "train", order_truck_number: "00012345" })],
+    });
+    expect(screen.getByText("Вагон 00123456")).toBeInTheDocument();
+    expect(screen.getByText("Вагон 00012345")).toBeInTheDocument();
+    expect(screen.queryByText("KZ")).not.toBeInTheDocument();
+  });
+
   beforeEach(() => {
     postMock.mockReset();
     deleteMock.mockReset();

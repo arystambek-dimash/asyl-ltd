@@ -154,7 +154,8 @@ export function OrderForm({
   const [store, setStore] = useState(source?.store ? String(source.store) : "");
   const [warehouse, setWarehouse] = useState(source?.warehouse ? String(source.warehouse) : "");
   const [transport, setTransport] = useState<"truck" | "train">(source?.transport_type ?? "truck");
-  const [truck, setTruck] = useState(source?.truck_number ?? "");
+  const [truck, setTruck] = useState(source?.transport_type === "train" ? "" : (source?.truck_number ?? ""));
+  const [wagonNumber, setWagonNumber] = useState(source?.transport_type === "train" ? source.truck_number : "");
   const [arrival, setArrival] = useState(editing?.arrival_date ?? (template ? todayLocalIsoDate() : ""));
   const [rows, setRows] = useState<Row[]>(
     source
@@ -173,6 +174,13 @@ export function OrderForm({
   const compositionLocked = editing?.status === "loading";
   const shippedCorrection = editing?.status === "shipped";
   const physicalFieldsLocked = Boolean(editing && ["arrived", "loading", "loaded", "shipped"].includes(editing.status));
+  const unchangedWagonNumber = editing && transport === editing.transport_type && wagonNumber === editing.truck_number;
+  const wagonNumberInvalid =
+    !physicalFieldsLocked &&
+    !unchangedWagonNumber &&
+    transport === "train" &&
+    wagonNumber !== "" &&
+    !/^[0-9]{8}$/.test(wagonNumber);
 
   const assignedDepartment = !editing ? me?.sales_department : null;
   const clientPricesUrl = client ? `/client-prices/?client=${client}&currency=${currency}` : null;
@@ -286,6 +294,10 @@ export function OrderForm({
       setError("Выберите склад отгрузки.");
       return;
     }
+    if (step === 2 && wagonNumberInvalid) {
+      setError("Номер вагона должен содержать 8 цифр. Если номер пока неизвестен, оставьте поле пустым.");
+      return;
+    }
     if (step < 3) setStep((step + 1) as Step);
   }
 
@@ -297,6 +309,10 @@ export function OrderForm({
     }
     if (step < 3) {
       nextStep();
+      return;
+    }
+    if (wagonNumberInvalid) {
+      setError("Номер вагона должен содержать 8 цифр.");
       return;
     }
     setBusy(true);
@@ -319,7 +335,7 @@ export function OrderForm({
           ? {
               department: assignedDepartment?.code ?? dept,
               transport_type: transport,
-              truck_number: transport === "train" ? "" : truck,
+              truck_number: transport === "train" ? wagonNumber : truck,
             }
           : {}),
         ...(!compositionLocked
@@ -683,7 +699,7 @@ export function OrderForm({
           </section>
 
           <section className="grid gap-4 border-t border-slate-200 pt-5 sm:grid-cols-2">
-            {transport === "truck" && (
+            {transport === "truck" ? (
               <div className="grid gap-2">
                 <Label id="order-truck-label">Номер машины</Label>
                 <LicensePlateInput
@@ -692,6 +708,25 @@ export function OrderForm({
                   onChange={setTruck}
                   disabled={physicalFieldsLocked}
                 />
+              </div>
+            ) : (
+              <div className="grid gap-2">
+                <Label htmlFor="order-wagon-number">Номер вагона</Label>
+                <Input
+                  id="order-wagon-number"
+                  inputMode="numeric"
+                  maxLength={8}
+                  placeholder="8 цифр"
+                  value={wagonNumber}
+                  onChange={(event) => setWagonNumber(event.target.value)}
+                  disabled={physicalFieldsLocked}
+                  aria-describedby="order-wagon-number-hint"
+                  aria-invalid={wagonNumberInvalid || undefined}
+                  className="h-11 rounded-xl tabular-nums"
+                />
+                <p id="order-wagon-number-hint" className="text-xs text-slate-500">
+                  Можно указать позже, до начала погрузки.
+                </p>
               </div>
             )}
             <div className="grid gap-2">

@@ -489,6 +489,8 @@ export interface AiCountingSession {
   order_id: number;
   order_client_name: string;
   order_truck_number: string;
+  /** Older API versions omit the transport type. */
+  order_transport_type?: "truck" | "train";
   camera: string;
   status: "starting" | "active";
   started_at: string;
@@ -502,6 +504,7 @@ export interface AiCountingHistory {
   order_id: number;
   order_client_name: string;
   order_truck_number: string;
+  order_transport_type?: "truck" | "train";
   camera: string;
   camera_name: string;
   status: string;

@@ -26,7 +26,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { StatusBadge } from "@/components/status-badge";
 import { CHART_TOOLTIP_STYLE as TOOLTIP_STYLE } from "@/components/ui/chart-tooltip";
 import { ErrorAlert } from "@/components/ui/data-state";
-import { formatPlate } from "@/components/ui/license-plate-input";
+import { formatTransportNumber } from "@/components/ui/transport-number";
 import { Tabs } from "@/components/ui/tabs";
 import { can } from "@/lib/can";
 import { useDashboardMetrics, type DashboardMetrics } from "@/lib/use-dashboard-metrics";
@@ -538,7 +538,9 @@ function LiveQueue({ m }: { m: DashboardMetrics }) {
           >
             <div className="min-w-0 flex-1">
               <div className="font-semibold tabular-nums">
-                {order.truck_number ? formatPlate(order.truck_number) : `Заказ #${order.id}`}
+                {order.truck_number
+                  ? formatTransportNumber(order.truck_number, order.transport_type)
+                  : `Заказ #${order.id}`}
               </div>
               <div className="mt-0.5 truncate text-xs text-[var(--muted-foreground)]">
                 {order.client_name || "Клиент не указан"}

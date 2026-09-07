@@ -13,6 +13,7 @@ from .labels import payment_method_label
 from .models import Order, OrderItem, Payment, StatusChangeRequest
 from .services import set_order_department, set_transport_type, set_truck_number
 from .statuses import public_status_label
+from .transport import validate_transport_number
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -518,6 +519,14 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         return code
 
     def validate(self, attrs):
+        current_number = getattr(self.instance, "truck_number", "")
+        current_transport = getattr(self.instance, "transport_type", "truck")
+        number = attrs.get("truck_number", current_number)
+        transport = attrs.get("transport_type", current_transport)
+        # Historical identifiers may predate the rail format. Unrelated edits
+        # may preserve that exact pair; new or changed identifiers must be valid.
+        if self.instance is None or (number, transport) != (current_number, current_transport):
+            validate_transport_number(number, transport)
         if "prices" in self.initial_data and not isinstance(self.initial_data["prices"], dict):
             raise serializers.ValidationError({"prices": "Ожидается объект цен по идентификаторам товаров"})
         items = attrs.get("items")
@@ -626,6 +635,12 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         # the same parent lock as AI start/finish so a stale PATCH cannot put
         # status/loading_camera back after a physical transition.
         instance = lock_live_order(instance, user)
+        # Recheck the final pair against the locked row: another edit may have
+        # changed the transport after serializer validation.
+        number = validated_data.get("truck_number", instance.truck_number)
+        transport = validated_data.get("transport_type", instance.transport_type)
+        if (number, transport) != (instance.truck_number, instance.transport_type):
+            validate_transport_number(number, transport)
         warehouse_supplied = "warehouse" in validated_data
         requested_warehouse = validated_data.pop("warehouse", None)
         if warehouse_supplied:
@@ -713,13 +728,13 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                     "code": "currency_locked"
                 }
             )
-        new_truck = validated_data.pop("truck_number", None)
-        if new_truck is not None and new_truck != instance.truck_number:
-            set_truck_number(instance, new_truck, user)
-            instance.refresh_from_db()
         new_transport = validated_data.pop("transport_type", None)
         if new_transport is not None and new_transport != instance.transport_type:
             set_transport_type(instance, new_transport, user)
+            instance.refresh_from_db()
+        new_truck = validated_data.pop("truck_number", None)
+        if new_truck is not None and new_truck != instance.truck_number:
+            set_truck_number(instance, new_truck, user)
             instance.refresh_from_db()
         new_department = validated_data.pop("department", None)
         if new_department is not None and new_department != instance.department:

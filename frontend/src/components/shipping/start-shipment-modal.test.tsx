@@ -49,6 +49,12 @@ function renderModal(overrides: Partial<Parameters<typeof StartShipmentModal>[0]
 }
 
 describe("StartShipmentModal", () => {
+  it("shows the complete wagon identifier instead of a vehicle plate", () => {
+    renderModal({ order: { ...order, transport_type: "train", truck_number: "00123456" } });
+    expect(screen.getByText("Вагон 00123456")).toBeInTheDocument();
+    expect(screen.queryByText("KZ")).not.toBeInTheDocument();
+  });
+
   it("lets the operator pick a camera and starts the order on it", async () => {
     const user = userEvent.setup();
     const { onStart, onClose } = renderModal();

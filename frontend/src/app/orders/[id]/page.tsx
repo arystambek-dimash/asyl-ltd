@@ -32,6 +32,7 @@ import { DataGate } from "@/components/ui/data-state";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { PaymentChain, AddPaymentActions, PaidMethodBreakdown, paymentOpen } from "@/components/payment-chain";
+import { formatTransportNumber } from "@/components/ui/transport-number";
 import { OrderForm } from "@/components/order-form";
 import { OrderPriceCorrectionModal } from "@/components/order-price-correction-modal";
 import { Modal } from "@/components/ui/modal";
@@ -209,7 +210,9 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             </span>
             <span className="flex items-center gap-1.5">
               <Truck className="size-3.5" />
-              {order.transport_type === "train" ? "Вагон" : order.truck_number || "Машина не указана"}
+              {order.transport_type === "train"
+                ? `Вагон ${order.truck_number || "· без номера"}`
+                : formatTransportNumber(order.truck_number, order.transport_type) || "Машина не указана"}
             </span>
             {order.department_name && <span>{order.department_name}</span>}
           </div>
@@ -358,7 +361,9 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                   {order.arrival_date ? formatIsoDate(order.arrival_date) : "Не указана"}
                 </InfoRow>
                 <InfoRow label="Способ">
-                  {order.transport_type === "train" ? "Вагон" : order.truck_number || "Машина"}
+                  {order.transport_type === "train"
+                    ? `Вагон ${order.truck_number || "· без номера"}`
+                    : formatTransportNumber(order.truck_number, order.transport_type) || "Машина"}
                 </InfoRow>
                 <InfoRow label="Отдел">{order.department_name ?? order.department}</InfoRow>
                 <InfoRow label="Склад отгрузки">{order.warehouse_name || "Основной склад"}</InfoRow>

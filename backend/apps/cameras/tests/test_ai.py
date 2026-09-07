@@ -1907,6 +1907,30 @@ def test_open_sessions_require_load_permission(api_client, make_user):
     assert response.status_code == 403
 
 
+@pytest.mark.parametrize("endpoint", ["sessions", "history"])
+@pytest.mark.parametrize(
+    "transport_type,number", [("train", "00123456"), ("truck", "123ABC02")]
+)
+def test_session_dtos_identify_transport_without_changing_number(
+    api_client, user_with_perms, loading_order, endpoint, transport_type, number,
+):
+    viewer = user_with_perms("transport-viewer", codes=["shipping.view"])
+    loading_order.transport_type = transport_type
+    loading_order.truck_number = number
+    loading_order.save(update_fields=["transport_type", "truck_number"])
+    session = AiCountingSession.objects.create(
+        order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
+    )
+    api_client.force_authenticate(viewer)
+
+    response = api_client.get(f"/api/cameras/ai/{endpoint}/")
+
+    assert response.status_code == 200
+    assert response.data[0]["id"] == session.pk
+    assert response.data[0]["order_transport_type"] == transport_type
+    assert response.data[0]["order_truck_number"] == number
+
+
 def test_open_sessions_include_every_department(api_client, loader):
     client = Client.objects.create_with_user(
         first_name="Field", last_name="Client", phone="3")

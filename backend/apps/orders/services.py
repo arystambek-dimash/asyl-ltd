@@ -14,6 +14,7 @@ from apps.sales.access import assigned_department_id
 
 from .models import Order, OrderItem, Payment, StatusChangeRequest
 from .statuses import PUBLIC_MANUAL_STATUSES, PUBLIC_STATUS_LABELS, public_status_label
+from .transport import validate_transport_number
 
 MAX_MONEY = Decimal("9999999999.99")
 
@@ -1415,17 +1416,20 @@ def set_truck_number(order: Order, value: str, user) -> Order:
     # Match AI start: lock the parent first. If start already reserved a
     # session we observe it after waiting; if not, start waits for this edit.
     order = lock_live_order(order, user)
+    number_label = "Номер вагона" if order.transport_type == "train" else "Номер КАМАЗа"
     if not can_set_truck_number(order, user):
         raise ValidationError(
-            {"detail": "Номер КАМАЗа задан другим пользователем", "code": "forbidden"})
+            {"detail": f"{number_label} задан другим пользователем", "code": "forbidden"})
     if value != order.truck_number and (
         order.status in ("arrived", "loading", "loaded", "shipped")
         or _has_open_ai_session(order)
     ):
         raise ValidationError({
-            "detail": "Номер КАМАЗа нельзя изменить после прибытия или начала погрузки",
+            "detail": f"{number_label} нельзя изменить после прибытия или начала погрузки",
             "code": "truck_number_locked",
         })
+    if value != order.truck_number:
+        validate_transport_number(value, order.transport_type)
     order.truck_number = value
     order.truck_number_set_by = user
     order.save(update_fields=["truck_number", "truck_number_set_by"])
@@ -1434,9 +1438,10 @@ def set_truck_number(order: Order, value: str, user) -> Order:
     caller_order.truck_number = value
     caller_order.truck_number_set_by = user
     caller_order.truck_number_set_by_id = user.pk
-    log_event("status", f"Номер КАМАЗа: {value}", user=user, order=order,
+    log_event("status", f"{number_label}: {value}", user=user, order=order,
               payload={"truck_number": value})
-    notify(order.client, f"Ваш КАМАЗ {value} отправляется")
+    transport_label = "вагон" if order.transport_type == "train" else "КАМАЗ"
+    notify(order.client, f"Ваш {transport_label} {value} отправляется")
     return order
 
 
