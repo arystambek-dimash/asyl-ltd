@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from decimal import Decimal
 
 import pytest
@@ -645,25 +646,31 @@ def test_provider_side_effect_rechecks_scope_after_local_reservation(
             channel="phone",
         )
 
-    original_scope_check = apipay_services.assert_order_user_scope
-    checks = 0
+    original_fence = apipay_services._provider_scope_fence
 
-    def transfer_after_first_scope_check(locked_order, user):
-        nonlocal checks
-        checks += 1
-        original_scope_check(locked_order, user)
-        if checks == 1:
-            Client.objects.filter(pk=locked_order.client_id).update(
-                department=scope["second_department"]
-            )
+    @contextmanager
+    def transfer_after_reservation(order_id, user, **kwargs):
+        # Change real ownership at the transaction boundary. The authorization
+        # check may live in a shared service; do not replace or bypass it.
+        if operation == "refund":
+            assert PaymentRefund.objects.filter(
+                payment=payment, status="pending",
+            ).exists()
+        else:
+            assert ApiPayInvoice.objects.filter(payment=payment).exists()
+        Client.objects.filter(pk=order.client_id).update(
+            department=scope["second_department"]
+        )
+        with original_fence(order_id, user, **kwargs) as locked_order:
+            yield locked_order
 
     def unexpected_provider_call(*args, **kwargs):
         pytest.fail("the second scope fence must reject before an ApiPay call")
 
     monkeypatch.setattr(
         apipay_services,
-        "assert_order_user_scope",
-        transfer_after_first_scope_check,
+        "_provider_scope_fence",
+        transfer_after_reservation,
     )
     monkeypatch.setattr(
         apipay_services,
@@ -686,7 +693,6 @@ def test_provider_side_effect_rechecks_scope_after_local_reservation(
                 reason="scope moved between phases",
             )
 
-    assert checks == 2
     if operation == "invoice":
         payment.refresh_from_db()
         assert payment.status == "rejected"
