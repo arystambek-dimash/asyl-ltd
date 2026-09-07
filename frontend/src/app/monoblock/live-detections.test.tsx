@@ -287,7 +287,7 @@ describe("AI 24/7 live detections", () => {
     render(<MonoblockPage />);
     await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
     await user.click(screen.getByRole("tab", { name: "Аналитика" }));
-    await user.click(screen.getByRole("button", { name: "Аналитика за 24.08.2026: 12 мешков" }));
+    await user.click(screen.getByRole("button", { name: "Подробнее о дне: 24.08.2026, 12 мешков" }));
 
     expect(screen.getByText("Цвета мешков за день")).toBeInTheDocument();
     expect(screen.queryByText("Цвета и продукция за день")).not.toBeInTheDocument();
@@ -373,6 +373,7 @@ describe("AI 24/7 live detections", () => {
           ],
           dominant_color: null,
           dominant_brand: "korol",
+          analytics_sync: { available: true, status: "synced", detail: "" },
           updated_at: null,
         },
       ],
@@ -570,6 +571,7 @@ describe("AI 24/7 live detections", () => {
           brands: historyPoint.brands,
           dominant_color: "red",
           dominant_brand: "korol",
+          analytics_sync: { available: true, status: "synced", detail: "" },
           updated_at: null,
         },
       ],
@@ -775,6 +777,7 @@ describe("AI 24/7 live detections", () => {
     await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
     await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
     await user.click(screen.getByRole("tab", { name: "Аналитика" }));
+    await user.click(screen.getByRole("button", { name: "30 дней" }));
     await waitFor(() =>
       expect(mocks.apiGet).toHaveBeenCalledWith(currentProductionUrl, {
         signal: expect.any(AbortSignal),
@@ -791,13 +794,6 @@ describe("AI 24/7 live detections", () => {
     expect(within(allTimeColorsPanel).queryByText("Синий")).not.toBeInTheDocument();
     expect(within(allTimeColorsPanel).getByText("Зелёный")).toBeInTheDocument();
     expect(allTimeColorsPanel.querySelector('[data-receipt-binding="unbound"]')).toHaveTextContent("Не привязан");
-
-    const dominantPanel = screen.getByText("Основная продукция").closest('[data-testid="always-on-panel"]');
-    if (!(dominantPanel instanceof HTMLElement)) throw new Error("Карточка основного цвета не найдена");
-    expect(within(dominantPanel).getByText("ДБН 1с 50кг · Красный 50 кг")).toBeInTheDocument();
-    expect(dominantPanel.querySelector('[data-receipt-binding="bound"]')).toHaveTextContent("Склад готовой продукции");
-    expect(within(dominantPanel).queryByText("Красный")).not.toBeInTheDocument();
-    expect(dominantPanel.getElementsByClassName("bg-[#dc604d]")).toHaveLength(1);
 
     await user.click(screen.getByRole("button", { name: "Аналитика за 24.08.2026: 153 мешков" }));
 

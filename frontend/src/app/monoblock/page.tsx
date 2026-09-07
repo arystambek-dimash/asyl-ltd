@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertTriangle,
   BarChart3,
   Camera,
   CalendarDays,
@@ -32,13 +31,13 @@ import {
   type AlwaysOnDayColorView,
   type AlwaysOnReceiptMappingContext,
 } from "@/components/monoblock/always-on-production-panel";
+import { CameraAnalyticsOverview, type AnalyticsDateRange } from "@/components/monoblock/camera-analytics-overview";
 import { RequirePerm } from "@/components/require-perm";
 import { CompletedOrdersSettingsModal } from "@/components/shipping/completed-orders-settings-modal";
 import { ShippingTable } from "@/components/shipping/shipping-table";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/data-state";
-import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { StatCard } from "@/components/ui/stat-card";
 import { Tabs, type TabDef } from "@/components/ui/tabs";
@@ -67,7 +66,7 @@ import type {
   Order,
   ShippingBoardSettings,
 } from "@/lib/types";
-import { dayColorBreakdown, fullDay, shortDay } from "@/lib/day-analytics";
+import { dayColorBreakdown, fullDay } from "@/lib/day-analytics";
 import { useApi } from "@/lib/use-api";
 import { useDebounced } from "@/lib/use-debounced";
 import { useLocalDay } from "@/lib/use-local-day";
@@ -500,7 +499,7 @@ function AlwaysOnCard({
   const visibleModalTabs = MODAL_TABS.filter((tab) => modalViews.includes(tab.key));
   const [open, setOpen] = useState(false);
   const today = useLocalDay();
-  const [dateRange, setDateRange] = useState<{ from: string; to: string } | null>(null);
+  const [dateRange, setDateRange] = useState<AnalyticsDateRange | null>(null);
   const dateFrom = dateRange?.from ?? today;
   const dateTo = dateRange?.to ?? today;
   const rangeDays = (Date.parse(dateTo) - Date.parse(dateFrom)) / 86_400_000 + 1;
@@ -526,6 +525,9 @@ function AlwaysOnCard({
   const [liveDaily, setLiveDaily] = useState<AlwaysOnDailyCameraAnalytics | undefined>(daily);
   const [liveDetail, setLiveDetail] = useState(detail || "");
   const [liveAnalyticsError, setLiveAnalyticsError] = useState(analyticsError || "");
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [loadedAnalyticsQuery, setLoadedAnalyticsQuery] = useState<string | null>(null);
+  const [analyticsReload, setAnalyticsReload] = useState(0);
   const [production, setProduction] = useState<AlwaysOnProductionPayload | null>(null);
   const [productionLoading, setProductionLoading] = useState(false);
   const [productionError, setProductionError] = useState<string | null>(null);
@@ -537,6 +539,8 @@ function AlwaysOnCard({
   const [selectedProductionError, setSelectedProductionError] = useState<string | null>(null);
   const [selectedProductionReload, setSelectedProductionReload] = useState(0);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const dayDetailHeading = useRef<HTMLHeadingElement>(null);
+  const dayTrigger = useRef<HTMLElement | null>(null);
   const [selectedDayColorView, setSelectedDayColorView] = useState<AlwaysOnDayColorView>("algorithm");
   const current = open ? liveProcessor : processor;
   const currentReadiness = open ? liveReadiness : readiness;
@@ -569,7 +573,6 @@ function AlwaysOnCard({
   const currentCycleDisplay = liveCounterAvailable ? current.total : "—";
   const inSession = current.mode === "session";
   const chartMax = Math.max(1, ...(currentDaily?.history ?? []).map((item) => item.total));
-  const dominant = currentDaily?.colors?.[0];
   const currentReceiptMappings = selectedProductionDay?.mappings ?? production?.mappings ?? null;
   const currentReceiptError = selectedProductionError || productionError;
   const receiptMapping = useMemo<AlwaysOnReceiptMappingContext>(
@@ -588,13 +591,30 @@ function AlwaysOnCard({
     }),
     [currentReceiptError, currentReceiptMappings, production, selectedProductionDay],
   );
-  const dominantReceiptDestination =
-    !isShipping && dominant ? resolveAlwaysOnReceiptDestination(receiptMapping, dominant.color) : null;
-  const dominantHasProduct = dominantReceiptDestination?.state === "bound";
   // Разбор одного дня: сам столбик уже несёт полную статистику, поэтому
   // выбранный день хранится ключом, а не копией — опрос обновляет данные,
   // не закрывая панель.
   const selectedPoint = (currentDaily?.history ?? []).find((item) => item.day === selectedDay);
+  function selectAnalyticsDay(day: string | null) {
+    if (day) dayTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setSelectedDay(day);
+    if (!day) dayTrigger.current?.focus();
+  }
+  useEffect(() => {
+    if (selectedPoint?.day) {
+      const heading = dayDetailHeading.current;
+      heading?.focus({ preventScroll: true });
+      const scrollBody = heading?.closest<HTMLElement>("[data-modal-scroll-body]");
+      if (heading && scrollBody) {
+        // Scroll only the body: scrollIntoView also moves overflow-hidden
+        // ancestors and can push the modal title/tabs off screen on mobile.
+        scrollBody.scrollTop = Math.max(
+          0,
+          scrollBody.scrollTop + heading.getBoundingClientRect().top - scrollBody.getBoundingClientRect().top - 80,
+        );
+      }
+    }
+  }, [selectedPoint?.day]);
   // Разбивку за день считает бэкенд — тем же кодом, что и общую, поэтому
   // цифры сходятся. Локальный расчёт остаётся на случай старого ответа.
   const selectedColors = selectedPoint?.colors?.length ? selectedPoint.colors : dayColorBreakdown(selectedPoint);
@@ -672,6 +692,10 @@ function AlwaysOnCard({
     setLiveAnalyticsError(analyticsError || "");
   }, [analyticsError, daily, detail, open, processor, readiness]);
 
+  useEffect(() => {
+    setSelectedDay(null);
+  }, [rangeQuery]);
+
   // Разбор дня — состояние одного просмотра: закрыли окно, выбор снят.
   useEffect(() => {
     if (!open) setSelectedDay(null);
@@ -685,7 +709,7 @@ function AlwaysOnCard({
     if (!open || !rangeValid) return;
     const controller = new AbortController();
     setLiveAnalyticsError("");
-    setSelectedDay(null);
+    setAnalyticsLoading(true);
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const refresh = async () => {
@@ -719,7 +743,11 @@ function AlwaysOnCard({
           setLiveAnalyticsError(message);
         }
       } finally {
-        if (!disposed) timer = setTimeout(() => void refresh(), SESSION_POLL_MS);
+        if (!disposed) {
+          setAnalyticsLoading(false);
+          setLoadedAnalyticsQuery(rangeQuery);
+          timer = setTimeout(() => void refresh(), SESSION_POLL_MS);
+        }
       }
     };
     void refresh();
@@ -728,7 +756,7 @@ function AlwaysOnCard({
       controller.abort();
       if (timer) clearTimeout(timer);
     };
-  }, [analyticsUrl, open, processor.cam, rangeQuery, rangeValid, runtimeSettingsUrl, scope]);
+  }, [analyticsReload, analyticsUrl, open, processor.cam, rangeQuery, rangeValid, runtimeSettingsUrl, scope]);
 
   // Быстрый опрос только рамок. Отдельно от тяжёлого снимка: аналитику и
   // настройки незачем перечитывать раз в секунду, а рамка на общем интервале
@@ -993,20 +1021,22 @@ function AlwaysOnCard({
         title={camera?.zone || processor.cam}
         description={
           isShipping
-            ? "Прямой эфир и отдельная непрерывная аналитика камеры отгрузки. Заказ подключается к уже работающей модели без переноса камеры в AI 24/7."
-            : "Прямой эфир, журнал цветовых смен, аналитика и автоматический приход на склад. Фоновый AI-overlay не публикуется; исходный substream хранится в техническом архиве 48 часов."
+            ? "Прямой эфир и учёт мешков при погрузке."
+            : "Прямой эфир, выпуск продукции и поступления на склад."
         }
         className="max-w-5xl"
         mobileFullscreen
       >
-        <Tabs
-          tabs={visibleModalTabs}
-          active={modalView}
-          onChange={(key) => setModalView(key as ModalView)}
-          variant="segment"
-          label="Режим мониторинга камеры"
-          className="mb-4 max-w-full overflow-x-auto [&>button]:shrink-0 [&>button]:whitespace-nowrap"
-        />
+        <div className="sticky -top-4 z-20 -mx-4 -mt-4 mb-5 border-b border-[var(--border)] bg-[var(--card)] px-4 py-3 sm:-top-6 sm:-mx-6 sm:-mt-6 sm:px-6">
+          <Tabs
+            tabs={visibleModalTabs}
+            active={modalView}
+            onChange={(key) => setModalView(key as ModalView)}
+            variant="segment"
+            label="Режим мониторинга камеры"
+            className="w-full max-w-full overflow-x-auto sm:w-fit [&>button]:min-w-0 [&>button]:flex-1 [&>button]:whitespace-nowrap [&>button]:px-2 [&>button]:text-xs sm:[&>button]:flex-none sm:[&>button]:px-4 sm:[&>button]:text-sm [&>button>svg]:hidden sm:[&>button>svg]:block"
+          />
+        </div>
 
         {modalView === "live" ? (
           <div
@@ -1142,206 +1172,32 @@ function AlwaysOnCard({
           </div>
         ) : modalView === "analytics" ? (
           <div {...modalPanelProps("analytics")} className="space-y-4">
-            <div className="flex flex-wrap items-end gap-3" aria-label="Период аналитики">
-              <label className="flex flex-col gap-1 text-sm">
-                С даты
-                <Input
-                  type="date"
-                  aria-label="Аналитика с даты"
-                  value={dateFrom}
-                  onChange={(event) => setDateRange({ from: event.target.value, to: dateTo })}
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm">
-                По дату
-                <Input
-                  type="date"
-                  aria-label="Аналитика по дату"
-                  value={dateTo}
-                  onChange={(event) => setDateRange({ from: dateFrom, to: event.target.value })}
-                />
-              </label>
-              <Button variant="outline" onClick={() => setDateRange(null)}>
-                Сегодня
-              </Button>
-              <span className="pb-2 text-xs text-[var(--muted-foreground)]">Календарные дни · до 366 дней</span>
-            </div>
-            {!isShipping && (
-              <p className="text-xs text-[var(--muted-foreground)]">
-                Периоды, перенесённые в архив, здесь не учитываются.
-              </p>
-            )}
-            {!rangeValid && (
-              <p role="alert" className="text-sm text-[var(--destructive)]">
-                Выберите период от 1 до 366 дней. Начало не должно быть позже окончания.
-              </p>
-            )}
-            {!analyticsAvailable && rangeValid && (
-              <div className="flex items-start gap-3 rounded-md border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-4 py-3 text-sm text-[var(--foreground)]">
-                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-[var(--warning)]" />
-                <p>
-                  <b>Аналитика не синхронизирована.</b> {analyticsDetail} Живой счётчик модели может продолжать
-                  увеличиваться, но неподтверждённые события не показываются как ноль.
-                </p>
-              </div>
-            )}
-            <div className="grid gap-4 sm:grid-cols-3">
-              <Panel className="p-5">
-                <Metric
-                  label={dateFrom === today && dateTo === today ? "Сегодня" : "За выбранный период"}
-                  value={analyticsAvailable ? (currentDaily?.period_total ?? "—") : "—"}
-                  unit={analyticsAvailable ? "меш." : undefined}
-                />
-              </Panel>
-              <Panel className="p-5">
-                <Metric label={isShipping ? "За всё время" : "Всего вне архива"} value={allTimeDisplay} />
-              </Panel>
-              <Panel className="p-5">
-                <Metric
-                  label={isShipping ? "Основной цвет" : "Основная продукция"}
-                  value={dominant ? dominant.total : "—"}
-                  unit={dominant ? "меш." : undefined}
-                />
-                {dominant && (
-                  <>
-                    <div className="mt-2 flex min-w-0 items-center gap-2 text-[13px] font-medium text-[var(--foreground)]">
-                      <ColorDot className={colorMeta(dominant.color).dot} />
-                      <span className="truncate">
-                        {dominantHasProduct ? dominantReceiptDestination.productLabel : colorMeta(dominant.color).label}
-                      </span>
-                    </div>
-                    {!isShipping && dominantReceiptDestination && (
-                      <AlwaysOnReceiptDestinationLabel
-                        destination={dominantReceiptDestination}
-                        colorLabel={dominantHasProduct ? undefined : colorMeta(dominant.color).label}
-                        showProduct={!dominantHasProduct}
-                        className="mt-2"
-                      />
-                    )}
-                  </>
-                )}
-              </Panel>
-            </div>
-
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-              <Panel className="p-5 sm:p-6">
-                <SectionHead
-                  title="Учтено по дням"
-                  aside={
-                    <span className="text-[11px] tabular-nums text-[var(--muted-foreground)]">макс. {chartMax}</span>
-                  }
-                />
-                <div className="mt-5 overflow-x-auto pb-1" role="region" aria-label="График по дням" tabIndex={0}>
-                  <div
-                    className="h-56 sm:h-64"
-                    style={{ minWidth: Math.max(320, (currentDaily?.history.length ?? 0) * 40) }}
-                  >
-                    <div className="flex h-[188px] items-end gap-2 sm:h-[216px]">
-                      {(currentDaily?.history ?? []).map((item) => {
-                        const active = item.day === selectedDay;
-                        // Число дня живёт в aria-label и в панели разбора по
-                        // клику: подсказка по наведению на планшете недоступна.
-                        return (
-                          <button
-                            type="button"
-                            key={item.day}
-                            aria-pressed={active}
-                            aria-label={`Аналитика за ${fullDay(item.day)}: ${item.total} мешков`}
-                            onClick={() => setSelectedDay(active ? null : item.day)}
-                            className="flex h-full min-w-0 flex-1 cursor-pointer flex-col justify-end rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                          >
-                            <div className="flex flex-1 items-end justify-center">
-                              <div
-                                className={cn(
-                                  "w-full max-w-8 rounded-sm",
-                                  active ? "bg-[var(--ring)]" : "bg-[var(--muted-foreground)]/35",
-                                  selectedDay && !active && "opacity-60",
-                                )}
-                                style={{
-                                  height: item.total ? `${Math.max(4, (item.total * 100) / chartMax)}%` : 0,
-                                }}
-                              />
-                            </div>
-                            <span
-                              className={cn(
-                                "mt-2 block truncate text-center text-[10px]",
-                                active ? "font-semibold text-[var(--foreground)]" : "text-[var(--muted-foreground)]",
-                              )}
-                            >
-                              {shortDay(item.day)}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-                {!selectedPoint && (
-                  <p className="mt-4 text-center text-[12px] text-[var(--muted-foreground)]">
-                    Нажмите на столбик, чтобы раскрыть день
-                  </p>
-                )}
-              </Panel>
-
-              <Panel className="flex flex-col p-5 sm:p-6">
-                <SectionHead
-                  title={isShipping ? "Цвета мешков" : "Продукция"}
-                  hint={
-                    isShipping
-                      ? "За выбранный период в контуре отгрузки."
-                      : "За выбранный период по данным модели. При наличии привязки название цвета заменяется товаром и складом, а цветовой индикатор сохраняется."
-                  }
-                />
-                <div className="mt-5 space-y-4">
-                  {(currentDaily?.colors ?? []).map((item) => {
-                    const destination = !isShipping
-                      ? resolveAlwaysOnReceiptDestination(receiptMapping, item.color)
-                      : null;
-                    const hasProduct = destination?.state === "bound";
-                    return (
-                      <div key={item.color}>
-                        <div className="mb-1.5 flex items-center gap-2 text-sm">
-                          <ColorDot className={colorMeta(item.color).dot} />
-                          <span className="min-w-0 truncate font-medium text-[var(--foreground)]">
-                            {hasProduct ? destination.productLabel : colorMeta(item.color).label}
-                          </span>
-                          <span className="ml-auto font-semibold tabular-nums text-[var(--foreground)]">
-                            {item.total}
-                          </span>
-                          <span className="w-9 text-right text-[12px] tabular-nums text-[var(--muted-foreground)]">
-                            {item.percent}%
-                          </span>
-                        </div>
-                        <div className="h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
-                          <div
-                            className={cn("h-full rounded-full", colorMeta(item.color).bar)}
-                            style={{ width: `${item.percent}%` }}
-                          />
-                        </div>
-                        {!isShipping && destination && (
-                          <AlwaysOnReceiptDestinationLabel
-                            destination={destination}
-                            colorLabel={hasProduct ? undefined : colorMeta(item.color).label}
-                            showProduct={!hasProduct}
-                            className="mt-2"
-                          />
-                        )}
-                      </div>
-                    );
-                  })}
-                  {!currentDaily?.colors?.length && (
-                    <div className="py-10 text-center text-sm text-[var(--muted-foreground)]">
-                      {isShipping ? "Цветов пока нет" : "Продукции пока нет"}
-                    </div>
-                  )}
-                </div>
-              </Panel>
-            </div>
+            <CameraAnalyticsOverview
+              today={today}
+              dateFrom={dateFrom}
+              dateTo={dateTo}
+              onRangeChange={setDateRange}
+              daily={currentDaily}
+              loading={rangeValid && (analyticsLoading || loadedAnalyticsQuery !== rangeQuery)}
+              available={analyticsAvailable}
+              error={analyticsDetail}
+              onRetry={() => setAnalyticsReload((value) => value + 1)}
+              isShipping={isShipping}
+              receiptMapping={receiptMapping}
+              selectedDay={selectedDay}
+              onSelectDay={selectAnalyticsDay}
+            />
 
             {selectedPoint && (
               <Panel className="p-5 sm:p-6">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h4 className="text-[15px] font-semibold tracking-tight">{fullDay(selectedPoint.day)}</h4>
+                  <h4
+                    ref={dayDetailHeading}
+                    tabIndex={-1}
+                    className="scroll-mt-20 text-[15px] font-semibold tracking-tight outline-none"
+                  >
+                    {fullDay(selectedPoint.day)}
+                  </h4>
                   <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
                     {!isShipping && (
                       <AlwaysOnDayColorViewToggle
@@ -1350,7 +1206,7 @@ function AlwaysOnCard({
                         onChange={setSelectedDayColorView}
                       />
                     )}
-                    <Button variant="ghost" size="sm" onClick={() => setSelectedDay(null)}>
+                    <Button variant="ghost" size="sm" onClick={() => selectAnalyticsDay(null)}>
                       Закрыть
                     </Button>
                   </div>
@@ -1358,11 +1214,13 @@ function AlwaysOnCard({
 
                 <div className="mt-4 grid max-w-xl grid-cols-2 gap-x-8 gap-y-4">
                   <Metric label="Учтено за день" value={selectedPoint.total} size="sm" />
-                  <Metric
-                    label="От максимума"
-                    value={`${Math.round((selectedPoint.total * 100) / chartMax)}%`}
-                    size="sm"
-                  />
+                  {rangeDays > 1 && (
+                    <Metric
+                      label="От максимума"
+                      value={`${Math.round((selectedPoint.total * 100) / chartMax)}%`}
+                      size="sm"
+                    />
+                  )}
                 </div>
 
                 {selectedVisibleColors.length > 0 && (
@@ -1376,7 +1234,7 @@ function AlwaysOnCard({
                           : "Количество по цветам распознано камерой; товар показан по текущему сопоставлению в разделе «Куда приходовать»."
                       }
                     />
-                    <div className="mt-3 grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
+                    <div className="mt-3 grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
                       {selectedVisibleColors.map((item) => {
                         if (isShipping) {
                           return (
@@ -1425,13 +1283,13 @@ function AlwaysOnCard({
                             <div className="mt-1.5 flex min-w-0 items-center gap-2">
                               <ColorDot className={colorMeta(item.color).dot} />
                               <span
-                                title={hasProduct ? `Бренд: ${brandLabel}` : colorAndBrandLabel}
+                                title={hasProduct ? (brand ? `Бренд: ${brandLabel}` : brandLabel) : colorAndBrandLabel}
                                 className={cn(
                                   "truncate text-[11px] font-medium",
                                   brand ? "text-[var(--foreground)]" : "text-[var(--muted-foreground)]",
                                 )}
                               >
-                                {hasProduct ? `Бренд: ${brandLabel}` : colorAndBrandLabel}
+                                {hasProduct ? (brand ? `Бренд: ${brandLabel}` : brandLabel) : colorAndBrandLabel}
                               </span>
                             </div>
                           </div>

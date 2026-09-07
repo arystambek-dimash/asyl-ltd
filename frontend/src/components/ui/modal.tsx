@@ -204,7 +204,9 @@ export function Modal({
             <X className="size-4" />
           </button>
         </div>
-        <div className="overflow-y-auto p-4 sm:p-6">{children}</div>
+        <div data-modal-scroll-body className="overflow-y-auto p-4 sm:p-6">
+          {children}
+        </div>
         {footer && (
           <div className="flex items-center justify-end gap-2 border-t bg-[var(--muted)]/40 px-4 py-3 sm:px-6">
             {footer}

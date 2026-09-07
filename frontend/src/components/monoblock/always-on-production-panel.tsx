@@ -171,7 +171,7 @@ export function AlwaysOnReceiptDestinationLabel({
 
   if (destination.state !== "bound") {
     return (
-      <span className={cn("text-xs font-medium text-slate-500", className)}>
+      <span className={cn("text-xs font-medium text-[var(--muted-foreground)]", className)}>
         <span className="sr-only">{accessiblePrefix}</span>
         {destination.state === "loading" ? "Загрузка сопоставления…" : "Сопоставление недоступно"}
       </span>
@@ -190,9 +190,11 @@ export function AlwaysOnReceiptDestinationLabel({
       className={cn("flex min-w-0 flex-wrap items-center gap-x-1 text-xs leading-tight", className)}
     >
       <span className="sr-only">{accessiblePrefix}</span>
-      {showProduct && <span className="min-w-0 font-semibold text-slate-700">{destination.productLabel}</span>}
+      {showProduct && (
+        <span className="min-w-0 font-semibold text-[var(--foreground)]">{destination.productLabel}</span>
+      )}
       {destination.warehouseName && (
-        <span className="inline-flex min-w-0 items-center gap-1 font-medium text-slate-500">
+        <span className="inline-flex min-w-0 items-center gap-1 font-medium text-[var(--muted-foreground)]">
           <span aria-hidden="true">→</span>
           <span className="sr-only">склад </span>
           <Warehouse aria-hidden="true" className="size-3 shrink-0" />
@@ -237,14 +239,14 @@ export function AlwaysOnDayColorViewToggle({
 }) {
   return (
     <>
-      <span className="text-[11px] font-semibold text-slate-400">Цвета:</span>
+      <span className="text-[11px] font-semibold text-[var(--muted-foreground)]">Цвета:</span>
       <InfoHint
         text={`Алгоритм объединяет соседние одинаковые периоды и меняет короткий период (< ${nMin} меш.) только между двумя периодами одного другого цвета. Сырые данные не меняются.`}
       />
       <div
         role="group"
         aria-label="Отображение цветовой аналитики"
-        className="inline-flex rounded-lg bg-slate-100 p-0.5"
+        className="inline-flex rounded-lg bg-[var(--muted)] p-0.5"
       >
         <button
           type="button"
@@ -252,7 +254,9 @@ export function AlwaysOnDayColorViewToggle({
           onClick={() => onChange("algorithm")}
           className={cn(
             "rounded-md px-2.5 py-1 text-[11px] font-semibold transition",
-            view === "algorithm" ? "bg-white text-slate-800 shadow-sm" : "text-slate-400 hover:text-slate-600",
+            view === "algorithm"
+              ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
+              : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
           )}
         >
           Алгоритм
@@ -263,7 +267,9 @@ export function AlwaysOnDayColorViewToggle({
           onClick={() => onChange("raw")}
           className={cn(
             "rounded-md px-2.5 py-1 text-[11px] font-semibold transition",
-            view === "raw" ? "bg-white text-slate-800 shadow-sm" : "text-slate-400 hover:text-slate-600",
+            view === "raw"
+              ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
+              : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
           )}
         >
           Сырые данные
@@ -296,14 +302,16 @@ export function AlwaysOnDayRunLog({
   return (
     <section className="mt-4">
       <div className="flex flex-wrap items-center gap-2">
-        <h5 className="text-[13px] font-semibold tracking-tight text-slate-800">Периоды цветов</h5>
+        <h5 className="text-[13px] font-semibold tracking-tight text-[var(--foreground)]">Периоды цветов</h5>
         {runs !== null && !loading && !error && !unavailableReason && (
-          <span className="text-[11px] font-medium tabular-nums text-slate-400">{orderedRuns.length}</span>
+          <span className="text-[11px] font-medium tabular-nums text-[var(--muted-foreground)]">
+            {orderedRuns.length}
+          </span>
         )}
       </div>
 
       {loading && runs === null ? (
-        <div className="mt-3 flex min-h-20 items-center justify-center gap-2 py-5 text-xs text-slate-400">
+        <div className="mt-3 flex min-h-20 items-center justify-center gap-2 py-5 text-xs text-[var(--muted-foreground)]">
           <LoaderCircle className="size-4 animate-spin" /> Загружаем периоды дня…
         </div>
       ) : error ? (
@@ -329,7 +337,7 @@ export function AlwaysOnDayRunLog({
           <span>{unavailableReason}</span>
         </div>
       ) : orderedRuns.length ? (
-        <div className="mt-2 max-h-[19rem] divide-y divide-slate-100 overflow-y-auto overscroll-contain">
+        <div className="mt-2 max-h-[19rem] divide-y divide-[var(--border)] overflow-y-auto overscroll-contain">
           {orderedRuns.map((run) => {
             const meta = colorMeta(run.color);
             const destination = receiptMapping
@@ -349,20 +357,24 @@ export function AlwaysOnDayRunLog({
                 }
                 className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-2.5 sm:grid-cols-[minmax(220px,1.25fr)_minmax(150px,1fr)_auto] sm:items-center"
               >
-                <div className="min-w-0">
+                <div className="col-start-1 row-start-1 min-w-0">
                   {hasProduct ? (
                     <div className="flex min-w-0 items-start gap-2">
                       <span
                         className={cn("mt-0.5 size-2.5 shrink-0 rounded-full", meta.dot, active && "animate-pulse")}
                       />
                       {destination && (
-                        <AlwaysOnReceiptDestinationLabel destination={destination} colorLabel={undefined} />
+                        <AlwaysOnReceiptDestinationLabel
+                          destination={destination}
+                          colorLabel={undefined}
+                          className="flex-col items-start gap-y-1"
+                        />
                       )}
                     </div>
                   ) : (
                     <div className="flex min-w-0 items-center gap-2">
                       <span className={cn("size-2.5 shrink-0 rounded-full", meta.dot, active && "animate-pulse")} />
-                      <span className="truncate text-xs font-bold text-slate-700">{meta.label}</span>
+                      <span className="truncate text-xs font-bold text-[var(--foreground)]">{meta.label}</span>
                     </div>
                   )}
                   {destination && !hasProduct && (
@@ -373,20 +385,20 @@ export function AlwaysOnDayRunLog({
                     />
                   )}
                 </div>
-                <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-slate-500 sm:col-span-1">
-                  <Clock3 className="size-3 shrink-0 text-slate-400" />
-                  <span className="font-semibold tabular-nums text-slate-700">
+                <div className="col-span-2 col-start-1 row-start-2 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-[var(--muted-foreground)] sm:col-span-1 sm:col-start-2 sm:row-start-1">
+                  <Clock3 className="size-3 shrink-0 text-[var(--muted-foreground)]" />
+                  <span className="font-semibold tabular-nums text-[var(--foreground)]">
                     {run.starts_before_day ? "с 00:00" : zonedDateTime(run.started_at, timezone, false)}
                   </span>
-                  <span className="text-slate-300">—</span>
+                  <span className="text-[var(--muted-foreground)]">—</span>
                   {run.ends_after_day ? (
-                    <span className="font-semibold text-slate-700">до конца дня</span>
+                    <span className="font-semibold text-[var(--foreground)]">до конца дня</span>
                   ) : active ? (
                     <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 font-bold text-emerald-700">
                       идёт сейчас
                     </span>
                   ) : (
-                    <span className="font-semibold tabular-nums text-slate-700">
+                    <span className="font-semibold tabular-nums text-[var(--foreground)]">
                       {zonedDateTime(run.ended_at ?? run.last_counted_at, timezone, false)}
                     </span>
                   )}
@@ -399,7 +411,7 @@ export function AlwaysOnDayRunLog({
                     </span>
                   )}
                 </div>
-                <div className="row-start-1 text-right sm:col-start-3">
+                <div className="col-start-2 row-start-1 whitespace-nowrap text-right sm:col-start-3">
                   {partial ? (
                     <span
                       title="Точное число мешков этой части берётся из итогов выбранного дня"
@@ -409,8 +421,10 @@ export function AlwaysOnDayRunLog({
                     </span>
                   ) : (
                     <>
-                      <span className="text-sm font-black tabular-nums text-slate-900">{run.model_bags}</span>
-                      <span className="ml-1 text-[10px] text-slate-400">меш.</span>
+                      <span className="text-sm font-black tabular-nums text-[var(--foreground)]">
+                        {run.model_bags.toLocaleString("ru-RU")}
+                      </span>
+                      <span className="ml-1 text-[10px] text-[var(--muted-foreground)]">меш.</span>
                     </>
                   )}
                 </div>
@@ -419,7 +433,9 @@ export function AlwaysOnDayRunLog({
           })}
         </div>
       ) : (
-        <p className="mt-2 py-4 text-center text-xs text-slate-400">Детализация за {formatIsoDate(day)} недоступна.</p>
+        <p className="mt-2 py-4 text-center text-xs text-[var(--muted-foreground)]">
+          Детализация за {formatIsoDate(day)} недоступна.
+        </p>
       )}
     </section>
   );
