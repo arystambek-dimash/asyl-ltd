@@ -37,6 +37,7 @@ x-backend-environment: &backend-environment
   AI_SERVICE_URL: ${AI_SERVICE_URL:-${CAMERA_AI_URL:-}}
   AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY:-${CAMERA_AI_KEY:-}}
   AI_SERVICE_TIMEOUT: ${AI_SERVICE_TIMEOUT:-25}
+  CAMERA_EVENT_SYNC_WORKERS: ${CAMERA_EVENT_SYNC_WORKERS:-2}
   # A distinct host-only secret for the inbound camera-PC webhook. Requiring
   # it at Compose validation prevents an accidentally unauthenticated rollout.
   VEHICLE_PLATE_WEBHOOK_TOKEN: ${VEHICLE_PLATE_WEBHOOK_TOKEN:?set VEHICLE_PLATE_WEBHOOK_TOKEN}

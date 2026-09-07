@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.cache import cache
-from django.db import DatabaseError, connection
+from django.db import DatabaseError, close_old_connections, connection, connections
 from django.db.models import Q
 from django.utils import timezone
 
@@ -113,7 +116,10 @@ def _processor_readiness(
         return "pending", f"Ожидается запуск процессора {camera}"
     if processor.get("source") != "sub":
         return "pending", f"Процессор {camera} ещё не перешёл на источник sub"
-    if analytics_scope is not None and processor.get("analytics_scope") != analytics_scope:
+    if (
+        analytics_scope is not None
+        and processor.get("analytics_scope") != analytics_scope
+    ):
         return "pending", f"Процессор {camera} не подтвердил свою роль"
     mode = processor.get("mode")
     if mode not in {"always_on", "session"}:
@@ -246,14 +252,8 @@ def _record_counts(
     """Use durable events when supported and snapshots only for explicit 404s."""
 
     legacy_snapshot_cameras: set[str] = set()
-    for camera in desired:
-        try:
-            result = event_sync.sync_camera(camera)
-        except (ai.AiUnavailable, ai.AiError, event_sync.EventSyncError) as exc:
-            # An uncertain journal is never permission to use the aggregate
-            # snapshot: the next successful page would then count it twice.
-            log.warning("Camera event sync failed camera=%s: %s", camera, exc)
-            event_sync.mark_sync_failure(camera, exc)
+    for camera, result in _camera_event_results(desired):
+        if result is None:
             continue
         if not result.supported:
             legacy_snapshot_cameras.add(camera)
@@ -278,6 +278,62 @@ def _record_counts(
         )
 
 
+def _sync_camera_events(
+    camera: str, *, threaded: bool = False
+) -> event_sync.SyncResult | None:
+    try:
+        if threaded:
+            close_old_connections()
+        try:
+            return event_sync.sync_camera(camera)
+        except (ai.AiUnavailable, ai.AiError, event_sync.EventSyncError) as exc:
+            # An uncertain journal is never permission to use the aggregate
+            # snapshot: the next successful page would then count it twice.
+            log.warning("Camera event sync failed camera=%s: %s", camera, exc)
+            event_sync.mark_sync_failure(camera, exc)
+            return None
+        except Exception as exc:
+            event_sync.mark_sync_failure(camera, exc)
+            raise
+    finally:
+        if threaded:
+            # Executor threads have their own Django connections, outside the
+            # HTTP request lifecycle. Release them even after failed imports.
+            connections.close_all()
+
+
+def _camera_event_results(
+    cameras: list[str],
+) -> Iterator[tuple[str, event_sync.SyncResult | None]]:
+    cameras = sorted({ai.normalize(camera) for camera in cameras})
+    workers = min(settings.CAMERA_EVENT_SYNC_WORKERS, len(cameras))
+    if workers <= 1:
+        for camera in cameras:
+            yield camera, _sync_camera_events(camera)
+        return
+    with ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="camera-events"
+    ) as pool:
+        pending = {
+            pool.submit(_sync_camera_events, camera, threaded=True): camera
+            for camera in cameras
+        }
+        failures: list[Exception] = []
+        for future in as_completed(pending):
+            camera = pending[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                # Finish healthy cameras before surfacing an unexpected fault;
+                # don't convert a programming/DB error into a successful sync.
+                log.exception("Camera event worker failed camera=%s", camera)
+                failures.append(exc)
+            else:
+                yield camera, result
+        if failures:
+            raise failures[0]
+
+
 def _observed_analytics_scopes(
     current: dict,
     desired_scopes: dict[str, str],
@@ -290,10 +346,10 @@ def _observed_analytics_scopes(
     live_scopes = current.get("analytics_scopes")
     if isinstance(live_scopes, dict):
         for camera, scope in live_scopes.items():
-            if (
-                isinstance(camera, str)
-                and scope in {ANALYTICS_SCOPE_SHIPPING, ANALYTICS_SCOPE_AI247}
-            ):
+            if isinstance(camera, str) and scope in {
+                ANALYTICS_SCOPE_SHIPPING,
+                ANALYTICS_SCOPE_AI247,
+            }:
                 result[camera] = scope
     return result
 
@@ -449,12 +505,16 @@ def reconcile() -> dict:
                 normalized_current_sources.add(ai.normalize(source))
             except ai.AiError:
                 continue
-    stopped_pending_sources = set(
-        AlwaysOnCounterCursor.objects.filter(
-            event_stop_drain_requested_at__isnull=False,
-            event_stop_confirmed_at__isnull=True,
-        ).values_list("camera", flat=True)
-    ) - normalized_current_sources - desired_sources
+    stopped_pending_sources = (
+        set(
+            AlwaysOnCounterCursor.objects.filter(
+                event_stop_drain_requested_at__isnull=False,
+                event_stop_confirmed_at__isnull=True,
+            ).values_list("camera", flat=True)
+        )
+        - normalized_current_sources
+        - desired_sources
+    )
     for camera in stopped_pending_sources:
         # Recovery after a process crash between the remote stop response and
         # its second durable barrier: the live configuration itself confirms

@@ -425,6 +425,10 @@ def _bounded_float_env(
     return value
 
 
+# Parallelism is across cameras; pages of one journal remain sequential.
+CAMERA_EVENT_SYNC_WORKERS = _bounded_int_env("CAMERA_EVENT_SYNC_WORKERS", 2, 1, 8)
+
+
 # Dedicated inbound credential for vehicle-plate events. It deliberately does
 # not reuse AI_SERVICE_API_KEY (outbound backend -> camera-PC). An empty value
 # keeps the webhook fail-closed until provisioned.

@@ -8,15 +8,24 @@ and the high-water cursor either all advance or all roll back.
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 from django.db import transaction
 from django.utils import timezone
-from django.utils.dateparse import parse_datetime
 
 from . import ai, analytics, production
+from .event_policy import decide_event
+from .event_protocol import (
+    EVENT_PAGE_LIMIT,
+    CountEvent,
+    EventPage,
+    EventSyncError,
+    _applies_to_continuous_analytics,
+    _event_brand,
+    _event_color,
+    parse_page,
+)
 from .models import (
     ANALYTICS_SCOPE_AI247,
     ANALYTICS_SCOPE_SHIPPING,
@@ -29,43 +38,10 @@ from .models import (
     ShippingDailyAnalytics,
 )
 
-EVENT_PAGE_LIMIT = 500
 EVENT_MAX_PAGES_PER_SYNC = 4
 
 
 log = logging.getLogger(__name__)
-
-
-class EventSyncError(Exception):
-    """The upstream journal cannot be advanced without risking lost counts."""
-
-
-@dataclass(frozen=True)
-class CountEvent:
-    upstream_event_id: int
-    occurred_at: datetime
-    camera: str
-    source: str
-    mode: str
-    continuous_analytics: bool
-    analytics_scope: str
-    class_name: str
-    total_after: int
-    color: str | None = None
-    color_confidence: float | None = None
-    brand: str | None = None
-    brand_confidence: float | None = None
-    sku: str | None = None
-    classification_status: str | None = None
-
-
-@dataclass(frozen=True)
-class EventPage:
-    events: tuple[CountEvent, ...]
-    next_after_id: int
-    has_more: bool
-    enrichment_pending: bool
-    journal_id: str | None
 
 
 @dataclass(frozen=True)
@@ -84,165 +60,6 @@ def _daily_model(analytics_scope: str):
     if analytics_scope == ANALYTICS_SCOPE_SHIPPING:
         return ShippingDailyAnalytics
     raise EventSyncError("AI /events: invalid event.analytics_scope")
-
-
-def _plain_int(value: object, field: str, *, minimum: int = 0) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise EventSyncError(f"AI /events: invalid {field}")
-    return value
-
-
-def _optional_text(
-    raw: dict,
-    field: str,
-    *,
-    max_length: int,
-) -> str | None:
-    value = raw.get(field)
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value or len(value) > max_length:
-        raise EventSyncError(f"AI /events: invalid event.{field}")
-    return value
-
-
-def _optional_confidence(raw: dict, field: str) -> float | None:
-    value = raw.get(field)
-    if value is None:
-        return None
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-        or not 0.0 <= float(value) <= 1.0
-    ):
-        raise EventSyncError(f"AI /events: invalid event.{field}")
-    return float(value)
-
-
-def _parse_event(raw: object, *, camera: str, previous_id: int) -> CountEvent:
-    if not isinstance(raw, dict):
-        raise EventSyncError("AI /events: event must be an object")
-    event_id = _plain_int(raw.get("id"), "event.id", minimum=1)
-    if event_id <= previous_id:
-        raise EventSyncError("AI /events: event ids must be strictly increasing")
-    if raw.get("cam") != camera:
-        raise EventSyncError("AI /events: event camera does not match the filter")
-
-    created_at = raw.get("created_at")
-    occurred_at = parse_datetime(created_at) if isinstance(created_at, str) else None
-    if occurred_at is None or timezone.is_naive(occurred_at):
-        raise EventSyncError("AI /events: invalid event.created_at")
-
-    mode = raw.get("mode")
-    if mode not in {"always_on", "session"}:
-        raise EventSyncError("AI /events: invalid event.mode")
-    continuous_analytics = raw.get("continuous_analytics", False)
-    if not isinstance(continuous_analytics, bool):
-        raise EventSyncError("AI /events: invalid event.continuous_analytics")
-    analytics_scope = raw.get("analytics_scope")
-    if analytics_scope not in {ANALYTICS_SCOPE_SHIPPING, ANALYTICS_SCOPE_AI247}:
-        raise EventSyncError("AI /events: invalid event.analytics_scope")
-    source = raw.get("source")
-    if source not in {"main", "sub"}:
-        raise EventSyncError("AI /events: invalid event.source")
-    if source != "sub" and (
-        mode == "always_on" or continuous_analytics
-    ):
-        raise EventSyncError(
-            "AI /events: continuous analytics event must use sub source"
-        )
-    class_name = raw.get("class_name")
-    if not isinstance(class_name, str) or len(class_name) > 100:
-        raise EventSyncError("AI /events: invalid event.class_name")
-    total_after = _plain_int(raw.get("total_after"), "event.total_after")
-    return CountEvent(
-        upstream_event_id=event_id,
-        occurred_at=occurred_at,
-        camera=camera,
-        source=source,
-        mode=mode,
-        continuous_analytics=continuous_analytics,
-        analytics_scope=analytics_scope,
-        class_name=class_name,
-        total_after=total_after,
-        color=_optional_text(raw, "color", max_length=100),
-        color_confidence=_optional_confidence(raw, "color_confidence"),
-        brand=_optional_text(raw, "brand", max_length=100),
-        brand_confidence=_optional_confidence(raw, "brand_confidence"),
-        sku=_optional_text(raw, "sku", max_length=255),
-        classification_status=_optional_text(
-            raw,
-            "classification_status",
-            max_length=32,
-        ),
-    )
-
-
-def _applies_to_continuous_analytics(event: CountEvent) -> bool:
-    """Honor the durable decision made when the camera event was created."""
-
-    return event.mode == "always_on" or (
-        event.mode == "session" and event.continuous_analytics
-    )
-
-
-def parse_page(payload: object, *, camera: str, after_id: int) -> EventPage:
-    """Validate the observed production /events contract without coercion."""
-
-    if not isinstance(payload, dict):
-        raise EventSyncError("AI /events: response must be an object")
-    raw_events = payload.get("events")
-    if not isinstance(raw_events, list) or len(raw_events) > EVENT_PAGE_LIMIT:
-        raise EventSyncError("AI /events: invalid events page")
-    has_more = payload.get("has_more")
-    if not isinstance(has_more, bool):
-        raise EventSyncError("AI /events: invalid has_more")
-    enrichment_pending = payload.get("enrichment_pending", False)
-    if not isinstance(enrichment_pending, bool):
-        raise EventSyncError("AI /events: invalid enrichment_pending")
-    journal_id = payload.get("journal_id")
-    if journal_id is not None and (
-        not isinstance(journal_id, str)
-        or not journal_id.strip()
-        or len(journal_id) > 64
-    ):
-        raise EventSyncError("AI /events: invalid journal_id")
-
-    events: list[CountEvent] = []
-    previous_id = after_id
-    for raw in raw_events:
-        event = _parse_event(raw, camera=camera, previous_id=previous_id)
-        events.append(event)
-        previous_id = event.upstream_event_id
-
-    next_after_id = _plain_int(payload.get("next_after_id"), "next_after_id")
-    expected_next = events[-1].upstream_event_id if events else after_id
-    if next_after_id != expected_next:
-        raise EventSyncError("AI /events: next_after_id skipped an event")
-    if has_more and not events:
-        raise EventSyncError("AI /events: has_more without cursor progress")
-    return EventPage(
-        tuple(events),
-        next_after_id,
-        has_more,
-        enrichment_pending,
-        journal_id,
-    )
-
-
-def _event_color(event: CountEvent) -> dict[str, int]:
-    color = (event.color or event.class_name).split("_", 1)[0].strip().lower()
-    return {color: 1} if color and len(color) <= 32 else {}
-
-
-def _event_brand(event: CountEvent) -> dict[str, int] | None:
-    """Return a classified brand, preserving absence as legacy data."""
-
-    if event.brand is None:
-        return None
-    brand = " ".join(event.brand.split()).lower()
-    return {brand: 1} if brand and len(brand) <= 100 else None
 
 
 @transaction.atomic
@@ -423,47 +240,46 @@ def _mark_events_unsupported(camera: str) -> None:
     )
 
 
-def _production_period_posted(event: CountEvent) -> bool:
-    """True when the event's production shift is already posted to stock."""
+def _locked_accounting_periods(
+    camera: str, events: tuple[CountEvent, ...]
+) -> tuple[set[date], set[date]]:
+    """Read shift/day guards once under the page's camera-cursor lock.
 
-    if event.analytics_scope != ANALYTICS_SCOPE_AI247:
-        return False
-    stock_batch = (
+    Stock closing and archive operations acquire that same cursor first. Their
+    eligibility cannot change until this page commits; no per-bag requery is
+    needed. Keep row locks on existing periods and deterministic lock order.
+    """
+    ai_events = [
+        event for event in events if event.analytics_scope == ANALYTICS_SCOPE_AI247
+    ]
+    business_days = {
+        production.business_day_for(event.occurred_at) for event in ai_events
+    }
+    calendar_days = {timezone.localdate(event.occurred_at) for event in ai_events}
+    batches = (
         AlwaysOnStockBatch.objects.select_for_update()
         .filter(
-            camera=event.camera,
-            business_day=production.business_day_for(event.occurred_at),
+            camera=camera,
+            business_day__in=business_days,
         )
-        .first()
+        .order_by("business_day")
+    )
+    days = (
+        AlwaysOnDailyAnalytics.objects.select_for_update()
+        .filter(
+            camera=camera,
+            day__in=calendar_days,
+        )
+        .order_by("day")
     )
     return (
-        stock_batch is not None
-        and stock_batch.status in production.TERMINAL_BATCH_STATUSES
+        {
+            row.business_day
+            for row in batches
+            if row.status in production.TERMINAL_BATCH_STATUSES
+        },
+        {row.day for row in days if row.archived_at is not None},
     )
-
-
-def _assert_open_accounting_period(
-    event: CountEvent,
-    *,
-    record_production: bool,
-) -> None:
-    """Never mutate an already posted/archived period with a late event."""
-
-    if event.analytics_scope == ANALYTICS_SCOPE_AI247:
-        if record_production and _production_period_posted(event):
-            raise EventSyncError(
-                "AI /events: event belongs to an already posted production shift"
-            )
-        day = timezone.localdate(event.occurred_at)
-        daily_row = (
-            AlwaysOnDailyAnalytics.objects.select_for_update()
-            .filter(camera=event.camera, day=day)
-            .first()
-        )
-        if daily_row is not None and daily_row.archived_at is not None:
-            raise EventSyncError(
-                "AI /events: event belongs to an archived analytics day"
-            )
 
 
 @transaction.atomic
@@ -580,44 +396,34 @@ def apply_page(
             # journal events will be added.
             cursor.event_boundary_validated = True
 
+    incoming = tuple(
+        event for event in page.events if event.upstream_event_id > current_id
+    )
+    posted_days, archived_days = _locked_accounting_periods(camera, incoming)
+    existing_events = {
+        row.upstream_event_id: row
+        for row in AlwaysOnImportedEvent.objects.filter(
+            camera=camera,
+            upstream_event_id__in=[event.upstream_event_id for event in incoming],
+        )
+    }
+    new_events: list[AlwaysOnImportedEvent] = []
+
     for event in page.events:
         if event.upstream_event_id <= current_id:
             continue
-        allowed_scope = event.analytics_scope == role
-        bootstrap_ai_tail = bool(
-            role == ANALYTICS_SCOPE_SHIPPING
-            and pending_shipping_bootstrap
-            and event.analytics_scope == ANALYTICS_SCOPE_AI247
+        disposition = decide_event(
+            event,
+            role=role,
+            pending_shipping_bootstrap=pending_shipping_bootstrap,
         )
-        if not allowed_scope and not bootstrap_ai_tail:
-            raise EventSyncError(
-                "AI /events: event analytics scope violates camera role"
-            )
-        legacy_ai_session = bool(
-            role == ANALYTICS_SCOPE_AI247
-            and event.mode == "session"
-            and event.analytics_scope == ANALYTICS_SCOPE_AI247
-        )
-        # Old CV journals used the implicit AI scope for session rows.  A
-        # permanently AI-owned camera imports those rows for cursor continuity
-        # but never turns shipment crossings into AI production.  A pending
-        # shipping bootstrap is the sole exception: it copies the delta only
-        # into the rollback-owned daily baseline before the additive seed.
-        applies_to_continuous = bool(
-            _applies_to_continuous_analytics(event) and not legacy_ai_session
-        )
-        applies_to_shipping_bootstrap = bool(
-            applies_to_continuous
-            and bootstrap_ai_tail
-        )
-        applies_to_analytics = bool(
-            applies_to_continuous and not applies_to_shipping_bootstrap
-        )
-        applies_to_production = bool(
-            applies_to_analytics
-            and event.analytics_scope == ANALYTICS_SCOPE_AI247
-        )
-        if applies_to_production and _production_period_posted(event):
+        applies_to_analytics = disposition.analytics
+        applies_to_shipping_bootstrap = disposition.shipping_bootstrap
+        applies_to_production = disposition.production
+        if (
+            applies_to_production
+            and production.business_day_for(event.occurred_at) in posted_days
+        ):
             # The shift is already posted to stock, so this late bag (a
             # restart-gap backfill, typically) cannot join it. Refusing the
             # page would freeze the journal for every later event; instead the
@@ -625,29 +431,35 @@ def apply_page(
             # production never received it.
             applies_to_production = False
             late_for_posted_shift += 1
-        applies_to_daily = applies_to_analytics or applies_to_shipping_bootstrap
-        imported, created = AlwaysOnImportedEvent.objects.get_or_create(
-            camera=camera,
-            upstream_event_id=event.upstream_event_id,
-            defaults={
-                "occurred_at": event.occurred_at,
-                "source": event.source,
-                "mode": event.mode,
-                "continuous_analytics": event.continuous_analytics,
-                "analytics_scope": event.analytics_scope,
-                "class_name": event.class_name,
-                "color": event.color,
-                "color_confidence": event.color_confidence,
-                "brand": event.brand,
-                "brand_confidence": event.brand_confidence,
-                "sku": event.sku,
-                "classification_status": event.classification_status,
-                "total_after": event.total_after,
-                "applied_to_analytics": applies_to_analytics,
-                "applied_to_production": applies_to_production,
-                "applied_to_shipping_bootstrap": applies_to_shipping_bootstrap,
-            },
-        )
+        applies_to_daily = disposition.daily
+        defaults = {
+            "occurred_at": event.occurred_at,
+            "source": event.source,
+            "mode": event.mode,
+            "continuous_analytics": event.continuous_analytics,
+            "analytics_scope": event.analytics_scope,
+            "class_name": event.class_name,
+            "color": event.color,
+            "color_confidence": event.color_confidence,
+            "brand": event.brand,
+            "brand_confidence": event.brand_confidence,
+            "sku": event.sku,
+            "classification_status": event.classification_status,
+            "total_after": event.total_after,
+            "applied_to_analytics": applies_to_analytics,
+            "applied_to_production": applies_to_production,
+            "applied_to_shipping_bootstrap": applies_to_shipping_bootstrap,
+        }
+        imported = existing_events.get(event.upstream_event_id)
+        created = imported is None
+        if created:
+            new_events.append(
+                AlwaysOnImportedEvent(
+                    camera=camera,
+                    upstream_event_id=event.upstream_event_id,
+                    **defaults,
+                )
+            )
         if not created:
             if (
                 imported.occurred_at != event.occurred_at
@@ -669,16 +481,16 @@ def apply_page(
                 raise EventSyncError("AI /events: imported event was not fully applied")
             if imported.applied_to_production != applies_to_production:
                 raise EventSyncError("AI /events: event production eligibility changed")
-            if (
-                imported.applied_to_shipping_bootstrap
-                != applies_to_shipping_bootstrap
-            ):
+            if imported.applied_to_shipping_bootstrap != applies_to_shipping_bootstrap:
                 raise EventSyncError("AI /events: event bootstrap eligibility changed")
         elif applies_to_daily:
-            _assert_open_accounting_period(
-                event,
-                record_production=applies_to_production,
-            )
+            if (
+                event.analytics_scope == ANALYTICS_SCOPE_AI247
+                and timezone.localdate(event.occurred_at) in archived_days
+            ):
+                raise EventSyncError(
+                    "AI /events: event belongs to an archived analytics day"
+                )
             color_delta = _event_color(event)
             analytics.record_model_delta(
                 camera=camera,
@@ -700,6 +512,10 @@ def apply_page(
         current_id = event.upstream_event_id
         last_event_at = event.occurred_at
 
+    # Constraints remain authoritative. A conflicting writer or failed bulk
+    # insert rolls back projections and cursor along with the entire page.
+    AlwaysOnImportedEvent.objects.bulk_create(new_events, batch_size=EVENT_PAGE_LIMIT)
+
     if late_for_posted_shift:
         log.warning(
             "Camera events arrived after their shift was posted camera=%s "
@@ -716,12 +532,9 @@ def apply_page(
         cursor.event_drain_required_at is None
         or synced_at >= cursor.event_drain_required_at
     )
-    stop_drain_satisfied = (
-        cursor.event_stop_drain_requested_at is None
-        or (
-            cursor.event_stop_confirmed_at is not None
-            and synced_at >= cursor.event_stop_confirmed_at
-        )
+    stop_drain_satisfied = cursor.event_stop_drain_requested_at is None or (
+        cursor.event_stop_confirmed_at is not None
+        and synced_at >= cursor.event_stop_confirmed_at
     )
     drain_satisfied = ordinary_drain_satisfied and stop_drain_satisfied
     stream_caught_up = not page.has_more and not page.enrichment_pending
