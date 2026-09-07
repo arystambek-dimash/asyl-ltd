@@ -637,6 +637,22 @@ export interface WagonNumberCameraStatus {
   assigned: boolean;
   mode: "wagon_number_24_7";
 }
+export type TransportRecognitionModel = "vehicle_number" | "wagon_number";
+
+export interface ShippingTransportCameraSettings {
+  conveyor_camera: string;
+  number_camera: string | null;
+  recognition_model: TransportRecognitionModel | null;
+  updated_at: string | null;
+}
+
+export interface ShippingTransportRecognition {
+  conveyor_camera: string;
+  number_camera: string;
+  recognition_model: TransportRecognitionModel;
+  number: string | null;
+  observed_at: string;
+}
 export interface WagonNumberCameraSettings {
   camera_source: string | null;
   source: "main";

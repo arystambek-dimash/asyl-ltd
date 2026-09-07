@@ -74,9 +74,13 @@ def _camera_token_user(token: str):
     return user
 
 
-def _is_valid_camera_stream_source(source: str) -> bool:
+def _is_valid_camera_stream_source(source: str, *, allow_main: bool = False) -> bool:
     if not source or source.strip() != source:
         return False
+    # Superusers preview a number camera before saving its conveyor binding.
+    # Limit the extra access to camera main aliases, never arbitrary go2rtc URLs.
+    if allow_main and re.fullmatch(r"cam[1-9][0-9]*main", source):
+        return True
     if STAFF_ONLY_CAMERA_MAIN_STREAM_RE.fullmatch(source):
         if (
             settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED
@@ -103,7 +107,7 @@ def _is_valid_camera_stream_source(source: str) -> bool:
         return False
 
 
-def _camera_stream_source(original_uri: str | None) -> str | None:
+def _camera_stream_source(original_uri: str | None, *, allow_main: bool = False) -> str | None:
     if (
         not isinstance(original_uri, str)
         or not original_uri
@@ -131,7 +135,7 @@ def _camera_stream_source(original_uri: str | None) -> str | None:
     ):
         return None
     source = query[0][1]
-    return source if _is_valid_camera_stream_source(source) else None
+    return source if _is_valid_camera_stream_source(source, allow_main=allow_main) else None
 
 
 class CameraTokenView(APIView):
@@ -161,11 +165,13 @@ class CameraAuthView(APIView):
     throttle_classes: ClassVar[list[type]] = []
 
     def get(self, request):
-        source = _camera_stream_source(request.META.get("HTTP_X_ORIGINAL_URI"))
-        if source is None:
-            return Response(status=status.HTTP_403_FORBIDDEN)
         token = request.COOKIES.get(CAM_COOKIE, "")
         user = _camera_token_user(token)
         if user is None:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        source = _camera_stream_source(
+            request.META.get("HTTP_X_ORIGINAL_URI"), allow_main=user.is_superuser
+        )
+        if source is None:
             return Response(status=status.HTTP_403_FORBIDDEN)
         return Response(status=status.HTTP_204_NO_CONTENT)

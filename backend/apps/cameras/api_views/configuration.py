@@ -2,21 +2,22 @@
 
 from django.db import transaction
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm, IsStaff
-from apps.orders.models import Order
+from apps.eventlog.services import log_event
 
 from .. import ai, continuous, services
 from ..models import (
     ANALYTICS_SCOPE_AI247,
     ANALYTICS_SCOPE_SHIPPING,
-    AiCountingSession,
     MonoblockCameraSettings,
+    ShippingTransportCamera,
 )
 from ..policies import (
+    assert_camera_has_no_active_work,
     assert_no_pending_shipping_bootstrap,
     reserve_camera_roles,
 )
@@ -234,7 +235,7 @@ class MonoblockCameraSettingsView(APIView):
             )
             changed_sources = set(previous_shipping) ^ set(proposed_shipping)
             for camera in sorted(changed_sources):
-                _assert_camera_has_no_active_work(camera)
+                assert_camera_has_no_active_work(camera)
             ai247_sources = MonoblockCameraSettings.ai247_sources(row)
             reserve_camera_roles(ai247_sources, ANALYTICS_SCOPE_AI247)
             reserve_camera_roles(proposed_shipping, ANALYTICS_SCOPE_SHIPPING)
@@ -254,6 +255,26 @@ class MonoblockCameraSettingsView(APIView):
             row.camera_sources = sources
             row.updated_by = request.user
             row.save(update_fields=["camera_sources", "updated_by", "updated_at"])
+            # The association belongs to this conveyor assignment. Removing
+            # a conveyor releases its number camera for another loading bay.
+            removed_bindings = ShippingTransportCamera.objects.filter(
+                conveyor_camera__in=set(previous_shipping) - set(proposed_shipping)
+            )
+            if not request.user.is_superuser and removed_bindings.exists():
+                raise PermissionDenied(
+                    "Только суперпользователь может удалить конвейер с привязанной камерой номера"
+                )
+            for binding in removed_bindings:
+                log_event(
+                    "camera_settings", "Камера номера отвязана вместе с конвейером",
+                    user=request.user,
+                    payload={
+                        "conveyor_camera": binding.conveyor_camera,
+                        "number_camera": binding.number_camera,
+                        "recognition_model": binding.recognition_model,
+                    },
+                )
+            removed_bindings.delete()
         sync_status, detail = _sync_effective_always_on(previous_sources)
         row = MonoblockCameraSettings.objects.get(singleton=True)
         return Response(
@@ -269,17 +290,3 @@ class MonoblockCameraSettingsView(APIView):
                 else status.HTTP_202_ACCEPTED
             ),
         )
-
-
-def _assert_camera_has_no_active_work(camera: str) -> None:
-    if AiCountingSession.objects.filter(
-        camera=camera,
-        status__in=AiCountingSession.OPEN_STATUSES,
-    ).exists() or Order.objects.filter(
-        loading_camera=camera,
-        status__in=("confirmed", "arrived", "loading"),
-    ).exists():
-        raise ValidationError({
-            "detail": "Сначала завершите активную отгрузку этой камеры",
-            "code": "monoblock_busy",
-        })

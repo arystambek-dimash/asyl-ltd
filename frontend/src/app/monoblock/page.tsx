@@ -32,6 +32,7 @@ import {
   type AlwaysOnReceiptMappingContext,
 } from "@/components/monoblock/always-on-production-panel";
 import { CameraAnalyticsOverview, type AnalyticsDateRange } from "@/components/monoblock/camera-analytics-overview";
+import { ShippingTransportCamera } from "@/components/monoblock/shipping-transport-camera";
 import { RequirePerm } from "@/components/require-perm";
 import { CompletedOrdersSettingsModal } from "@/components/shipping/completed-orders-settings-modal";
 import { ShippingTable } from "@/components/shipping/shipping-table";
@@ -90,8 +91,8 @@ const DETECTIONS_STALE_MS = 2_500;
 // каждые 3 секунды на экране, который висит открытым весь день.
 const SLOW_POLL_MS = 30_000;
 const ALWAYS_ON_MODAL_VIEWS = ["live", "production", "analytics"] as const;
-type ModalView = (typeof ALWAYS_ON_MODAL_VIEWS)[number];
-const SHIPPING_MODAL_VIEWS: readonly ModalView[] = ["live", "analytics"];
+type ModalView = (typeof ALWAYS_ON_MODAL_VIEWS)[number] | "transport";
+const SHIPPING_MODAL_VIEWS: readonly ModalView[] = ["live", "analytics", "transport"];
 type MonoblockTab = "shipments" | "monoblock";
 
 /** Заказ, занимающий камеру отгрузки, — подпись плитки. */
@@ -106,6 +107,7 @@ const MODAL_TABS: { key: ModalView; label: string; icon: LucideIcon }[] = [
   { key: "live", label: "Прямой эфир", icon: Video },
   { key: "production", label: "Выпуск и склад", icon: PackageCheck },
   { key: "analytics", label: "Аналитика", icon: BarChart3 },
+  { key: "transport", label: "Камера номера", icon: ScanLine },
 ];
 
 /** Панель вкладки модалки: общий Tabs не связывает панели по id, роль и подпись ставим сами. */
@@ -493,11 +495,15 @@ function AlwaysOnCard({
   bound?: ShippingTileBinding;
 }) {
   const isShipping = scope === "shipping";
+  const { me } = useAuth();
+  const canManageTransport = isShipping && me?.is_superuser === true;
   const runtimeSettingsUrl = isShipping ? "/cameras/shipping-continuous-settings/" : "/cameras/always-on-settings/";
   const detectionsUrl = isShipping ? "/cameras/shipping-continuous-detections/" : "/cameras/always-on-detections/";
   const analyticsUrl = isShipping ? "/cameras/shipping-continuous-analytics/" : "/cameras/always-on-analytics/";
   const modalViews = isShipping ? SHIPPING_MODAL_VIEWS : ALWAYS_ON_MODAL_VIEWS;
-  const visibleModalTabs = MODAL_TABS.filter((tab) => modalViews.includes(tab.key));
+  const visibleModalTabs = MODAL_TABS.filter(
+    (tab) => modalViews.includes(tab.key) && (tab.key !== "transport" || canManageTransport),
+  );
   const [open, setOpen] = useState(false);
   const today = useLocalDay();
   const [dateRange, setDateRange] = useState<AnalyticsDateRange | null>(null);
@@ -1174,6 +1180,10 @@ function AlwaysOnCard({
                 </p>
               )}
             </aside>
+          </div>
+        ) : modalView === "transport" && canManageTransport ? (
+          <div {...modalPanelProps("transport")}>
+            {open && <ShippingTransportCamera conveyorCamera={processor.cam} />}
           </div>
         ) : modalView === "production" ? (
           <div {...modalPanelProps("production")}>

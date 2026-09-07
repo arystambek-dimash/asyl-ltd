@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   apiPut: vi.fn(),
   apiPost: vi.fn(),
   permissions: ["shipping.load"],
+  isSuperuser: false,
   resolveDetections: null as null | ((value: { data: { processors: unknown[] } }) => void),
   rejectDetections: null as null | ((reason?: unknown) => void),
 }));
@@ -22,7 +23,7 @@ vi.mock("@/store/auth", () => ({
       id: 1,
       username: "loader",
       is_client: false,
-      is_superuser: false,
+      is_superuser: mocks.isSuperuser,
 
       permissions: mocks.permissions,
       position: null,
@@ -35,6 +36,11 @@ vi.mock("@/store/auth", () => ({
 
 vi.mock("@/components/layout/app-shell", () => ({
   AppShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+vi.mock("@/components/monoblock/shipping-transport-camera", () => ({
+  ShippingTransportCamera: ({ conveyorCamera }: { conveyorCamera: string }) => (
+    <div data-testid="transport-camera">{conveyorCamera}</div>
+  ),
 }));
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -305,6 +311,7 @@ function selectedDayPanel(day: string) {
 beforeEach(() => {
   mocks.requestedUrls = [];
   mocks.permissions = ["shipping.load"];
+  mocks.isSuperuser = false;
   mocks.apiPut.mockReset();
   mocks.apiPost.mockReset();
   mocks.responses = new Map<string, unknown>([
@@ -344,6 +351,29 @@ beforeEach(() => {
 });
 
 describe("AI 24/7 live detections", () => {
+  it("mounts number camera settings only in the shipping modal for a superuser", async () => {
+    mocks.isSuperuser = true;
+    setupShippingHistory();
+    const user = userEvent.setup();
+    render(<MonoblockPage />);
+    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    expect(screen.queryByTestId("transport-camera")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Камера номера" }));
+    expect(screen.getByTestId("transport-camera")).toHaveTextContent("cam2");
+    await user.click(screen.getByRole("tab", { name: "Аналитика" }));
+    expect(screen.queryByTestId("transport-camera")).not.toBeInTheDocument();
+  });
+
+  it("does not expose number camera settings through the manage permission alone", async () => {
+    mocks.permissions = ["shipping.load", "sys_permissions.manage"];
+    setupShippingHistory();
+    const user = userEvent.setup();
+    render(<MonoblockPage />);
+    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    expect(screen.queryByRole("tab", { name: "Камера номера" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("transport-camera")).not.toBeInTheDocument();
+  });
+
   it("не подменяет недоступный живой счётчик нулём", async () => {
     const user = userEvent.setup();
     const unavailableSettings = {

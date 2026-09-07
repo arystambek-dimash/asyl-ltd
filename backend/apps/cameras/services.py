@@ -258,7 +258,7 @@ def _natural(s: str) -> tuple:
 
 
 def _static_slot(path: str) -> bool:
-    """cam1..cam32 (и их camNai) уже прописаны в go2rtc.yaml."""
+    """cam1..cam32 (и их camNai/camNmain) уже прописаны в go2rtc.yaml."""
     m = re.fullmatch(r"cam(\d+)", path)
     if m is None:
         return False
@@ -284,6 +284,12 @@ def _sync_go2rtc(pairs: list[tuple[str, str]]) -> None:
             continue
         _go2rtc_put(path, f"{base}/{sub}", f"ffmpeg:{path}#video=h264")
         _go2rtc_put(f"{path}ai", f"{base}/{path}ai")
+        if ai.CAM_RE.fullmatch(path):
+            # MediaMTX inventory's path is the main stream; sub is a separate
+            # path. OCR and its preview must use the same full-resolution frame.
+            _go2rtc_put(
+                f"{path}main", f"{base}/{path}", f"ffmpeg:{path}main#video=h264"
+            )
 
 
 def _go2rtc_put(name: str, *srcs: str) -> None:

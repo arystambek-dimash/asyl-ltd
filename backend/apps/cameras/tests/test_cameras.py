@@ -175,6 +175,36 @@ def test_discover_syncs_dynamic_streams_to_go2rtc(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("camera", ["cam33", "cam64"])
+def test_discover_provisions_dynamic_main_without_replacing_sub_or_ai(monkeypatch, camera):
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    monkeypatch.setattr(services, "GO2RTC_API", "http://go2rtc:1984")
+    inventory = {
+        "devices": [
+            {"kind": "nvr-channel", "path": "cam32", "sub": "cam32sub"},
+            {"kind": "nvr-channel", "path": camera, "sub": f"{camera}sub"},
+        ],
+    }
+    with (
+        patch.object(ai, "inventory", return_value=inventory),
+        patch.object(services, "_go2rtc_put") as put,
+    ):
+        cameras = services.discover_cameras()
+
+    assert [item["src"] for item in cameras] == ["cam32", camera]
+    base = (
+        f"rtsp://{services.CAMERA_USER}:{services.CAMERA_PASS}"
+        f"@{services.CAMERA_HOST}:{services.CAMERA_PORT}"
+    )
+    # cam32 already has all three aliases in the static configuration. The
+    # dynamic camera gets the same split: low-bandwidth wall, AI and true main.
+    assert [call.args for call in put.call_args_list] == [
+        (camera, f"{base}/{camera}sub", f"ffmpeg:{camera}#video=h264"),
+        (f"{camera}ai", f"{base}/{camera}ai"),
+        (f"{camera}main", f"{base}/{camera}", f"ffmpeg:{camera}main#video=h264"),
+    ]
+
+
 def test_discover_falls_back_to_probe_when_ai_down(monkeypatch):
     monkeypatch.setattr(ai, "AI_KEY", "k")
     monkeypatch.setattr(services, "CAMERA_PASS", "x")
@@ -227,8 +257,27 @@ def test_discover_preserves_last_good_topology_during_total_outage(monkeypatch):
     ):
         first = services.discover_cameras()
     cache.delete(services.CACHE_KEY)
-    with patch.object(services, "_probe_path", return_value="absent"):
-        during_outage = services.discover_cameras()
+    thread_class = threading.Thread
+    refresh_threads = []
+
+    def capture_refresh(*args, **kwargs):
+        thread = thread_class(*args, **kwargs)
+        if kwargs.get("name") == "camera-discovery":
+            refresh_threads.append(thread)
+        return thread
+
+    with (
+        patch.object(services, "_probe_path", return_value="absent"),
+        patch.object(services.threading, "Thread", side_effect=capture_refresh),
+    ):
+        try:
+            during_outage = services.discover_cameras()
+        finally:
+            # Keep the outage stub alive until refresh finishes, and prevent
+            # it from writing cached topology into the next test's fixture.
+            for thread in refresh_threads:
+                thread.join(timeout=5)
+                assert not thread.is_alive()
 
     assert [camera["id"] for camera in during_outage] == [
         camera["id"] for camera in first

@@ -26,6 +26,8 @@ from .views import (
     ShippingContinuousDetectionsView,
     ShippingContinuousHistoryView,
     ShippingContinuousSettingsView,
+    ShippingTransportCameraView,
+    ShippingTransportRecognizeView,
     VehiclePlateRuntimeView,
     WagonNumberCameraSettingsView,
 )
@@ -110,5 +112,7 @@ urlpatterns = [
         name="vehicle-plate-runtime",
     ),
     path("cameras/<str:cam>/ai/", CameraAiView.as_view()),
+    path("cameras/<str:cam>/transport-camera/", ShippingTransportCameraView.as_view()),
+    path("cameras/<str:cam>/transport-camera/recognize/", ShippingTransportRecognizeView.as_view()),
     path("cameras/<str:cam>/ai/reset/", CameraAiResetView.as_view()),
 ]

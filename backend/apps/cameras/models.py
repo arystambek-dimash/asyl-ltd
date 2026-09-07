@@ -6,6 +6,37 @@ ANALYTICS_SCOPE_SHIPPING = "shipping"
 ANALYTICS_SCOPE_AI247 = "ai_247"
 
 
+class ShippingTransportCamera(models.Model):
+    """Number camera and OCR model chosen for one shipping conveyor."""
+
+    RECOGNITION_MODELS = (
+        ("vehicle_number", "Госномера грузовиков"),
+        ("wagon_number", "Номера вагонов"),
+    )
+    conveyor_camera = models.CharField(max_length=32, unique=True)
+    number_camera = models.CharField(max_length=32, unique=True)
+    recognition_model = models.CharField(max_length=32, choices=RECOGNITION_MODELS)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="shipping_transport_camera_updates",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=~Q(conveyor_camera=models.F("number_camera")),
+                name="shipping_number_camera_separate",
+            ),
+            models.CheckConstraint(
+                condition=Q(recognition_model__in=["vehicle_number", "wagon_number"]),
+                name="shipping_number_model_valid",
+            ),
+        ]
+
+
 class AiCountingSession(models.Model):
     """Durable ownership of a per-camera AI counting slot.
 

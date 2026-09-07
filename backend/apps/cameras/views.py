@@ -50,6 +50,10 @@ from .api_views.operations import (
     ShippingContinuousSettingsView,
     WagonNumberCameraSettingsView,
 )
+from .api_views.transport_camera import (
+    ShippingTransportCameraView,
+    ShippingTransportRecognizeView,
+)
 from .api_views.vehicle_runtime import VehiclePlateRuntimeView
 
 __all__ = [
@@ -86,6 +90,8 @@ __all__ = [
     "ShippingContinuousDetectionsView",
     "ShippingContinuousHistoryView",
     "ShippingContinuousSettingsView",
+    "ShippingTransportCameraView",
+    "ShippingTransportRecognizeView",
     "VehiclePlateRuntimeView",
     "WagonNumberCameraSettingsView",
 ]

@@ -1,8 +1,25 @@
 """Shared rules for permanent camera roles and analytics initialization."""
 
-from rest_framework.exceptions import APIException
+from rest_framework.exceptions import APIException, ValidationError
 
-from .models import ContinuousCameraRole, ShippingAnalyticsBootstrap
+from apps.orders.models import Order
+
+from .models import AiCountingSession, ContinuousCameraRole, ShippingAnalyticsBootstrap
+
+
+def assert_camera_has_no_active_work(camera: str) -> None:
+    """Call under the shared camera-binding lock before changing its setup."""
+    if AiCountingSession.objects.filter(
+        camera=camera,
+        status__in=AiCountingSession.OPEN_STATUSES,
+    ).exists() or Order.objects.filter(
+        loading_camera=camera,
+        status__in=("confirmed", "arrived", "loading"),
+    ).exists():
+        raise ValidationError({
+            "detail": "Сначала завершите активную отгрузку этой камеры",
+            "code": "monoblock_busy",
+        })
 
 
 class CameraRoleImmutable(APIException):
