@@ -1,6 +1,6 @@
 "use client";
 import { OrderConfirmation, type OrderConfirmationData } from "@/components/order-confirmation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import Link from "next/link";
@@ -148,7 +148,7 @@ function useCashierQueue(
 
   const mutationInFlight = useRef(false);
   async function act(fn: () => Promise<unknown>, done?: string) {
-    if (mutationInFlight.current) return;
+    if (mutationInFlight.current) return false;
     mutationInFlight.current = true;
     setBusy(true);
     setError("");
@@ -158,8 +158,10 @@ function useCashierQueue(
       // Без подтверждения удачное действие выглядит как «ничего не произошло»,
       // и кассир жмёт кнопку второй раз.
       if (done) showSuccess(done);
+      return true;
     } catch (e) {
       setError(apiError(e));
+      return false;
     } finally {
       mutationInFlight.current = false;
       setBusy(false);
@@ -221,10 +223,7 @@ function ConfirmQueueSection({
   canReceivePayments: boolean;
 }) {
   const [confirming, setConfirming] = useState<Order | null>(null);
-  useEffect(() => {
-    if (confirming && !q.busy && !q.loading && !q.pendingOrders.some((order) => order.id === confirming.id))
-      setConfirming(null);
-  }, [confirming, q.busy, q.loading, q.pendingOrders]);
+
   const {
     data: confirmationDepartments,
     error: departmentsError,
@@ -251,8 +250,7 @@ function ConfirmQueueSection({
               departments={confirmationDepartments ?? []}
               busy={q.busy}
               onConfirm={async (payload) => {
-                // act exposes errors; close only after this order leaves the live queue.
-                await q.confirmOrder(confirming, payload);
+                if (await q.confirmOrder(confirming, payload)) setConfirming(null);
               }}
             />
           )

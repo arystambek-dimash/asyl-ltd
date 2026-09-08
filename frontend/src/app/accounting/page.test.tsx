@@ -1,9 +1,14 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import CashierPage from "./page";
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), paid: false, queueError: false }));
+const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), paid: false, queueError: false, poll: async () => {} }));
+vi.mock("@/lib/use-visible-polling", () => ({
+  useVisiblePolling: (poll: () => Promise<void>, _interval: number, active: boolean) => {
+    if (active) mocks.poll = poll;
+  },
+}));
 vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: { is_superuser: true, permissions: [] }, loading: false }) }));
 vi.mock("@/components/layout/app-shell", () => ({
   AppShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -144,4 +149,48 @@ it("loads only overview totals initially and fetches each confirmation page once
   await screen.findByRole("button", { name: "Подтвердить получение" });
   expect(urls().filter((url) => url === "/orders/payments-queue/?page=1&page_size=50")).toHaveLength(1);
   expect(urls().filter((url) => url === "/orders/?status_group=pending&page=1&page_size=50")).toHaveLength(1);
+});
+
+it("keeps entered confirmation data when a background refresh removes the row from the page", async () => {
+  const user = userEvent.setup();
+  const baseGet = mocks.get.getMockImplementation()!;
+  let includeRequest = true;
+  mocks.get.mockImplementation(async (raw: string) => {
+    const path = new URL(raw, "http://localhost").pathname;
+    if (path === "/orders/")
+      return {
+        data: {
+          results: includeRequest
+            ? [
+                {
+                  id: 621,
+                  client_name: "Клиент",
+                  status: "pending",
+                  currency: "KZT",
+                  total_amount: "0",
+                  items: [{ id: 7, product: 1, quantity: 2, product_label: "Мука" }],
+                },
+              ]
+            : [],
+          count: includeRequest ? 1 : 0,
+          next: null,
+        },
+      };
+    if (path === "/departments/") return { data: [{ id: 1, code: "main", name: "Мельница", is_active: true }] };
+    return baseGet(raw);
+  });
+  render(<CashierPage />);
+  await user.click(screen.getByRole("tab", { name: /Заявки и оплаты/ }));
+  await user.click(await screen.findByRole("button", { name: "Проверить и подтвердить" }));
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Отдел продаж" }), "main");
+  await user.type(screen.getByRole("spinbutton", { name: "Цена: Мука" }), "1234");
+  includeRequest = false;
+  await act(async () => {
+    await mocks.poll();
+  });
+  expect(screen.getByRole("combobox", { name: "Отдел продаж" })).toHaveValue("main");
+  expect(screen.getByRole("spinbutton", { name: "Цена: Мука" })).toHaveValue(1234);
+  await user.click(screen.getByRole("button", { name: "Подтвердить заказ" }));
+  await waitFor(() => expect(screen.queryByRole("combobox", { name: "Отдел продаж" })).not.toBeInTheDocument());
+  expect(mocks.post).toHaveBeenCalledWith("/orders/621/confirm/", { department: "main", prices: { "7": "1234" } });
 });
