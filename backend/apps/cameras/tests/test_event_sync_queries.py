@@ -93,7 +93,7 @@ def test_page_crossing_shift_boundary_batches_each_shift_separately():
     assert len(runs) == 2
     assert sum(run.model_bags for run in runs) == 20
     assert AlwaysOnImportedEvent.objects.count() == 20
-    assert sum('"cameras_alwaysonstockbatch"' in q["sql"] for q in queries) == 2
+    assert sum('"cameras_alwaysonstockbatch"' in q["sql"] for q in queries) == 1
 
 
 def test_bulk_journal_failure_rolls_back_projections_and_cursor():
