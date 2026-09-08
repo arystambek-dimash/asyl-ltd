@@ -60,6 +60,9 @@ class Order(models.Model):
         on_delete=models.PROTECT,
         related_name="orders",
     )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                    on_delete=models.SET_NULL, related_name="reviewed_orders")
     status = models.CharField(max_length=20, default="draft")
     payment_status = models.CharField(max_length=20, default="unpaid")
     settlement_intent = models.CharField(max_length=20, default="debt")

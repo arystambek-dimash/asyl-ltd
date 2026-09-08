@@ -9,7 +9,7 @@ from io import BytesIO
 from collections import defaultdict
 from decimal import Decimal
 import re
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, Max, Q, Sum
 from django.utils import timezone
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import HasPerm, PermViewSetMixin
@@ -669,6 +669,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "train": "train.load",
         "loading_camera": "shipping.load",
         "department_summary": "orders.view",
+        "workflow_summary": "orders.view",
+        "review": "orders.confirm",
         "dashboard_operational": "orders.view",
         "repeat": "orders.create",
         "form_options": ("orders.create", "orders.edit"),
@@ -714,7 +716,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             for field in ("department", "status", "payment_status"):
                 value = params.get(field)
                 if value:
-                    qs = qs.filter(**{field: value})
+                    qs = qs.filter(**{field: "" if field == "department" and value == "__unassigned" else value})
             # Фильтр по публичной группе: «Ожидает загрузки» покрывает
             # confirmed/arrived/loading — точечный status для этого не годится.
             group = params.get("status_group")
@@ -724,6 +726,9 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                         {"detail": "Неизвестная группа статусов",
                          "code": "bad_status_group"})
                 qs = qs.filter(status__in=statuses_in_group(group))
+            stage = params.get("review_stage")
+            if stage in ("new", "review"):
+                qs = qs.filter(status__in=("draft", "pending"), reviewed_at__isnull=stage == "new")
             date_from, date_to = parse_date_range(params)
             qs = filter_date_range(qs, "created_at", date_from, date_to)
             store = parse_store_id(params.get("store"))
@@ -734,6 +739,37 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             if params.get("ordering"):
                 qs = order_page_sort(qs, params["ordering"])
         return qs
+
+    @action(detail=False, methods=["get"], url_path="workflow-summary")
+    def workflow_summary(self, request):
+        # One aggregate, no history/item/payment serialization. Counts span all pages.
+        qs = self.get_queryset().select_related(None).prefetch_related(None)
+        pending = Q(status__in=("draft", "pending"))
+        return Response(qs.aggregate(
+            all=Count("pk"),
+            new=Count("pk", filter=pending & Q(reviewed_at__isnull=True)),
+            review=Count("pk", filter=pending & Q(reviewed_at__isnull=False)),
+            confirmed=Count("pk", filter=Q(status__in=("confirmed", "arrived", "loading"))),
+            loaded=Count("pk", filter=Q(status="loaded")),
+            shipped=Count("pk", filter=Q(status="shipped")),
+            cancelled=Count("pk", filter=Q(status__in=("rejected", "cancelled"))),
+            latest_id=Max("pk"),
+        ))
+
+    @action(detail=True, methods=["post"], url_path="review")
+    def review(self, request, pk=None):
+        from django.db import transaction
+        from .services import lock_live_order
+        with transaction.atomic():
+            order = lock_live_order(self.get_object(), request.user)
+            if order.status not in ("draft", "pending"):
+                raise ValidationError({"detail": "На рассмотрение можно взять только новую заявку"})
+            if order.reviewed_at is None:
+                order.reviewed_at = timezone.now()
+                order.reviewed_by = request.user
+                order.save(update_fields=["reviewed_at", "reviewed_by"])
+                log_event("order_review", "Заявка взята на рассмотрение", user=request.user, order=order)
+        return Response(OrderSerializer(order, context={"request": request}).data)
 
     @action(detail=False, methods=["get"], url_path="form-options")
     def form_options(self, request):
@@ -878,6 +914,15 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             "unpaid_orders": 0,
             "debt_orders": 0,
         } for department in Department.objects.all()}
+        rows[""] = {
+            "id": 0, "code": "__unassigned", "name": "Отдел не выбран",
+            "color": "#64748B", "is_active": False,
+            "orders": 0, "active": 0, "shipped": 0, "revenue": Decimal("0"),
+            "revenue_by_currency": defaultdict(lambda: Decimal("0")),
+            "debt_by_currency": defaultdict(lambda: Decimal("0")),
+            "paid_by_currency": defaultdict(lambda: Decimal("0")),
+            "paid_orders": 0, "partial_orders": 0, "unpaid_orders": 0, "debt_orders": 0,
+        }
         totals = with_order_amounts(qs).values(
             "department", "status", "currency", "settlement_intent", "amount_total", "amount_paid"
         )
@@ -1319,8 +1364,12 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="confirm")
     def confirm(self, request, pk=None):
-        order = confirm_order(self.get_object(), request.user,
-                              prices=request.data.get("prices"))
+        order = self.get_object()
+        if not request.data.get("department"):
+            raise ValidationError({"department": "Перед подтверждением выберите отдел продаж"})
+        order = confirm_order(order, request.user,
+                              prices=request.data.get("prices"),
+                              department=request.data["department"])
         # confirm_order updates item instances loaded inside the service; the
         # view's prefetched items still contain the old prices until refreshed.
         order.refresh_from_db()

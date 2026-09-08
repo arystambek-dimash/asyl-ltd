@@ -1,3 +1,4 @@
+from apps.sales.models import Department
 import pytest
 from decimal import Decimal
 from rest_framework.test import APIClient
@@ -20,10 +21,12 @@ def test_staff_create_with_prices_confirms_immediately(manager):
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
     StockItem.objects.create(product=p, bags=500)
+    Department.objects.get_or_create(code="main", defaults={"name": "Основной"})
     r = _api(manager).post(
         "/api/orders/",
         {
             "client": c.id,
+            "department": "main",
             "items": [{"product": p.id, "quantity": 3}],
             "prices": {str(p.id): "15000"},  # цена по товару
         },

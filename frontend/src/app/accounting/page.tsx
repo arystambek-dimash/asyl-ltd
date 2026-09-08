@@ -1,9 +1,10 @@
 "use client";
-import { useCallback, useRef, useState } from "react";
+import { OrderConfirmation, type OrderConfirmationData } from "@/components/order-confirmation";
+import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { Modal } from "@/components/ui/modal";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -129,7 +130,7 @@ function useCashierQueue(
   };
   // Кассе нужны заявки на подтверждение и оплаты — отбор отдела общий.
   const pendingPage = usePagedApi<Order>(
-    queueActive && canReviewOrders ? apiUrl("/orders/", { ...queueParams, status: "pending" }) : null,
+    queueActive && canReviewOrders ? apiUrl("/orders/", { ...queueParams, status_group: "pending" }) : null,
   );
   const queuePage = usePagedApi<PaymentQueueItem>(queueActive ? apiUrl("/orders/payments-queue/", queueParams) : null);
   const { reload: reloadPending } = pendingPage;
@@ -176,7 +177,8 @@ function useCashierQueue(
     error,
     loadError,
     reload: reloadAll,
-    confirmOrder: (o: Order) => act(() => api.post(`/orders/${o.id}/confirm/`, {}), "Заказ подтверждён"),
+    confirmOrder: (o: Order, payload: OrderConfirmationData) =>
+      act(() => api.post(`/orders/${o.id}/confirm/`, payload), "Заказ подтверждён"),
     confirmPayment: (p: PaymentQueueItem) =>
       act(() => api.post(`/orders/${p.order}/payments/${p.id}/confirm/`), "Оплата подтверждена"),
     receivePayment: (p: PaymentQueueItem) =>
@@ -211,18 +213,51 @@ function ConfirmQueueSection({
   q,
   canViewOrders,
   canReviewOrders,
-  canEditOrders,
   canReceivePayments,
 }: {
   q: CashierQueue;
   canViewOrders: boolean;
   canReviewOrders: boolean;
-  canEditOrders: boolean;
   canReceivePayments: boolean;
 }) {
-  const router = useRouter();
+  const [confirming, setConfirming] = useState<Order | null>(null);
+  useEffect(() => {
+    if (confirming && !q.busy && !q.loading && !q.pendingOrders.some((order) => order.id === confirming.id))
+      setConfirming(null);
+  }, [confirming, q.busy, q.loading, q.pendingOrders]);
+  const {
+    data: confirmationDepartments,
+    error: departmentsError,
+    reload: retryDepartments,
+  } = useApi<Department[]>(confirming ? "/departments/" : null);
   return (
     <section className="flex flex-col gap-4">
+      <Modal
+        open={!!confirming}
+        onClose={() => {
+          if (!q.busy) setConfirming(null);
+        }}
+        eyebrow="Подтверждение"
+        title={`Заказ #${confirming?.id ?? ""}`}
+      >
+        <ActionError message={q.error} />
+        {departmentsError ? (
+          <ErrorAlert message={departmentsError} onRetry={retryDepartments} />
+        ) : (
+          confirming && (
+            <OrderConfirmation
+              key={confirming.id}
+              order={confirming}
+              departments={confirmationDepartments ?? []}
+              busy={q.busy}
+              onConfirm={async (payload) => {
+                // act exposes errors; close only after this order leaves the live queue.
+                await q.confirmOrder(confirming, payload);
+              }}
+            />
+          )
+        )}
+      </Modal>
       <ActionError message={q.error} />
       {q.loadError && <ErrorAlert message={q.loadError} onRetry={q.reload} />}
 
@@ -237,7 +272,6 @@ function ConfirmQueueSection({
                 <p className="text-sm text-[var(--muted-foreground)]">Нет заявок, ожидающих подтверждения.</p>
               )}
               {q.pendingOrders.map((o) => {
-                const priced = o.items.every((it) => it.unit_price != null);
                 return (
                   <div key={o.id} className="flex flex-col gap-2 rounded-lg border p-3">
                     <div className="flex items-start justify-between gap-2">
@@ -251,19 +285,9 @@ function ConfirmQueueSection({
                       </div>
                       <DepartmentBadge name={o.department_name} color={o.department_color} />
                     </div>
-                    {priced ? (
-                      <Button size="sm" disabled={q.busy} onClick={() => q.confirmOrder(o)}>
-                        Подтвердить заказ
-                      </Button>
-                    ) : canEditOrders ? (
-                      <Button size="sm" variant="outline" onClick={() => router.push(`/orders/${o.id}`)}>
-                        Указать цены и подтвердить
-                      </Button>
-                    ) : (
-                      <p className="text-xs text-[var(--muted-foreground)]">
-                        Сначала сотрудник с правом редактирования должен указать цены.
-                      </p>
-                    )}
+                    <Button size="sm" disabled={q.busy} onClick={() => setConfirming(o)}>
+                      Проверить и подтвердить
+                    </Button>
                   </div>
                 );
               })}
@@ -752,7 +776,6 @@ function CashierInner() {
   const canTransactions = can(me, "payments.view");
   const canViewOrders = can(me, "orders.view");
   const canReviewOrders = canViewOrders && can(me, "orders.confirm");
-  const canEditOrders = can(me, "orders.edit");
   const canViewClients = can(me, "clients.view");
   const canCheckOverdue = can(me, "clients.edit");
 
@@ -942,7 +965,12 @@ function CashierInner() {
       description="Поступления, очередь подтверждений, долги и транзакции в одном месте."
     >
       <div className="flex flex-col gap-6">
-        <Tabs tabs={tabs} active={tab} onChange={(key) => setTab(key as CashTab)} />
+        <Tabs
+          className="overflow-x-auto whitespace-nowrap"
+          tabs={tabs}
+          active={tab}
+          onChange={(key) => setTab(key as CashTab)}
+        />
 
         {/* У транзакций свой поиск — фильтры кассы к ним не применяются.
             Панель правит фильтры только текущей вкладки. */}
@@ -1061,7 +1089,6 @@ function CashierInner() {
             q={queue}
             canViewOrders={canViewOrders}
             canReviewOrders={canReviewOrders}
-            canEditOrders={canEditOrders}
             canReceivePayments={canPayments}
           />
         )}

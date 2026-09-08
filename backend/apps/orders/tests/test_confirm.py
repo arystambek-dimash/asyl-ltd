@@ -1,3 +1,4 @@
+from apps.sales.models import Department
 import pytest
 from apps.clients.models import Client
 from apps.orders.models import Order
@@ -8,7 +9,8 @@ pytestmark = pytest.mark.django_db
 def test_confirm_moves_draft_to_confirmed(auth_client, manager):
     c = Client.objects.create_with_user(first_name="L", last_name="К", phone="x")
     o = Order.objects.create(client=c, status="draft")
-    resp = auth_client(manager).post(f"/api/orders/{o.id}/confirm/")
+    Department.objects.get_or_create(code="main", defaults={"name": "Основной"})
+    resp = auth_client(manager).post(f"/api/orders/{o.id}/confirm/", {"department": "main"})
     assert resp.status_code == 200
     o.refresh_from_db()
     assert o.status == "confirmed"

@@ -296,7 +296,7 @@ class DepartmentLabelMixin:
     def get_department_name(self, obj):
         code = self._department_code(obj)
         row = self._department(code)
-        return row.name if row else code
+        return row.name if row else (code or "Отдел не выбран")
 
     def get_department_color(self, obj):
         row = self._department(self._department_code(obj))
@@ -363,9 +363,11 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     payments = serializers.SerializerMethodField()
     pending_payments = serializers.SerializerMethodField()
     shipped_at = serializers.SerializerMethodField()
-    department = serializers.CharField(required=False)
+    department = serializers.CharField(required=False, allow_blank=True)
     department_name = serializers.SerializerMethodField()
     department_color = serializers.SerializerMethodField()
+    reviewed_at = serializers.DateTimeField(read_only=True)
+    reviewed_by = serializers.PrimaryKeyRelatedField(read_only=True)
     currency = serializers.ChoiceField(choices=Order.CURRENCIES, required=False)
     # Источник шаблона передаётся только при создании. Сам заказ всё равно
     # создаётся обычной формой после ручной проверки менеджером.
@@ -378,6 +380,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         fields = ["id", "client", "store", "warehouse", "warehouse_name",
                   "client_name", "client_phone",
                   "department", "department_name", "department_color", "status",
+                  "reviewed_at", "reviewed_by",
                   "currency",
                   "payment_status", "settlement_intent", "payment_method", "transport_type",
                   "truck_number", "arrival_date", "notes", "items", "total_amount",
@@ -519,6 +522,10 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     "Закреплённый отдел продаж отключён — обратитесь к администратору")
             return assigned.code
+        if not code:
+            if self.instance and self.instance.status not in ("draft", "pending"):
+                raise serializers.ValidationError("У подтверждённого заказа должен быть отдел продаж")
+            return ""
         qs = Department.objects.filter(code=code)
         if self.instance and self.instance.department == code:
             if qs.exists():
@@ -601,7 +608,11 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                 })
             validated_data["department"] = assigned.code
         else:
-            validated_data.setdefault("department", Department.default_code())
+            validated_data.setdefault(
+                "department",
+                validated_data["client"].department.code
+                if validated_data["client"].department_id else "",
+            )
         if template_order is not None:
             validated_data["repeated_from"] = template_order
         prices_by_product = self.initial_data.get("prices")
@@ -615,7 +626,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                                              prices_by_product.get(it.product_id))
                 for it in created
             }
-            if user.has_perm_code("orders.confirm"):
+            if user.has_perm_code("orders.confirm") and order.department:
                 confirm_order(order, user, prices=prices_by_item)
             else:
                 apply_item_prices(order, prices_by_item, user)

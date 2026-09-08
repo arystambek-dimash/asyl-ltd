@@ -74,3 +74,21 @@ it("keeps searching and sorting paginated and loads later results only on reques
   expect(orderUrls().at(-1)?.searchParams.get("search")).toBe("934");
   expect(orderUrls().at(-1)?.searchParams.get("ordering")).toBe("amount");
 });
+
+it("separates new and reviewed requests on the server and defers analytics", async () => {
+  const user = userEvent.setup();
+  render(<OrdersPage />);
+  await user.click(screen.getByRole("tab", { name: /Новые заявки/ }));
+  await waitFor(() =>
+    expect(mocks.get.mock.calls.some(([url]) => String(url).includes("review_stage=new"))).toBe(true),
+  );
+  await user.click(screen.getByRole("tab", { name: /На рассмотрении/ }));
+  await waitFor(() =>
+    expect(mocks.get.mock.calls.some(([url]) => String(url).includes("review_stage=review"))).toBe(true),
+  );
+  expect(mocks.get.mock.calls.some(([url]) => String(url).includes("department-summary"))).toBe(false);
+  await user.click(screen.getByText("Аналитика и сравнение отделов"));
+  await waitFor(() =>
+    expect(mocks.get.mock.calls.some(([url]) => String(url).includes("department-summary"))).toBe(true),
+  );
+});

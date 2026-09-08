@@ -1,3 +1,4 @@
+from apps.sales.models import Department
 import pytest
 from decimal import Decimal
 from apps.catalog.models import Product, ClientPrice
@@ -70,9 +71,10 @@ def test_confirm_does_not_change_personal_price_without_permission(user_with_per
 def test_confirm_api_response_contains_fresh_prices(auth_client, manager):
     o, item, _client, _product = _order(manager)
 
+    Department.objects.get_or_create(code="main", defaults={"name": "Основной"})
     response = auth_client(manager).post(
         f"/api/orders/{o.id}/confirm/",
-        {"prices": {str(item.id): "10000.00"}},
+        {"department": "main", "prices": {str(item.id): "10000.00"}},
         format="json",
     )
 

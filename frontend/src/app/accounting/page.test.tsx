@@ -143,5 +143,5 @@ it("loads only overview totals initially and fetches each confirmation page once
   await user.click(screen.getByRole("tab", { name: /Заявки и оплаты/ }));
   await screen.findByRole("button", { name: "Подтвердить получение" });
   expect(urls().filter((url) => url === "/orders/payments-queue/?page=1&page_size=50")).toHaveLength(1);
-  expect(urls().filter((url) => url === "/orders/?status=pending&page=1&page_size=50")).toHaveLength(1);
+  expect(urls().filter((url) => url === "/orders/?status_group=pending&page=1&page_size=50")).toHaveLength(1);
 });

@@ -869,7 +869,7 @@ def transition(order: Order, to_status: str, user, message: str | None = None) -
 
 
 @transaction.atomic
-def confirm_order(order: Order, user, prices: dict | None = None) -> Order:
+def confirm_order(order: Order, user, prices: dict | None = None, *, department=None) -> Order:
     # Freeze the order and its item set before validating/pricing. This shares
     # the parent fence with item edits and AI reservation.
     caller_order = order
@@ -877,6 +877,15 @@ def confirm_order(order: Order, user, prices: dict | None = None) -> Order:
     if order.status not in ("draft", "pending"):
         raise ValidationError(
             {"detail": "Подтвердить можно только новый заказ", "code": "invalid_status"})
+    if department is not None:
+        from apps.sales.models import Department
+        if not isinstance(department, str) or not Department.objects.filter(
+            code=department, is_active=True
+        ).exists():
+            raise ValidationError({"department": "Выберите действующий отдел продаж"})
+        set_order_department(order, department, user)
+    if not order.department:
+        raise ValidationError({"department": "Перед подтверждением выберите отдел продаж"})
     if order.warehouse_id is None:
         from apps.warehouse.services import resolve_warehouse
 
@@ -1533,6 +1542,8 @@ def set_order_department(order: Order, value: str, user) -> Order:
     """Keep an active camera order inside the scope that can stop it."""
     caller_order = order
     order = lock_live_order(order, user)
+    if not value and order.status not in ("draft", "pending"):
+        raise ValidationError({"department": "У подтверждённого заказа должен быть отдел продаж"})
     if value == order.department:
         return order
     _assert_no_open_ai_session(order)
@@ -1573,6 +1584,12 @@ def _force_set_status(order: Order, to_status: str, user,
         })
 
     _assert_no_open_ai_session(order)
+
+    if old in ("draft", "pending") and to_status in ("confirmed", "shipped"):
+        raise ValidationError({
+            "detail": "Сначала выберите отдел и подтвердите заказ в его карточке",
+            "code": "order_confirmation_required",
+        })
 
     if to_status == "shipped":
         from apps.shipments.services import manual_complete_order

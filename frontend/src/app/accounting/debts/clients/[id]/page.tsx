@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { PaymentHistoryTable, type HistoryPayment } from "@/components/payment-history-table";
 import { Modal } from "@/components/ui/modal";
 import { Tabs } from "@/components/ui/tabs";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
@@ -74,17 +75,6 @@ interface ClientDebtDetail {
   orders: Order[];
 }
 
-/** Платёж из /clients/{id}/history/ — вся история, включая погашенные заказы. */
-interface HistoryPayment {
-  id: number;
-  order_id: number;
-  date: string;
-  employee: string | null;
-  method: string;
-  status: string;
-  amount: string;
-  currency: string;
-}
 interface ClientHistory {
   payments: HistoryPayment[];
 }
@@ -352,73 +342,6 @@ function DebtOrdersTable({
 }
 
 /* ── История платежей / счета (из истории клиента) ──────────────────────── */
-function PaymentHistoryTable({
-  rows,
-  emptyText,
-  canViewOrders,
-}: {
-  rows: HistoryPayment[];
-  emptyText: string;
-  canViewOrders: boolean;
-}) {
-  if (rows.length === 0) {
-    return (
-      <Card>
-        <CardContent className="py-10 text-center text-sm text-[var(--muted-foreground)]">{emptyText}</CardContent>
-      </Card>
-    );
-  }
-  return (
-    <Card>
-      <CardContent className="pt-5">
-        <Table>
-          <THead>
-            <TR>
-              <TH>Дата</TH>
-              <TH>Заказ</TH>
-              <TH>Способ</TH>
-              <TH>Статус</TH>
-              <TH>Сотрудник</TH>
-              <TH className="text-right">Сумма</TH>
-            </TR>
-          </THead>
-          <TBody>
-            {rows.map((p) => (
-              <TR key={p.id}>
-                <TD className="tabular-nums">{formatDateTime(p.date)}</TD>
-                <TD>
-                  {canViewOrders ? (
-                    <Link href={`/orders/${p.order_id}`} className="font-medium hover:underline">
-                      #{p.order_id}
-                    </Link>
-                  ) : (
-                    <span className="font-medium">#{p.order_id}</span>
-                  )}
-                </TD>
-                <TD>{PAYMENT_METHOD_LABELS[p.method] ?? p.method}</TD>
-                <TD>
-                  <Badge tone={PAYMENT_STAGE_TONE[p.status] ?? "muted"}>
-                    {PAYMENT_STAGE_LABELS[p.status] ?? p.status}
-                  </Badge>
-                </TD>
-                <TD className="text-[var(--muted-foreground)]">{p.employee ?? "—"}</TD>
-                <TD
-                  className={cn(
-                    "text-right tabular-nums font-semibold",
-                    p.status === "confirmed" && "text-[var(--success)]",
-                  )}
-                >
-                  {money(p.amount, p.currency)}
-                </TD>
-              </TR>
-            ))}
-          </TBody>
-        </Table>
-      </CardContent>
-    </Card>
-  );
-}
-
 /* ── Панель «Внести оплату» ─────────────────────────────────────────────── */
 /** Куда выставлять счёт: клиенту онлайн или нашим PDF-документом. */
 type InvoiceChannel = "remote" | "document";
@@ -992,10 +915,28 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
               />
             ))}
           {tab === "history" && (
-            <PaymentHistoryTable rows={payments} emptyText="Платежей пока нет." canViewOrders={canViewOrders} />
+            <PaymentHistoryTable
+              rows={payments}
+              emptyText="Платежей пока нет."
+              canViewOrders={canViewOrders}
+              canManagePayments={can(me, "payments.confirm")}
+              onChanged={() => {
+                void reload();
+                void reloadHistory();
+              }}
+            />
           )}
           {tab === "invoices" && (
-            <PaymentHistoryTable rows={invoices} emptyText="Выставленных счетов нет." canViewOrders={canViewOrders} />
+            <PaymentHistoryTable
+              rows={invoices}
+              emptyText="Выставленных счетов нет."
+              canViewOrders={canViewOrders}
+              canManagePayments={can(me, "payments.confirm")}
+              onChanged={() => {
+                void reload();
+                void reloadHistory();
+              }}
+            />
           )}
         </div>
       </div>

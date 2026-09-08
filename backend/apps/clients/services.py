@@ -28,7 +28,8 @@ def client_history(client) -> dict:
         Payment.objects
         .filter(order__client=client, order__deleted_at__isnull=True)
         .exclude(method="debt")
-        .select_related("order", "recorded_by", "received_by", "confirmed_by")
+        .select_related("order", "recorded_by", "received_by", "confirmed_by", "apipay_invoice")
+        .prefetch_related("payment_refunds")
         .order_by("-paid_at")
     )
 
@@ -58,6 +59,14 @@ def client_history(client) -> dict:
             "status": p.status,
             "amount": _d(p.amount),
             "currency": p.order.currency,
+            "can_reopen": (
+                p.status == "confirmed" and not hasattr(p, "apipay_invoice")
+                and p.refunded_amount == 0 and p.pending_refund_amount == 0
+                and not any(r.status in ("pending", "completed") for r in p.payment_refunds.all())
+            ),
+            "can_reject": p.status in Payment.IN_PROGRESS_STATUSES,
+            "provider": hasattr(p, "apipay_invoice"),
+            "refunded_amount": _d(p.refunded_amount),
         }
 
     def debt_row(o):

@@ -35,6 +35,8 @@ import {
   orderStatusGroup,
 } from "@/lib/constants";
 import { useApi } from "@/lib/use-api";
+import { Tabs } from "@/components/ui/tabs";
+import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useDebounced } from "@/lib/use-debounced";
 import { LoadMore } from "@/components/ui/load-more";
@@ -750,6 +752,7 @@ function OrdersPageInner() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [status, setStatus] = useState("all");
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [dept, setDept] = useState("all");
   const [q, setQ] = useState("");
   const search = useDebounced(q.trim());
@@ -762,7 +765,8 @@ function OrdersPageInner() {
     if (dateFrom) params.set("date_from", dateFrom);
     if (dateTo) params.set("date_to", dateTo);
     if (dept !== "all") params.set("department", dept);
-    if (status !== "all") params.set("status_group", status);
+    if (["new", "review"].includes(status)) params.set("review_stage", status);
+    else if (status !== "all") params.set("status_group", status);
     if (search) params.set("search", search);
     params.set("ordering", `${sortDir === "desc" ? "-" : ""}${sortKey}`);
     const query = params.toString();
@@ -771,16 +775,37 @@ function OrdersPageInner() {
   const paged = usePagedApi<Order>(view === "orders" ? ordersUrl : null, 50);
   const orders = paged.items;
   const { loading, error, reload } = paged;
+  const {
+    data: workflow,
+    error: workflowError,
+    reload: reloadWorkflow,
+  } = useApi<Record<string, number | null>>(view === "orders" ? "/orders/workflow-summary/" : null);
+  const [seenLatest, setSeenLatest] = useState<number | null>(null);
+  useEffect(() => {
+    if (workflow && seenLatest === null) setSeenLatest(workflow.latest_id ?? 0);
+  }, [workflow, seenLatest]);
+  useVisiblePolling(reloadWorkflow, 15000, view === "orders");
+  const hasNewArrivals = seenLatest !== null && (workflow?.latest_id ?? 0) > seenLatest;
+  const showNewOrders = () => {
+    setStatus("new");
+    setQ("");
+    setDept("all");
+    setDateFrom("");
+    setDateTo("");
+    setSeenLatest(workflow?.latest_id ?? 0);
+    void reload();
+  };
+
   const summaryUrl = useMemo(() => {
     const params = new URLSearchParams();
     if (dateFrom) params.set("date_from", dateFrom);
     if (dateTo) params.set("date_to", dateTo);
-    if (status !== "all") params.set("status_group", status);
+    if (!["all", "new", "review"].includes(status)) params.set("status_group", status);
     const query = params.toString();
     return `/orders/department-summary/${query ? `?${query}` : ""}`;
   }, [dateFrom, dateTo, status]);
   const { data: departmentSummary, reload: reloadSummary } = useApi<DepartmentSummary[]>(
-    view === "orders" ? summaryUrl : null,
+    view === "orders" && analyticsOpen ? summaryUrl : null,
   );
   const { data: departments, reload: reloadDepartments } = useApi<Department[]>("/departments/");
   const { me } = useAuth();
@@ -938,7 +963,12 @@ function OrdersPageInner() {
   // только выбранная группа, честных цифр по остальным нет.
   const pills = [
     { key: "all", label: "Все" },
-    ...ORDER_PUBLIC_STATUSES.map((st) => ({ key: st, label: ORDER_STATUS_LABELS[st] })),
+    { key: "new", label: "Новые заявки" },
+    { key: "review", label: "На рассмотрении" },
+    { key: "confirmed", label: "Подтверждены" },
+    { key: "loaded", label: "Готовы к выезду" },
+    { key: "shipped", label: "Отгружены" },
+    { key: "cancelled", label: "Отменены" },
   ];
 
   const toggleSort = (k: string) => {
@@ -1014,13 +1044,67 @@ function OrdersPageInner() {
         />
       ) : (
         <>
-          <OrdersAnalytics
-            rows={departmentSummary ?? []}
-            active={dept}
-            onSelect={setDept}
-            orders={countable}
-            activeCount={activeCount}
+          <div
+            className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-[var(--card)] p-4"
+            role="status"
+            aria-live="polite"
+          >
+            <div>
+              <p className="font-semibold">{hasNewArrivals ? "Поступили новые заказы" : "Очередь заказов"}</p>
+              <p className="text-sm text-[var(--muted-foreground)]">
+                {workflowError
+                  ? "Не удалось обновить счётчики"
+                  : workflow
+                    ? `${workflow.new ?? 0} новых · ${workflow.review ?? 0} на рассмотрении`
+                    : "Проверяем новые заявки…"}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant={hasNewArrivals || (workflow?.new ?? 0) > 0 ? "default" : "outline"}
+                onClick={showNewOrders}
+              >
+                Открыть новые заявки
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  void reload();
+                  void reloadWorkflow();
+                }}
+              >
+                Обновить
+              </Button>
+            </div>
+          </div>
+          <details
+            className="mb-4 rounded-xl border bg-[var(--card)]"
+            onToggle={(event) => setAnalyticsOpen(event.currentTarget.open)}
+          >
+            <summary className="cursor-pointer px-4 py-3 text-sm font-medium">Аналитика и сравнение отделов</summary>
+            {analyticsOpen && (
+              <OrdersAnalytics
+                rows={departmentSummary ?? []}
+                active={dept}
+                onSelect={setDept}
+                orders={countable}
+                activeCount={activeCount}
+              />
+            )}
+          </details>
+          <Tabs
+            label="Этапы заказов"
+            className="mb-4 overflow-x-auto whitespace-nowrap"
+            tabs={pills.map((tab) => ({
+              ...tab,
+              count: workflow && !workflowError ? Number(workflow[tab.key] ?? 0) : undefined,
+            }))}
+            active={status}
+            onChange={setStatus}
           />
+          <p className="mb-3 text-xs text-[var(--muted-foreground)]">
+            Счётчики — по всем доступным заказам. Поиск, дата и отдел фильтруют список ниже.
+          </p>
 
           <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="relative max-w-md flex-1">
@@ -1041,6 +1125,7 @@ function OrdersPageInner() {
                   onChange={setDept}
                   options={[
                     { key: "all", label: "Все" },
+                    { key: "__unassigned", label: "Отдел не выбран" },
                     ...(departments ?? []).map((department) => ({
                       key: department.code,
                       label: department.name,
@@ -1048,7 +1133,6 @@ function OrdersPageInner() {
                   ]}
                 />
               )}
-              <FilterDropdown label="Статус" options={pills} active={status} onChange={setStatus} />
             </div>
           </div>
 
@@ -1085,7 +1169,7 @@ function OrdersPageInner() {
                       <span className="text-sm font-semibold">#{o.id}</span>
                       {showDept && <DepartmentBadge order={o} />}
                     </div>
-                    {canEdit && (o.status !== "shipped" || canRollback) ? (
+                    {canEdit && !["draft", "pending"].includes(o.status) && (o.status !== "shipped" || canRollback) ? (
                       <div className="relative z-10">
                         <OrderStatusSelect
                           status={o.status}
@@ -1093,6 +1177,12 @@ function OrdersPageInner() {
                           onChange={(target) => chooseStatus(o, target)}
                         />
                       </div>
+                    ) : ["draft", "pending"].includes(o.status) ? (
+                      <Link href={`/orders/${o.id}`}>
+                        <Badge tone="warning" dot>
+                          {o.reviewed_at ? "На рассмотрении" : "Новая заявка"}
+                        </Badge>
+                      </Link>
                     ) : (
                       <StatusBadge status={o.status} dot />
                     )}
@@ -1214,12 +1304,20 @@ function OrdersPageInner() {
                         </TD>
                         <TD>
                           <div className="flex flex-wrap items-center gap-1.5">
-                            {canEdit && (o.status !== "shipped" || canRollback) ? (
+                            {canEdit &&
+                            !["draft", "pending"].includes(o.status) &&
+                            (o.status !== "shipped" || canRollback) ? (
                               <OrderStatusSelect
                                 status={o.status}
                                 disabled={statusBusyId === o.id}
                                 onChange={(target) => chooseStatus(o, target)}
                               />
+                            ) : ["draft", "pending"].includes(o.status) ? (
+                              <Link href={`/orders/${o.id}`}>
+                                <Badge tone="warning" dot>
+                                  {o.reviewed_at ? "На рассмотрении" : "Новая заявка"}
+                                </Badge>
+                              </Link>
                             ) : (
                               <StatusBadge status={o.status} dot />
                             )}

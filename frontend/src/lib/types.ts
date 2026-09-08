@@ -259,6 +259,8 @@ interface StatusChangeRequest {
   decided_at?: string | null;
 }
 export interface Order {
+  reviewed_at?: string | null;
+  reviewed_by?: number | null;
   id: number;
   client: number;
   store?: number | null;

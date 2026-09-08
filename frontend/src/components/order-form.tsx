@@ -204,8 +204,6 @@ export function OrderForm({
       setDept(assignedDepartment.code);
       return;
     }
-    if (dept || !departments?.length) return;
-    setDept((departments.find((department) => department.is_default) ?? departments[0]).code);
   }, [assignedDepartment, departments, dept, editing]);
 
   useEffect(() => {

@@ -7,7 +7,6 @@ from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Store
 from apps.orders.models import Order, OrderItem, Payment
 from apps.orders.statuses import is_financial
-from apps.sales.models import Department
 
 
 MAX_PORTAL_ORDER_ITEMS = 100
@@ -300,7 +299,7 @@ class PortalOrderSerializer(serializers.ModelSerializer):
         }
         order = Order.objects.create(client=client, status="pending",
                                      currency=currency,
-                                     department=Department.default_code(),
+                                     department=client.department.code if client.department_id else "",
                                      settlement_intent=intent,
                                      payment_method=method, store=store,
                                      warehouse=warehouse,
