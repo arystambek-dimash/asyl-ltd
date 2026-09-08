@@ -59,6 +59,19 @@ function awaitsExit(wagon: GrainWagon) {
   return wagon.status === "at_silo" && wagon.exit_weight_kg == null;
 }
 
+function canBeExit(item: GrainUnassignedWeighing, wagon: GrainWagon) {
+  // Passage entry time; a repaired weighing record may have been created later.
+  const entryAt = wagon.silo_arrived_at || wagon.arrived_at;
+  return (
+    wagon.direction === "passage" &&
+    awaitsExit(wagon) &&
+    wagon.entry_weight_kg != null &&
+    item.weight_kg > wagon.entry_weight_kg &&
+    item.orientation !== "front" &&
+    (!entryAt || new Date(item.stable_weight_at).getTime() > new Date(entryAt).getTime())
+  );
+}
+
 function candidateLabel(wagon: GrainWagon) {
   const stage = awaitsEntry(wagon)
     ? "ждёт вес пустой"
@@ -71,7 +84,7 @@ function candidateLabel(wagon: GrainWagon) {
 /**
  * Подсказка по весу: гружёная машина почти наверняка выезд одной из тех,
  * что ждут вес гружёной; пустая — новый заезд. Кандидаты сортируются так,
- * чтобы самый вероятный стоял первым, но выбор остаётся за оператором.
+ * чтобы подходящий этап стоял первым. Вес не определяет номер машины.
  */
 function rankCandidates(item: GrainUnassignedWeighing, candidates: GrainWagon[]) {
   const loaded = looksLoaded(item);
@@ -94,17 +107,23 @@ function UnassignedRow({
   candidates,
   canWeigh,
   onResolved,
+  exitWagon,
+  onBusyChange,
 }: {
   item: GrainUnassignedWeighing;
   candidates: GrainWagon[];
   canWeigh: boolean;
   onResolved: () => void;
+  exitWagon?: GrainWagon;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const ranked = rankCandidates(item, candidates);
-  const loaded = looksLoaded(item);
+  const loaded = Boolean(exitWagon) || looksLoaded(item);
+  const exits = ranked.filter((wagon) => canBeExit(item, wagon));
+  const suggestedExit = loaded && exits.length === 1 ? exits[0] : undefined;
   const cameraHint = orientationHint(item);
   const [mode, setMode] = useState<"idle" | "assign" | "create" | "discard">("idle");
-  const [wagonId, setWagonId] = useState(() => (ranked[0] && loaded ? String(ranked[0].id) : ""));
+  const [wagonId, setWagonId] = useState("");
   const [number, setNumber] = useState(item.vehicle_number ?? "");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -112,7 +131,9 @@ function UnassignedRow({
   const photo = apiFileUrl(item.photo_url);
 
   async function run(path: string, body: Record<string, unknown>) {
+    if (busy || !canWeigh) return;
     setBusy(true);
+    onBusyChange?.(true);
     setError("");
     try {
       await api.post(`/grain/unassigned-weighings/${item.id}/${path}/`, body);
@@ -122,12 +143,13 @@ function UnassignedRow({
       setError(apiError(e));
     } finally {
       setBusy(false);
+      onBusyChange?.(false);
     }
   }
 
   return (
     <li className="border-b border-[var(--border)]/70 last:border-0">
-      <div className="flex items-center gap-3 px-3 py-2">
+      <div className="flex flex-wrap items-center gap-3 px-3 py-2">
         {photo ? (
           <a
             href={photo}
@@ -147,66 +169,89 @@ function UnassignedRow({
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span className="text-base font-semibold tabular-nums">{formatKg(item.weight_kg)}</span>
             {item.vehicle_number && <span className="font-mono text-sm font-semibold">{item.vehicle_number}</span>}
-            <span className="text-xs text-[var(--muted-foreground)]">{loaded ? "гружёная" : "пустая"}</span>
+            <span className="text-xs text-[var(--muted-foreground)]">
+              {loaded ? "возможный выезд" : "возможный заезд"}
+            </span>
             <span className="text-xs text-[var(--muted-foreground)]">· {formatDateTime(item.stable_weight_at)}</span>
           </div>
           <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">
-            {item.reason === "entry_missing"
-              ? "выезд без заезда: рейс с этим номером не найден"
-              : loaded
-                ? ranked[0] && awaitsExit(ranked[0])
-                  ? `похоже на выезд ${ranked[0].number || `#${ranked[0].id}`}`
-                  : "номер не распознан, похоже на выезд"
-                : "номер не распознан, похоже на новый заезд"}
+            {exitWagon
+              ? `Сверьте фото с машиной ${exitWagon.number || `#${exitWagon.id}`}`
+              : item.reason === "entry_missing"
+                ? "выезд без заезда: рейс с этим номером не найден"
+                : loaded
+                  ? suggestedExit
+                    ? `похоже на выезд ${suggestedExit.number || `#${suggestedExit.id}`}`
+                    : "номер не распознан — выберите рейс по фото и времени"
+                  : "номер не распознан, похоже на новый заезд"}
             {cameraHint && <span className="ml-1 text-amber-700">· {cameraHint}</span>}
           </div>
         </div>
         {canWeigh && mode === "idle" && (
           <div className="flex shrink-0 items-center gap-1.5">
-            <Button size="sm" variant={loaded ? "default" : "outline"} onClick={() => setMode("assign")}>
-              <Scale /> Привязать
-            </Button>
-            <Button size="sm" variant={loaded ? "outline" : "default"} onClick={() => setMode("create")}>
-              <PackagePlus /> Новый рейс
-            </Button>
             <Button
               size="sm"
-              variant="ghost"
-              aria-label="Отклонить взвешивание"
-              title="Отклонить"
-              onClick={() => setMode("discard")}
+              variant={loaded || exitWagon ? "default" : "outline"}
+              onClick={() => {
+                setWagonId(String(exitWagon?.id || suggestedExit?.id || ""));
+                setMode("assign");
+              }}
             >
-              <Trash2 />
+              <Scale /> {exitWagon ? "Выбрать этот вес" : "Привязать"}
             </Button>
+            {!exitWagon && (
+              <>
+                <Button size="sm" variant={loaded ? "outline" : "default"} onClick={() => setMode("create")}>
+                  <PackagePlus /> Новый рейс
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Отклонить взвешивание"
+                  title="Отклонить"
+                  onClick={() => setMode("discard")}
+                >
+                  <Trash2 />
+                </Button>
+              </>
+            )}
           </div>
         )}
       </div>
 
       {mode !== "idle" && (
-        <div className="px-3 pb-3 pl-[7.5rem]">
+        <div className="px-3 pb-3 sm:pl-[7.5rem]">
           {mode === "assign" && (
             <form
               className="flex flex-wrap items-center gap-2"
               onSubmit={(event) => {
                 event.preventDefault();
-                void run("assign", { wagon: Number(wagonId) });
+                if (canWeigh && wagonId) void run("assign", { wagon: Number(wagonId) });
               }}
             >
-              <Select
-                aria-label="Рейс для привязки"
-                value={wagonId}
-                onChange={(event) => setWagonId(event.target.value)}
-                className="h-9 min-w-64"
-              >
-                <option value="">Выберите рейс…</option>
-                {ranked.map((wagon) => (
-                  <option key={wagon.id} value={wagon.id}>
-                    {candidateLabel(wagon)}
-                  </option>
-                ))}
-              </Select>
-              <Button size="sm" type="submit" disabled={busy || !wagonId}>
-                {busy ? <LoaderCircle className="animate-spin" /> : <Check />} Привязать
+              {exitWagon ? (
+                <p className="w-full text-sm">
+                  Вывоз {exitWagon.number || `#${exitWagon.id}`}: вес гружёной {formatKg(item.weight_kg)}, нетто{" "}
+                  {formatKg(item.weight_kg - (exitWagon.entry_weight_kg ?? 0))}. Записать этот вес и завершить рейс?
+                </p>
+              ) : (
+                <Select
+                  aria-label="Рейс для привязки"
+                  value={wagonId}
+                  onChange={(event) => setWagonId(event.target.value)}
+                  className="h-9 min-w-64"
+                >
+                  <option value="">Выберите рейс…</option>
+                  {ranked.map((wagon) => (
+                    <option key={wagon.id} value={wagon.id}>
+                      {candidateLabel(wagon)}
+                    </option>
+                  ))}
+                </Select>
+              )}
+              <Button size="sm" type="submit" disabled={busy || !wagonId || !canWeigh}>
+                {busy ? <LoaderCircle className="animate-spin" /> : <Check />}
+                {exitWagon ? "Записать выезд и завершить рейс" : "Привязать"}
               </Button>
               <Button size="sm" type="button" variant="ghost" disabled={busy} onClick={() => setMode("idle")}>
                 Отмена
@@ -284,40 +329,50 @@ export function UnassignedWeighingsPanel({
   canWeigh,
   active = true,
   onChanged,
+  exitWagon,
+  onBusyChange,
 }: {
   canWeigh: boolean;
   active?: boolean;
   onChanged?: () => void;
+  exitWagon?: GrainWagon;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const { data, reload, loading, error } = useApi<GrainUnassignedWeighing[]>("/grain/unassigned-weighings/");
   const {
     data: candidatesData,
     reload: reloadCandidates,
     error: candidatesError,
-  } = useApi<GrainWagon[] | { results: GrainWagon[] }>(CANDIDATES_URL);
+  } = useApi<GrainWagon[] | { results: GrainWagon[] }>(exitWagon ? null : CANDIDATES_URL);
   const [expanded, setExpanded] = useState(false);
   const refresh = () => Promise.all([reload(), reloadCandidates()]);
   useVisiblePolling(refresh, 10_000, active);
   const invalidQueue = data !== null && (!Array.isArray(data) || !data.every(isUnassignedWeighing));
   const loadError = error || (invalidQueue ? "Сервер вернул некорректный список взвешиваний." : "");
-  const items = Array.isArray(data) ? data.filter(isUnassignedWeighing) : [];
+  const items = Array.isArray(data)
+    ? data.filter(isUnassignedWeighing).filter((item) => !exitWagon || canBeExit(item, exitWagon))
+    : [];
   const rawCandidates = Array.isArray(candidatesData) ? candidatesData : (candidatesData?.results ?? []);
-  const candidates = Array.isArray(rawCandidates) ? rawCandidates.filter(isWagon) : [];
+  const candidates = exitWagon ? [exitWagon] : Array.isArray(rawCandidates) ? rawCandidates.filter(isWagon) : [];
   if (!items.length && !loading && !loadError) return null;
   const visible = expanded ? items : items.slice(0, COLLAPSED_ROWS);
   const hidden = items.length - visible.length;
 
   return (
     <section
-      aria-label="Неопознанные взвешивания"
+      aria-label={exitWagon ? "Выезд без распознанного номера" : "Неопознанные взвешивания"}
       className="overflow-hidden rounded-xl border border-amber-200 bg-[var(--card)]"
     >
       <header className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50/70 px-3 py-2">
         <Scale className="size-4 text-amber-700" />
-        <span className="text-sm font-semibold">Неопознанные взвешивания</span>
+        <span className="text-sm font-semibold">
+          {exitWagon ? "Выезд без распознанного номера" : "Неопознанные взвешивания"}
+        </span>
         <Badge tone="warning">{items.length}</Badge>
         <span className="text-xs text-[var(--muted-foreground)]">
-          вес и фото сохранены, номер не прочитался · привяжите к рейсу или создайте новый
+          {exitWagon
+            ? "Выберите взвешивание этой машины по фото и времени. Повторное распознавание номера не требуется."
+            : "Вес сохранён без привязки · выберите рейс по фото и времени или создайте новый"}
         </span>
       </header>
       {loading && !data && (
@@ -340,6 +395,8 @@ export function UnassignedWeighingsPanel({
             item={item}
             candidates={candidates}
             canWeigh={canWeigh && !loadError && !candidatesError}
+            exitWagon={exitWagon}
+            onBusyChange={onBusyChange}
             onResolved={() => {
               void reload();
               void reloadCandidates();

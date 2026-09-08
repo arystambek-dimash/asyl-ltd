@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { Suspense, type ComponentProps, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { GrainWagon, PassageWeightCapture } from "@/lib/types";
+import type { GrainUnassignedWeighing, GrainWagon, PassageWeightCapture } from "@/lib/types";
 import GrainWagonPage from "./page";
 import PassagePage from "../../passages/[id]/page";
 
@@ -55,6 +55,7 @@ vi.mock("next/link", () => ({
 }));
 
 let activeWagon: GrainWagon;
+let unassignedWeighings: Partial<GrainUnassignedWeighing>[];
 
 function wagon(overrides: Partial<GrainWagon> = {}): GrainWagon {
   return {
@@ -131,8 +132,12 @@ describe("StageAction automatic scale capture", () => {
     wagonReloadMock.mockReset();
     timelineReloadMock.mockReset();
     activeWagon = wagon();
+    unassignedWeighings = [];
     useApiMock.mockReset();
     useApiMock.mockImplementation((url: string | null) => {
+      if (url === "/grain/unassigned-weighings/") {
+        return { data: unassignedWeighings, loading: false, error: "", reload: vi.fn() };
+      }
       if (url === "/grain/wagons/7/" || url === "/grain/passages/7/") {
         return { data: activeWagon, loading: false, error: "", reload: wagonReloadMock, setData: vi.fn() };
       }
@@ -166,6 +171,35 @@ describe("StageAction automatic scale capture", () => {
     for (const label of ["Брутто", "Тара", "Силос", "Тип зерна", "Точка разгрузки", "История вагона"]) {
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
+  });
+
+  it("completes an unreadable exit from its saved weight inside the trip card", async () => {
+    unassignedWeighings = [
+      {
+        id: 21,
+        weight_kg: 8_900,
+        stable_weight_at: "2026-09-08T05:00:00Z",
+        orientation: "rear",
+        photo_url: null,
+      },
+    ];
+    let finish!: () => void;
+    postMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ data: {} });
+        }),
+    );
+    await renderStage(wagon({ number: "996BKC13", status: "at_silo", entry_weight_kg: 3_980, gross_weight_kg: 3_980 }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Выбрать этот вес" }));
+    await userEvent.click(screen.getByRole("button", { name: "Записать выезд и завершить рейс" }));
+    expect(screen.getByRole("button", { name: "Получить вес гружёной и завершить вывоз" })).toBeDisabled();
+    expect(postMock).toHaveBeenCalledExactlyOnceWith("/grain/unassigned-weighings/21/assign/", { wagon: 7 });
+
+    await act(async () => finish());
+    expect(wagonReloadMock).toHaveBeenCalledOnce();
+    expect(timelineReloadMock).toHaveBeenCalledOnce();
   });
 
   it("redirects a legacy wagon URL by the actual record direction before exposing commands", async () => {

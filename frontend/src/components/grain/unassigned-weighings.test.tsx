@@ -152,6 +152,76 @@ describe("UnassignedWeighingsPanel", () => {
     expect(postMock).toHaveBeenCalledWith("/grain/unassigned-weighings/5/assign/", { wagon: 11 });
   });
 
+  it("requires choosing a trip when several trucks could have produced the exit weight", async () => {
+    mockApi([item], [loaded, { ...loaded, id: 13, number: "996BKC13", entry_weight_kg: 3_980 }]);
+    render(<UnassignedWeighingsPanel canWeigh />);
+
+    expect(screen.queryByText(/похоже на выезд 465BDS13/)).not.toBeInTheDocument();
+    expect(screen.getByText("номер не распознан — выберите рейс по фото и времени")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Привязать" }));
+    expect(screen.getByLabelText("Рейс для привязки")).toHaveValue("");
+    expect(screen.getByRole("button", { name: /^Привязать$/ })).toBeDisabled();
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it("assigns a saved rear weight to the open trip only after reviewing its weight and net", async () => {
+    const exitWagon = { ...loaded, number: "996BKC13", entry_weight_kg: 3_980 };
+    mockApi([{ ...item, orientation: "rear", weight_kg: 8_900 }], []);
+    postMock.mockResolvedValue({ data: { action: "exit" } });
+    const onChanged = vi.fn();
+    const onBusyChange = vi.fn();
+    render(
+      <UnassignedWeighingsPanel canWeigh exitWagon={exitWagon} onChanged={onChanged} onBusyChange={onBusyChange} />,
+    );
+
+    expect(screen.getByRole("region", { name: "Выезд без распознанного номера" })).toBeInTheDocument();
+    expect(useApiMock).not.toHaveBeenCalledWith("/grain/passages/?scope=on_site");
+    expect(screen.queryByRole("button", { name: "Новый рейс" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Отклонить взвешивание" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Выбрать этот вес" }));
+    expect(postMock).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Рейс для привязки")).not.toBeInTheDocument();
+    expect(screen.getByText(/Вывоз 996BKC13: вес гружёной 8 900 кг, нетто 4 920 кг/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Записать выезд и завершить рейс" }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(postMock).toHaveBeenCalledExactlyOnceWith("/grain/unassigned-weighings/5/assign/", { wagon: 11 });
+    expect(onBusyChange.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it("offers only heavier exit weights captured after this trip's entry", () => {
+    const exitWagon = {
+      ...loaded,
+      entry_weight_kg: 3_980,
+      arrived_at: "2026-09-04T08:00:00Z",
+      silo_arrived_at: "2026-09-04T09:00:00Z",
+    };
+    mockApi(
+      [
+        { ...item, id: 1, orientation: "front", weight_kg: 8_100 },
+        { ...item, id: 2, orientation: "rear", weight_kg: 3_900 },
+        { ...item, id: 3, orientation: "rear", weight_kg: 8_200, stable_weight_at: "2026-09-04T08:30:00Z" },
+        { ...item, id: 4, orientation: "", weight_kg: 5_900 },
+      ],
+      [],
+    );
+    render(<UnassignedWeighingsPanel canWeigh exitWagon={exitWagon} />);
+
+    expect(screen.getByText("5 900 кг")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByText("возможный выезд")).toBeInTheDocument();
+  });
+
+  it("blocks assignment if permission disappears while the confirmation is open", async () => {
+    mockApi([item], []);
+    const { rerender } = render(<UnassignedWeighingsPanel canWeigh exitWagon={loaded} />);
+    await userEvent.click(screen.getByRole("button", { name: "Выбрать этот вес" }));
+    rerender(<UnassignedWeighingsPanel canWeigh={false} exitWagon={loaded} />);
+
+    expect(screen.getByRole("button", { name: "Записать выезд и завершить рейс" })).toBeDisabled();
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
   it("keeps a failed action's error inside the row", async () => {
     mockApi([item], [loaded]);
     postMock.mockRejectedValueOnce({ response: { data: { code: "wagon_not_awaiting_weight" } } });
@@ -204,8 +274,8 @@ describe("UnassignedWeighingsPanel camera orientation", () => {
     mockApi([{ ...item, id: 7, weight_kg: 5_000, orientation: "rear" }], [loaded]);
     render(<UnassignedWeighingsPanel canWeigh />);
 
-    expect(screen.getByText("гружёная")).toBeInTheDocument();
-    expect(screen.getByText(/похоже на выезд 465BDS13/)).toBeInTheDocument();
+    expect(screen.getByText("возможный выезд")).toBeInTheDocument();
+    expect(screen.queryByText(/похоже на выезд 465BDS13/)).not.toBeInTheDocument();
     expect(screen.getByText(/камера: задом → выезд/)).toBeInTheDocument();
   });
 
@@ -226,7 +296,7 @@ describe("UnassignedWeighingsPanel camera orientation", () => {
     mockApi([{ ...item, id: 9, weight_kg: 8_000, orientation: "front" }], [loaded]);
     render(<UnassignedWeighingsPanel canWeigh />);
 
-    expect(screen.getByText("пустая")).toBeInTheDocument();
+    expect(screen.getByText("возможный заезд")).toBeInTheDocument();
     expect(screen.getByText(/похоже на новый заезд/)).toBeInTheDocument();
     expect(screen.getByText(/камера: передом → заезд/)).toBeInTheDocument();
   });

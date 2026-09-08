@@ -13,6 +13,7 @@ import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { GrainWagonDeleteDialog } from "@/components/grain/wagon-delete-dialog";
 import { PassageNumberEditor } from "@/components/grain/passage-number-editor";
 import { WagonPhotos } from "@/components/grain/wagon-photos";
+import { UnassignedWeighingsPanel } from "@/components/grain/unassigned-weighings";
 import { can } from "@/lib/can";
 import {
   GRAIN_STATUS_TONE,
@@ -239,9 +240,22 @@ function TripPageInner({ params, direction }: TripPageProps) {
           </Card>
 
           {!error && (
-            <StageAction
-              key={`${wagon.id}:${wagon.status}:${wagon.gross_weight_kg}:${wagon.tare_weight_kg}`}
-              wagon={wagon}
+            <fieldset disabled={mutationBusy} className="min-w-0">
+              <StageAction
+                key={`${wagon.id}:${wagon.status}:${wagon.gross_weight_kg}:${wagon.tare_weight_kg}`}
+                wagon={wagon}
+                onChanged={refresh}
+                onBusyChange={handleBusyChange}
+              />
+            </fieldset>
+          )}
+
+          {passage && wagon.status === "at_silo" && wagon.exit_weight_kg == null && (
+            <UnassignedWeighingsPanel
+              key={wagon.id}
+              exitWagon={wagon}
+              canWeigh={can(me, "grain.weigh") && !error && !mutationBusy}
+              active={!mutationBusy && !deleteOpen}
               onChanged={refresh}
               onBusyChange={handleBusyChange}
             />

@@ -348,6 +348,15 @@ it to a passage (entry or exit), opens a new passage from it, or discards it.
 Either way the lane goes to `awaiting_clear` and re-arms by itself after the
 confirmed clear streak.
 
+The card of a passage waiting for its loaded weight also shows **Выезд без
+распознанного номера**. It lists parked weights greater than this passage's
+entry, captured after that entry, with a rear or unknown orientation. The
+operator checks the photo and time, selects a weight, then reviews the trip
+number, loaded weight and net before assigning it through the same endpoint.
+This uses the stored weighing and photo without another scale read or OCR
+request. In the general queue, several compatible trips leave the selection
+empty; weight alone must not suggest the first truck in the list.
+
 `manual_required` with the **Подтвердить ручную обработку** acknowledgement
 remains only for failures that happened while writing the business result
 (database apply errors). Scale-read failures before a sample was stored and

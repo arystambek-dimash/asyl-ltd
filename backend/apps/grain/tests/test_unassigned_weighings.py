@@ -2,10 +2,12 @@
 
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 from apps.grain import statuses as st
+from apps.grain import scale, services
 from apps.grain.models import UnassignedWeighing, Wagon, WeighingRecord
 from apps.grain.photos import photo_token
 from django.core.files.base import ContentFile
@@ -168,6 +170,65 @@ def test_assigning_to_a_loaded_passage_records_its_exit_and_moves_the_photo(
         f"/api/grain/photos/weighing/{exit_weighing.pk}/?token="
     )
     assert detail.data["entry_photo_url"] is None
+
+
+@pytest.mark.parametrize("orientation", ["rear", ""])
+def test_unreadable_exit_with_four_open_trips_completes_only_the_selected_trip(
+    auth_client, user_with_perms, settings, orientation
+):
+    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED = True
+    operator = user_with_perms("unreadable-exit", codes=["grain.weigh"])
+    trips = [
+        _passage(number=number, status=st.AT_SILO, entry=weight)
+        for number, weight in [
+            ("996BKC13", 3980),
+            ("934PPB13", 3940),
+            ("065BBE13", 5360),
+            ("870ATU13", 4040),
+        ]
+    ]
+    result = services.apply_unidentified_passage_scale_sample(
+        reading=scale.ScaleReading(
+            weight_kg=Decimal("8900"),
+            age_seconds=Decimal("0.2"),
+            updated_at="2026-09-08T05:00:00Z",
+        ),
+        camera="cam1",
+        request_id=uuid4(),
+        stable_weight_at=timezone.now() - timedelta(seconds=2),
+        orientation=orientation,
+    )
+    assert result.action == "unassigned"
+    item = UnassignedWeighing.objects.get(pk=result.unassigned_id)
+    item.photo.save(f"{item.photo_request_id}.jpg", ContentFile(JPEG), save=True)
+
+    with (
+        patch("apps.grain.scale.read_truck_scale") as read_scale,
+        patch("apps.grain.vehicle_weight_capture.camera_ai.recognize_vehicle_from_camera") as recognize,
+    ):
+        response = auth_client(operator).post(
+            f"/api/grain/unassigned-weighings/{item.pk}/assign/",
+            {"wagon": trips[0].pk},
+            format="json",
+        )
+        read_scale.assert_not_called()
+        recognize.assert_not_called()
+
+    assert response.status_code == 200, response.data
+    assert response.data["action"] == "exit"
+    trips[0].refresh_from_db()
+    assert trips[0].number == "996BKC13"
+    assert trips[0].status == st.COMPLETED
+    assert trips[0].net_weight_kg == 4920
+    weighing = trips[0].weighings.get(kind="tare")
+    assert weighing.weight_kg == 8900
+    assert weighing.photo.name == item.photo.name
+    assert trips[0].exited_at == item.stable_weight_at
+    for trip in trips[1:]:
+        trip.refresh_from_db()
+        assert trip.status == st.AT_SILO
+        assert trip.exit_weight_kg is None
 
 
 def test_assigning_to_an_arrived_passage_records_its_entry(auth_client, user_with_perms):
