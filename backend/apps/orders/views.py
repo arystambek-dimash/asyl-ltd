@@ -919,7 +919,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             "debt_orders": 0,
         } for department in Department.objects.all()}
         rows[""] = {
-            "id": 0, "code": "__unassigned", "name": "Отдел не выбран",
+            "id": 0, "code": "__unassigned", "name": "Нет отдела",
             "color": "#64748B", "is_active": False,
             "orders": 0, "active": 0, "shipped": 0, "revenue": Decimal("0"),
             "revenue_by_currency": defaultdict(lambda: Decimal("0")),

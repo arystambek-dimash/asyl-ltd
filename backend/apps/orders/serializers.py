@@ -296,7 +296,7 @@ class DepartmentLabelMixin:
     def get_department_name(self, obj):
         code = self._department_code(obj)
         row = self._department(code)
-        return row.name if row else (code or "Отдел не выбран")
+        return row.name if row else (code or "Нет отдела")
 
     def get_department_color(self, obj):
         row = self._department(self._department_code(obj))

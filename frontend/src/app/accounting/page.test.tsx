@@ -164,6 +164,8 @@ it("keeps entered confirmation data when a background refresh removes the row fr
             ? [
                 {
                   id: 621,
+                  department: "",
+                  department_name: "Мельница",
                   client_name: "Клиент",
                   status: "pending",
                   currency: "KZT",
@@ -181,7 +183,9 @@ it("keeps entered confirmation data when a background refresh removes the row fr
   });
   render(<CashierPage />);
   await user.click(screen.getByRole("tab", { name: /Заявки и оплаты/ }));
-  await user.click(await screen.findByRole("button", { name: "Проверить и подтвердить" }));
+  const confirm = await screen.findByRole("button", { name: "Проверить и подтвердить" });
+  expect(screen.getAllByText("Нет отдела").length).toBeGreaterThan(0);
+  await user.click(confirm);
   await user.selectOptions(await screen.findByRole("combobox", { name: "Отдел продаж" }), "main");
   await user.type(screen.getByRole("spinbutton", { name: "Цена: Мука" }), "1234");
   includeRequest = false;

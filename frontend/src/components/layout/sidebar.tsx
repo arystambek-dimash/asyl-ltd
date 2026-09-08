@@ -1,7 +1,5 @@
 "use client";
 import { useEffect, useRef } from "react";
-import { useApi } from "@/lib/use-api";
-import { useVisiblePolling } from "@/lib/use-visible-polling";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
@@ -130,13 +128,11 @@ function NavLeaf({
   label,
   icon: Icon,
   active,
-  count,
 }: {
   href: string;
   label: string;
   icon: React.ElementType;
   active: boolean;
-  count?: number;
 }) {
   return (
     <Link
@@ -152,19 +148,11 @@ function NavLeaf({
     >
       <Icon className="size-[18px] shrink-0" />
       {label}
-      {!!count && (
-        <span
-          aria-label={`${count} новых заявок`}
-          className="ml-auto rounded-full bg-[var(--warning)]/15 px-2 text-xs font-semibold text-[var(--warning)]"
-        >
-          {count}
-        </span>
-      )}
     </Link>
   );
 }
 
-function SidebarContent({ me, onNavigate, newOrders }: { me: Me; onNavigate?: () => void; newOrders?: number }) {
+function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void }) {
   const pathname = usePathname();
   const sections: NavSection[] = me.is_client ? PORTAL_SECTIONS : staffSections();
   const visible = sections
@@ -211,7 +199,6 @@ function SidebarContent({ me, onNavigate, newOrders }: { me: Me; onNavigate?: ()
                 label={item.label}
                 icon={item.icon}
                 active={item.href === activeHref}
-                count={item.href === "/orders" ? newOrders : undefined}
               />
             ))}
           </div>
@@ -230,13 +217,6 @@ function SidebarContent({ me, onNavigate, newOrders }: { me: Me; onNavigate?: ()
 }
 
 export function Sidebar({ me, mobileOpen = false, onClose }: { me: Me; mobileOpen?: boolean; onClose?: () => void }) {
-  const {
-    data: workflow,
-    error: workflowError,
-    reload: reloadWorkflow,
-  } = useApi<{ new: number }>(!me.is_client && hasNavPerm(me, "orders.view") ? "/orders/workflow-summary/" : null);
-  useVisiblePolling(reloadWorkflow, 15000, !me.is_client && hasNavPerm(me, "orders.view"));
-  const newOrders = workflowError ? undefined : workflow?.new;
   const pathname = usePathname();
   const mobilePanelRef = useRef<HTMLElement>(null);
   const mobileCloseRef = useRef<HTMLButtonElement>(null);
@@ -292,7 +272,7 @@ export function Sidebar({ me, mobileOpen = false, onClose }: { me: Me; mobileOpe
         data-tour="nav"
         className="hidden w-[248px] flex-col border-r bg-[var(--sidebar)] text-[var(--sidebar-foreground)] lg:flex"
       >
-        <SidebarContent newOrders={newOrders} me={me} />
+        <SidebarContent me={me} />
       </aside>
 
       {/* мобайл: выезжающая панель с оверлеем */}
@@ -325,7 +305,7 @@ export function Sidebar({ me, mobileOpen = false, onClose }: { me: Me; mobileOpe
           >
             <X className="size-4" />
           </button>
-          <SidebarContent newOrders={newOrders} me={me} onNavigate={onClose} />
+          <SidebarContent me={me} onNavigate={onClose} />
         </aside>
       </div>
     </>

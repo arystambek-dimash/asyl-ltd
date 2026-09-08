@@ -154,7 +154,7 @@ def test_unassigned_staff_request_waits_despite_prices(
     assert response.status_code == 201
     assert response.data["department"] == ""
     assert response.data["status"] == "pending"
-    assert response.data["department_name"] == "Отдел не выбран"
+    assert response.data["department_name"] == "Нет отдела"
 
 
 def test_history_cancel_flags_and_balances(auth_client, accountant, request_order):

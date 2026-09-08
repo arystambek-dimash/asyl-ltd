@@ -92,11 +92,10 @@ function filtersAreValid(filters: CashFilters) {
 }
 
 function DepartmentBadge({ name, color }: { name?: string; color?: string }) {
-  if (!name) return null;
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold">
       <span className="size-2 rounded-full" style={{ backgroundColor: color ?? "#64748B" }} />
-      {name}
+      {name || "Нет отдела"}
     </span>
   );
 }
@@ -281,7 +280,10 @@ function ConfirmQueueSection({
                           {o.client_name} · {formatCurrency(o.total_amount, o.currency)}
                         </div>
                       </div>
-                      <DepartmentBadge name={o.department_name} color={o.department_color} />
+                      <DepartmentBadge
+                        name={o.department ? o.department_name || o.department : "Нет отдела"}
+                        color={o.department ? o.department_color : undefined}
+                      />
                     </div>
                     <Button size="sm" disabled={q.busy} onClick={() => setConfirming(o)}>
                       Проверить и подтвердить
