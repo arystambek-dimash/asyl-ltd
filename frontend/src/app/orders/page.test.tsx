@@ -89,6 +89,8 @@ it("separates new and reviewed requests on the server and defers analytics", asy
   expect(mocks.get.mock.calls.some(([url]) => String(url).includes("department-summary"))).toBe(false);
   await user.click(screen.getByText("Аналитика и сравнение отделов"));
   await waitFor(() =>
-    expect(mocks.get.mock.calls.some(([url]) => String(url).includes("department-summary"))).toBe(true),
+    expect(mocks.get.mock.calls.some(([url]) => String(url).includes("department-summary/?review_stage=review"))).toBe(
+      true,
+    ),
   );
 });

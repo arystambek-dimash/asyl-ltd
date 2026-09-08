@@ -217,3 +217,20 @@ def test_unassigned_orders_are_counted_and_filterable(
     order.department = "chosen"
     order.save()
     assert api.patch(f"/api/orders/{order.pk}/", {"department": ""}).status_code == 400
+
+
+def test_analytics_and_arrival_marker_follow_new_request_stage(
+    auth_client, manager, request_order
+):
+    order, _, _ = request_order
+    api = auth_client(manager)
+    Order.objects.create(client=order.client, status="confirmed", department="chosen")
+    assert api.get("/api/orders/workflow-summary/").data["latest_new_id"] == order.pk
+    rows = api.get("/api/orders/department-summary/?review_stage=new").data
+    assert sum(row["orders"] for row in rows) == 1
+    api.post(f"/api/orders/{order.pk}/review/")
+    assert api.get("/api/orders/workflow-summary/").data["latest_new_id"] is None
+    rows = api.get("/api/orders/department-summary/?review_stage=new").data
+    assert sum(row["orders"] for row in rows) == 0
+    rows = api.get("/api/orders/department-summary/?review_stage=review").data
+    assert sum(row["orders"] for row in rows) == 1

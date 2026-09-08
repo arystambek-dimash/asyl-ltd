@@ -782,17 +782,17 @@ function OrdersPageInner() {
   } = useApi<Record<string, number | null>>(view === "orders" ? "/orders/workflow-summary/" : null);
   const [seenLatest, setSeenLatest] = useState<number | null>(null);
   useEffect(() => {
-    if (workflow && seenLatest === null) setSeenLatest(workflow.latest_id ?? 0);
+    if (workflow && seenLatest === null) setSeenLatest(workflow.latest_new_id ?? 0);
   }, [workflow, seenLatest]);
   useVisiblePolling(reloadWorkflow, 15000, view === "orders");
-  const hasNewArrivals = seenLatest !== null && (workflow?.latest_id ?? 0) > seenLatest;
+  const hasNewArrivals = seenLatest !== null && (workflow?.latest_new_id ?? 0) > seenLatest;
   const showNewOrders = () => {
     setStatus("new");
     setQ("");
     setDept("all");
     setDateFrom("");
     setDateTo("");
-    setSeenLatest(workflow?.latest_id ?? 0);
+    setSeenLatest(workflow?.latest_new_id ?? 0);
     void reload();
   };
 
@@ -800,7 +800,8 @@ function OrdersPageInner() {
     const params = new URLSearchParams();
     if (dateFrom) params.set("date_from", dateFrom);
     if (dateTo) params.set("date_to", dateTo);
-    if (!["all", "new", "review"].includes(status)) params.set("status_group", status);
+    if (["new", "review"].includes(status)) params.set("review_stage", status);
+    else if (status !== "all") params.set("status_group", status);
     const query = params.toString();
     return `/orders/department-summary/${query ? `?${query}` : ""}`;
   }, [dateFrom, dateTo, status]);

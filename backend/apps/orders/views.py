@@ -753,7 +753,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             loaded=Count("pk", filter=Q(status="loaded")),
             shipped=Count("pk", filter=Q(status="shipped")),
             cancelled=Count("pk", filter=Q(status__in=("rejected", "cancelled"))),
-            latest_id=Max("pk"),
+            latest_new_id=Max("pk", filter=pending & Q(reviewed_at__isnull=True)),
         ))
 
     @action(detail=True, methods=["post"], url_path="review")
@@ -891,6 +891,10 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 raise ValidationError({"detail": "Неизвестная группа статусов",
                                        "code": "bad_status_group"})
             qs = qs.filter(status__in=statuses_in_group(group))
+
+        stage = params.get("review_stage")
+        if stage in ("new", "review"):
+            qs = qs.filter(status__in=("draft", "pending"), reviewed_at__isnull=stage == "new")
 
         rows = {department.code: {
             "id": department.id,
