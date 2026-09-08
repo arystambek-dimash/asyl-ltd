@@ -98,6 +98,17 @@ describe("UnassignedWeighingsPanel", () => {
     expect(postMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["waiting_photo", "Ожидаем фото для ИИ"],
+    ["waiting_budget", "Лимит ИИ на сегодня исчерпан"],
+  ])("shows %s explicitly while keeping the saved weight actionable", (status, text) => {
+    mockApi([{ ...item, identity_check: { status, reason: "", plate: "" } }], [loaded]);
+    render(<UnassignedWeighingsPanel canWeigh />);
+    expect(screen.getByText(new RegExp(text))).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Привязать" })).toBeEnabled();
+    expect(screen.queryByText(/ИИ сверяет номер/)).not.toBeInTheDocument();
+  });
+
   it("distinguishes an empty queue from an invalid response", () => {
     mockApi([], []);
     const { container, rerender } = render(<UnassignedWeighingsPanel canWeigh />);

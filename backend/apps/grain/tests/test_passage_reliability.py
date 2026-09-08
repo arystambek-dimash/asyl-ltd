@@ -144,6 +144,35 @@ def test_next_equal_weight_truck_is_saved_while_previous_ocr_is_blocked():
     assert Lane.objects.get().current_capture_id == second.pk
 
 
+def test_recovers_every_saved_weight_after_a_batch_of_camera_failures():
+    Lane.objects.create()
+    captures = [
+        Capture.objects.create(
+            idempotency_key=uuid4(),
+            camera="cam1",
+            status=Capture.FAILED,
+            stage=Capture.DONE,
+            weight_kg=4000 + (i % 3) * 20,
+            stable_weight_at=timezone.now() - timedelta(minutes=2),
+            error_code="camera_unavailable",
+            requires_acknowledgement=False,
+        )
+        for i in range(30)
+    ]
+    for _ in range(35):
+        monitor.process_once()
+    assert set(UnassignedWeighing.objects.values_list("capture_id", flat=True)) == {
+        row.pk for row in captures
+    }
+    assert UnassignedWeighing.objects.count() == 30
+    assert WeighingPhotoDelivery.objects.count() == 30
+    assert list(
+        UnassignedWeighing.objects.order_by("capture_id").values_list(
+            "weight_kg", flat=True
+        )
+    ) == [row.weight_kg for row in captures]
+
+
 def test_departure_fences_fresh_ocr_even_if_next_truck_has_the_same_weight():
     capture = saved_capture(
         recognition_dispatched=True,

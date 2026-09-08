@@ -405,3 +405,26 @@ def test_country_emblem_does_not_block_a_clear_unique_match(visit):
     result["exit"]["plate"] = "KZ 449 ABC 13"
     result["entries"][0]["plate"] = "449-ABC-13"
     assert identity.choose(result, entries, item.vehicle_number)[1] == "449ABC13"
+
+
+def test_budget_exhaustion_is_visible_and_retries_next_day(visit, settings):
+    settings.WEIGHING_AI_MAX_DAILY_REQUESTS = 1
+    verify(visit[2])
+    another = parked()
+    with patch.object(identity, "request_verification") as request:
+        identity.process_once()
+    request.assert_not_called()
+    check = WeighingIdentityCheck.objects.get(weighing=another)
+    assert check.reason == "daily_budget_exhausted" and check.attempts == 0
+    assert check.next_attempt_at > timezone.now()
+    assert identity.public_status(another)["status"] == "waiting_budget"
+
+
+def test_expired_or_missing_photos_are_not_reported_as_active_vision():
+    item = parked(at=timezone.now() - timedelta(hours=25))
+    assert identity.public_status(item)["status"] == "review"
+    item.stable_weight_at = timezone.now()
+    item.photo = None
+    assert identity.public_status(item)["status"] == "waiting_photo"
+    item.photo_request_id = None
+    assert identity.public_status(item)["status"] == "review"

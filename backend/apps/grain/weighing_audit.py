@@ -3,7 +3,7 @@
 from datetime import timedelta
 
 from django.conf import settings
-from django.db.models import Count, Q
+from django.db.models import Count, Exists, OuterRef, Q
 from django.utils import timezone
 from apps.eventlog.models import EventLog
 
@@ -30,9 +30,25 @@ def snapshot(*, now=None, hours=24, sample_limit=3):
     lower = now - timedelta(hours=hours)
     captures = AutomaticPassageCapture.objects.filter(started_at__gte=lower)
     saved = captures.filter(weight_kg__isnull=False, stable_weight_at__isnull=False)
-    uncovered = saved.exclude(status="processing").filter(
+    legacy = saved.exclude(status="processing").filter(
         wagon_id__isnull=True, unassigned_weighing__isnull=True
     )
+    # Older/manual bookings retain the immutable photo request UUID even when
+    # their direct capture FK was never populated. Never infer links by plate.
+    frame_match = Q(photo_request_id=OuterRef("idempotency_key")) | Q(
+        photo_request_id=OuterRef("attempt_request_id")
+    )
+    legacy = legacy.annotate(
+        has_record=Exists(WeighingRecord.objects.filter(frame_match)),
+        has_queue=Exists(UnassignedWeighing.objects.filter(frame_match)),
+    )
+    uncovered = legacy.filter(has_record=False, has_queue=False)
+    frame_ids = [
+        value
+        for pair in legacy.values_list("idempotency_key", "attempt_request_id")
+        for value in pair
+        if value is not None
+    ]
     queue = UnassignedWeighing.objects.filter(status="open")
     checks = WeighingIdentityCheck.objects.filter(weighing__status="open")
     photos = WeighingPhotoDelivery.objects.filter(created_at__gte=lower)
@@ -59,6 +75,21 @@ def snapshot(*, now=None, hours=24, sample_limit=3):
         "lane": lanes,
         "captures": _counts(captures),
         "saved_weight_count": saved.count(),
+        "legacy_photo_link_count": legacy.exclude(
+            has_record=False, has_queue=False
+        ).count(),
+        "legacy_records": [
+            {**row, "photo_request_id": str(row["photo_request_id"])}
+            for row in WeighingRecord.objects.filter(
+                photo_request_id__in=frame_ids
+            ).values("id", "wagon_id", "kind", "photo_request_id")[:100]
+        ],
+        "legacy_queue": [
+            {**row, "photo_request_id": str(row["photo_request_id"])}
+            for row in UnassignedWeighing.objects.filter(
+                photo_request_id__in=frame_ids
+            ).values("id", "status", "capture_id", "photo_request_id")[:100]
+        ],
         "uncovered_saved_weight_count": uncovered.count(),
         "uncovered_saved_weight_ids": list(uncovered.values_list("pk", flat=True)[:50]),
         "uncovered_details": list(

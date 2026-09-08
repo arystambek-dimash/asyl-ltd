@@ -10,6 +10,7 @@ import django
 
 django.setup()
 from django.db import connection, transaction
+from django.conf import settings
 from apps.grain.weighing_audit import snapshot, probe
 from apps.grain import scale
 
@@ -27,6 +28,9 @@ try:
         "connected": observation.connected,
         "stable": observation.stable,
         "weight_kg": str(observation.weight_kg),
+        "age_seconds": str(observation.age_seconds),
+        "updated_at": observation.updated_at,
+        "max_age_seconds": settings.TRUCK_SCALE_MAX_AGE_SECONDS,
     }
 except Exception as exc:
     report["scale_probe"] = {"error_type": type(exc).__name__}

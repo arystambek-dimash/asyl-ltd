@@ -180,16 +180,20 @@ function UnassignedRow({
           </div>
           {item.identity_check && item.identity_check.status !== "disabled" && (
             <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-              {item.identity_check.status === "review"
-                ? "ИИ: нужна ручная проверка номера и машины"
-                : item.identity_check.status === "matched"
-                  ? "ИИ: номер и машина совпали"
-                  : item.identity_check.status === "retrying"
-                    ? item.identity_check.reason === "entry_evidence_pending"
-                      ? "Ожидаем фото заезда для проверки ИИ"
-                      : "ИИ временно недоступен, повторим проверку"
-                    : "ИИ сверяет номер и машину с фото заезда…"}
-              {item.identity_check.plate && ` · прочитан ${item.identity_check.plate}`}
+              {item.identity_check.status === "waiting_photo"
+                ? "Ожидаем фото для ИИ — вес сохранён, доступна ручная привязка"
+                : item.identity_check.status === "waiting_budget"
+                  ? "Лимит ИИ на сегодня исчерпан — доступна ручная привязка"
+                  : item.identity_check.status === "review"
+                    ? "ИИ: нужна ручная проверка номера и машины"
+                    : item.identity_check.status === "matched"
+                      ? "ИИ: номер и машина совпали"
+                      : item.identity_check.status === "retrying"
+                        ? item.identity_check.reason === "entry_evidence_pending"
+                          ? "Ожидаем фото заезда для проверки ИИ"
+                          : "ИИ временно недоступен, повторим проверку"
+                        : "ИИ сверяет номер и машину с фото заезда…"}
+              {item.identity_check.plate && ` · вариант ИИ: ${item.identity_check.plate}`}
             </p>
           )}
           <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">

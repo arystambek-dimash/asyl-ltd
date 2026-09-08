@@ -1041,7 +1041,8 @@ export type VehicleOrientation = "" | "front" | "rear";
 /** Вес с автовесов без распознанного номера, который ждёт привязки к рейсу. */
 export interface GrainUnassignedWeighing {
   identity_check?: {
-    status: "pending" | "processing" | "retrying" | "review" | "matched" | "disabled";
+    status:
+      "pending" | "processing" | "retrying" | "review" | "matched" | "disabled" | "waiting_photo" | "waiting_budget";
     reason: string;
     plate: string;
   };

@@ -211,19 +211,9 @@ class UnassignedWeighingSerializer(serializers.ModelSerializer):
     identity_check = serializers.SerializerMethodField()
 
     def get_identity_check(self, item):
-        from .weighing_identity import enabled
+        from .weighing_identity import public_status
 
-        check = getattr(item, "identity_check", None)
-        if check is None:
-            return {
-                "status": "pending" if enabled() and item.orientation != "front" else "disabled",
-                "reason": "",
-                "plate": "",
-            }
-        verdict = check.evidence.get("verdict", {})
-        reading = verdict.get("exit", {}) if isinstance(verdict, dict) else {}
-        plate = reading.get("plate", "") if isinstance(reading, dict) else ""
-        return {"status": check.status, "reason": check.reason, "plate": str(plate)[:30]}
+        return public_status(item)
 
     def get_photo_status(self, item):
         return photo_delivery_status(item)

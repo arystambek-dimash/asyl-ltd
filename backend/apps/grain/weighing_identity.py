@@ -11,6 +11,7 @@ from datetime import timedelta
 
 import http.client
 from django.conf import settings
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
@@ -69,7 +70,7 @@ def _snapshot(kind, record, number, at):
         "key": f"{kind}:{record.pk}",
         "number": number,
         "weight_kg": record.weight_kg,
-        "at": at.isoformat(),
+        "at": at.isoformat() if at is not None else None,
         "photo": record.photo.name,
         "request_id": str(record.photo_request_id),
         "orientation": record.orientation,
@@ -313,6 +314,37 @@ def normalized_plate(value):
     return compact if services.KZ_VEHICLE_PLATE_RE.fullmatch(compact) else ""
 
 
+def public_status(item, *, now=None):
+    now = now or timezone.now()
+    check = getattr(item, "identity_check", None)
+    verdict = check.evidence.get("verdict", {}) if check else {}
+    reading = verdict.get("exit", {}) if isinstance(verdict, dict) else {}
+    result = {
+        "status": check.status if check else "pending",
+        "reason": check.reason if check else "",
+        "plate": (
+            normalized_plate(reading.get("plate")) if isinstance(reading, dict) else ""
+        ),
+    }
+    if check and check.status in {"matched", "review"}:
+        return result
+    if not enabled() or (check is None and item.orientation == "front"):
+        result["status"] = "disabled"
+    elif item.stable_weight_at < now - timedelta(hours=24):
+        result.update(status="review", reason="verification_window_expired")
+    elif not item.photo_request_id:
+        result.update(status="review", reason="photo_not_bound")
+    elif not item.photo:
+        result.update(status="waiting_photo", reason="photo_pending")
+    elif (
+        check
+        and check.status == "retrying"
+        and check.reason == "daily_budget_exhausted"
+    ):
+        result["status"] = "waiting_budget"
+    return result
+
+
 def choose(verdict, entries, original_number):
     if not isinstance(verdict, dict) or not isinstance(verdict.get("exit"), dict):
         return None
@@ -392,12 +424,18 @@ def _claim():
         or 0
     )
     if daily >= settings.WEIGHING_AI_MAX_DAILY_REQUESTS:
+        check.status, check.reason = "retrying", "daily_budget_exhausted"
+        check.next_attempt_at = now.replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ) + timedelta(days=1)
+        check.save()
         return None
     if check.attempts >= MAX_ATTEMPTS:
         check.status, check.reason = "review", "attempts_exhausted"
         check.save()
         return None
     check.status = "processing"
+    check.reason = ""
     check.attempts += 1
     check.lease_until = now + timedelta(minutes=3)
     check.model = settings.WEIGHING_AI_MODEL
@@ -524,7 +562,7 @@ def _finish(check, item, entries, verdict, response_id):
                             "response_id": response_id,
                         },
                     )
-            except (APIException, IntegrityError, ValueError):
+            except (APIException, IntegrityError, ValueError, ObjectDoesNotExist):
                 locked.reason = "entry_changed"
         else:
             locked.reason = "entry_changed"

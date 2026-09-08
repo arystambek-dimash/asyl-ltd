@@ -98,3 +98,25 @@ def test_network_error_does_not_expose_exception_message():
         results = audit.probe([(item, None, item.vehicle_number)])
     assert results[0]["error_type"] == "OSError"
     assert "private header" not in str(results)
+
+
+def test_legacy_uuid_links_are_covered_but_similar_plates_are_not():
+    booked = capture(status="completed", attempt_request_id=uuid4())
+    queued = capture(status="completed")
+    missing = capture(status="completed", vehicle_number="934PPB13")
+    wagon = Wagon.objects.create(number="934PPB13", direction="passage")
+    WeighingRecord.objects.create(
+        wagon=wagon,
+        kind="tare",
+        weight_kg=4000,
+        photo_request_id=booked.attempt_request_id,
+    )
+    UnassignedWeighing.objects.create(
+        weight_kg=4000,
+        stable_weight_at=timezone.now(),
+        photo_request_id=queued.idempotency_key,
+        status="discarded",
+    )
+    report, _ = audit.snapshot()
+    assert report["legacy_photo_link_count"] == 2
+    assert report["uncovered_saved_weight_ids"] == [missing.pk]
