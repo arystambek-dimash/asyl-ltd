@@ -120,3 +120,18 @@ def test_legacy_uuid_links_are_covered_but_similar_plates_are_not():
     report, _ = audit.snapshot()
     assert report["legacy_photo_link_count"] == 2
     assert report["uncovered_saved_weight_ids"] == [missing.pk]
+
+
+def test_public_actions_summary_excludes_all_business_data():
+    report, _ = audit.snapshot()
+    report.update(
+        ok=False,
+        scale_probe={"state": "stale", "weight_kg": "8500"},
+        vision_samples=[{"plate": "private-plate", "pair_reading_matches": True}],
+        arbitrary_private_field="secret-example",
+    )
+    public = audit.public_summary(report)
+    assert public["scale_ready"] is False
+    assert public["vision_samples_passed"] is True
+    assert all(type(value) is bool for value in public.values())
+    assert "private" not in str(public) and "8500" not in str(public)

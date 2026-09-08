@@ -131,6 +131,9 @@ def snapshot(*, now=None, hours=24, sample_limit=3):
         "manual_queue_without_photo": queue.exclude(HAS_PHOTO).count(),
         "recorded_weighings_without_photo": records.exclude(HAS_PHOTO).count(),
         "identity_checks": _counts(checks),
+        "verified_saved_exit_present": WeighingIdentityCheck.objects.filter(
+            status="matched", updated_at__gte=lower
+        ).exists(),
         "identity_review_reasons": _counts(checks.filter(status="review"), "reason"),
         "reviews_matching_after_normalization": [
             check.pk
@@ -214,3 +217,30 @@ def probe(samples):
             result["error_type"] = type(exc).__name__
         results.append(result)
     return results
+
+
+def public_summary(report):
+    """Allowlist health signals only: Actions logs may be publicly accessible."""
+    return {
+        "ok": report["ok"],
+        "automatic_scale_enabled": bool(report["config"]["automatic_scale_enabled"]),
+        "vision_enabled": bool(report["config"]["vision_enabled"]),
+        "saved_weights_accounted_for": report["uncovered_saved_weight_count"] == 0,
+        "processing_stalled": bool(report["processing_over_10_minutes"]),
+        "manual_review_pending": bool(report["manual_queue_count"]),
+        "missing_photos": bool(
+            report["manual_queue_without_photo"]
+            or report["recorded_weighings_without_photo"]
+        ),
+        "scale_ready": report.get("scale_probe", {}).get("state") == "ready",
+        "scale_data_stale": report.get("scale_probe", {}).get("state") == "stale",
+        "verified_saved_exit_present": bool(report["verified_saved_exit_present"]),
+        "vision_samples_passed": bool(report["vision_samples"])
+        and all(
+            "error_type" not in row and row.get("pair_reading_matches") is not False
+            for row in report["vision_samples"]
+        ),
+        "legacy_format_review_pending": bool(
+            report.get("reviews_matching_after_normalization")
+        ),
+    }

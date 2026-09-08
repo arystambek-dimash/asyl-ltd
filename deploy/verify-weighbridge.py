@@ -12,6 +12,7 @@ django.setup()
 from django.db import connection, transaction
 from django.conf import settings
 from apps.grain.weighing_audit import snapshot, probe
+from apps.grain.weighing_audit import public_summary
 from apps.grain import scale
 
 with transaction.atomic():
@@ -49,5 +50,5 @@ report["ok"] = bool(
         row.get("pair_reading_matches") is not False for row in report["vision_samples"]
     )
 )
-print(json.dumps(report, ensure_ascii=False, indent=2))
+print(json.dumps(public_summary(report), ensure_ascii=False, indent=2))
 sys.exit(0 if report["ok"] else 1)

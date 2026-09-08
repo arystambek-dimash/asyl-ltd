@@ -91,8 +91,9 @@ This requirement does not apply to the OpenAI weighbridge wrapper.
 Run the **Verify production weighbridge** Actions workflow manually on `main`.
 It checks saved-weight coverage and performs at most three vision requests on
 existing entry/exit photographs. SQL is read-only; no trip is assigned and no
-fresh camera photograph is requested. Only bounded text diagnostics are retained
-in a private Actions artifact for three days, without image bytes or credentials.
+fresh camera photograph is requested. Actions logs/artifacts contain only an
+allowlist of boolean health signals: no plates, weights, timestamps, row IDs,
+image bytes or credentials. Repository visibility does not protect these reports.
 Older bookings are traced by their exact photograph request UUID, never by a
 similar plate, weight or time. The diagnostic fails on missing coverage, stalled
 processing, a non-ready scale, API errors or disagreement in a sampled pair.
