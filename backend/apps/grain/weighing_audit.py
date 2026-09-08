@@ -5,6 +5,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.db.models import Count, Q
 from django.utils import timezone
+from apps.eventlog.models import EventLog
 
 from . import weighing_identity
 from .models import (
@@ -60,6 +61,32 @@ def snapshot(*, now=None, hours=24, sample_limit=3):
         "saved_weight_count": saved.count(),
         "uncovered_saved_weight_count": uncovered.count(),
         "uncovered_saved_weight_ids": list(uncovered.values_list("pk", flat=True)[:50]),
+        "uncovered_details": list(
+            uncovered.values(
+                "id",
+                "action",
+                "vehicle_number",
+                "weight_kg",
+                "scale_updated_at",
+                "vehicle_plate_event_id",
+                "error_code",
+            )[:50]
+        ),
+        "deleted_visits": list(
+            EventLog.objects.filter(
+                event_type="grain_wagon_deleted", created_at__gte=lower
+            ).values("id", "payload")[:100]
+        ),
+        "uncovered_weight_audit": list(
+            EventLog.objects.filter(
+                event_type="grain_weighing",
+                payload__scale_updated_at__in=list(
+                    uncovered.exclude(scale_updated_at="").values_list(
+                        "scale_updated_at", flat=True
+                    )
+                ),
+            ).values("id", "payload")[:100]
+        ),
         "processing_over_10_minutes": list(
             saved.filter(
                 status="processing", updated_at__lt=now - timedelta(minutes=10)
@@ -121,10 +148,14 @@ def probe(samples):
             result.update(
                 {
                     "plate": reading.get("plate"),
+                    "normalized_plate": weighing_identity.normalized_plate(
+                        reading.get("plate")
+                    ),
                     "plate_clear": reading.get("plate_clear"),
                     "orientation": reading.get("orientation"),
                     "agrees_with_reference": bool(reference)
-                    and reading.get("plate") == reference,
+                    and weighing_identity.normalized_plate(reading.get("plate"))
+                    == reference,
                     "pair_reading_matches": (
                         bool(weighing_identity.choose(verdict, entries, reference))
                         if entry is not None

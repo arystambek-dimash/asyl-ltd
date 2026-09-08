@@ -8,6 +8,7 @@ on:
       - .github/workflows/verify-weighbridge.yml
       - deploy/verify-weighbridge.py
       - backend/apps/grain/weighing_audit.py
+      - backend/apps/grain/weighing_identity.py
 
 permissions:
   contents: read
@@ -43,9 +44,11 @@ jobs:
           # source files or credentials are installed on the production host.
           python - <<'PY' > "$RUNNER_TEMP/verify.py"
           from pathlib import Path
-          module = Path('backend/apps/grain/weighing_audit.py').read_text()
           wrapper = Path('deploy/verify-weighbridge.py').read_text()
-          injection = "import types\nmodule = types.ModuleType('apps.grain.weighing_audit')\nmodule.__package__ = 'apps.grain'\nexec(" + repr(module) + ", module.__dict__)\nsys.modules[module.__name__] = module\n"
+          injection = 'import types\nimport apps.grain\n'
+          for name in ('weighing_identity', 'weighing_audit'):
+              source = Path('backend/apps/grain/' + name + '.py').read_text()
+              injection += "module = types.ModuleType('apps.grain." + name + "')\nmodule.__package__ = 'apps.grain'\nexec(" + repr(source) + ", module.__dict__)\nsys.modules[module.__name__] = module\nsetattr(apps.grain, '" + name + "', module)\n"
           print(wrapper.replace('from apps.grain.weighing_audit import snapshot, probe', injection + '\nfrom apps.grain.weighing_audit import snapshot, probe'))
           PY
           ssh -i ~/.ssh/asyl_verify_key -p "$PROD_PORT" \

@@ -380,3 +380,28 @@ def test_orphan_entry_before_another_completed_visit_is_not_reused(visit):
     wagon.refresh_from_db()
     assert wagon.tare_weight_kg is None
     assert item.identity_check.status == "review"
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("KZ 411 BBF 13", "411BBF13"),
+        ("KZ854ANB13", "854ANB13"),
+        ("X 315 FPM", "X315FPM"),
+        ("449-ABC-13", "449ABC13"),
+        ("KZ 449 A?C 13", ""),
+        ("449ABC13 OR 149ABC13", ""),
+        ("9449ABC13", ""),
+    ],
+)
+def test_normalizes_only_plate_layout_not_unclear_characters(raw, expected):
+    assert identity.normalized_plate(raw) == expected
+
+
+def test_country_emblem_does_not_block_a_clear_unique_match(visit):
+    _, _, item = visit
+    entries = identity.candidates(item)
+    result = verdict(entries)
+    result["exit"]["plate"] = "KZ 449 ABC 13"
+    result["entries"][0]["plate"] = "449-ABC-13"
+    assert identity.choose(result, entries, item.vehicle_number)[1] == "449ABC13"

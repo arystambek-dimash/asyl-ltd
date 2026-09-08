@@ -11,6 +11,7 @@ import django
 django.setup()
 from django.db import connection, transaction
 from apps.grain.weighing_audit import snapshot, probe
+from apps.grain import scale
 
 with transaction.atomic():
     with connection.cursor() as cursor:
@@ -19,11 +20,25 @@ with transaction.atomic():
     report, samples = snapshot(hours=24, sample_limit=3)
 
 report["vision_samples"] = probe(samples) if report["config"]["vision_enabled"] else []
+try:
+    observation = scale.read_truck_scale_observation(scale.TRUCK_SCALE_KEY)
+    report["scale_probe"] = {
+        "state": observation.state,
+        "connected": observation.connected,
+        "stable": observation.stable,
+        "weight_kg": str(observation.weight_kg),
+    }
+except Exception as exc:
+    report["scale_probe"] = {"error_type": type(exc).__name__}
+report["code_scope"] = (
+    "reviewed diagnostic and candidate vision wrapper; no server files changed"
+)
 report["ok"] = bool(
     report["config"]["automatic_scale_enabled"]
     and report["config"]["vision_enabled"]
     and not report["uncovered_saved_weight_count"]
     and not report["processing_over_10_minutes"]
+    and report["scale_probe"].get("state") == "ready"
     and all("error_type" not in row for row in report["vision_samples"])
 )
 print(json.dumps(report, ensure_ascii=False, indent=2))
