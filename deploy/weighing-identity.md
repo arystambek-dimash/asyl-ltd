@@ -18,6 +18,8 @@ model. Generic make/colour or matching plates alone are insufficient.
 Readings drop whitespace/hyphens and a leading country label `KZ` only when
 the remaining complete number has a valid Kazakhstan plate format. This is
 format normalization; digits/letters are never substituted to fit an answer.
+Old format-only rejections are queued once for a fresh image verification, within
+the existing attempt/daily caps. Old model verdicts alone never book a weighing.
 
 Code can complete an exit only when there is exactly one clear plate match,
 the image directions are front/rear, distinctive appearance agrees, and the

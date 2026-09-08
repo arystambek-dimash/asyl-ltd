@@ -2,13 +2,6 @@ name: Verify production weighbridge
 
 on:
   workflow_dispatch:
-  push:
-    branches: [codex/weighbridge-acceptance]
-    paths:
-      - .github/workflows/verify-weighbridge.yml
-      - deploy/verify-weighbridge.py
-      - backend/apps/grain/weighing_audit.py
-      - backend/apps/grain/weighing_identity.py
 
 permissions:
   contents: read

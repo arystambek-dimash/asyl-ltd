@@ -428,3 +428,54 @@ def test_expired_or_missing_photos_are_not_reported_as_active_vision():
     assert identity.public_status(item)["status"] == "waiting_photo"
     item.photo_request_id = None
     assert identity.public_status(item)["status"] == "review"
+
+
+@pytest.mark.parametrize("fresh_clear", [True, False])
+def test_old_format_rejection_gets_one_fresh_check_without_resetting_attempts(
+    visit, fresh_clear
+):
+    wagon, _, item = visit
+    entries = identity.candidates(item)
+    old = verdict(entries, plate="KZ 449 ABC 13")
+    check = WeighingIdentityCheck.objects.create(
+        weighing=item,
+        status="review",
+        reason="identity_uncertain",
+        attempts=1,
+        evidence={"verdict": old, "entries": [row[0] for row in entries]},
+    )
+    fresh = verdict(entries)
+    fresh["exit"]["plate_clear"] = fresh_clear
+    with patch.object(
+        identity, "request_verification", return_value=(fresh, "resp-new")
+    ) as request:
+        identity.process_once()
+        identity.process_once()
+    request.assert_called_once()
+    check.refresh_from_db()
+    wagon.refresh_from_db()
+    assert check.attempts == 2
+    assert check.status == ("matched" if fresh_clear else "review")
+    assert bool(wagon.tare_weight_kg) == fresh_clear
+
+
+def test_format_retry_leaves_manually_resolved_weights_alone(visit):
+    _, _, item = visit
+    entries = identity.candidates(item)
+    item.status = "discarded"
+    item.save()
+    check = WeighingIdentityCheck.objects.create(
+        weighing=item,
+        status="review",
+        reason="identity_uncertain",
+        attempts=1,
+        evidence={
+            "verdict": verdict(entries, plate="KZ 449 ABC 13"),
+            "entries": [row[0] for row in entries],
+        },
+    )
+    with patch.object(identity, "request_verification") as request:
+        identity.process_once()
+    request.assert_not_called()
+    check.refresh_from_db()
+    assert check.status == "review" and check.attempts == 1

@@ -391,6 +391,7 @@ def _claim():
     PassageScaleAutomationState.objects.select_for_update().get_or_create(
         scale_number=scale.TRUCK_SCALE_KEY
     )
+    _requeue_legacy_format_reviews(now)
     item = (
         UnassignedWeighing.objects.filter(
             status="open",
@@ -452,7 +453,11 @@ def _finish(check, item, entries, verdict, response_id):
     if locked.status != "processing" or locked.lease_until != check.lease_until:
         return
     current = UnassignedWeighing.objects.select_for_update().get(pk=item.pk)
-    locked.evidence = {"verdict": verdict, "entries": [row[0] for row in entries]}
+    locked.evidence = {
+        "verdict": verdict,
+        "entries": [row[0] for row in entries],
+        "plate_format_version": 1,
+    }
     locked.response_id = response_id
     locked.lease_until = None
     locked.status, locked.reason = "review", "identity_uncertain"
@@ -578,6 +583,32 @@ def _retry(check, reason):
         lease_until=None,
         next_attempt_at=timezone.now() + timedelta(seconds=60 * check.attempts),
     )
+
+
+def _requeue_legacy_format_reviews(now):
+    """Caller holds the lane lock; retry old layout-only rejections once."""
+    checks = (
+        WeighingIdentityCheck.objects.filter(
+            status="review",
+            reason="identity_uncertain",
+            attempts__lt=MAX_ATTEMPTS,
+            weighing__status="open",
+            weighing__stable_weight_at__gte=now - timedelta(hours=24),
+        )
+        .exclude(evidence__has_key="plate_format_version")
+        .select_related("weighing")
+        .order_by("pk")[:20]
+    )
+    for check in checks:
+        evidence = check.evidence
+        entries = [(entry, None) for entry in evidence.get("entries", [])]
+        if choose(evidence.get("verdict", {}), entries, check.weighing.vehicle_number):
+            # Never book from an old verdict: the normal worker re-reads current
+            # photos, revalidates candidates, and increments the existing count.
+            check.status, check.reason = "pending", "plate_format_updated"
+            check.next_attempt_at, check.lease_until = now, None
+        check.evidence = {**evidence, "plate_format_version": 1}
+        check.save()
 
 
 def process_once():
