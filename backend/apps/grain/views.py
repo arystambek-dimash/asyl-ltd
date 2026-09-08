@@ -692,7 +692,7 @@ class WagonViewSet(GrainTripViewSet):
 class UnassignedWeighingViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
     """Веса автовесов без номера, которые ждут привязки оператором."""
 
-    queryset = UnassignedWeighing.objects.select_related("wagon", "resolved_by").order_by(
+    queryset = UnassignedWeighing.objects.select_related("wagon", "resolved_by", "identity_check").order_by(
         "-id"
     )
     serializer_class = UnassignedWeighingSerializer

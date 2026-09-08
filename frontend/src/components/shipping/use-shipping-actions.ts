@@ -47,27 +47,9 @@ export function finishLoadingConfirmText(order: Order, bags: number): ShippingCo
 export function shipOutConfirmText(order: Pick<Order, "id">): ShippingConfirmText {
   return {
     title: "Оформить выезд?",
-    description: `Погрузка заказа #${order.id} уже завершена. Подтвердите, что машина действительно покинула пост.`,
+    description: `Погрузка заказа #${order.id} уже завершена. Подтвердите, что транспорт действительно покинул пост.`,
     confirmLabel: "Подтвердить выезд",
     confirmVariant: "default",
-  };
-}
-
-export function resetAiConfirmText(orderId: number): ShippingConfirmText {
-  return {
-    title: "Обнулить счёт камеры?",
-    description: `Камера начнёт считать заново с нуля для заказа #${orderId}. Ручной счёт не изменится.`,
-    confirmLabel: "Обнулить",
-    confirmVariant: "destructive",
-  };
-}
-
-export function stopAiConfirmText(orderId: number): ShippingConfirmText {
-  return {
-    title: "Выключить AI-подсчёт?",
-    description: `Камера перестанет считать заказ #${orderId}. Погрузку можно продолжить вручную и завершить с ручным счётом, либо запустить AI заново.`,
-    confirmLabel: "Выключить",
-    confirmVariant: "destructive",
   };
 }
 
@@ -129,8 +111,8 @@ export function useShippingActions({
       const session = sessionsByOrderId.get(order.id);
       if (!session) return false;
       await api.delete(`/cameras/${session.camera}/ai/`, {
-        params: { order_id: order.id, complete_order: completeOrder ? 1 : 0 },
-        data: { order_id: order.id, complete_order: completeOrder },
+        params: { order_id: order.id, session_id: session.id, complete_order: completeOrder ? 1 : 0 },
+        data: { order_id: order.id, session_id: session.id, complete_order: completeOrder },
       });
       return true;
     },
@@ -140,7 +122,7 @@ export function useShippingActions({
   const completeLoading = useCallback(
     async (order: Order, latestBags = order.bags_loaded ?? 0) => {
       // При активной AI-сессии один backend-вызов фиксирует финальный кадр/счёт,
-      // закрывает processor и переводит заказ только в `loaded`. Оформление
+      // закрывает сессию заказа и переводит его только в `loaded`. Оформление
       // физического выезда остаётся отдельным действием с правом shipping.ship.
       if (await stopOrderAi(order, true)) return;
       if (order.transport_type === "train") {
@@ -196,20 +178,12 @@ export function useShippingActions({
     [act, allowedStages, completeLoading, stopOrderAi],
   );
 
-  // Команды сессии из строки/кебаба, где счётчик useAiCounter не смонтирован.
-  // order_id и session_id дублируются в query и JSON — как в useAiCounter.
+  // Завершение сессии привязано к её id: запоздавшая команда не должна
+  // закрыть новую сессию этой же камеры. Параметры дублируем в query и JSON.
   const sessionRequest = useCallback((session: AiCountingSession) => {
     const body = { order_id: session.order_id, session_id: session.id };
     return { body, config: { params: body } };
   }, []);
-
-  const resetSessionAi = useCallback(
-    (session: AiCountingSession) => {
-      const { body, config } = sessionRequest(session);
-      return act(session.order_id, () => api.post(`/cameras/${session.camera}/ai/reset/`, body, config));
-    },
-    [act, sessionRequest],
-  );
 
   const stopSessionAi = useCallback(
     (session: AiCountingSession, completeOrder: boolean) => {
@@ -227,19 +201,6 @@ export function useShippingActions({
     [act, sessionRequest],
   );
 
-  const startAi = useCallback(
-    (order: Order, cameraSrc: string) =>
-      act(order.id, () =>
-        api.post(`/cameras/${cameraSrc}/ai/`, { order_id: order.id }, { params: { order_id: order.id } }),
-      ),
-    [act],
-  );
-
-  const startTrain = useCallback(
-    (order: Order) => act(order.id, () => api.post(`/orders/${order.id}/train/`, { action: "start" })),
-    [act],
-  );
-
   return {
     busyOrderId,
     act,
@@ -248,10 +209,7 @@ export function useShippingActions({
     completeLoading,
     saveBags,
     executeMove,
-    resetSessionAi,
     stopSessionAi,
-    startAi,
-    startTrain,
   };
 }
 

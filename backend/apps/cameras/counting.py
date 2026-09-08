@@ -5,18 +5,20 @@ business state: which order reserved a camera and whether the loading was
 completed.  Keeping that coordination here makes the HTTP views adapters
 instead of a second, implicit state machine.
 
-There is deliberately no reconciliation in :func:`get_status`.  Polling is a
-read operation; recovering a stopped worker is an explicit call to
-:func:`start`, protected by ``shipping.load`` in the view.
+There is deliberately no reconciliation in :func:`get_status`. UI polling is
+read-only. The shipping transport worker can recover an automatic session by
+calling :func:`start` with its same durable identity.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from datetime import timedelta
 
 from django.db import transaction
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from apps.orders.models import Order
@@ -69,6 +71,7 @@ def metadata(
         "session_started_at": session.started_at,
         "session_started_by_id": session.started_by_id,
         "session_started_by_name": session_started_by_name(session),
+        "automatically_started": session.automatically_started,
         "can_stop": can_control_session(session, user),
     }
 
@@ -201,6 +204,11 @@ def _delete_exact_session(
     """
 
     stopped = ai.delete(camera, session_id=session_id)
+    return _validated_finished_session(stopped, camera, session_id, invalid_detail)
+
+
+def _validated_finished_session(stopped, camera, session_id, invalid_detail):
+    """Validate the exact frozen identity for manual and guarded completion."""
     payload = _payload(stopped)
     final = _payload(payload.get("final"))
     outer_session_id = payload.get("session_id")
@@ -348,6 +356,10 @@ def start(
     user,
     *,
     expected_session_id: int | None = None,
+    automatic: bool = False,
+    before_reserve: Callable[[Order], None] | None = None,
+    after_reserve: Callable[[AiCountingSession], None] | None = None,
+    before_remote_start: Callable[[AiCountingSession], None] | None = None,
 ) -> dict:
     """Reserve a camera, start its worker, then begin the DB loading.
 
@@ -355,13 +367,18 @@ def start(
     AI timeout keeps the ``starting`` reservation; repeating this command
     reconciles it.
     """
+    if automatic and user is not None:
+        raise ValueError("Automatic counting uses the system actor")
     camera = ai.normalize(camera)
 
     _validate_start(order, camera)
 
     with transaction.atomic():
         sessions.lock_camera_binding()
-        if not type(user)._default_manager.filter(pk=user.pk, is_active=True).exists():
+        if not automatic and (
+            user is None
+            or not type(user)._default_manager.filter(pk=user.pk, is_active=True).exists()
+        ):
             raise PermissionDenied("Учётная запись отключена администратором")
         from apps.orders.services import lock_live_order
 
@@ -370,8 +387,12 @@ def start(
         _assert_expected_session(existing, expected_session_id)
         _validate_start(order, camera)
 
-        session, created = sessions.reserve(order, camera, user)
+        if before_reserve is not None:
+            before_reserve(order)
+        session, created = sessions.reserve(order, camera, user, automatic=automatic)
         _assert_expected_session(session, expected_session_id)
+        if after_reserve is not None:
+            after_reserve(session)
 
     deterministic_error: ai.AiError | None = None
     validation_error: ValidationError | PermissionDenied | None = None
@@ -384,7 +405,9 @@ def start(
         )
         if session.status not in AiCountingSession.OPEN_STATUSES:
             raise ai.AiError(409, "AI-сессия уже завершена")
-        if not can_control_session(session, user):
+        if not (
+            automatic and session.automatically_started
+        ) and not can_control_session(session, user):
             raise PermissionDenied(
                 "Восстановить AI-счётчик может только начавший отгрузку "
                 "сотрудник или администратор"
@@ -397,6 +420,8 @@ def start(
             if was_starting:
                 _finish_pending_cleanup(camera, exclude_session_id=session.pk)
             if initialize_worker:
+                if before_remote_start is not None:
+                    before_remote_start(session)
                 live = ai.start(
                     camera,
                     {
@@ -415,6 +440,11 @@ def start(
                     or live_payload.get("running") is not True
                     or live_payload.get("mode") != "session"
                 ):
+                    # Cleanup/status can outlive fresh acquisition evidence.
+                    # Recheck only a reservation that has not become active;
+                    # restoring an existing loading must preserve its binding.
+                    if was_starting and before_remote_start is not None:
+                        before_remote_start(session)
                     live = ai.start(
                         camera,
                         {
@@ -596,6 +626,150 @@ def _locked_open_session(camera: str) -> AiCountingSession | None:
         .order_by("started_at")
         .first()
     )
+
+
+def _automatic_finish_proof(final: dict, guard: dict) -> dict:
+    """A durable receipt proves the guard at freeze time, including old retries."""
+    proof = _payload(final.get("automatic_finish"))
+    activity = _payload(proof.get("cargo_activity"))
+
+    def instant(value):
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = parse_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed and timezone.is_aware(parsed) else None
+
+    completed = instant(proof.get("completed_at"))
+    observed = instant(activity.get("observed_at"))
+    clear_since = instant(activity.get("clear_since"))
+    last_activity = instant(activity.get("last_activity_at"))
+    minimum = proof.get("min_clear_seconds")
+    if (
+        type(proof.get("schema_version")) is not int
+        or proof.get("schema_version") != 1
+        or proof.get("activity_generation") != guard.get("activity_generation")
+        or type(minimum) is not int
+        or not 40 <= minimum <= 3_600
+        or minimum < max(40, guard.get("min_clear_seconds", 40))
+        or type(activity.get("schema_version")) is not int
+        or activity.get("schema_version") != 1
+        or activity.get("basis") != "bag_detections_and_scene_motion"
+        or activity.get("state") != "clear"
+        or activity.get("generation") != proof.get("activity_generation")
+        or type(activity.get("sequence")) is not int
+        or activity["sequence"] < 0
+        or not isinstance(activity.get("reason"), str)
+        or (activity.get("last_activity_at") is not None and last_activity is None)
+        or completed is None
+        or observed is None
+        or clear_since is None
+        or completed > timezone.now() + timedelta(seconds=5)
+        or not completed - timedelta(seconds=15) <= observed <= completed
+        or observed - clear_since < timedelta(seconds=minimum)
+        or (last_activity is not None and last_activity > clear_since)
+    ):
+        raise ai.AiError(503, "AI-сервис не подтвердил безопасное автозавершение")
+    return proof
+
+
+def complete_automatic(
+    camera: str,
+    order: Order,
+    *,
+    expected_session_id: int,
+    guard: dict,
+    before_remote_finish: Callable[[AiCountingSession], None] | None = None,
+) -> dict:
+    """Idempotently complete one automatic loading from a guarded durable final.
+
+    The caller commits its finishing intent before entering here. After an
+    ambiguous response it must retry with ``recovery_only`` so a vehicle that
+    has returned cannot be completed by a new live freeze. The camera service
+    replays an existing receipt before checking current presence/activity.
+    """
+    camera = ai.normalize(camera)
+    if type(expected_session_id) is not int or expected_session_id < 1:
+        raise ValueError("Automatic completion requires an exact session_id")
+    with transaction.atomic():
+        session = (
+            AiCountingSession.objects.select_for_update(of=("self",))
+            .select_related("order")
+            .filter(pk=expected_session_id, camera=camera, order_id=order.pk)
+            .first()
+        )
+        _assert_expected_session(session, expected_session_id)
+        if not session.automatically_started:
+            raise PermissionDenied("Система может завершать только автоматическую погрузку")
+        locked_order = _assert_order_department_scope(session.order_id, None)
+        if (
+            session.status == AiCountingSession.CLOSED
+            and locked_order.status in ("loaded", "shipped")
+            and _valid_total(session.final_total) is not None
+        ):
+            # Exact-session lookup makes a delayed retry harmless even after a
+            # different vehicle has acquired the same conveyor.
+            return {
+                "running": False,
+                "session_id": session.pk,
+                "order_status": locked_order.status,
+                "total": session.final_total,
+                "bags_loaded": locked_order.shipment.bags_loaded,
+            }
+        if (
+            session.status != AiCountingSession.ACTIVE
+            or locked_order.status != "loading"
+            or locked_order.loading_camera != camera
+        ):
+            raise ai.AiError(409, "Автоматическая погрузка уже изменилась")
+        if before_remote_finish is not None:
+            before_remote_finish(session)
+        stopped = ai.finish_automatic(camera, session.pk, guard)
+        _, final = _validated_finished_session(
+            stopped,
+            camera,
+            session.pk,
+            "AI-сервис не подтвердил точный финал автоматической погрузки",
+        )
+        safe_total = _valid_total(final.get("total"))
+        if not _is_continuous_shipping(final) or safe_total is None:
+            raise ai.AiError(503, "AI-сервис не подтвердил точный финальный счёт")
+        proof = _automatic_finish_proof(final, guard)
+        shipment = finish_ai_counting(
+            locked_order,
+            safe_total,
+            None,
+            automatic_session_id=session.pk,
+            completion_guard=proof,
+        )
+        session.status = AiCountingSession.CLOSED
+        session.closed_by = None
+        session.ended_at = timezone.now()
+        session.final_total = safe_total
+        final = {
+            **final,
+            "auto_finish": {
+                "state": "completed",
+                "remaining_seconds": 0,
+                "observed_at": session.ended_at.isoformat(),
+                "detail": "Погрузка завершена автоматически: транспорт отсутствовал и конвейер был свободен 40 секунд",
+            },
+        }
+        session.last_status = final
+        session.recording_stream = _stream(final) or session.recording_stream
+        session.error = ""
+        session.save(update_fields=[
+            "status", "closed_by", "ended_at", "final_total", "last_status",
+            "recording_stream", "error",
+        ])
+        return {
+            **final,
+            "running": False,
+            "order_status": "loaded",
+            "bags_loaded": shipment.bags_loaded,
+        }
 
 
 def stop(

@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState, type Ref } from "react";
-import { Check, Package, Phone, RefreshCw, RotateCcw, Square, VideoOff } from "lucide-react";
+import { Check, Package, Phone, VideoOff } from "lucide-react";
 import { CameraCountingLineOverlay } from "@/components/camera-counting-line-overlay";
 import { CameraStream } from "@/components/camera-stream";
 import type { CameraFeed } from "@/components/camera-wall";
 import { DetectionOverlay } from "@/components/detection-overlay";
 import { BagCounter, type BagCounterHandle } from "@/components/shipping/bag-counter";
+import { ShippingTransportEvidence } from "@/components/shipping/shipping-transport-evidence";
 import type { ShippingActionResult } from "@/components/shipping/use-shipping-actions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,18 +34,12 @@ export interface ShippingRowDetailProps {
   occupiedByOrderId?: number | null;
   /** Ручной счёт и «Принять N»: (грузовик && shipping.load) || (вагон && train.load). */
   canCount: boolean;
-  /** Команды сессии (обнулить/выключить/перезапуск) — shipping.load. */
-  canLoad: boolean;
   /** Действие строки уже выполняется — кнопки панели заблокированы. */
   busy: boolean;
   /** Владелец таблицы читает `saveNow()` перед завершением погрузки. */
   bagCounterRef: Ref<BagCounterHandle>;
   onSaveBags: (bags: number) => Promise<unknown>;
   onAccept: (bags: number) => Promise<ShippingActionResult>;
-  onResetAi: () => void;
-  onStopAi: () => void;
-  /** Перезапуск/отмена/восстановление сессии выполнены — перечитать заказы и сессии. */
-  onSessionChanged: () => void;
   /** Главная кнопка «Завершить погрузку»; null — по правам недоступна. */
   finish: { disabled: boolean; hint?: string; onClick: () => void } | null;
 }
@@ -57,14 +52,10 @@ export function ShippingRowDetail({
   cameraSrc,
   occupiedByOrderId = null,
   canCount,
-  canLoad,
   busy,
   bagCounterRef,
   onSaveBags,
   onAccept,
-  onResetAi,
-  onStopAi,
-  onSessionChanged,
   finish,
 }: ShippingRowDetailProps) {
   // Вторая точность живого счёта: свёрнутые строки показывают
@@ -107,7 +98,7 @@ export function ShippingRowDetail({
   const warming = !isAiOnlineStatus(ai.status?.status);
   const accepted = order?.bags_loaded ?? 0;
   const aiLabel = !session
-    ? "AI не запущен"
+    ? "Ожидает привязки камеры"
     : ai.stale
       ? "Связь потеряна"
       : goalReached
@@ -115,7 +106,7 @@ export function ShippingRowDetail({
         : live
           ? "AI считает"
           : needsRecovery
-            ? "Требует запуска"
+            ? "Восстановление связи"
             : "Запуск";
   const chipLabel = streamOnline ? aiLabel : "Подключение видео";
   const chipDot = !streamOnline
@@ -127,16 +118,6 @@ export function ShippingRowDetail({
         : goalReached || live
           ? "bg-emerald-400"
           : "bg-amber-400";
-
-  async function runCommand(command: () => Promise<void>) {
-    try {
-      await command();
-    } catch {
-      // useAiCounter показывает нормализованную ошибку внутри AI-блока.
-    } finally {
-      onSessionChanged();
-    }
-  }
 
   async function accept() {
     setAcceptError("");
@@ -262,7 +243,10 @@ export function ShippingRowDetail({
             )}
             <div className="flex flex-wrap items-center gap-2 text-[12px] text-[var(--muted-foreground)]">
               <span>
-                запустил {session.started_by_name || "другой сотрудник"} · {formatDateTime(session.started_at)}
+                {session.automatically_started
+                  ? "Автоматически"
+                  : `Запустил ${session.started_by_name || "другой сотрудник"}`}{" "}
+                · {formatDateTime(session.started_at)}
               </span>
               {ai.stale && (
                 <Badge tone="destructive" dot>
@@ -271,84 +255,19 @@ export function ShippingRowDetail({
               )}
             </div>
 
-            {canStop && canLoad ? (
-              <div className="flex flex-wrap gap-2 pt-1">
-                {isStarting ? (
-                  <>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className={sessionButton}
-                      disabled={ai.busy || busy}
-                      onClick={() => void runCommand(() => ai.start(session.id))}
-                    >
-                      <RefreshCw className="size-3.5" /> Повторить запуск
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className={sessionButton}
-                      disabled={ai.busy || busy}
-                      onClick={() => void runCommand(() => ai.stop(false, session.id))}
-                    >
-                      <Square className="size-3.5" /> Отменить запуск
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    {needsRecovery && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className={sessionButton}
-                        disabled={ai.busy || busy}
-                        onClick={() => void runCommand(() => ai.start(session.id))}
-                      >
-                        <RefreshCw className="size-3.5" /> Восстановить AI-счётчик
-                      </Button>
-                    )}
-                    {/* Принимается только явно: на прогреве счёт ещё нулевой. */}
-                    {order && canCount && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className={sessionButton}
-                        disabled={busy || ai.busy || !live || warming || total === accepted}
-                        onClick={() => void accept()}
-                      >
-                        <Check className="size-3.5" /> Принять {total}
-                      </Button>
-                    )}
-                    {canLoad && session.status === "active" && (
-                      <>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className={sessionButton}
-                          disabled={busy || ai.busy}
-                          onClick={onResetAi}
-                        >
-                          <RotateCcw className="size-3.5" /> Обнулить AI-счёт
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className={sessionButton}
-                          disabled={busy || ai.busy}
-                          onClick={onStopAi}
-                        >
-                          <Square className="size-3.5" /> Выключить AI-подсчёт
-                        </Button>
-                      </>
-                    )}
-                  </>
-                )}
+            {order && canCount && canStop && !isStarting && (
+              <div className="pt-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={sessionButton}
+                  disabled={busy || !live || warming || total === accepted}
+                  onClick={() => void accept()}
+                >
+                  <Check className="size-3.5" /> Принять {total}
+                </Button>
               </div>
-            ) : !canStop ? (
-              <p className="text-[12px] text-[var(--muted-foreground)]">
-                Управлять сессией может {session.started_by_name || "другой сотрудник"} или администратор
-              </p>
-            ) : null}
+            )}
             {(ai.error || acceptError) && (
               <p role="alert" className="text-[12px] text-[var(--destructive)]">
                 {ai.error || acceptError}
@@ -362,6 +281,8 @@ export function ShippingRowDetail({
             AI-подсчёт занят — считается заказ #{occupiedByOrderId}
           </p>
         )}
+
+        {order && <ShippingTransportEvidence orderId={order.id} liveAutoFinish={!!session} />}
 
         {order && canCount && <BagCounter ref={bagCounterRef} key={order.id} order={order} onSave={onSaveBags} />}
 

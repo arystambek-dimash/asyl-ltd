@@ -42,6 +42,8 @@ def reserve(
     order,
     camera: str,
     user,
+    *,
+    automatic: bool = False,
 ) -> tuple[AiCountingSession, bool]:
     """Atomically reserve a camera, or return the same owner session on it."""
     try:
@@ -51,6 +53,7 @@ def reserve(
                 camera=camera,
                 status=AiCountingSession.STARTING,
                 started_by=user,
+                automatically_started=automatic,
             )
         return session, True
     except IntegrityError:
@@ -70,5 +73,6 @@ def reserve(
                 camera=camera,
                 status=AiCountingSession.STARTING,
                 started_by=user,
+                automatically_started=automatic,
             )
         return session, True

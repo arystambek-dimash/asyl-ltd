@@ -73,11 +73,17 @@ export function VehicleRoiOverlay({
   expectedSource,
   editable = false,
   onPointsChange,
+  label = "ROI ОСТАНОВКИ",
+  editorLabel = "Редактор зоны остановки",
+  pointLabel = "Точка ROI",
 }: {
   roi: VehicleRoiConfig | null | undefined;
   expectedSource: string;
   editable?: boolean;
   onPointsChange?: (points: NormalizedRoiPoint[]) => void;
+  label?: string;
+  editorLabel?: string;
+  pointLabel?: string;
 }) {
   const [container, setContainer] = useState<HTMLElement | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
@@ -123,7 +129,7 @@ export function VehicleRoiOverlay({
     <div
       ref={setContainer}
       aria-hidden={editable ? undefined : "true"}
-      aria-label={editable ? "Редактор зоны остановки" : undefined}
+      aria-label={editable ? editorLabel : undefined}
       role={editable ? "group" : undefined}
       data-testid="vehicle-roi-layer"
       data-roi-edit-layer={editable ? "true" : undefined}
@@ -166,7 +172,7 @@ export function VehicleRoiOverlay({
               className="pointer-events-none absolute -translate-y-full rounded bg-sky-400/90 px-2 py-1 text-[9px] font-black tracking-[0.12em] text-slate-950 shadow-lg"
               style={{ left: `${labelPoint[0] * 100}%`, top: `${labelPoint[1] * 100}%` }}
             >
-              {editable ? "ПЕРЕТАЩИТЕ ТОЧКИ" : "ROI ОСТАНОВКИ"}
+              {editable ? "ПЕРЕТАЩИТЕ ТОЧКИ" : label}
             </span>
           ) : null}
           {editable
@@ -174,7 +180,7 @@ export function VehicleRoiOverlay({
                 <button
                   key={index}
                   type="button"
-                  aria-label={`Точка ROI ${index + 1}`}
+                  aria-label={`${pointLabel} ${index + 1}`}
                   aria-pressed={draggingIndex === index}
                   className="absolute size-6 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border-2 border-slate-950 bg-sky-300 shadow-[0_0_0_3px_rgba(255,255,255,0.9)] outline-none active:cursor-grabbing focus-visible:ring-4 focus-visible:ring-sky-300/60"
                   style={{ left: `${x * 100}%`, top: `${y * 100}%` }}

@@ -66,6 +66,11 @@ vi.mock("@/lib/use-ai-counter", () => ({
     reset: vi.fn(),
   }),
 }));
+vi.mock("@/components/shipping/shipping-transport-evidence", () => ({
+  ShippingTransportEvidence: ({ orderId }: { orderId: number }) => (
+    <div data-testid="transport-evidence">{orderId}</div>
+  ),
+}));
 
 const camera: CameraFeed = {
   id: "nvr:cam2",
@@ -121,14 +126,10 @@ function renderDetail() {
       camera={camera}
       cameraSrc="cam2"
       canCount
-      canLoad
       busy={false}
       bagCounterRef={createRef<BagCounterHandle>()}
       onSaveBags={vi.fn().mockResolvedValue(undefined)}
       onAccept={vi.fn().mockResolvedValue({ ok: true, error: "" })}
-      onResetAi={vi.fn()}
-      onStopAi={vi.fn()}
-      onSessionChanged={vi.fn()}
       finish={{ disabled: false, onClick: vi.fn() }}
     />,
   );
@@ -156,6 +157,8 @@ describe("активная AI-отгрузка", () => {
     const stream = screen.getByTestId("active-session-stream");
     expect(stream).toHaveAttribute("data-src", "cam2");
     expect(stream).not.toHaveAttribute("data-src", "cam2ai");
+    expect(screen.getByTestId("transport-evidence")).toHaveTextContent("404");
+    expect(screen.queryByRole("button", { name: /Выключить AI|Обнулить AI|Повторить запуск/ })).not.toBeInTheDocument();
     expect(screen.getByText("Подключение видео")).toBeInTheDocument();
     expect(screen.queryByTestId("active-session-detections")).not.toBeInTheDocument();
 

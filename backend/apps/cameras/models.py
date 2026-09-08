@@ -16,6 +16,8 @@ class ShippingTransportCamera(models.Model):
     conveyor_camera = models.CharField(max_length=32, unique=True)
     number_camera = models.CharField(max_length=32, unique=True)
     recognition_model = models.CharField(max_length=32, choices=RECOGNITION_MODELS)
+    # Normalized rectangle in the number-camera image; null uses the whole frame.
+    loading_zone = models.JSONField(null=True, blank=True, default=None)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -81,6 +83,7 @@ class AiCountingSession(models.Model):
     recording_stream = models.CharField(max_length=64, blank=True, default="")
     last_status = models.JSONField(default=dict, blank=True)
     error = models.CharField(max_length=500, blank=True, default="")
+    automatically_started = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["-started_at"]
@@ -101,6 +104,72 @@ class AiCountingSession(models.Model):
                 name="cameras_one_open_session_per_order",
             ),
         ]
+
+
+class ShippingTransportState(models.Model):
+    """Durable observations and the last claimed visit of one conveyor.
+
+    A missing/unreadable number never releases a loading or its visit latch.
+    """
+
+    binding = models.OneToOneField(
+        ShippingTransportCamera, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="automation"
+    )
+    conveyor_camera = models.CharField(max_length=32, unique=True)
+    configuration_updated_at = models.DateTimeField()
+    state = models.CharField(max_length=32, default="waiting_number")
+    detail = models.CharField(max_length=500, blank=True, default="")
+    number = models.CharField(max_length=32, blank=True, default="")
+    candidate_number = models.CharField(max_length=32, blank=True, default="")
+    confirmations = models.PositiveSmallIntegerField(default=0)
+    candidate_since = models.DateTimeField(null=True, blank=True)
+    observed_at = models.DateTimeField(null=True, blank=True)
+    frame_ids = models.JSONField(default=list, blank=True)
+    polled_at = models.DateTimeField(null=True, blank=True)
+    claimed_number = models.CharField(max_length=32, blank=True, default="")
+    # Presence comes from a separate body detector, never from missing OCR.
+    tracking = models.JSONField(default=dict, blank=True)
+    candidate_visit_id = models.CharField(max_length=256, blank=True, default="")
+    claimed_visit_id = models.CharField(max_length=256, blank=True, default="")
+    departure_observed_at = models.DateTimeField(null=True, blank=True)
+    tracking_alert = models.CharField(max_length=500, blank=True, default="")
+    auto_finish = models.JSONField(default=dict, blank=True)
+    session = models.ForeignKey(
+        AiCountingSession, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="transport_states",
+    )
+    evidence = models.ForeignKey(
+        "ShippingTransportRecognitionEvent", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="current_states",
+    )
+
+
+class ShippingTransportRecognitionEvent(models.Model):
+    """Recognition evidence displayed in the monoblock loading/order details."""
+
+    conveyor_camera = models.CharField(max_length=32)
+    number_camera = models.CharField(max_length=32)
+    recognition_model = models.CharField(max_length=32)
+    number = models.CharField(max_length=32)
+    visit_id = models.CharField(max_length=256, blank=True, default="")
+    tracking = models.JSONField(default=dict, blank=True)
+    first_seen_at = models.DateTimeField()
+    last_seen_at = models.DateTimeField()
+    status = models.CharField(max_length=32)
+    order = models.ForeignKey(
+        "orders.Order", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="transport_recognitions",
+    )
+    session = models.ForeignKey(
+        AiCountingSession, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="transport_recognitions",
+    )
+    image = models.FileField(upload_to="shipping-transport/%Y/%m/%d", blank=True)
+
+    class Meta:
+        ordering = ["-first_seen_at", "-id"]
+        indexes = [models.Index(fields=["conveyor_camera", "-first_seen_at"], name="shipping_transport_seen_idx")]
 
 
 class MonoblockCameraSettings(models.Model):

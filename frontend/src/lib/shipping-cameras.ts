@@ -1,71 +1,8 @@
 import type { CameraFeed } from "@/components/camera-wall";
-import type { AiCountingSession, AlwaysOnProcessorStatus, CameraContinuousReadiness, Order } from "@/lib/types";
+import type { AiCountingSession, Order } from "@/lib/types";
 
 /** Камера с потоком (locked-камеры не играют и AI не считают). */
 export type PlayableCamera = CameraFeed & { src: string };
-
-/** Всё, что влияет на доступность камеры для запуска AI-подсчёта. */
-export interface CameraAvailabilityContext {
-  /** Камеры с видимыми сессиями (`/cameras/ai/sessions/`). */
-  busyCameras?: readonly string[];
-  /** Глобальное состояние процессоров отгрузки, включая сессии чужих отделов. */
-  shippingProcessors?: readonly AlwaysOnProcessorStatus[];
-  /** Камера → заказ, за которым она закреплена (loading_camera или сессия). */
-  cameraOwners?: Record<string, number>;
-  cameraReadiness?: Record<string, CameraContinuousReadiness>;
-  /** Общий статус непрерывного контура, когда по-камерной готовности нет. */
-  continuousReady?: boolean;
-}
-
-export function isCameraReady(camera: Pick<CameraFeed, "src">, context: CameraAvailabilityContext): boolean {
-  const readiness = camera.src ? context.cameraReadiness?.[camera.src] : undefined;
-  return readiness ? readiness.status === "synced" : context.continuousReady !== false;
-}
-
-/** Камеры, занятые сессией — видимой или известной только ПК цеха. */
-export function occupiedCameras(context: CameraAvailabilityContext): Set<string> {
-  const occupied = new Set(context.busyCameras ?? []);
-  for (const processor of context.shippingProcessors ?? []) {
-    if (processor.mode === "session") occupied.add(processor.cam);
-  }
-  return occupied;
-}
-
-/**
- * Камеры, на которых можно запустить AI-подсчёт для заказа.
- *
- * Готовый непрерывный процессор и подтверждённый online-источник обязательны:
- * поток с известным src ещё не означает живую камеру. Закреплённая за другим
- * заказом камера недоступна, а закреплённая за этим — доступна даже при
- * активной сессии (перезапуск после «Выключить AI»).
- */
-export function availableCamerasForOrder(
-  order: Pick<Order, "id"> | null | undefined,
-  cameras: readonly PlayableCamera[],
-  context: CameraAvailabilityContext,
-): PlayableCamera[] {
-  const occupied = occupiedCameras(context);
-  return cameras.filter((camera) => {
-    if (!isCameraReady(camera, context)) return false;
-    if (!camera.online) return false;
-    const ownerId = context.cameraOwners?.[camera.src];
-    if (ownerId != null) return ownerId === order?.id;
-    return !occupied.has(camera.src);
-  });
-}
-
-/** Подпись пустого выбора камеры — объясняет, почему список пуст. */
-export function cameraPlaceholder(
-  cameras: readonly PlayableCamera[],
-  available: readonly PlayableCamera[],
-  context: CameraAvailabilityContext,
-): string {
-  if (!cameras.length) return "Камеры не настроены";
-  if (!cameras.some((camera) => isCameraReady(camera, context))) return "Камеры отгрузки ещё не готовы";
-  if (!cameras.some((camera) => camera.online)) return "Нет камер онлайн";
-  if (!available.length) return "Нет свободных камер";
-  return "Выберите камеру";
-}
 
 // Цвет партии из ai_service (Blue_50, White…) → точка-индикатор в чипе.
 export const BAG_COLORS: [RegExp, string][] = [

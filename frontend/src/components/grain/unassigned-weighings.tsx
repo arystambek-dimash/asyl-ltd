@@ -178,6 +178,20 @@ function UnassignedRow({
             </span>
             <span className="text-xs text-[var(--muted-foreground)]">· {formatDateTime(item.stable_weight_at)}</span>
           </div>
+          {item.identity_check && item.identity_check.status !== "disabled" && (
+            <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+              {item.identity_check.status === "review"
+                ? "ИИ: нужна ручная проверка номера и машины"
+                : item.identity_check.status === "matched"
+                  ? "ИИ: номер и машина совпали"
+                  : item.identity_check.status === "retrying"
+                    ? item.identity_check.reason === "entry_evidence_pending"
+                      ? "Ожидаем фото заезда для проверки ИИ"
+                      : "ИИ временно недоступен, повторим проверку"
+                    : "ИИ сверяет номер и машину с фото заезда…"}
+              {item.identity_check.plate && ` · прочитан ${item.identity_check.plate}`}
+            </p>
+          )}
           <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">
             {exitWagon
               ? `Сверьте фото с машиной ${exitWagon.number || `#${exitWagon.id}`}`

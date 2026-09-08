@@ -18,6 +18,7 @@ from django.core.management.base import BaseCommand
 from django.db import InterfaceError, OperationalError, close_old_connections
 
 from apps.grain import passage_scale_automation, passage_monitor, weighing_photos
+from apps.grain import weighing_identity
 
 log = logging.getLogger(__name__)
 
@@ -103,8 +104,9 @@ class Command(BaseCommand):
         # worker that gets stuck after this point.
         _write_heartbeat(heartbeat, initial_status)
         last_status = initial_status
-        pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="passage")
-        recognition_future = photo_future = None
+        pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="passage")
+        recognition_future = photo_future = identity_future = None
+        next_identity_at = 0.0
         try:
             while not stopped.is_set():
                 started = time.monotonic()
@@ -123,6 +125,9 @@ class Command(BaseCommand):
                         if photo_future is not None and photo_future.done():
                             finished.append(photo_future)
                             photo_future = None
+                        if identity_future is not None and identity_future.done():
+                            finished.append(identity_future)
+                            identity_future = None
                         for future in finished:
                             try:
                                 future.result()
@@ -137,6 +142,11 @@ class Command(BaseCommand):
                         if photo_future is None or photo_future.done():
                             photo_future = pool.submit(
                                 _background_call, weighing_photos.retry_due_photos
+                            )
+                        if identity_future is None and time.monotonic() >= next_identity_at:
+                            next_identity_at = time.monotonic() + 5
+                            identity_future = pool.submit(
+                                _background_call, weighing_identity.process_once
                             )
                     if result.state == "disabled":
                         status = "disabled"

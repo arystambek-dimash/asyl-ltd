@@ -75,6 +75,29 @@ describe("UnassignedWeighingsPanel", () => {
     pollingMock.mockReset();
   });
 
+  it("keeps manual assignment available when the AI cannot verify the vehicle", async () => {
+    mockApi(
+      [
+        {
+          ...item,
+          reason: "identity_verification_required",
+          identity_check: {
+            status: "review",
+            reason: "identity_uncertain",
+            plate: "449ABC13",
+          },
+        },
+      ],
+      [loaded],
+    );
+    render(<UnassignedWeighingsPanel canWeigh />);
+    expect(screen.getByText(/ИИ: нужна ручная проверка номера и машины/)).toBeInTheDocument();
+    expect(screen.getByText(/449ABC13/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Привязать" }));
+    expect(screen.getByLabelText("Рейс для привязки")).toBeInTheDocument();
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
   it("distinguishes an empty queue from an invalid response", () => {
     mockApi([], []);
     const { container, rerender } = render(<UnassignedWeighingsPanel canWeigh />);

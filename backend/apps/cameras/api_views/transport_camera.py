@@ -1,6 +1,7 @@
 """Superuser configuration and explicit OCR checks for shipping conveyors."""
 
 from typing import ClassVar
+import math
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -31,6 +32,20 @@ class TransportCameraSerializer(serializers.Serializer):
     recognition_model = serializers.ChoiceField(
         choices=ShippingTransportCamera.RECOGNITION_MODELS
     )
+    loading_zone = serializers.JSONField(required=False, allow_null=True)
+
+    def validate_loading_zone(self, value):
+        if value is None:
+            return None
+        if (
+            not isinstance(value, list)
+            or len(value) != 4
+            or any(type(n) not in (int, float) or not math.isfinite(n) or not 0 <= n <= 1 for n in value)
+            or value[0] >= value[2]
+            or value[1] >= value[3]
+        ):
+            raise ValidationError("Задайте прямоугольную зону внутри изображения")
+        return value
 
     def validate_number_camera(self, value):
         if (
@@ -55,6 +70,7 @@ def _payload(camera: str, binding: ShippingTransportCamera | None) -> dict:
         "conveyor_camera": camera,
         "number_camera": binding.number_camera if binding else None,
         "recognition_model": binding.recognition_model if binding else None,
+        "loading_zone": binding.loading_zone if binding else None,
         "updated_at": binding.updated_at if binding else None,
     }
 
@@ -89,9 +105,14 @@ class ShippingTransportCameraView(APIView):
             binding = ShippingTransportCamera.objects.filter(
                 conveyor_camera=camera
             ).first()
-            if binding and (binding.number_camera, binding.recognition_model) == (
+            loading_zone = serializer.validated_data.get(
+                "loading_zone",
+                binding.loading_zone if binding and binding.number_camera == number_camera else None,
+            )
+            if binding and (binding.number_camera, binding.recognition_model, binding.loading_zone) == (
                 number_camera,
                 recognition_model,
+                loading_zone,
             ):
                 return Response(_payload(camera, binding))
             assert_camera_has_no_active_work(camera)
@@ -128,6 +149,7 @@ class ShippingTransportCameraView(APIView):
                         defaults={
                             "number_camera": number_camera,
                             "recognition_model": recognition_model,
+                            "loading_zone": loading_zone,
                             "updated_by": request.user,
                         },
                     )
@@ -146,6 +168,8 @@ class ShippingTransportCameraView(APIView):
                     "conveyor_camera": camera,
                     "number_camera": number_camera,
                     "recognition_model": recognition_model,
+                    "loading_zone": loading_zone,
+                    "previous_loading_zone": previous["loading_zone"],
                     "previous_number_camera": previous["number_camera"],
                     "previous_recognition_model": previous["recognition_model"],
                 },

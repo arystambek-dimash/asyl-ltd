@@ -6,6 +6,7 @@ export function photoStatusLabel(status?: string) {
 }
 
 const REASONS: Record<string, string> = {
+  identity_verification_required: "Вес сохранён — требуется проверка номера и фото машины",
   entry_missing: "выезд без заезда: рейс с этим номером не найден",
   plate_unreadable: "Номер не распознан — выберите рейс по фото и времени",
   open_passages_exist: "Номер не распознан — требуется привязка к рейсу",

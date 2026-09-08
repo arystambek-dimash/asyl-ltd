@@ -33,7 +33,7 @@ class CameraAiSessionListView(APIView):
     """Открытые отгрузки для моноблока — по одной на каждую камеру."""
 
     def get_permissions(self):
-        return [HasPerm("shipping.load", "shipping.view")]
+        return [HasPerm("shipping.load", "shipping.view", "train.load", "train.view")]
 
     def get(self, request):
         open_sessions = (
@@ -62,6 +62,7 @@ class CameraAiSessionListView(APIView):
                     "started_at": session.started_at,
                     "started_by_id": session.started_by_id,
                     "started_by_name": session_started_by_name(session),
+                    "automatically_started": session.automatically_started,
                     "can_stop": can_control_session(session, request.user),
                     "last_status": session.last_status,
                 }
@@ -105,6 +106,7 @@ def _history_payload(session: AiCountingSession, names=None) -> dict:
         "ended_at": session.ended_at,
         "started_by_id": session.started_by_id,
         "started_by_name": session_started_by_name(session),
+        "automatically_started": session.automatically_started,
         "final_total": total,
         "last_status": last,
         "has_recording": bool(stream),

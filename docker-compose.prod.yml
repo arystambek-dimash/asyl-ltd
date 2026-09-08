@@ -38,6 +38,10 @@ x-backend-environment: &backend-environment
   AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY:-${CAMERA_AI_KEY:-}}
   AI_SERVICE_TIMEOUT: ${AI_SERVICE_TIMEOUT:-25}
   CAMERA_EVENT_SYNC_WORKERS: ${CAMERA_EVENT_SYNC_WORKERS:-2}
+  # Configured shipping number cameras acquire orders independently of the UI.
+  SHIPPING_TRANSPORT_POLL_SECONDS: ${SHIPPING_TRANSPORT_POLL_SECONDS:-2}
+  SHIPPING_TRANSPORT_HEARTBEAT_FILE: ${SHIPPING_TRANSPORT_HEARTBEAT_FILE:-/tmp/shipping-transport-monitor/heartbeat.json}
+  SHIPPING_TRANSPORT_HEARTBEAT_MAX_AGE_SECONDS: ${SHIPPING_TRANSPORT_HEARTBEAT_MAX_AGE_SECONDS:-180}
   # A distinct host-only secret for the inbound camera-PC webhook. Requiring
   # it at Compose validation prevents an accidentally unauthenticated rollout.
   VEHICLE_PLATE_WEBHOOK_TOKEN: ${VEHICLE_PLATE_WEBHOOK_TOKEN:?set VEHICLE_PLATE_WEBHOOK_TOKEN}
@@ -45,6 +49,11 @@ x-backend-environment: &backend-environment
   THROTTLE_VEHICLE_PLATE_WEBHOOK: ${THROTTLE_VEHICLE_PLATE_WEBHOOK:-120/min}
   # Event-driven only: at most one scale read per durable event, no background poll.
   # Setting this to 0 is the immediate automation rollback switch.
+  OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+  WEIGHING_AI_ENABLED: "${WEIGHING_AI_ENABLED:-1}"
+  WEIGHING_AI_MODEL: "${WEIGHING_AI_MODEL:-gpt-5-mini}"
+  WEIGHING_AI_MAX_DAILY_REQUESTS: "${WEIGHING_AI_MAX_DAILY_REQUESTS:-200}"
+  WEIGHING_AI_ENTRY_MAX_HOURS: "${WEIGHING_AI_ENTRY_MAX_HOURS:-12}"
   VEHICLE_PLATE_AUTO_EXPORT_ENABLED: ${VEHICLE_PLATE_AUTO_EXPORT_ENABLED:-0}
   VEHICLE_PLATE_WEIGHT_FIRST_ENABLED: ${VEHICLE_PLATE_WEIGHT_FIRST_ENABLED:-0}
   VEHICLE_PLATE_WEIGHT_FIRST_CAMERA: ${VEHICLE_PLATE_WEIGHT_FIRST_CAMERA:-cam1}
@@ -297,6 +306,44 @@ services:
       backend:
         condition: service_healthy
     init: true
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - data
+      - default
+
+  shipping-transport-monitor:
+    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    environment:
+      <<: *backend-environment
+      DJANGO_COLLECTSTATIC: "0"
+      APP_SERVICE: shipping-transport-monitor
+    # Wait for backend-owned migrations before acquiring any loading orders.
+    entrypoint: []
+    command: ["python", "manage.py", "monitor_shipping_transports"]
+    # Persist recognition photos where the backend's protected image API reads.
+    volumes:
+      - mediadata:/app/media
+    depends_on:
+      backend:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      go2rtc:
+        condition: service_healthy
+    init: true
+    stop_grace_period: 180s
+    tmpfs:
+      - /tmp/shipping-transport-monitor:rw,noexec,nosuid,nodev,size=1m,mode=1777
+    # Model/camera failures keep a live loop degraded; stale heartbeats fail.
+    healthcheck:
+      test: ["CMD", "python", "/app/shipping_transport_monitor_healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     logging: *default-logging
     networks:

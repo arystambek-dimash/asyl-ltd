@@ -33,6 +33,7 @@ import {
 } from "@/components/monoblock/always-on-production-panel";
 import { CameraAnalyticsOverview, type AnalyticsDateRange } from "@/components/monoblock/camera-analytics-overview";
 import { ShippingTransportCamera } from "@/components/monoblock/shipping-transport-camera";
+import { ShippingTransportStatus } from "@/components/monoblock/shipping-transport-status";
 import { RequirePerm } from "@/components/require-perm";
 import { CompletedOrdersSettingsModal } from "@/components/shipping/completed-orders-settings-modal";
 import { ShippingTable } from "@/components/shipping/shipping-table";
@@ -1407,8 +1408,8 @@ function MonoblockPageInner() {
   const canOpenOrder = can(me, "orders.view");
   // Без права URL = null: иначе бэкенд отвечает 403 и страница держит
   // постоянный ErrorAlert. Условия повторяют гейты бэкенда.
-  const canViewSessions = canLoad || canViewShipping;
-  const canViewContinuous = canLoad || canViewShipping || canManage;
+  const canViewSessions = canLoad || canTrain || canViewShipping;
+  const canViewContinuous = canLoad || canTrain || canViewShipping || canManage;
   const canViewCameraSettings = canLoad || canManage;
   const canViewShippingSettings = canViewShipping || canManage;
 
@@ -1492,10 +1493,6 @@ function MonoblockPageInner() {
   const allPlayable = useMemo(() => playableCameras(cameras), [cameras]);
   // Логические камеры camN — только их закрепляют за моноблоком и контурами.
   const playable = useMemo(() => allPlayable.filter((camera) => /^cam[1-9]\d*$/.test(camera.src)), [allPlayable]);
-  const monoblockCameras = useMemo(() => {
-    const allowed = new Set(cameraSettings?.camera_sources ?? []);
-    return playable.filter((camera) => allowed.has(camera.src));
-  }, [cameraSettings?.camera_sources, playable]);
   const { ordersById, sessionsByCamera, camerasBySrc, cameraOwners } = useMemo(
     () => ({
       ordersById: indexFirstBy(orders ?? [], (order) => order.id),
@@ -1800,6 +1797,8 @@ function MonoblockPageInner() {
                 </section>
               )}
 
+              <ShippingTransportStatus enabled={canViewContinuous} camerasBySrc={camerasBySrc} />
+
               <ShippingTable
                 orders={orders}
                 sessions={sessions ?? []}
@@ -1813,21 +1812,6 @@ function MonoblockPageInner() {
                   canViewShipping,
                   canOpenOrder,
                 }}
-                monoblockCameras={monoblockCameras}
-                shippingProcessors={shippingContinuousSettings?.processors}
-                cameraOwners={cameraOwners}
-                cameraReadiness={shippingContinuousSettings?.camera_readiness ?? cameraSettings?.camera_readiness}
-                continuousReady={
-                  (shippingContinuousSettings?.sync_status ??
-                    cameraSettings?.continuous_sync_status ??
-                    cameraSettings?.always_on_sync_status) === "synced"
-                }
-                continuousDetail={
-                  shippingContinuousSettings?.detail ??
-                  cameraSettings?.continuous_detail ??
-                  cameraSettings?.always_on_detail ??
-                  ""
-                }
                 completedOrdersDays={completedDays}
                 filter={boardFilter}
                 reloadOrders={reloadOrders}
@@ -1858,7 +1842,7 @@ export default function MonoblockPage() {
   // /monoblock (shipping.load) — ровно те права, которые бэкенд принимает на
   // GET /orders/?post_board=1.
   return (
-    <RequirePerm perm={["shipping.load", "shipping.view", "train.view"]} title="Моноблок">
+    <RequirePerm perm={["shipping.load", "shipping.view", "train.load", "train.view"]} title="Моноблок">
       <MonoblockPageInner />
     </RequirePerm>
   );

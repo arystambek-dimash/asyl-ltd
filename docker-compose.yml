@@ -64,6 +64,11 @@ services:
       THROTTLE_VEHICLE_PLATE_WEBHOOK: "${THROTTLE_VEHICLE_PLATE_WEBHOOK:-120/min}"
       # Local development never drives a physical export workflow unless it is
       # explicitly enabled. Production is also fail-closed by default.
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      WEIGHING_AI_ENABLED: "${WEIGHING_AI_ENABLED:-1}"
+      WEIGHING_AI_MODEL: "${WEIGHING_AI_MODEL:-gpt-5-mini}"
+      WEIGHING_AI_MAX_DAILY_REQUESTS: "${WEIGHING_AI_MAX_DAILY_REQUESTS:-200}"
+      WEIGHING_AI_ENTRY_MAX_HOURS: "${WEIGHING_AI_ENTRY_MAX_HOURS:-12}"
       VEHICLE_PLATE_AUTO_EXPORT_ENABLED: "${VEHICLE_PLATE_AUTO_EXPORT_ENABLED:-0}"
       VEHICLE_PLATE_WEIGHT_FIRST_ENABLED: "${VEHICLE_PLATE_WEIGHT_FIRST_ENABLED:-0}"
       VEHICLE_PLATE_WEIGHT_FIRST_CAMERA: "${VEHICLE_PLATE_WEIGHT_FIRST_CAMERA:-cam1}"
@@ -94,6 +99,9 @@ services:
       THROTTLE_TRUCK_SCALE_PREVIEW: "${THROTTLE_TRUCK_SCALE_PREVIEW:-60/min}"
       CAMERA_PLAYBACK_URL: "${CAMERA_PLAYBACK_URL:-}"
       GO2RTC_API_URL: "${GO2RTC_API_URL:-}"
+      SHIPPING_TRANSPORT_POLL_SECONDS: "${SHIPPING_TRANSPORT_POLL_SECONDS:-2}"
+      SHIPPING_TRANSPORT_HEARTBEAT_FILE: "${SHIPPING_TRANSPORT_HEARTBEAT_FILE:-/tmp/shipping-transport-monitor/heartbeat.json}"
+      SHIPPING_TRANSPORT_HEARTBEAT_MAX_AGE_SECONDS: "${SHIPPING_TRANSPORT_HEARTBEAT_MAX_AGE_SECONDS:-180}"
       APIPAY_API_KEY: "${APIPAY_API_KEY:-}"
       APIPAY_WEBHOOK_SECRET: "${APIPAY_WEBHOOK_SECRET:-}"
       APIPAY_BASE_URL: "${APIPAY_BASE_URL:-https://api.apipay.kz/api/v1}"
@@ -107,6 +115,36 @@ services:
       - mediadata:/app/media
     ports:
       - "8000:8000"
+
+  shipping-transport-monitor:
+    profiles: ["hardware"]
+    build: ./backend
+    environment:
+      <<: *backend-environment
+      APP_SERVICE: shipping-transport-monitor
+      DJANGO_COLLECTSTATIC: "0"
+    entrypoint: []
+    command: ["python", "manage.py", "monitor_shipping_transports"]
+    volumes:
+      - mediadata:/app/media
+    depends_on:
+      backend:
+        condition: service_started
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    init: true
+    stop_grace_period: 180s
+    tmpfs:
+      - /tmp/shipping-transport-monitor:rw,noexec,nosuid,nodev,size=1m,mode=1777
+    healthcheck:
+      test: ["CMD", "python", "/app/shipping_transport_monitor_healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
 
   passage-scale-monitor:
     profiles: ["hardware"]

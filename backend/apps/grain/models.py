@@ -417,6 +417,32 @@ class UnassignedWeighing(models.Model):
         ]
 
 
+class WeighingIdentityCheck(models.Model):
+    """Durable, bounded verification of a saved exit against this visit's entry."""
+
+    weighing = models.OneToOneField(
+        UnassignedWeighing, on_delete=models.CASCADE, related_name="identity_check"
+    )
+    status = models.CharField(max_length=16, default="pending", db_index=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    lease_until = models.DateTimeField(null=True, blank=True)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    model = models.CharField(max_length=80, blank=True, default="")
+    response_id = models.CharField(max_length=100, blank=True, default="")
+    reason = models.CharField(max_length=100, blank=True, default="")
+    evidence = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                name="grain_identity_status_valid",
+                condition=models.Q(status__in=["pending", "processing", "retrying", "review", "matched"]),
+            ),
+        ]
+
+
 class PassageWeightCapture(models.Model):
     """Durable weight-first command joining one scale read to one plate result."""
 

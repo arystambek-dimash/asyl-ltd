@@ -1358,8 +1358,6 @@ def _assert_automatic_passage_lane_allows_manual_operation(
     state: PassageScaleAutomationState | None,
     capture: AutomaticPassageCapture | None,
 ) -> None:
-    if state is None:
-        return
     blocked = (
         AutomaticPassageCapture.objects.filter(
             status=AutomaticPassageCapture.PROCESSING
@@ -1367,13 +1365,17 @@ def _assert_automatic_passage_lane_allows_manual_operation(
         or (
             capture is not None and capture.status == AutomaticPassageCapture.PROCESSING
         )
-        or state.phase
-        in {
-            PassageScaleAutomationState.STABILIZING,
-            PassageScaleAutomationState.PROCESSING,
-        }
         or (
-            state.phase == PassageScaleAutomationState.AWAITING_CLEAR
+            state is not None
+            and state.phase
+            in {
+                PassageScaleAutomationState.STABILIZING,
+                PassageScaleAutomationState.PROCESSING,
+            }
+        )
+        or (
+            state is not None
+            and state.phase == PassageScaleAutomationState.AWAITING_CLEAR
             and (capture is None or capture.status != AutomaticPassageCapture.FAILED)
         )
     )

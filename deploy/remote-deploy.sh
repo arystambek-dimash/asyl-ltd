@@ -30,7 +30,7 @@ cleanup_state_temp() {
     if ! (
       cd "$APP_DIR" &&
       docker compose -f "$COMPOSE_FILE" start \
-        backend camera-monitor ai-stock-monitor passage-scale-monitor
+        backend camera-monitor ai-stock-monitor passage-scale-monitor shipping-transport-monitor
     ); then
       echo "Failed to resume one or more previous camera writer containers." >&2
       cleanup_status=1
@@ -639,6 +639,9 @@ docker compose -f "$COMPOSE_FILE" exec -T db-backup \
   sh -c 'sha256sum -c /backups/asyl-latest.dump.sha256 && sha256sum -c /backups/media-latest.tar.gz.sha256'
 
 echo "Validating compose config..."
+if [ -n "${OPENAI_API_KEY_B64:-}" ]; then
+  python3 deploy/sync-openai-secret.py
+fi
 # `config` expands all environment values, including camera/alert credentials.
 # Quiet validation keeps those secrets out of a world-readable /tmp file.
 docker compose -f "$COMPOSE_FILE" config --quiet
@@ -671,8 +674,8 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
 # can post or import across the schema/policy cutover.
 echo "Quiescing previous camera writers before role migration..."
 OLD_CAMERA_WRITERS_QUIESCED=1
-if ! docker compose -f "$COMPOSE_FILE" stop -t 60 \
-  backend camera-monitor ai-stock-monitor passage-scale-monitor; then
+if ! docker compose -f "$COMPOSE_FILE" stop -t 180 \
+  backend camera-monitor ai-stock-monitor passage-scale-monitor shipping-transport-monitor; then
   echo "Failed to quiesce previous camera writers." >&2
   exit 1
 fi

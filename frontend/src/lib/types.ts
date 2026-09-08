@@ -498,6 +498,7 @@ export interface AiCountingSession {
   started_at: string;
   started_by_id: number | null;
   started_by_name: string;
+  automatically_started?: boolean;
   can_stop: boolean;
   last_status: AiCountingSnapshot;
 }
@@ -640,11 +641,13 @@ export interface WagonNumberCameraStatus {
   mode: "wagon_number_24_7";
 }
 export type TransportRecognitionModel = "vehicle_number" | "wagon_number";
+export type ShippingLoadingZone = [number, number, number, number];
 
 export interface ShippingTransportCameraSettings {
   conveyor_camera: string;
   number_camera: string | null;
   recognition_model: TransportRecognitionModel | null;
+  loading_zone?: ShippingLoadingZone | null;
   updated_at: string | null;
 }
 
@@ -654,6 +657,67 @@ export interface ShippingTransportRecognition {
   recognition_model: TransportRecognitionModel;
   number: string | null;
   observed_at: string;
+}
+export interface ShippingTransportTracking {
+  schema_version: 1;
+  basis: "transport_body";
+  presence: "present" | "absent" | "unknown";
+  motion: "stationary" | "moving" | "unknown";
+  visit_id: string | null;
+  observed_at: string | null;
+  present_since: string | null;
+  last_seen_at: string | null;
+  stationary_since: string | null;
+  absent_since: string | null;
+  detection_count: number;
+  reason: string;
+  number_associated: boolean;
+}
+export interface ShippingAutoFinish {
+  state: "idle" | "waiting" | "blocked" | "finishing" | "completed";
+  remaining_seconds: number | null;
+  observed_at: string | null;
+  detail: string;
+}
+export interface ShippingTransportAutomation {
+  conveyor_camera: string;
+  number_camera: string | null;
+  recognition_model: TransportRecognitionModel | null;
+  state:
+    | "waiting_number"
+    | "confirming"
+    | "no_order"
+    | "multiple_orders"
+    | "starting"
+    | "loading"
+    | "completed"
+    | "busy"
+    | "error";
+  detail: string;
+  number: string | null;
+  observed_at: string | null;
+  order_id: number | null;
+  session_id: number | null;
+  tracking?: ShippingTransportTracking | null;
+  tracking_alert?: string | null;
+  auto_finish?: ShippingAutoFinish | null;
+}
+export interface ShippingTransportHistory {
+  id: number;
+  conveyor_camera: string;
+  number_camera: string;
+  recognition_model: TransportRecognitionModel;
+  number: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  status: "matched" | "no_order" | "multiple_orders" | "tracking_alert" | "observed";
+  order_id: number | null;
+  session_id: number | null;
+  image_url: string | null;
+  tracking?: ShippingTransportTracking | null;
+  tracking_alert?: string | null;
+  visit_id?: string | null;
+  auto_finish?: ShippingAutoFinish | null;
 }
 export interface WagonNumberCameraSettings {
   camera_source: string | null;
@@ -976,6 +1040,11 @@ export type VehicleOrientation = "" | "front" | "rear";
 
 /** Вес с автовесов без распознанного номера, который ждёт привязки к рейсу. */
 export interface GrainUnassignedWeighing {
+  identity_check?: {
+    status: "pending" | "processing" | "retrying" | "review" | "matched" | "disabled";
+    reason: string;
+    plate: string;
+  };
   photo_status?: "pending" | "retrying" | "saved" | "unavailable";
   id: number;
   weight_kg: number;

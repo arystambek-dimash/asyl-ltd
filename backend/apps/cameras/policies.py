@@ -119,6 +119,8 @@ def assert_no_pending_shipping_bootstrap(cameras) -> None:
 
 
 def session_started_by_name(session) -> str:
+    if session.automatically_started:
+        return "Автоматически"
     user = session.started_by
     if user is None:
         return "Система"
@@ -134,5 +136,12 @@ def can_control_session(session, user) -> bool:
             user.is_superuser
             or user.has_perm_code("sys_permissions.manage")
             or session.started_by_id == user.pk
+            or (
+                session.automatically_started
+                and not user.is_client
+                and user.has_perm_code(
+                    "train.load" if session.order.transport_type == "train" else "shipping.load"
+                )
+            )
         )
     )

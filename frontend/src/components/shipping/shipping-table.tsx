@@ -9,12 +9,10 @@ import type { BagCounterHandle } from "@/components/shipping/bag-counter";
 import { CountingHistoryModal } from "@/components/shipping/counting-history-modal";
 import { RewindLoadingModal } from "@/components/shipping/rewind-loading-modal";
 import { ShippingRowDetail } from "@/components/shipping/shipping-row-detail";
-import { StartShipmentModal } from "@/components/shipping/start-shipment-modal";
+import { ShippingTransportEvidence } from "@/components/shipping/shipping-transport-evidence";
 import {
   finishLoadingConfirmText,
-  resetAiConfirmText,
   shipOutConfirmText,
-  stopAiConfirmText,
   useShippingActions,
   type ShippingActionResult,
   type ShippingConfirmText,
@@ -24,22 +22,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { ErrorAlert } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
 import { TransportNumberBadge } from "@/components/ui/transport-number";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { apiError } from "@/lib/api";
 import { orderedBagCount } from "@/lib/orders";
-import { indexFirstBy, type CameraAvailabilityContext, type PlayableCamera } from "@/lib/shipping-cameras";
+import { indexFirstBy } from "@/lib/shipping-cameras";
 import type { ShippingCapabilities } from "@/lib/shipping-flow";
-import type {
-  AiCountingHistory,
-  AiCountingSession,
-  AlwaysOnProcessorStatus,
-  CameraContinuousReadiness,
-  Order,
-} from "@/lib/types";
+import type { AiCountingHistory, AiCountingSession, Order } from "@/lib/types";
 import { cn, formatDateTime, formatIsoDate } from "@/lib/utils";
 
 export interface ShippingTableCapabilities extends ShippingCapabilities {
@@ -73,13 +64,6 @@ export interface ShippingTableProps {
   /** Играбельные камеры по src — зона, имя, сохранённая линия подсчёта. */
   camerasBySrc: Map<string, CameraFeed>;
   capabilities: ShippingTableCapabilities;
-  /** Камеры, разрешённые настройкой «Камеры моноблока», — выбор при запуске. */
-  monoblockCameras: PlayableCamera[];
-  shippingProcessors?: AlwaysOnProcessorStatus[];
-  cameraOwners: Record<string, number>;
-  cameraReadiness?: Record<string, CameraContinuousReadiness>;
-  continuousReady: boolean;
-  continuousDetail: string;
   /** Окно группы «Выехали» (бэкенд применяет его сам). */
   completedOrdersDays: number;
   /** Без фильтра шапка показывает только заголовок. */
@@ -103,10 +87,7 @@ type SessionRow = { kind: "session"; key: string; id: number; session: AiCountin
 type Row = OrderRow | SessionRow;
 
 type Dialog =
-  | { kind: "finish"; row: Row; text: ShippingConfirmText }
-  | { kind: "ship"; order: Order; text: ShippingConfirmText }
-  | { kind: "reset"; session: AiCountingSession; text: ShippingConfirmText }
-  | { kind: "stopAi"; session: AiCountingSession; text: ShippingConfirmText };
+  { kind: "finish"; row: Row; text: ShippingConfirmText } | { kind: "ship"; order: Order; text: ShippingConfirmText };
 
 const LOADING_STATUSES = ["arrived", "loading"];
 const COLUMN_COUNT = 6;
@@ -146,7 +127,7 @@ function sessionBadge(session: AiCountingSession | null, hasCamera: boolean): Re
   if (session?.status === "starting") {
     return (
       <Badge tone="warning" dot>
-        запуск
+        {session.automatically_started ? "привязка" : "запуск"}
       </Badge>
     );
   }
@@ -167,12 +148,6 @@ export function ShippingTable({
   histories,
   camerasBySrc,
   capabilities,
-  monoblockCameras,
-  shippingProcessors,
-  cameraOwners,
-  cameraReadiness,
-  continuousReady,
-  continuousDetail,
   completedOrdersDays,
   filter,
   reloadOrders,
@@ -271,9 +246,10 @@ export function ShippingTable({
 
   /* ── Раскрытие: одна строка за раз ─────── */
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
-  const isExpandable = (row: Row) => row.kind === "session" || isLoadingStatus(row.order.status);
-  // Строка, ушедшая из погрузки (возврат, завершение с другого места), сама
-  // закрывается: панель живёт только у раскрываемых строк.
+  const isExpandable = (row: Row) =>
+    row.kind === "session" || ["arrived", "loading", "loaded", "shipped"].includes(row.order.status);
+  // Возврат в ожидание закрывает детали. После завершения доступны
+  // сохранённые сведения о распознанном транспорте.
   const expandedRow = expandedKey ? rowsByKey.get(expandedKey) : undefined;
   const expanded = expandedRow && isExpandable(expandedRow) ? expandedRow.key : null;
   function toggleRow(row: Row) {
@@ -295,11 +271,9 @@ export function ShippingTable({
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [dialogBusy, setDialogBusy] = useState(false);
   const [dialogError, setDialogError] = useState("");
-  const [startOrder, setStartOrder] = useState<Order | null>(null);
   const [rewindOrder, setRewindOrder] = useState<Order | null>(null);
   const [rollbackOrder, setRollbackOrder] = useState<Order | null>(null);
   const [historyOpen, setHistoryOpen] = useState<AiCountingHistory | null>(null);
-  const [actionError, setActionError] = useState("");
 
   function openDialog(next: Dialog) {
     setDialogError("");
@@ -328,9 +302,7 @@ export function ShippingTable({
     setDialogError("");
     let result: ShippingActionResult;
     if (dialog.kind === "finish") result = await finishRow(dialog.row);
-    else if (dialog.kind === "ship") result = await actions.executeMove(dialog.order, "done");
-    else if (dialog.kind === "reset") result = await actions.resetSessionAi(dialog.session);
-    else result = await actions.stopSessionAi(dialog.session, false);
+    else result = await actions.executeMove(dialog.order, "done");
     setDialogBusy(false);
     if (!result.ok) {
       setDialogError(result.error);
@@ -341,33 +313,14 @@ export function ShippingTable({
     setDialog(null);
   }
 
-  /** Действия без модалки: ошибка уходит в алерт над таблицей. */
-  async function runInline(run: () => Promise<ShippingActionResult>) {
-    setActionError("");
-    const result = await run();
-    if (!result.ok && result.error) setActionError(result.error);
-  }
-
-  const availability = useMemo<CameraAvailabilityContext>(
-    () => ({
-      busyCameras: sessions.map((session) => session.camera),
-      shippingProcessors,
-      cameraOwners,
-      cameraReadiness,
-      continuousReady,
-    }),
-    [cameraOwners, cameraReadiness, continuousReady, sessions, shippingProcessors],
-  );
-
   /* ── Действия строки: ровно одна главная кнопка + кебаб ───────────── */
   type Primary = { label: string; onClick: () => void; disabled?: boolean; hint?: string };
   function rowActions(row: Row): { primary: Primary | null; note: string | null; menu: ActionMenuItem[] } {
     const menu: ActionMenuItem[] = [];
     if (row.kind === "session") {
       const { session } = row;
-      const own = session.can_stop && canLoad;
+      const own = session.can_stop && (session.order_transport_type === "train" ? canTrain : canLoad);
       const primary: Primary | null = own ? { label: "Завершить погрузку", onClick: () => openFinish(row) } : null;
-      if (own && session.status === "active") menu.push(...sessionMenu(session));
       return { primary, note: primary ? null : "Идёт погрузка", menu };
     }
 
@@ -380,15 +333,11 @@ export function ShippingTable({
 
     if (order.status === "confirmed") {
       if (session) {
-        // Сессии опрашиваются чаще заказов: другой оператор уже запустил AI,
-        // а заказ ещё не успел стать «loading» — второй старт недопустим.
-        note = session.status === "starting" ? "Запуск AI" : "Идёт погрузка";
-      } else if (train && canTrain) {
-        primary = { label: "Начать загрузку вагона", onClick: () => void runInline(() => actions.startTrain(order)) };
-      } else if (!train && canLoad) {
-        primary = { label: "Начать погрузку", onClick: () => setStartOrder(order) };
+        // Сессии опрашиваются чаще заказов: привязка может появиться
+        // раньше обновлённого статуса заказа.
+        note = session.status === "starting" ? "Привязка заказа" : "Идёт погрузка";
       } else {
-        note = "Ожидает запуска";
+        note = "Ожидает распознавания номера";
       }
     } else if (isLoadingStatus(order.status)) {
       if (stages.includes("exit")) {
@@ -408,10 +357,6 @@ export function ShippingTable({
       if (canCount) {
         menu.push({ key: "manual", label: "Мешки вручную", onSelect: () => setExpandedKey(row.key) });
       }
-      if (!train && !session && canLoad) {
-        menu.push({ key: "start-ai", label: "Запустить AI-подсчёт", onSelect: () => setStartOrder(order) });
-      }
-      if (session?.status === "active" && session.can_stop && canLoad) menu.push(...sessionMenu(session));
     } else if (order.status === "loaded") {
       if (canShip && stages.includes("done")) {
         primary = {
@@ -437,21 +382,6 @@ export function ShippingTable({
       menu.push({ key: "open", label: "Открыть заказ", onSelect: () => router.push(`/orders/${order.id}`) });
     }
     return { primary, note, menu };
-  }
-
-  function sessionMenu(session: AiCountingSession): ActionMenuItem[] {
-    return [
-      {
-        key: "reset-ai",
-        label: "Обнулить AI-счёт",
-        onSelect: () => openDialog({ kind: "reset", session, text: resetAiConfirmText(session.order_id) }),
-      },
-      {
-        key: "stop-ai",
-        label: "Выключить AI-подсчёт",
-        onSelect: () => openDialog({ kind: "stopAi", session, text: stopAiConfirmText(session.order_id) }),
-      },
-    ];
   }
 
   function openFinish(row: Row) {
@@ -609,14 +539,15 @@ export function ShippingTable({
       badge =
         session?.status === "starting" ? (
           <Badge tone="warning" dot>
-            Запуск AI
+            {session.automatically_started ? "Привязка заказа" : "Запуск AI"}
           </Badge>
         ) : (
           <Badge tone="primary" dot>
             Погрузка
           </Badge>
         );
-      if (session) line2 = `с ${formatTime(session.started_at)} · ${session.started_by_name || "—"}`;
+      if (session)
+        line2 = `с ${formatTime(session.started_at)} · ${session.automatically_started ? "Автоматически" : session.started_by_name || "—"}`;
     } else if (row.order.status === "confirmed") {
       badge = <Badge tone="outline">{row.order.transport_type === "train" ? "Вагон ожидает" : "Ожидает"}</Badge>;
     } else if (row.order.status === "loaded") {
@@ -668,6 +599,9 @@ export function ShippingTable({
   }
 
   function detailRow(row: Row) {
+    if (row.kind === "order" && ["loaded", "shipped"].includes(row.order.status)) {
+      return <ShippingTransportEvidence orderId={row.order.id} />;
+    }
     const order = row.kind === "order" ? row.order : null;
     const session = row.session;
     const cameraSrc = order?.loading_camera ?? session?.camera ?? null;
@@ -689,16 +623,12 @@ export function ShippingTable({
         cameraSrc={cameraSrc}
         occupiedByOrderId={occupiedBy}
         canCount={canCount}
-        canLoad={canLoad}
         busy={actions.busyOrderId === row.id}
         bagCounterRef={bagCounterRef}
         onSaveBags={order ? actions.saveBags(order) : () => Promise.resolve()}
         onAccept={(bags) =>
           order ? actions.act(order.id, () => actions.saveBags(order)(bags)) : Promise.resolve({ ok: true, error: "" })
         }
-        onResetAi={() => session && openDialog({ kind: "reset", session, text: resetAiConfirmText(session.order_id) })}
-        onStopAi={() => session && openDialog({ kind: "stopAi", session, text: stopAiConfirmText(session.order_id) })}
-        onSessionChanged={() => void Promise.all([reloadOrders(), reloadSessions()])}
         finish={finish}
       />
     );
@@ -760,11 +690,6 @@ export function ShippingTable({
       {viewingDay && (
         <div className="border-b px-4 py-2 text-[12px] text-[var(--muted-foreground)]">
           Показан день {formatIsoDate(viewingDay)}
-        </div>
-      )}
-      {actionError && (
-        <div className="px-4 pt-3">
-          <ErrorAlert message={actionError} />
         </div>
       )}
       <Table>
@@ -862,15 +787,6 @@ export function ShippingTable({
         </TBody>
       </Table>
 
-      <StartShipmentModal
-        order={startOrder}
-        cameras={monoblockCameras}
-        camerasBySrc={camerasBySrc}
-        availability={availability}
-        continuousDetail={continuousDetail}
-        onClose={() => setStartOrder(null)}
-        onStart={(order, cameraSrc) => actions.startAi(order, cameraSrc)}
-      />
       <ConfirmDialog
         open={dialog !== null}
         onClose={() => !dialogBusy && setDialog(null)}

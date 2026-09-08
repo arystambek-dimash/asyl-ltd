@@ -14,6 +14,7 @@ vi.mock("@/components/camera-stream", () => ({
   CameraStream: ({ src }: { src: string }) => <div data-testid="number-preview">{src}</div>,
   ensureCameraStreamToken: vi.fn(),
 }));
+vi.mock("@/lib/use-video-box", () => ({ useVideoBox: () => ({ left: 0, top: 0, width: 640, height: 360 }) }));
 
 const url = "/cameras/cam1/transport-camera/";
 const unset: ShippingTransportCameraSettings = {
@@ -89,7 +90,11 @@ describe("ShippingTransportCamera", () => {
       fireEvent.click(save);
     });
     expect(mocks.put).toHaveBeenCalledTimes(1);
-    expect(mocks.put).toHaveBeenCalledWith(url, { number_camera: "cam3", recognition_model: "wagon_number" });
+    expect(mocks.put).toHaveBeenCalledWith(url, {
+      number_camera: "cam3",
+      recognition_model: "wagon_number",
+      loading_zone: null,
+    });
     expect(screen.getByLabelText("Камера номера")).toBeDisabled();
     await act(async () =>
       resolveSave({ data: { ...configured, number_camera: "cam3", recognition_model: "wagon_number" } }),
@@ -121,6 +126,60 @@ describe("ShippingTransportCamera", () => {
     expect(screen.getByLabelText("Камера номера")).toHaveValue("cam3");
     expect(screen.getByRole("button", { name: "Сохранить связь" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Проверить распознавание" })).toBeDisabled();
+  });
+
+  it("loads the saved zone and sends normalized edited boundaries", async () => {
+    serveSettings({ ...configured, loading_zone: [0.1, 0.2, 0.8, 0.9] });
+    mocks.put.mockImplementation((_url, body) => Promise.resolve({ data: { ...configured, ...body } }));
+    const user = userEvent.setup();
+    render(<ShippingTransportCamera conveyorCamera="cam1" />);
+    await ready();
+    expect(screen.getByLabelText("Область наблюдения")).toHaveValue("zone");
+    expect(screen.getByLabelText("Слева, %")).toHaveValue(10);
+    expect(screen.getByRole("button", { name: "Сохранить связь" })).toBeDisabled();
+    await user.clear(screen.getByLabelText("Слева, %"));
+    await user.type(screen.getByLabelText("Слева, %"), "25");
+    await user.click(screen.getByRole("button", { name: "Сохранить связь" }));
+    expect(mocks.put).toHaveBeenCalledWith(url, {
+      number_camera: "cam2",
+      recognition_model: "vehicle_number",
+      loading_zone: [0.25, 0.2, 0.8, 0.9],
+    });
+    await screen.findByText("Связь сохранена");
+    await user.selectOptions(screen.getByLabelText("Область наблюдения"), "full");
+    await user.click(screen.getByRole("button", { name: "Сохранить связь" }));
+    expect(mocks.put).toHaveBeenLastCalledWith(url, {
+      number_camera: "cam2",
+      recognition_model: "vehicle_number",
+      loading_zone: null,
+    });
+  });
+
+  it("blocks inverted zones and clears a zone when the source camera changes", async () => {
+    serveSettings({ ...configured, loading_zone: [0.1, 0.2, 0.8, 0.9] });
+    const user = userEvent.setup();
+    render(<ShippingTransportCamera conveyorCamera="cam1" />);
+    await ready();
+    fireEvent.change(screen.getByLabelText("Слева, %"), { target: { value: "90" } });
+    expect(screen.getByRole("alert")).toHaveTextContent("Левая граница должна быть меньше правой");
+    expect(screen.getByRole("button", { name: "Сохранить связь" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Проверить распознавание" })).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText("Камера номера"), "cam3");
+    expect(screen.getByLabelText("Область наблюдения")).toHaveValue("full");
+    expect(screen.queryByLabelText("Слева, %")).not.toBeInTheDocument();
+  });
+
+  it("keeps the zone rectangular when an overlay corner is moved", async () => {
+    serveSettings({ ...configured, loading_zone: [0.1, 0.2, 0.8, 0.9] });
+    render(<ShippingTransportCamera conveyorCamera="cam1" />);
+    await ready();
+    fireEvent.keyDown(screen.getByRole("button", { name: "Угол зоны 2" }), { key: "ArrowLeft" });
+    expect(screen.getByLabelText("Справа, %")).toHaveValue(79.5);
+    expect(screen.getByLabelText("Слева, %")).toHaveValue(10);
+    expect(screen.getByTestId("vehicle-roi-polygon").querySelector("polygon")).toHaveAttribute(
+      "points",
+      "100,200 795,200 795,900 100,900",
+    );
   });
 
   it("deletes the saved link and clears recognition and preview state", async () => {

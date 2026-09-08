@@ -4,6 +4,7 @@ from typing import ClassVar
 
 from django.shortcuts import get_object_or_404
 from rest_framework import status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -197,6 +198,8 @@ class CameraAiView(APIView):
     def get_permissions(self):
         if self.request.method in ("GET", "HEAD", "OPTIONS"):
             return [IsStaff()]
+        if self.request.method == "DELETE":
+            return [HasPerm("shipping.load", "train.load")]
         return [HasPerm("shipping.load")]
 
     def get(self, request, cam: str):
@@ -241,6 +244,11 @@ class CameraAiView(APIView):
                 missing_order_detail="Укажите заказ для завершения AI-сессии",
                 include_complete_order=True,
             )
+            if not request.user.has_perm_code("shipping.load") and not (
+                order.transport_type == "train"
+                and request.user.has_perm_code("train.load")
+            ):
+                raise PermissionDenied("Нет права на погрузку этого транспорта")
             return counting.stop(
                 cam,
                 order,

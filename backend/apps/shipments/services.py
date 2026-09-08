@@ -162,7 +162,7 @@ def begin_camera_loading(
 ):
     """Закрепить свободную камеру и перевести заказ в активную погрузку.
 
-    Моноблок вызывает эту операцию перед запуском модели. Поэтому заказ из
+    Моноблок вызывает эту операцию после подтверждения AI-сессии. Заказ из
     `confirmed` покидает очередь готовых к погрузке в момент фактического старта
     с выбранной камерой. Одна камера может принадлежать только одному живому
     заказу; ограничение продублировано частичным UNIQUE-индексом в PostgreSQL.
@@ -311,7 +311,14 @@ def _valid_ai_total(bags) -> bool:
 
 
 @transaction.atomic
-def finish_ai_counting(order, bags: int, user):
+def finish_ai_counting(
+    order,
+    bags: int,
+    user,
+    *,
+    automatic_session_id: int | None = None,
+    completion_guard: dict | None = None,
+):
     """Сохранить финальный AI-счёт и завершить загрузку.
 
     Воркер на ПК цеха — сторонний процесс, и его ответ может прийти пустым
@@ -320,7 +327,30 @@ def finish_ai_counting(order, bags: int, user):
     ручное завершение, и откат.
     Поэтому негодное число не блокирует завершение подсчёта: за факт берётся
     заказанное количество, а расхождение попадает в журнал.
+    Системное автозавершение требует точный финал активной автоматической
+    сессии и никогда не подставляет заказанное количество вместо счёта.
     """
+    automatic = automatic_session_id is not None
+    automatic_session = None
+    if automatic:
+        from apps.cameras.models import AiCountingSession
+
+        if user is not None or type(automatic_session_id) is not int:
+            raise ValidationError("Автозавершение выполняется только системой")
+        automatic_session = (
+            AiCountingSession.objects.select_for_update()
+            .filter(
+                pk=automatic_session_id,
+                order_id=order.pk,
+                automatically_started=True,
+                status=AiCountingSession.ACTIVE,
+            )
+            .first()
+        )
+        if automatic_session is None:
+            raise ValidationError("Активная автоматическая погрузка не найдена")
+        if not _valid_ai_total(bags) or bags > 2_147_483_647:
+            raise ValidationError("Для автозавершения нужен точный финальный счёт")
     order = _locked(order, user)
 
     if order.status != "loading":
@@ -329,8 +359,10 @@ def finish_ai_counting(order, bags: int, user):
             "code": "invalid_status",
         })
     shipment = _require_shipment(order)
+    if automatic_session is not None and order.loading_camera != automatic_session.camera:
+        raise ValidationError("Камера автоматической погрузки изменилась")
 
-    source = "ai_final"
+    source = "ai_final_automatic" if automatic else "ai_final"
     if not _valid_ai_total(bags):
         rejected, bags = bags, sum(item.quantity for item in order.items.all())
         source = "ai_final_fallback"
@@ -345,19 +377,28 @@ def finish_ai_counting(order, bags: int, user):
 
     shipment.bags_loaded = bags
     shipment.save(update_fields=["bags_loaded"])
+    audit = {"bags": bags, "source": source}
+    if automatic:
+        audit.update(
+            automatic=True,
+            session_id=automatic_session_id,
+            reason="transport_absent_conveyor_idle",
+            completion_guard=completion_guard or {},
+        )
     log_event(
         "loading",
         f"AI-подсчёт зафиксирован: {bags} мешков",
         user=user,
         order=order,
-        payload={"bags": bags, "source": source},
+        payload=audit,
     )
     log_event(
         "loading_done",
-        "Загрузка завершена по финальному AI-подсчёту",
+        "Загрузка завершена автоматически: транспорт не обнаружен, конвейер свободен"
+        if automatic else "Загрузка завершена по финальному AI-подсчёту",
         user=user,
         order=order,
-        payload={"bags": bags, "source": source},
+        payload=audit,
     )
     order.status = "loaded"
     order.loading_camera = ""

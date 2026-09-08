@@ -1,5 +1,10 @@
 from django.urls import path
 
+from .api_views.shipping_automation import (
+    ShippingTransportEvidenceImageView,
+    ShippingTransportEvidenceView,
+    ShippingTransportStatusView,
+)
 from .vehicle_plate_events import VehiclePlateEventListView, VehiclePlateWebhookView
 from .views import (
     AlwaysOnAnalyticsArchiveView,
@@ -44,6 +49,9 @@ urlpatterns = [
         name="vehicle-plate-events-list",
     ),
     path("cameras/", CameraListView.as_view()),
+    path("cameras/shipping-transport/", ShippingTransportStatusView.as_view()),
+    path("cameras/shipping-transport/history/", ShippingTransportEvidenceView.as_view()),
+    path("cameras/shipping-transport/history/<int:pk>/image/", ShippingTransportEvidenceImageView.as_view()),
     path("cameras/token/", CameraTokenView.as_view()),
     path("cameras/auth/", CameraAuthView.as_view()),
     path("cameras/health/", CameraHealthView.as_view()),

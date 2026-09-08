@@ -731,6 +731,34 @@ def delete(cam: str, session_id: int | None = None) -> dict | None:
     return _call("DELETE", _path(cam), body=body, none_on_404=True)
 
 
+def finish_automatic(cam: str, session_id: int, guard: dict) -> dict:
+    """Conditionally freeze one order while continuous shipping stays running.
+
+    A separate action is essential: older camera services could ignore new
+    fields in the ordinary DELETE body and finish without checking activity.
+    """
+    if type(session_id) is not int or session_id < 1:
+        raise ValueError("Automatic completion requires an exact session_id")
+    if (
+        not isinstance(guard, dict)
+        or type(guard.get("schema_version")) is not int
+        or guard["schema_version"] != 1
+        or not isinstance(guard.get("activity_generation"), str)
+        or not 1 <= len(guard["activity_generation"]) <= 256
+        or type(guard.get("min_clear_seconds")) is not int
+        or not 40 <= guard["min_clear_seconds"] <= 3_600
+        or ("recovery_only" in guard and type(guard["recovery_only"]) is not bool)
+    ):
+        raise ValueError("Automatic completion requires a valid conveyor guard")
+    payload = _call(
+        "POST",
+        f"{_path(cam)}/finish-automatic",
+        body={"session_id": session_id, "automatic_guard": dict(guard)},
+    )
+    assert payload is not None
+    return payload
+
+
 def _normalize_always_on(payload: dict | None) -> dict:
     """Accept both generations of the Windows always-on API response."""
     result = dict(payload or {})

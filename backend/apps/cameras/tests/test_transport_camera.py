@@ -84,10 +84,44 @@ def test_get_unset_is_read_only(setup, auth_client, monkeypatch):
         "conveyor_camera": "cam2",
         "number_camera": None,
         "recognition_model": None,
+        "loading_zone": None,
         "updated_at": None,
     }
     assert not ShippingTransportCamera.objects.exists()
     discovery.assert_not_called()
+
+
+def test_loading_zone_roundtrip_preserved_when_omitted_and_cleared_explicitly(setup, auth_client):
+    client = auth_client(setup)
+    zone = [0.1, 0.2, 0.8, 0.9]
+    saved = client.put(URL, {**DATA, "loading_zone": zone}, format="json")
+    assert saved.status_code == 200
+    assert saved.data["loading_zone"] == zone
+    assert client.put(URL, DATA, format="json").data["loading_zone"] == zone
+    assert client.put(URL, {**DATA, "loading_zone": None}, format="json").data["loading_zone"] is None
+
+
+def test_old_camera_zone_is_not_inherited_when_changing_camera(setup, auth_client):
+    client = auth_client(setup)
+    client.put(URL, {**DATA, "loading_zone": [0.1, 0.2, 0.8, 0.9]}, format="json")
+    result = client.put(URL, {**DATA, "number_camera": "cam8"}, format="json")
+    assert result.status_code == 200
+    assert result.data["loading_zone"] is None
+
+
+@pytest.mark.parametrize("zone", [[0, 0, 0, 1], [0.8, 0, 0.1, 1], [-0.1, 0, 1, 1], [0, 0, 1, 1.2], [False, 0, 1, 1], [0, 1], "0,0,1,1"])
+def test_invalid_loading_zone_is_rejected(setup, auth_client, zone):
+    assert auth_client(setup).put(URL, {**DATA, "loading_zone": zone}, format="json").status_code == 400
+
+
+def test_zone_cannot_change_under_active_loading(binding, setup, auth_client):
+    client = Client.objects.create_with_user(first_name="Zone", phone="zone-guard")
+    order = Order.objects.create(client=client, status="loading", loading_camera="cam2")
+    AiCountingSession.objects.create(order=order, camera="cam2", status=AiCountingSession.ACTIVE)
+    response = auth_client(setup).put(URL, {**DATA, "loading_zone": [0.1, 0.1, 0.8, 0.8]}, format="json")
+    assert response.status_code == 400
+    binding.refresh_from_db()
+    assert binding.loading_zone is None
 
 
 @pytest.mark.parametrize("model", ["vehicle_number", "wagon_number"])

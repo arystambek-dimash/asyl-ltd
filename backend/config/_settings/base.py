@@ -457,6 +457,15 @@ VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES = _bounded_int_env(
 VEHICLE_PLATE_AUTO_EXPORT_ENABLED = env_flag(
     os.environ.get("VEHICLE_PLATE_AUTO_EXPORT_ENABLED", "0")
 )
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+WEIGHING_AI_ENABLED = env_flag(os.environ.get("WEIGHING_AI_ENABLED", "1"))
+WEIGHING_AI_MODEL = os.environ.get("WEIGHING_AI_MODEL", "gpt-5-mini").strip()
+WEIGHING_AI_MAX_DAILY_REQUESTS = _bounded_int_env(
+    "WEIGHING_AI_MAX_DAILY_REQUESTS", 200, 1, 2000
+)
+WEIGHING_AI_ENTRY_MAX_HOURS = _bounded_int_env(
+    "WEIGHING_AI_ENTRY_MAX_HOURS", 12, 1, 24
+)
 VEHICLE_PLATE_AUTO_SCALE_ENABLED = env_flag(
     os.environ.get("VEHICLE_PLATE_AUTO_SCALE_ENABLED", "0")
 )

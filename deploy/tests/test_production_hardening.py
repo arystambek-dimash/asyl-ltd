@@ -434,8 +434,8 @@ exit 0
             self.assertEqual(result.returncode, 0, result.stderr)
             commands = docker_log.read_text(encoding="utf-8")
             stop = (
-                "stop -t 60 backend camera-monitor ai-stock-monitor "
-                "passage-scale-monitor"
+                "stop -t 180 backend camera-monitor ai-stock-monitor "
+                "passage-scale-monitor shipping-transport-monitor"
             )
             cutover = "backend manage.py check_camera_cutover"
             self.assertIn(stop, commands)
@@ -458,7 +458,7 @@ exit 0
             commands = docker_log.read_text(encoding="utf-8")
             self.assertIn(
                 "start backend camera-monitor ai-stock-monitor "
-                "passage-scale-monitor",
+                "passage-scale-monitor shipping-transport-monitor",
                 commands,
             )
             self.assertNotIn(" up -d ", f" {commands} ")

@@ -115,10 +115,6 @@ function renderTable(
       histories={[]}
       camerasBySrc={new Map([[camera.src as string, camera]])}
       capabilities={{ ...noCapabilities, ...capabilities }}
-      monoblockCameras={[camera as CameraFeed & { src: string }]}
-      cameraOwners={{ cam2: 12 }}
-      continuousReady
-      continuousDetail=""
 
       completedOrdersDays={1}
       reloadOrders={reloadOrders}
@@ -162,11 +158,12 @@ describe("ShippingTable", () => {
     expect(screen.getAllByText("Пусто")).toHaveLength(2);
   });
 
-  it("gives loading staff a launcher and requires an explicit row expansion", async () => {
+  it("waits for automatic acquisition and requires an explicit row expansion", async () => {
     const user = userEvent.setup();
     renderTable({ capabilities: { canLoad: true } });
 
-    expect(within(rowOf(10)).getByRole("button", { name: "Начать погрузку" })).toBeInTheDocument();
+    expect(within(rowOf(10)).getByText("Ожидает распознавания номера")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Начать погрузку" })).not.toBeInTheDocument();
     expect(within(rowOf(11)).getByText("Ожидает оформления выезда")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Оформить выезд" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Действия: заказ #11/ })).not.toBeInTheDocument();
@@ -183,7 +180,7 @@ describe("ShippingTable", () => {
     const user = userEvent.setup();
     renderTable({ capabilities: { canViewShipping: true }, histories: [history] });
 
-    expect(within(rowOf(10)).getByText("Ожидает запуска")).toBeInTheDocument();
+    expect(within(rowOf(10)).getByText("Ожидает распознавания номера")).toBeInTheDocument();
     expect(within(rowOf(12)).getByText("Идёт погрузка")).toBeInTheDocument();
     expect(within(rowOf(11)).getByText("Ожидает оформления выезда")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^(Начать погрузку|Завершить погрузку|Оформить выезд)$/ })).toBeNull();
@@ -195,11 +192,12 @@ describe("ShippingTable", () => {
     expect(screen.queryByRole("menuitem", { name: "Открыть заказ" })).not.toBeInTheDocument();
   });
 
-  it("offers wagon start only to train.load and keeps trucks waiting", () => {
+  it("waits for automatic recognition for both wagons and trucks", () => {
     renderTable({ orders: [waiting, waitingWagon], capabilities: { canTrain: true } });
 
-    expect(within(rowOf(13)).getByRole("button", { name: "Начать загрузку вагона" })).toBeInTheDocument();
-    expect(within(rowOf(10)).getByText("Ожидает запуска")).toBeInTheDocument();
+    expect(within(rowOf(13)).getByText("Ожидает распознавания номера")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Начать загрузку вагона" })).not.toBeInTheDocument();
+    expect(within(rowOf(10)).getByText("Ожидает распознавания номера")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Начать погрузку" })).not.toBeInTheDocument();
   });
 
@@ -376,5 +374,43 @@ describe("ShippingTable", () => {
     expect(within(row).getByText("нет доступа к заказу")).toBeInTheDocument();
     expect(within(row).getByText("7 / —")).toBeInTheDocument();
     expect(within(row).getByRole("button", { name: "Завершить погрузку" })).toBeInTheDocument();
+  });
+
+  it("allows train staff to finish an automatic wagon session and labels its source", async () => {
+    const user = userEvent.setup();
+    deleteMock.mockResolvedValue({ data: {} });
+    renderTable({
+      orders: [],
+      sessions: [
+        session({
+          automatically_started: true,
+          order_transport_type: "train",
+          started_by_id: null,
+          started_by_name: "",
+        }),
+      ],
+      capabilities: { canTrain: true },
+    });
+    expect(within(rowOf(12)).getAllByText(/Автоматически/).length).toBeGreaterThan(0);
+    await user.click(within(rowOf(12)).getByRole("button", { name: "Завершить погрузку" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Завершить погрузку" }));
+    await waitFor(() =>
+      expect(deleteMock).toHaveBeenCalledWith("/cameras/cam2/ai/", {
+        params: { order_id: 12, session_id: 100, complete_order: 1 },
+        data: { order_id: 12, session_id: 100, complete_order: true },
+      }),
+    );
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps saved transport details accessible after loading and departure", async () => {
+    const user = userEvent.setup();
+    renderTable({ orders: [loaded, shipped], sessions: [], capabilities: { canLoad: true } });
+    await user.click(within(rowOf(11)).getByRole("button", { name: "Раскрыть заказ #11" }));
+    expect(screen.getByRole("region", { name: "Распознанный транспорт" })).toBeInTheDocument();
+    expect(screen.queryByTestId("row-detail")).not.toBeInTheDocument();
+    await user.click(within(rowOf(14)).getByRole("button", { name: "Раскрыть заказ #14" }));
+    expect(screen.getAllByRole("region", { name: "Распознанный транспорт" })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /Начать погрузку|Завершить погрузку/ })).not.toBeInTheDocument();
   });
 });

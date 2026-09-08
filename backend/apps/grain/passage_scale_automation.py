@@ -1242,6 +1242,10 @@ def _apply_recognized_capture(capture_id: int) -> AutomaticPassageCapture:
         return capture
     try:
         reading = _reading_from_capture(capture)
+        from .weighing_identity import defer_exit
+        deferred = defer_exit(capture)
+        if deferred is not None:
+            return _finish_success(capture_id, result=deferred)
         if capture.plate_unresolved:
             result = services.apply_unidentified_passage_scale_sample(
                 reading=reading,
