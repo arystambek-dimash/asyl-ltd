@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
+from django.utils.functional import cached_property
 from rest_framework import serializers
 
 from apps.clients.models import Client, Store
@@ -476,10 +477,18 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         u = obj.deleted_by
         return u.username if u else None
 
+    @cached_property
+    def _status_request_list_serializer(self):
+        return StatusChangeRequestSerializer(many=True, context=self.context)
+
+    @cached_property
+    def _payment_list_serializer(self):
+        return PaymentSerializer(many=True, context=self.context)
+
     def get_pending_status_requests(self, obj):
         # Фильтруем по предзагруженному кэшу, без запроса на каждый заказ.
         reqs = [r for r in obj.status_requests.all() if r.status == "pending"]
-        return StatusChangeRequestSerializer(reqs, many=True).data
+        return self._status_request_list_serializer.to_representation(reqs)
 
     def _payments_by_status(self, obj, statuses):
         rows = [p for p in obj.payments.all() if p.status in statuses]
@@ -489,7 +498,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     def get_payments(self, obj):
         # История платежей — только подтверждённые кассой (реально полученные).
         rows = self._payments_by_status(obj, ("confirmed",))
-        return PaymentSerializer(rows, many=True, context=self.context).data
+        return self._payment_list_serializer.to_representation(rows)
 
     def get_pending_payments(self, obj):
         # Оплаты в цепочке подтверждения (запрошена/принята/сверена) видят все
@@ -499,7 +508,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         if not user or getattr(user, "is_client", False):
             return []
         rows = self._payments_by_status(obj, Payment.IN_PROGRESS_STATUSES)
-        return PaymentSerializer(rows, many=True, context=self.context).data
+        return self._payment_list_serializer.to_representation(rows)
 
     def validate_department(self, code):
         request = self.context.get("request")

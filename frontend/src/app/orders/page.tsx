@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
@@ -19,7 +20,6 @@ import { ErrorAlert } from "@/components/ui/data-state";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ActionMenu, type ActionMenuItem } from "@/components/ui/action-menu";
 import { ActionCard } from "@/components/ui/action-card";
-import { OrderForm } from "@/components/order-form";
 import { OrderPriceCorrectionModal } from "@/components/order-price-correction-modal";
 import { OrderStatusSelect } from "@/components/order-status-select";
 import { ManualOrderStatusModal, type ManualOrderTarget } from "@/components/manual-order-status-modal";
@@ -36,6 +36,7 @@ import {
 } from "@/lib/constants";
 import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
+import { useDebounced } from "@/lib/use-debounced";
 import { LoadMore } from "@/components/ui/load-more";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
@@ -65,6 +66,8 @@ import {
   Trash2,
 } from "lucide-react";
 import type { Department, DepartmentSummary, Order } from "@/lib/types";
+
+const OrderForm = dynamic(() => import("@/components/order-form").then((m) => m.OrderForm));
 
 function shortDate(value: string) {
   if (!value) return "";
@@ -230,8 +233,8 @@ function DepartmentBadge({ order }: { order: Order }) {
 const DEPARTMENT_COLORS = ["#315FD5", "#D68B2C", "#238C6E", "#B84A5A", "#7654B3", "#3B7F91", "#6B7280"];
 
 function DepartmentManager({ onChanged }: { onChanged: () => void }) {
-  const { data, reload } = useApi<Department[]>("/departments/?all=1");
   const [open, setOpen] = useState(false);
+  const { data, reload } = useApi<Department[]>(open ? "/departments/?all=1" : null);
   const [editing, setEditing] = useState<Department | null>(null);
   const [name, setName] = useState("");
   const [color, setColor] = useState(DEPARTMENT_COLORS[0]);
@@ -654,6 +657,9 @@ function OrdersAnalytics({
           {...analyticsTabs.getTabPanelProps("overview")}
           className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 sm:p-4"
         >
+          <p className="col-span-full text-xs text-[var(--muted-foreground)]">
+            Показатели по загруженным заказам. Следующие заказы доступны под списком.
+          </p>
           <StatCard label="Всего заказов" value={String(orders.length)} icon={ListChecks} />
           <StatCard label="В процессе" value={String(activeCount)} icon={Clock3} />
           <StatCard
@@ -745,6 +751,11 @@ function OrdersPageInner() {
   const [dateTo, setDateTo] = useState("");
   const [status, setStatus] = useState("all");
   const [dept, setDept] = useState("all");
+  const [q, setQ] = useState("");
+  const search = useDebounced(q.trim());
+  const [sortKey, setSortKey] = useState("id");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [view, setView] = useState<"orders" | "archive">("orders");
   // Фильтры уходят на бэк: список, карточки и сумма считаются по выборке сервера.
   const ordersUrl = useMemo(() => {
     const params = new URLSearchParams();
@@ -752,23 +763,14 @@ function OrdersPageInner() {
     if (dateTo) params.set("date_to", dateTo);
     if (dept !== "all") params.set("department", dept);
     if (status !== "all") params.set("status_group", status);
+    if (search) params.set("search", search);
+    params.set("ordering", `${sortDir === "desc" ? "-" : ""}${sortKey}`);
     const query = params.toString();
     return `/orders/${query ? `?${query}` : ""}`;
-  }, [dateFrom, dateTo, dept, status]);
-  const [q, setQ] = useState("");
-  const [sortKey, setSortKey] = useState("id");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
-  // Лениво грузим страницами только «дефолтный» список. Поиск и пересортировка
-  // работают по всем строкам, поэтому в этих режимах берём полный список —
-  // иначе они бы молча смотрели только на загруженную часть.
-  const defaultOrder = sortKey === "id" && sortDir === "desc";
-  const usePaging = !q && defaultOrder;
-  const paged = usePagedApi<Order>(usePaging ? ordersUrl : null, 50);
-  const flat = useApi<Order[]>(usePaging ? null : ordersUrl);
-  const orders = usePaging ? paged.items : flat.data;
-  const loading = usePaging ? paged.loading : flat.loading;
-  const error = usePaging ? paged.error : flat.error;
-  const reload = usePaging ? paged.reload : flat.reload;
+  }, [dateFrom, dateTo, dept, status, search, sortKey, sortDir]);
+  const paged = usePagedApi<Order>(view === "orders" ? ordersUrl : null, 50);
+  const orders = paged.items;
+  const { loading, error, reload } = paged;
   const summaryUrl = useMemo(() => {
     const params = new URLSearchParams();
     if (dateFrom) params.set("date_from", dateFrom);
@@ -777,7 +779,9 @@ function OrdersPageInner() {
     const query = params.toString();
     return `/orders/department-summary/${query ? `?${query}` : ""}`;
   }, [dateFrom, dateTo, status]);
-  const { data: departmentSummary, reload: reloadSummary } = useApi<DepartmentSummary[]>(summaryUrl);
+  const { data: departmentSummary, reload: reloadSummary } = useApi<DepartmentSummary[]>(
+    view === "orders" ? summaryUrl : null,
+  );
   const { data: departments, reload: reloadDepartments } = useApi<Department[]>("/departments/");
   const { me } = useAuth();
   const canCreate = can(me, "orders.create");
@@ -792,7 +796,6 @@ function OrdersPageInner() {
   const [statementOpen, setStatementOpen] = useState(false);
   const [editing, setEditing] = useState<Order | null>(null);
   const [correctingPrice, setCorrectingPrice] = useState<Order | null>(null);
-  const [view, setView] = useState<"orders" | "archive">("orders");
   const [delItem, setDelItem] = useState<Order | null>(null);
   const [delBusy, setDelBusy] = useState(false);
   const [delError, setDelError] = useState("");
@@ -923,11 +926,7 @@ function OrdersPageInner() {
   ];
 
   const list = orders ?? [];
-  const filtered = list.filter((o) => {
-    if (!q) return true;
-    const hay = `${o.id} ${o.client_name ?? ""} ${o.truck_number ?? ""}`.toLowerCase();
-    return hay.includes(q.toLowerCase());
-  });
+  const filtered = list;
 
   // Карточки считаются по видимой выборке (фильтры + поиск): выбрал
   // «На рассмотрении» — видишь их сумму. Отменённые и отклонённые
@@ -950,33 +949,8 @@ function OrdersPageInner() {
     }
   };
 
-  // Только выехавшие падают вниз списка — сверху активная работа.
-  const doneRank = (o: Order) => (orderStatusGroup(o.status) === "shipped" ? 1 : 0);
-  const sorted = [...filtered].sort((a, b) => {
-    const rank = doneRank(a) - doneRank(b);
-    if (rank !== 0) return rank;
-    let av: number | string, bv: number | string;
-    if (sortKey === "amount") {
-      const currencyCmp = a.currency.localeCompare(b.currency);
-      if (currencyCmp !== 0) return sortDir === "asc" ? currencyCmp : -currencyCmp;
-      av = Number(a.total_amount || 0);
-      bv = Number(b.total_amount || 0);
-    } else if (sortKey === "client") {
-      av = a.client_name ?? "";
-      bv = b.client_name ?? "";
-    } else if (sortKey === "status") {
-      av = a.status;
-      bv = b.status;
-    } else if (sortKey === "created") {
-      av = a.created_at;
-      bv = b.created_at;
-    } else {
-      av = a.id;
-      bv = b.id;
-    }
-    const cmp = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv), "ru");
-    return sortDir === "asc" ? cmp : -cmp;
-  });
+  // The API sorts the complete selection before slicing a page.
+  const sorted = filtered;
 
   return (
     <AppShell
@@ -1278,17 +1252,15 @@ function OrdersPageInner() {
                   </TBody>
                 </Table>
               )}
-              {usePaging && (
-                <LoadMore
-                  shown={list.length}
-                  total={paged.count}
-                  hasMore={paged.hasMore}
-                  loading={paged.loadingMore}
-                  onClick={paged.loadMore}
-                />
-              )}
             </CardContent>
           </Card>
+          <LoadMore
+            shown={list.length}
+            total={paged.count}
+            hasMore={paged.hasMore}
+            loading={paged.loading || paged.loadingMore}
+            onClick={paged.loadMore}
+          />
         </>
       )}
 

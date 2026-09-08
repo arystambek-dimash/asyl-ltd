@@ -58,8 +58,11 @@ beforeEach(() => {
     }
     if (url.pathname === "/orders/payments-queue/") {
       if (mocks.queueError) throw new Error("Очередь временно недоступна");
-      return { data: mocks.paid ? [] : [queueItem] };
+      const rows = mocks.paid ? [] : [queueItem];
+      if (url.searchParams.has("page")) return { data: { results: rows, count: rows.length, next: null } };
+      return { data: rows };
     }
+    if (url.pathname === "/orders/") return { data: { results: [], count: 0, next: null } };
     if (url.pathname === "/clients/debts/")
       return {
         data: mocks.paid
@@ -119,9 +122,26 @@ it("uses overview dates for its payment card and never presents a failed queue a
   mocks.queueError = true;
   fireEvent.change(screen.getByLabelText("С даты"), { target: { value: "2026-09-01" } });
   await waitFor(() =>
-    expect(mocks.get.mock.calls.some(([url]) => url === "/orders/payments-queue/?date_from=2026-09-01")).toBe(true),
+    expect(mocks.get.mock.calls.some(([url]) => url === "/orders/payments-queue/?summary=1&date_from=2026-09-01")).toBe(
+      true,
+    ),
   );
   expect(await screen.findByText("Очередь временно недоступна")).toBeInTheDocument();
   expect(card("Ожидает подтверждения").getByText("—")).toBeInTheDocument();
   expect(card("Ожидает подтверждения").queryByText("0")).not.toBeInTheDocument();
+});
+
+it("loads only overview totals initially and fetches each confirmation page once on demand", async () => {
+  const user = userEvent.setup();
+  render(<CashierPage />);
+  await waitFor(() => expect(card("Ожидает подтверждения").getAllByText(/100/).length).toBeGreaterThan(0));
+  const urls = () => mocks.get.mock.calls.map(([url]) => String(url));
+  expect(urls().filter((url) => url.startsWith("/orders/payments-queue/"))).toEqual([
+    "/orders/payments-queue/?summary=1",
+  ]);
+  expect(urls().some((url) => url.startsWith("/orders/?"))).toBe(false);
+  await user.click(screen.getByRole("tab", { name: /Заявки и оплаты/ }));
+  await screen.findByRole("button", { name: "Подтвердить получение" });
+  expect(urls().filter((url) => url === "/orders/payments-queue/?page=1&page_size=50")).toHaveLength(1);
+  expect(urls().filter((url) => url === "/orders/?status=pending&page=1&page_size=50")).toHaveLength(1);
 });

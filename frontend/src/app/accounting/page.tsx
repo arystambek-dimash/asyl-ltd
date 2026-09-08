@@ -1,5 +1,6 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -17,7 +18,6 @@ import { ErrorAlert } from "@/components/ui/data-state";
 import { CurrencyAmounts } from "@/components/ui/currency-amounts";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { PaymentStageBadge } from "@/components/payment-chain";
-import { TransactionsSection } from "@/components/transactions-section";
 import { can } from "@/lib/can";
 import { amountForCurrency, otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
 import { useAuth } from "@/store/auth";
@@ -36,6 +36,11 @@ import {
 } from "@/lib/utils";
 import { PAYMENT_METHOD_LABELS } from "@/lib/constants";
 import { ArrowUpRight, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
+
+const TransactionsSection = dynamic(() =>
+  import("@/components/transactions-section").then((m) => m.TransactionsSection),
+);
+type QueueTotal = Pick<PaymentQueueItem, "amount" | "currency" | "method"> & { count: number };
 import type {
   CashierLogItem,
   ClientDebt,
@@ -123,23 +128,15 @@ function useCashierQueue(
     store: queueFilters.store,
   };
   // Кассе нужны заявки на подтверждение и оплаты — отбор отдела общий.
-  const {
-    data: pending,
-    loading: pendingLoading,
-    error: pendingError,
-    reload: reloadPending,
-  } = useApi<Order[]>(
+  const pendingPage = usePagedApi<Order>(
     queueActive && canReviewOrders ? apiUrl("/orders/", { ...queueParams, status: "pending" }) : null,
   );
-  const {
-    data: queue,
-    loading: queueLoading,
-    error: queueError,
-    reload: reloadQueue,
-  } = useApi<PaymentQueueItem[]>(queueActive ? apiUrl("/orders/payments-queue/", queueParams) : null);
+  const queuePage = usePagedApi<PaymentQueueItem>(queueActive ? apiUrl("/orders/payments-queue/", queueParams) : null);
+  const { reload: reloadPending } = pendingPage;
+  const { reload: reloadQueue } = queuePage;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const loadError = pendingError || queueError;
+  const loadError = pendingPage.error || queuePage.error;
 
   const refresh = useCallback(async () => {
     await Promise.all([reloadPending(), reloadQueue()]);
@@ -169,10 +166,12 @@ function useCashierQueue(
   }
 
   return {
-    loading: pendingLoading || queueLoading,
+    loading: pendingPage.loading || queuePage.loading,
     refresh,
-    pendingOrders: pending ?? [],
-    toReview: queue ?? [],
+    pendingOrders: pendingPage.items,
+    toReview: queuePage.items,
+    pendingPage,
+    queuePage,
     busy,
     error,
     loadError,
@@ -268,6 +267,13 @@ function ConfirmQueueSection({
                   </div>
                 );
               })}
+              <LoadMore
+                shown={q.pendingOrders.length}
+                total={q.pendingPage.count}
+                hasMore={q.pendingPage.hasMore}
+                loading={q.pendingPage.loadingMore}
+                onClick={q.pendingPage.loadMore}
+              />
             </CardContent>
           </Card>
         )}
@@ -326,6 +332,13 @@ function ConfirmQueueSection({
                 </div>
               </div>
             ))}
+            <LoadMore
+              shown={q.toReview.length}
+              total={q.queuePage.count}
+              hasMore={q.queuePage.hasMore}
+              loading={q.queuePage.loadingMore}
+              onClick={q.queuePage.loadMore}
+            />
           </CardContent>
         </Card>
       </div>
@@ -801,6 +814,7 @@ function CashierInner() {
   const { data: departments } = useApi<Department[]>("/departments/");
 
   const overviewQueueUrl = apiUrl("/orders/payments-queue/", {
+    summary: "1",
     date_from: overviewFilters.dateFrom,
     date_to: overviewFilters.dateTo,
     department: overviewFilters.department,
@@ -811,20 +825,34 @@ function CashierInner() {
     loading: overviewQueueLoading,
     error: overviewQueueError,
     reload: reloadOverviewQueue,
-  } = useApi<PaymentQueueItem[]>(canPayments && tab === "overview" && validOverview ? overviewQueueUrl : null);
+  } = useApi<QueueTotal[]>(canPayments && tab === "overview" && validOverview ? overviewQueueUrl : null);
   async function reloadOverview() {
     await Promise.all([reloadSummary(), reloadDebts(), reloadOverviewQueue()]);
   }
   async function paymentChanged() {
     await Promise.all([reloadOverview(), journalLog.reload()]);
   }
-  const queue = useCashierQueue(canPayments, canReviewOrders, filtersByTab.confirm, paymentChanged);
+  const queue = useCashierQueue(
+    canPayments && tab === "confirm",
+    canReviewOrders,
+    filtersByTab.confirm,
+    paymentChanged,
+  );
   const refreshQueue = queue.refresh;
   useVisiblePolling(reloadOverview, 30_000, tab === "overview" && validOverview && !queue.busy);
-  useVisiblePolling(refreshQueue, 30_000, canPayments && !queue.busy);
-  useEffect(() => {
-    if (tab === "confirm") void refreshQueue();
-  }, [tab, refreshQueue]);
+  // Preserve rows the cashier explicitly expanded; manual refresh and
+  // completed actions still reload the queue from its first page.
+  useVisiblePolling(
+    refreshQueue,
+    30_000,
+    canPayments &&
+      tab === "confirm" &&
+      !queue.busy &&
+      !queue.pendingPage.loadingMore &&
+      !queue.queuePage.loadingMore &&
+      queue.pendingOrders.length <= 50 &&
+      queue.toReview.length <= 50,
+  );
 
   const overviewPayments = overviewQueue ?? [];
   const toReviewByCurrency = sumMoneyByCurrency(
@@ -888,7 +916,11 @@ function CashierInner() {
     ...(canDebtEntry ? [{ key: "overview", label: canReports ? "Общее" : "Долги" }] : []),
     ...(canPayments
       ? [
-          { key: "confirm", label: "Заявки и оплаты", count: queue.pendingOrders.length + queue.toReview.length },
+          {
+            key: "confirm",
+            label: "Заявки и оплаты",
+            count: tab === "confirm" && !queue.loading ? queue.pendingPage.count + queue.queuePage.count : undefined,
+          },
           { key: "journal", label: "Журнал" },
         ]
       : []),

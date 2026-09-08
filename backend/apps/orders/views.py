@@ -9,13 +9,13 @@ from io import BytesIO
 from collections import defaultdict
 from decimal import Decimal
 import re
-from django.db.models import Q, Sum
+from django.db.models import Count, Q, Sum
 from django.utils import timezone
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import HasPerm, PermViewSetMixin
 from apps.common.money import as_money_strings, money_string, primary_currency
 from apps.common.query_params import (
-    filter_date_range, parse_date_range, parse_store_id,
+    filter_date_range, parse_date_range, parse_store_id, parse_search_param,
 )
 from apps.sales.access import scope_by_client_department
 from apps.sales.models import Department
@@ -38,6 +38,7 @@ from .querysets import (
     post_board_params,
     with_order_api_relations,
     with_payment_api_relations,
+    with_order_amounts, filter_order_search, order_page_sort,
 )
 from .reports import summary_report
 from .references import build_order_form_options
@@ -358,11 +359,11 @@ class PaymentTransactionListView(APIView):
             "confirmed": Q(status="confirmed"),
             "rejected": Q(status="rejected"),
         }
-        status_counts = {}
-        for key, condition in public_status_filters.items():
-            group_count = qs.filter(condition).count()
-            if group_count:
-                status_counts[key] = group_count
+        grouped_counts = qs.aggregate(**{
+            key: Count("pk", filter=condition)
+            for key, condition in public_status_filters.items()
+        })
+        status_counts = {key: count for key, count in grouped_counts.items() if count}
         if status:
             condition = public_status_filters.get(status)
             if condition is None:
@@ -728,6 +729,10 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             store = parse_store_id(params.get("store"))
             if store:
                 qs = qs.filter(store_id=store)
+            if params.get("post_board") != "1":
+                qs = filter_order_search(qs, parse_search_param(params.get("search")))
+            if params.get("ordering"):
+                qs = order_page_sort(qs, params["ordering"])
         return qs
 
     @action(detail=False, methods=["get"], url_path="form-options")
@@ -837,13 +842,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     def department_summary(self, request):
         """Оперативная аналитика заказов в разрезе динамических отделов."""
         params = request.query_params
-        # Нужны только статус/отдел/сумма — полный план загрузки здесь лишний.
-        # Выручка складывается из quantity/unit_price позиции — сам товар в
-        # сводке не читается, поэтому джоин к каталогу здесь лишний.
-        # Платежи нужны для разбивки «оплачено / частично / не оплачено»:
-        # paid_total читает их у каждого заказа, без prefetch это N+1.
         qs = scope_by_client_department(
-            Order.objects.prefetch_related("items", "payments"),
+            Order.objects.all(),
             request.user,
             client_path="client",
         )
@@ -878,28 +878,31 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             "unpaid_orders": 0,
             "debt_orders": 0,
         } for department in Department.objects.all()}
-        for order in qs:
-            row = rows.get(order.department)
+        totals = with_order_amounts(qs).values(
+            "department", "status", "currency", "settlement_intent", "amount_total", "amount_paid"
+        )
+        for order in totals.iterator(chunk_size=2000):
+            row = rows.get(order["department"])
             if row is None:
                 continue
             row["orders"] += 1
-            if order.status == "shipped":
+            if order["status"] == "shipped":
                 row["shipped"] += 1
-            elif is_in_progress(order.status):
+            elif is_in_progress(order["status"]):
                 row["active"] += 1
             # В выручку идут только финансовые заказы: черновик и «на
             # рассмотрении» ещё не подтверждены и оборотом не являются.
-            if not is_financial(order.status):
+            if not is_financial(order["status"]):
                 continue
-            currency = order.currency or "KZT"
-            total, paid = order.total_amount, order.paid_total
+            currency = order["currency"] or "KZT"
+            total, paid = order["amount_total"], order["amount_paid"]
             row["revenue_by_currency"][currency] += total
             row["paid_by_currency"][currency] += paid
             # Дебиторка — по тому же правилу, что и везде (Order.is_debt),
             # иначе цифра в дашборде разойдётся с «Кассой» и выпиской.
-            if order.is_debt:
+            if order["status"] == "shipped" and order["settlement_intent"] == "debt" and total > paid:
                 row["debt_orders"] += 1
-                row["debt_by_currency"][currency] += order_remaining(order)
+                row["debt_by_currency"][currency] += total - paid
             if total <= 0:
                 continue
             if paid <= 0:
@@ -948,10 +951,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             request.user,
             client_path="order__client",
         )
-        qs = with_payment_api_relations(
-            payments,
-            order_context=True,
-        ).order_by("paid_at")
+        qs = payments.order_by("paid_at", "id")
         department = request.query_params.get("department")
         if department:
             qs = qs.filter(order__department=department)
@@ -960,7 +960,21 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             qs = qs.filter(order__store_id=store)
         date_from, date_to = parse_date_range(request.query_params)
         qs = filter_date_range(qs, "paid_at", date_from, date_to)
-        return Response(PaymentQueueSerializer(qs, many=True).data)
+        if request.query_params.get("summary") == "1":
+            return Response([
+                {"currency": row["order__currency"], "method": row["method"],
+                 "amount": money_string(row["amount"]), "count": row["count"]}
+                for row in qs.order_by().values("order__currency", "method").annotate(
+                    amount=Sum("amount"), count=Count("id")
+                ).order_by("order__currency", "method")
+            ])
+        qs = with_payment_api_relations(qs, order_context=True)
+        page = self.paginate_queryset(qs)
+        data = PaymentQueueSerializer(
+            page if page is not None else qs, many=True,
+            context=self.get_serializer_context(),
+        ).data
+        return self.get_paginated_response(data) if page is not None else Response(data)
 
     @action(detail=False, methods=["get"], url_path="cashier-log")
     def cashier_log(self, request):

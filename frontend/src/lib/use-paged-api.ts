@@ -73,9 +73,9 @@ export function usePagedApi<T>(baseUrl: string | null, pageSize = 50) {
   const reload = useCallback(() => fetchPage(1, false), [fetchPage]);
 
   const loadMore = useCallback(() => {
-    if (!hasMore || loadingMore) return;
+    if (!hasMore || loading || loadingMore) return;
     void fetchPage(pageRef.current + 1, true);
-  }, [fetchPage, hasMore, loadingMore]);
+  }, [fetchPage, hasMore, loading, loadingMore]);
 
   useEffect(() => {
     pageRef.current = 1;

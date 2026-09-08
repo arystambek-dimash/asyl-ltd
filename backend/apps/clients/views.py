@@ -1,4 +1,5 @@
 from decimal import Decimal
+from collections import defaultdict
 
 from django.db import transaction
 from django.db.models import Prefetch
@@ -29,7 +30,7 @@ from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.services import log_event
 from apps.orders.debt import debt_orders, order_remaining
 from apps.orders.models import Order
-from apps.orders.querysets import with_order_api_relations
+from apps.orders.querysets import with_order_api_relations, with_order_amounts
 from apps.sales.access import scope_by_client_department
 
 from .models import Client, Store
@@ -534,14 +535,25 @@ class ClientViewSet(
             orders_qs = orders_qs.filter(created_at__date__lte=date_to)
         if store_id:
             orders_qs = orders_qs.filter(store_id=store_id)
-        clients = self.get_queryset().prefetch_related(None).prefetch_related(
-            Prefetch("orders", queryset=orders_qs.prefetch_related("items", "payments")),
-            "stores",
+        visible_clients = self.get_queryset().prefetch_related(None)
+        balances = with_order_amounts(orders_qs).filter(
+            client_id__in=visible_clients.values("pk"), amount_remaining__gt=0,
+        ).values("client_id", "store_id", "currency", "payment_status", "amount_remaining")
+        by_client = defaultdict(list)
+        store_ids = set()
+        for balance in balances.iterator(chunk_size=2000):
+            by_client[balance["client_id"]].append(balance)
+            if balance["store_id"] is not None:
+                store_ids.add(balance["store_id"])
+        clients = visible_clients.filter(pk__in=by_client).prefetch_related(
+            Prefetch("stores", queryset=Store.objects.filter(pk__in=store_ids)),
         )
         rows = []
         for client in clients:
-            orders = list(self._debt_orders(client))
-            totals = sum_by_currency(orders, order_remaining)
+            orders = by_client[client.pk]
+            totals = defaultdict(lambda: Decimal("0"))
+            for order in orders:
+                totals[order["currency"] or "KZT"] += order["amount_remaining"]
             currency = primary_currency(totals, fallback=client.currency)
             debt = totals.get(currency, Decimal("0"))
             if debt <= 0:
@@ -555,8 +567,7 @@ class ClientViewSet(
                 continue
             if debt_max is not None and filtered_debt > debt_max:
                 continue
-            stores = [s for s in client.stores.all()
-                      if any(o.store_id == s.id for o in orders)]
+            stores = list(client.stores.all())
             rows.append({
                 "client_id": client.id,
                 "client_name": client.name,
@@ -566,8 +577,8 @@ class ClientViewSet(
                 "debt_currency": currency,
                 "debt_by_currency": as_money_strings(totals),
                 "orders_count": len(orders),
-                "unpaid_count": sum(1 for o in orders if o.payment_status == "unpaid"),
-                "partial_count": sum(1 for o in orders if o.payment_status == "partial"),
+                "unpaid_count": sum(1 for o in orders if o["payment_status"] == "unpaid"),
+                "partial_count": sum(1 for o in orders if o["payment_status"] == "partial"),
                 "stores_count": len(stores),
                 "overdue_count": sum(
                     1 for s in stores

@@ -7,7 +7,25 @@ queries when serializer fields evolve.
 
 from datetime import date, timedelta
 
-from django.db.models import Prefetch, Q, QuerySet
+from decimal import Decimal
+
+from django.db.models import (
+    Case,
+    CharField,
+    DecimalField,
+    F,
+    IntegerField,
+    OuterRef,
+    Prefetch,
+    Q,
+    QuerySet,
+    Subquery,
+    Sum,
+    Value,
+    When,
+)
+from django.db.models.functions import Cast, Coalesce, Concat, Greatest, NullIf, Trim
+from rest_framework.exceptions import ValidationError
 from django.utils import timezone
 
 from apps.common.query_params import (
@@ -16,7 +34,125 @@ from apps.common.query_params import (
     plate_search_q,
 )
 
-from .models import Order, Payment, StatusChangeRequest
+from .models import Order, OrderItem, Payment, StatusChangeRequest
+
+
+def with_order_amounts(
+    queryset: QuerySet[Order], *, select: bool = True
+) -> QuerySet[Order]:
+    """Read-only totals without hydrating every historical item and payment.
+
+    Separate subqueries avoid multiplying items by payments. Match the model:
+    unpriced items contribute zero, only confirmed payments count, and each
+    payment's net amount is clamped separately after completed refunds.
+    """
+    money = DecimalField(max_digits=30, decimal_places=2)
+    zero = Value(Decimal("0"), output_field=money)
+    items = (
+        OrderItem.objects.filter(order_id=OuterRef("pk"))
+        .order_by()
+        .values("order_id")
+        .annotate(
+            value=Sum(F("quantity") * Coalesce("unit_price", zero), output_field=money)
+        )
+    )
+    payments = (
+        Payment.objects.filter(order_id=OuterRef("pk"), status="confirmed")
+        .order_by()
+        .values("order_id")
+        .annotate(
+            value=Sum(
+                Greatest(F("amount") - F("refunded_amount"), zero), output_field=money
+            )
+        )
+    )
+    annotate = queryset.annotate if select else queryset.alias
+    queryset = annotate(
+        amount_total=Coalesce(
+            Subquery(items.values("value"), output_field=money), zero
+        ),
+        amount_paid=Coalesce(
+            Subquery(payments.values("value"), output_field=money), zero
+        ),
+    )
+    annotate = queryset.annotate if select else queryset.alias
+    return annotate(amount_remaining=F("amount_total") - F("amount_paid"))
+
+
+def filter_order_search(queryset: QuerySet[Order], search: str) -> QuerySet[Order]:
+    if not search:
+        return queryset
+    # Same full name / username fallback displayed by Client.name.
+    queryset = queryset.alias(
+        search_name=Coalesce(
+            NullIf(
+                Trim(
+                    Concat(
+                        "client__user__first_name",
+                        Value(" "),
+                        "client__user__last_name",
+                    )
+                ),
+                Value(""),
+            ),
+            F("client__user__username"),
+        ),
+        search_id=Cast("id", CharField()),
+    )
+    return queryset.filter(
+        Q(search_name__icontains=search)
+        | Q(search_id__icontains=search)
+        | plate_search_q("truck_number", search)
+    )
+
+
+def order_page_sort(queryset: QuerySet[Order], ordering: str) -> QuerySet[Order]:
+    """Sort before pagination; the legacy unparameterized API stays unchanged."""
+    descending = ordering.startswith("-")
+    key = ordering.removeprefix("-")
+    columns = {
+        "id": "id",
+        "created": "created_at",
+        "status": "status",
+        "client": "sort_client",
+        "amount": "amount_total",
+    }
+    if key not in columns:
+        raise ValidationError(
+            {"detail": "Неизвестная сортировка заказов", "code": "bad_ordering"}
+        )
+    queryset = queryset.alias(
+        done_rank=Case(
+            When(status="shipped", then=Value(1)),
+            default=Value(0),
+            output_field=IntegerField(),
+        )
+    )
+    if key == "amount":
+        queryset = with_order_amounts(queryset, select=False)
+    if key == "client":
+        queryset = queryset.alias(
+            sort_client=Coalesce(
+                NullIf(
+                    Trim(
+                        Concat(
+                            "client__user__first_name",
+                            Value(" "),
+                            "client__user__last_name",
+                        )
+                    ),
+                    Value(""),
+                ),
+                F("client__user__username"),
+            )
+        )
+    direction = "-" if descending else ""
+    fields = ["done_rank"]
+    if key == "amount":
+        fields.append(direction + "currency")
+    fields.extend([direction + columns[key], direction + "id"])
+    return queryset.order_by(*dict.fromkeys(fields))
+
 
 # Заказ уже на посту: машина заехала, грузится или ждёт выезда. Такие строки
 # живут на доске, пока не выедут, — сколько бы дней ни длилась погрузка.
