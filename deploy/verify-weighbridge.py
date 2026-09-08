@@ -43,7 +43,11 @@ report["ok"] = bool(
     and not report["uncovered_saved_weight_count"]
     and not report["processing_over_10_minutes"]
     and report["scale_probe"].get("state") == "ready"
+    and bool(report["vision_samples"])
     and all("error_type" not in row for row in report["vision_samples"])
+    and all(
+        row.get("pair_reading_matches") is not False for row in report["vision_samples"]
+    )
 )
 print(json.dumps(report, ensure_ascii=False, indent=2))
 sys.exit(0 if report["ok"] else 1)

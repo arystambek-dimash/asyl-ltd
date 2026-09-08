@@ -15,6 +15,10 @@ the physical plates in departure and candidate entry images and compares the
 individual truck/body/trailer. Database plate answers are not supplied to the
 model. Generic make/colour or matching plates alone are insufficient.
 
+Readings drop whitespace/hyphens and a leading country label `KZ` only when
+the remaining complete number has a valid Kazakhstan plate format. This is
+format normalization; digits/letters are never substituted to fit an answer.
+
 Code can complete an exit only when there is exactly one clear plate match,
 the image directions are front/rear, distinctive appearance agrees, and the
 original exit OCR is empty, identical or differs by one character. Unclear
@@ -59,7 +63,10 @@ Requests use `store: false`, a 45-second socket timeout, a three-minute lease,
 at most three attempts per weighing and a 5,000-output-token bound. Image size
 and response size are bounded. API/storage failures and delayed entry photos
 retry after 60/120 seconds, then remain for manual review. Restarting a worker
-recovers expired leases. An exhausted daily budget leaves weights pending.
+recovers expired leases. An exhausted daily budget leaves weights pending
+until the next UTC day, with an explicit limit message and manual assignment.
+Missing photos are shown as waiting for a photo; evidence older than 24 hours
+requires operator review. No pending label implies that a model is still running.
 This is an upper bound on attempts, not a fixed monetary spending guarantee.
 
 `WEIGHING_AI_ENABLED=0` restores the previous OCR matching path for new captures;
@@ -76,3 +83,20 @@ docker compose -f docker-compose.prod.yml logs --tail=100 passage-scale-monitor
 The separate shipping/conveyor automation in the same release requires its
 compatible CV service update and body detector; see `deploy/shipping-transports.md`.
 This requirement does not apply to the OpenAI weighbridge wrapper.
+
+## Production acceptance diagnostic
+
+Run the **Verify production weighbridge** Actions workflow manually on `main`.
+It checks saved-weight coverage and performs at most three vision requests on
+existing entry/exit photographs. SQL is read-only; no trip is assigned and no
+fresh camera photograph is requested. Only bounded text diagnostics are retained
+in a private Actions artifact for three days, without image bytes or credentials.
+Older bookings are traced by their exact photograph request UUID, never by a
+similar plate, weight or time. The diagnostic fails on missing coverage, stalled
+processing, a non-ready scale, API errors or disagreement in a sampled pair.
+
+`HTTP 200` and `connected=true` alone do not establish current weight freshness.
+The bridge must continuously update `updated_at`/`age_seconds` on actual sensor
+messages, including repeated zero values. If it stops, verify the Windows reader
+and indicator/serial connection before a new truck trial. Do not relax the
+freshness threshold or relabel an old reading as fresh.

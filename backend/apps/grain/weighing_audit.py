@@ -131,6 +131,18 @@ def snapshot(*, now=None, hours=24, sample_limit=3):
         "manual_queue_without_photo": queue.exclude(HAS_PHOTO).count(),
         "recorded_weighings_without_photo": records.exclude(HAS_PHOTO).count(),
         "identity_checks": _counts(checks),
+        "identity_review_reasons": _counts(checks.filter(status="review"), "reason"),
+        "reviews_matching_after_normalization": [
+            check.pk
+            for check in checks.filter(
+                status="review", reason="identity_uncertain"
+            ).select_related("weighing")[:50]
+            if weighing_identity.choose(
+                check.evidence.get("verdict", {}),
+                [(entry, None) for entry in check.evidence.get("entries", [])],
+                check.weighing.vehicle_number,
+            )
+        ],
         "photo_delivery": _counts(photos),
     }
     # Prefer complete saved entry/exit pairs. Never make a fresh camera request.
