@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .photos import WeighingPhotoView
 from .passage_views import PassageViewSet
+from .passage_history import PassageScaleHistoryView
 from .views import (
     AutomaticPassageScaleAcknowledgeView,
     AutomaticPassageScaleRuntimeView,
@@ -37,6 +38,7 @@ router.register(
     "grain/types", SiloTypeViewSet, basename="grain-type")
 
 urlpatterns = [
+    path("grain/automatic-passage-scale/history/", PassageScaleHistoryView.as_view()),
     path("truck-scale/reading/", TruckScaleReadingView.as_view()),
     path(
         "grain/automatic-passage-scale/acknowledge/",

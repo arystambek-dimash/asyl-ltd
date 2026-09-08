@@ -9,6 +9,7 @@ import signal
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -16,9 +17,17 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import InterfaceError, OperationalError, close_old_connections
 
-from apps.grain import passage_scale_automation
+from apps.grain import passage_scale_automation, passage_monitor, weighing_photos
 
 log = logging.getLogger(__name__)
+
+
+def _background_call(function):
+    close_old_connections()
+    try:
+        return function()
+    finally:
+        close_old_connections()
 
 
 def _write_heartbeat(path_value: str, status: str, *, now: float | None = None) -> None:
@@ -81,7 +90,10 @@ class Command(BaseCommand):
         # A process gap can hide an empty->occupied edge. Preserve durable
         # processing/failure state, but require a fresh confirmed clear before
         # any idle lane may trigger after this worker starts.
-        passage_scale_automation.prepare_monitor_start()
+        if once:
+            passage_scale_automation.prepare_monitor_start()
+        else:
+            passage_monitor.prepare_start()
         heartbeat = settings.VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE
         initial_status = (
             "running" if settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED else "disabled"
@@ -91,13 +103,41 @@ class Command(BaseCommand):
         # worker that gets stuck after this point.
         _write_heartbeat(heartbeat, initial_status)
         last_status = initial_status
+        pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="passage")
+        recognition_future = photo_future = None
         try:
             while not stopped.is_set():
                 started = time.monotonic()
                 close_old_connections()
                 status = "running"
                 try:
-                    result = passage_scale_automation.monitor_once()
+                    if once:
+                        result = passage_scale_automation.monitor_once()
+                    else:
+                        # Bounded workers: no unbounded in-memory job queue.
+                        # Any unfinished work remains discoverable in the DB.
+                        finished = []
+                        if recognition_future is not None and recognition_future.done():
+                            finished.append(recognition_future)
+                            recognition_future = None
+                        if photo_future is not None and photo_future.done():
+                            finished.append(photo_future)
+                            photo_future = None
+                        for future in finished:
+                            try:
+                                future.result()
+                            except (OSError, TimeoutError, OperationalError, InterfaceError):
+                                log.exception("Automatic passage background dependency failed")
+                                status = "degraded"
+                        result = passage_monitor.poll_once()
+                        if recognition_future is None or recognition_future.done():
+                            recognition_future = pool.submit(
+                                _background_call, passage_monitor.process_once
+                            )
+                        if photo_future is None or photo_future.done():
+                            photo_future = pool.submit(
+                                _background_call, weighing_photos.retry_due_photos
+                            )
                     if result.state == "disabled":
                         status = "disabled"
                     elif result.state == "unavailable":
@@ -122,6 +162,7 @@ class Command(BaseCommand):
                 remaining = max(0.0, interval - (time.monotonic() - started))
                 stopped.wait(remaining)
         finally:
+            pool.shutdown(wait=True, cancel_futures=True)
             close_old_connections()
             for restore_signum, handler in previous_handlers.items():
                 signal.signal(restore_signum, handler)

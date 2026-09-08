@@ -136,3 +136,40 @@ def test_command_rejects_unsafe_poll_interval():
             "0.1",
             stdout=StringIO(),
         )
+
+
+def test_daemon_polls_during_slow_camera_work(settings, tmp_path):
+    from threading import Event
+    from apps.grain import passage_monitor, weighing_photos
+
+    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
+    settings.VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE = str(tmp_path / "heartbeat.json")
+    entered, release = Event(), Event()
+    calls = []
+
+    def camera_work():
+        entered.set()
+        assert release.wait(3)
+
+    def poll():
+        calls.append(len(calls))
+        if len(calls) == 2:
+            assert entered.is_set()
+            assert not release.is_set()
+            release.set()
+        if len(calls) == 3:
+            raise KeyboardInterrupt
+        return automation.MonitorIteration(state="idle")
+
+    try:
+        with (
+            patch.object(passage_monitor, "prepare_start"),
+            patch.object(passage_monitor, "poll_once", side_effect=poll),
+            patch.object(passage_monitor, "process_once", side_effect=camera_work),
+            patch.object(weighing_photos, "retry_due_photos", return_value=0),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            call_command("monitor_passage_scale", "--interval", "0.5", stdout=StringIO())
+    finally:
+        release.set()
+    assert len(calls) == 3

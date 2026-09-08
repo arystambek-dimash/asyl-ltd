@@ -22,6 +22,7 @@ from .models import (
 )
 from .orientation_dataset import load_records
 from .photos import KIND_UNASSIGNED, KIND_WEIGHING, photo_url
+from .weighing_photos import photo_delivery_status
 from .statuses import WAGON_STATUS_LABELS
 
 
@@ -178,6 +179,10 @@ class WeighingRecordSerializer(serializers.ModelSerializer):
         source="operator.username", default=None, read_only=True
     )
     photo_url = serializers.SerializerMethodField()
+    photo_status = serializers.SerializerMethodField()
+
+    def get_photo_status(self, record):
+        return photo_delivery_status(record)
 
     class Meta:
         model = WeighingRecord
@@ -191,6 +196,7 @@ class WeighingRecordSerializer(serializers.ModelSerializer):
             "previous_weight_kg",
             "operator_name",
             "photo_url",
+            "photo_status",
             "orientation",
             "created_at",
         ]
@@ -201,6 +207,11 @@ class WeighingRecordSerializer(serializers.ModelSerializer):
 
 class UnassignedWeighingSerializer(serializers.ModelSerializer):
     photo_url = serializers.SerializerMethodField()
+    photo_status = serializers.SerializerMethodField()
+
+    def get_photo_status(self, item):
+        return photo_delivery_status(item)
+
     wagon_number = serializers.CharField(
         source="wagon.number", default="", read_only=True
     )
@@ -217,6 +228,7 @@ class UnassignedWeighingSerializer(serializers.ModelSerializer):
             "scale_number",
             "camera",
             "photo_url",
+            "photo_status",
             "reason",
             "vehicle_number",
             "orientation",

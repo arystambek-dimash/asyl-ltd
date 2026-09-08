@@ -307,73 +307,68 @@ migrations.
 
 ## Automatic scale-first truck export (default off)
 
-`passage-scale-monitor` is a dedicated sequential process. It polls the truck
-scale every second, but a numeric change is never itself a business trigger.
-The PostgreSQL state machine starts `unarmed` and requires several consecutive
-fresh, stable readings at or below the configured empty threshold. It then
-requires an occupied weight to remain fresh, stable, and within the configured
-tolerance for the durable `stable_weight_seconds` interval (10 seconds by
-default). Only after that real elapsed interval does it commit one
-`AutomaticPassageCapture`, perform one strict scale read, and call the same
-on-demand Camera-PC endpoint with that capture UUID. Empty, unsafe, changed, or
-failed observations reset the complete interval; a monitor restart also fences
-the candidate and requires a new confirmed clear edge.
+`passage-scale-monitor` continuously observes physical occupancy; one separate
+worker processes the durable OCR queue and another delivers photos. Camera and
+photo I/O never hold the physical scale mutex or pause observation polling.
+The queue lives in PostgreSQL, not in executor memory.
 
-After OCR, locked CRM state determines the action. A plate with no on-site
-passage creates an export passage and records its empty entry weight
-(`arrived -> at_silo`). A plate that matches a passage still waiting for its
-empty weight (for example one a dispatcher registered by hand) records the
-entry into that passage. The same plate on exactly one on-site passage that
-already carries an entry weight records the loaded exit weight and completes
-the status chain (`at_silo -> ... -> completed`). An unknown plate is always a
-new entry, even while blank-number or manual passages are on site: automation
-never stops to ask whether a human mistyped a plate.
+The lane starts unarmed and requires confirmed fresh empty readings. Occupied
+weight must stay stable within tolerance for `stable_weight_seconds` (10 seconds
+by default). A strict scale read then persists the sample before any OCR call.
+A confirmed empty streak releases the physical lane even when the previous
+capture is still recognizing/applying. Completing an older capture never resets
+or replaces the current vehicle's lane state.
 
-Camera-PC answers `no_match` after one 8-second window, but trucks stand on
-the scale for 30-60 seconds. The monitor therefore asks again: each attempt
-re-reads the strict scale (the weight must still match the stored sample
-within tolerance) and sends a new Camera-PC request whose UUID is
-`uuid5(capture UUID, "attempt-N")`, up to
-`VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS` attempts. Configuration
-failures (missing ROI, model, key, camera) skip the retries.
+The first observed empty reading fences further live OCR attempts for that
+capture. Observation outages and process restarts also fence camera results;
+an equal weight on a later truck is not evidence of identity. Cached results
+from before the gap may still apply; later/uncertain results retain the sample
+for operator review. A delayed first dispatch (over five seconds) never asks a
+camera to identify a potentially different vehicle. Existing UUIDs use the
+lookup-only retry endpoint after an uncertain network outcome. Known no-match
+results may request another live attempt only while occupancy continuity and
+the strict weight are still confirmed.
 
-When the plate is still unknown the weighing is applied without a number
-instead of waiting for an operator: with no open passage on site a passage
-with an empty number is created and weighed (the operator fills in the plate
-later from the wagon card, where a **номер не распознан** badge and the photo
-help); with open passages on site the weight is parked as an
-**unassigned weighing** (`/api/grain/unassigned-weighings/`) together with its
-photo, and the Grain page shows a panel where a `grain.weigh` operator binds
-it to a passage (entry or exit), opens a new passage from it, or discards it.
-Either way the lane goes to `awaiting_clear` and re-arms by itself after the
-confirmed clear streak.
+A new front-facing truck opens an entry, including a blank-number entry when
+only the direction was recognized. An exact recognized plate can close its
+open trip when the time, state and loaded weight are valid. Missing direction
+for a new plate, unreadable exits, missing entries and business-state conflicts
+become **unassigned weighings**. One blank trip, one lighter parked weight or
+one similar plate never proves identity. A new front read does not cancel an
+unfinished trip or automatically borrow a parked exit weight.
 
-The card of a passage waiting for its loaded weight also shows **Выезд без
-распознанного номера**. It lists parked weights greater than this passage's
-entry, captured after that entry, with a rear or unknown orientation. The
-operator checks the photo and time, selects a weight, then reviews the trip
-number, loaded weight and net before assigning it through the same endpoint.
-This uses the stored weighing and photo without another scale read or OCR
-request. In the general queue, several compatible trips leave the selection
-empty; weight alone must not suggest the first truck in the list.
+The **Неопознанные взвешивания** panel and the trip card let an operator choose
+a saved weight, review the photo/time/gross/net, and assign it without reading
+the physical scale or OCR again. The **Журнал взвешиваний** is read-only for
+`grain.view`: `/api/grain/automatic-passage-scale/history/` returns the last
+50 automatic attempts and a `before` cursor for older ones. It includes
+processing, assigned/unassigned, and failed attempts, including departure
+before stability or a scale observation outage. An observed candidate weight
+is never presented as a confirmed weighing.
 
-`manual_required` with the **Подтвердить ручную обработку** acknowledgement
-remains only for failures that happened while writing the business result
-(database apply errors). Scale-read failures before a sample was stored and
-recognition failures never latch the lane: `requires_acknowledgement=false`
-on the capture, the lane re-arms after a fresh confirmed clear. `stale`,
-disconnected, malformed, unstable, or `weight_kg=null` responses never count
-as an empty scale. Thus a restart while a truck is parked cannot duplicate it,
-and an unattended error cannot disappear between five-second UI polls.
+Every persisted automatic sample creates a `WeighingPhotoDelivery`. Its worker
+tries one immediate main-stream snapshot through the existing go2rtc connection,
+independently of OCR. This is allowed only within five seconds of the sample
+and while the same occupancy remains confirmed; a response crossing a departure
+or observation gap is discarded. This live snapshot is never retried for an
+old weighing. Without go2rtc, UUID-bound Camera-PC evidence remains available.
 
-Every completed capture (recognized or plate-less) then fetches the evidence
-frame Camera-PC kept for the last attempt
-(`GET /cameras/<cam>/vehicle-recognition/<uuid>/frame`) and stores it on the
-`WeighingRecord` (or the unassigned weighing) under `MEDIA_ROOT/grain/`. The
-wagon detail exposes `entry_photo_url`/`exit_photo_url` as signed links valid
-for one hour (`/api/grain/photos/<kind>/<id>/?token=...`); the media
-directory itself is never served by nginx. A missing photo never changes the
-weighing. The manual weight-first button stores the photo the same way.
+Subsequent attempts fetch only
+`GET /cameras/<cam>/vehicle-recognition/<uuid>/frame`. They retry after
+5/15/60/300 seconds and then every 30 minutes for up to seven days. Photo
+failures cannot undo a weight. Each delivery is leased in the database, can
+survive restart, and re-resolves its target after network I/O so operator
+assignment cannot strand the photo or overwrite a weight. Saved evidence from
+another attempt of the same capture can be reused. Late camera frames after
+an occupancy gap are rejected. The manual weight-first path uses the same
+UUID delivery queue. A Celery beat sweep (`grain.retry_weighing_photos`, every
+30 seconds) provides recovery even when automatic weighing is disabled.
+
+Photo statuses are `pending`, `retrying`, `saved`, `unavailable`. Photos stay
+under private `MEDIA_ROOT/grain/` and use one-hour signed URLs; there is no
+public media directory. Migration 0015 queues recent existing records with
+missing photos and known Camera-PC request IDs. It performs no network I/O.
+Frames already missing from both CRM and Camera-PC cannot be reconstructed.
 
 The CRM polls
 `GET /api/grain/automatic-passage-scale/runtime/` independently from
@@ -388,17 +383,10 @@ it with an exact integer from 2 through 60 via `PATCH` or `PUT`. The Camera Gate
 screen polls this setting and exposes the editor only to a superuser. Changing
 it while a candidate is stabilizing resets that candidate, so the newly chosen
 full interval must pass before OCR.
-Turning the kill switch off stops and terminalizes new work, releases a
-completed/acknowledged lane for manual controls, and still keeps an unacknowledged
-failure visible until the operator confirms it.
-
-Recovery never obtains a later physical sample: an interrupted claim without
-a stored weight becomes terminal, a stored `recognizing` capture calls only
-`vehicle-recognition-retry` with the original UUID/timestamp, and an
-`applying` capture reuses the stored event. The final strict weight must still
-match the observed candidate within tolerance before Camera-PC is contacted.
-If the process dies during the final allowed camera call, its unknown outcome
-gets one lookup-only retry before the attempt is declared exhausted.
+Turning the kill switch off stops new work and parks already-saved pending
+weights for manual review. It does not erase the capture/evidence journal.
+`monitor_passage_scale --once` remains the synchronous diagnostic path; the
+long-running command uses continuous polling and independent workers.
 
 ```dotenv
 VEHICLE_PLATE_AUTO_EXPORT_ENABLED=0
@@ -416,17 +404,10 @@ VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS=60
 configuration compatibility. It no longer controls the occupied trigger; the
 durable UI/API setting `stable_weight_seconds` is authoritative.
 
-The heartbeat maximum age must cover the configured poll interval, preview
-and strict scale timeouts, Camera-PC timeout, and database apply margin;
-startup rejects a shorter self-defeating value. Active passage deletion takes
-the same persistent lane mutex as episode claiming, so an in-flight loaded
-exit cannot race deletion and become a false new entry. A manually created
-passage waiting for its entry weight, and any durable manual weight-first
-capture still in `processing`, reserve the same physical lane; empty polls
-during operator or OCR latency therefore cannot arm a competing automatic
-episode. While a manually owned passage remains `at_silo`, an otherwise
-unknown plate is also never classified as a new automatic entry: it stops at
-`manual_required`, because the stored manual plate may contain a typo.
+The heartbeat contract retains its existing timeout margin. Manual physical
+operations share the lane mutex and cannot race unfinished automatic samples.
+Registering a passage ahead of time does not reserve the scale indefinitely;
+automation can record its entry when its plate is recognized.
 
 The kill switch defaults to `0`. Before enabling it, verify that physically
 empty scales produce fresh stable zero/low readings. The controller currently
@@ -630,36 +611,23 @@ classifier (`models/vehicle-orientation.pt`, `yolo11n-cls`, classes
 `orientation: {label, confidence, raw_label}` with both `recognized` and
 `no_match` answers. `label` is `null` below
 `AI_VEHICLE_ORIENTATION_CONFIDENCE_THRESHOLD` (0.60) or when the model is
-absent, and the CRM then falls back to the older weight/state rules.
+absent. A scale-triggered new plate without a verdict is retained for review;
+an exact existing plate can still use the trip state.
 
 The verdict is stored on `AutomaticPassageCapture.orientation` (+ confidence),
 on every `WeighingRecord.orientation` and on `UnassignedWeighing.orientation`,
 and is the primary entry/exit signal in `apps/grain/services.py`:
 
-- **rear, plate known, no open trip**: the empty entry was missed. The latest
-  parked front-facing (or, without a verdict, lighter) unassigned weighing of
-  the last `VEHICLE_PLATE_AUTO_MISSED_ENTRY_MAX_AGE_HOURS` (24) becomes the
-  entry of a new trip and the current weight closes it. With nothing parked,
-  exactly one blank-number `at_silo` trip (an entry booked without a plate:
-  front verdict, or no verdict on an empty site) that entered within the same
-  24 h window before this event, at least the minimum trip duration ago, and
-  weighs less than this loaded weight is the same truck: it takes the plate read on the way out
-  (`number_source=camera`) and the current weight closes it; named trips do
-  not count as candidates, and two or more blank trips are never guessed
-  between. Only then is the weight stored as an unassigned weighing with
-  `reason=entry_missing` and the plate in `vehicle_number`; the panel prefills
-  that plate for a new trip.
-- **front, plate known, trip still open**: the loaded exit was missed. A parked
-  rear-facing (or heavier) weighing inside that trip closes it; otherwise the
-  stale trip is cancelled with an `exit_note`, and a fresh trip takes this entry.
-- **rear, plate not recognized**: exactly one on-site trip waiting for a
-  heavier loaded weight is closed automatically; several candidates park the
-  weight (`open_passages_exist`), none parks it as `entry_missing`. A rear
-  weight never opens a trip any more, even on an empty site.
-- **front, plate not recognized**: always a new blank-number trip, even while
-  other trips are open.
-- Plates that differ by one dropped series letter (`849AT13` vs `849ATT13`)
-  are the same truck when exactly one on-site trip is compatible.
+- **rear, plate known, no exact open trip**: save an unassigned exit with
+  `reason=entry_missing`, its plate and its evidence.
+- **front, plate known, trip still open**: preserve the old trip and park the
+  new weight with `reason=open_trip_conflict` for review.
+- **rear, plate unreadable**: park the weight even if only one trip is open.
+- **front, plate unreadable**: create a blank-number entry.
+- **direction and plate unknown**: park the weight; an empty site does not
+  establish that it was an entry.
+- Different series letters, including a dropped letter, require operator
+  confirmation. Time and weight only help the operator compare candidates.
 
 Operators repair a trip whose booked "entry" was really the exit from the
 unassigned panel: binding an earlier, lighter (or front-facing) weight to an

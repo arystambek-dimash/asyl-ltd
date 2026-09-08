@@ -188,7 +188,7 @@ def test_automatic_scale_event_is_not_visible_or_manually_claimable(
     assert candidates.status_code == 200
     assert candidates.data == []
     assert passage.status_code == 400
-    assert passage.data["code"] == "vehicle_plate_event_unavailable"
+    assert passage.data["code"] == "passage_capture_in_progress"
     assert not Wagon.objects.exists()
     event.refresh_from_db()
     assert event.processing_status == VehiclePlateEvent.RECEIVED

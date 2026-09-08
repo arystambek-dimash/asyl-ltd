@@ -281,6 +281,11 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
 from celery.schedules import crontab  # noqa: E402 - beat schedule below
 
 CELERY_BEAT_SCHEDULE = {
+    "retry-weighing-photos": {
+        "task": "grain.retry_weighing_photos",
+        "schedule": 30.0,
+        "options": {"queue": "payments", "expires": 25},
+    },
     # The CRM labels the day's scale-camera frames and hands them to Camera-PC
     # before its 02:30 local self-training run of the orientation classifier.
     "export-orientation-samples": {

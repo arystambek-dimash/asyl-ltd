@@ -180,7 +180,11 @@ describe("Grain passage creation", () => {
 
     await user.click(screen.getByRole("tab", { name: "Камера проходной" }));
     expect(screen.getByRole("region", { name: "Камера машин на вывоз" })).toBeInTheDocument();
-    expect(visiblePollingMock).toHaveBeenLastCalledWith(reloadMock, 10_000, false);
+    expect(visiblePollingMock.mock.calls.filter(([, interval]) => interval === 10_000).at(-1)).toEqual([
+      reloadMock,
+      10_000,
+      false,
+    ]);
 
     await user.click(screen.getByRole("tab", { name: "Приход" }));
     expect(screen.getByRole("tab", { name: "Камера проходной" })).toHaveAttribute("aria-selected", "true");
@@ -421,7 +425,11 @@ describe("Grain list filters", () => {
     expect(screen.getByRole("button", { name: "Все дни" })).toBeDisabled();
     await waitFor(() => expect(lastWagonsUrl()).toBe("/grain/wagons/?scope=finished&direction=intake"));
     // Архив не опрашивается: иначе подгруженные «Показать ещё» страницы схлопывались бы.
-    expect(visiblePollingMock).toHaveBeenLastCalledWith(reloadMock, 10_000, false);
+    expect(visiblePollingMock.mock.calls.filter(([, interval]) => interval === 10_000).at(-1)).toEqual([
+      reloadMock,
+      10_000,
+      false,
+    ]);
   });
 
   it("follows the calendar on the finished tab until a different day is picked explicitly", async () => {

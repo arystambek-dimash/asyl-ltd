@@ -14,14 +14,18 @@ from rest_framework.exceptions import NotFound
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 
-from .models import UnassignedWeighing, WeighingRecord
+from .models import UnassignedWeighing, WeighingRecord, WeighingPhotoDelivery
 
 SIGNING_SALT = "grain.weighing.photo"
 # Long enough for an open wagon card; short enough that a leaked link expires.
 PHOTO_LINK_MAX_AGE_SECONDS = 60 * 60
 KIND_WEIGHING = "weighing"
 KIND_UNASSIGNED = "unassigned"
-_MODELS = {KIND_WEIGHING: WeighingRecord, KIND_UNASSIGNED: UnassignedWeighing}
+_MODELS = {
+    KIND_WEIGHING: WeighingRecord,
+    KIND_UNASSIGNED: UnassignedWeighing,
+    "evidence": WeighingPhotoDelivery,
+}
 
 
 def photo_token(kind: str, pk: int) -> str:

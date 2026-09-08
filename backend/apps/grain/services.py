@@ -1361,14 +1361,21 @@ def _assert_automatic_passage_lane_allows_manual_operation(
     if state is None:
         return
     blocked = (
-        capture is not None
-        and capture.status == AutomaticPassageCapture.PROCESSING
-    ) or state.phase in {
-        PassageScaleAutomationState.STABILIZING,
-        PassageScaleAutomationState.PROCESSING,
-    } or (
-        state.phase == PassageScaleAutomationState.AWAITING_CLEAR
-        and (capture is None or capture.status != AutomaticPassageCapture.FAILED)
+        AutomaticPassageCapture.objects.filter(
+            status=AutomaticPassageCapture.PROCESSING
+        ).exists()
+        or (
+            capture is not None and capture.status == AutomaticPassageCapture.PROCESSING
+        )
+        or state.phase
+        in {
+            PassageScaleAutomationState.STABILIZING,
+            PassageScaleAutomationState.PROCESSING,
+        }
+        or (
+            state.phase == PassageScaleAutomationState.AWAITING_CLEAR
+            and (capture is None or capture.status != AutomaticPassageCapture.FAILED)
+        )
     )
     if blocked:
         raise _error(
@@ -1729,62 +1736,20 @@ def _finish_auto_event(
     )
 
 
-def _plate_parts(number: str) -> tuple[str, str, str] | None:
-    match = re.fullmatch(r"([0-9]{3})([A-Z]{2,3})([0-9]{2})", number or "")
-    return None if match is None else match.groups()
-
-
-def _plates_compatible(short: str, long: str) -> bool:
-    """``849AT13`` and ``849ATT13`` are one truck: OCR dropped a series letter."""
-
-    a, b = _plate_parts(short), _plate_parts(long)
-    if a is None or b is None or a[0] != b[0] or a[2] != b[2]:
-        return False
-    short_letters, long_letters = a[1], b[1]
-    if len(long_letters) != len(short_letters) + 1:
-        return False
-    return any(
-        long_letters[:index] + long_letters[index + 1 :] == short_letters
-        for index in range(len(long_letters))
-    )
-
-
-def _locked_similar_passage(number: str) -> Wagon | None:
-    """The single on-site passage whose plate differs by one dropped letter."""
-
-    parts = _plate_parts(number)
-    if parts is None:
-        return None
-    candidates = [
-        wagon
-        for wagon in Wagon.objects.select_for_update(of=("self",))
-        .filter(
-            direction=Wagon.PASSAGE,
-            status__in=st.ON_SITE_STATUSES,
-            number__startswith=parts[0],
-            number__endswith=parts[2],
-        )
-        .exclude(number=number)
-        .order_by("id")
-        if _plates_compatible(number, wagon.number)
-        or _plates_compatible(wagon.number, number)
-    ]
-    return candidates[0] if len(candidates) == 1 else None
-
-
 def _locked_auto_intent(
     event: VehiclePlateEvent,
     *,
     orientation: str = "",
+    require_orientation: bool = False,
 ) -> tuple[str | None, Wagon | None, str]:
     """Decide entry or exit for a recognized plate without an operator.
 
     The camera's front/rear verdict is the primary signal: a truck facing the
     scale camera is driving in, a truck showing its tail is driving out. The
-    passage state then says which trip that concerns. Without a verdict the
-    state alone decides: an unknown plate is a new entry, a plate with one
-    on-site passage is an entry while that passage waits for its empty weight
-    and an exit once it carries one. Automation never stops for a human.
+    passage state then says which exact plate that concerns. The scale-first
+    path requires a verdict for a new entry; an exact existing plate can use
+    the trip state. The legacy event-first webhook retains its entry fallback.
+    Conflicts are returned to the coordinator for operator review.
     """
     passages = list(
         Wagon.objects.select_for_update(of=("self",))
@@ -1795,10 +1760,6 @@ def _locked_auto_intent(
         )
         .order_by("id")[:2]
     )
-    if not passages:
-        similar = _locked_similar_passage(event.vehicle_number)
-        if similar is not None:
-            passages = [similar]
     if not passages:
         cooldown = timedelta(
             seconds=settings.VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS
@@ -1820,11 +1781,19 @@ def _locked_auto_intent(
         if orientation == VEHICLE_ORIENTATION_REAR:
             # Leaving loaded without an open trip: the entry was missed.
             return AUTO_ACTION_EXIT, None, ""
+        if require_orientation and not orientation:
+            return None, None, "orientation_unknown"
         return AUTO_ACTION_ENTRY, None, ""
     if len(passages) != 1:
         return None, None, "ambiguous_active_passage"
 
     wagon = passages[0]
+    if (
+        wagon.entry_weight_kg is not None
+        and wagon.arrived_at
+        and event.detected_at < wagon.arrived_at
+    ):
+        return None, wagon, "passage_time_conflict"
     if wagon.status == st.ARRIVED and wagon.entry_weight_kg is None:
         # A dispatcher pre-registered this plate; the truck now stands on the
         # scale for its empty weight.
@@ -1838,9 +1807,7 @@ def _locked_auto_intent(
     if not valid_state:
         return None, wagon, "passage_state_mismatch"
     if orientation == VEHICLE_ORIENTATION_FRONT:
-        # Facing the camera again while the trip is open: the exit was
-        # missed. The caller closes this trip and starts a new one.
-        return AUTO_ACTION_ENTRY, wagon, ""
+        return None, wagon, "open_trip_conflict"
     minimum_exit_at = wagon.arrived_at + timedelta(
         seconds=settings.VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS
     )
@@ -1849,163 +1816,8 @@ def _locked_auto_intent(
     return AUTO_ACTION_EXIT, wagon, ""
 
 
-def _resolve_unassigned_automatically(
-    item: UnassignedWeighing,
-    wagon: Wagon,
-    action: str,
-    kind: str,
-    user,
-) -> None:
-    _move_unassigned_photo(item, wagon, kind)
-    item.status = UnassignedWeighing.ASSIGNED
-    item.wagon = wagon
-    item.action = action
-    item.resolved_by = user
-    item.resolved_at = timezone.now()
-    item.save(update_fields=["status", "wagon", "action", "resolved_by", "resolved_at"])
-    _log(
-        wagon,
-        "unassigned_weighing",
-        f"Вывоз {wagon.number or f'#{wagon.pk}'}: неопознанное взвешивание "
-        f"{item.weight_kg} кг привязано автоматически "
-        f"({'заезд' if action == AUTO_ACTION_ENTRY else 'выезд'})",
-        user,
-        unassigned_id=item.pk,
-        action=action,
-        weight_kg=item.weight_kg,
-        auto=True,
-    )
-
-
-def _locked_open_unassigned():
-    return UnassignedWeighing.objects.select_for_update().filter(
-        status=UnassignedWeighing.OPEN
-    )
-
-
-def _single_parked(parked, *, preferred_orientation: str):
-    """The one parked weight that fits, or ``None`` when pairing would be a guess.
-
-    Two plausible frames mean two trucks: an operator must choose, so the
-    automation parks the weight instead of attaching it to the wrong trip.
-    """
-
-    candidates = list(parked.exclude(orientation=_other_orientation(preferred_orientation)))
-    if len(candidates) == 1:
-        return candidates[0]
-    verdicts = [item for item in candidates if item.orientation == preferred_orientation]
-    return verdicts[0] if len(verdicts) == 1 else None
-
-
-def _other_orientation(orientation: str) -> str:
-    return (
-        VEHICLE_ORIENTATION_REAR
-        if orientation == VEHICLE_ORIENTATION_FRONT
-        else VEHICLE_ORIENTATION_FRONT
-    )
-
-
-def _locked_missed_entry_candidate(*, before, lighter_than: int):
-    """The single parked empty (front-facing) weight that precedes ``before``."""
-
-    oldest = before - timedelta(
-        hours=settings.VEHICLE_PLATE_AUTO_MISSED_ENTRY_MAX_AGE_HOURS
-    )
-    parked = _locked_open_unassigned().filter(
-        stable_weight_at__gte=oldest,
-        stable_weight_at__lt=before,
-        weight_kg__lt=lighter_than,
-    )
-    return _single_parked(parked, preferred_orientation=VEHICLE_ORIENTATION_FRONT)
-
-
-def _locked_missed_exit_candidate(*, after, before, heavier_than: int):
-    """The single parked loaded (rear-facing) weight inside the open trip."""
-
-    parked = _locked_open_unassigned().filter(
-        stable_weight_at__gt=after,
-        stable_weight_at__lt=before,
-        weight_kg__gt=heavier_than,
-    )
-    return _single_parked(parked, preferred_orientation=VEHICLE_ORIENTATION_REAR)
-
-
 def _passage_entry_at(wagon: Wagon):
     return wagon.silo_arrived_at or wagon.arrived_at
-
-
-def _locked_single_blank_trip_awaiting_exit(*, before, lighter_than: int):
-    """The one plate-less trip whose empty entry precedes ``before``.
-
-    A truck weighed on the way in with an unreadable plate opens a blank
-    trip, so when it leaves with its rear plate read there is no trip under
-    that plate. One blank trip lighter than the loaded weight is that entry;
-    several mean several trucks and an operator must choose. The same age
-    window as for parked entries keeps a forgotten blank trip from an earlier
-    day from being closed by today's exit, and the minimum trip duration keeps
-    a trip opened seconds ago from being closed by an unrelated rear read.
-    """
-
-    oldest = before - timedelta(
-        hours=settings.VEHICLE_PLATE_AUTO_MISSED_ENTRY_MAX_AGE_HOURS
-    )
-    latest = before - timedelta(
-        seconds=settings.VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS
-    )
-    blank_trips = (
-        Wagon.objects.select_for_update(of=("self",))
-        .filter(
-            direction=Wagon.PASSAGE,
-            status=st.AT_SILO,
-            number="",
-            gross_weight_kg__isnull=False,
-            tare_weight_kg__isnull=True,
-            gross_weight_kg__lt=lighter_than,
-        )
-        .order_by("id")
-    )
-    candidates = [
-        wagon
-        for wagon in blank_trips
-        if (entry_at := _passage_entry_at(wagon)) is not None
-        and oldest <= entry_at <= latest
-    ]
-    return candidates[0] if len(candidates) == 1 else None
-
-
-def _close_passage_after_missed_exit(
-    stale: Wagon,
-    event: VehiclePlateEvent,
-    user,
-) -> None:
-    entry_at = _passage_entry_at(stale)
-    item = _locked_missed_exit_candidate(
-        after=entry_at,
-        before=event.detected_at,
-        heavier_than=stale.gross_weight_kg or 0,
-    )
-    if item is not None:
-        record_passage_exit_weight(
-            stale,
-            item.weight_kg,
-            user,
-            occurred_at=item.stable_weight_at,
-            **_unassigned_scale_kwargs(item),
-        )
-        _resolve_unassigned_automatically(item, stale, AUTO_ACTION_EXIT, "tare", user)
-        return
-    stale.exit_note = "Выезд не взвешен: машина снова заехала, рейс закрыт автоматически"
-    stale.exited_at = event.detected_at
-    stale.save(update_fields=["exit_note", "exited_at"])
-    _set_status(
-        stale,
-        st.CANCELLED,
-        user,
-        f"Проход {stale.number}: гружёный выезд не был взвешен, машина снова "
-        "на въезде — рейс отменён автоматически",
-        auto=True,
-        vehicle_plate_event_id=str(event.event_id),
-    )
 
 
 def _passage_for_exit_without_entry(
@@ -2015,93 +1827,20 @@ def _passage_for_exit_without_entry(
     user,
     kwargs: dict,
 ) -> tuple[Wagon | None, UnassignedWeighing | None]:
-    item = _locked_missed_entry_candidate(
-        before=event.detected_at, lighter_than=weight_kg
+    # Weight, timing and a single blank trip do not establish identity.
+    parked = UnassignedWeighing.objects.create(
+        weight_kg=weight_kg,
+        stable_weight_at=event.detected_at,
+        scale_number=scale.TRUCK_SCALE_KEY,
+        scale_age_seconds=reading.age_seconds,
+        scale_updated_at=reading.updated_at or "",
+        camera=event.camera,
+        photo_request_id=kwargs.get("photo_request_id"),
+        vehicle_number=event.vehicle_number,
+        orientation=VEHICLE_ORIENTATION_REAR,
+        reason="entry_missing",
     )
-    if item is None:
-        # The entry may have been booked without a plate: a single blank trip
-        # lighter than this weight is that truck, so the plate read on the way
-        # out names it and the caller closes it with this weight.
-        wagon = _locked_single_blank_trip_awaiting_exit(
-            before=event.detected_at, lighter_than=weight_kg
-        )
-        if wagon is not None:
-            wagon.number = event.vehicle_number
-            wagon.number_source = "camera"
-            wagon.number_camera_source = event.camera
-            wagon.save(
-                update_fields=["number", "number_source", "number_camera_source"]
-            )
-            _log(
-                wagon,
-                "passage",
-                f"Вывоз {wagon.number}: номер прочитан на выезде, единственный "
-                "безымянный рейс закрыт автоматически",
-                user,
-                camera_source=event.camera,
-                auto=True,
-                vehicle_plate_event_id=str(event.event_id),
-            )
-            return wagon, None
-        parked = UnassignedWeighing.objects.create(
-            weight_kg=weight_kg,
-            stable_weight_at=event.detected_at,
-            scale_number=scale.TRUCK_SCALE_KEY,
-            scale_age_seconds=reading.age_seconds,
-            scale_updated_at=reading.updated_at or "",
-            camera=event.camera,
-            photo_request_id=kwargs.get("photo_request_id"),
-            vehicle_number=event.vehicle_number,
-            orientation=VEHICLE_ORIENTATION_REAR,
-            reason="entry_missing",
-        )
-        log_event(
-            "grain_unassigned_weighing",
-            f"Выезд {event.vehicle_number} {weight_kg} кг без заезда: рейс не "
-            "найден, вес и фото сохранены для оператора",
-            user=user,
-            payload={
-                "unassigned_id": parked.pk,
-                "weight_kg": weight_kg,
-                "vehicle_number": event.vehicle_number,
-                "camera_source": event.camera,
-                "auto": True,
-            },
-        )
-        return None, parked
-    wagon = Wagon.objects.create(
-        supply=None,
-        number=event.vehicle_number,
-        direction=Wagon.PASSAGE,
-        workflow="simple",
-        cargo_name=settings.VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME,
-        status=st.ARRIVED,
-        arrived_at=item.stable_weight_at,
-        arrived_by=user,
-        number_source="camera",
-        number_camera_source=event.camera,
-        note="Автоматически оформлено по весам: заезд восстановлен из неопознанного взвешивания",
-    )
-    _log(
-        wagon,
-        "passage",
-        f"Вывоз {wagon.number}: заезд восстановлен из неопознанного "
-        f"взвешивания {item.weight_kg} кг, машина уже выезжает",
-        user,
-        cargo_name=wagon.cargo_name,
-        camera_source=event.camera,
-        unassigned_id=item.pk,
-        auto=True,
-    )
-    record_passage_entry_weight(
-        wagon,
-        item.weight_kg,
-        user,
-        occurred_at=item.stable_weight_at,
-        **_unassigned_scale_kwargs(item),
-    )
-    _resolve_unassigned_automatically(item, wagon, AUTO_ACTION_ENTRY, "gross", user)
-    return wagon, None
+    return None, parked
 
 
 def _is_missed_entry_for(item: UnassignedWeighing, wagon: Wagon) -> bool:
@@ -2294,7 +2033,9 @@ def _begin_vehicle_plate_automation(
         )
         return _terminal_automation_result(event, already_processed=False)
 
-    action, _wagon, error = _locked_auto_intent(event, orientation=orientation)
+    action, _wagon, error = _locked_auto_intent(
+        event, orientation=orientation, require_orientation=durable_scale_sample
+    )
     if error:
         event.processing_attempts += 1
         _finish_auto_event(
@@ -2391,6 +2132,7 @@ def _apply_vehicle_plate_automation(
     photo_request_id=None,
     photo_camera: str = "",
     orientation: str = "",
+    require_orientation: bool = False,
 ) -> VehiclePlateAutomationResult:
     scale.configure_authoritative_db_timeouts()
     hint = VehiclePlateEvent.objects.get(pk=claim.event_id)
@@ -2412,7 +2154,9 @@ def _apply_vehicle_plate_automation(
             error="automation_state_changed",
         )
 
-    action, wagon, intent_error = _locked_auto_intent(event, orientation=orientation)
+    action, wagon, intent_error = _locked_auto_intent(
+        event, orientation=orientation, require_orientation=require_orientation
+    )
     if intent_error or action != claim.action:
         _finish_auto_event(
             event,
@@ -2429,13 +2173,6 @@ def _apply_vehicle_plate_automation(
         "orientation": orientation,
     }
     if action == AUTO_ACTION_ENTRY:
-        if wagon is not None and wagon.status == st.AT_SILO:
-            # The truck faces the camera again while its previous trip is
-            # still open: the loaded exit was never weighed. Close that trip
-            # from a parked loaded weight when there is one, otherwise cancel
-            # it, and open a fresh trip for this entry.
-            _close_passage_after_missed_exit(wagon, event, user)
-            wagon = None
         if wagon is None:
             try:
                 with transaction.atomic():
@@ -2510,8 +2247,8 @@ def _apply_vehicle_plate_automation(
         if wagon is None:
             # A loaded truck shows its tail but has no open trip under its
             # plate: the empty entry was missed or booked without a number.
-            # Rebuild the trip from a parked empty weight, name the single
-            # blank trip, or park this weight with the plate for the operator.
+            # Preserve this weight for the operator; timing and other blank
+            # entries cannot establish which truck it belongs to.
             wagon, parked = _passage_for_exit_without_entry(
                 event, reading, weight_kg, user, kwargs
             )
@@ -2663,6 +2400,7 @@ def apply_automatic_passage_scale_sample(
         photo_request_id=photo_request_id,
         photo_camera=photo_camera,
         orientation=orientation,
+        require_orientation=True,
     )
 
 
@@ -2677,17 +2415,9 @@ def apply_unidentified_passage_scale_sample(
     user=None,
     orientation: str = "",
 ) -> VehiclePlateAutomationResult:
-    """Apply a durable scale sample whose plate could not be recognized.
+    """Save a known front entry without a plate; park all uncertain pairings.
 
-    A truck facing the camera is a new entry even while other passages are
-    open, so a passage without a number is created and weighed; the plate is
-    filled in later by the operator or by the rear read on the way out (see
-    ``_passage_for_exit_without_entry``). A truck showing its tail is
-    somebody's exit:
-    with exactly one passage waiting for a heavier loaded weight it closes
-    that passage, otherwise the weight is parked as an unassigned weighing
-    with its photo. Without a camera verdict only an empty site makes the
-    weight an entry. Either way the lane is released.
+    Neither a single open trip nor a weight threshold identifies a truck.
     """
 
     weight_kg = _whole_scale_weight_kg(reading)
@@ -2703,9 +2433,7 @@ def apply_unidentified_passage_scale_sample(
         .order_by("id")
     )
     open_passage_ids = [wagon.pk for wagon in open_passages]
-    if orientation == VEHICLE_ORIENTATION_FRONT or (
-        not open_passages and orientation != VEHICLE_ORIENTATION_REAR
-    ):
+    if orientation == VEHICLE_ORIENTATION_FRONT:
         wagon = Wagon.objects.create(
             supply=None,
             number="",
@@ -2744,44 +2472,9 @@ def apply_unidentified_passage_scale_sample(
             weight_kg=weight_kg,
         )
 
-    reason = "open_passages_exist"
-    if orientation == VEHICLE_ORIENTATION_REAR:
-        awaiting_exit = [
-            wagon
-            for wagon in open_passages
-            if wagon.status == st.AT_SILO
-            and wagon.gross_weight_kg is not None
-            and wagon.tare_weight_kg is None
-            and wagon.gross_weight_kg < weight_kg
-        ]
-        if len(awaiting_exit) == 1:
-            wagon = awaiting_exit[0]
-            _log(
-                wagon,
-                "passage",
-                f"Вывоз {wagon.number or f'#{wagon.pk}'}: автоматический выезд — "
-                "номер не распознан, но это единственная машина, ждущая вес гружёной",
-                user,
-                camera_source=camera,
-                auto=True,
-                plate_unresolved=True,
-                orientation=orientation,
-            )
-            record_passage_exit_weight(
-                wagon,
-                weight_kg,
-                user,
-                occurred_at=stable_weight_at,
-                **kwargs,
-            )
-            return VehiclePlateAutomationResult(
-                status="processed",
-                action=AUTO_ACTION_EXIT,
-                wagon_id=wagon.pk,
-                weight_kg=weight_kg,
-            )
-        if not awaiting_exit:
-            reason = "entry_missing"
+    reason = "plate_unreadable" if orientation else "orientation_unknown"
+    if orientation == VEHICLE_ORIENTATION_REAR and not open_passages:
+        reason = "entry_missing"
 
     item = UnassignedWeighing.objects.create(
         capture=capture,

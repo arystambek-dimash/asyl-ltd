@@ -953,6 +953,7 @@ export interface TruckScalePreview {
 }
 
 export interface GrainWeighing {
+  photo_status?: "pending" | "retrying" | "saved" | "unavailable";
   id: number;
   kind: "gross" | "tare";
   weight_kg: number;
@@ -973,6 +974,7 @@ export type VehicleOrientation = "" | "front" | "rear";
 
 /** Вес с автовесов без распознанного номера, который ждёт привязки к рейсу. */
 export interface GrainUnassignedWeighing {
+  photo_status?: "pending" | "retrying" | "saved" | "unavailable";
   id: number;
   weight_kg: number;
   stable_weight_at: string;

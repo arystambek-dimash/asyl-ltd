@@ -102,32 +102,13 @@ def _parked(weight, *, ago, orientation="", with_photo=True):
 # ── Recognized plate + camera verdict ────────────────────────────────────────
 
 
-def test_rear_without_open_trip_rebuilds_the_trip_from_the_parked_empty_weight():
-    parked = _parked(3880, ago=timedelta(hours=1), orientation="front")
-
+def test_rear_does_not_guess_from_one_parked_empty_weight():
+    entry = _parked(3880, ago=timedelta(hours=1), orientation="front")
     result = _apply(_event(), "8760", orientation="rear")
-
-    wagon = Wagon.objects.get(pk=result.wagon_id)
-    parked.refresh_from_db()
-    assert result.action == "exit"
-    assert wagon.number == "854ANB13"
-    assert wagon.status == st.COMPLETED
-    assert (wagon.entry_weight_kg, wagon.exit_weight_kg, wagon.net_weight_kg) == (
-        3880,
-        8760,
-        4880,
-    )
-    assert wagon.arrived_at == parked.stable_weight_at
-    assert parked.status == UnassignedWeighing.ASSIGNED
-    assert parked.action == "entry"
-    assert parked.wagon_id == wagon.pk
-    entry, exit_record = (
-        wagon.weighings.get(kind="gross"),
-        wagon.weighings.get(kind="tare"),
-    )
-    assert entry.photo.name == parked.photo.name
-    assert entry.orientation == "front"
-    assert exit_record.orientation == "rear"
+    entry.refresh_from_db()
+    assert result.action == "unassigned"
+    assert entry.status == UnassignedWeighing.OPEN
+    assert not Wagon.objects.exists()
 
 
 def test_rear_without_open_trip_or_parked_entry_is_parked_with_the_plate():
@@ -150,27 +131,14 @@ def test_rear_without_open_trip_or_parked_entry_is_parked_with_the_plate():
     assert not Wagon.objects.exists()
 
 
-def test_rear_with_plate_names_and_closes_the_only_blank_trip():
-    blank = _open_trip("", entry=3960)  # front entry whose plate was not read
-    event = _event("233LUB13")
-
-    result = _apply(event, "9200", orientation="rear")
-
+def test_rear_does_not_name_the_only_blank_trip():
+    blank = _open_trip("", entry=3960)
+    result = _apply(_event("233LUB13"), "9200", orientation="rear")
     blank.refresh_from_db()
-    assert (result.action, result.wagon_id) == ("exit", blank.pk)
-    assert blank.number == "233LUB13"
-    assert (blank.number_source, blank.number_camera_source) == ("camera", "cam1")
-    assert blank.exit_vehicle_plate_event_id == event.pk
-    assert blank.status == st.COMPLETED
-    assert (blank.entry_weight_kg, blank.exit_weight_kg, blank.net_weight_kg) == (
-        3960,
-        9200,
-        5240,
-    )
-    assert Wagon.objects.count() == 1
-    assert not UnassignedWeighing.objects.exists()
-    exit_record = blank.weighings.get(kind="tare")
-    assert (exit_record.weight_kg, exit_record.orientation) == (9200, "rear")
+    assert result.action == "unassigned"
+    assert blank.number == ""
+    assert blank.exit_weight_kg is None
+    assert blank.status == st.AT_SILO
 
 
 def test_rear_with_plate_ignores_a_blank_trip_opened_seconds_ago():
@@ -218,80 +186,54 @@ def test_rear_with_plate_ignores_a_blank_trip_older_than_the_entry_window():
     assert (stale.number, stale.status, stale.exit_weight_kg) == ("", st.AT_SILO, None)
 
 
-def test_rear_with_plate_pairs_the_blank_trip_while_a_named_trip_stays_open():
-    named = _open_trip("465BDS13", entry=3760)
+def test_rear_preserves_both_blank_and_named_trips():
     blank = _open_trip("", entry=3960)
-
+    named = _open_trip("465BDS13", entry=3800)
     result = _apply(_event("233LUB13"), "9200", orientation="rear")
-
-    named.refresh_from_db()
-    blank.refresh_from_db()
-    assert (result.action, result.wagon_id) == ("exit", blank.pk)
-    assert (blank.number, blank.status) == ("233LUB13", st.COMPLETED)
-    assert (named.number, named.status, named.exit_weight_kg) == (
-        "465BDS13",
-        st.AT_SILO,
-        None,
-    )
+    assert result.action == "unassigned"
+    for wagon in (blank, named):
+        wagon.refresh_from_db()
+        assert wagon.status == st.AT_SILO
+        assert wagon.exit_weight_kg is None
 
 
-def test_front_with_open_trip_closes_it_from_the_parked_loaded_weight():
+def test_front_does_not_close_trip_from_a_parked_weight():
     stale = _open_trip(entry=3880, entered_ago=timedelta(hours=3))
     parked = _parked(8700, ago=timedelta(hours=1), orientation="rear")
-
     result = _apply(_event(), "3900", orientation="front")
-
     stale.refresh_from_db()
     parked.refresh_from_db()
-    fresh = Wagon.objects.get(pk=result.wagon_id)
-    assert result.action == "entry"
-    assert fresh.pk != stale.pk
-    assert (fresh.status, fresh.entry_weight_kg) == (st.AT_SILO, 3900)
-    assert stale.status == st.COMPLETED
-    assert (stale.exit_weight_kg, stale.net_weight_kg) == (8700, 4820)
-    assert parked.status == UnassignedWeighing.ASSIGNED
-    assert parked.action == "exit"
-    assert parked.wagon_id == stale.pk
+    assert result.error == "open_trip_conflict"
+    assert stale.status == st.AT_SILO
+    assert stale.exit_weight_kg is None
+    assert parked.status == UnassignedWeighing.OPEN
 
 
-def test_front_with_open_trip_and_nothing_parked_cancels_the_stale_trip():
+def test_front_preserves_open_trip_for_review():
     stale = _open_trip(entry=3880)
-    event = _event()
-
-    result = _apply(event, "3900", orientation="front")
-
+    result = _apply(_event(), "3900", orientation="front")
     stale.refresh_from_db()
-    fresh = Wagon.objects.get(pk=result.wagon_id)
-    assert result.action == "entry"
-    assert fresh.pk != stale.pk
-    assert fresh.status == st.AT_SILO
-    assert stale.status == st.CANCELLED
-    assert stale.exited_at == event.detected_at
-    assert "не взвешен" in stale.exit_note
+    assert result.error == "open_trip_conflict"
+    assert stale.status == st.AT_SILO
+    assert stale.exit_weight_kg is None
+    assert Wagon.objects.count() == 1
 
 
-def test_plate_missing_one_series_letter_matches_the_open_trip():
+def test_missing_series_letter_requires_confirmation():
     trip = _open_trip("849ATT13", entry=4160)
-
     result = _apply(_event("849AT13"), "9120", orientation="rear")
-
     trip.refresh_from_db()
-    assert result.action == "exit"
-    assert result.wagon_id == trip.pk
-    assert trip.status == st.COMPLETED
-    assert trip.number == "849ATT13"
-    assert trip.exit_weight_kg == 9120
+    assert result.action == "unassigned"
+    assert trip.status == st.AT_SILO
+    assert trip.exit_weight_kg is None
 
 
 def test_plate_similarity_never_guesses_between_two_candidates():
     _open_trip("849ATT13", entry=4160)
     _open_trip("849ATB13", entry=4200)
-
     result = _apply(_event("849AT13"), "9120", orientation="")
-
-    # Two compatible trips: fall back to the old rule (unknown plate = entry).
-    assert result.action == "entry"
-    assert Wagon.objects.filter(number="849AT13").exists()
+    assert result.error == "orientation_unknown"
+    assert not Wagon.objects.filter(number="849AT13").exists()
 
 
 def test_without_camera_verdict_the_passage_state_still_decides():
@@ -329,17 +271,13 @@ def test_front_without_plate_is_a_new_entry_even_with_open_passages():
     assert wagon.weighings.get().orientation == "front"
 
 
-def test_rear_without_plate_closes_the_only_trip_waiting_for_a_loaded_weight():
-    waiting = _open_trip("465BDS13", entry=3760)
-    _open_trip("506WKZ13", entry=9000)  # heavier than this weight: not a candidate
-
+def test_rear_without_plate_never_closes_trip_by_weight():
+    waiting = _open_trip(entry=3900)
     result = _unidentified("8900", orientation="rear")
-
     waiting.refresh_from_db()
-    assert (result.action, result.wagon_id) == ("exit", waiting.pk)
-    assert waiting.status == st.COMPLETED
-    assert waiting.exit_weight_kg == 8900
-    assert not UnassignedWeighing.objects.exists()
+    assert result.action == "unassigned"
+    assert waiting.status == st.AT_SILO
+    assert waiting.exit_weight_kg is None
 
 
 def test_rear_without_plate_and_two_candidates_is_parked_for_the_operator():
@@ -350,7 +288,7 @@ def test_rear_without_plate_and_two_candidates_is_parked_for_the_operator():
 
     parked = UnassignedWeighing.objects.get(pk=result.unassigned_id)
     assert result.action == "unassigned"
-    assert (parked.reason, parked.orientation) == ("open_passages_exist", "rear")
+    assert (parked.reason, parked.orientation) == ("plate_unreadable", "rear")
 
 
 def test_rear_without_plate_and_no_candidate_is_parked_as_missing_entry():
@@ -359,7 +297,7 @@ def test_rear_without_plate_and_no_candidate_is_parked_as_missing_entry():
     result = _unidentified("8900", orientation="rear")
 
     parked = UnassignedWeighing.objects.get(pk=result.unassigned_id)
-    assert (parked.reason, parked.orientation) == ("entry_missing", "rear")
+    assert (parked.reason, parked.orientation) == ("plate_unreadable", "rear")
     assert Wagon.objects.count() == 1
 
 
@@ -370,9 +308,11 @@ def test_rear_without_plate_on_an_empty_site_never_creates_a_bogus_entry():
     assert not Wagon.objects.exists()
 
 
-def test_no_verdict_keeps_the_old_rule_for_unrecognized_plates():
-    assert _unidentified("3900", orientation="").action == "entry"
-    assert _unidentified("8900", orientation="").action == "unassigned"
+def test_no_verdict_never_guesses_entry_from_an_empty_site():
+    result = _unidentified("8900", orientation="")
+    assert result.action == "unassigned"
+    assert UnassignedWeighing.objects.get().reason == "orientation_unknown"
+    assert not Wagon.objects.exists()
 
 
 # ── Operator repair: the booked entry was really the exit ────────────────────
@@ -535,25 +475,21 @@ def test_two_plausible_parked_entries_are_never_paired_by_guess():
     assert not Wagon.objects.exists()
 
 
-def test_one_confident_front_among_unknown_parked_weights_is_still_paired():
-    _parked(3900, ago=timedelta(hours=2), orientation="")
-    front = _parked(3880, ago=timedelta(hours=1), orientation="front")
-
+def test_one_front_photo_does_not_identify_a_leaving_truck():
+    _parked(3900, ago=timedelta(hours=1), orientation="front")
+    _parked(4000, ago=timedelta(hours=1), orientation="")
     result = _apply(_event(), "8760", orientation="rear")
+    assert result.action == "unassigned"
+    assert UnassignedWeighing.objects.filter(status="open").count() == 3
+    assert not Wagon.objects.exists()
 
-    front.refresh_from_db()
-    assert result.action == "exit"
-    assert front.status == UnassignedWeighing.ASSIGNED
 
-
-def test_two_parked_loaded_weights_cancel_the_stale_trip_instead_of_guessing():
+def test_two_parked_weights_do_not_cancel_open_trip():
     stale = _open_trip(entry=3880, entered_ago=timedelta(hours=3))
-    _parked(8700, ago=timedelta(hours=2), orientation="rear")
-    _parked(10160, ago=timedelta(hours=1), orientation="rear")
-
+    _parked(8700, ago=timedelta(hours=1), orientation="rear")
+    _parked(8800, ago=timedelta(minutes=30), orientation="rear")
     result = _apply(_event(), "3900", orientation="front")
-
     stale.refresh_from_db()
-    assert result.action == "entry"
-    assert stale.status == st.CANCELLED
-    assert UnassignedWeighing.objects.filter(status=UnassignedWeighing.OPEN).count() == 2
+    assert result.error == "open_trip_conflict"
+    assert stale.status == st.AT_SILO
+    assert stale.exit_weight_kg is None

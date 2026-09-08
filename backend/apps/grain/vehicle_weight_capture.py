@@ -20,7 +20,7 @@ from apps.cameras import ai as camera_ai
 
 from . import scale
 from .models import PassageWeightCapture, Wagon
-from .weighing_photos import attach_photo
+from .weighing_photos import attach_photo, queue_photo
 
 KZ_VEHICLE_PLATE_RE = re.compile(r"^(?:[0-9]{3}[A-Z]{2,3}[0-9]{2}|[A-Z][0-9]{3}[A-Z]{3})$")
 
@@ -435,6 +435,7 @@ def _persist_scale_reading(
     _grain_services()._ensure_scale_action_ready(wagon, capture.action)
     weight_kg = _grain_services()._whole_scale_weight_kg(reading)
     capture.weight_kg = weight_kg
+    queue_photo(capture.camera, capture.idempotency_key)
     capture.scale_number = scale.TRUCK_SCALE_KEY
     capture.scale_age_seconds = reading.age_seconds
     capture.scale_updated_at = reading.updated_at or ""

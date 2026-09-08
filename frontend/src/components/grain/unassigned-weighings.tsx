@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { photoStatusLabel, weighingReasonLabel } from "@/lib/weighing-evidence";
 import { Camera, Check, ChevronDown, LoaderCircle, PackagePlus, Scale, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -162,7 +163,10 @@ function UnassignedRow({
           </a>
         ) : (
           <div className="flex h-14 w-24 shrink-0 items-center justify-center rounded-md border border-dashed text-[var(--muted-foreground)]">
-            <Camera className="size-4" />
+            <span className="px-1 text-center text-[10px]">
+              <Camera className="mx-auto size-4" />
+              {photoStatusLabel(item.photo_status)}
+            </span>
           </div>
         )}
         <div className="min-w-0 flex-1">
@@ -177,8 +181,8 @@ function UnassignedRow({
           <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">
             {exitWagon
               ? `Сверьте фото с машиной ${exitWagon.number || `#${exitWagon.id}`}`
-              : item.reason === "entry_missing"
-                ? "выезд без заезда: рейс с этим номером не найден"
+              : item.reason && item.reason !== "open_passages_exist"
+                ? weighingReasonLabel(item.reason)
                 : loaded
                   ? suggestedExit
                     ? `похоже на выезд ${suggestedExit.number || `#${suggestedExit.id}`}`

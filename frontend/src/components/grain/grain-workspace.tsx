@@ -3,6 +3,7 @@
 import { GrainToolbar } from "@/components/grain/grain-toolbar";
 import { UnassignedWeighingsPanel } from "@/components/grain/unassigned-weighings";
 import { VehiclePlateCameraWorkspace } from "@/components/grain/vehicle-plate-camera";
+import { PassageHistory } from "@/components/grain/passage-history";
 import { WagonNumberCameraWorkspace } from "@/components/grain/wagon-number-camera";
 import { FlowEmptyState, WagonTable } from "@/components/grain/wagon-table";
 import { AppShell } from "@/components/layout/app-shell";
@@ -316,6 +317,8 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
         {direction === "passage" && tab !== "camera" && (
           <UnassignedWeighingsPanel canWeigh={canWeigh} onChanged={refreshAll} />
         )}
+
+        {direction === "passage" && <PassageHistory />}
 
         {tab === "camera" ? (
           direction === "intake" ? (

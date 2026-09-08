@@ -48,7 +48,11 @@ def automatic_scale_settings(settings):
     settings.VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS = 60
     settings.TRUCK_SCALE_TIMEOUT_SECONDS = 3
     cache.delete(automation.RUNTIME_CACHE_KEY)
-    yield
+    with (
+        patch.object(camera_ai, "fetch_vehicle_recognition_frame", return_value=None),
+        patch.object(camera_ai, "camera_frame_jpeg", return_value=None),
+    ):
+        yield
     cache.delete(automation.RUNTIME_CACHE_KEY)
 
 
@@ -94,7 +98,9 @@ def _monitor_sequence(observations, *, step_seconds=10, started_at=None):
     ]
 
 
-def _recognized(request_id, stable_weight_at, *, number="123ABC02") -> dict:
+def _recognized(
+    request_id, stable_weight_at, *, number="123ABC02", orientation="front"
+) -> dict:
     return {
         "ok": True,
         "status": "recognized",
@@ -104,6 +110,7 @@ def _recognized(request_id, stable_weight_at, *, number="123ABC02") -> dict:
         "stable_weight_at": stable_weight_at,
         "recognized_at": timezone.now().isoformat(),
         "vehicle_number": number,
+        "orientation": {"label": orientation, "confidence": 0.99},
         "confirmation": {
             "votes": 3,
             "detector_confidence": 0.91,
@@ -711,6 +718,7 @@ def test_minimal_production_camera_response_completes_automatic_entry():
             "ocr_confidence": 0.96,
         },
         "frames_scanned": 3,
+        "orientation": {"label": "front", "confidence": 0.99},
     }
 
     with (
@@ -896,6 +904,7 @@ def test_disable_cannot_split_business_apply_from_capture_completion(settings):
         weight_kg=12_000,
         scale_age_seconds=Decimal("0.2"),
         vehicle_plate_event=event,
+        orientation="front",
     )
     PassageScaleAutomationState.objects.create(
         scale_number=scale.TRUCK_SCALE_KEY,
@@ -952,6 +961,7 @@ def test_disable_cannot_split_business_apply_from_capture_completion(settings):
 
 
 def test_confirmed_clear_rearms_lane_and_next_episode_completes_exit():
+    orientations = ["front", "rear"]
     step_seconds = 10
     sequence_started_at = timezone.now()
     entry_observations = [
@@ -981,7 +991,9 @@ def test_confirmed_clear_rearms_lane_and_next_episode_completes_exit():
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
-            side_effect=lambda _camera, key, stable_at: _recognized(key, stable_at),
+            side_effect=lambda _camera, key, stable_at: _recognized(
+                key, stable_at, orientation=orientations.pop(0)
+            ),
         ) as recognize,
     ):
         entry_results = _monitor_sequence(
@@ -1820,6 +1832,7 @@ def test_exhausted_camera_retries_apply_weight_without_plate_and_without_depende
         camera="cam1",
         stable_weight_at=timezone.now() - timedelta(seconds=1),
         weight_kg=12_000,
+        orientation="front",
         scale_age_seconds=Decimal("0.200"),
         recognition_attempts=3,
         final_lookup_attempted=True,
@@ -2119,11 +2132,16 @@ def test_disabled_monitor_does_not_touch_scale_or_persistent_lane(settings):
     read_observation.assert_not_called()
 
 
-def _no_match(*_args, **_kwargs):
+def _no_match(*_args, orientation="", **_kwargs):
     raise camera_ai.AiError(
         422,
         "vehicle number was not confirmed inside the ROI",
-        {"status": "no_match", "retryable": False, "frames_scanned": 20},
+        {
+            "status": "no_match",
+            "retryable": False,
+            "frames_scanned": 20,
+            "orientation": {"label": orientation, "confidence": 0.99},
+        },
     )
 
 
@@ -2203,7 +2221,7 @@ def test_exhausted_attempts_without_open_passages_create_blank_passage_and_rearm
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
-            side_effect=_no_match,
+            side_effect=lambda *args: _no_match(*args, orientation="front"),
         ) as recognize,
         patch.object(camera_ai, "fetch_vehicle_recognition_frame", return_value=None),
     ):
@@ -2283,7 +2301,7 @@ def test_exhausted_attempts_with_open_passage_park_an_unassigned_weighing(settin
     assert item.capture_id == capture.pk
     assert item.weight_kg == 30_010
     assert item.status == UnassignedWeighing.OPEN
-    assert item.reason == "open_passages_exist"
+    assert item.reason == "orientation_unknown"
     assert item.photo_request_id == capture.idempotency_key
     assert Wagon.objects.count() == 1
     assert open_passage.exit_weight_kg is None

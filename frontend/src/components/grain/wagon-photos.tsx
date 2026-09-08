@@ -4,6 +4,7 @@ import { Camera } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiFileUrl } from "@/lib/grain";
 import type { GrainWagon } from "@/lib/types";
+import { photoStatusLabel } from "@/lib/weighing-evidence";
 
 function PhotoTile({ label, url, hint }: { label: string; url: string | null | undefined; hint: string }) {
   const src = apiFileUrl(url);
@@ -43,12 +44,20 @@ export function WagonPhotos({ wagon }: { wagon: GrainWagon }) {
         <PhotoTile
           label="Въезд"
           url={wagon.entry_photo_url}
-          hint={wagon.entry_weight_kg == null ? "появится после взвешивания пустой" : "кадр не сохранён"}
+          hint={
+            wagon.entry_weight_kg == null
+              ? "появится после взвешивания пустой"
+              : photoStatusLabel(wagon.weighings?.find((row) => row.kind === "gross")?.photo_status)
+          }
         />
         <PhotoTile
           label="Выезд"
           url={wagon.exit_photo_url}
-          hint={wagon.exit_weight_kg == null ? "появится после взвешивания гружёной" : "кадр не сохранён"}
+          hint={
+            wagon.exit_weight_kg == null
+              ? "появится после взвешивания гружёной"
+              : photoStatusLabel(wagon.weighings?.find((row) => row.kind === "tare")?.photo_status)
+          }
         />
       </CardContent>
     </Card>

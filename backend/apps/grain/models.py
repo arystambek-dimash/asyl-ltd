@@ -10,6 +10,7 @@
 from django.conf import settings
 from django.db import models
 from django.db.models import Sum
+from django.utils import timezone
 
 from .statuses import EXPECTED, ON_SITE_STATUSES, WAGON_STATUSES
 
@@ -615,6 +616,11 @@ class AutomaticPassageCapture(models.Model):
     # Номер так и не распознан: вес применяется без номера (рейс без номера
     # или неопознанное взвешивание), лента освобождается сама.
     plate_unresolved = models.BooleanField(default=False)
+    # Physical departure fences camera retries even before the clear streak
+    # completes. Existing captures already dispatched OCR before this field.
+    recognition_dispatched = models.BooleanField(default=True)
+    departure_observed_at = models.DateTimeField(null=True, blank=True)
+    recognition_valid_until = models.DateTimeField(null=True, blank=True)
     # Только сбой записи в базу оставляет ленту заблокированной до
     # подтверждения оператором; сбои распознавания не требуют человека.
     requires_acknowledgement = models.BooleanField(default=True)
@@ -679,6 +685,38 @@ class AutomaticPassageCapture(models.Model):
             and self.requires_acknowledgement
             and self.acknowledged_at is None
         )
+
+
+class WeighingPhotoDelivery(models.Model):
+    """Durable evidence independent of OCR success and trip assignment."""
+
+    request_id = models.UUIDField(unique=True)
+    camera = models.CharField(max_length=32)
+    capture = models.ForeignKey(
+        AutomaticPassageCapture,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="photo_deliveries",
+    )
+    photo = models.FileField(upload_to="grain/evidence/", null=True, blank=True)
+    status = models.CharField(
+        max_length=12,
+        default="pending",
+        choices=[
+            ("pending", "Фото ожидается"),
+            ("retrying", "Повторная загрузка"),
+            ("saved", "Фото сохранено"),
+            ("unavailable", "Фото недоступно"),
+        ],
+    )
+    attempts = models.PositiveIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now, db_index=True)
+    lease_until = models.DateTimeField(null=True, blank=True)
+    error_code = models.CharField(max_length=64, blank=True, default="")
+    snapshot_attempted = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
 
 class PassageScaleAutomationState(models.Model):
