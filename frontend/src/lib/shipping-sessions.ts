@@ -62,6 +62,7 @@ export function shippingIdentityError(reason: string): string {
     photo_window_expired: "Событие пришло с задержкой: кадр этой погрузки уже недоступен.",
     photo_capture_interrupted: "Получение кадра прервано.",
     photo_storage_unavailable: "Кадр номера не удалось сохранить.",
+    loading_zone_invalid: "Проверьте зону распознавания в настройках камеры номера.",
     plate_unreadable: "Номер не удалось прочитать.",
     number_unreadable: "Номер не удалось прочитать.",
     no_number_camera: "Не назначена камера номера.",
