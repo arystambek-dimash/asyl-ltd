@@ -29,7 +29,7 @@ def test_shipping_transport_worker_is_independent_and_health_checked(
     assert "<<: *backend-environment" in monitor
     assert "APP_SERVICE: shipping-transport-monitor" in monitor
     assert "entrypoint: []" in monitor
-    assert 'command: ["python", "manage.py", "monitor_shipping_transports"]' in monitor
+    assert 'command: ["python", "manage.py", "monitor_shipping_sessions"]' in monitor
     assert "init: true" in monitor
     assert "stop_grace_period: 180s" in monitor
     assert "/tmp/shipping-transport-monitor:rw,noexec,nosuid,nodev,size=1m" in monitor

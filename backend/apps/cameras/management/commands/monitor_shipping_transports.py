@@ -61,6 +61,12 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        return self.run_monitor(
+            *args, scheduler_class=ShippingTransportScheduler,
+            once_callback=shipping_automation.poll_once, **options,
+        )
+
+    def run_monitor(self, *args, scheduler_class, once_callback, **options):
         interval = float(options["interval"])
         if not 0.5 <= interval <= 60:
             raise CommandError("--interval must be between 0.5 and 60 seconds")
@@ -81,7 +87,7 @@ class Command(BaseCommand):
             os.environ.get("SHIPPING_TRANSPORT_HEARTBEAT_FILE")
             or DEFAULT_HEARTBEAT_FILE
         )
-        scheduler = None if once else ShippingTransportScheduler(interval)
+        scheduler = None if once else scheduler_class(interval)
         try:
             _write_heartbeat(heartbeat, "running")
             last_status = "running"
@@ -91,7 +97,7 @@ class Command(BaseCommand):
                 try:
                     close_old_connections()
                     result = (
-                        shipping_automation.poll_once() if once else scheduler.tick()
+                        once_callback() if once else scheduler.tick()
                     )
                     if result.get("errors", 0):
                         status = "degraded"

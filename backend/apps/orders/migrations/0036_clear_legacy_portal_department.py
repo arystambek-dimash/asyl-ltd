@@ -45,6 +45,7 @@ def clear_legacy_portal_department(apps, schema_editor):
 class Migration(migrations.Migration):
     dependencies = [
         ("orders", "0035_order_review_workflow"),
+        ("clients", "0016_client_department"),
         ("sales", "0001_initial"),
         ("eventlog", "0003_eventlog_eventlog_recent_idx_and_more"),
     ]

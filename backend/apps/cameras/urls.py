@@ -1,5 +1,10 @@
 from django.urls import path
 
+from .api_views.shipping_sessions import (
+    ShippingSessionListView, ShippingSegmentDetailView, ShippingSegmentIdentifyView,
+    ShippingSessionSettingsView, ShippingSegmentPhotoView,
+)
+
 from .api_views.shipping_automation import (
     ShippingTransportEvidenceImageView,
     ShippingTransportEvidenceView,
@@ -49,6 +54,11 @@ urlpatterns = [
         name="vehicle-plate-events-list",
     ),
     path("cameras/", CameraListView.as_view()),
+    path("cameras/shipping-sessions/", ShippingSessionListView.as_view()),
+    path("cameras/shipping-session-settings/", ShippingSessionSettingsView.as_view()),
+    path("cameras/shipping-segments/<int:pk>/", ShippingSegmentDetailView.as_view()),
+    path("cameras/shipping-segments/<int:pk>/identify/", ShippingSegmentIdentifyView.as_view()),
+    path("cameras/shipping-segments/<int:pk>/photo/", ShippingSegmentPhotoView.as_view()),
     path("cameras/shipping-transport/", ShippingTransportStatusView.as_view()),
     path("cameras/shipping-transport/history/", ShippingTransportEvidenceView.as_view()),
     path("cameras/shipping-transport/history/<int:pk>/image/", ShippingTransportEvidenceImageView.as_view()),

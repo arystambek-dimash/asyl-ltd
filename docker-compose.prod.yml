@@ -319,9 +319,9 @@ services:
       <<: *backend-environment
       DJANGO_COLLECTSTATIC: "0"
       APP_SERVICE: shipping-transport-monitor
-    # Wait for backend-owned migrations before acquiring any loading orders.
+    # Wait for backend-owned migrations before projecting loading segments.
     entrypoint: []
-    command: ["python", "manage.py", "monitor_shipping_transports"]
+    command: ["python", "manage.py", "monitor_shipping_sessions"]
     # Persist recognition photos where the backend's protected image API reads.
     volumes:
       - mediadata:/app/media

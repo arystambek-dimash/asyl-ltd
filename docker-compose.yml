@@ -124,7 +124,7 @@ services:
       APP_SERVICE: shipping-transport-monitor
       DJANGO_COLLECTSTATIC: "0"
     entrypoint: []
-    command: ["python", "manage.py", "monitor_shipping_transports"]
+    command: ["python", "manage.py", "monitor_shipping_sessions"]
     volumes:
       - mediadata:/app/media
     depends_on:
