@@ -1,6 +1,8 @@
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
+from django.core.validators import MinValueValidator, MaxValueValidator
+from django.utils import timezone
 
 ANALYTICS_SCOPE_SHIPPING = "shipping"
 ANALYTICS_SCOPE_AI247 = "ai_247"
@@ -1034,3 +1036,99 @@ class CameraIncident(models.Model):
                 name="cameras_one_open_camera_incident",
             )
         ]
+
+
+class ShippingSessionSettings(models.Model):
+    """Count-session policy; migration-time fence excludes old journal history."""
+
+    singleton = models.BooleanField(default=True, unique=True, editable=False)
+    idle_timeout_seconds = models.PositiveIntegerField(
+        default=300, validators=[MinValueValidator(30), MaxValueValidator(86400)]
+    )
+    activated_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(
+            condition=Q(idle_timeout_seconds__gte=30, idle_timeout_seconds__lte=86400),
+            name="shipping_idle_timeout_range",
+        ), models.CheckConstraint(condition=Q(singleton=True), name="shipping_settings_singleton_true")]
+
+
+class ShippingLoadingCursor(models.Model):
+    """Per-camera projection mutex and consumed upstream journal boundary."""
+
+    camera = models.CharField(max_length=32, unique=True)
+    last_event_id = models.PositiveBigIntegerField(default=0)
+    activated_at = models.DateTimeField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class ShippingLoadingSession(models.Model):
+    """Adjacent loading segments identified as the same transport."""
+
+    ACTIVE, CLOSED, MERGED = "active", "closed", "merged"
+    camera = models.CharField(max_length=32, db_index=True)
+    recognition_model = models.CharField(max_length=32, blank=True, default="")
+    number = models.CharField(max_length=32, blank=True, default="")
+    status = models.CharField(max_length=12, default=ACTIVE)
+    total_bags = models.PositiveBigIntegerField(default=0)
+    started_at = models.DateTimeField()
+    last_counted_at = models.DateTimeField()
+    ended_at = models.DateTimeField(null=True, blank=True)
+    order = models.ForeignKey("orders.Order", null=True, blank=True, on_delete=models.PROTECT, related_name="shipping_loading_sessions")
+    merged_into = models.ForeignKey("self", null=True, blank=True, on_delete=models.PROTECT, related_name="merged_sessions")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-started_at", "-pk"]
+        constraints = [models.CheckConstraint(condition=Q(status__in=["active", "closed", "merged"]), name="shipping_loading_session_status")]
+
+
+class ShippingLoadingSegment(models.Model):
+    """One interval of bag crossings, with its own immutable photo evidence."""
+
+    session = models.ForeignKey(ShippingLoadingSession, on_delete=models.PROTECT, related_name="segments")
+    camera = models.CharField(max_length=32)
+    number_camera = models.CharField(max_length=32, blank=True, default="")
+    configured_recognition_model = models.CharField(max_length=32, blank=True, default="")
+    recognition_model = models.CharField(max_length=32, blank=True, default="")
+    number = models.CharField(max_length=32, blank=True, default="")
+    number_source = models.CharField(max_length=12, blank=True, default="")
+    identity_status = models.CharField(max_length=16, default="pending")
+    photo = models.FileField(upload_to="shipping-loading/%Y/%m/%d", blank=True)
+    photo_taken_at = models.DateTimeField(null=True, blank=True)
+    photo_attempted = models.BooleanField(default=False)
+    primary_attempted = models.BooleanField(default=False)
+    identity_attempts = models.PositiveSmallIntegerField(default=0)
+    identity_lease_until = models.DateTimeField(null=True, blank=True)
+    identity_next_attempt_at = models.DateTimeField(null=True, blank=True)
+    identity_error = models.CharField(max_length=128, blank=True, default="")
+    identity_response_id = models.CharField(max_length=100, blank=True, default="")
+    started_at = models.DateTimeField()
+    last_counted_at = models.DateTimeField()
+    ended_at = models.DateTimeField(null=True, blank=True)
+    total_bags = models.PositiveBigIntegerField(default=0)
+    idle_timeout_seconds = models.PositiveIntegerField(default=300)
+    first_event = models.ForeignKey(AlwaysOnImportedEvent, on_delete=models.PROTECT, related_name="started_loading_segments")
+    last_event = models.ForeignKey(AlwaysOnImportedEvent, on_delete=models.PROTECT, related_name="last_loading_segments")
+    first_upstream_event_id = models.PositiveBigIntegerField()
+    last_upstream_event_id = models.PositiveBigIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["camera", "first_upstream_event_id", "pk"]
+        indexes = [models.Index(fields=["camera", "first_upstream_event_id"], name="ship_segment_camera_event_idx")]
+        constraints = [
+            models.UniqueConstraint(fields=["camera"], condition=Q(ended_at__isnull=True), name="shipping_one_active_segment"),
+            models.CheckConstraint(condition=Q(identity_status__in=["pending", "processing", "identified", "unidentified"]), name="shipping_segment_identity_state"),
+            models.CheckConstraint(condition=Q(idle_timeout_seconds__gte=30, idle_timeout_seconds__lte=86400), name="shipping_segment_idle_range"),
+        ]
+
+
+class ShippingLoadingEvent(models.Model):
+    """Every counted upstream crossing belongs to exactly one segment."""
+
+    event = models.OneToOneField(AlwaysOnImportedEvent, on_delete=models.PROTECT, related_name="shipping_loading_event")
+    segment = models.ForeignKey(ShippingLoadingSegment, on_delete=models.PROTECT, related_name="count_events")
+    created_at = models.DateTimeField(auto_now_add=True)
