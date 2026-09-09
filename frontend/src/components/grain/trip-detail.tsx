@@ -13,6 +13,7 @@ import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { GrainWagonDeleteDialog } from "@/components/grain/wagon-delete-dialog";
 import { PassageNumberEditor } from "@/components/grain/passage-number-editor";
 import { WagonPhotos } from "@/components/grain/wagon-photos";
+import { HistoricalTareDialog } from "@/components/grain/historical-tare-dialog";
 import { UnassignedWeighingsPanel } from "@/components/grain/unassigned-weighings";
 import { can } from "@/lib/can";
 import {
@@ -218,7 +219,14 @@ function TripPageInner({ params, direction }: TripPageProps) {
           {/* Ключевые числа одной полосой. */}
           <Card className="flex flex-wrap items-center gap-x-10 gap-y-3 p-4">
             {[
-              { label: passage ? "Вес пустой · въезд" : "Брутто", value: formatKg(wagon.entry_weight_kg) },
+              {
+                label: passage
+                  ? wagon.weighings?.some((row) => row.source === "historical")
+                    ? "Сохранённая тара"
+                    : "Вес пустой · въезд"
+                  : "Брутто",
+                value: formatKg(wagon.entry_weight_kg),
+              },
               { label: passage ? "Вес гружёной · выезд" : "Тара", value: formatKg(wagon.exit_weight_kg) },
               { label: passage ? "Вывезено · нетто" : "Нетто", value: formatKg(wagon.net_weight_kg), strong: true },
               ...(!passage
@@ -262,6 +270,14 @@ function TripPageInner({ params, direction }: TripPageProps) {
           )}
 
           <WagonPhotos wagon={wagon} />
+          {passage &&
+            wagon.status === "at_silo" &&
+            can(me, "grain.weigh") &&
+            !error &&
+            wagon.weighings?.length === 1 &&
+            wagon.weighings[0].orientation === "rear" && (
+              <HistoricalTareDialog wagon={wagon} onChanged={refresh} onBusyChange={handleBusyChange} />
+            )}
 
           <Card>
             <CardHeader className="p-4 pb-2">
@@ -360,18 +376,23 @@ function TripPageInner({ params, direction }: TripPageProps) {
                   <InfoRow
                     key={row.id}
                     label={
-                      wagon.direction === "passage"
-                        ? row.kind === "gross"
-                          ? "Въезд"
-                          : "Выезд"
-                        : row.kind === "gross"
-                          ? "Брутто"
-                          : "Тара"
+                      row.source === "historical"
+                        ? "Сохранённая тара"
+                        : wagon.direction === "passage"
+                          ? row.kind === "gross"
+                            ? "Въезд"
+                            : "Выезд"
+                          : row.kind === "gross"
+                            ? "Брутто"
+                            : "Тара"
                     }
                   >
                     <span className="tabular-nums">{formatKg(row.weight_kg)}</span>
                     <span className="block text-[10px] font-normal text-[var(--muted-foreground)]">
                       {formatDateTime(row.created_at)}
+                      {row.reference_record_at
+                        ? ` · исходное взвешивание ${formatDateTime(row.reference_record_at)}`
+                        : ""}
                       {row.operator_name ? ` · ${row.operator_name}` : ""}
                       {row.manual_reason ? ` · ${row.manual_reason}` : ""}
                       {row.photo_url ? " · есть фото" : ""}

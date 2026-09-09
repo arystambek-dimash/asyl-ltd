@@ -341,6 +341,7 @@ def _record_weighing(
     photo_request_id=None,
     photo_camera="",
     orientation="",
+    occurred_at=None,
 ):
     try:
         weight_kg = int(weight_kg)
@@ -351,7 +352,7 @@ def _record_weighing(
     if source == "manual" and not manual_reason:
         raise _error("Для ручного ввода веса укажите причину", "manual_reason_required")
     previous = wagon.gross_weight_kg if kind == "gross" else wagon.tare_weight_kg
-    WeighingRecord.objects.create(
+    record = WeighingRecord.objects.create(
         wagon=wagon,
         kind=kind,
         weight_kg=weight_kg,
@@ -365,7 +366,13 @@ def _record_weighing(
         photo_camera=photo_camera or "",
         orientation=orientation or "",
     )
+    if occurred_at is not None:
+        # Deferred delivery keeps the physical measurement time. EventLog
+        # still records when this database operation was performed.
+        WeighingRecord.objects.filter(pk=record.pk).update(created_at=occurred_at)
     scale_payload = {}
+    if occurred_at is not None:
+        scale_payload["occurred_at"] = occurred_at.isoformat()
     if scale_age_seconds is not None:
         scale_payload["scale_age_seconds"] = str(scale_age_seconds)
     if scale_updated_at is not None:
@@ -1519,7 +1526,7 @@ def record_passage_entry_weight(
     if not wagon.is_passage:
         raise _error("Это приход, а не проход", "not_passage")
     ensure_transition(wagon, st.AT_SILO)
-    wagon.gross_weight_kg = _record_weighing(wagon, "gross", weight_kg, user, **kwargs)
+    wagon.gross_weight_kg = _record_weighing(wagon, "gross", weight_kg, user, occurred_at=occurred_at, **kwargs)
     wagon.silo_arrived_at = occurred_at or timezone.now()
     wagon.unloading_started_at = wagon.silo_arrived_at
     wagon.save(
@@ -1551,7 +1558,7 @@ def record_passage_exit_weight(
     ensure_transition(wagon, st.TARE_WEIGHED)
     if wagon.gross_weight_kg is None:
         raise _error("Сначала зафиксируйте вес на въезде", "entry_weight_required")
-    exit_weight = _record_weighing(wagon, "tare", weight_kg, user, **kwargs)
+    exit_weight = _record_weighing(wagon, "tare", weight_kg, user, occurred_at=occurred_at, **kwargs)
     return _finish_passage_exit(wagon, exit_weight, user, occurred_at=occurred_at)
 
 
@@ -2554,6 +2561,8 @@ def assign_unassigned_weighing(
         raise _error("Привязать взвешивание можно только к вывозу", "not_passage")
     kwargs = _unassigned_scale_kwargs(item)
     if wagon.status == st.ARRIVED and wagon.gross_weight_kg is None:
+        if item.orientation == VEHICLE_ORIENTATION_REAR:
+            raise _error("Камера видит выезд. Выберите существующий заезд или сохранённую тару.", "rear_cannot_be_entry")
         record_passage_entry_weight(
             wagon, item.weight_kg, user, occurred_at=item.stable_weight_at, **kwargs
         )
@@ -2780,6 +2789,8 @@ def delete_wagon(
         else None
     )
     reason = _normalized_delete_reason(reason)
+    if WeighingRecord.objects.filter(reference_record__wagon=wagon).exists():
+        raise _error("Тара этого рейса используется в другом вывозе. Исходное взвешивание нужно сохранить для аудита.", "tare_reference_in_use")
     active_deletion = _is_active_deletable_wagon(wagon)
     finished = wagon.status in st.TERMINAL_STATUSES or wagon.status == st.EXITED
     if not finished and not active_deletion:

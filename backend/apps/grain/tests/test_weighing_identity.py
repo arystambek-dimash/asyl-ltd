@@ -311,6 +311,37 @@ def test_api_request_has_only_images_no_database_answers_or_tools(visit):
     assert body["text"]["format"]["strict"] is True
 
 
+@pytest.mark.parametrize("pair_agrees", [True, False])
+def test_mixed_image_answer_gets_one_isolated_recheck_not_unchecked_assignment(visit, pair_agrees):
+    wagon, record, item = visit
+    item.vehicle_number=""; item.save()
+    at=wagon.silo_arrived_at
+    other=Wagon.objects.create(number="987XYZ13",direction="passage",workflow="simple",cargo_name="Отруби",status=st.AT_SILO,gross_weight_kg=4200,arrived_at=at,silo_arrived_at=at)
+    other_record=WeighingRecord.objects.create(wagon=other,kind="gross",weight_kg=4200,source="scale",scale_number="truck",photo_camera="cam1",orientation="front",photo_request_id=uuid4(),photo=record.photo.name)
+    entries=identity.candidates(item)
+    confused=verdict(entries)
+    for row in confused["entries"]:
+        row["orientation"]="rear"
+    with patch.object(identity,"request_verification",return_value=(confused,"first")):
+        identity.process_once()
+    check=WeighingIdentityCheck.objects.get(weighing=item)
+    assert check.status == "retrying" and check.reason == "image_binding_recheck"
+    wagon.refresh_from_db();assert wagon.tare_weight_kg is None
+    WeighingIdentityCheck.objects.filter(pk=check.pk).update(next_attempt_at=timezone.now()-timedelta(seconds=1))
+    def pair_request(current, pair):
+        assert len(pair) == 1 and pair[0][1].pk == record.pk
+        answer=verdict(pair)
+        if not pair_agrees: answer["entries"][0]["appearance"]="different"
+        return answer,"second"
+    with patch.object(identity,"request_verification",side_effect=pair_request):
+        identity.process_once()
+    check.refresh_from_db();wagon.refresh_from_db();other.refresh_from_db()
+    assert check.attempts == 2
+    assert check.status == ("matched" if pair_agrees else "review")
+    assert wagon.tare_weight_kg == (8000 if pair_agrees else None)
+    assert other.tare_weight_kg is None
+
+
 def test_entry_photo_arriving_later_is_retried_without_losing_weight(visit):
     wagon, entry, item = visit
     photo = entry.photo.name

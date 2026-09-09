@@ -313,7 +313,7 @@ describe("UnassignedWeighingsPanel camera orientation", () => {
     expect(screen.getByText(/камера: задом → выезд/)).toBeInTheDocument();
   });
 
-  it("shows the plate of an exit without an entry and prefills it for a new trip", async () => {
+  it("routes a rear-facing exit to historical tare instead of creating a false entry", async () => {
     mockApi(
       [{ ...item, id: 8, weight_kg: 8_760, orientation: "rear", reason: "entry_missing", vehicle_number: "854ANB13" }],
       [loaded],
@@ -322,8 +322,9 @@ describe("UnassignedWeighingsPanel camera orientation", () => {
 
     expect(screen.getByText("854ANB13")).toBeInTheDocument();
     expect(screen.getByText(/выезд без заезда/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Новый рейс" }));
-    expect(screen.getByLabelText("Номер машины")).toHaveValue("854ANB13");
+    expect(screen.queryByRole("button", { name: "Новый рейс" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Выезд с сохранённой тарой" }));
+    expect(screen.getByLabelText("Номер машины для поиска тары")).toHaveValue("854ANB13");
   });
 
   it("marks a front-facing truck as a new entry regardless of weight", () => {

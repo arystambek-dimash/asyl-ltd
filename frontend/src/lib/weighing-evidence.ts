@@ -28,3 +28,13 @@ const REASONS: Record<string, string> = {
 export function weighingReasonLabel(reason: string, detail?: string) {
   return REASONS[reason] || detail || (reason ? "Требуется проверка взвешивания" : "");
 }
+
+export function identityReviewLabel(reason?: string) {
+  const labels: Record<string, string> = {
+    entry_missing: "Нет подходящего открытого заезда с фото — выберите рейс или сохранённую тару",
+    plate_unclear: "ИИ не смог уверенно прочитать все символы номера",
+    image_binding_conflict: "ИИ противоречиво определил фотографии — требуется сверка",
+    appearance_unconfirmed: "Номер прочитан, но соответствие машины по фото не подтверждено",
+  };
+  return labels[reason || ""] || "ИИ: нужна ручная проверка номера и машины";
+}

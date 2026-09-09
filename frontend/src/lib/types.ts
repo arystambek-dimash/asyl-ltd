@@ -1042,7 +1042,9 @@ export interface GrainWeighing {
   kind: "gross" | "tare";
   weight_kg: number;
   scale_number: string;
-  source: "auto" | "manual" | "scale";
+  source: "auto" | "manual" | "scale" | "historical";
+  reference_record?: number | null;
+  reference_record_at?: string | null;
   manual_reason: string;
   previous_weight_kg: number | null;
   operator_name: string | null;
@@ -1059,6 +1061,7 @@ export type VehicleOrientation = "" | "front" | "rear";
 /** Вес с автовесов без распознанного номера, который ждёт привязки к рейсу. */
 export interface GrainUnassignedWeighing {
   identity_check?: {
+    review_reason?: string;
     status:
       "pending" | "processing" | "retrying" | "review" | "matched" | "disabled" | "waiting_photo" | "waiting_budget";
     reason: string;

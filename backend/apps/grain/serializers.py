@@ -175,6 +175,7 @@ class SiloTypeSerializer(serializers.ModelSerializer):
 
 
 class WeighingRecordSerializer(serializers.ModelSerializer):
+    reference_record_at = serializers.DateTimeField(source="reference_record.created_at", default=None, read_only=True)
     operator_name = serializers.CharField(
         source="operator.username", default=None, read_only=True
     )
@@ -192,6 +193,8 @@ class WeighingRecordSerializer(serializers.ModelSerializer):
             "weight_kg",
             "scale_number",
             "source",
+            "reference_record",
+            "reference_record_at",
             "manual_reason",
             "previous_weight_kg",
             "operator_name",
@@ -331,6 +334,12 @@ class PassageNumberSerializer(serializers.Serializer):
 
 class UnassignedAssignSerializer(serializers.Serializer):
     wagon = serializers.IntegerField(min_value=1)
+
+
+class HistoricalTareSerializer(serializers.Serializer):
+    reference_record = serializers.IntegerField(min_value=1)
+    number = serializers.CharField(max_length=30)
+    reason = serializers.CharField(min_length=5, max_length=300)
 
 
 class UnassignedCreatePassageSerializer(serializers.Serializer):

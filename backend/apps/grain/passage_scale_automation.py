@@ -570,6 +570,9 @@ def _advance_lane(
             defaults={"phase": PassageScaleAutomationState.UNARMED},
         )
     )
+    from .outbox_importer import enabled as collector_enabled
+    if collector_enabled():
+        return None  # Activation shares this lane lock; only the collector samples now.
     capture = None
     if state.current_capture_id is not None:
         capture = AutomaticPassageCapture.objects.select_for_update().get(
@@ -1918,6 +1921,8 @@ def scale_automation_runtime(*, now=None) -> dict:
         )
     durable_state, durable_capture = _durable_lane()
     stable_weight_seconds = _stable_weight_seconds(durable_state)
+    if payload.get("collector"):
+        return {**payload, "stable_weight_seconds": stable_weight_seconds, "heartbeat_stale": False}
     durable_public_state = _public_state(
         durable_state,
         durable_capture,

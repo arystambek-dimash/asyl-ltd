@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiFileUrl } from "@/lib/grain";
 import type { GrainWagon } from "@/lib/types";
 import { photoStatusLabel } from "@/lib/weighing-evidence";
+import { formatDateTime } from "@/lib/utils";
 
 function PhotoTile({ label, url, hint }: { label: string; url: string | null | undefined; hint: string }) {
   const src = apiFileUrl(url);
@@ -32,6 +33,7 @@ export function WagonPhotos({ wagon }: { wagon: GrainWagon }) {
   if (wagon.direction !== "passage") return null;
   const hasAny = Boolean(wagon.entry_photo_url || wagon.exit_photo_url);
   const weighed = wagon.entry_weight_kg != null || wagon.exit_weight_kg != null;
+  const reference = wagon.weighings?.find((row) => row.kind === "gross" && row.source === "historical");
   if (!hasAny && !weighed) return null;
   return (
     <Card>
@@ -42,7 +44,11 @@ export function WagonPhotos({ wagon }: { wagon: GrainWagon }) {
       </CardHeader>
       <CardContent className="grid grid-cols-1 gap-3 p-4 pt-0 sm:grid-cols-2">
         <PhotoTile
-          label="Въезд"
+          label={
+            reference
+              ? `Сохранённая тара · ${formatDateTime(reference.reference_record_at || reference.created_at)}`
+              : "Въезд"
+          }
           url={wagon.entry_photo_url}
           hint={
             wagon.entry_weight_kg == null

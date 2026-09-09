@@ -19,6 +19,7 @@ from django.db import InterfaceError, OperationalError, close_old_connections
 
 from apps.grain import passage_scale_automation, passage_monitor, weighing_photos
 from apps.grain import weighing_identity
+from apps.grain import outbox_importer
 
 log = logging.getLogger(__name__)
 
@@ -91,7 +92,9 @@ class Command(BaseCommand):
         # A process gap can hide an empty->occupied edge. Preserve durable
         # processing/failure state, but require a fresh confirmed clear before
         # any idle lane may trigger after this worker starts.
-        if once:
+        if outbox_importer.enabled():
+            pass  # The independent collector did not restart with this process.
+        elif once:
             passage_scale_automation.prepare_monitor_start()
         else:
             passage_monitor.prepare_start()
@@ -114,7 +117,11 @@ class Command(BaseCommand):
                 status = "running"
                 try:
                     if once:
-                        result = passage_scale_automation.monitor_once()
+                        result = (
+                            outbox_importer.poll_once()
+                            if outbox_importer.enabled()
+                            else passage_scale_automation.monitor_once()
+                        )
                     else:
                         # Bounded workers: no unbounded in-memory job queue.
                         # Any unfinished work remains discoverable in the DB.
@@ -134,8 +141,9 @@ class Command(BaseCommand):
                             except (OSError, TimeoutError, OperationalError, InterfaceError):
                                 log.exception("Automatic passage background dependency failed")
                                 status = "degraded"
-                        result = passage_monitor.poll_once()
-                        if recognition_future is None or recognition_future.done():
+                        durable_collector = outbox_importer.enabled()
+                        result = outbox_importer.poll_once() if durable_collector else passage_monitor.poll_once()
+                        if not durable_collector and (recognition_future is None or recognition_future.done()):
                             recognition_future = pool.submit(
                                 _background_call, passage_monitor.process_once
                             )

@@ -234,6 +234,7 @@ def collect(*, limit: int | None = None) -> dict[str, int]:
     counters = {"created": 0, "updated": 0, "unchanged": 0, "unlabelled": 0}
     records = (
         WeighingRecord.objects.exclude(photo="")
+        .exclude(source="historical")  # Reused evidence is not a new camera observation.
         .filter(wagon__direction=Wagon.PASSAGE, created_at__gte=since)
         .select_related("wagon")
         .order_by("-id")

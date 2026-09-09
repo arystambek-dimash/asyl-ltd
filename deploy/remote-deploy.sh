@@ -466,6 +466,16 @@ rollback_release() {
   # paired with its own bind-mounted files rather than a half-rollback.
   ensure_image_available "$STATE_PREVIOUS_BACKEND_IMAGE_REF" || return 1
   ensure_image_available "$STATE_PREVIOUS_FRONTEND_IMAGE_REF" || return 1
+  if docker ps -q --filter label=com.docker.compose.project=asyl-weighbridge --filter label=com.docker.compose.service=collector | grep -q .; then
+    if ! git cat-file -e "$STATE_PREVIOUS_GIT_SHA:backend/apps/grain/outbox_importer.py"; then
+      # The collector keeps recording to disk. An older application may be
+      # restored, but must never start a competing physical poller. Replay
+      # resumes when a compatible release is deployed again.
+      VEHICLE_PLATE_AUTO_SCALE_ENABLED=0
+      export VEHICLE_PLATE_AUTO_SCALE_ENABLED
+      echo "Rollback predates importer: legacy automation disabled; collector retains events." >&2
+    fi
+  fi
   git checkout --detach "$STATE_PREVIOUS_GIT_SHA" || return 1
 
   # A pre-split release used TRUCK_SCALE_API_URL for every Grain weighing.
@@ -665,6 +675,18 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
   --user root \
   --entrypoint /bin/sh \
   backend -c 'chown -R app:app /app/media /app/staticfiles'
+docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
+  --user root --entrypoint /bin/sh passage-scale-monitor \
+  -c 'chown app:app /var/lib/weighbridge'
+
+# The separate collector must remain alive while all application writers stop.
+weighbridge_collector="$(docker ps -q --filter label=com.docker.compose.project=asyl-weighbridge --filter label=com.docker.compose.service=collector)"
+if [ -n "$weighbridge_collector" ]; then
+  docker exec "$weighbridge_collector" python -m weighbridge.healthcheck
+fi
+if [ -f deploy/weighbridge/install.sh ]; then
+  WEIGHBRIDGE_IMAGE_REF="$BACKEND_IMAGE_REF" sh deploy/weighbridge/install.sh prepare
+fi
 
 # Migration 0028 introduces permanent analytics roles. The previous backend,
 # camera importer and stock poster do not understand those fences. Stop every
@@ -684,6 +706,17 @@ if ! docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
   backend manage.py check_camera_cutover; then
   echo "Camera contour cutover refused; the previous release will resume." >&2
   exit 2
+fi
+
+# First rollout hands off on fresh clear readings after the legacy poller
+# stops, BEFORE migrations/startup. Later deployments find the marker and do
+# nothing: the independent collector stays alive while PostgreSQL is down.
+if [ -f deploy/weighbridge/install.sh ]; then
+  if ! docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
+    --entrypoint python passage-scale-monitor manage.py activate_weighbridge_collector; then
+    echo "Scale is busy or collector unavailable; deployment deferred, previous writers resume." >&2
+    exit 2
+  fi
 fi
 
 candidate_status=0

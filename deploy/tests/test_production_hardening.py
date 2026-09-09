@@ -225,6 +225,9 @@ case "$*" in
   *"run --rm --no-deps --entrypoint python backend manage.py check_camera_cutover")
     exit "${FAKE_CUTOVER_STATUS:-0}"
     ;;
+  *"manage.py activate_weighbridge_collector")
+    exit "${FAKE_WEIGHBRIDGE_STATUS:-0}"
+    ;;
   "image inspect "*)
     case "$*" in
       *"$FAKE_PREVIOUS_BACKEND"|*"$FAKE_PREVIOUS_FRONTEND")
@@ -462,6 +465,29 @@ exit 0
                 commands,
             )
             self.assertNotIn(" up -d ", f" {commands} ")
+
+    def test_independent_collector_handoff_precedes_candidate_and_refuses_busy(self):
+        for handoff_status in (0, 1):
+            with self.subTest(handoff_status=handoff_status), tempfile.TemporaryDirectory() as temporary:
+                environment, docker_log, _ = self._environment(
+                    Path(temporary), running_services="db-backup"
+                )
+                installer = Path(environment["APP_DIR"]) / "deploy/weighbridge/install.sh"
+                installer.parent.mkdir()
+                _write_executable(installer, '#!/bin/sh\nprintf "collector prepare\\n" >> "$FAKE_DOCKER_LOG"\n')
+                environment["FAKE_WEIGHBRIDGE_STATUS"] = str(handoff_status)
+                result = self._run(environment)
+                commands = docker_log.read_text()
+                handoff = "manage.py activate_weighbridge_collector"
+                self.assertLess(commands.index("collector prepare"), commands.index("stop -t 180"))
+                self.assertLess(commands.index("check_camera_cutover"), commands.index(handoff))
+                if handoff_status:
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("start backend camera-monitor", commands)
+                    self.assertNotIn(" up -d ", commands)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertLess(commands.index(handoff), commands.index(" up -d "))
 
     def test_same_candidate_retry_preserves_original_rollback_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

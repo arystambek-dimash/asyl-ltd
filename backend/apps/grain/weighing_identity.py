@@ -244,6 +244,22 @@ different. Never guess a weight or choose a vehicle based on weight or timing.
 Return every supplied entry exactly once. If uncertain say so."""
 
 
+def focused_entries(check, entries):
+    """A prior plate reading can narrow a RECHECK, never authorize booking.
+
+    The new request independently re-reads BOTH photos. Do not narrow away an
+    unreadable entry or a duplicate plate; those still need the full comparison.
+    """
+    reading = check.evidence.get("verdict", {}).get("exit", {})
+    plate = normalized_plate(reading.get("plate"))
+    if reading.get("plate_clear") is not True or reading.get("orientation") != "rear":
+        return entries
+    if not plate or any(not row[0]["number"] for row in entries):
+        return entries
+    matching = [row for row in entries if row[0]["number"] == plate]
+    return matching if len(matching) == 1 else entries
+
+
 def request_verification(item, entries):
     content = [{"type": "input_text", "text": "EXIT"}, _image(item.photo)]
     for snapshot, record in entries:
@@ -326,6 +342,8 @@ def public_status(item, *, now=None):
             normalized_plate(reading.get("plate")) if isinstance(reading, dict) else ""
         ),
     }
+    if check and check.status == "review":
+        result["review_reason"] = review_reason(check)
     if check and check.status in {"matched", "review"}:
         return result
     if not enabled() or (check is None and item.orientation == "front"):
@@ -343,6 +361,25 @@ def public_status(item, *, now=None):
     ):
         result["status"] = "waiting_budget"
     return result
+
+
+def review_reason(check):
+    if check.reason == "entry_evidence_pending":
+        return "entry_missing"
+    verdict = check.evidence.get("verdict", {})
+    exit = verdict.get("exit", {})
+    plate = normalized_plate(exit.get("plate"))
+    if not plate or exit.get("plate_clear") is not True:
+        return "plate_unclear"
+    snapshots = check.evidence.get("entries", [])
+    if snapshots and all(row.get("number") not in ("", plate) for row in snapshots):
+        return "entry_missing"
+    readings = verdict.get("entries", [])
+    if any(row.get("orientation") != "front" for row in readings):
+        return "image_binding_conflict"
+    if any(row.get("appearance") != "same" for row in readings if normalized_plate(row.get("plate")) == plate):
+        return "appearance_unconfirmed"
+    return "identity_uncertain"
 
 
 def choose(verdict, entries, original_number):
@@ -445,7 +482,7 @@ def _claim():
 
 
 @transaction.atomic
-def _finish(check, item, entries, verdict, response_id):
+def _finish(check, item, entries, verdict, response_id, *, candidate_pool=None):
     PassageScaleAutomationState.objects.select_for_update().get(
         scale_number=scale.TRUCK_SCALE_KEY
     )
@@ -457,6 +494,7 @@ def _finish(check, item, entries, verdict, response_id):
         "verdict": verdict,
         "entries": [row[0] for row in entries],
         "plate_format_version": 1,
+        "image_binding_version": 2,
     }
     locked.response_id = response_id
     locked.lease_until = None
@@ -473,7 +511,7 @@ def _finish(check, item, entries, verdict, response_id):
         selected = next((row for row in fresh if row[0] == snapshot), None)
         # Never select out of a truncated / changed candidate set.
         if sorted((row[0] for row in fresh), key=lambda row: row["key"]) != sorted(
-            (row[0] for row in entries), key=lambda row: row["key"]
+            (row[0] for row in (candidate_pool if candidate_pool is not None else entries)), key=lambda row: row["key"]
         ):
             selected = None
         if selected and current.weight_kg <= snapshot["weight_kg"]:
@@ -571,6 +609,12 @@ def _finish(check, item, entries, verdict, response_id):
                 locked.reason = "entry_changed"
         else:
             locked.reason = "entry_changed"
+    if locked.reason == "identity_uncertain" and locked.attempts < MAX_ATTEMPTS and len(entries) > 1:
+        # Contradictory image bindings must be rechecked in isolation, not
+        # silently accepted or left stuck after the first ambiguous response.
+        if len(focused_entries(locked, entries)) == 1:
+            locked.status, locked.reason = "retrying", "image_binding_recheck"
+            locked.next_attempt_at = timezone.now() + timedelta(seconds=5)
     locked.save()
 
 
@@ -609,6 +653,17 @@ def _requeue_legacy_format_reviews(now):
             check.next_attempt_at, check.lease_until = now, None
         check.evidence = {**evidence, "plate_format_version": 1}
         check.save()
+    # One fresh, budgeted pair check for pre-fix multi-image verdicts.
+    for check in WeighingIdentityCheck.objects.filter(
+        status="review", reason="identity_uncertain", attempts__lt=MAX_ATTEMPTS,
+        weighing__status="open", weighing__stable_weight_at__gte=now-timedelta(hours=24),
+    ).exclude(evidence__has_key="image_binding_version").order_by("pk")[:20]:
+        entries = [(entry, None) for entry in check.evidence.get("entries", [])]
+        if len(entries) > 1 and len(focused_entries(check, entries)) == 1:
+            check.status, check.reason = "pending", "image_binding_recheck"
+            check.next_attempt_at, check.lease_until = now, None
+        check.evidence = {**check.evidence, "image_binding_version": 2}
+        check.save()
 
 
 def process_once():
@@ -627,8 +682,9 @@ def process_once():
         if len(entries) > MAX_CANDIDATES:
             _finish(check, item, [], {}, "")
             return
-        verdict, response_id = request_verification(item, entries)
-        _finish(check, item, entries, verdict, response_id)
+        verification_entries = focused_entries(check, entries)
+        verdict, response_id = request_verification(item, verification_entries)
+        _finish(check, item, verification_entries, verdict, response_id, candidate_pool=entries)
     except (http.client.HTTPException, OSError, ValueError, TypeError, KeyError):
         # Never persist headers, API response bodies, credentials or base64.
         _retry(check, "verification_unavailable")

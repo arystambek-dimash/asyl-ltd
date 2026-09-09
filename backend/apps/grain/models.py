@@ -319,6 +319,9 @@ class WeighingRecord(models.Model):
     weight_kg = models.PositiveBigIntegerField()
     scale_number = models.CharField(max_length=50, blank=True, default="")
     source = models.CharField(max_length=10, default="manual")
+    reference_record = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="tare_reuses"
+    )
     manual_reason = models.CharField(max_length=300, blank=True, default="")
     previous_weight_kg = models.PositiveBigIntegerField(null=True, blank=True)
     operator = models.ForeignKey(

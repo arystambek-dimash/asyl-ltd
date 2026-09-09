@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { photoStatusLabel, weighingReasonLabel } from "@/lib/weighing-evidence";
+import { HistoricalTareDialog } from "./historical-tare-dialog";
+import { photoStatusLabel, weighingReasonLabel, identityReviewLabel } from "@/lib/weighing-evidence";
 import { Camera, Check, ChevronDown, LoaderCircle, PackagePlus, Scale, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -185,13 +186,15 @@ function UnassignedRow({
                 : item.identity_check.status === "waiting_budget"
                   ? "Лимит ИИ на сегодня исчерпан — доступна ручная привязка"
                   : item.identity_check.status === "review"
-                    ? "ИИ: нужна ручная проверка номера и машины"
+                    ? identityReviewLabel(item.identity_check.review_reason)
                     : item.identity_check.status === "matched"
                       ? "ИИ: номер и машина совпали"
                       : item.identity_check.status === "retrying"
-                        ? item.identity_check.reason === "entry_evidence_pending"
-                          ? "Ожидаем фото заезда для проверки ИИ"
-                          : "ИИ временно недоступен, повторим проверку"
+                        ? item.identity_check.reason === "image_binding_recheck"
+                          ? "ИИ повторно сверяет только фото этой машины"
+                          : item.identity_check.reason === "entry_evidence_pending"
+                            ? "Ожидаем фото заезда для проверки ИИ"
+                            : "ИИ временно недоступен, повторим проверку"
                         : "ИИ сверяет номер и машину с фото заезда…"}
               {item.identity_check.plate && ` · вариант ИИ: ${item.identity_check.plate}`}
             </p>
@@ -223,9 +226,11 @@ function UnassignedRow({
             </Button>
             {!exitWagon && (
               <>
-                <Button size="sm" variant={loaded ? "outline" : "default"} onClick={() => setMode("create")}>
-                  <PackagePlus /> Новый рейс
-                </Button>
+                {item.orientation !== "rear" && (
+                  <Button size="sm" variant={loaded ? "outline" : "default"} onClick={() => setMode("create")}>
+                    <PackagePlus /> Новый рейс
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   variant="ghost"
@@ -240,6 +245,17 @@ function UnassignedRow({
           </div>
         )}
       </div>
+
+      {!exitWagon && item.orientation !== "front" && (
+        <div className="px-3 pb-2">
+          <HistoricalTareDialog
+            disabled={!canWeigh || mode !== "idle"}
+            item={item}
+            onChanged={onResolved}
+            onBusyChange={onBusyChange}
+          />
+        </div>
+      )}
 
       {mode !== "idle" && (
         <div className="px-3 pb-3 sm:pl-[7.5rem]">

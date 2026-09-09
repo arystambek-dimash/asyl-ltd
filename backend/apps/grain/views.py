@@ -6,7 +6,7 @@ from config.throttles import TruckScalePreviewRateThrottle
 from django.conf import settings
 from django.db import transaction
 from django.core.cache import cache
-from django.db.models import Count, F, Q
+from django.db.models import Count, F, Q, Prefetch
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import viewsets
@@ -44,6 +44,7 @@ from .models import (
     UnassignedWeighing,
     VehicleOrientationSample,
     Wagon,
+    WeighingRecord,
 )
 from .scale_preview import get_scale_preview
 from .queries import silo_overview
@@ -55,6 +56,8 @@ from .serializers import (
     SiloSerializer,
     SiloTypeSerializer,
     UnassignedAssignSerializer,
+    HistoricalTareSerializer,
+    WeighingRecordSerializer,
     UnassignedCreatePassageSerializer,
     UnassignedDiscardSerializer,
     UnassignedWeighingSerializer,
@@ -344,7 +347,7 @@ class GrainTripViewSet(
     queryset = (
         Wagon.objects.select_related("supply", "assigned_silo")
         .prefetch_related(
-            "weighings",
+            Prefetch("weighings", queryset=WeighingRecord.objects.select_related("operator", "reference_record")),
             "lab_checks",
             "allocations__silo",
         )
@@ -702,6 +705,8 @@ class UnassignedWeighingViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet)
         "retrieve": "grain.view",
         "assign": "grain.weigh",
         "create_passage": "grain.weigh",
+        "tare_candidates": "grain.weigh",
+        "historical_exit": "grain.weigh",
         "discard": "grain.weigh",
     }
 
@@ -713,6 +718,11 @@ class UnassignedWeighingViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet)
         status = self.request.query_params.get("status", UnassignedWeighing.OPEN)
         if status != "all":
             qs = qs.filter(status=status)
+        wagon_id = self.request.query_params.get("wagon")
+        if wagon_id:
+            if not wagon_id.isdecimal():
+                raise ValidationError("Некорректный рейс")
+            qs = qs.filter(wagon_id=int(wagon_id))
         return qs
 
     def _done(self, item: UnassignedWeighing):
@@ -720,6 +730,21 @@ class UnassignedWeighingViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet)
         response = Response(UnassignedWeighingSerializer(item).data)
         response["Cache-Control"] = "no-store"
         return response
+
+    @action(detail=True, methods=["get"], url_path="tare-candidates")
+    def tare_candidates(self, request, pk=None):
+        from .historical_tare import candidates
+        rows = candidates(self.get_object(), request.query_params.get("number", ""))[:20]
+        response = Response(WeighingRecordSerializer(rows, many=True).data)
+        response["Cache-Control"] = "no-store"
+        return response
+
+    @action(detail=True, methods=["post"], url_path="historical-exit")
+    def historical_exit(self, request, pk=None):
+        from .historical_tare import complete
+        serializer = HistoricalTareSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return self._done(complete(self.get_object(), request.user, **serializer.validated_data))
 
     @action(detail=True, methods=["post"], url_path="assign")
     def assign(self, request, pk=None):

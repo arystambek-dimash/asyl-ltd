@@ -1,0 +1,48 @@
+# Independent project. Normal application releases NEVER run compose up here.
+name: asyl-weighbridge
+services:
+  video:
+    image: alexxit/go2rtc:1.9.14
+    environment:
+      CAMERA_HOST: ${CAMERA_HOST:-100.109.156.107}
+      CAMERA_USER: ${CAMERA_USER:-viewer}
+      CAMERA_PASS: ${CAMERA_PASS:-}
+    volumes:
+      - ./go2rtc.yaml:/config/go2rtc.yaml:ro
+    restart: unless-stopped
+    logging: &logging
+      driver: json-file
+      options: {max-size: 10m, max-file: "5"}
+  collector:
+    image: ${WEIGHBRIDGE_IMAGE_REF:?Pin collector image during installation}
+    entrypoint: []
+    command: [python, -m, weighbridge.collector]
+    environment:
+      DJANGO_SETTINGS_MODULE: config.weighbridge_settings
+      WEIGHBRIDGE_OUTBOX_DIR: /var/lib/weighbridge
+      TRUCK_SCALE_API_URL: ${TRUCK_SCALE_API_URL-http://desktop-t5p32d3:8000/api/v1/weight}
+      TRUCK_SCALE_TIMEOUT_SECONDS: "2"
+      TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS: "1"
+      TRUCK_SCALE_MAX_AGE_SECONDS: "5"
+      AI_SERVICE_URL: ${AI_SERVICE_URL:-${CAMERA_AI_URL:-}}
+      AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY:-${CAMERA_AI_KEY:-}}
+      VEHICLE_PLATE_WEIGHT_FIRST_CAMERA: cam1
+      VEHICLE_PLATE_WEIGHT_FIRST_SOURCE: main
+      VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS: "12"
+      GO2RTC_API_URL: http://video:1984
+    volumes:
+      - outbox:/var/lib/weighbridge
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging: *logging
+    healthcheck:
+      test: [CMD, python, -m, weighbridge.healthcheck]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+volumes:
+  outbox:
+    external: true
+    name: asyl-weighbridge-outbox
