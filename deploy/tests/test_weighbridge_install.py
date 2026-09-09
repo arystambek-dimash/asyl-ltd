@@ -41,6 +41,8 @@ if args[:2]==['exec','-i']:
   sys.modules['weighbridge.outbox']=outbox
   exec(compile(script, '<collector-upgrade-guard>', 'exec'), {})
 if args[-1:] == ['chown app:app /var/lib/weighbridge']:
+ if os.environ.get('BACKEND_IMAGE_REF') != 'ghcr.io/example/backend@sha256:'+'a'*64:
+  sys.exit('Permission helper did not use the running backend image')
  Path(os.environ['PREP_MARKER']).touch()
 if args[-3:]==['ps','-q','backend']:print('backend-current')
 if args[:1]==['inspect']:print('ghcr.io/example/backend@sha256:'+'a'*64)
@@ -53,6 +55,7 @@ if args[:1]==['inspect']:print('ghcr.io/example/backend@sha256:'+'a'*64)
                    'PREP_MARKER':str(root / 'prepared'), 'VIDEO_FAILURE':str(int(video_failure)),
                    'PENDING_WRITES':str(int(pending_writes))}
             env.pop('WEIGHBRIDGE_IMAGE_REF', None)
+            env.pop('BACKEND_IMAGE_REF', None)
             result = subprocess.run(['sh', str(root / 'deploy/weighbridge/install.sh'), action],
                                     env=env, capture_output=True, text=True)
             return result, log.read_text()

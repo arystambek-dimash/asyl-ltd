@@ -23,6 +23,7 @@ jobs:
       PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
       UPGRADE_COLLECTOR: ${{ inputs.upgrade }}
     steps:
+      - uses: actions/checkout@v6
       - name: Activate only on a freshly empty scale
         shell: bash
         run: |
@@ -41,4 +42,4 @@ jobs:
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/collector_hosts" \
             -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=6 \
             "$PROD_USER@$PROD_HOST" \
-            "cd '/home/$PROD_USER/asyl-ltd' && sh deploy/weighbridge/install.sh $collector_action"
+            "cd '/home/$PROD_USER/asyl-ltd' && sh -s -- $collector_action" < deploy/weighbridge/install.sh

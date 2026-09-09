@@ -38,6 +38,9 @@ else
   fi
   case "$WEIGHBRIDGE_IMAGE_REF" in *@sha256:*) ;; *) echo 'Immutable image required' >&2; exit 1;; esac
   export WEIGHBRIDGE_IMAGE_REF
+  # Manual activation has no deployment-shell image variables. Use the already
+  # running, verified backend image for the one-off volume-permission helper.
+  export BACKEND_IMAGE_REF="$WEIGHBRIDGE_IMAGE_REF"
   # Persist the pinned reference; subsequent application image updates do not change it.
   printf '%s\n' "$WEIGHBRIDGE_IMAGE_REF" > "$install_dir/image-ref"
   docker compose -f docker-compose.prod.yml run --rm --no-deps --user root --entrypoint sh passage-scale-monitor -c 'chown app:app /var/lib/weighbridge'
