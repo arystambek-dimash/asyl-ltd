@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import base64
 import http.client
+import io
 import json
+import math
 import re
 import urllib.parse
 import urllib.request
@@ -19,6 +21,7 @@ from django.core.files.base import ContentFile
 from django.db import connection, transaction
 from django.db.models import Case, IntegerField, Q, Value, When
 from django.utils import timezone
+from PIL import Image
 
 from . import ai, transport_recognition
 from .models import ShippingLoadingSegment as Segment
@@ -27,6 +30,36 @@ MAX_FRAME_AGE = timedelta(seconds=15)
 MAX_JPEG_BYTES = 4 * 1024 * 1024
 MAX_IDENTITY_ATTEMPTS = 3
 MODELS = {"vehicle_number": "/vehicle-number/detect", "wagon_number": "/wagon-number/detect"}
+
+
+class InvalidLoadingZone(ValueError):
+    pass
+
+
+def recognition_frame(original, zone):
+    """Use the segment's immutable zone for both models, keeping full evidence."""
+    if zone is None:
+        return original
+    if (
+        not isinstance(zone, list) or len(zone) != 4
+        or any(type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1 for value in zone)
+        or zone[0] >= zone[2] or zone[1] >= zone[3]
+    ):
+        raise InvalidLoadingZone("Invalid saved loading zone")
+    with Image.open(io.BytesIO(original)) as image:
+        width, height = image.size
+        if image.format != "JPEG" or width * height > 24_000_000:
+            raise ValueError("Invalid source JPEG")
+        bounds = (
+            math.floor(zone[0] * width), math.floor(zone[1] * height),
+            math.ceil(zone[2] * width), math.ceil(zone[3] * height),
+        )
+        output = io.BytesIO()
+        image.crop(bounds).convert("RGB").save(output, format="JPEG", quality=95, subsampling=0)
+    frame = output.getvalue()
+    if len(frame) > MAX_JPEG_BYTES:
+        raise ValueError("Loading zone JPEG is too large")
+    return frame
 
 
 def valid_number(value, model):
@@ -316,6 +349,14 @@ def process_once(segment_id=None):
         if len(frame) > MAX_JPEG_BYTES or not frame.startswith(b"\xff\xd8\xff"):
             raise ValueError("invalid JPEG")
     except (OSError, ValueError):
+        _finish_failure(segment.pk, lease, "photo_unavailable")
+        return True
+    try:
+        frame = recognition_frame(frame, segment.loading_zone)
+    except InvalidLoadingZone:
+        _finish_failure(segment.pk, lease, "loading_zone_invalid")
+        return True
+    except (OSError, ValueError, Image.DecompressionBombError):
         _finish_failure(segment.pk, lease, "photo_unavailable")
         return True
     number, source, response_id = "", "model", ""

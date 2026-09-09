@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 from datetime import timedelta
 from unittest.mock import Mock, patch
@@ -6,6 +7,7 @@ from unittest.mock import Mock, patch
 import pytest
 from django.db import connection
 from django.utils import timezone
+from PIL import Image
 
 from apps.cameras import ai, shipping_segment_identity as identity, shipping_segments
 from apps.cameras.models import (
@@ -28,7 +30,7 @@ def configuration(settings, tmp_path):
         yield
 
 
-def segment(*, age=0, model="vehicle_number", number_camera="cam7", camera="cam3"):
+def segment(*, age=0, model="vehicle_number", number_camera="cam7", camera="cam3", loading_zone=None):
     at = timezone.now() - timedelta(seconds=age)
     AlwaysOnCounterCursor.objects.create(camera=camera, last_event_id=1, last_total=1, event_compat_total=1)
     event = AlwaysOnImportedEvent.objects.create(
@@ -40,6 +42,7 @@ def segment(*, age=0, model="vehicle_number", number_camera="cam7", camera="cam3
     )
     result = ShippingLoadingSegment.objects.create(
         session=session, camera=camera, number_camera=number_camera,
+        loading_zone=loading_zone,
         configured_recognition_model=model, recognition_model=model,
         started_at=at, last_counted_at=at, total_bags=1,
         first_event=event, last_event=event, first_upstream_event_id=1, last_upstream_event_id=1,
@@ -98,6 +101,72 @@ def test_primary_failure_calls_gpt_with_exact_same_original_bytes():
     assert row.number_source == "gpt"
     assert row.identity_response_id == "response-test"
     assert row.total_bags == 1
+
+
+def test_primary_and_gpt_share_saved_zone_crop_while_original_photo_is_preserved():
+    image = Image.new("RGB", (120, 80), "red")
+    image.paste("blue", (60, 0, 120, 80))
+    stream = io.BytesIO()
+    image.save(stream, format="JPEG", quality=95, subsampling=0)
+    original = stream.getvalue()
+    row = segment(loading_zone=[0.5, 0.25, 1.0, 0.75])
+    with patch.object(identity, "capture_frame", return_value=original):
+        assert identity.capture_once(row.pk)
+    # A later settings edit must never select a different region for this
+    # segment's already saved evidence, including on fallback retries.
+    ShippingTransportCamera.objects.create(
+        conveyor_camera="cam3", number_camera="cam7", recognition_model="vehicle_number",
+        loading_zone=[0, 0, 0.5, 1],
+    )
+    with patch.object(ai, "_request", return_value=(200, _payload("vehicle_number", []))) as primary, patch.object(identity, "gpt_number", return_value=("123ABC02", "vehicle_number", "response-test")) as gpt:
+        assert identity.process_once(row.pk)
+    crop = primary.call_args.kwargs["raw_body"]
+    gpt.assert_called_once_with(crop)
+    with Image.open(io.BytesIO(crop)) as cropped:
+        assert cropped.size == (60, 40)
+        red, green, blue = cropped.getpixel((30, 20))
+        assert blue > 240 and red < 15 and green < 15
+    row.refresh_from_db()
+    assert row.photo.read() == original
+    assert row.loading_zone == [0.5, 0.25, 1.0, 0.75]
+    assert row.number_source == "gpt"
+    assert row.total_bags == row.session.total_bags == 1
+
+
+@pytest.mark.parametrize("zone", [
+    [True, 0, 1, 1], [0.8, 0, 0.2, 1], [0, 0, 1.1, 1], [0, 0, 1], {"left": 0},
+])
+def test_invalid_zone_does_not_silently_recognize_another_transport_from_full_frame(zone):
+    row = photographed(loading_zone=zone)
+    with patch.object(ai, "_request") as primary, patch.object(identity, "gpt_number") as gpt:
+        assert identity.process_once(row.pk)
+    primary.assert_not_called()
+    gpt.assert_not_called()
+    row.refresh_from_db()
+    assert row.identity_error == "loading_zone_invalid"
+    assert row.identity_status == "unidentified"
+    assert row.photo.read() == JPEG
+    assert row.total_bags == 1
+
+
+@pytest.mark.parametrize("model,detections", [
+    ("vehicle_number", []),
+    ("vehicle_number", [_vehicle(accepted=False)]),
+    ("vehicle_number", [_vehicle("123ABC02"), _vehicle("456DEF02")]),
+    ("wagon_number", [_wagon(checksum_valid=False)]),
+    ("wagon_number", [_wagon("00123455"), _wagon("00123463")]),
+])
+def test_rejected_or_multiple_native_numbers_go_to_gpt_without_using_first_candidate(model, detections):
+    row = photographed(model=model)
+    with patch.object(ai, "_request", return_value=(200, _payload(model, detections))) as primary, patch.object(identity, "gpt_number", return_value=("", "unknown", "response-test")) as gpt:
+        assert identity.process_once(row.pk)
+    primary.assert_called_once()
+    gpt.assert_called_once_with(JPEG)
+    row.refresh_from_db()
+    assert row.identity_status == "unidentified"
+    assert row.identity_error == "number_unreadable"
+    assert row.number == ""
+    assert row.session.total_bags == 1
 
 
 def test_snapshot_and_ocr_have_separate_leases_and_no_network_inside_transaction():
