@@ -1,19 +1,22 @@
 """Superuser configuration and explicit OCR checks for shipping conveyors."""
 
 from typing import ClassVar
+from http.client import HTTPException
 import math
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework import serializers, status
 from rest_framework.exceptions import APIException, NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from PIL import Image
 
 from apps.common.permissions import IsSuperUser
 from apps.eventlog.services import log_event
 
-from .. import ai, services, transport_recognition
+from .. import ai, services, shipping_segment_identity as identity
 from ..models import MonoblockCameraSettings, ShippingTransportCamera
 from ..policies import assert_camera_has_no_active_work
 from ..sessions import lock_camera_binding
@@ -213,9 +216,25 @@ class ShippingTransportRecognizeView(APIView):
                 }
             )
         try:
-            number = transport_recognition.recognize_transport_number(
-                binding.number_camera, binding.recognition_model
-            )
+            frame = identity.capture_frame(binding.number_camera)
+            if not frame:
+                raise ai.AiUnavailable("Shipping camera frame unavailable")
+            frame = identity.recognition_frame(frame, binding.loading_zone)
+            number = None
+            if binding.recognition_model == "vehicle_number":
+                try:
+                    number = identity.primary_number(frame, binding.recognition_model)
+                except (ai.AiUnavailable, ai.AiError, HTTPException, OSError, ValueError, TypeError):
+                    pass  # The manual check follows the same saved-frame fallback.
+            if not number:
+                if not settings.OPENAI_API_KEY:
+                    raise ai.AiError(503, "OpenAI is not configured")
+                number, model, _ = identity.gpt_number(
+                    frame, recognition_model=binding.recognition_model,
+                )
+                if model != binding.recognition_model:
+                    number = None
+            number = identity.valid_number(number, binding.recognition_model) or None
         except ai.AiUnavailable:
             return Response(
                 {
@@ -227,7 +246,7 @@ class ShippingTransportRecognizeView(APIView):
         except ai.AiError as exc:
             return Response(
                 {
-                    "detail": "Выбранная модель распознавания недоступна на ПК камер",
+                    "detail": "Сервис распознавания недоступен. Повторите проверку",
                     "code": "transport_recognition_unavailable",
                 },
                 status=(
@@ -235,6 +254,14 @@ class ShippingTransportRecognizeView(APIView):
                     if exc.status == 503
                     else status.HTTP_502_BAD_GATEWAY
                 ),
+            )
+        except (HTTPException, OSError, ValueError, TypeError, KeyError, Image.DecompressionBombError):
+            return Response(
+                {
+                    "detail": "Не удалось получить кадр или результат распознавания. Повторите проверку",
+                    "code": "transport_recognition_unavailable",
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
             )
         # Do not report a check against an old source/model after another
         # administrator changed or deleted this binding while inference ran.

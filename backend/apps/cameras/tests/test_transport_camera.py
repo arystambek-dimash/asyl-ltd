@@ -1,16 +1,21 @@
 from concurrent.futures import ThreadPoolExecutor
+from http.client import IncompleteRead
+import io
 from threading import Barrier
 from unittest.mock import Mock
 
 import pytest
 from django.db import close_old_connections
 from rest_framework.test import APIClient
+from PIL import Image
 
-from apps.cameras import ai, services, transport_recognition
+from apps.cameras import ai, services, shipping_segment_identity as identity, transport_recognition
 from apps.cameras.api_views.access import CAM_COOKIE
 from apps.cameras.models import (
     AiCountingSession,
     MonoblockCameraSettings,
+    ShippingLoadingEvent,
+    ShippingLoadingSegment,
     ShippingTransportCamera,
 )
 from apps.clients.models import Client
@@ -20,10 +25,11 @@ from apps.orders.models import Order
 pytestmark = pytest.mark.django_db
 URL = "/api/cameras/cam2/transport-camera/"
 DATA = {"number_camera": "cam7", "recognition_model": "vehicle_number"}
+FRAME = b"\xff\xd8\xff\xe0one shipping camera frame"
 
 
 @pytest.fixture
-def setup(monkeypatch, django_user_model):
+def setup(monkeypatch, django_user_model, settings):
     root = django_user_model.objects.create_superuser(
         username="transport-root", password="test"
     )
@@ -33,6 +39,11 @@ def setup(monkeypatch, django_user_model):
         wagon_number_camera_source="cam9",
     )
     monkeypatch.setattr(ai, "AI_KEY", "")
+    settings.OPENAI_API_KEY = "unit-test-only"
+    monkeypatch.setattr(identity, "capture_frame", Mock(return_value=FRAME))
+    monkeypatch.setattr(identity, "primary_number", Mock(return_value="123ABC02"))
+    monkeypatch.setattr(identity, "gpt_number", Mock(return_value=("", "unknown", "test-response")))
+    monkeypatch.setattr(transport_recognition, "recognize_transport_number", Mock(side_effect=AssertionError("Legacy OCR must not run in shipping check")))
     monkeypatch.setattr(
         services,
         "discover_cameras",
@@ -69,6 +80,9 @@ def test_configuration_is_superuser_only(
     assert not ShippingTransportCamera.objects.exists()
     discovery.assert_not_called()
     recognize.assert_not_called()
+    identity.capture_frame.assert_not_called()
+    identity.primary_number.assert_not_called()
+    identity.gpt_number.assert_not_called()
 
 
 def test_anonymous_cannot_read_configuration(setup, api_client):
@@ -231,28 +245,86 @@ def test_delete_is_idempotent_and_releases_camera(setup, binding, auth_client):
     assert EventLog.objects.filter(event_type="camera_settings").count() == 2
 
 
-@pytest.mark.parametrize("number", ["00123456", None])
-def test_recognize_uses_saved_camera_and_model_without_accounting(
+@pytest.mark.parametrize("number,model,expected", [
+    ("00123455", "wagon_number", "00123455"),
+    ("", "wagon_number", None),
+    ("00123456", "wagon_number", None),
+    ("123ABC02", "vehicle_number", None),
+])
+def test_wagon_recognize_uses_only_openai_and_saved_camera_without_accounting(
     setup,
     binding,
     auth_client,
-    monkeypatch,
     number,
+    model,
+    expected,
 ):
     binding.recognition_model = "wagon_number"
     binding.save()
-    recognize = Mock(return_value=number)
-    monkeypatch.setattr(transport_recognition, "recognize_transport_number", recognize)
+    identity.gpt_number.return_value = (number, model, "test-response")
     response = auth_client(setup).post(
         URL + "recognize/", {"number_camera": "cam9"}, format="json"
     )
     assert response.status_code == 200, response.data
-    assert response.data["number"] == number
+    assert response.data["number"] == expected
     assert response.data["observed_at"]
-    recognize.assert_called_once_with("cam7", "wagon_number")
+    identity.capture_frame.assert_called_once_with("cam7")
+    identity.gpt_number.assert_called_once_with(FRAME, recognition_model="wagon_number")
+    identity.primary_number.assert_not_called()
+    transport_recognition.recognize_transport_number.assert_not_called()
     assert not AiCountingSession.objects.exists()
     assert not Order.objects.exists()
     assert not EventLog.objects.exists()
+    assert not ShippingLoadingSegment.objects.exists()
+    assert not ShippingLoadingEvent.objects.exists()
+
+
+def test_truck_recognize_uses_primary_without_openai_when_number_is_accepted(setup, binding, auth_client, settings):
+    settings.OPENAI_API_KEY = ""
+    response = auth_client(setup).post(URL + "recognize/")
+    assert response.status_code == 200
+    assert response.data["number"] == "123ABC02"
+    identity.primary_number.assert_called_once_with(FRAME, "vehicle_number")
+    identity.gpt_number.assert_not_called()
+
+
+@pytest.mark.parametrize("primary", [None, ai.AiUnavailable("private camera host"), ai.AiError(503, "private model path")])
+def test_truck_recognize_falls_back_on_same_frame_for_missing_or_failed_primary(setup, binding, auth_client, primary):
+    if isinstance(primary, Exception):
+        identity.primary_number.side_effect = primary
+    else:
+        identity.primary_number.return_value = primary
+    identity.gpt_number.return_value = ("456DEF02", "vehicle_number", "test-response")
+    response = auth_client(setup).post(URL + "recognize/")
+    assert response.status_code == 200
+    assert response.data["number"] == "456DEF02"
+    identity.capture_frame.assert_called_once_with("cam7")
+    identity.gpt_number.assert_called_once_with(FRAME, recognition_model="vehicle_number")
+
+
+@pytest.mark.parametrize("model", ["vehicle_number", "wagon_number"])
+def test_recognize_uses_saved_zone_crop_for_primary_and_openai(setup, binding, auth_client, model):
+    image = Image.new("RGB", (120, 80), "red")
+    image.paste("blue", (60, 0, 120, 80))
+    source = io.BytesIO()
+    image.save(source, format="JPEG", quality=95, subsampling=0)
+    identity.capture_frame.return_value = source.getvalue()
+    identity.primary_number.return_value = None
+    binding.recognition_model = model
+    binding.loading_zone = [0.5, 0.25, 1, 0.75]
+    binding.save()
+    response = auth_client(setup).post(URL + "recognize/", {"loading_zone": [0, 0, 0.5, 1]}, format="json")
+    assert response.status_code == 200
+    crop = identity.gpt_number.call_args.args[0]
+    with Image.open(io.BytesIO(crop)) as result:
+        assert result.size == (60, 40)
+        red, green, blue = result.getpixel((30, 20))
+        assert blue > 240 and red < 15 and green < 15
+    if model == "vehicle_number":
+        identity.primary_number.assert_called_once_with(crop, model)
+    else:
+        identity.primary_number.assert_not_called()
+    assert response.data["loading_zone"] == [0.5, 0.25, 1, 0.75]
 
 
 @pytest.mark.parametrize(
@@ -268,12 +340,44 @@ def test_recognize_errors_are_not_unrecognized_numbers(
     setup, binding, auth_client, monkeypatch, error, expected
 ):
     monkeypatch.setattr(
-        transport_recognition, "recognize_transport_number", Mock(side_effect=error)
+        identity, "capture_frame", Mock(side_effect=error)
     )
     response = auth_client(setup).post(URL + "recognize/")
     assert response.status_code == expected
     assert "number" not in response.data
     assert "private" not in str(response.data)
+
+
+@pytest.mark.parametrize("error", [TimeoutError("private key"), IncompleteRead(b"private body"), ValueError("private OpenAI response")])
+def test_openai_failure_is_sanitized_and_never_falls_back_to_wagon_native(setup, binding, auth_client, error):
+    binding.recognition_model = "wagon_number"
+    binding.save()
+    identity.gpt_number.side_effect = error
+    response = auth_client(setup).post(URL + "recognize/")
+    assert response.status_code == 502
+    assert "number" not in response.data
+    assert "private" not in str(response.data)
+    identity.primary_number.assert_not_called()
+
+
+@pytest.mark.parametrize("model", ["vehicle_number", "wagon_number"])
+def test_missing_openai_key_is_service_unavailable_when_needed(setup, binding, auth_client, settings, model):
+    binding.recognition_model = model
+    binding.save()
+    settings.OPENAI_API_KEY = ""
+    identity.primary_number.return_value = None
+    response = auth_client(setup).post(URL + "recognize/")
+    assert response.status_code == 503
+    assert "number" not in response.data
+    identity.gpt_number.assert_not_called()
+
+
+def test_missing_photo_never_calls_number_models(setup, binding, auth_client):
+    identity.capture_frame.return_value = None
+    response = auth_client(setup).post(URL + "recognize/")
+    assert response.status_code == 502
+    identity.primary_number.assert_not_called()
+    identity.gpt_number.assert_not_called()
 
 
 def test_recognize_requires_saved_configuration(setup, auth_client):
@@ -289,7 +393,7 @@ def test_recognize_discards_result_after_configuration_changed(
         binding.save()
         return "123ABC02"
 
-    monkeypatch.setattr(transport_recognition, "recognize_transport_number", recognize)
+    monkeypatch.setattr(identity, "primary_number", recognize)
     response = auth_client(setup).post(URL + "recognize/")
     assert response.status_code == 409
     assert response.data["code"] == "transport_camera_changed"
