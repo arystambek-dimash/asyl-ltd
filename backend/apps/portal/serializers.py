@@ -7,7 +7,7 @@ from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Store
 from apps.orders.models import Order, OrderItem, Payment
 from apps.orders.statuses import is_financial
-
+from apps.orders.serializers import DepartmentLabelMixin
 
 MAX_PORTAL_ORDER_ITEMS = 100
 MAX_PORTAL_ITEM_QUANTITY = 1_000_000
@@ -75,7 +75,8 @@ class PortalOrderItemSerializer(serializers.ModelSerializer):
         }
 
 
-class PortalOrderSerializer(serializers.ModelSerializer):
+class PortalOrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
+    department_name = serializers.SerializerMethodField()
     items = PortalOrderItemSerializer(many=True)
     settlement_intent = serializers.ChoiceField(
         choices=Order.SETTLEMENT_INTENTS, required=False)
@@ -99,17 +100,43 @@ class PortalOrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ["id", "status", "payment_status", "settlement_intent", "payment_method",
-                  "currency",
-                  "transport_type",
-                  "store", "store_name",
-                  "items", "total_amount", "paid_total", "remaining_amount",
-                  "has_pending_payment", "available_amount", "payment_parts",
-                  "apipay_invoice", "client_phone",
-                  "receipt_available",
-                  "truck_number", "debt_requested", "debt_override", "created_at"]
-        read_only_fields = ["status", "payment_status",
-                            "truck_number", "debt_requested", "debt_override"]
+        fields = [
+            "id",
+            "status",
+            "payment_status",
+            "settlement_intent",
+            "payment_method",
+            "currency",
+            "department",
+            "department_name",
+            "rejection_reason",
+            "transport_type",
+            "store",
+            "store_name",
+            "items",
+            "total_amount",
+            "paid_total",
+            "remaining_amount",
+            "has_pending_payment",
+            "available_amount",
+            "payment_parts",
+            "apipay_invoice",
+            "client_phone",
+            "receipt_available",
+            "truck_number",
+            "debt_requested",
+            "debt_override",
+            "created_at",
+        ]
+        read_only_fields = [
+            "status",
+            "payment_status",
+            "department",
+            "rejection_reason",
+            "truck_number",
+            "debt_requested",
+            "debt_override",
+        ]
 
     def validate_store(self, store):
         if store is None:

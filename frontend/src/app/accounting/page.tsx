@@ -1,5 +1,7 @@
 "use client";
 import { OrderConfirmation, type OrderConfirmationData } from "@/components/order-confirmation";
+import { OrderRejectionDialog } from "@/components/order-rejection-dialog";
+import { DepartmentComparison } from "@/components/reports/department-comparison";
 import { useCallback, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
@@ -222,6 +224,7 @@ function ConfirmQueueSection({
   canReceivePayments: boolean;
 }) {
   const [confirming, setConfirming] = useState<Order | null>(null);
+  const [rejecting, setRejecting] = useState<Order | null>(null);
 
   const {
     data: confirmationDepartments,
@@ -230,6 +233,17 @@ function ConfirmQueueSection({
   } = useApi<Department[]>(confirming ? "/departments/" : null);
   return (
     <section className="flex flex-col gap-4">
+      {rejecting && (
+        <OrderRejectionDialog
+          key={rejecting.id}
+          order={rejecting}
+          onClose={() => setRejecting(null)}
+          onDone={() => {
+            setRejecting(null);
+            void q.reload();
+          }}
+        />
+      )}
       <Modal
         open={!!confirming}
         onClose={() => {
@@ -285,9 +299,16 @@ function ConfirmQueueSection({
                         color={o.department ? o.department_color : undefined}
                       />
                     </div>
-                    <Button size="sm" disabled={q.busy} onClick={() => setConfirming(o)}>
-                      Проверить и подтвердить
-                    </Button>
+                    <div className="flex flex-wrap gap-2">
+                      <Button className="flex-1" size="sm" disabled={q.busy} onClick={() => setConfirming(o)}>
+                        Проверить и подтвердить
+                      </Button>
+                      {o.status === "pending" && (
+                        <Button size="sm" variant="outline" disabled={q.busy} onClick={() => setRejecting(o)}>
+                          Отклонить
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -814,7 +835,9 @@ function CashierInner() {
     loading: summaryLoading,
     error: summaryError,
     reload: reloadSummary,
-  } = useApi<Pick<ReportSummary, "income">>(canReports && tab === "overview" && validOverview ? reportUrl : null);
+  } = useApi<Pick<ReportSummary, "income" | "departments" | "from" | "to">>(
+    canReports && tab === "overview" && validOverview ? reportUrl : null,
+  );
   const journalFilters = filtersByTab.journal;
   const journalLog = usePagedApi<CashierLogItem>(
     canPayments && tab === "journal" && filtersAreValid(journalFilters)
@@ -1074,6 +1097,9 @@ function CashierInner() {
               />
             </section>
 
+            {canReports && summary?.departments && (
+              <DepartmentComparison rows={summary.departments} incomeOnly from={summary.from} to={summary.to} />
+            )}
             <DebtsSection
               rows={debtRows}
               loading={debtsLoading}

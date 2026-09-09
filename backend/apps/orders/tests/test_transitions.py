@@ -21,14 +21,14 @@ def test_confirm_from_pending(make_order, make_user):
 
 def test_reject_from_pending(make_order, make_user):
     o = make_order("pending")
-    services.reject_order(o, make_user())
+    services.reject_order(o, make_user(), reason="Нет товара")
     assert o.status == "rejected"
 
 
 def test_cannot_reject_confirmed(make_order, make_user):
     o = make_order("confirmed")
     with pytest.raises(ValidationError):
-        services.reject_order(o, make_user())
+        services.reject_order(o, make_user(), reason="Нет товара")
 
 
 def test_transition_rejects_illegal(make_order, make_user):

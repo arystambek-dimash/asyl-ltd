@@ -21,7 +21,9 @@ def shipped_order(db):
 def test_reject_endpoint(db, manager, auth_client):
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = Order.objects.create(client=c, status="pending")
-    r = auth_client(manager).post(f"/api/orders/{o.id}/reject/")
+    r = auth_client(manager).post(
+        f"/api/orders/{o.id}/reject/", {"reason": "Нет товара"}
+    )
     assert r.status_code == 200
     o.refresh_from_db()
     assert o.status == "rejected"

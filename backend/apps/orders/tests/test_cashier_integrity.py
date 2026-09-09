@@ -112,7 +112,7 @@ def test_journal_only_latest_confirmation_can_reopen_across_pages_and_dates(auth
     assert next(row for row in old_period.data if row['id'] == old_event.pk)['can_reopen'] is False
 
 
-def test_income_projection_matches_full_report_with_two_queries(accountant):
+def test_income_projection_matches_full_report_with_three_queries(accountant):
     first = record_staff_payment(_order(), '100', accountant)
     create_cash_refund(first, accountant, amount='20', reason='Возврат')
     from apps.orders.models import OrderItem
@@ -122,8 +122,15 @@ def test_income_projection_matches_full_report_with_two_queries(accountant):
     full = summary_report(Order.objects.all())
     with CaptureQueriesContext(connection) as queries:
         compact = summary_report(Order.objects.all(), income_only=True)
-    assert compact == {key: full[key] for key in ('from', 'to', 'income')}
-    assert len(queries) == 2
+    assert {key: compact[key] for key in ("from", "to", "income")} == {
+        key: full[key] for key in ("from", "to", "income")
+    }
+    assert compact["departments"] == [
+        {**row, "orders": None, "sales_by_currency": None}
+        for row in full["departments"]
+    ]
+    # Two grouped money queries and one shared department-label lookup.
+    assert len(queries) == 3
 
 
 @pytest.mark.django_db(transaction=True)

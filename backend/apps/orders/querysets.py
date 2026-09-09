@@ -270,16 +270,17 @@ def with_order_api_relations(queryset: QuerySet[Order]) -> QuerySet[Order]:
     status_requests = StatusChangeRequest.objects.select_related(
         "requested_by", "decided_by"
     )
-    return (
-        queryset
-        .select_related(
-            "client__user", "store", "warehouse", "shipment",
-            "debt_override_by", "deleted_by"
-        )
-        .prefetch_related(
-            "items__product",
-            "client__prices",
-            Prefetch("payments", queryset=payments),
-            Prefetch("status_requests", queryset=status_requests),
-        )
+    return queryset.select_related(
+        "client__user",
+        "client__department",
+        "store",
+        "warehouse",
+        "shipment",
+        "debt_override_by",
+        "deleted_by",
+    ).prefetch_related(
+        "items__product",
+        "client__prices",
+        Prefetch("payments", queryset=payments),
+        Prefetch("status_requests", queryset=status_requests),
     )

@@ -192,6 +192,9 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
             </div>
           </CardHeader>
           <CardContent>
+            <p className="mb-3 text-sm text-[var(--muted-foreground)]">
+              Отдел продаж: {order.department_name || order.department || "Нет отдела"}
+            </p>
             <Table>
               <THead>
                 <TR>
@@ -233,7 +236,12 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
 
         {step === "rejected" && (
           <Card>
-            <CardContent className="py-6 text-center text-sm text-[var(--destructive)]">Заказ отклонён.</CardContent>
+            <CardContent className="space-y-2 py-6 text-sm">
+              <p className="font-medium text-[var(--destructive)]">
+                {order.status === "rejected" ? "Заявка отклонена" : "Заказ отменён"}
+              </p>
+              {order.status === "rejected" && <p>{order.rejection_reason || "Уточните причину у менеджера."}</p>}
+            </CardContent>
           </Card>
         )}
 

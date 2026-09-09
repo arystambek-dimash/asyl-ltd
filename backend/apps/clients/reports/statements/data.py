@@ -75,7 +75,7 @@ def local_time(value):
 
 
 def department_name(data: StatementData, code: str) -> str:
-    return data.department_names.get(code, code)
+    return data.department_names.get(code, code or "Нет отдела")
 
 
 def _payments_in_period(queryset, date_from, date_to):

@@ -18,7 +18,7 @@ def build_order_form_options(user) -> dict:
     bank details, client debt, store schedules or CV metadata.
     """
     clients = scope_by_client_department(
-        Client.objects.select_related("user"),
+        Client.objects.select_related("user", "department"),
         user,
     ).only(
         "id",
@@ -28,6 +28,9 @@ def build_order_form_options(user) -> dict:
         "company_name",
         "phone",
         "currency",
+        "department_id",
+        "department__code",
+        "department__name",
     ).order_by("id")
     products = (
         Product.objects.filter(is_active=True)
@@ -87,6 +90,8 @@ def build_order_form_options(user) -> dict:
                 "company_name": client.company_name,
                 "phone": client.phone,
                 "currency": client.currency,
+                "department_code": client.department.code if client.department_id else "",
+                "department_name": client.department.name if client.department_id else "",
             }
             for client in clients
         ],

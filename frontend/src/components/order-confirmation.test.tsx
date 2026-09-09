@@ -15,6 +15,23 @@ const departments = [
   { code: "city", name: "Город", is_active: true },
 ] as Department[];
 
+it("uses the assigned client department and cannot redirect a sale to another", async () => {
+  const confirm = vi.fn();
+  render(
+    <OrderConfirmation
+      order={{ ...order, client_department: "city", client_department_name: "Город" }}
+      departments={departments}
+      busy={false}
+      onConfirm={confirm}
+    />,
+  );
+  expect(screen.getByRole("combobox")).toHaveValue("city");
+  expect(screen.getByRole("combobox")).toBeDisabled();
+  expect(screen.queryByRole("option", { name: "Мельница" })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Подтвердить заказ" }));
+  expect(confirm).toHaveBeenCalledWith({ department: "city", prices: { "1": "100" } });
+});
+
 it("requires an explicit department even when a legacy order contains the default", async () => {
   const user = userEvent.setup();
   const confirm = vi.fn();

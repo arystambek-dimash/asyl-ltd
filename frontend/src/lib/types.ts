@@ -142,7 +142,19 @@ export interface ReportClientRow {
 }
 
 /** Canonical accounting response from GET /reports/summary/. */
+export interface DepartmentReport {
+  code: string;
+  name: string;
+  color: string;
+  orders: number | null;
+  sales_by_currency: Record<string, string> | null;
+  received_by_currency: Record<string, string>;
+  refunded_by_currency: Record<string, string>;
+  net_by_currency: Record<string, string>;
+}
+
 export interface ReportSummary {
+  departments?: DepartmentReport[];
   from: string | null;
   to: string | null;
   income: {
@@ -259,6 +271,9 @@ interface StatusChangeRequest {
   decided_at?: string | null;
 }
 export interface Order {
+  rejection_reason?: string;
+  client_department?: string;
+  client_department_name?: string;
   reviewed_at?: string | null;
   reviewed_by?: number | null;
   id: number;
@@ -322,6 +337,9 @@ export interface DashboardOperationalSummary {
 
 /** Client-portal projection: prices are deliberately hidden until confirmation. */
 export interface PortalOrder {
+  department?: string;
+  department_name?: string;
+  rejection_reason?: string;
   id: number;
   status: string;
   payment_status?: string;

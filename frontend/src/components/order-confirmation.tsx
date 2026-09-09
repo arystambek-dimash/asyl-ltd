@@ -24,14 +24,14 @@ export function OrderConfirmation({
   onConfirm: (data: OrderConfirmationData) => void;
 }) {
   // Even legacy requests may contain a department assigned by the old default.
-  const [department, setDepartment] = useState("");
+  const [department, setDepartment] = useState(order.client_department || "");
   const [prices, setPrices] = useState<Record<string, string>>(() =>
     Object.fromEntries(
       order.items.map((item) => [String(item.id), String(item.unit_price ?? item.client_price ?? "")]),
     ),
   );
   const valid =
-    department &&
+    departments.some((row) => row.code === department && row.is_active !== false) &&
     order.items.every((item) => {
       const value = Number(prices[String(item.id)]);
       return Number.isFinite(value) && value > 0;
@@ -46,10 +46,17 @@ export function OrderConfirmation({
     >
       <label className="grid gap-1.5 text-sm font-medium">
         Отдел продаж
-        <Select value={department} onChange={(event) => setDepartment(event.target.value)} required disabled={busy}>
+        <Select
+          value={department}
+          onChange={(event) => setDepartment(event.target.value)}
+          required
+          disabled={busy || !!order.client_department}
+        >
           <option value="">Выберите отдел продаж</option>
           {departments
-            .filter((row) => row.is_active !== false)
+            .filter(
+              (row) => row.is_active !== false && (!order.client_department || row.code === order.client_department),
+            )
             .map((row) => (
               <option key={row.code} value={row.code}>
                 {row.name}
@@ -57,6 +64,18 @@ export function OrderConfirmation({
             ))}
         </Select>
       </label>
+      {order.client_department && (
+        <p className="text-xs text-[var(--muted-foreground)]">
+          Отдел клиента: {order.client_department_name || order.client_department}. Продажа и оплата будут учтены здесь.
+        </p>
+      )}
+      {order.client_department &&
+        departments.length > 0 &&
+        !departments.some((row) => row.code === order.client_department && row.is_active !== false) && (
+          <p role="alert" className="text-sm text-[var(--destructive)]">
+            Отдел клиента недоступен. Проверьте его в карточке клиента.
+          </p>
+        )}
       {!departments.length && (
         <p role="status" className="text-sm text-[var(--muted-foreground)]">
           Нет доступных отделов. Проверьте справочник отделов продаж.

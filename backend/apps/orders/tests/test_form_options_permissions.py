@@ -76,6 +76,8 @@ def test_order_permission_grants_minimal_form_options(
         "company_name": "ТОО Север",
         "phone": "+77010000000",
         "currency": "USD",
+        "department_code": client.department.code if client.department_id else "",
+        "department_name": client.department.name if client.department_id else "",
     }
     main = Warehouse.objects.get(is_default=True)
     assert products[product.id] == {

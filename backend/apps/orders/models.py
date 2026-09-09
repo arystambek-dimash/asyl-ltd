@@ -64,6 +64,9 @@ class Order(models.Model):
     reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
                                     on_delete=models.SET_NULL, related_name="reviewed_orders")
     status = models.CharField(max_length=20, default="draft")
+    rejection_reason = models.CharField(
+        max_length=500, blank=True, default="", db_default=""
+    )
     payment_status = models.CharField(max_length=20, default="unpaid")
     settlement_intent = models.CharField(max_length=20, default="debt")
     # Выбор клиента. До выбора оплаты оба поля имеют значение pending;

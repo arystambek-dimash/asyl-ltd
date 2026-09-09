@@ -324,6 +324,12 @@ class PaymentQueueSerializer(DepartmentLabelMixin, PaymentSerializer):
 
 
 class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
+    client_department = serializers.CharField(
+        source="client.department.code", read_only=True, default=""
+    )
+    client_department_name = serializers.CharField(
+        source="client.department.name", read_only=True, default=""
+    )
     items = OrderItemSerializer(many=True, allow_empty=False, max_length=100)
     transport_type = serializers.ChoiceField(choices=Order.TRANSPORT_TYPES, required=False)
     edit_reason = serializers.CharField(
@@ -377,23 +383,61 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ["id", "client", "store", "warehouse", "warehouse_name",
-                  "client_name", "client_phone",
-                  "department", "department_name", "department_color", "status",
-                  "reviewed_at", "reviewed_by",
-                  "currency",
-                  "payment_status", "settlement_intent", "payment_method", "transport_type",
-                  "truck_number", "arrival_date", "notes", "items", "total_amount",
-                  "paid_total", "remaining_amount", "is_fully_paid",
-                  "is_debt", "debt_override", "debt_override_by_name", "pending_status_requests",
-                  "payments", "pending_payments",
-                  "weigh_in_kg",
-                  "bags_loaded", "bag_estimate_kg", "bag_weight_kg", "created_at",
-                  "shipped_at", "loading_camera", "repeated_from",
-                  "template_order",
-                  "edit_reason",
-                  "deleted_at", "deleted_by_name"]
-        read_only_fields = ["debt_override", "repeated_from", "deleted_at"]
+        fields = [
+            "id",
+            "client",
+            "store",
+            "warehouse",
+            "warehouse_name",
+            "client_name",
+            "client_phone",
+            "client_department",
+            "client_department_name",
+            "department",
+            "department_name",
+            "department_color",
+            "status",
+            "reviewed_at",
+            "reviewed_by",
+            "rejection_reason",
+            "currency",
+            "payment_status",
+            "settlement_intent",
+            "payment_method",
+            "transport_type",
+            "truck_number",
+            "arrival_date",
+            "notes",
+            "items",
+            "total_amount",
+            "paid_total",
+            "remaining_amount",
+            "is_fully_paid",
+            "is_debt",
+            "debt_override",
+            "debt_override_by_name",
+            "pending_status_requests",
+            "payments",
+            "pending_payments",
+            "weigh_in_kg",
+            "bags_loaded",
+            "bag_estimate_kg",
+            "bag_weight_kg",
+            "created_at",
+            "shipped_at",
+            "loading_camera",
+            "repeated_from",
+            "template_order",
+            "edit_reason",
+            "deleted_at",
+            "deleted_by_name",
+        ]
+        read_only_fields = [
+            "debt_override",
+            "repeated_from",
+            "deleted_at",
+            "rejection_reason",
+        ]
         extra_kwargs = {
             "truck_number": {"required": False},
             "arrival_date": {"required": False, "allow_null": True},
@@ -556,16 +600,28 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
             if len(product_ids) != len(set(product_ids)):
                 raise serializers.ValidationError({"items": "Объедините повторяющиеся товары в одну строку"})
         if self.instance is not None and attrs.get("template_order") is not None:
-            raise serializers.ValidationError({
-                "detail": "Шаблон указывается только при создании заказа",
-                "code": "template_on_update",
-            })
+            raise serializers.ValidationError(
+                {
+                    "detail": "Шаблон указывается только при создании заказа",
+                    "code": "template_on_update",
+                }
+            )
         store = attrs.get("store")
         client = attrs.get("client") or getattr(self.instance, "client", None)
+        if self.instance is None and client and client.department_id:
+            code = client.department.code
+            if attrs.get("department") not in (None, "", code):
+                raise serializers.ValidationError(
+                    {"department": "Заказ должен учитываться в отделе клиента"}
+                )
+            attrs["department"] = code
         if store and client and store.client_id != client.id:
             raise serializers.ValidationError(
-                {"detail": "Магазин принадлежит другому клиенту",
-                 "code": "store_mismatch"})
+                {
+                    "detail": "Магазин принадлежит другому клиенту",
+                    "code": "store_mismatch",
+                }
+            )
         intent = attrs.get("settlement_intent")
         if self.instance is None and intent is not None:
             attrs["payment_method"] = {
@@ -600,12 +656,16 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         validated_data.setdefault("currency", validated_data["client"].currency)
 
         employee = getattr(user, "employee", None)
-        assigned = getattr(employee, "sales_department", None)
+        assigned = validated_data["client"].department or getattr(
+            employee, "sales_department", None
+        )
         if assigned is not None:
             if not assigned.is_active:
-                raise serializers.ValidationError({
-                    "department": "Закреплённый отдел продаж отключён — обратитесь к администратору"
-                })
+                raise serializers.ValidationError(
+                    {
+                        "department": "Закреплённый отдел продаж отключён — обратитесь к администратору"
+                    }
+                )
             validated_data["department"] = assigned.code
         else:
             validated_data.setdefault(

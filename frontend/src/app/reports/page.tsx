@@ -6,6 +6,7 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis } f
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { ClientsTable } from "@/components/reports/clients-table";
+import { DepartmentComparison } from "@/components/reports/department-comparison";
 import { CHART_TOOLTIP_STYLE } from "@/components/ui/chart-tooltip";
 import { LoadMore } from "@/components/ui/load-more";
 import { CurrencyAmounts } from "@/components/ui/currency-amounts";
@@ -562,6 +563,7 @@ function ReportsPageInner() {
         {data && (
           <>
             <PeriodStory data={data} />
+            {data.departments && <DepartmentComparison rows={data.departments} from={data.from} to={data.to} />}
             <DebtNowBand debt={data.debt_now} />
             <DaysChart data={data} />
             <div className="flex flex-col gap-3">

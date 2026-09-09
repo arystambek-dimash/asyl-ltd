@@ -2,19 +2,7 @@
 
 import { useId, useState } from "react";
 import Link from "next/link";
-import {
-  Activity,
-  ArrowDownToLine,
-  Boxes,
-  Gauge,
-  History,
-  Plus,
-  Route,
-  Settings2,
-  ShieldAlert,
-  Sprout,
-  Warehouse,
-} from "lucide-react";
+import { Activity, Gauge, History, Plus, Route, Settings2, ShieldAlert, Sprout, Warehouse } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Badge } from "@/components/ui/badge";
@@ -66,146 +54,69 @@ function SummaryMetric({
     blue: "bg-[#315d74] text-white",
   };
   return (
-    <div className="flex min-w-0 items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-      <div className={cn("flex size-10 shrink-0 items-center justify-center rounded-xl", tones[tone])}>
+    <div className="flex min-w-0 items-center gap-3 rounded-xl border bg-[var(--card)] p-3 sm:p-4">
+      <div className={cn("hidden size-10 shrink-0 items-center justify-center rounded-xl sm:flex", tones[tone])}>
         <Icon className="size-5" />
       </div>
       <div className="min-w-0">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">{label}</div>
-        <div className="mt-0.5 truncate text-xl font-bold tabular-nums text-slate-900">{value}</div>
-        <div className="truncate text-xs text-slate-400">{note}</div>
+        <div className="text-xs text-[var(--muted-foreground)]">{label}</div>
+        <div className="mt-0.5 truncate text-xl font-semibold tabular-nums">{value}</div>
+        <div className="truncate text-xs text-[var(--muted-foreground)]">{note}</div>
       </div>
     </div>
   );
 }
 
 function SiloTank({ silo }: { silo: GrainSilo }) {
-  const rawId = useId();
-  const svgId = rawId.replace(/:/g, "");
+  const clipId = useId().replace(/:/g, "");
   const fill = clampPercent(silo.fill_percent);
-  const reserve = clampPercent((silo.reserved_kg / Math.max(1, silo.total_capacity_kg)) * 100);
-  const tankTop = 72;
-  const tankBottom = 326;
-  const tankHeight = tankBottom - tankTop;
-  const fillY = tankBottom - (tankHeight * fill) / 100;
-  const reserveHeight = (tankHeight * reserve) / 100;
-  const reserveY = Math.max(tankTop, fillY - reserveHeight);
-  const color = silo.silo_type_color || (silo.is_quarantine ? "#B8463B" : DEFAULT_TYPE_COLOR);
-  const inactive = silo.status !== "active";
-
+  const reserve = Math.min(100 - fill, clampPercent((silo.reserved_kg / Math.max(1, silo.total_capacity_kg)) * 100));
+  const color = silo.silo_type_color || DEFAULT_TYPE_COLOR;
   return (
-    <div className="relative mx-auto w-full max-w-[210px]">
-      {silo.is_default_route && (
-        <div className="absolute left-1/2 top-2 z-10 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-full bg-[#173947] px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-white shadow-lg">
-          <ArrowDownToLine className="size-3.5" />
-          Приход сюда
-        </div>
-      )}
-      <svg
-        viewBox="0 0 320 390"
-        role="img"
-        aria-label={`${silo.name}: заполнено ${fill}%`}
-        className="h-auto w-full drop-shadow-[0_24px_24px_rgba(15,23,42,0.18)]"
-      >
-        <defs>
-          <clipPath id={`tank-${svgId}`}>
-            <path d="M54 91 82 40h156l28 51v211l-71 56h-70l-71-56Z" />
-          </clipPath>
-          <linearGradient id={`steel-${svgId}`} x1="0" x2="1">
-            <stop offset="0" stopColor="#d3d7d8" />
-            <stop offset=".18" stopColor="#f4f5f2" />
-            <stop offset=".5" stopColor="#c8cdce" />
-            <stop offset=".78" stopColor="#f7f7f4" />
-            <stop offset="1" stopColor="#afb6b8" />
-          </linearGradient>
-          <linearGradient id={`grain-${svgId}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stopColor={color} stopOpacity=".76" />
-            <stop offset="1" stopColor={color} />
-          </linearGradient>
-          <pattern
-            id={`reserve-${svgId}`}
-            width="9"
-            height="9"
-            patternUnits="userSpaceOnUse"
-            patternTransform="rotate(45)"
-          >
-            <rect width="4" height="9" fill="#f1b447" fillOpacity=".88" />
-          </pattern>
-          <pattern id={`grid-${svgId}`} width="18" height="18" patternUnits="userSpaceOnUse">
-            <path d="M18 0H0v18" fill="none" stroke="#64748b" strokeOpacity=".13" strokeWidth="1" />
-          </pattern>
-        </defs>
-
-        {silo.is_default_route && (
-          <g className="animate-pulse">
-            <path d="M160 0v31" stroke="#173947" strokeWidth="5" strokeLinecap="round" />
-            <path d="m150 21 10 10 10-10" fill="none" stroke="#173947" strokeWidth="5" strokeLinecap="round" />
-          </g>
+    <svg
+      viewBox="0 0 120 170"
+      role="img"
+      aria-label={`${silo.name}: заполнено ${fill}%`}
+      className="mx-auto w-16 shrink-0 sm:w-24"
+    >
+      <defs>
+        <clipPath id={clipId}>
+          <path d="M20 30 Q60 5 100 30 V130 L72 150 H48 L20 130Z" />
+        </clipPath>
+      </defs>
+      <path
+        d="M20 30 Q60 5 100 30 V130 L72 150 H48 L20 130Z"
+        fill="var(--muted)"
+        stroke="var(--muted-foreground)"
+        strokeWidth="1.5"
+      />
+      <g clipPath={`url(#${clipId})`}>
+        {fill > 0 && <rect x="20" y={150 - fill * 1.3} width="80" height={fill * 1.3} fill={color} fillOpacity=".75" />}
+        {reserve > 0 && (
+          <rect
+            x="20"
+            y={150 - (fill + reserve) * 1.3}
+            width="80"
+            height={reserve * 1.3}
+            fill={color}
+            fillOpacity=".2"
+          />
         )}
-
-        <path
-          d="M54 91 82 40h156l28 51v211l-71 56h-70l-71-56Z"
-          fill={`url(#steel-${svgId})`}
-          stroke="#667174"
-          strokeWidth="3"
-          opacity={inactive ? 0.58 : 1}
-        />
-        <g clipPath={`url(#tank-${svgId})`} opacity={inactive ? 0.55 : 1}>
-          <rect x="44" y={fillY} width="232" height={tankBottom - fillY + 40} fill={`url(#grain-${svgId})`} />
-          {reserveHeight > 0 && (
-            <rect x="44" y={reserveY} width="232" height={fillY - reserveY} fill={`url(#reserve-${svgId})`} />
-          )}
-          <rect x="44" y="40" width="232" height="318" fill={`url(#grid-${svgId})`} />
-        </g>
-
-        <path
-          d="M54 91h212M54 132h212M54 176h212M54 220h212M54 264h212M82 40l-28 51m184-51 28 51"
-          fill="none"
-          stroke="#758083"
-          strokeOpacity=".52"
-          strokeWidth="1.4"
-        />
-        <path d="M91 45v266M229 45v266" stroke="white" strokeOpacity=".43" strokeWidth="3" />
-        <path d="M125 358v17m70-17v17M105 375h110" fill="none" stroke="#667174" strokeWidth="4" strokeLinecap="round" />
-
-        <g transform="translate(270 92)">
-          <path d="M0 0v218" stroke="#596568" strokeWidth="3" />
-          {Array.from({ length: 12 }).map((_, index) => (
-            <path key={index} d={`M0 ${index * 18 + 4}h18`} stroke="#596568" strokeWidth="2" />
-          ))}
-          <path d="M18 0v218" stroke="#596568" strokeWidth="3" />
-        </g>
-
-        <rect
-          x="92"
-          y="100"
-          width="136"
-          height="72"
-          rx="10"
-          fill="#152b32"
-          fillOpacity=".9"
-          stroke="white"
-          strokeOpacity=".16"
-        />
-        <text x="160" y="125" textAnchor="middle" fill="#aebbc0" fontSize="10" fontWeight="700" letterSpacing="2">
-          УРОВЕНЬ
-        </text>
-        <text x="160" y="154" textAnchor="middle" fill="white" fontSize="30" fontWeight="800">
-          {fill}%
-        </text>
-        <circle cx="77" cy="113" r="5" fill={inactive ? "#d8a443" : "#55b977"} stroke="white" strokeWidth="2" />
-
-        {silo.sensor_difference_kg != null && Math.abs(silo.sensor_difference_kg) > 0 && (
-          <g transform="translate(78 284)">
-            <rect width="164" height="32" rx="8" fill="#fff" fillOpacity=".88" />
-            <text x="82" y="21" textAnchor="middle" fill="#475569" fontSize="11" fontWeight="700">
-              ДАТЧИК Δ {formatKg(silo.sensor_difference_kg)}
-            </text>
-          </g>
-        )}
-      </svg>
-      <div className="pointer-events-none absolute inset-x-[17%] bottom-[11%] h-4 rounded-[50%] bg-slate-950/20 blur-md" />
-    </div>
+        {[45, 70, 95, 120].map((y) => (
+          <path key={y} d={`M20 ${y}H100`} stroke="var(--muted-foreground)" strokeOpacity=".2" />
+        ))}
+      </g>
+      <path
+        d="M20 30 Q60 50 100 30 M48 150 V160 M72 150 V160 M38 160 H82"
+        fill="none"
+        stroke="var(--muted-foreground)"
+        strokeWidth="1.5"
+      />
+      <rect x="27" y="62" width="66" height="36" rx="8" fill="var(--card)" />
+      <text x="60" y="86" textAnchor="middle" fill="var(--foreground)" fontSize="20" fontWeight="600">
+        {Math.round(fill)}%
+      </text>
+    </svg>
   );
 }
 
@@ -618,123 +529,113 @@ function SiloCard({
   silo,
   canAdjust,
   canOpenWagons,
-  index,
   onAdjust,
   onMovements,
 }: {
   silo: GrainSilo;
   canAdjust: boolean;
   canOpenWagons: boolean;
-  index: number;
   onAdjust: () => void;
   onMovements: () => void;
 }) {
-  const grainDescription = silo.silo_type_name || "Тип зерна не назначен";
-
   return (
-    <Card
-      className="group relative overflow-hidden border-slate-200/80 bg-[#f7f5ef] shadow-[0_16px_44px_rgba(39,50,54,0.08)] animate-fade-up"
-      style={{ animationDelay: `${Math.min(index * 70, 350)}ms` }}
-    >
-      <div className="absolute inset-0 opacity-[0.22] [background-image:radial-gradient(#657276_0.8px,transparent_0.8px)] [background-size:16px_16px]" />
-      <div className="relative grid items-center gap-4 p-4 sm:p-5 md:grid-cols-[200px_minmax(0,1fr)]">
-        <SiloTank silo={silo} />
-        <div className="flex min-w-0 flex-col self-stretch py-1">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h2 className="truncate text-lg font-black tracking-[-0.025em] text-[#253136]">{silo.name}</h2>
-              <div className="mt-0.5 flex items-center gap-1.5 text-sm text-[#6d777a]">
-                <Sprout className="size-4" />
-                {grainDescription}
-              </div>
+    <Card className="flex flex-col overflow-hidden">
+      <div className="flex flex-wrap items-start justify-between gap-2 border-b px-5 py-4">
+        <div>
+          <h2 className="text-base font-semibold">{silo.name}</h2>
+          <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+            {silo.silo_type_name || "Тип зерна не назначен"}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {silo.is_default_route && <Badge tone="success">Основной приход</Badge>}
+          {silo.is_quarantine && <Badge tone="destructive">Карантин</Badge>}
+          {silo.status !== "active" && (
+            <Badge tone="warning">{silo.status === "blocked" ? "Заблокирован" : "Обслуживание"}</Badge>
+          )}
+          {silo.status === "active" && !silo.is_quarantine && (
+            <Badge tone="muted">{silo.current_balance_kg ? "В хранении" : "Пустой"}</Badge>
+          )}
+        </div>
+      </div>
+      <div className="flex flex-1 flex-col p-5">
+        <div className="flex items-center gap-3 sm:gap-5">
+          <SiloTank silo={silo} />
+          <dl className="grid min-w-0 flex-1 grid-cols-2 gap-x-4 gap-y-4 text-sm">
+            <div>
+              <dt className="text-[var(--muted-foreground)]">В хранении</dt>
+              <dd className="mt-1 text-lg font-semibold tabular-nums">{formatKg(silo.current_balance_kg)}</dd>
+            </div>
+            <div>
+              <dt className="text-[var(--muted-foreground)]">Свободно</dt>
+              <dd className="mt-1 text-lg font-semibold tabular-nums text-[var(--success)]">
+                {formatKg(silo.free_capacity_kg)}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[var(--muted-foreground)]">Вместимость</dt>
+              <dd className="mt-1 font-medium tabular-nums">{formatKg(silo.total_capacity_kg)}</dd>
+            </div>
+            <div>
+              <dt className="text-[var(--muted-foreground)]">Резерв под приход</dt>
+              <dd className="mt-1 font-medium tabular-nums">{formatKg(silo.reserved_kg)}</dd>
+            </div>
+          </dl>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--muted-foreground)]">
+          {silo.unloading_line && (
+            <span className="inline-flex items-center gap-1">
+              <Route className="size-3" />
+              {silo.unloading_line}
+            </span>
+          )}
+          <span>{silo.allow_mixing ? "Смешивание разрешено" : "Без смешивания зерна"}</span>
+        </div>
+        {silo.sensor_difference_kg != null && Math.abs(silo.sensor_difference_kg) > 0 && (
+          <p className="mt-3 text-xs text-[var(--warning)]">
+            Расхождение с датчиком: {formatKg(silo.sensor_difference_kg)}
+          </p>
+        )}
+        {silo.active_wagons.length > 0 && (
+          <div className="mt-3 rounded-xl border border-[#315d74]/20 bg-[#315d74]/7 p-3">
+            <div className="mb-2 flex items-center gap-2 text-xs font-medium text-[#315d74]">
+              <Activity className="size-4" />
+              Вагоны в работе
             </div>
             <div className="flex flex-wrap gap-1.5">
-              {silo.is_default_route && <Badge tone="success">основной приход</Badge>}
-              {silo.is_quarantine && <Badge tone="destructive">карантин</Badge>}
-              {silo.status !== "active" && (
-                <Badge tone="warning">{silo.status === "blocked" ? "заблокирован" : "обслуживание"}</Badge>
+              {silo.active_wagons.map((wagon) =>
+                canOpenWagons ? (
+                  <Link
+                    key={wagon.id}
+                    href={`/grain/wagons/${wagon.id}`}
+                    className="rounded-full border border-[#315d74]/25 bg-[var(--card)] px-2.5 py-1 text-xs font-semibold text-[#315d74] transition-transform hover:-translate-y-0.5"
+                  >
+                    {wagon.number || `#${wagon.id}`}
+                  </Link>
+                ) : (
+                  <span
+                    key={wagon.id}
+                    className="rounded-full border border-[#315d74]/25 bg-[var(--card)] px-2.5 py-1 text-xs font-semibold text-[#315d74]"
+                  >
+                    {wagon.number || `#${wagon.id}`}
+                  </span>
+                ),
               )}
             </div>
           </div>
-
-          <div className="my-4 grid grid-cols-2 gap-px overflow-hidden rounded-xl border bg-slate-200">
-            <div className="bg-white/85 p-2.5">
-              <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">В силосе</div>
-              <div className="mt-0.5 text-[15px] font-bold tabular-nums text-slate-900">
-                {formatKg(silo.current_balance_kg)}
-              </div>
-            </div>
-            <div className="bg-white/85 p-2.5">
-              <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Вместимость</div>
-              <div className="mt-0.5 text-[15px] font-bold tabular-nums text-slate-900">
-                {formatKg(silo.total_capacity_kg)}
-              </div>
-            </div>
-            <div className="bg-white/85 p-2.5">
-              <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Резерв</div>
-              <div className="mt-0.5 text-[15px] font-bold tabular-nums text-[#a66a20]">
-                {formatKg(silo.reserved_kg)}
-              </div>
-            </div>
-            <div className="bg-white/85 p-2.5">
-              <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Свободно</div>
-              <div className="mt-0.5 text-[15px] font-bold tabular-nums text-[#356f48]">
-                {formatKg(silo.free_capacity_kg)}
-              </div>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-1.5 text-xs">
-            {silo.unloading_line && (
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-300/70 bg-white/70 px-2.5 py-1 font-medium text-slate-600">
-                <Route className="size-3.5" /> {silo.unloading_line}
-              </span>
-            )}
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-300/70 bg-white/70 px-2.5 py-1 font-medium text-slate-600">
-              <Boxes className="size-3.5" /> смешивание {silo.allow_mixing ? "разрешено" : "запрещено"}
-            </span>
-          </div>
-
-          {silo.active_wagons.length > 0 && (
-            <div className="mt-3 rounded-xl border border-[#315d74]/20 bg-[#315d74]/7 p-3">
-              <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.12em] text-[#315d74]">
-                <Activity className="size-4" />
-                Вагоны в работе
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {silo.active_wagons.map((wagon) =>
-                  canOpenWagons ? (
-                    <Link
-                      key={wagon.id}
-                      href={`/grain/wagons/${wagon.id}`}
-                      className="rounded-full border border-[#315d74]/25 bg-white px-2.5 py-1 text-xs font-semibold text-[#315d74] transition-transform hover:-translate-y-0.5"
-                    >
-                      {wagon.number || `#${wagon.id}`}
-                    </Link>
-                  ) : (
-                    <span
-                      key={wagon.id}
-                      className="rounded-full border border-[#315d74]/25 bg-white px-2.5 py-1 text-xs font-semibold text-[#315d74]"
-                    >
-                      {wagon.number || `#${wagon.id}`}
-                    </span>
-                  ),
-                )}
-              </div>
-            </div>
-          )}
-
-          <div className="mt-auto flex flex-wrap justify-end gap-2 border-t border-slate-300/70 pt-3">
-            <Button size="sm" variant="ghost" onClick={onMovements}>
-              <History className="size-4" /> Движения
-            </Button>
-            {canAdjust && (
-              <Button size="sm" variant="outline" onClick={onAdjust}>
-                <Gauge className="size-4" /> Корректировка
-              </Button>
-            )}
-          </div>
-        </div>
+        )}
+      </div>
+      <div className="flex flex-wrap justify-end gap-2 border-t px-5 py-3">
+        <Button size="sm" variant="ghost" onClick={onMovements}>
+          <History className="size-4" />
+          Движения
+        </Button>
+        {canAdjust && (
+          <Button size="sm" variant="outline" onClick={onAdjust}>
+            <Gauge className="size-4" />
+            Корректировка
+          </Button>
+        )}
       </div>
     </Card>
   );
@@ -793,7 +694,7 @@ function SilosPageInner() {
       {(error || typesError) && <ErrorAlert message={error || typesError || ""} onRetry={reloadAll} />}
 
       <section className="mb-5">
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
           <SummaryMetric
             icon={Warehouse}
             label="Общая ёмкость"
@@ -804,7 +705,7 @@ function SilosPageInner() {
             icon={Sprout}
             label="В хранении"
             value={formatKg(totalBalance)}
-            note={`${totalCapacity ? Math.round((totalBalance / totalCapacity) * 100) : 0}% парка`}
+            note={`${totalCapacity ? Math.round((totalBalance / totalCapacity) * 100) : 0}% общей ёмкости`}
             tone="grain"
           />
           <SummaryMetric
@@ -818,24 +719,23 @@ function SilosPageInner() {
             icon={Route}
             label="Маршруты"
             value={`${configuredRoutes} / ${typeRows.length}`}
-            note="типов направлено"
+            note="типов зерна с маршрутом"
             tone="blue"
           />
         </div>
         <p className="mt-2.5 flex items-center gap-1.5 px-1 text-xs text-[var(--muted-foreground)]">
           <ShieldAlert className="size-3.5 shrink-0 text-[#a66a20]" />
-          Остаток рассчитывается по неизменяемому журналу движений — правки только через «Корректировку».
+          Свободное место указано с учётом резерва под приход. Для изменения остатка используйте «Корректировку».
         </p>
       </section>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        {siloRows.map((silo, index) => (
+        {siloRows.map((silo) => (
           <SiloCard
             key={silo.id}
             silo={silo}
             canAdjust={canAdjust}
             canOpenWagons={can(me, "grain.view")}
-            index={index}
             onAdjust={() => setAdjustFor(silo)}
             onMovements={() => setMovementsFor(silo)}
           />

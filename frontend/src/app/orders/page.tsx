@@ -621,7 +621,9 @@ function OrdersAnalytics({
                       <div className="mt-1 text-sm font-bold tabular-nums">{row.shipped}</div>
                     </div>
                     <div className="text-right">
-                      <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Выручка</div>
+                      <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">
+                        Стоимость заказов
+                      </div>
                       <div className="mt-1 truncate text-sm font-bold tabular-nums">
                         {formatMoney(row.revenue)} {currencySymbol(row.revenue_currency ?? oneCurrency ?? "KZT")}
                       </div>

@@ -1381,7 +1381,9 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="reject")
     def reject(self, request, pk=None):
-        order = reject_order(self.get_object(), request.user)
+        order = reject_order(
+            self.get_object(), request.user, reason=request.data.get("reason", "")
+        )
         return Response(OrderSerializer(order, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path=r"payments/(?P<pid>\d+)/confirm")

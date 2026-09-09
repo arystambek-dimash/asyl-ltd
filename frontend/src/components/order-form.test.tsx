@@ -506,4 +506,38 @@ describe("OrderForm reference data resilience", () => {
     expect(screen.getByText(/Номер вагона должен содержать 8 цифр/)).toBeInTheDocument();
     expect(postMock).not.toHaveBeenCalled();
   });
+  it("creates a template order in the selected client's department", async () => {
+    const template = {
+      id: 99,
+      client: client.id,
+      department: "old",
+      currency: "KZT",
+      truck_number: "",
+      items: [{ product: product.id, quantity: 2, unit_price: "17.50" }],
+    } as Order;
+    const states = new Map<string, unknown>([
+      [
+        "/orders/form-options/",
+        apiState({
+          clients: [{ ...client, department_code: department.code, department_name: department.name }],
+          products: [product],
+          stores: [],
+          departments: [department, { ...department, id: 4, code: "old", name: "Другой отдел" }],
+        }),
+      ],
+      ["/client-prices/?client=1&currency=KZT", apiState({ "2": "17.50" })],
+    ]);
+    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+    const user = userEvent.setup();
+    render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
+    expect(screen.getByText("отдел клиента")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Другой отдел" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
+    expect(postMock).toHaveBeenCalledWith(
+      "/orders/",
+      expect.objectContaining({ client: client.id, department: department.code }),
+    );
+  });
 });

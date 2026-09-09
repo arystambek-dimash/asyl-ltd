@@ -34,7 +34,10 @@ import type { Client, Department, Order, Product, Store, Warehouse } from "@/lib
 
 type Row = { id: number; product: string; quantity: string; price: string };
 type Step = 1 | 2 | 3;
-type OrderClientOption = Pick<Client, "id" | "name" | "company_name" | "phone" | "currency">;
+type OrderClientOption = Pick<Client, "id" | "name" | "company_name" | "phone" | "currency"> & {
+  department_code?: string;
+  department_name?: string;
+};
 type OrderProductOption = Pick<
   Product,
   "id" | "label" | "available_bags" | "stock_by_warehouse" | "warehouse" | "warehouse_name"
@@ -182,7 +185,9 @@ export function OrderForm({
     wagonNumber !== "" &&
     !/^[0-9]{8}$/.test(wagonNumber);
 
-  const assignedDepartment = !editing ? me?.sales_department : null;
+  const selectedClient = clients.find((item) => String(item.id) === client);
+  const clientDepartment = departments.find((item) => item.code === selectedClient?.department_code);
+  const assignedDepartment = !editing ? (clientDepartment ?? me?.sales_department) : null;
   const clientPricesUrl = client ? `/client-prices/?client=${client}&currency=${currency}` : null;
   const {
     data: loadedClientPrices,
@@ -236,7 +241,6 @@ export function OrderForm({
       .toLocaleLowerCase("ru")
       .includes(normalizedSearch);
   });
-  const selectedClient = clients.find((item) => String(item.id) === client);
   const clientStores = stores.filter((item) => String(item.client) === client);
   const selectedStore = clientStores.find((item) => String(item.id) === store);
   const selectedDepartment = departments.find((item) => item.code === dept);
@@ -270,6 +274,8 @@ export function OrderForm({
   const selectedBags = validRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
 
   function chooseClient(item: OrderClientOption) {
+    if (item.department_code) setDept(item.department_code);
+    else if (selectedClient?.department_code) setDept(me?.sales_department?.code ?? "");
     setClient(String(item.id));
     setStore("");
     setCurrency(item.currency);
@@ -282,6 +288,10 @@ export function OrderForm({
     setError("");
     if (!referenceDataReady) {
       setError("Сначала загрузите справочники заказа.");
+      return;
+    }
+    if (!editing && selectedClient?.department_code && !clientDepartment) {
+      setError("Отдел клиента недоступен. Проверьте его в карточке клиента.");
       return;
     }
     if (step === 1 && (!client || !dept)) {
@@ -400,7 +410,7 @@ export function OrderForm({
               </div>
               {assignedDepartment && (
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
-                  <ShieldCheck className="size-3.5" /> назначен вам
+                  <ShieldCheck className="size-3.5" /> {clientDepartment ? "отдел клиента" : "назначен вам"}
                 </span>
               )}
             </div>
@@ -421,7 +431,12 @@ export function OrderForm({
                   <button
                     key={department.code}
                     type="button"
-                    disabled={physicalFieldsLocked}
+                    disabled={
+                      physicalFieldsLocked ||
+                      (!!selectedClient?.department_code &&
+                        department.code !== selectedClient.department_code &&
+                        department.code !== editing?.department)
+                    }
                     onClick={() => setDept(department.code)}
                     className={cn(
                       "flex min-h-12 items-center gap-2.5 rounded-xl border px-3 py-2 text-left text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60",

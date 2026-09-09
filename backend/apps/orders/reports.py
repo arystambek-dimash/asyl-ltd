@@ -24,6 +24,7 @@ from apps.common.money import (
     sum_by_currency,
 )
 from apps.common.money import money_string as _d
+from apps.sales.models import Department
 
 from .debt import debt_orders, order_remaining
 from .models import Payment, PaymentRefund
@@ -59,18 +60,22 @@ def _payment_events_by_day(orders_qs, date_from, date_to):
         .annotate(day=TruncDate(Coalesce("confirmed_at", "paid_at")))
     )
     qs = _day_bounds(qs, date_from, date_to)
-    return qs.values("day", "order__currency").annotate(
-        gross_cash=Coalesce(
-            Sum("amount", filter=Q(method__in=CASH_METHODS)),
-            _ZERO,
-            output_field=_MONEY,
-        ),
-        gross_cashless=Coalesce(
-            Sum("amount", filter=Q(method__in=CASHLESS_METHODS)),
-            _ZERO,
-            output_field=_MONEY,
-        ),
-        payments=Count("id"),
+    return (
+        qs.order_by()
+        .values("day", "order__currency", "order__department")
+        .annotate(
+            gross_cash=Coalesce(
+                Sum("amount", filter=Q(method__in=CASH_METHODS)),
+                _ZERO,
+                output_field=_MONEY,
+            ),
+            gross_cashless=Coalesce(
+                Sum("amount", filter=Q(method__in=CASHLESS_METHODS)),
+                _ZERO,
+                output_field=_MONEY,
+            ),
+            payments=Count("id"),
+        )
     )
 
 
@@ -86,18 +91,22 @@ def _refund_events_by_day(orders_qs, date_from, date_to):
         .annotate(day=TruncDate("completed_at"))
     )
     qs = _day_bounds(qs, date_from, date_to)
-    return qs.values("day", "payment__order__currency").annotate(
-        refund_cash=Coalesce(
-            Sum("amount", filter=Q(method__in=REFUND_CASH_METHODS)),
-            _ZERO,
-            output_field=_MONEY,
-        ),
-        refund_cashless=Coalesce(
-            Sum("amount", filter=Q(method__in=REFUND_CASHLESS_METHODS)),
-            _ZERO,
-            output_field=_MONEY,
-        ),
-        refunds=Count("id"),
+    return (
+        qs.order_by()
+        .values("day", "payment__order__currency", "payment__order__department")
+        .annotate(
+            refund_cash=Coalesce(
+                Sum("amount", filter=Q(method__in=REFUND_CASH_METHODS)),
+                _ZERO,
+                output_field=_MONEY,
+            ),
+            refund_cashless=Coalesce(
+                Sum("amount", filter=Q(method__in=REFUND_CASHLESS_METHODS)),
+                _ZERO,
+                output_field=_MONEY,
+            ),
+            refunds=Count("id"),
+        )
     )
 
 
@@ -272,6 +281,19 @@ def _income_currency_row():
 def summary_report(orders_qs, date_from=None, date_to=None, *, income_only=False) -> dict:
     """Собрать отчёт по живым заказам скоупа."""
     days: dict = {}
+    departments = {}
+
+    def department_row(code):
+        return departments.setdefault(
+            code,
+            {
+                "code": code,
+                "orders": 0,
+                "sales_by_currency": defaultdict(lambda: _ZERO),
+                "received_by_currency": defaultdict(lambda: _ZERO),
+                "refunded_by_currency": defaultdict(lambda: _ZERO),
+            },
+        )
 
     def day_row(day):
         return days.setdefault(day, {
@@ -294,6 +316,9 @@ def summary_report(orders_qs, date_from=None, date_to=None, *, income_only=False
     snapshots = [] if income_only else _period_shipped_snapshots(orders_qs, date_from, date_to)
     total_bags = 0
     for snapshot in snapshots:
+        department = department_row(snapshot["order"].department)
+        department["orders"] += 1
+        department["sales_by_currency"][snapshot["currency"]] += snapshot["total"]
         row = day_row(snapshot["day"])
         currency = snapshot["currency"]
         row["orders"] += 1
@@ -311,6 +336,9 @@ def summary_report(orders_qs, date_from=None, date_to=None, *, income_only=False
     for event in _payment_events_by_day(orders_qs, date_from, date_to):
         row = day_row(event["day"])
         currency = event["order__currency"] or DEFAULT_CURRENCY
+        department_row(event["order__department"])["received_by_currency"][
+            currency
+        ] += (event["gross_cash"] + event["gross_cashless"])
         row["gross_cash_by_currency"][currency] += event["gross_cash"]
         row["gross_cashless_by_currency"][currency] += event["gross_cashless"]
         row["payments"] += event["payments"]
@@ -322,6 +350,9 @@ def summary_report(orders_qs, date_from=None, date_to=None, *, income_only=False
     for event in _refund_events_by_day(orders_qs, date_from, date_to):
         row = day_row(event["day"])
         currency = event["payment__order__currency"] or DEFAULT_CURRENCY
+        department_row(event["payment__order__department"])["refunded_by_currency"][
+            currency
+        ] += (event["refund_cash"] + event["refund_cashless"])
         row["refund_cash_by_currency"][currency] += event["refund_cash"]
         row["refund_cashless_by_currency"][currency] += event["refund_cashless"]
         row["refunds"] += event["refunds"]
@@ -388,9 +419,43 @@ def summary_report(orders_qs, date_from=None, date_to=None, *, income_only=False
             for currency, values in income_by_currency.items()
         }),
     }
+    # Reuse the same shipment/payment/refund rows as the total report. Separate
+    # grouping keys avoid multiplying items by payments and add no per-department queries.
+    labels = {row.code: row for row in Department.objects.all()} if departments else {}
+    department_rows = []
+    for code, values in sorted(departments.items()):
+        label = labels.get(code)
+        received = values["received_by_currency"]
+        refunded = values["refunded_by_currency"]
+        department_rows.append(
+            {
+                "code": code,
+                "name": label.name if label else (code or "Нет отдела"),
+                "color": label.color if label else "#64748B",
+                "orders": values["orders"] if not income_only else None,
+                "sales_by_currency": (
+                    as_money_strings(values["sales_by_currency"])
+                    if not income_only
+                    else None
+                ),
+                "received_by_currency": as_money_strings(received),
+                "refunded_by_currency": as_money_strings(refunded),
+                "net_by_currency": as_money_strings(
+                    {
+                        currency: received.get(currency, _ZERO)
+                        - refunded.get(currency, _ZERO)
+                        for currency in received.keys() | refunded.keys()
+                    }
+                ),
+            }
+        )
     if income_only:
-        return {"from": date_from.isoformat() if date_from else None,
-                "to": date_to.isoformat() if date_to else None, "income": income}
+        return {
+            "from": date_from.isoformat() if date_from else None,
+            "to": date_to.isoformat() if date_to else None,
+            "income": income,
+            "departments": department_rows,
+        }
 
     day_list = []
     for row in sorted(days.values(), key=lambda value: value["date"], reverse=True):
@@ -484,6 +549,7 @@ def summary_report(orders_qs, date_from=None, date_to=None, *, income_only=False
         "from": date_from.isoformat() if date_from else None,
         "to": date_to.isoformat() if date_to else None,
         "income": income,
+        "departments": department_rows,
         "shipped": {
             "revenue": _d(revenue_totals["revenue"]),
             "paid_amount": _d(revenue_totals["paid_amount"]),
@@ -493,18 +559,24 @@ def summary_report(orders_qs, date_from=None, date_to=None, *, income_only=False
             "bags": total_bags,
             "currency": revenue_currency,
             "revenue_by_currency": as_money_strings(revenue_by_currency),
-            "paid_amount_by_currency": as_money_strings({
-                currency: values["paid_amount"]
-                for currency, values in shipped_by_currency.items()
-            }),
-            "debt_amount_by_currency": as_money_strings({
-                currency: values["debt_amount"]
-                for currency, values in shipped_by_currency.items()
-            }),
-            "awaiting_amount_by_currency": as_money_strings({
-                currency: values["awaiting_amount"]
-                for currency, values in shipped_by_currency.items()
-            }),
+            "paid_amount_by_currency": as_money_strings(
+                {
+                    currency: values["paid_amount"]
+                    for currency, values in shipped_by_currency.items()
+                }
+            ),
+            "debt_amount_by_currency": as_money_strings(
+                {
+                    currency: values["debt_amount"]
+                    for currency, values in shipped_by_currency.items()
+                }
+            ),
+            "awaiting_amount_by_currency": as_money_strings(
+                {
+                    currency: values["awaiting_amount"]
+                    for currency, values in shipped_by_currency.items()
+                }
+            ),
         },
         "debt_now": _debt_now(orders_qs),
         "clients": _clients_breakdown(snapshots),

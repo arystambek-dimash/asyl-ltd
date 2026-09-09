@@ -81,6 +81,8 @@ def test_staff_reviews_template_then_creates_linked_order(manager):
         "new_order_id": created.id,
         "mode": "reviewed_template",
         "client_id": client.id,
+        "department": created.department,
+        "currency": created.currency,
     }
 
 

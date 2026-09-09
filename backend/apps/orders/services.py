@@ -852,7 +852,9 @@ ALLOWED_TRANSITIONS = {
 
 
 @transaction.atomic
-def transition(order: Order, to_status: str, user, message: str | None = None) -> Order:
+def transition(
+    order: Order, to_status: str, user, message: str | None = None, *, payload=None
+) -> Order:
     order = lock_live_order(order, user)
     _assert_no_open_ai_session(order)
     allowed = ALLOWED_TRANSITIONS.get(order.status, set())
@@ -863,8 +865,13 @@ def transition(order: Order, to_status: str, user, message: str | None = None) -
     old = order.status
     order.status = to_status
     order.save(update_fields=["status"])
-    log_event("status", message or _status_message("Статус", old, to_status),
-              user=user, order=order, payload={"from": old, "to": to_status})
+    log_event(
+        "status",
+        message or _status_message("Статус", old, to_status),
+        user=user,
+        order=order,
+        payload={**(payload or {}), "from": old, "to": to_status},
+    )
     return order
 
 
@@ -877,6 +884,22 @@ def confirm_order(order: Order, user, prices: dict | None = None, *, department=
     if order.status not in ("draft", "pending"):
         raise ValidationError(
             {"detail": "Подтвердить можно только новый заказ", "code": "invalid_status"})
+    client = Client.objects.select_for_update().get(pk=order.client_id)
+    if client.department_id:
+        assigned = client.department
+        if not assigned.is_active:
+            raise ValidationError(
+                {
+                    "department": "Отдел клиента отключён. Сначала измените отдел в карточке клиента."
+                }
+            )
+        if department is not None and department != assigned.code:
+            raise ValidationError(
+                {
+                    "department": f"Заказ должен учитываться в отделе клиента: {assigned.name}"
+                }
+            )
+        department = assigned.code
     if department is not None:
         from apps.sales.models import Department
         if not isinstance(department, str) or not Department.objects.filter(
@@ -931,10 +954,12 @@ def repeat_order(source: Order, user) -> Order:
     has_complete_prices = all(
         item.unit_price is not None and item.unit_price > 0 for item in items
     )
+    # A repeat is a new sale; the original order keeps its historical department.
+    client = Client.objects.select_for_update().get(pk=source.client_id)
     repeated = Order.objects.create(
-        client=source.client,
+        client=client,
         currency=source.currency,
-        department=source.department,
+        department=client.department.code if client.department_id else source.department,
         transport_type=source.transport_type,
         store=source.store,
         warehouse=warehouse,
@@ -1393,13 +1418,32 @@ def replace_items(
 
 
 @transaction.atomic
-def reject_order(order: Order, user) -> Order:
+def reject_order(order: Order, user, *, reason: str) -> Order:
     caller_order = order
     order = lock_live_order(order, user)
     if order.status != "pending":
         raise ValidationError(
             {"detail": "Отклонить можно только заказ на рассмотрении", "code": "invalid_status"})
-    rejected = transition(order, "rejected", user, "Заказ отклонён")
+    if not isinstance(reason, str) or not reason.strip() or len(reason.strip()) > 500:
+        raise ValidationError(
+            {"reason": "Укажите причину отклонения (до 500 символов)"}
+        )
+    if order.payments.exists():
+        raise ValidationError(
+            {
+                "detail": "У заявки есть платёжные операции. Сначала проверьте их в кассе."
+            }
+        )
+    order.rejection_reason = reason.strip()
+    order.save(update_fields=["rejection_reason"])
+    rejected = transition(
+        order,
+        "rejected",
+        user,
+        f"Заявка отклонена: {order.rejection_reason}",
+        payload={"reason": order.rejection_reason, "action": "order_rejected"},
+    )
+    caller_order.rejection_reason = order.rejection_reason
     caller_order.status = rejected.status
     return rejected
 
@@ -1546,6 +1590,16 @@ def set_order_department(order: Order, value: str, user) -> Order:
         raise ValidationError({"department": "У подтверждённого заказа должен быть отдел продаж"})
     if value == order.department:
         return order
+    if order.payments.exists():
+        raise ValidationError(
+            {
+                "detail": "Отдел нельзя изменить после создания платёжной операции: он закреплён для учёта и выписок",
+                "code": "department_has_payments",
+            }
+        )
+    client = Client.objects.select_for_update().get(pk=order.client_id)
+    if client.department_id and value != client.department.code:
+        raise ValidationError({"department": "Выберите отдел, к которому закреплён клиент"})
     _assert_no_open_ai_session(order)
     if order.status in ("arrived", "loading", "loaded", "shipped"):
         raise ValidationError({
